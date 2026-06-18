@@ -21,6 +21,7 @@ from chatbot.features.chat.ports import (
 )
 from chatbot.features.chat.router import build_chat_router
 from chatbot.features.chat.service import OrchestratorService
+from chatbot.features.sim.router import build_sim_router
 from chatbot.platform.config import get_settings
 from chatbot.platform.logger import configure_logging
 from chatbot.platform.server import create_app
@@ -81,6 +82,10 @@ def bootstrap_application() -> FastAPI:
 
     # 6. Include endpoints and mount static folders for voice file playbacks
     app.include_router(build_chat_router(orchestrator))
+
+    # Developer simulator UI — exposed only when DEBUG=true (never in production)
+    if settings.debug:
+        app.include_router(build_sim_router(orchestrator))
 
     os.makedirs("static/audio", exist_ok=True)
     app.mount("/static", StaticFiles(directory="static"), name="static")

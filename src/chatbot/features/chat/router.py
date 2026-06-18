@@ -171,11 +171,12 @@ class ChatRouter:
                 "Laporan Anda memerlukan bantuan agen manusia. "
                 "Mohon tunggu, kami sedang menyambungkan panggilan Anda."
             )
+            dial_number = self.orchestrator._settings.twilio_escalation_phone
             twiml = (
                 '<?xml version="1.0" encoding="UTF-8"?>\n'
                 "<Response>\n"
                 f'  <Say language="id-ID" voice="Polly.Aditi">{say_escalation}</Say>\n'
-                "  <Dial>+6281234567890</Dial>\n"
+                f"  <Dial>{dial_number}</Dial>\n"
                 "</Response>"
             )
             return Response(content=twiml, media_type="application/xml")
@@ -200,7 +201,8 @@ class ChatRouter:
                 await run_in_threadpool(_write_file, audio_path, audio_bytes)
 
                 # Public URL of the audio file (requires public host in production, mock for local)
-                audio_url = f"/static/audio/{filename}"
+                base_url = self.orchestrator._settings.public_base_url.rstrip("/")
+                audio_url = f"{base_url}/static/audio/{filename}" if base_url else f"/static/audio/{filename}"
                 say_thanks = "Terima kasih telah menghubungi kami."
 
                 twiml = (

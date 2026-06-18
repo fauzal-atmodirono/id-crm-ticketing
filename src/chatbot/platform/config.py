@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     zammad_api_token: str = ""
     zammad_enabled: bool = True
 
+    # Twilio settings
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_escalation_phone: str = "+6281234567890"
+    public_base_url: str = ""
+
     # Voice settings
     voice_stt_max_seconds: int = 30
     voice_default_lang: str = "en-US"

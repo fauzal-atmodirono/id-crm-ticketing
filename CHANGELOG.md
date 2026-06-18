@@ -10,10 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Monorepo structure** (`apps/backend/` + `apps/frontend/`) per `project-structure-vue-frontend.md`.
 - **Vue 3 frontend** at `apps/frontend/` (Vite + TypeScript + Pinia, `<script setup lang="ts">` exclusively). Vertical feature slices for `chat/` and `voice/`, each with its own `api/`, `store/`, `components/`, and `types/`.
-- **`useMediaRecorder` composable** — browser `MediaRecorder` wrapper picking Opus in OGG or WebM. Hold-to-talk recorder posts audio blobs to `/voice/turn` and auto-plays the returned MP3.
+- **`useVoiceCapture` composable** — `getUserMedia` + `AnalyserNode` + `MediaRecorder` with built-in **voice activity detection** (sustained-silence auto-stop, configurable RMS floor / min-speech / trailing-silence). On stop, the captured Opus blob is decoded via `AudioContext.decodeAudioData`, mixed to mono, linearly resampled to 16 kHz, and packed as 16-bit PCM WAV — Gemini accepts WAV natively, so Chrome's webm/opus output is no longer rejected.
+- **`WaveformDisplay.vue`** — 48-bar canvas waveform driven by the live analyser; switches palette when speech is detected.
+- **`VoiceRecorder.vue`** rewritten as **tap-to-talk** with a four-phase status machine (`idle → listening → processing → speaking`), pulsing halo locked to mic level, mid-turn manual-stop, and a <kbd>Space</kbd>-key shortcut.
+- **`phase` state in `useVoiceStore`** — `'idle' | 'listening' | 'processing' | 'speaking'`. Assistant audio autoplays and flips back to `idle` on `ended`.
 - **`POST /chat/turn`** — JSON in, JSON out frontend chat endpoint (returns `{reply, language, sentiment, handoff}`).
-- **`POST /voice/turn`** — multipart audio in, `audio/mpeg` out with `X-Reply-Text` (URL-encoded) and `X-Handoff-Reason` response headers.
-- **CORS middleware** on the backend; new `FRONTEND_ORIGIN` setting controls the allowed origin (default `http://localhost:5173`).
+- **`POST /voice/turn`** — multipart audio in (now `audio/wav`), `audio/mpeg` out with `X-Reply-Text` (URL-encoded) and `X-Handoff-Reason` response headers.
+- **CORS middleware** on the backend; new `FRONTEND_ORIGINS` setting accepts a JSON list of allowed origins and defaults to Vite's port fallbacks (`5173`–`5180`).
+- **Vertex AI env mirroring** — `bootstrap_application` now copies `vertex_project_id` / `vertex_location` into `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` so the `google-genai` SDK actually sees them when `GOOGLE_GENAI_USE_VERTEXAI=true`. A single `.env` now drives both layers.
 - **`GEMINI_TTS_MODEL` / `GEMINI_TTS_VOICE`** settings selecting the Gemini TTS model and voice (defaults: `gemini-2.5-flash-tts`, `Kore`).
 - **ADR 0002** documenting the monorepo, Vue frontend, and Gemini end-to-end audio decisions together.
 
@@ -22,10 +26,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `OrchestratorService.handle_voice_turn` now sends the audio bytes directly as a multimodal `Part` to the ADK runner. No separate transcription step.
   - `GcpTextToSpeechAdapter` replaced by `GeminiTextToSpeechAdapter` — uses Cloud TTS with `model_name="gemini-2.5-flash-tts"`.
   - `MockVoiceAdapter` now implements only `TextToSpeechPort`.
+- **Frontend upload format**: voice turns now post `audio/wav` (16 kHz mono PCM-16) instead of `audio/ogg`/`audio/webm`. The wire MIME is consumed verbatim by the ADK `Part`.
+- **Settings — `frontend_origin: str` → `frontend_origins: list[str]`** (BREAKING for anyone overriding `.env`). `.env.example` updated; old `FRONTEND_ORIGIN=…` keys must be migrated to `FRONTEND_ORIGINS=["…"]`.
+- **CORS consolidated to one middleware** in `bootstrap_application` (the duplicate `allow_origins=["*"]` in `create_app` was removed). Stacking two `CORSMiddleware` layers caused the restrictive one to win for preflight while the permissive one shaped simple-request responses — symptoms were "Failed to fetch" on `/chat/turn` from Vite fallback ports.
 - **Frontend replaces the old `/sim` simulator.** The inline-HTML `features/sim/` package was deleted; the Vue app at `apps/frontend/` is the new UI surface.
 - **CLAUDE.md, README, USAGE** updated for the new layout and `cd apps/backend` / `cd apps/frontend` workflow.
 
+### Fixed
+- **Chat "Failed to fetch" from Vite fallback ports** (e.g., `:5174`, `:5176`) — the old single-origin allowlist returned `400 Disallowed CORS origin` on preflight. Replaced with the multi-origin `FRONTEND_ORIGINS` list.
+- **Voice `Maaf, terjadi kendala teknis…` fallback in Chrome** — Gemini does not accept `audio/webm;codecs=opus`, so every Chrome capture hit the exception handler. Re-encoding to WAV in the browser fixes the round trip natively.
+- **`google-genai` not honouring Settings on Vertex** — declared but never propagated, so even with `GOOGLE_GENAI_USE_VERTEXAI=true` the SDK fell back to AI Studio (and 401'd without `GOOGLE_API_KEY`). Bootstrap now mirrors the values into the env vars the SDK actually reads.
+
 ### Removed
+- **`useMediaRecorder` composable** — superseded by `useVoiceCapture` (which adds VAD + WAV encoding). Hold-to-talk semantics are gone; tap-to-talk replaces them.
+- **Duplicate `CORSMiddleware`** registration in `chatbot/platform/server.py` (the permissive `allow_origins=["*"]` one).
 - **BREAKING — Twilio integration removed entirely.**
   - Routes `/webhooks/voice/twilio` and `/webhooks/voice/twilio/process` deleted.
   - All TwiML generation and the `static/audio/` mount removed.
@@ -35,10 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GcpSpeechToTextAdapter` deleted.
 
 ### Planned
-- Safari `MediaRecorder` support (transcoder service or polyfill)
-- Frontend unit tests via Vitest
-- Persistent session store (currently in-memory)
-- Observability dashboards and alert wiring
+- Safari support for the voice capture path (Safari's `MediaRecorder` is feature-limited; needs a polyfill or a WebAudio-only PCM capture path).
+- Continuous "conversation mode" — auto-resume listening after the assistant finishes speaking.
+- Frontend unit tests via Vitest (with the WAV encoder + VAD timing as first targets).
+- Persistent session store (currently in-memory).
+- Webhook signature verification on `/webhooks/zendesk` and `/webhooks/chatwoot`.
+- Observability dashboards and alert wiring.
 
 ---
 

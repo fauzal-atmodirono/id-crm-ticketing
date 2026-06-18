@@ -44,7 +44,7 @@ npm install
 npm run dev                            # → http://localhost:5173
 ```
 
-Open `http://localhost:5173` — the header should show three green badges (CRM, Voice, Model). If the CORS badge says "Backend unreachable", check the backend is up and `FRONTEND_ORIGIN` in `apps/backend/.env` matches the Vite dev port (`http://localhost:5173`).
+Open `http://localhost:5173` — the header should show three green badges (CRM, Voice, Model). If the CORS badge says "Backend unreachable", check the backend is up and that the Vite port is included in `FRONTEND_ORIGINS` in `apps/backend/.env` (the default list covers `5173`–`5180`, so Vite's port fallbacks work out of the box).
 
 ---
 
@@ -73,20 +73,21 @@ When the agent triggers escalation, `handoff` populates and the frontend renders
 
 ## 3. Sending a Voice Message
 
-Click the **Voice** tab. Hold the microphone button to record, release to send. The frontend:
+Click the **Voice** tab. **Tap** the microphone, start talking, and stop — the agent auto-replies when you pause for ~1.2 s. <kbd>Space</kbd> toggles the mic without the mouse. The frontend:
 
-1. Captures audio with `MediaRecorder` (Chrome/Firefox: `audio/ogg;codecs=opus`).
-2. POSTs the blob to `/voice/turn` as multipart form-data.
-3. Backend forwards the bytes to Gemini as a multimodal `Part` — no separate transcription.
-4. Gemini's reply text is synthesized by Gemini TTS (`gemini-2.5-flash-tts`) into an MP3.
-5. Browser auto-plays the MP3 and displays the reply text (from the `X-Reply-Text` response header).
+1. Captures audio with `MediaRecorder` (Chrome: `audio/webm;codecs=opus`, Firefox: `audio/ogg;codecs=opus`) while an `AnalyserNode` powers the live waveform and the silence-based VAD.
+2. On auto-stop (or manual tap-to-stop), decodes the Opus stream via `AudioContext.decodeAudioData`, mixes to mono, resamples to 16 kHz, and packs as 16-bit PCM **WAV**.
+3. POSTs `audio/wav` to `/voice/turn` as multipart form-data.
+4. Backend forwards the bytes to Gemini as a multimodal `Part` — no separate transcription.
+5. Gemini's reply text is synthesized by Gemini TTS (`gemini-2.5-flash-tts`) into an MP3.
+6. Browser auto-plays the MP3 and displays the reply text (from the `X-Reply-Text` response header).
 
-Equivalent `curl` (works with any `audio/ogg` file):
+Equivalent `curl` (Gemini accepts WAV, MP3, OGG, FLAC, AAC, AIFF natively):
 
 ```bash
 curl -X POST http://localhost:8000/voice/turn \
   -F 'session_id=cli-test' \
-  -F 'audio=@/path/to/clip.ogg;type=audio/ogg' \
+  -F 'audio=@/path/to/clip.wav;type=audio/wav' \
   -D headers.txt \
   -o reply.mp3
 
@@ -96,11 +97,11 @@ grep -i '^x-reply-text:' headers.txt
 
 ### Browser support
 
-| Browser | Status                                              |
-|---------|-----------------------------------------------------|
-| Chrome  | ✅ `audio/ogg;codecs=opus`                          |
-| Firefox | ✅ `audio/ogg;codecs=opus` or `audio/webm`          |
-| Safari  | ❌ no Opus in `MediaRecorder` yet (see ADR 0002)    |
+| Browser | Status                                                                                |
+|---------|---------------------------------------------------------------------------------------|
+| Chrome  | ✅ `audio/webm;codecs=opus` — decoded + re-encoded to WAV in-browser                  |
+| Firefox | ✅ `audio/ogg;codecs=opus` — decoded + re-encoded to WAV in-browser                   |
+| Safari  | ❌ no Opus in `MediaRecorder` yet (see ADR 0002)                                      |
 
 ---
 
@@ -173,7 +174,7 @@ Going live for the first time:
 1. Fill remaining `apps/backend/.env` values (CRM + GCP).
 2. Start backend on a reachable host with HTTPS (browser mic capture needs it).
 3. Build the frontend: `npm run build` → deploy `apps/frontend/dist/` to a static host. Set `VITE_API_BASE_URL` at build time to your backend's HTTPS URL.
-4. Set `FRONTEND_ORIGIN` in the backend to the deployed frontend origin.
+4. Set `FRONTEND_ORIGINS` in the backend to a JSON list containing the deployed frontend origin (e.g. `FRONTEND_ORIGINS=["https://app.example.com"]`).
 5. (Optional) Wire Chatwoot/Zendesk webhooks for customers who chat through those platforms instead of your Vue app.
 
 ---
@@ -182,7 +183,7 @@ Going live for the first time:
 
 | Symptom                                                | Likely cause                                                                | Fix                                                                                          |
 |--------------------------------------------------------|-----------------------------------------------------------------------------|----------------------------------------------------------------------------------------------|
-| Frontend header shows "Backend unreachable"            | Backend not running, wrong port, or CORS origin mismatch                    | Verify backend is up; ensure `FRONTEND_ORIGIN` in `apps/backend/.env` matches the frontend's exact origin (scheme + host + port). |
+| Frontend header shows "Backend unreachable"            | Backend not running, wrong port, or CORS origin mismatch                    | Verify backend is up; ensure the frontend's origin (scheme + host + port) is in `FRONTEND_ORIGINS` in `apps/backend/.env`. Defaults cover Vite ports `5173`–`5180`. |
 | `GET /` returns wrong provider                         | `.env` not loaded — wrong working directory                                 | Run `uvicorn` from `apps/backend/` so it finds `.env` in cwd.                                |
 | 401 from Zendesk Support API                           | `ZENDESK_EMAIL` missing or doesn't match the API token's owner              | Set `ZENDESK_EMAIL` in `.env` to the user who created the token.                            |
 | Voice tab record button does nothing                   | Safari (no Opus in MediaRecorder) or `getUserMedia` blocked by HTTP origin  | Use Chrome/Firefox; serve from `localhost` or HTTPS.                                        |

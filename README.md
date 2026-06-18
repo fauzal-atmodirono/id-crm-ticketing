@@ -7,14 +7,15 @@ Two apps in one repo:
 - **`apps/backend/`** — Python / FastAPI / Google ADK (over Gemini) — webhook handlers + frontend API.
 - **`apps/frontend/`** — Vue 3 / Vite / TypeScript / Pinia — browser UI with text chat and microphone-driven voice.
 
-Voice goes end-to-end through Gemini: the browser captures audio with `MediaRecorder`, the backend forwards it as a multimodal `Part` to the same ADK runner used for text turns, and Gemini TTS (`gemini-2.5-flash-tts`) synthesizes the reply. No Twilio, no separate Speech-to-Text step.
+Voice goes end-to-end through Gemini: the browser captures audio with `MediaRecorder`, decodes the Opus stream client-side and re-encodes to 16 kHz mono WAV (Gemini accepts WAV natively), the backend forwards it as a multimodal `Part` to the same ADK runner used for text turns, and Gemini TTS (`gemini-2.5-flash-tts`) synthesizes the reply. No Twilio, no separate Speech-to-Text step.
 
 ---
 
 ## Highlights
 
 - **Unified agent core** — one Gemini instruction + tool pipeline drives both channels.
-- **Gemini native audio** — `audio/ogg` blob → ADK Part → Gemini TTS MP3 → browser playback. One model, one round trip.
+- **Gemini native audio** — 16 kHz mono WAV blob → ADK Part → Gemini TTS MP3 → browser playback. One model, one round trip.
+- **Interactive voice UX** — tap-to-talk with live canvas waveform, auto-stop on silence (built-in VAD), and a four-state status machine (`idle → listening → processing → speaking`). Keyboard `Space` toggles the mic.
 - **Pluggable CRM** — swap Zendesk for Chatwoot/Zammad via configuration.
 - **Tool-using LLM** — knowledge-base search, ticket classification, and human escalation as Gemini tools.
 - **Automated handoff** — keyword/sentiment-triggered escalation produces a structured JSON summary for the receiving human agent.
@@ -46,7 +47,7 @@ proton-conversational-ai/
 │   └── frontend/                         # Vue 3 + Vite + Pinia
 │       └── src/
 │           ├── features/chat/            # vertical slice: api, store, components, types
-│           ├── features/voice/           # vertical slice: + composables/useMediaRecorder.ts
+│           ├── features/voice/           # vertical slice: + composables/useVoiceCapture.ts, components/WaveformDisplay.vue
 │           ├── components/ui/            # ChannelTabs
 │           ├── components/layout/        # AppHeader
 │           ├── layouts/MainLayout.vue
@@ -112,7 +113,7 @@ npm run dev
 # → http://localhost:5173
 ```
 
-The header badges show the current backend providers. Switch the **Chat** / **Voice** tab to use either channel. The Voice tab uses your microphone — Chrome and Firefox supported (Safari isn't yet, see ADR 0002).
+The header badges show the current backend providers. Switch the **Chat** / **Voice** tab to use either channel. The Voice tab uses your microphone — **tap the mic** to start talking, and the agent auto-replies (text + synthesized speech) when you pause for ~1.2 s. Press <kbd>Space</kbd> to toggle the mic without using the mouse. Chrome and Firefox supported (Safari isn't yet, see ADR 0002).
 
 ---
 
@@ -124,7 +125,7 @@ Backend settings load from `apps/backend/.env`. See [.env.example](apps/backend/
 |-----------------------------|--------------------------------------------------------|---------------------------------|
 | `CRM_PROVIDER`              | `chatwoot` or `zendesk`                                | `chatwoot`                      |
 | `VOICE_PROVIDER`            | `mock` or `gcp`                                        | `mock`                          |
-| `FRONTEND_ORIGIN`           | CORS origin allowed by the backend                     | `http://localhost:5173`         |
+| `FRONTEND_ORIGINS`          | JSON list of CORS origins (covers Vite port fallbacks) | `["http://localhost:5173",…5180]`|
 | `GEMINI_MODEL`              | Gemini model id                                        | `gemini-2.5-flash`              |
 | `GEMINI_TTS_MODEL`          | TTS model (via Cloud TTS API)                          | `gemini-2.5-flash-tts`          |
 | `GEMINI_TTS_VOICE`          | Voice name (e.g. `Kore`, `Charon`, `Callirrhoe`)       | `Kore`                          |

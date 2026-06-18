@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current State of the Repository
 
-Two-app monorepo: a Python FastAPI backend (Google ADK over Gemini) and a Vue 3 frontend (Vite + Pinia + TypeScript). Voice goes end-to-end through Gemini — browser `MediaRecorder` → audio `Part` to ADK → Gemini TTS MP3 → browser playback. No Twilio. ADRs: [0001](docs/decisions/0001-python-fastapi-gemini-adk-stack.md) (backend stack), [0002](docs/decisions/0002-monorepo-vue-frontend-gemini-audio.md) (monorepo + Vue + Gemini audio). Layout follows `.agents/rules/project-structure.md` and `.agents/rules/project-structure-vue-frontend.md`.
+Two-app monorepo: a Python FastAPI backend (Google ADK over Gemini) and a Vue 3 frontend (Vite + Pinia + TypeScript). Voice goes end-to-end through Gemini — browser `MediaRecorder` captures Opus, the frontend decodes + re-encodes to 16 kHz mono WAV with a built-in VAD (tap-to-talk, auto-stop on silence), the audio `Part` reaches ADK, then Gemini TTS MP3 returns for browser playback. No Twilio. ADRs: [0001](docs/decisions/0001-python-fastapi-gemini-adk-stack.md) (backend stack), [0002](docs/decisions/0002-monorepo-vue-frontend-gemini-audio.md) (monorepo + Vue + Gemini audio). Layout follows `.agents/rules/project-structure.md` and `.agents/rules/project-structure-vue-frontend.md`.
 
 ### Layout
 
@@ -33,7 +33,7 @@ apps/
         ├── views/HomeView.vue
         └── features/
             ├── chat/                        api/, components/, store/, types/, index.ts
-            └── voice/                       api/, components/, composables/useMediaRecorder.ts, store/, types/
+            └── voice/                       api/, components/ (VoiceLog, VoiceRecorder, WaveformDisplay), composables/useVoiceCapture.ts, store/, types/
 ```
 
 ### Commands

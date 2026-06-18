@@ -1,0 +1,45 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+service-account*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Agent workspaces
+.wt/
+task.md
+
+# Claude Code local settings (per-developer)
+.claude/settings.local.json

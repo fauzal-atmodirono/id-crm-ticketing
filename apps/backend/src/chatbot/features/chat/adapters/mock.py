@@ -1,13 +1,7 @@
 from __future__ import annotations
 
-from chatbot.features.chat.models import KbArticle, VoiceTranscript
-from chatbot.features.chat.ports import (
-    ChatPort,
-    KnowledgePort,
-    SpeechToTextPort,
-    TextToSpeechPort,
-    TicketingPort,
-)
+from chatbot.features.chat.models import KbArticle
+from chatbot.features.chat.ports import ChatPort, KnowledgePort, TextToSpeechPort, TicketingPort
 
 
 class InMemoryChatAdapter(ChatPort):
@@ -79,22 +73,8 @@ class InMemoryKnowledgeAdapter(KnowledgePort):
         return results[:limit]
 
 
-class MockVoiceAdapter(SpeechToTextPort, TextToSpeechPort):
-    """Mock voice processor simulating STT and TTS conversions."""
-
-    async def transcribe(
-        self, audio_content: bytes, language_code: str = "en-US"
-    ) -> VoiceTranscript:
-        # Returns a mock transcription using the length of audio bytes as indicator
-        text = "Hello support, I need help resetting my password"
-        if len(audio_content) == 1:
-            text = "agent"  # Keyword trigger for escalation tests
-        return VoiceTranscript(
-            text=text,
-            confidence=0.95,
-            language=language_code,
-            duration_ms=2500,
-        )
+class MockVoiceAdapter(TextToSpeechPort):
+    """Mock TTS adapter returning a deterministic byte payload, for local tests."""
 
     async def synthesize(self, text: str, language_code: str = "en-US") -> bytes:
         return f"mock_voice_audio:{language_code}:{text}".encode()

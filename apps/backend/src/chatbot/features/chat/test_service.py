@@ -78,7 +78,6 @@ async def test_handle_turn_happy_path() -> None:
         chat_port=chat_port,
         ticketing_port=ticketing_port,
         knowledge_port=knowledge_port,
-        stt_port=voice_client,
         tts_port=voice_client,
         runner_factory=fake_runner_factory,
     )
@@ -105,7 +104,6 @@ async def test_handle_turn_ai_paused() -> None:
         chat_port=chat_port,
         ticketing_port=ticketing_port,
         knowledge_port=knowledge_port,
-        stt_port=voice_client,
         tts_port=voice_client,
     )
 
@@ -159,7 +157,6 @@ async def test_handle_turn_triggers_escalation() -> None:
         chat_port=chat_port,
         ticketing_port=ticketing_port,
         knowledge_port=knowledge_port,
-        stt_port=voice_client,
         tts_port=voice_client,
         runner_factory=fake_runner_factory,
     )
@@ -200,7 +197,6 @@ async def test_handle_voice_turn_happy_path() -> None:
         chat_port=chat_port,
         ticketing_port=ticketing_port,
         knowledge_port=knowledge_port,
-        stt_port=voice_client,
         tts_port=voice_client,
         runner_factory=fake_runner_factory,
     )

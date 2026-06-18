@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from chatbot.features.chat.models import KbArticle, VoiceTranscript
+from chatbot.features.chat.models import KbArticle
 
 
 class ChatPort(Protocol):
@@ -25,11 +25,11 @@ class TicketingPort(Protocol):
         ...
 
     async def pause_ai_for_session(self, session_id: str) -> None:
-        """State mutation: pause AI response actions on this session due to handoff."""
+        """Pause AI response actions on this session due to handoff."""
         ...
 
     async def unpause_ai_for_session(self, session_id: str) -> None:
-        """State mutation: resume AI response actions on this session."""
+        """Resume AI response actions on this session."""
         ...
 
     async def is_ai_paused(self, session_id: str) -> bool:
@@ -45,19 +45,9 @@ class KnowledgePort(Protocol):
         ...
 
 
-class SpeechToTextPort(Protocol):
-    """Port interface for transcribing audio clips to text."""
-
-    async def transcribe(
-        self, audio_content: bytes, language_code: str = "en-US"
-    ) -> VoiceTranscript:
-        """Convert voice audio bytes into a text transcript."""
-        ...
-
-
 class TextToSpeechPort(Protocol):
-    """Port interface for synthesizing text into audio speech."""
+    """Port interface for synthesizing text into audio speech via Gemini TTS."""
 
     async def synthesize(self, text: str, language_code: str = "en-US") -> bytes:
-        """Synthesize text into audio bytes (e.g. MP3 or WAV)."""
+        """Synthesize text into MP3 audio bytes."""
         ...

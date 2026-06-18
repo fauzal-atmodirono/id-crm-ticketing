@@ -20,7 +20,6 @@ from chatbot.platform.server import create_app
 
 class _FakeRunner:
     async def run_async(self, **_: Any) -> AsyncGenerator[Any, None]:
-        # Yields an empty async generator (mocking no response / fallback)
         for _i in range(0):
             yield None
 
@@ -33,13 +32,11 @@ def client() -> TestClient:
     knowledge_port = InMemoryKnowledgeAdapter()
     voice_client = MockVoiceAdapter()
 
-    # Orchestrator with mock runner factory to bypass real Vertex AI calls
     orchestrator = OrchestratorService(
         settings=settings,
         chat_port=chat_port,
         ticketing_port=ticketing_port,
         knowledge_port=knowledge_port,
-        stt_port=voice_client,
         tts_port=voice_client,
         runner_factory=lambda _agent: _FakeRunner(),
     )
@@ -71,39 +68,3 @@ def test_chatwoot_webhook_processed_correctly(client: TestClient) -> None:
     response = client.post("/webhooks/chatwoot", json=payload)
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
-
-
-def test_twilio_voice_welcome_returns_valid_twiml(client: TestClient) -> None:
-    data = {
-        "CallSid": "CA12345",
-        "From": "+62812345678",
-    }
-    response = client.post("/webhooks/voice/twilio", data=data)
-    assert response.status_code == 200
-    assert response.headers["content-type"] == "application/xml"
-    assert "<Response>" in response.text
-    assert "<Gather" in response.text
-    assert 'language="id-ID"' in response.text
-
-
-def test_twilio_voice_process_empty_speech_asks_to_repeat(client: TestClient) -> None:
-    data = {
-        "CallSid": "CA12345",
-        "SpeechResult": "",
-    }
-    response = client.post("/webhooks/voice/twilio/process", data=data)
-    assert response.status_code == 200
-    assert "<Response>" in response.text
-    assert "ulangi kembali" in response.text
-
-
-def test_twilio_voice_process_valid_speech_returns_response(client: TestClient) -> None:
-    data = {
-        "CallSid": "CA12345",
-        "SpeechResult": "Saya butuh bantuan reset password",
-    }
-    response = client.post("/webhooks/voice/twilio/process", data=data)
-    assert response.status_code == 200
-    assert "<Response>" in response.text
-    # Check that Twilio voice responses say the reply or fallback
-    assert "<Say" in response.text

@@ -15,7 +15,6 @@ from chatbot.features.chat.models import HandoffPayload, Message, TurnResult
 from chatbot.features.chat.ports import (
     ChatPort,
     KnowledgePort,
-    SpeechToTextPort,
     TextToSpeechPort,
     TicketingPort,
 )
@@ -35,7 +34,6 @@ class OrchestratorService:
         chat_port: ChatPort,
         ticketing_port: TicketingPort,
         knowledge_port: KnowledgePort,
-        stt_port: SpeechToTextPort,
         tts_port: TextToSpeechPort,
         runner_factory: Callable[[Any], Any] | None = None,
     ) -> None:
@@ -43,7 +41,6 @@ class OrchestratorService:
         self._chat_port = chat_port
         self._ticketing_port = ticketing_port
         self._knowledge_port = knowledge_port
-        self._stt_port = stt_port
         self._tts_port = tts_port
 
         # Initialize ADK agents
@@ -142,40 +139,101 @@ class OrchestratorService:
         )
 
     async def handle_voice_turn(
-        self, session_id: str, audio_bytes: bytes, language_code: str = "en-US"
+        self,
+        session_id: str,
+        audio_bytes: bytes,
+        audio_mime_type: str = "audio/ogg",
+        language_code: str = "en-US",
     ) -> tuple[bytes, TurnResult]:
-        """Process a single audio-based voicebot turn."""
-        _log.info("processing_voicebot_turn", session_id=session_id, size_bytes=len(audio_bytes))
+        """Process a single audio-based voicebot turn end-to-end through Gemini.
 
-        # 1. Speech-to-Text conversion
+        Sends the audio bytes directly to ADK as a multimodal Part — no explicit
+        transcription step — then synthesizes the text reply via Gemini TTS.
+        """
+        _log.info(
+            "processing_voicebot_turn",
+            session_id=session_id,
+            size_bytes=len(audio_bytes),
+            mime_type=audio_mime_type,
+        )
+
+        if await self._ticketing_port.is_ai_paused(session_id):
+            _log.info("ai_paused_short_circuiting_voice_turn", session_id=session_id)
+            return b"", TurnResult(reply=None)
+
+        self._history.setdefault(session_id, []).append(
+            Message(role="user", text="[audio]", timestamp=datetime.now(UTC))
+        )
+
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        if not session:
+            await self._adk_sessions.create_session(
+                app_name="chatbot",
+                user_id=session_id,
+                session_id=session_id,
+                state={
+                    "session_id": session_id,
+                    "handoff_triggered": False,
+                    "handoff_reason": "",
+                },
+            )
+
+        new_message = types.Content(
+            role="user",
+            parts=[types.Part.from_bytes(data=audio_bytes, mime_type=audio_mime_type)],
+        )
+
+        runner = self._runner_factory(self._support_agent)
+        reply_text: str | None = ""
         try:
-            transcript = await self._stt_port.transcribe(
-                audio_content=audio_bytes, language_code=language_code
-            )
+            async for event in runner.run_async(
+                user_id=session_id,
+                session_id=session_id,
+                new_message=new_message,
+            ):
+                if event.is_final_response() and event.content and event.content.parts:
+                    reply_text = event.content.parts[0].text or ""
         except Exception as e:
-            _log.error("voice_stt_transcription_failed", session_id=session_id, error=str(e))
-            # Return standard fallback audio
-            fallback_text = (
-                "Maaf, kami tidak dapat mendengar suara Anda dengan jelas. Mohon ulangi kembali."
-            )
+            _log.exception("adk_voice_execution_failed", session_id=session_id, error=str(e))
+            fallback_text = "Maaf, terjadi kendala teknis. Mohon coba beberapa saat lagi."
             err_audio = await self._tts_port.synthesize(
                 text=fallback_text, language_code=language_code
             )
             return err_audio, TurnResult(reply=fallback_text)
 
-        # 2. Run text-based orchestrator turn
-        turn_result = await self.handle_turn(session_id=session_id, text=transcript.text)
+        if reply_text:
+            self._history[session_id].append(
+                Message(role="assistant", text=reply_text, timestamp=datetime.now(UTC))
+            )
 
-        # 3. If a reply is generated, convert it back into Text-to-Speech audio bytes
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        session_state = session.state if session else {}
+
+        handoff_payload = None
+        if session_state.get("handoff_triggered") is True:
+            reason = session_state.get("handoff_reason", "help_request")
+            handoff_payload = await self._escalate_handoff(session_id, reason)
+            reply_text = None
+
         audio_reply = b""
-        if turn_result.reply:
+        if reply_text:
             try:
                 audio_reply = await self._tts_port.synthesize(
-                    text=turn_result.reply, language_code=language_code
+                    text=reply_text, language_code=language_code
                 )
             except Exception as e:
                 _log.error("voice_tts_synthesis_failed", session_id=session_id, error=str(e))
 
+        turn_result = TurnResult(
+            reply=reply_text,
+            language=session_state.get("language", "unknown"),
+            sentiment=session_state.get("sentiment"),
+            handoff=handoff_payload,
+        )
         return audio_reply, turn_result
 
     async def _escalate_handoff(self, session_id: str, reason: str) -> HandoffPayload:

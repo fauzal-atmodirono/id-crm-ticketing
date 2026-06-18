@@ -56,13 +56,3 @@ class KbArticle:
     title: str
     content: str
     url: str | None = None
-
-
-@dataclass(frozen=True)
-class VoiceTranscript:
-    """Result of Speech-to-Text transcription."""
-
-    text: str
-    confidence: float
-    language: str
-    duration_ms: int

@@ -1,44 +1,36 @@
 from __future__ import annotations
 
-import os
-
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 
 from chatbot.features.chat.adapters.chatwoot_zammad import ChatwootZammadAdapter
-from chatbot.features.chat.adapters.gcp_voice import GcpSpeechToTextAdapter, GcpTextToSpeechAdapter
-from chatbot.features.chat.adapters.mock import (
-    InMemoryKnowledgeAdapter,
-    MockVoiceAdapter,
-)
+from chatbot.features.chat.adapters.gcp_voice import GeminiTextToSpeechAdapter
+from chatbot.features.chat.adapters.mock import InMemoryKnowledgeAdapter, MockVoiceAdapter
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
-from chatbot.features.chat.ports import (
-    ChatPort,
-    KnowledgePort,
-    SpeechToTextPort,
-    TextToSpeechPort,
-    TicketingPort,
-)
+from chatbot.features.chat.ports import ChatPort, KnowledgePort, TextToSpeechPort, TicketingPort
 from chatbot.features.chat.router import build_chat_router
 from chatbot.features.chat.service import OrchestratorService
-from chatbot.features.sim.router import build_sim_router
 from chatbot.platform.config import get_settings
 from chatbot.platform.logger import configure_logging
 from chatbot.platform.server import create_app
 
 
 def bootstrap_application() -> FastAPI:
-    """Bootstrap settings, configure structured loggers, wire adapters, and return app."""
-    # 1. Load application configurations
+    """Bootstrap settings, structured logging, adapters, CORS, and routes."""
     settings = get_settings()
-
-    # 2. Setup structured logging
     configure_logging(settings.debug)
 
-    # 3. Create FastAPI app
     app = create_app(settings)
 
-    # 4. Wire Adapters based on the configuration provider switches
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[settings.frontend_origin],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+        expose_headers=["X-Reply-Text", "X-Handoff-Reason"],
+    )
+
     # --- CRM and Ticketing wiring ---
     chat_port: ChatPort
     ticketing_port: TicketingPort
@@ -50,47 +42,28 @@ def bootstrap_application() -> FastAPI:
         ticketing_port = zendesk_client
         knowledge_port = zendesk_client
     else:
-        # Fallback to local Chatwoot & Zammad open-source simulator
         chatwoot_zammad_client = ChatwootZammadAdapter(settings)
         chat_port = chatwoot_zammad_client
         ticketing_port = chatwoot_zammad_client
-        # Zammad does not serve a public KB directly, so we use the local in-memory KB
         knowledge_port = InMemoryKnowledgeAdapter()
 
-    # --- Voice Processing wiring ---
-    stt_port: SpeechToTextPort
+    # --- Voice (TTS) wiring — STT is no longer a separate step; Gemini consumes audio natively ---
     tts_port: TextToSpeechPort
-
     if settings.voice_provider == "gcp":
-        stt_port = GcpSpeechToTextAdapter()
-        tts_port = GcpTextToSpeechAdapter()
+        tts_port = GeminiTextToSpeechAdapter(settings)
     else:
-        # Mock voice processors
-        voice_client = MockVoiceAdapter()
-        stt_port = voice_client
-        tts_port = voice_client
+        tts_port = MockVoiceAdapter()
 
-    # 5. Instantiate Unified Orchestrator Service
     orchestrator = OrchestratorService(
         settings=settings,
         chat_port=chat_port,
         ticketing_port=ticketing_port,
         knowledge_port=knowledge_port,
-        stt_port=stt_port,
         tts_port=tts_port,
     )
 
-    # 6. Include endpoints and mount static folders for voice file playbacks
     app.include_router(build_chat_router(orchestrator))
 
-    # Developer simulator UI — exposed only when DEBUG=true (never in production)
-    if settings.debug:
-        app.include_router(build_sim_router(orchestrator))
-
-    os.makedirs("static/audio", exist_ok=True)
-    app.mount("/static", StaticFiles(directory="static"), name="static")
-
-    # Simple root health check endpoint
     @app.get("/")
     def health_check() -> dict[str, str]:
         return {

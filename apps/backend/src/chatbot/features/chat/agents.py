@@ -27,12 +27,17 @@ def build_ai_agent(
         """
         articles = await knowledge_port.search_kb(query, limit=2)
         if not articles:
-            return "No matching support articles found."
+            # Literal token the agent prompt branches on — see rule 2 in
+            # AGENT_INSTRUCTION. Distinct from a tool execution error.
+            return "NO_MATCHES: The Knowledge Base has no documents matching this query."
 
         results = []
         for art in articles:
-            results.append(f"Title: {art.title}\nContent: {art.content}")
-        return "\n\n".join(results)
+            snippet = f"Title: {art.title}\nContent: {art.content}"
+            if art.url:
+                snippet += f"\nSource URL: {art.url}"
+            results.append(snippet)
+        return "\n\n---\n\n".join(results)
 
     async def classify_ticket_tool(
         tool_context: ToolContext,

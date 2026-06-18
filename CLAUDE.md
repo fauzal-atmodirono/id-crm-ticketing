@@ -4,12 +4,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current State of the Repository
 
-This repository currently contains **no application code**. There is no `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, build scripts, tests, or source directories. The only contents are:
+Python conversational AI backend (FastAPI + Google ADK over Gemini) supporting both text chat and voice channels. Stack choice is recorded in [docs/decisions/0001-python-fastapi-gemini-adk-stack.md](docs/decisions/0001-python-fastapi-gemini-adk-stack.md). Layout follows `.agents/rules/project-structure-python-backend.md`.
 
-- `.agents/` — the operations framework (agent personas, rules, skills, workflows) described below
-- `.claude/settings.local.json` — local permission allowlist (currently permits `rtk ls *` and `rtk find *`)
+### Layout
 
-Until application code is added, there are no `build`, `lint`, `test`, or `run` commands to document. Do not invent or guess them. When a stack is chosen, the project-structure rules under `.agents/rules/` (e.g. `project-structure-go-backend.md`, `project-structure-rust-cargo.md`) define the expected layout — read those before scaffolding.
+- `src/chatbot/main.py` — FastAPI app bootstrap and dependency injection.
+- `src/chatbot/platform/` — `config.py` (Pydantic Settings), `logger.py` (structlog), `server.py` (ASGI setup).
+- `src/chatbot/features/chat/` — vertical slice: `models.py`, `ports.py` (protocols), `service.py` (orchestrator), `agents.py` (Gemini ADK tool-loop), `prompts.py`, `schemas.py`, `router.py` (webhook endpoints).
+- `src/chatbot/features/chat/adapters/` — `mock.py`, `chatwoot_zammad.py`, `zendesk.py`, `gcp_voice.py`.
+- `src/chatbot/features/chat/test_*.py` — pytest test suites (co-located with code per project-structure rule).
+- `.agents/` — the operations framework (agent personas, rules, skills, workflows).
+- `.env.example` — env-var template; real values go in `.env` (gitignored).
+
+### Commands
+
+Dependencies are managed with `uv`. The virtualenv lives at `.venv/`.
+
+```bash
+# Install / sync deps
+uv sync
+
+# Lint & format
+.venv/bin/ruff format .
+.venv/bin/ruff check . --fix
+
+# Static type checking (strict)
+.venv/bin/mypy src/ --strict
+
+# Tests
+.venv/bin/pytest src/
+
+# Run dev server
+.venv/bin/uvicorn chatbot.main:app --reload
+```
+
+Health check: `GET /` returns `{status, crm_provider, voice_provider, model}`.
 
 ## The `.agents/` Framework (the actual "architecture" right now)
 
@@ -55,5 +84,5 @@ When rules conflict, this priority order applies — top wins:
 ## Repo Conventions Worth Knowing
 
 - Git commits follow conventional format (`<type>(<scope>): <description>`) per `rules/git-workflow-principles.md` and `workflows/phase-commit.md`.
-- The repo is not (yet) a git repository — `git init` will be required before the commit phase can run.
+- Remote: `origin` → `https://github.com/Yudaadi-devo/proton-conversational-ai.git` (branch `main`).
 - `.claude/settings.local.json` only allows `rtk ls *` and `rtk find *` automatically; other tools will trigger permission prompts.

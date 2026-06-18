@@ -32,8 +32,7 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort):
         }
 
     def _support_headers(self) -> dict[str, str]:
-        email = getattr(self._settings, "zendesk_email", "admin@example.com")
-        auth_str = f"{email}/token:{self._settings.zendesk_api_token}"
+        auth_str = f"{self._settings.zendesk_email}/token:{self._settings.zendesk_api_token}"
         encoded = base64.b64encode(auth_str.encode("utf-8")).decode("utf-8")
         return {
             "Content-Type": "application/json",

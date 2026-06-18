@@ -26,6 +26,7 @@ class Settings(BaseSettings):
 
     # Zendesk credentials
     zendesk_subdomain: str = "your-zendesk-subdomain"
+    zendesk_email: str = ""
     zendesk_app_id: str = ""
     zendesk_key_id: str = ""
     zendesk_secret_key: str = ""

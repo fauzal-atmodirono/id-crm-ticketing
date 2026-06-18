@@ -41,35 +41,55 @@ class VertexAISearchAdapter(KnowledgePort):
             
             def run_search() -> list[KbArticle]:
                 client = discoveryengine.SearchServiceClient()
-                
+
                 request = discoveryengine.SearchRequest(
                     serving_config=self._serving_config_path,
                     query=query,
                     page_size=limit,
                 )
-                
+
                 response = client.search(request=request)
                 articles = []
-                
+
                 for result in response.results:
                     doc = result.document
-                    derived_data = doc.derived_struct_data or {}
-                    
-                    title = derived_data.get("title", doc.id or "PROTON Page")
-                    link = derived_data.get("link", "")
-                    
-                    # Extract snippets for document content summary
-                    snippets = derived_data.get("snippets", [])
+                    # We populated `struct_data` at ingest time with the real
+                    # title + canonical URL. Vertex's `derived_struct_data`
+                    # overrides `link` with the GCS URI, which is useless to
+                    # the agent — prefer ours, fall back to Vertex's view.
+                    struct_data = dict(doc.struct_data) if doc.struct_data else {}
+                    derived_data = (
+                        dict(doc.derived_struct_data) if doc.derived_struct_data else {}
+                    )
+
+                    title = (
+                        struct_data.get("title")
+                        or derived_data.get("title")
+                        or doc.id
+                        or "PROTON Page"
+                    )
+                    link = struct_data.get("link") or derived_data.get("link") or ""
+
+                    # Snippets + extractive segments require Enterprise edition
+                    # on the engine — this project is Standard tier. We pre-
+                    # extracted a ~1.2 kB body excerpt at ingest time and
+                    # stashed it in struct_data so the agent has real content
+                    # to ground its reply in.
                     content = ""
-                    if snippets and isinstance(snippets, list):
-                        content = snippets[0].get("snippet", "")
+                    excerpt = struct_data.get("body_excerpt")
+                    if isinstance(excerpt, str):
+                        content = excerpt
                     if not content:
-                        content = derived_data.get("snippet", "")
+                        snippets = derived_data.get("snippets", [])
+                        if snippets and isinstance(snippets, list):
+                            first = snippets[0]
+                            if isinstance(first, dict):
+                                content = first.get("snippet", "") or ""
                     if not content:
-                        content = derived_data.get("extractive_segments", [{}])[0].get("content", "")
+                        content = derived_data.get("snippet", "") or ""
                     if not content:
-                        content = "No preview available."
-                        
+                        content = f"See: {title}"
+
                     articles.append(
                         KbArticle(title=title, content=content, url=link)
                     )

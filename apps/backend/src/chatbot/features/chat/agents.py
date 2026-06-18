@@ -80,7 +80,13 @@ def build_ai_agent(
         tool_context.state["handoff_reason"] = reason
         return f"[internal] handoff triggered (Reason: {reason})."
 
-    # Instantiate the ADK Agent
+    # Instantiate the ADK Agent. `classify_ticket_tool` is intentionally
+    # excluded from `tools` for now — its result is stored only in
+    # tool_context.state which nothing downstream consumes, and Gemini was
+    # treating the classify call as the turn's terminal action and skipping
+    # the customer-facing text reply. It stays defined above so we can
+    # re-enable once we wire its state into the handoff payload.
+    _ = classify_ticket_tool  # keep referenced for ruff
     return Agent(
         name="support_agent",
         model=settings.gemini_model,
@@ -88,7 +94,7 @@ def build_ai_agent(
         generate_content_config=types.GenerateContentConfig(
             temperature=0.3,
         ),
-        tools=[search_kb_tool, classify_ticket_tool, emit_handoff_tool],
+        tools=[search_kb_tool, emit_handoff_tool],
     )
 
 

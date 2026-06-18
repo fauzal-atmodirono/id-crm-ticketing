@@ -47,3 +47,8 @@ task.md
 
 # Claude Code local settings (per-developer)
 .claude/settings.local.json
+screenshot/
+
+# Scraped raw HTML for the Vertex AI Search KB (uploaded to the GCS bucket;
+# not source-controlled).
+apps/backend/scraped_data/

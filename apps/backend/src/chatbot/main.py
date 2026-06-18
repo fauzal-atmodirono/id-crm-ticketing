@@ -8,8 +8,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from chatbot.features.chat.adapters.chatwoot_zammad import ChatwootZammadAdapter
 from chatbot.features.chat.adapters.gcp_voice import GeminiTextToSpeechAdapter
 from chatbot.features.chat.adapters.mock import InMemoryKnowledgeAdapter, MockVoiceAdapter
+from chatbot.features.chat.adapters.sunshine_conversations import SunshineConversationsAdapter
+from chatbot.features.chat.adapters.vertex_search import VertexAISearchAdapter
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
-from chatbot.features.chat.ports import ChatPort, KnowledgePort, TextToSpeechPort, TicketingPort
+from chatbot.features.chat.handoff_bridge import HandoffBridge
+from chatbot.features.chat.ports import (
+    ChatPort,
+    HumanAgentBridgePort,
+    KnowledgePort,
+    TextToSpeechPort,
+    TicketingPort,
+)
 from chatbot.features.chat.router import build_chat_router
 from chatbot.features.chat.service import OrchestratorService
 from chatbot.platform.config import get_settings
@@ -38,7 +47,14 @@ def bootstrap_application() -> FastAPI:
         allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
-        expose_headers=["X-Reply-Text", "X-Handoff-Reason"],
+        expose_headers=[
+            "X-Reply-Text",
+            "X-Handoff-Reason",
+            "X-Handoff-Summary",
+            "X-Handoff-Urgency",
+            "X-Handoff-Language",
+            "X-Handoff-Live-Chat",
+        ],
     )
 
     # --- CRM and Ticketing wiring ---
@@ -46,15 +62,22 @@ def bootstrap_application() -> FastAPI:
     ticketing_port: TicketingPort
     knowledge_port: KnowledgePort
 
+    zendesk_client: ZendeskAdapter | None = None
     if settings.crm_provider == "zendesk":
         zendesk_client = ZendeskAdapter(settings)
         chat_port = zendesk_client
         ticketing_port = zendesk_client
-        knowledge_port = zendesk_client
     else:
         chatwoot_zammad_client = ChatwootZammadAdapter(settings)
         chat_port = chatwoot_zammad_client
         ticketing_port = chatwoot_zammad_client
+
+    # --- Knowledge wiring ---
+    if settings.knowledge_provider == "vertex_search":
+        knowledge_port = VertexAISearchAdapter(settings)
+    elif settings.knowledge_provider == "zendesk" and zendesk_client is not None:
+        knowledge_port = zendesk_client
+    else:
         knowledge_port = InMemoryKnowledgeAdapter()
 
     # --- Voice (TTS) wiring — STT is no longer a separate step; Gemini consumes audio natively ---
@@ -64,15 +87,36 @@ def bootstrap_application() -> FastAPI:
     else:
         tts_port = MockVoiceAdapter()
 
+    # --- Human-agent bridge (Sunshine Conversations) ---
+    # Only wired when the credentials are present so dev environments without
+    # SC keys still boot.
+    human_agent_bridge: HumanAgentBridgePort | None = None
+    handoff_bridge: HandoffBridge | None = None
+    if (
+        settings.zendesk_app_id
+        and settings.zendesk_key_id
+        and settings.zendesk_secret_key
+    ):
+        human_agent_bridge = SunshineConversationsAdapter(settings)
+        handoff_bridge = HandoffBridge()
+
     orchestrator = OrchestratorService(
         settings=settings,
         chat_port=chat_port,
         ticketing_port=ticketing_port,
         knowledge_port=knowledge_port,
         tts_port=tts_port,
+        human_agent_bridge=human_agent_bridge,
+        handoff_bridge=handoff_bridge,
     )
 
-    app.include_router(build_chat_router(orchestrator))
+    app.include_router(
+        build_chat_router(
+            orchestrator=orchestrator,
+            handoff_bridge=handoff_bridge,
+            human_agent_bridge=human_agent_bridge,
+        )
+    )
 
     @app.get("/")
     def health_check() -> dict[str, str]:

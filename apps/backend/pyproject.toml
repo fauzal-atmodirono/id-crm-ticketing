@@ -17,6 +17,9 @@ dependencies = [
   "httpx>=0.27",
   "google-cloud-texttospeech>=2.25.0",
   "python-multipart>=0.0.9",
+  "beautifulsoup4>=4.15.0",
+  "google-cloud-discoveryengine>=0.20.0",
+  "google-cloud-storage>=3.12.0",
 ]
 
 [dependency-groups]

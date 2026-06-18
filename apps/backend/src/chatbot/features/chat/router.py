@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import json
+from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import quote
 
 import structlog
-from fastapi import APIRouter, File, Form, Response, UploadFile
+from fastapi import APIRouter, File, Form, Header, HTTPException, Request, Response, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from chatbot.features.chat.handoff_bridge import HandoffBridge
+from chatbot.features.chat.ports import HumanAgentBridgePort
 from chatbot.features.chat.schemas import ChatwootWebhookPayload, ZendeskWebhookPayload
 from chatbot.features.chat.service import OrchestratorService
 
@@ -23,6 +29,7 @@ class ChatTurnResponse(BaseModel):
     language: str | None = None
     sentiment: str | None = None
     handoff: dict[str, Any] | None = None
+    forwarded_to_agent: bool = False
 
 
 def _handoff_dict(turn_result: Any) -> dict[str, Any] | None:
@@ -33,14 +40,22 @@ def _handoff_dict(turn_result: Any) -> dict[str, Any] | None:
         "language": turn_result.handoff.language,
         "summary": turn_result.handoff.summary,
         "urgency": turn_result.handoff.urgency,
+        "live_chat_available": turn_result.handoff.live_chat_available,
     }
 
 
 class ChatRouter:
     """Class-based router for CRM webhooks plus the frontend-facing chat/voice endpoints."""
 
-    def __init__(self, orchestrator: OrchestratorService) -> None:
+    def __init__(
+        self,
+        orchestrator: OrchestratorService,
+        handoff_bridge: HandoffBridge | None = None,
+        human_agent_bridge: HumanAgentBridgePort | None = None,
+    ) -> None:
         self.orchestrator = orchestrator
+        self._handoff_bridge = handoff_bridge
+        self._human_agent_bridge = human_agent_bridge
         self.router = APIRouter(tags=["chat"])
 
         self.router.add_api_route(
@@ -50,10 +65,18 @@ class ChatRouter:
             "/webhooks/zendesk", self.zendesk_webhook, methods=["POST"]
         )
         self.router.add_api_route(
+            "/webhooks/sunshine", self.sunshine_webhook, methods=["POST"]
+        )
+        self.router.add_api_route(
             "/chat/turn",
             self.chat_turn,
             methods=["POST"],
             response_model=ChatTurnResponse,
+        )
+        self.router.add_api_route(
+            "/chat/stream/{session_id}",
+            self.chat_stream,
+            methods=["GET"],
         )
         self.router.add_api_route(
             "/voice/turn",
@@ -114,6 +137,38 @@ class ChatRouter:
 
         return {"status": "ok"}
 
+    async def sunshine_webhook(
+        self,
+        request: Request,
+        x_api_key: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        """Receive a Sunshine Conversations webhook payload.
+
+        We only fan out `business`-author message events — those represent the
+        Zendesk agent replying from their workspace. Customer (`user`) events
+        are echoes of what the frontend already showed when the user pressed
+        Send, so we ignore them.
+        """
+        if self._handoff_bridge is None or self._human_agent_bridge is None:
+            raise HTTPException(status_code=503, detail="Handoff bridge not configured")
+
+        body = await request.body()
+        if not self._human_agent_bridge.verify_webhook_signature(body, x_api_key):
+            _log.warning("sunshine_webhook_signature_invalid")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON") from None
+
+        events = self._human_agent_bridge.parse_webhook_events(payload)
+        for event in events:
+            await self._handoff_bridge.publish(event)
+
+        _log.info("sunshine_webhook_received", event_count=len(events))
+        return {"status": "ok", "delivered": str(len(events))}
+
     # --- Frontend-facing API (consumed by the Vue app) ----------------------
 
     async def chat_turn(self, req: ChatTurnRequest) -> ChatTurnResponse:
@@ -127,6 +182,56 @@ class ChatRouter:
             language=result.language,
             sentiment=result.sentiment,
             handoff=_handoff_dict(result),
+            forwarded_to_agent=result.forwarded_to_agent,
+        )
+
+    async def chat_stream(self, session_id: str) -> StreamingResponse:
+        """SSE stream of human-agent messages for a handed-off session.
+
+        Emits one event per agent message. A 30-second heartbeat keeps the
+        connection alive through HTTP proxies. The stream terminates when the
+        session is unregistered (e.g. `New session` clicked) or when the
+        client disconnects.
+        """
+        if self._handoff_bridge is None:
+            raise HTTPException(status_code=503, detail="Live chat bridge disabled")
+
+        bridge = self._handoff_bridge
+
+        async def event_source() -> AsyncIterator[bytes]:
+            queue = bridge.subscribe(session_id)
+            try:
+                yield b": connected\n\n"
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    except TimeoutError:
+                        yield b": ping\n\n"
+                        continue
+
+                    if event is None:
+                        # Session unregistered — close the stream.
+                        return
+
+                    data = json.dumps(
+                        {
+                            "type": "agent_message",
+                            "author_name": event.author_name,
+                            "text": event.text,
+                            "timestamp": event.timestamp.isoformat(),
+                        }
+                    )
+                    yield f"event: agent_message\ndata: {data}\n\n".encode()
+            finally:
+                bridge.unsubscribe(session_id, queue)
+
+        return StreamingResponse(
+            event_source(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     async def voice_turn(
@@ -134,7 +239,7 @@ class ChatRouter:
         session_id: str = Form(...),
         audio: UploadFile = File(...),  # noqa: B008  (FastAPI file injection)
     ) -> Response:
-        """Run a single voice turn. Returns MP3 audio with X-Reply-Text + X-Handoff-Reason headers."""
+        """Run a single voice turn. Returns MP3 audio with X-Reply-Text + X-Handoff-* headers."""
         audio_bytes = await audio.read()
         mime_type = audio.content_type or "audio/ogg"
         _log.info(
@@ -156,10 +261,27 @@ class ChatRouter:
             headers["X-Reply-Text"] = quote(turn_result.reply, safe="")
         if turn_result.handoff is not None:
             headers["X-Handoff-Reason"] = turn_result.handoff.reason
+            headers["X-Handoff-Urgency"] = turn_result.handoff.urgency
+            headers["X-Handoff-Language"] = turn_result.handoff.language
+            headers["X-Handoff-Live-Chat"] = (
+                "1" if turn_result.handoff.live_chat_available else "0"
+            )
+            if turn_result.handoff.summary:
+                headers["X-Handoff-Summary"] = quote(
+                    turn_result.handoff.summary, safe=""
+                )
 
         return Response(content=audio_reply, media_type="audio/mpeg", headers=headers)
 
 
-def build_chat_router(orchestrator: OrchestratorService) -> APIRouter:
+def build_chat_router(
+    orchestrator: OrchestratorService,
+    handoff_bridge: HandoffBridge | None = None,
+    human_agent_bridge: HumanAgentBridgePort | None = None,
+) -> APIRouter:
     """Builds and returns the configured FastAPI router instance."""
-    return ChatRouter(orchestrator).router
+    return ChatRouter(
+        orchestrator=orchestrator,
+        handoff_bridge=handoff_bridge,
+        human_agent_bridge=human_agent_bridge,
+    ).router

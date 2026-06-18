@@ -11,9 +11,16 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from chatbot.features.chat.agents import build_ai_agent, build_summarizer_agent
-from chatbot.features.chat.models import HandoffPayload, Message, TurnResult
+from chatbot.features.chat.handoff_bridge import HandoffBridge
+from chatbot.features.chat.models import (
+    HandoffOpenPayload,
+    HandoffPayload,
+    Message,
+    TurnResult,
+)
 from chatbot.features.chat.ports import (
     ChatPort,
+    HumanAgentBridgePort,
     KnowledgePort,
     TextToSpeechPort,
     TicketingPort,
@@ -35,6 +42,8 @@ class OrchestratorService:
         ticketing_port: TicketingPort,
         knowledge_port: KnowledgePort,
         tts_port: TextToSpeechPort,
+        human_agent_bridge: HumanAgentBridgePort | None = None,
+        handoff_bridge: HandoffBridge | None = None,
         runner_factory: Callable[[Any], Any] | None = None,
     ) -> None:
         self._settings = settings
@@ -42,6 +51,8 @@ class OrchestratorService:
         self._ticketing_port = ticketing_port
         self._knowledge_port = knowledge_port
         self._tts_port = tts_port
+        self._human_agent_bridge = human_agent_bridge
+        self._handoff_bridge = handoff_bridge
 
         # Initialize ADK agents
         self._support_agent = build_ai_agent(settings, ticketing_port, knowledge_port)
@@ -65,7 +76,41 @@ class OrchestratorService:
         """Process a single text-based chatbot turn."""
         _log.info("processing_chatbot_turn", session_id=session_id, text_length=len(text))
 
-        # 1. Short-circuit if AI is paused for this session (human has taken over)
+        # 0. If the session is already handed off to a human agent and we have
+        #    a live bridge, relay this turn straight to Sunshine Conversations
+        #    and return — the agent's reply arrives async over /chat/stream.
+        if (
+            self._handoff_bridge is not None
+            and self._human_agent_bridge is not None
+            and self._handoff_bridge.is_handed_off(session_id)
+        ):
+            conv_id = self._handoff_bridge.conversation_id_for(session_id)
+            if conv_id is not None:
+                self._history.setdefault(session_id, []).append(
+                    Message(role="user", text=text, timestamp=datetime.now(UTC))
+                )
+                try:
+                    await self._human_agent_bridge.forward_customer_message(
+                        conversation_id=conv_id,
+                        user_external_id=session_id,
+                        text=text,
+                    )
+                    return TurnResult(reply=None, forwarded_to_agent=True)
+                except Exception as e:
+                    _log.error(
+                        "forward_customer_message_failed",
+                        session_id=session_id,
+                        error=str(e),
+                    )
+                    return TurnResult(
+                        reply=(
+                            "Sorry, we couldn't deliver that to the agent. "
+                            "Please try again in a moment."
+                        ),
+                    )
+
+        # 1. Short-circuit if AI is paused for this session (human has taken over
+        #    but no live bridge is configured — fall back to ticket-only mode).
         if await self._ticketing_port.is_ai_paused(session_id):
             _log.info("ai_paused_short_circuiting_turn", session_id=session_id)
             return TurnResult(reply=None)
@@ -302,10 +347,64 @@ class OrchestratorService:
         )
         await self._ticketing_port.add_private_note(ticket_id=ticket_id, text=note_content)
 
-        _log.info("escalation_completed", session_id=session_id, ticket_id=ticket_id)
+        # 6. Open a live Sunshine Conversations bridge (if configured) so the
+        #    customer can continue talking to the agent inside our own UI.
+        live_chat_available = await self._open_live_bridge(
+            session_id=session_id,
+            summary_text=summary_text,
+            urgency=urgency,
+            language=lang,
+            chat_log=chat_log,
+        )
+
+        _log.info(
+            "escalation_completed",
+            session_id=session_id,
+            ticket_id=ticket_id,
+            live_chat_available=live_chat_available,
+        )
         return HandoffPayload(
             reason=reason,  # type: ignore[arg-type]
             language=lang,  # type: ignore[arg-type]
             summary=summary_text,
             urgency=urgency,  # type: ignore[arg-type]
+            live_chat_available=live_chat_available,
         )
+
+    async def _open_live_bridge(
+        self,
+        session_id: str,
+        summary_text: str,
+        urgency: str,
+        language: str,
+        chat_log: list[dict[str, str]],
+    ) -> bool:
+        if self._human_agent_bridge is None or self._handoff_bridge is None:
+            return False
+
+        transcript = tuple(
+            Message(role=entry["role"], text=entry["text"], timestamp=datetime.now(UTC))  # type: ignore[arg-type]
+            for entry in chat_log
+        )
+        payload = HandoffOpenPayload(
+            session_id=session_id,
+            customer_name=f"Proton AI Customer ({session_id})",
+            customer_email=f"{session_id}@proton.devoteam.example",
+            ai_summary=summary_text,
+            transcript=transcript,
+            urgency=urgency,  # type: ignore[arg-type]
+            language=language,  # type: ignore[arg-type]
+        )
+
+        try:
+            conversation_id = await self._human_agent_bridge.open_handoff(payload)
+        except Exception as e:
+            _log.error(
+                "sunshine_open_handoff_failed",
+                session_id=session_id,
+                error=str(e),
+            )
+            return False
+
+        self._handoff_bridge.register(session_id, conversation_id)
+        return True

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from chatbot.features.chat.models import KbArticle
+from chatbot.features.chat.models import (
+    AgentMessageEvent,
+    HandoffOpenPayload,
+    KbArticle,
+)
 
 
 class ChatPort(Protocol):
@@ -50,4 +54,32 @@ class TextToSpeechPort(Protocol):
 
     async def synthesize(self, text: str, language_code: str = "en-US") -> bytes:
         """Synthesize text into MP3 audio bytes."""
+        ...
+
+
+class HumanAgentBridgePort(Protocol):
+    """Port for relaying customer↔agent messages through an external messaging
+    platform (Sunshine Conversations). The platform takes over the conversation
+    after AI handoff; we use it as the transport so the customer can keep
+    talking in our own UI while a Zendesk agent replies from their workspace.
+    """
+
+    async def open_handoff(self, payload: HandoffOpenPayload) -> str:
+        """Create a conversation in the external platform with the AI summary
+        and recent transcript preloaded as a business message. Returns the
+        platform's conversation_id."""
+        ...
+
+    async def forward_customer_message(
+        self, conversation_id: str, user_external_id: str, text: str
+    ) -> None:
+        """Post a customer-authored message into the external conversation."""
+        ...
+
+    def verify_webhook_signature(self, body: bytes, signature: str | None) -> bool:
+        """Verify an inbound webhook request's authenticity."""
+        ...
+
+    def parse_webhook_events(self, payload: dict[str, object]) -> list[AgentMessageEvent]:
+        """Extract agent-authored message events from a webhook body."""
         ...

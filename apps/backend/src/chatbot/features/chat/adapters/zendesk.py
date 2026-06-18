@@ -71,6 +71,12 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort):
         priority_map = {"low": "low", "medium": "normal", "high": "high", "urgent": "urgent"}
         priority = priority_map.get(urgency.lower(), "normal")
 
+        # Attribute the ticket to a session-scoped pseudo-user so it isn't
+        # filed under the API token owner. Zendesk auto-creates an end-user
+        # for the email on first sight.
+        requester_email = f"{session_id}@proton.devoteam.example"
+        requester_name = f"Proton AI Customer ({session_id})"
+
         payload = {
             "ticket": {
                 "subject": f"[Escalated] {title}",
@@ -80,6 +86,10 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort):
                 },
                 "priority": priority,
                 "external_id": session_id,
+                "requester": {
+                    "name": requester_name,
+                    "email": requester_email,
+                },
             }
         }
 

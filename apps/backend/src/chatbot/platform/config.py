@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     # Provider configuration
     crm_provider: Literal["chatwoot", "zendesk"] = "chatwoot"
     voice_provider: Literal["mock", "gcp"] = "mock"
+    knowledge_provider: Literal["mock", "zendesk", "vertex_search"] = "mock"
 
     # Server settings
     port: int = 8000
@@ -24,6 +25,12 @@ class Settings(BaseSettings):
     vertex_location: str = "us-central1"
     gemini_model: str = "gemini-2.5-flash"
 
+    # Vertex AI Search settings
+    vertex_search_project_id: str = ""
+    vertex_search_location: str = "global"
+    vertex_search_data_store_id: str = "proton-kb"
+    vertex_search_engine_id: str = "proton-kb-engine"
+
     # Zendesk credentials
     zendesk_subdomain: str = "your-zendesk-subdomain"
     zendesk_email: str = ""
@@ -31,6 +38,11 @@ class Settings(BaseSettings):
     zendesk_key_id: str = ""
     zendesk_secret_key: str = ""
     zendesk_api_token: str = ""
+
+    # Sunshine Conversations webhook integration secret (used to HMAC-verify
+    # inbound /webhooks/sunshine requests). Configured in the Sunshine
+    # Conversations dashboard alongside the webhook URL.
+    sunshine_webhook_secret: str = ""
 
     # Chatwoot settings
     chatwoot_api_url: str = "http://localhost:3000"

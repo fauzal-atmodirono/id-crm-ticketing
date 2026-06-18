@@ -26,6 +26,11 @@ class HandoffPayload:
     language: Language
     summary: str | None = None
     urgency: Literal["low", "medium", "high"] = "medium"
+    # True if the Sunshine Conversations live bridge opened successfully and
+    # the frontend can subscribe to /chat/stream for inline agent messages.
+    # False means the session is paused but no live-chat channel is available
+    # (agent will reply via the Support ticket asynchronously).
+    live_chat_available: bool = False
 
 
 @dataclass(frozen=True)
@@ -47,6 +52,10 @@ class TurnResult:
     sentiment: Sentiment | None = None
     handoff: HandoffPayload | None = None
     attachments: list[MediaAttachment] = field(default_factory=list)
+    # Set when the session has already been handed off and this turn's text
+    # was relayed to the human-agent bridge instead of Gemini. The reply
+    # arrives asynchronously over /chat/stream/{session_id}, not in this call.
+    forwarded_to_agent: bool = False
 
 
 @dataclass(frozen=True)
@@ -56,3 +65,26 @@ class KbArticle:
     title: str
     content: str
     url: str | None = None
+
+
+@dataclass(frozen=True)
+class HandoffOpenPayload:
+    """Context handed to HumanAgentBridgePort.open_handoff."""
+
+    session_id: str
+    customer_name: str
+    customer_email: str
+    ai_summary: str
+    transcript: tuple[Message, ...]
+    urgency: Literal["low", "medium", "high"] = "medium"
+    language: Language = "unknown"
+
+
+@dataclass(frozen=True)
+class AgentMessageEvent:
+    """A normalized human-agent message extracted from a bridge webhook."""
+
+    conversation_id: str
+    author_name: str
+    text: str
+    timestamp: datetime

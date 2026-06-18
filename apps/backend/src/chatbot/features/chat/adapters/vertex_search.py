@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import structlog
+from google.cloud import discoveryengine_v1beta as discoveryengine
+
+from chatbot.features.chat.models import KbArticle
+from chatbot.features.chat.ports import KnowledgePort
+
+if TYPE_CHECKING:
+    from chatbot.platform.config import Settings
+
+_log = structlog.get_logger(__name__)
+
+
+class VertexAISearchAdapter(KnowledgePort):
+    """Adapter for searching Vertex AI Search (Discovery Engine) unstructured website data store."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        # The full resource name of the search engine branch
+        self._serving_config_path = f"projects/{settings.vertex_search_project_id}/locations/{settings.vertex_search_location}/collections/default_collection/engines/{settings.vertex_search_engine_id}/servingConfigs/default_search"
+
+    async def search_kb(self, query: str, limit: int = 2) -> list[KbArticle]:
+        """Search the Vertex AI Search engine for pages matching the query.
+
+        Args:
+            query: The search term or question.
+            limit: Maximum search results to return.
+        """
+        _log.info("searching_vertex_ai_search", query=query, limit=limit)
+        
+        try:
+            # Note: client init can be cached if needed, but creating it is lightweight.
+            # We don't make async calls inside Google clients directly unless using an async stub, 
+            # so we run it synchronously (or in a threadpool if it blocks the loop). 
+            # FastAPI's route handler is async, but calling synchronous library methods works fine 
+            # for low concurrency. To prevent blocking the main event loop, we can run it in a separate thread.
+            import asyncio
+            
+            def run_search() -> list[KbArticle]:
+                client = discoveryengine.SearchServiceClient()
+                
+                request = discoveryengine.SearchRequest(
+                    serving_config=self._serving_config_path,
+                    query=query,
+                    page_size=limit,
+                )
+                
+                response = client.search(request=request)
+                articles = []
+                
+                for result in response.results:
+                    doc = result.document
+                    derived_data = doc.derived_struct_data or {}
+                    
+                    title = derived_data.get("title", doc.id or "PROTON Page")
+                    link = derived_data.get("link", "")
+                    
+                    # Extract snippets for document content summary
+                    snippets = derived_data.get("snippets", [])
+                    content = ""
+                    if snippets and isinstance(snippets, list):
+                        content = snippets[0].get("snippet", "")
+                    if not content:
+                        content = derived_data.get("snippet", "")
+                    if not content:
+                        content = derived_data.get("extractive_segments", [{}])[0].get("content", "")
+                    if not content:
+                        content = "No preview available."
+                        
+                    articles.append(
+                        KbArticle(title=title, content=content, url=link)
+                    )
+                return articles
+
+            # Execute run_search in the default event loop executor to prevent blocking the async event loop
+            return await asyncio.to_thread(run_search)
+            
+        except Exception as e:
+            _log.error("vertex_ai_search_failed", query=query, error=str(e))
+            return []

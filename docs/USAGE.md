@@ -4,6 +4,8 @@ A practical, step-by-step walkthrough from a fresh clone to a running agent answ
 
 ---
 
+> **TL;DR — fastest way to try it**: After section 1 starts the server, open `http://localhost:8000/sim` in your browser for a built-in chat/voice simulator (no `curl` required). The simulator is only available when `DEBUG=true`.
+
 ## 1. First Run (Mock Mode)
 
 No credentials required — in-memory adapters and a mock voice provider let you exercise the full request path locally.
@@ -64,6 +66,10 @@ curl -X POST http://localhost:8000/webhooks/chatwoot \
 ```
 
 The Zendesk webhook (`POST /webhooks/zendesk`) accepts a similar shape — see `src/chatbot/features/chat/router.py` for the exact handler.
+
+### Faster: the built-in simulator
+
+Instead of `curl`, open `http://localhost:8000/sim` while the dev server is running. It's a single-page UI with a Chat and Voice tab, a session ID input, and a live conversation log. Each "Send" runs the same orchestrator path as the production webhooks. The simulator is gated on `DEBUG=true` and is not exposed in production.
 
 ---
 

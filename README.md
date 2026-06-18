@@ -50,6 +50,8 @@ I/O sits behind protocol ports; business logic is pure and dependency-free, per 
 | Method | Path                                | Purpose                                         |
 |--------|-------------------------------------|-------------------------------------------------|
 | GET    | `/`                                 | Health check (returns providers + model)        |
+| GET    | `/sim`                              | Developer simulator UI (only when `DEBUG=true`) |
+| POST   | `/sim/chat`                         | Direct chat turn (used by the simulator)        |
 | POST   | `/webhooks/chatwoot`                | Chatwoot inbound message webhook                |
 | POST   | `/webhooks/zendesk`                 | Zendesk / Sunshine Conversations webhook        |
 | POST   | `/webhooks/voice/twilio`            | Twilio Voice — call start (returns TwiML)       |

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `GET /sim` developer simulator UI with chat + voice channels. Gated on `DEBUG=true`.
+- `POST /sim/chat` direct-turn endpoint used by the simulator; runs the orchestrator without the webhook envelope.
+- `TWILIO_ESCALATION_PHONE` and `PUBLIC_BASE_URL` settings — replaces a hardcoded phone number in the TwiML Dial element and prefixes static audio URLs so Twilio can reach them from the public internet.
+
 ### Planned
 - Live Chatwoot/Zammad webhook ingress smoke test
 - Live Twilio Voice end-to-end call test

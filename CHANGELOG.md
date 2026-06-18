@@ -8,13 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `GET /sim` developer simulator UI with chat + voice channels. Gated on `DEBUG=true`.
-- `POST /sim/chat` direct-turn endpoint used by the simulator; runs the orchestrator without the webhook envelope.
-- `TWILIO_ESCALATION_PHONE` and `PUBLIC_BASE_URL` settings — replaces a hardcoded phone number in the TwiML Dial element and prefixes static audio URLs so Twilio can reach them from the public internet.
+- **Monorepo structure** (`apps/backend/` + `apps/frontend/`) per `project-structure-vue-frontend.md`.
+- **Vue 3 frontend** at `apps/frontend/` (Vite + TypeScript + Pinia, `<script setup lang="ts">` exclusively). Vertical feature slices for `chat/` and `voice/`, each with its own `api/`, `store/`, `components/`, and `types/`.
+- **`useMediaRecorder` composable** — browser `MediaRecorder` wrapper picking Opus in OGG or WebM. Hold-to-talk recorder posts audio blobs to `/voice/turn` and auto-plays the returned MP3.
+- **`POST /chat/turn`** — JSON in, JSON out frontend chat endpoint (returns `{reply, language, sentiment, handoff}`).
+- **`POST /voice/turn`** — multipart audio in, `audio/mpeg` out with `X-Reply-Text` (URL-encoded) and `X-Handoff-Reason` response headers.
+- **CORS middleware** on the backend; new `FRONTEND_ORIGIN` setting controls the allowed origin (default `http://localhost:5173`).
+- **`GEMINI_TTS_MODEL` / `GEMINI_TTS_VOICE`** settings selecting the Gemini TTS model and voice (defaults: `gemini-2.5-flash-tts`, `Kore`).
+- **ADR 0002** documenting the monorepo, Vue frontend, and Gemini end-to-end audio decisions together.
+
+### Changed
+- **BREAKING — voice pipeline rewritten end-to-end through Gemini.**
+  - `OrchestratorService.handle_voice_turn` now sends the audio bytes directly as a multimodal `Part` to the ADK runner. No separate transcription step.
+  - `GcpTextToSpeechAdapter` replaced by `GeminiTextToSpeechAdapter` — uses Cloud TTS with `model_name="gemini-2.5-flash-tts"`.
+  - `MockVoiceAdapter` now implements only `TextToSpeechPort`.
+- **Frontend replaces the old `/sim` simulator.** The inline-HTML `features/sim/` package was deleted; the Vue app at `apps/frontend/` is the new UI surface.
+- **CLAUDE.md, README, USAGE** updated for the new layout and `cd apps/backend` / `cd apps/frontend` workflow.
+
+### Removed
+- **BREAKING — Twilio integration removed entirely.**
+  - Routes `/webhooks/voice/twilio` and `/webhooks/voice/twilio/process` deleted.
+  - All TwiML generation and the `static/audio/` mount removed.
+  - Settings `TWILIO_*`, `PUBLIC_BASE_URL`, and `TWILIO_ESCALATION_PHONE` removed.
+  - Deps `twilio`, `google-cloud-speech` and the `twilio.*` mypy override removed from `apps/backend/pyproject.toml`.
+- `SpeechToTextPort` protocol and `VoiceTranscript` model deleted — Gemini consumes audio natively.
+- `GcpSpeechToTextAdapter` deleted.
 
 ### Planned
-- Live Chatwoot/Zammad webhook ingress smoke test
-- Live Twilio Voice end-to-end call test
+- Safari `MediaRecorder` support (transcoder service or polyfill)
+- Frontend unit tests via Vitest
 - Persistent session store (currently in-memory)
 - Observability dashboards and alert wiring
 

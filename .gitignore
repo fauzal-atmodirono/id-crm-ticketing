@@ -30,6 +30,10 @@ env/
 htmlcov/
 .tox/
 
+# Node.js / Vue
+node_modules/
+*.tsbuildinfo
+
 # IDE / OS
 .vscode/
 .idea/

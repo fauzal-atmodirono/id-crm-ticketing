@@ -4,41 +4,63 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current State of the Repository
 
-Python conversational AI backend (FastAPI + Google ADK over Gemini) supporting both text chat and voice channels. Stack choice is recorded in [docs/decisions/0001-python-fastapi-gemini-adk-stack.md](docs/decisions/0001-python-fastapi-gemini-adk-stack.md). Layout follows `.agents/rules/project-structure-python-backend.md`.
+Two-app monorepo: a Python FastAPI backend (Google ADK over Gemini) and a Vue 3 frontend (Vite + Pinia + TypeScript). Voice goes end-to-end through Gemini — browser `MediaRecorder` → audio `Part` to ADK → Gemini TTS MP3 → browser playback. No Twilio. ADRs: [0001](docs/decisions/0001-python-fastapi-gemini-adk-stack.md) (backend stack), [0002](docs/decisions/0002-monorepo-vue-frontend-gemini-audio.md) (monorepo + Vue + Gemini audio). Layout follows `.agents/rules/project-structure.md` and `.agents/rules/project-structure-vue-frontend.md`.
 
 ### Layout
 
-- `src/chatbot/main.py` — FastAPI app bootstrap and dependency injection.
-- `src/chatbot/platform/` — `config.py` (Pydantic Settings), `logger.py` (structlog), `server.py` (ASGI setup).
-- `src/chatbot/features/chat/` — vertical slice: `models.py`, `ports.py` (protocols), `service.py` (orchestrator), `agents.py` (Gemini ADK tool-loop), `prompts.py`, `schemas.py`, `router.py` (webhook endpoints).
-- `src/chatbot/features/chat/adapters/` — `mock.py`, `chatwoot_zammad.py`, `zendesk.py`, `gcp_voice.py`.
-- `src/chatbot/features/chat/test_*.py` — pytest test suites (co-located with code per project-structure rule).
-- `.agents/` — the operations framework (agent personas, rules, skills, workflows).
-- `.env.example` — env-var template; real values go in `.env` (gitignored).
+```
+apps/
+├── backend/
+│   ├── pyproject.toml, uv.lock, .env.example, .venv/
+│   └── src/chatbot/
+│       ├── main.py                          FastAPI bootstrap, DI, CORS
+│       ├── platform/                        config.py, logger.py, server.py
+│       └── features/chat/
+│           ├── ports.py                     ChatPort, TicketingPort, KnowledgePort, TextToSpeechPort
+│           ├── service.py                   handle_turn + handle_voice_turn
+│           ├── agents.py                    ADK support + summarizer agents
+│           ├── router.py                    /webhooks/*, /chat/turn, /voice/turn
+│           ├── adapters/                    mock, chatwoot_zammad, zendesk, gcp_voice (Gemini TTS)
+│           └── test_*.py                    co-located pytest suites
+└── frontend/
+    ├── package.json, vite.config.ts, tsconfig.json
+    └── src/
+        ├── main.ts, App.vue
+        ├── plugins/api.ts                   base URL + fetch wrappers
+        ├── components/ui/                   ChannelTabs
+        ├── components/layout/               AppHeader
+        ├── layouts/MainLayout.vue
+        ├── views/HomeView.vue
+        └── features/
+            ├── chat/                        api/, components/, store/, types/, index.ts
+            └── voice/                       api/, components/, composables/useMediaRecorder.ts, store/, types/
+```
 
 ### Commands
 
-Dependencies are managed with `uv`. The virtualenv lives at `.venv/`.
+Backend (Python — run from `apps/backend/`):
 
 ```bash
-# Install / sync deps
-uv sync
-
-# Lint & format
+cd apps/backend
+uv sync                              # install deps into .venv/
 .venv/bin/ruff format .
 .venv/bin/ruff check . --fix
-
-# Static type checking (strict)
 .venv/bin/mypy src/ --strict
-
-# Tests
 .venv/bin/pytest src/
-
-# Run dev server
-.venv/bin/uvicorn chatbot.main:app --reload
+.venv/bin/uvicorn chatbot.main:app --reload   # → :8000
 ```
 
-Health check: `GET /` returns `{status, crm_provider, voice_provider, model}`.
+Frontend (Node — run from `apps/frontend/`):
+
+```bash
+cd apps/frontend
+npm install
+npm run type-check                   # vue-tsc strict
+npm run build                        # production build
+npm run dev                          # Vite dev server → :5173
+```
+
+Health check: backend `GET /` returns `{status, crm_provider, voice_provider, model}`. Frontend reads `VITE_API_BASE_URL` (default `http://localhost:8000`).
 
 ## The `.agents/` Framework (the actual "architecture" right now)
 

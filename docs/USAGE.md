@@ -1,29 +1,29 @@
 # Usage Guide
 
-A practical, step-by-step walkthrough from a fresh clone to a running agent answering real customer messages. The [README](../README.md) gives the project overview; this document focuses on **how to drive it**.
+A practical walkthrough — from a fresh clone to a running agent that you can talk to in a browser. The [README](../README.md) gives the project overview; this document focuses on **how to drive it**.
+
+> **TL;DR**: Start the backend (`apps/backend/`) on `:8000`, start the frontend (`apps/frontend/`) on `:5173`, open the browser, switch between the Chat and Voice tabs. The Voice tab uses your microphone and Gemini TTS — no Twilio, no phone numbers, no public webhooks.
 
 ---
 
-> **TL;DR — fastest way to try it**: After section 1 starts the server, open `http://localhost:8000/sim` in your browser for a built-in chat/voice simulator (no `curl` required). The simulator is only available when `DEBUG=true`.
-
 ## 1. First Run (Mock Mode)
 
-No credentials required — in-memory adapters and a mock voice provider let you exercise the full request path locally.
+No GCP credentials required — in-memory mock adapters let you exercise the full pipeline locally. (Gemini calls themselves still need credentials; without them the agent returns its fallback message.)
+
+### Backend
 
 ```bash
-cd proton-conversational-ai
-uv sync                              # installs deps into .venv/
-cp .env.example .env                 # if not already done
+cd apps/backend
+uv sync                                # creates .venv/ and installs deps
+cp .env.example .env                   # then edit .env (see §3)
 .venv/bin/uvicorn chatbot.main:app --reload
 ```
 
-Verify it's alive:
+Verify:
 
 ```bash
 curl http://localhost:8000/
 ```
-
-Expected response:
 
 ```json
 {
@@ -34,125 +34,131 @@ Expected response:
 }
 ```
 
-The defaults are `crm_provider=chatwoot` and `voice_provider=mock` — change them in `.env` once you have live credentials.
+### Frontend
+
+In a second terminal:
+
+```bash
+cd apps/frontend
+npm install
+npm run dev                            # → http://localhost:5173
+```
+
+Open `http://localhost:5173` — the header should show three green badges (CRM, Voice, Model). If the CORS badge says "Backend unreachable", check the backend is up and `FRONTEND_ORIGIN` in `apps/backend/.env` matches the Vite dev port (`http://localhost:5173`).
 
 ---
 
-## 2. Send a Chat Message
+## 2. Sending a Chat Message
 
-The Chatwoot webhook accepts JSON. Open a second terminal:
+The Vue **Chat** tab is the canonical way to talk to the agent. Type and hit `Enter` (Shift+Enter for newline). Behind the scenes it POSTs to `/chat/turn`:
 
 ```bash
-curl -X POST http://localhost:8000/webhooks/chatwoot \
+curl -X POST http://localhost:8000/chat/turn \
   -H 'Content-Type: application/json' \
-  -d '{
-    "event": "message_created",
-    "message_type": "incoming",
-    "content": "Saya butuh bantuan reset password",
-    "conversation": {"id": 123},
-    "sender": {"id": 456, "name": "Test User"}
-  }'
+  -d '{"session_id":"sim-1","text":"How do I reset my password?"}'
 ```
 
-Expected: `{"status":"ok"}`. The agent processed the turn — in mock mode the reply is logged but not posted to a real Chatwoot.
-
-Non-message events are filtered:
-
-```bash
-curl -X POST http://localhost:8000/webhooks/chatwoot \
-  -H 'Content-Type: application/json' \
-  -d '{"event": "conversation_status_changed", "conversation": {"id": 123}, "sender": {"id": 456, "name": "T"}}'
-# → {"status":"ignored"}
+```json
+{
+  "reply": "...",
+  "language": "en",
+  "sentiment": "neutral",
+  "handoff": null
+}
 ```
 
-The Zendesk webhook (`POST /webhooks/zendesk`) accepts a similar shape — see `src/chatbot/features/chat/router.py` for the exact handler.
-
-### Faster: the built-in simulator
-
-Instead of `curl`, open `http://localhost:8000/sim` while the dev server is running. It's a single-page UI with a Chat and Voice tab, a session ID input, and a live conversation log. Each "Send" runs the same orchestrator path as the production webhooks. The simulator is gated on `DEBUG=true` and is not exposed in production.
+When the agent triggers escalation, `handoff` populates and the frontend renders an escalation banner instead of a normal reply.
 
 ---
 
-## 3. Simulate a Twilio Voice Call
+## 3. Sending a Voice Message
 
-Twilio sends form-encoded data (`application/x-www-form-urlencoded`). The call has two steps:
+Click the **Voice** tab. Hold the microphone button to record, release to send. The frontend:
+
+1. Captures audio with `MediaRecorder` (Chrome/Firefox: `audio/ogg;codecs=opus`).
+2. POSTs the blob to `/voice/turn` as multipart form-data.
+3. Backend forwards the bytes to Gemini as a multimodal `Part` — no separate transcription.
+4. Gemini's reply text is synthesized by Gemini TTS (`gemini-2.5-flash-tts`) into an MP3.
+5. Browser auto-plays the MP3 and displays the reply text (from the `X-Reply-Text` response header).
+
+Equivalent `curl` (works with any `audio/ogg` file):
 
 ```bash
-# Step 1 — call start: returns TwiML <Gather> asking Twilio to capture speech
-curl -X POST http://localhost:8000/webhooks/voice/twilio \
-  -d 'CallSid=CA12345' \
-  -d 'From=+62812345678'
+curl -X POST http://localhost:8000/voice/turn \
+  -F 'session_id=cli-test' \
+  -F 'audio=@/path/to/clip.ogg;type=audio/ogg' \
+  -D headers.txt \
+  -o reply.mp3
 
-# Step 2 — speech result: Twilio POSTs back transcribed text; you return a reply
-curl -X POST http://localhost:8000/webhooks/voice/twilio/process \
-  -d 'CallSid=CA12345' \
-  -d 'SpeechResult=Saya butuh bantuan reset password'
+# Reply text — URL-encoded UTF-8 in the X-Reply-Text header
+grep -i '^x-reply-text:' headers.txt
 ```
 
-Both return TwiML XML (`<Response>...<Say>...</Say>...</Response>`). Twilio executes that on the live call.
+### Browser support
 
-> **Language note**: The voice prompts default to **id-ID (Bahasa Indonesia)** — see `router.py:110`. To serve English customers, change `language="id-ID"` and update the canned Indonesian phrases in `router.py`.
+| Browser | Status                                              |
+|---------|-----------------------------------------------------|
+| Chrome  | ✅ `audio/ogg;codecs=opus`                          |
+| Firefox | ✅ `audio/ogg;codecs=opus` or `audio/webm`          |
+| Safari  | ❌ no Opus in `MediaRecorder` yet (see ADR 0002)    |
 
 ---
 
-## 4. Switch to Live Providers
+## 4. Switching to Live Providers
 
-Edit `.env` to point at real services:
+Edit `apps/backend/.env`:
 
 | To enable…             | Set                                                                       |
 |------------------------|---------------------------------------------------------------------------|
 | Live Zendesk           | `CRM_PROVIDER=zendesk` + all `ZENDESK_*` keys (incl. `ZENDESK_EMAIL`)     |
 | Live Chatwoot + Zammad | `CRM_PROVIDER=chatwoot` + real `CHATWOOT_API_URL` / `_TOKEN` / `_ACCOUNT_ID` |
-| Live GCP voice         | `VOICE_PROVIDER=gcp` + `gcloud auth application-default login`            |
+| Live Gemini TTS        | `VOICE_PROVIDER=gcp` + `gcloud auth application-default login`            |
 | Vertex AI Gemini       | `GOOGLE_GENAI_USE_VERTEXAI=true` + `VERTEX_PROJECT_ID`                    |
 
-### Wire incoming webhooks
-
-Each platform needs to know where to POST events:
+CRM webhooks remain available for production traffic (where customers chat directly through Chatwoot/Zendesk widgets rather than your Vue app):
 
 - **Chatwoot**: *Settings → Integrations → Webhooks* → `https://<your-host>/webhooks/chatwoot`
 - **Zendesk**: *Admin Center → Apps and integrations → Webhooks* → `https://<your-host>/webhooks/zendesk`
-- **Twilio**: *Phone Numbers → Active Number → Voice Configuration* → "A call comes in" Webhook → `https://<your-host>/webhooks/voice/twilio`
 
-### Expose `localhost` to the public internet (for testing live webhooks)
-
-```bash
-# Option A
-ngrok http 8000
-
-# Option B
-cloudflared tunnel --url http://localhost:8000
-```
-
-Copy the public HTTPS URL each tool prints and paste it into the dashboards above.
+For external testing, expose your local backend with `ngrok http 8000` or `cloudflared tunnel --url http://localhost:8000`.
 
 ---
 
 ## 5. Verify Before Shipping
 
-Run all three checks; they must pass green:
+Backend:
 
 ```bash
-.venv/bin/ruff check .          # lint
-.venv/bin/mypy src/ --strict    # strict type check
-.venv/bin/pytest src/           # 9 unit + route tests, ~0.9s
+cd apps/backend
+.venv/bin/ruff check .
+.venv/bin/mypy src/ --strict
+.venv/bin/pytest src/
 ```
 
-These use in-memory mocks — safe to run repeatedly, no API costs.
+Frontend:
+
+```bash
+cd apps/frontend
+npm run type-check
+npm run build
+```
+
+All five checks must pass green.
 
 ---
 
 ## 6. Observe What the Agent Is Doing
 
-The app emits structured JSON logs via `structlog`. With `DEBUG=true` in `.env`, you'll see one log line per:
+The backend emits structured JSON logs via `structlog`. With `DEBUG=true` you see one log line per:
 
 - Webhook received (event type, conversation id)
+- `chat_turn_received` / `voice_turn_received` (session, payload size)
 - Agent tool call (`search_kb_tool`, `classify_ticket_tool`, `emit_handoff_tool`)
 - Escalation trigger (keyword/sentiment/retry-limit)
 - Outbound reply posted (channel, conversation id)
-- Voice STT/TTS calls (duration, audio bytes)
+- `gemini_tts_synthesis_completed` (size_bytes)
 
-Pipe to `jq` for readability during development:
+Pipe to `jq` during dev:
 
 ```bash
 .venv/bin/uvicorn chatbot.main:app --reload 2>&1 | jq -c .
@@ -164,12 +170,11 @@ Pipe to `jq` for readability during development:
 
 Going live for the first time:
 
-1. Fill remaining `.env` values (subdomain, email, tokens, GCP project, Twilio number).
-2. Start server: `.venv/bin/uvicorn chatbot.main:app --reload`.
-3. Expose with `ngrok` or deploy to your host.
-4. Paste the public URL into Chatwoot / Zendesk / Twilio webhook configs.
-5. Send a real message or place a real call.
-6. Watch the JSON logs — confirm the agent's tool calls, reply, and (if triggered) handoff payload.
+1. Fill remaining `apps/backend/.env` values (CRM + GCP).
+2. Start backend on a reachable host with HTTPS (browser mic capture needs it).
+3. Build the frontend: `npm run build` → deploy `apps/frontend/dist/` to a static host. Set `VITE_API_BASE_URL` at build time to your backend's HTTPS URL.
+4. Set `FRONTEND_ORIGIN` in the backend to the deployed frontend origin.
+5. (Optional) Wire Chatwoot/Zendesk webhooks for customers who chat through those platforms instead of your Vue app.
 
 ---
 
@@ -177,11 +182,12 @@ Going live for the first time:
 
 | Symptom                                                | Likely cause                                                                | Fix                                                                                          |
 |--------------------------------------------------------|-----------------------------------------------------------------------------|----------------------------------------------------------------------------------------------|
-| `GET /` returns wrong provider                         | `.env` not loaded — wrong working directory                                 | Run `uvicorn` from the repo root, not from `src/`.                                          |
+| Frontend header shows "Backend unreachable"            | Backend not running, wrong port, or CORS origin mismatch                    | Verify backend is up; ensure `FRONTEND_ORIGIN` in `apps/backend/.env` matches the frontend's exact origin (scheme + host + port). |
+| `GET /` returns wrong provider                         | `.env` not loaded — wrong working directory                                 | Run `uvicorn` from `apps/backend/` so it finds `.env` in cwd.                                |
 | 401 from Zendesk Support API                           | `ZENDESK_EMAIL` missing or doesn't match the API token's owner              | Set `ZENDESK_EMAIL` in `.env` to the user who created the token.                            |
-| Twilio webhook returns 200 but call says nothing       | Voice provider is still `mock`                                              | Set `VOICE_PROVIDER=gcp` and run `gcloud auth application-default login`.                   |
-| Chatwoot webhook returns 200 but no reply in Chatwoot  | `CHATWOOT_ENABLED=false`, wrong API URL, or token lacks permission          | Verify `CHATWOOT_API_URL`/`_TOKEN`/`_ACCOUNT_ID` and that the agent user has bot privileges. |
-| Gemini calls fail with auth error                      | Not authenticated to GCP for Vertex AI                                      | Run `gcloud auth application-default login` and set `VERTEX_PROJECT_ID`.                    |
+| Voice tab record button does nothing                   | Safari (no Opus in MediaRecorder) or `getUserMedia` blocked by HTTP origin  | Use Chrome/Firefox; serve from `localhost` or HTTPS.                                        |
+| `/voice/turn` returns 200 but no audio plays           | Voice provider is still `mock` (returns text-as-bytes, not real MP3)        | Set `VOICE_PROVIDER=gcp` and run `gcloud auth application-default login`.                   |
+| Gemini calls fail with auth error                      | Not authenticated to GCP for Vertex AI or Cloud TTS                         | Run `gcloud auth application-default login` and set `VERTEX_PROJECT_ID` if using Vertex.    |
 | Tests pass but live calls hang                         | Live adapter timeout / network egress blocked                               | Check firewall; `httpx` clients default to 5s — extend in the adapter if needed.            |
 
 ---
@@ -190,6 +196,7 @@ Going live for the first time:
 
 - [README](../README.md) — project overview and quick-start
 - [CHANGELOG](../CHANGELOG.md) — version history
-- [docs/decisions/0001-python-fastapi-gemini-adk-stack.md](decisions/0001-python-fastapi-gemini-adk-stack.md) — stack choice rationale
+- [docs/decisions/0001-python-fastapi-gemini-adk-stack.md](decisions/0001-python-fastapi-gemini-adk-stack.md) — backend stack rationale
+- [docs/decisions/0002-monorepo-vue-frontend-gemini-audio.md](decisions/0002-monorepo-vue-frontend-gemini-audio.md) — monorepo + Vue + Gemini audio
 - [CLAUDE.md](../CLAUDE.md) — directory map and AI-assisted development conventions
 - [.agents/rules/](../.agents/rules/) — coding standards and architectural rules

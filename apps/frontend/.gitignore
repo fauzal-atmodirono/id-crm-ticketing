@@ -5,6 +5,11 @@ dist-ssr
 .vite
 .turbo
 
+# vue-tsc / TS composite project-reference artifacts
+vite.config.js
+vite.config.d.ts
+*.tsbuildinfo
+
 # Editor
 .vscode/!extensions.json
 .idea

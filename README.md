@@ -57,6 +57,8 @@ I/O sits behind protocol ports; business logic is pure and dependency-free, per 
 
 ---
 
+> For a full walkthrough — webhook payloads, live-provider setup, troubleshooting — see [docs/USAGE.md](docs/USAGE.md).
+
 ## Quick Start
 
 ### Prerequisites

@@ -68,3 +68,29 @@ def test_chatwoot_webhook_processed_correctly(client: TestClient) -> None:
     response = client.post("/webhooks/chatwoot", json=payload)
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_chat_turn_returns_shape(client: TestClient) -> None:
+    response = client.post(
+        "/chat/turn",
+        json={"session_id": "frontend-test", "text": "Hello"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert "reply" in body
+    assert "language" in body
+    assert "sentiment" in body
+    assert "handoff" in body
+
+
+def test_voice_turn_returns_mp3_with_reply_header(client: TestClient) -> None:
+    audio_payload = b"\x00" * 64
+    response = client.post(
+        "/voice/turn",
+        data={"session_id": "voice-test"},
+        files={"audio": ("clip.ogg", audio_payload, "audio/ogg")},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/mpeg"
+    # FakeRunner yields nothing → reply is "" → no audio_reply, no X-Reply-Text
+    assert response.content == b""

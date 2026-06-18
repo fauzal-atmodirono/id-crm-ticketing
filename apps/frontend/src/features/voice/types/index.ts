@@ -1,6 +1,8 @@
+import type { HandoffPayload } from '@/features/chat/types';
+
 export interface VoiceTurnResult {
   replyText: string;
-  handoffReason: string | null;
+  handoff: HandoffPayload | null;
   audioBlob: Blob;
 }
 

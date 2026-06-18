@@ -17,6 +17,23 @@ function reset(): void {
 <template>
   <ChannelTabs v-model="channel" />
 
+  <transition name="fade">
+    <aside
+      v-if="chat.handoff && channel === 'chat'"
+      class="handoff-banner"
+      :data-live="chat.isLiveChatActive ? 'true' : 'false'"
+    >
+      <span class="dot" />
+      <div class="info">
+        <strong>{{ chat.isLiveChatActive ? 'Connected to a human agent' : 'Handed off to a human agent' }}</strong>
+        <span>
+          {{ chat.handoff.summary || chat.handoff.reason }}
+          <span class="pill">urgency · {{ chat.handoff.urgency }}</span>
+        </span>
+      </div>
+    </aside>
+  </transition>
+
   <ChatLog v-if="channel === 'chat'" />
   <VoiceLog v-else />
 
@@ -33,6 +50,64 @@ function reset(): void {
 </template>
 
 <style scoped>
+.handoff-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  background: linear-gradient(180deg, rgba(168, 85, 247, 0.12), rgba(168, 85, 247, 0.04));
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.handoff-banner[data-live='false'] {
+  background: linear-gradient(180deg, rgba(234, 179, 8, 0.1), rgba(234, 179, 8, 0.03));
+  border-color: rgba(234, 179, 8, 0.4);
+}
+
+.dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: var(--radius-full);
+  background: #a855f7;
+  box-shadow: 0 0 0 4px rgba(168, 85, 247, 0.18);
+  animation: blink 2s ease infinite;
+}
+.handoff-banner[data-live='false'] .dot {
+  background: #eab308;
+  box-shadow: 0 0 0 4px rgba(234, 179, 8, 0.18);
+  animation: none;
+}
+
+.info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.info strong {
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+.info span {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.pill {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  padding: 0.05rem 0.5rem;
+  font-size: 0.7rem;
+  text-transform: lowercase;
+  color: var(--text);
+}
+
 .session-row {
   display: flex;
   justify-content: space-between;
@@ -59,9 +134,18 @@ button {
   font-size: 0.8rem;
   transition: all 120ms ease;
 }
-
 button:hover {
   border-color: var(--text-muted);
   color: var(--text);
+}
+
+.fade-enter-active,
+.fade-leave-active { transition: opacity 200ms ease; }
+.fade-enter-from,
+.fade-leave-to { opacity: 0; }
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
 }
 </style>

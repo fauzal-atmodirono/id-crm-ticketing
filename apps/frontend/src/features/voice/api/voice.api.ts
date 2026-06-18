@@ -1,4 +1,5 @@
 import { API_BASE_URL } from '@/plugins/api';
+import type { HandoffPayload } from '@/features/chat/types';
 import type { VoiceTurnResult } from '@/features/voice/types';
 
 export async function postVoiceTurn(sessionId: string, audio: Blob): Promise<VoiceTurnResult> {
@@ -23,10 +24,30 @@ export async function postVoiceTurn(sessionId: string, audio: Blob): Promise<Voi
   }
   const audioBlob = await res.blob();
   const encodedReply = res.headers.get('X-Reply-Text') ?? '';
-  const handoffReason = res.headers.get('X-Handoff-Reason');
+
   return {
     replyText: encodedReply ? decodeURIComponent(encodedReply) : '',
-    handoffReason,
+    handoff: parseHandoffHeaders(res.headers),
     audioBlob,
+  };
+}
+
+function parseHandoffHeaders(headers: Headers): HandoffPayload | null {
+  const reason = headers.get('X-Handoff-Reason');
+  if (!reason) return null;
+  const encodedSummary = headers.get('X-Handoff-Summary');
+  const urgency = headers.get('X-Handoff-Urgency') ?? 'medium';
+  const language = headers.get('X-Handoff-Language') ?? 'en';
+  const liveChat = headers.get('X-Handoff-Live-Chat') === '1';
+
+  return {
+    reason,
+    language,
+    summary: encodedSummary ? decodeURIComponent(encodedSummary) : null,
+    urgency: (['low', 'medium', 'high'].includes(urgency) ? urgency : 'medium') as
+      | 'low'
+      | 'medium'
+      | 'high',
+    live_chat_available: liveChat,
   };
 }

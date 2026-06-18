@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { postVoiceTurn } from '@/features/voice/api/voice.api';
+import type { HandoffPayload } from '@/features/chat/types';
 import type { VoiceEntry } from '@/features/voice/types';
 
 export type ConversationPhase = 'idle' | 'listening' | 'processing' | 'speaking';
@@ -15,11 +16,13 @@ export const useVoiceStore = defineStore('voice', () => {
   ]);
   const isSending = ref<boolean>(false);
   const phase = ref<ConversationPhase>('idle');
+  const handoff = ref<HandoffPayload | null>(null);
 
   function resetSession(): void {
     sessionId.value = `voice-${Math.floor(Math.random() * 9999)}`;
     entries.value = [{ kind: 'system', text: `New session: ${sessionId.value}` }];
     phase.value = 'idle';
+    handoff.value = null;
   }
 
   function setPhase(next: ConversationPhase): void {
@@ -42,11 +45,15 @@ export const useVoiceStore = defineStore('voice', () => {
     phase.value = 'processing';
     try {
       const result = await postVoiceTurn(sessionId.value, blob);
-      if (result.handoffReason) {
+      if (result.handoff) {
+        const summary = result.handoff.summary ?? result.handoff.reason;
         entries.value.push({
           kind: 'system',
-          text: `Escalated to human agent (${result.handoffReason}).`,
+          text:
+            `Escalated to a human agent. ${summary}\n\n` +
+            `Switch to the Chat tab to keep talking with them — the agent's replies appear there in real time.`,
         });
+        handoff.value = result.handoff;
         phase.value = 'idle';
       } else if (result.audioBlob.size > 0) {
         const replyUrl = URL.createObjectURL(result.audioBlob);
@@ -91,6 +98,7 @@ export const useVoiceStore = defineStore('voice', () => {
     entries,
     isSending,
     phase,
+    handoff,
     submitAudio,
     resetSession,
     setPhase,

@@ -73,4 +73,10 @@ const chat = useChatStore();
   color: var(--text-muted);
   font-size: 0.85rem;
 }
+
+.msg.agent .who { color: #c4b5fd; }
+.msg.agent .text {
+  background: linear-gradient(180deg, rgba(168, 85, 247, 0.1), rgba(168, 85, 247, 0.04));
+  border-color: rgba(168, 85, 247, 0.45);
+}
 </style>

@@ -48,8 +48,19 @@ class Settings(BaseSettings):
     gemini_tts_model: str = "gemini-2.5-flash-tts"
     gemini_tts_voice: str = "Kore"
 
-    # Frontend CORS — origin of the Vue dev server (override per deployment)
-    frontend_origin: str = "http://localhost:5173"
+    # Frontend CORS — origins of the Vue dev/prod app (comma-separated in env).
+    # Defaults cover Vite's first few fallback ports (5173-5180) so a stale dev
+    # server on 5173 doesn't break a fresh one bound to 5174+.
+    frontend_origins: list[str] = [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://localhost:5176",
+        "http://localhost:5177",
+        "http://localhost:5178",
+        "http://localhost:5179",
+        "http://localhost:5180",
+    ]
 
     # Settings configurations
     model_config = SettingsConfigDict(

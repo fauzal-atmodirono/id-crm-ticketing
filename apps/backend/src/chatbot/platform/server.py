@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 
 import structlog
 from fastapi import FastAPI, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
 
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
@@ -27,14 +26,9 @@ def create_app(settings: Settings) -> FastAPI:
         debug=settings.debug,
     )
 
-    # Configure CORS
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # CORS is configured by bootstrap_application (see main.py) so the allowlist
+    # is sourced from Settings.frontend_origins — a single middleware avoids the
+    # conflicting-origin foot-gun of stacking two CORSMiddlewares.
 
     # Observability Middleware: Logs incoming requests, attaches Correlation ID, measures duration
     @app.middleware("http")

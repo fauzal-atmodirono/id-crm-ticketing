@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -20,11 +22,19 @@ def bootstrap_application() -> FastAPI:
     settings = get_settings()
     configure_logging(settings.debug)
 
+    # google-genai (used by ADK under the hood) reads these from os.environ, not
+    # from our Settings object. Mirror them so a single .env drives both layers.
+    if settings.google_genai_use_vertexai:
+        os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
+        if settings.vertex_project_id:
+            os.environ["GOOGLE_CLOUD_PROJECT"] = settings.vertex_project_id
+        os.environ["GOOGLE_CLOUD_LOCATION"] = settings.vertex_location
+
     app = create_app(settings)
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[settings.frontend_origin],
+        allow_origins=settings.frontend_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],

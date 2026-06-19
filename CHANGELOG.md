@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Frontend chat autoscroll UX:** Added automated scrolling to the bottom of the chat container in `ChatLog.vue` when new messages (from the user, AI, or agent) are appended.
 - **Zendesk Support Webhook route:** Added `/webhooks/zendesk-support` to backend router to synchronize agent public comments on standard Support tickets into the SSE stream (for backward compatibility when fallback ticketing is active).
+- **Handoff conversation transcript persistence in Firestore:** Automatically saves the initial AI-to-user conversation history when registering a handoff session in `handoff_sessions/<session_id>` document.
+- **Dynamic message logging in Firestore during handoff:** Stores subsequent user turns (relayed to agent) and agent replies (received via Sunshine and Support webhook) in real time under the same document.
 
 ### Fixed — duplicate tickets & immediate handoff routing (2026-06-19)
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from chatbot.features.chat.models import (
     AgentMessageEvent,
@@ -63,8 +63,17 @@ class HandoffStorePort(Protocol):
     only in memory and are restored when clients reconnect their SSE streams.
     """
 
-    async def register(self, session_id: str, conversation_id: str) -> None:
-        """Persist a new handoff."""
+    async def register(
+        self,
+        session_id: str,
+        conversation_id: str,
+        transcript: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Persist a new handoff, optionally including the initial conversation transcript."""
+        ...
+
+    async def save_message(self, session_id: str, role: str, text: str) -> None:
+        """Append a message to the stored conversation transcript."""
         ...
 
     async def get_conversation_id(self, session_id: str) -> str | None:

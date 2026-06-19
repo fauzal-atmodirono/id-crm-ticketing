@@ -108,6 +108,8 @@ class OrchestratorService:
                         user_external_id=session_id,
                         text=text,
                     )
+                    # Automatically save user messages during active handoff
+                    await self._handoff_bridge.save_message(session_id, "user", text)
                     return TurnResult(reply=None, forwarded_to_agent=True)
                 except Exception as e:
                     _log.error(
@@ -424,5 +426,14 @@ class OrchestratorService:
             )
             return False
 
-        await self._handoff_bridge.register(session_id, conversation_id)
+        # Build initial transcript payload to save in Firestore
+        full_transcript = [
+            {
+                "role": msg.role,
+                "text": msg.text,
+                "timestamp": msg.timestamp.isoformat() if msg.timestamp else datetime.now(UTC).isoformat(),
+            }
+            for msg in self._history.get(session_id, [])
+        ]
+        await self._handoff_bridge.register(session_id, conversation_id, transcript=full_transcript)
         return True

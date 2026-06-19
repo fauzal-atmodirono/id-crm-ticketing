@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from typing import Any
 
 import structlog
 
@@ -35,8 +36,13 @@ class HandoffBridge:
 
     # --- Registration --------------------------------------------------------
 
-    async def register(self, session_id: str, conversation_id: str) -> None:
-        await self._store.register(session_id, conversation_id)
+    async def register(
+        self,
+        session_id: str,
+        conversation_id: str,
+        transcript: list[dict[str, Any]] | None = None,
+    ) -> None:
+        await self._store.register(session_id, conversation_id, transcript)
         self._session_cache[session_id] = conversation_id
         self._conv_cache[conversation_id] = session_id
         _log.info(
@@ -44,6 +50,14 @@ class HandoffBridge:
             session_id=session_id,
             conversation_id=conversation_id,
         )
+
+    async def save_message(self, session_id: str, role: str, text: str) -> None:
+        """Relay message saving to the store."""
+        try:
+            await self._store.save_message(session_id, role, text)
+            _log.info("handoff_bridge_message_saved", session_id=session_id, role=role)
+        except Exception as e:
+            _log.error("handoff_bridge_save_message_failed", session_id=session_id, error=str(e))
 
     async def unregister(self, session_id: str) -> None:
         await self._store.unregister(session_id)
@@ -107,6 +121,10 @@ class HandoffBridge:
                 conversation_id=event.conversation_id,
             )
             return
+
+        # Save incoming agent messages to the database
+        await self.save_message(session_id, "agent", event.text)
+
         for queue in list(self._subscribers.get(session_id, [])):
             try:
                 queue.put_nowait(event)

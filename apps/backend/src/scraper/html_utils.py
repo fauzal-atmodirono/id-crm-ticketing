@@ -68,6 +68,6 @@ def clean_html_for_storage(html: str, source_url: str) -> str:
         f"  <title>{title}</title>\n"
         f'  <link rel="canonical" href="{source_url}">\n'
         "</head>\n<body>\n"
-        f"  {body}\n"
+        f"  {body.decode_contents()}\n"
         "</body>\n</html>"
     )

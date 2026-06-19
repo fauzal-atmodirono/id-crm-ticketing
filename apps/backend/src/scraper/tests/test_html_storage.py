@@ -24,6 +24,7 @@ _SAMPLE_HTML = """\
 def test_clean_html_body_text_preserved() -> None:
     result = clean_html_for_storage(_SAMPLE_HTML, _SOURCE_URL)
     assert "Welcome to the X50 page." in result
+    assert result.count("<body") == 1
 
 
 def test_clean_html_canonical_present() -> None:

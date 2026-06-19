@@ -65,6 +65,10 @@ class KbArticle:
     title: str
     content: str
     url: str | None = None
+    source_type: str | None = None
+    price: str | None = None
+    image_urls: list[str] = field(default_factory=list)
+    brochure_url: str | None = None
 
 
 @dataclass(frozen=True)

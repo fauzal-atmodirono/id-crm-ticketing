@@ -5,8 +5,10 @@ SC REST API directly so the customer can stay inside the custom Vue chat UI
 while a Zendesk agent replies from their workspace.
 
 Auth is HTTP Basic with the SC integration's key id + secret. The webhook
-secret (separate from the API secret) is used to verify inbound payloads via
-HMAC-SHA256 — Sunshine Conversations signs each webhook body with it.
+secret (separate from the API secret) verifies inbound payloads: SC v2 sends
+the raw shared secret as the `X-Api-Key` header, which we compare in constant
+time. We also accept an HMAC-SHA256 of the body for legacy (Smooch v1)
+back-compat.
 """
 
 from __future__ import annotations
@@ -99,9 +101,14 @@ class SunshineConversationsAdapter(HumanAgentBridgePort):
             return True
         if not signature:
             return False
-        expected = hmac.new(
-            self._webhook_secret.encode(), body, hashlib.sha256
-        ).hexdigest()
+        # Sunshine Conversations v2 sends the raw shared secret directly as the
+        # X-Api-Key header value. We also accept an HMAC-SHA256 of the body for
+        # back-compat with the legacy (Smooch v1) signing scheme. Both paths
+        # require knowledge of the secret, so accepting either does not weaken
+        # verification — it only avoids rejecting legitimate v2 traffic.
+        if hmac.compare_digest(signature, self._webhook_secret):
+            return True
+        expected = hmac.new(self._webhook_secret.encode(), body, hashlib.sha256).hexdigest()
         return hmac.compare_digest(expected, signature)
 
     def parse_webhook_events(self, payload: dict[str, object]) -> list[AgentMessageEvent]:
@@ -231,8 +238,7 @@ class SunshineConversationsAdapter(HumanAgentBridgePort):
         summary_message = (
             f"AI handoff for session {payload.session_id}\n"
             f"Urgency: {payload.urgency.upper()} · Language: {payload.language}\n"
-            f"Summary: {payload.ai_summary}\n\n"
-            + "\n".join(transcript_lines)
+            f"Summary: {payload.ai_summary}\n\n" + "\n".join(transcript_lines)
         )
 
         url = f"{self.BASE}/apps/{self._app_id}/conversations/{conversation_id}/messages"

@@ -16,6 +16,7 @@ from chatbot.features.chat.models import (
     HandoffOpenPayload,
     HandoffPayload,
     Message,
+    ProductCard,
     TurnResult,
 )
 from chatbot.features.chat.ports import (
@@ -30,6 +31,22 @@ if TYPE_CHECKING:
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
+
+
+def _cards_from_state(raw: list[dict[str, Any]]) -> list[ProductCard]:
+    """Map raw product_carousel state dicts to ProductCard dataclass instances."""
+    cards: list[ProductCard] = []
+    for item in raw:
+        cards.append(
+            ProductCard(
+                title=str(item.get("title", "")),
+                description=str(item.get("description", "")),
+                image_url=item.get("image_url"),
+                price=item.get("price"),
+                url=item.get("url"),
+            )
+        )
+    return cards
 
 
 class OrchestratorService:
@@ -172,11 +189,14 @@ class OrchestratorService:
             handoff_payload = await self._escalate_handoff(session_id, reason)
             reply_text = None  # Clear reply so chatbot doesn't post text when handing off
 
+        products = _cards_from_state(session_state.get("product_carousel", []) or [])
+
         return TurnResult(
             reply=reply_text,
             language=session_state.get("language", "unknown"),
             sentiment=session_state.get("sentiment"),
             handoff=handoff_payload,
+            products=products,
         )
 
     async def handle_voice_turn(

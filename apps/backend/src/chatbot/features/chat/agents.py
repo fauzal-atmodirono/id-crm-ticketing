@@ -66,6 +66,32 @@ def build_ai_agent(
             f"({priority}, SLA {sla_minutes}m)."
         )
 
+    async def show_models_tool(tool_context: ToolContext, query: str) -> str:
+        """Fetch Proton model cards to display as a visual carousel.
+
+        Call this when the user asks to see, browse, or compare models, or
+        asks which Proton car to buy. Returns an internal confirmation; the
+        cards are rendered to the user automatically.
+
+        Args:
+            tool_context: Context injected by the ADK runner.
+            query: The model/segment the user is interested in.
+        """
+        articles = await knowledge_port.search_kb(query, limit=6)
+        cards = [
+            {
+                "title": a.title,
+                "description": a.content[:200],
+                "image_url": a.image_urls[0] if a.image_urls else None,
+                "price": a.price,
+                "url": a.url,
+            }
+            for a in articles
+            if a.source_type == "model"
+        ]
+        tool_context.state["product_carousel"] = cards
+        return f"[internal] prepared {len(cards)} model cards for the carousel."
+
     async def emit_handoff_tool(
         tool_context: ToolContext,
         reason: str,
@@ -94,7 +120,7 @@ def build_ai_agent(
         generate_content_config=types.GenerateContentConfig(
             temperature=0.3,
         ),
-        tools=[search_kb_tool, emit_handoff_tool],
+        tools=[search_kb_tool, emit_handoff_tool, show_models_tool],
     )
 
 

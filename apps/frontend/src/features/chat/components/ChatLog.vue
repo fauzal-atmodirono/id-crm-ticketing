@@ -2,6 +2,7 @@
 import { ref, watch, nextTick, onMounted } from 'vue';
 import { renderMarkdown } from '@/features/chat/markdown';
 import { useChatStore } from '@/features/chat/store/chat.store';
+import ProductCarousel from '@/features/chat/components/ProductCarousel.vue';
 
 const chat = useChatStore();
 const logEl = ref<HTMLElement | null>(null);
@@ -42,6 +43,10 @@ onMounted(() => {
         v-html="renderMarkdown(msg.text)"
       ></p>
       <p v-else class="text">{{ msg.text }}</p>
+      <ProductCarousel
+        v-if="msg.products && msg.products.length"
+        :items="msg.products"
+      />
       <footer v-if="msg.meta" class="meta">{{ msg.meta }}</footer>
     </article>
   </div>

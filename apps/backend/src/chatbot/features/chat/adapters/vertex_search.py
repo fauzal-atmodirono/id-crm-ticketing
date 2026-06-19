@@ -90,8 +90,34 @@ class VertexAISearchAdapter(KnowledgePort):
                     if not content:
                         content = f"See: {title}"
 
+                    raw_images = struct_data.get("image_urls") or []
+                    image_urls = (
+                        [str(u) for u in raw_images]
+                        if isinstance(raw_images, list)
+                        else []
+                    )
                     articles.append(
-                        KbArticle(title=title, content=content, url=link)
+                        KbArticle(
+                            title=title,
+                            content=content,
+                            url=link,
+                            source_type=(
+                                str(struct_data["source_type"])
+                                if struct_data.get("source_type") is not None
+                                else None
+                            ),
+                            price=(
+                                str(struct_data["price"])
+                                if struct_data.get("price") is not None
+                                else None
+                            ),
+                            image_urls=image_urls,
+                            brochure_url=(
+                                str(struct_data["brochure_url"])
+                                if struct_data.get("brochure_url") is not None
+                                else None
+                            ),
+                        )
                     )
                 return articles
 

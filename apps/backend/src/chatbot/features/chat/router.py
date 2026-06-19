@@ -36,6 +36,7 @@ class ChatTurnResponse(BaseModel):
     sentiment: str | None = None
     handoff: dict[str, Any] | None = None
     forwarded_to_agent: bool = False
+    products: list[dict[str, Any]] = []
 
 
 def _handoff_dict(turn_result: Any) -> dict[str, Any] | None:
@@ -48,6 +49,19 @@ def _handoff_dict(turn_result: Any) -> dict[str, Any] | None:
         "urgency": turn_result.handoff.urgency,
         "live_chat_available": turn_result.handoff.live_chat_available,
     }
+
+
+def _products_list(turn_result: Any) -> list[dict[str, Any]]:
+    return [
+        {
+            "title": p.title,
+            "description": p.description,
+            "image_url": p.image_url,
+            "price": p.price,
+            "url": p.url,
+        }
+        for p in turn_result.products
+    ]
 
 
 class ChatRouter:
@@ -234,6 +248,7 @@ class ChatRouter:
             sentiment=result.sentiment,
             handoff=_handoff_dict(result),
             forwarded_to_agent=result.forwarded_to_agent,
+            products=_products_list(result),
         )
 
     async def chat_stream(self, session_id: str) -> StreamingResponse:

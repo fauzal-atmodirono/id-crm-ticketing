@@ -44,6 +44,17 @@ class MediaAttachment:
 
 
 @dataclass(frozen=True)
+class ProductCard:
+    """A single product/model card for the A2UI-shaped carousel block."""
+
+    title: str
+    description: str
+    image_url: str | None = None
+    price: str | None = None
+    url: str | None = None
+
+
+@dataclass(frozen=True)
 class TurnResult:
     """Consolidated response parameters generated after running the Gemini turn."""
 
@@ -52,6 +63,7 @@ class TurnResult:
     sentiment: Sentiment | None = None
     handoff: HandoffPayload | None = None
     attachments: list[MediaAttachment] = field(default_factory=list)
+    products: list[ProductCard] = field(default_factory=list)
     # Set when the session has already been handed off and this turn's text
     # was relayed to the human-agent bridge instead of Gemini. The reply
     # arrives asynchronously over /chat/stream/{session_id}, not in this call.
@@ -65,6 +77,10 @@ class KbArticle:
     title: str
     content: str
     url: str | None = None
+    source_type: str | None = None
+    price: str | None = None
+    image_urls: list[str] = field(default_factory=list)
+    brochure_url: str | None = None
 
 
 @dataclass(frozen=True)

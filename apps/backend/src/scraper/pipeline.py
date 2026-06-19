@@ -41,6 +41,7 @@ def build_doc(
             text = extract_pdf_text(data)
             if text:
                 body = f"{body}\n\n[Brochure] {text}"
+                _log.debug("brochure_folded", url=base.brochure_url, chars=len(text))
 
     return replace(base, doc_id=doc_id_for(slug), gcs_uri=_gcs_uri(settings, slug), body=body)
 

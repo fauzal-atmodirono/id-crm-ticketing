@@ -19,6 +19,7 @@ dependencies = [
   "python-multipart>=0.0.9",
   "beautifulsoup4>=4.15.0",
   "google-cloud-discoveryengine>=0.20.0",
+  "google-cloud-firestore>=2.21.0",
   "google-cloud-storage>=3.12.0",
 ]
 

@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     # Conversations dashboard alongside the webhook URL.
     sunshine_webhook_secret: str = ""
 
+    # Firestore — persistent backing store for the handoff bridge.
+    # When `handoff_store=firestore`, the bridge's session ↔ conversation
+    # mapping survives backend restarts. Auth via ADC.
+    handoff_store: Literal["memory", "firestore"] = "memory"
+    firestore_project_id: str = "lv-playground-genai"
+    firestore_database_id: str = "proton-db"
+    firestore_handoff_collection: str = "handoff_sessions"
+
     # Chatwoot settings
     chatwoot_api_url: str = "http://localhost:3000"
     chatwoot_api_token: str = ""

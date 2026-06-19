@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from chatbot.features.chat.adapters.chatwoot_zammad import ChatwootZammadAdapter
 from chatbot.features.chat.adapters.gcp_voice import GeminiTextToSpeechAdapter
+from chatbot.features.chat.adapters.handoff_store import build_handoff_store
 from chatbot.features.chat.adapters.mock import InMemoryKnowledgeAdapter, MockVoiceAdapter
 from chatbot.features.chat.adapters.sunshine_conversations import SunshineConversationsAdapter
 from chatbot.features.chat.adapters.vertex_search import VertexAISearchAdapter
@@ -98,7 +99,7 @@ def bootstrap_application() -> FastAPI:
         and settings.zendesk_secret_key
     ):
         human_agent_bridge = SunshineConversationsAdapter(settings)
-        handoff_bridge = HandoffBridge()
+        handoff_bridge = HandoffBridge(store=build_handoff_store(settings))
 
     orchestrator = OrchestratorService(
         settings=settings,

@@ -1,13 +1,14 @@
-"""In-process state for the human-agent handoff bridge.
+"""Active-handoff coordinator.
 
-Owns:
-- `session_id` ↔ `conversation_id` mapping in both directions.
-- One `asyncio.Queue` per active SSE subscriber, so an agent webhook can
-  fan out to every open `/chat/stream/{session_id}` connection for that
-  session (typically one per browser tab).
+Combines a `HandoffStorePort` (in-memory or Firestore) for the
+`session_id ↔ conversation_id` mapping with an in-process per-session
+`asyncio.Queue` for SSE fan-out.
 
-Single-process and in-memory by design. Restarting the backend drops live
-handoffs. Persistent storage (Redis/DB) is the production upgrade path.
+The store is the source of truth for "is this session handed off?"; the
+in-memory cache is a fast-path that's repopulated on miss from the store.
+The subscriber queues are intentionally not persisted — SSE clients
+reconnect after a backend restart and re-subscribe, picking up the
+mapping from the store.
 """
 
 from __future__ import annotations
@@ -18,47 +19,65 @@ from collections import defaultdict
 import structlog
 
 from chatbot.features.chat.models import AgentMessageEvent
+from chatbot.features.chat.ports import HandoffStorePort
 
 _log = structlog.get_logger(__name__)
 
 
 class HandoffBridge:
-    def __init__(self) -> None:
-        self._session_to_conv: dict[str, str] = {}
-        self._conv_to_session: dict[str, str] = {}
+    def __init__(self, store: HandoffStorePort) -> None:
+        self._store = store
+        self._session_cache: dict[str, str] = {}
+        self._conv_cache: dict[str, str] = {}
         self._subscribers: dict[str, list[asyncio.Queue[AgentMessageEvent | None]]] = (
             defaultdict(list)
         )
 
     # --- Registration --------------------------------------------------------
 
-    def register(self, session_id: str, conversation_id: str) -> None:
-        self._session_to_conv[session_id] = conversation_id
-        self._conv_to_session[conversation_id] = session_id
+    async def register(self, session_id: str, conversation_id: str) -> None:
+        await self._store.register(session_id, conversation_id)
+        self._session_cache[session_id] = conversation_id
+        self._conv_cache[conversation_id] = session_id
         _log.info(
             "handoff_bridge_registered",
             session_id=session_id,
             conversation_id=conversation_id,
         )
 
-    def unregister(self, session_id: str) -> None:
-        conv_id = self._session_to_conv.pop(session_id, None)
-        if conv_id:
-            self._conv_to_session.pop(conv_id, None)
+    async def unregister(self, session_id: str) -> None:
+        await self._store.unregister(session_id)
+        conv = self._session_cache.pop(session_id, None)
+        if conv:
+            self._conv_cache.pop(conv, None)
         # Wake any open subscribers so their streams terminate.
         for queue in self._subscribers.pop(session_id, []):
             queue.put_nowait(None)
 
-    def is_handed_off(self, session_id: str) -> bool:
-        return session_id in self._session_to_conv
+    async def is_handed_off(self, session_id: str) -> bool:
+        return (await self.conversation_id_for(session_id)) is not None
 
-    def conversation_id_for(self, session_id: str) -> str | None:
-        return self._session_to_conv.get(session_id)
+    async def conversation_id_for(self, session_id: str) -> str | None:
+        cached = self._session_cache.get(session_id)
+        if cached is not None:
+            return cached
+        conv = await self._store.get_conversation_id(session_id)
+        if conv is not None:
+            self._session_cache[session_id] = conv
+            self._conv_cache[conv] = session_id
+        return conv
 
-    def session_id_for(self, conversation_id: str) -> str | None:
-        return self._conv_to_session.get(conversation_id)
+    async def session_id_for(self, conversation_id: str) -> str | None:
+        cached = self._conv_cache.get(conversation_id)
+        if cached is not None:
+            return cached
+        sid = await self._store.get_session_id(conversation_id)
+        if sid is not None:
+            self._conv_cache[conversation_id] = sid
+            self._session_cache[sid] = conversation_id
+        return sid
 
-    # --- Pub-sub -------------------------------------------------------------
+    # --- Pub-sub (in-process only) ------------------------------------------
 
     def subscribe(self, session_id: str) -> asyncio.Queue[AgentMessageEvent | None]:
         queue: asyncio.Queue[AgentMessageEvent | None] = asyncio.Queue(maxsize=64)
@@ -81,7 +100,7 @@ class HandoffBridge:
             self._subscribers.pop(session_id, None)
 
     async def publish(self, event: AgentMessageEvent) -> None:
-        session_id = self.session_id_for(event.conversation_id)
+        session_id = await self.session_id_for(event.conversation_id)
         if session_id is None:
             _log.warning(
                 "handoff_publish_no_session",

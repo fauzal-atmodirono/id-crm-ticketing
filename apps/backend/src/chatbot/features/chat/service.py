@@ -79,12 +79,8 @@ class OrchestratorService:
         # 0. If the session is already handed off to a human agent and we have
         #    a live bridge, relay this turn straight to Sunshine Conversations
         #    and return — the agent's reply arrives async over /chat/stream.
-        if (
-            self._handoff_bridge is not None
-            and self._human_agent_bridge is not None
-            and self._handoff_bridge.is_handed_off(session_id)
-        ):
-            conv_id = self._handoff_bridge.conversation_id_for(session_id)
+        if self._handoff_bridge is not None and self._human_agent_bridge is not None:
+            conv_id = await self._handoff_bridge.conversation_id_for(session_id)
             if conv_id is not None:
                 self._history.setdefault(session_id, []).append(
                     Message(role="user", text=text, timestamp=datetime.now(UTC))
@@ -406,5 +402,5 @@ class OrchestratorService:
             )
             return False
 
-        self._handoff_bridge.register(session_id, conversation_id)
+        await self._handoff_bridge.register(session_id, conversation_id)
         return True

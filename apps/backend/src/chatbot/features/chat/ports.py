@@ -57,6 +57,29 @@ class TextToSpeechPort(Protocol):
         ...
 
 
+class HandoffStorePort(Protocol):
+    """Persistent backing store for the `session_id ↔ conversation_id` mapping
+    that survives backend restarts. In-process subscribers (asyncio queues) live
+    only in memory and are restored when clients reconnect their SSE streams.
+    """
+
+    async def register(self, session_id: str, conversation_id: str) -> None:
+        """Persist a new handoff."""
+        ...
+
+    async def get_conversation_id(self, session_id: str) -> str | None:
+        """Look up the conversation associated with a session."""
+        ...
+
+    async def get_session_id(self, conversation_id: str) -> str | None:
+        """Reverse lookup: which session owns this conversation."""
+        ...
+
+    async def unregister(self, session_id: str) -> None:
+        """Remove a handoff (e.g. after the customer clicks New Session)."""
+        ...
+
+
 class HumanAgentBridgePort(Protocol):
     """Port for relaying customer↔agent messages through an external messaging
     platform (Sunshine Conversations). The platform takes over the conversation

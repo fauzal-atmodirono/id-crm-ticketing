@@ -30,6 +30,17 @@ def write_jsonl(docs: list[ScrapedDoc], path: Path) -> None:
     _log.info("wrote_jsonl", count=len(docs), path=str(path))
 
 
+def upload_html(settings: ScraperSettings, scraped_dir: Path) -> None:
+    """Upload every ``*.html`` file in *scraped_dir* to GCS under *gcs_prefix*."""
+    client = storage.Client(project=settings.project_id)
+    bucket = client.bucket(settings.bucket_name)
+    html_files = sorted(scraped_dir.glob("*.html"))
+    for path in html_files:
+        blob_name = f"{settings.gcs_prefix}/{path.name}"
+        bucket.blob(blob_name).upload_from_filename(str(path), content_type="text/html")
+    _log.info("uploaded_html", count=len(html_files), prefix=settings.gcs_prefix)
+
+
 def upload_jsonl(settings: ScraperSettings, path: Path) -> str:
     client = storage.Client(project=settings.project_id)
     bucket = client.bucket(settings.bucket_name)

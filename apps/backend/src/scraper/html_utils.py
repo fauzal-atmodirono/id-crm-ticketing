@@ -5,6 +5,7 @@ import re
 from bs4 import BeautifulSoup, Tag
 
 _CHROME_TAGS = ["script", "style", "noscript", "nav", "header", "footer", "iframe", "svg"]
+_STORAGE_STRIP_TAGS = ["script", "style", "noscript", "iframe", "svg"]
 
 
 def clean_text(text: str) -> str:
@@ -46,3 +47,27 @@ def headings(node: Tag, limit: int = 20) -> list[str]:
         if len(out) >= limit:
             break
     return out
+
+
+def clean_html_for_storage(html: str, source_url: str) -> str:
+    """Return a slim standalone HTML document suitable for GCS storage.
+
+    Strips ``_STORAGE_STRIP_TAGS`` (script, style, noscript, iframe, svg) and
+    wraps the remaining body in a minimal ``<!DOCTYPE html>`` shell that
+    includes a ``<link rel="canonical">`` so Vertex content retrieval can
+    resolve the origin URL.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    title = page_title(soup)
+    for el in soup(_STORAGE_STRIP_TAGS):
+        el.decompose()
+    body: Tag = soup.body if soup.body is not None else soup
+    return (
+        "<!DOCTYPE html>\n<html>\n<head>\n"
+        '  <meta charset="utf-8">\n'
+        f"  <title>{title}</title>\n"
+        f'  <link rel="canonical" href="{source_url}">\n'
+        "</head>\n<body>\n"
+        f"  {body}\n"
+        "</body>\n</html>"
+    )

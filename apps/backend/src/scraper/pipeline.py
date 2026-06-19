@@ -44,17 +44,3 @@ def build_doc(
                 _log.debug("brochure_folded", url=base.brochure_url, chars=len(text))
 
     return replace(base, doc_id=doc_id_for(slug), gcs_uri=_gcs_uri(settings, slug), body=body)
-
-
-def brochure_doc(parent: ScrapedDoc, settings: ScraperSettings, text: str) -> ScrapedDoc:
-    """Emit the brochure as its own citable document."""
-    slug = slug_for(parent.brochure_url or f"{parent.link}-brochure")
-    return ScrapedDoc(
-        doc_id=doc_id_for(slug),
-        title=f"{parent.title} — Brochure",
-        link=parent.brochure_url or parent.link,
-        source_type="brochure",
-        language=parent.language,
-        body=text,
-        gcs_uri=_gcs_uri(settings, slug),
-    )

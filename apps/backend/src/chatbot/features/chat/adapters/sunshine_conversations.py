@@ -243,7 +243,7 @@ class SunshineConversationsAdapter(HumanAgentBridgePort):
 
         url = f"{self.BASE}/apps/{self._app_id}/conversations/{conversation_id}/messages"
         body = {
-            "author": {"type": "business"},
+            "author": {"type": "user", "userExternalId": payload.session_id},
             "content": {"type": "text", "text": summary_message},
         }
         res = await client.post(url, json=body, headers=self._headers())

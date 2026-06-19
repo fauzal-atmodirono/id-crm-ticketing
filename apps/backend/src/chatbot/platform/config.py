@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     # Conversations dashboard alongside the webhook URL.
     sunshine_webhook_secret: str = ""
 
+    # Secret used to verify webhook calls from Zendesk Support (for standard ticket comment syncing)
+    zendesk_support_webhook_secret: str = ""
+
+
     # Firestore — persistent backing store for the handoff bridge.
     # When `handoff_store=firestore`, the bridge's session ↔ conversation
     # mapping survives backend restarts. Auth via ADC.

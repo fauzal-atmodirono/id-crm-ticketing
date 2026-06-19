@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — frontend UX & Zendesk webhook (2026-06-19)
+
+- **Frontend chat autoscroll UX:** Added automated scrolling to the bottom of the chat container in `ChatLog.vue` when new messages (from the user, AI, or agent) are appended.
+- **Zendesk Support Webhook route:** Added `/webhooks/zendesk-support` to backend router to synchronize agent public comments on standard Support tickets into the SSE stream (for backward compatibility when fallback ticketing is active).
+
+### Fixed — duplicate tickets & immediate handoff routing (2026-06-19)
+
+- **Ticket creation on human agent handoff:** Switched Sunshine Conversations handoff summary message author from `business` to `user` (using the session ID as external ID). This ensures Zendesk Messaging registers user activity immediately at handoff and creates the ticket in the agent workspace without requiring the customer to send another message.
+- **Prevention of duplicate Support tickets:** Bypassed manual standard Support ticket creation in `OrchestratorService` when `live_chat_available` is true, since Sunshine Conversations automatically manages Messaging tickets.
+
 ### Added — handoff bridge, KB grounding, persistence (2026-06-19)
 
 - **Sunshine Conversations bridge** for inline human-agent handoff. `SunshineConversationsAdapter` (httpx, v2 REST) opens a conversation per session and posts the AI summary + recent transcript as a business message; `forward_customer_message` relays subsequent customer turns. Reuses the existing `ZENDESK_KEY_ID` / `ZENDESK_SECRET_KEY` for HTTP Basic auth.

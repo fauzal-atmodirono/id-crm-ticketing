@@ -320,30 +320,7 @@ class OrchestratorService:
         except Exception as e:
             _log.warning("handoff_summarization_failed", error=str(e))
 
-        # 4. Open ticket in support CRM
-        title = f"AI Escalation - {reason.replace('_', ' ').title()}"
-        body = (
-            f"Reason: {reason}\n"
-            f"Urgency: {urgency.upper()}\n"
-            f"Transcript Summary: {summary_text}\n\n"
-            f"Recent Transcript Logs:\n"
-        )
-        for log_msg in chat_log:
-            body += f"- {log_msg['role'].upper()}: {log_msg['text']}\n"
-
-        ticket_id = await self._ticketing_port.create_ticket(
-            session_id=session_id, title=title, body=body, urgency=urgency
-        )
-
-        # 5. Add private note banner
-        note_content = (
-            f"⚠️ AI ASSISTANT SUMMARY:\n"
-            f"{summary_text}\n\n"
-            f"Urgency: {urgency.upper()} | Language: {lang.upper()}"
-        )
-        await self._ticketing_port.add_private_note(ticket_id=ticket_id, text=note_content)
-
-        # 6. Open a live Sunshine Conversations bridge (if configured) so the
+        # 4. Open a live Sunshine Conversations bridge (if configured) so the
         #    customer can continue talking to the agent inside our own UI.
         live_chat_available = await self._open_live_bridge(
             session_id=session_id,
@@ -352,6 +329,31 @@ class OrchestratorService:
             language=lang,
             chat_log=chat_log,
         )
+
+        ticket_id = None
+        if not live_chat_available:
+            # Fall back to standard Support ticket-only mode
+            title = f"AI Escalation - {reason.replace('_', ' ').title()}"
+            body = (
+                f"Reason: {reason}\n"
+                f"Urgency: {urgency.upper()}\n"
+                f"Transcript Summary: {summary_text}\n\n"
+                f"Recent Transcript Logs:\n"
+            )
+            for log_msg in chat_log:
+                body += f"- {log_msg['role'].upper()}: {log_msg['text']}\n"
+
+            ticket_id = await self._ticketing_port.create_ticket(
+                session_id=session_id, title=title, body=body, urgency=urgency
+            )
+
+            # Add private note banner
+            note_content = (
+                f"⚠️ AI ASSISTANT SUMMARY:\n"
+                f"{summary_text}\n\n"
+                f"Urgency: {urgency.upper()} | Language: {lang.upper()}"
+            )
+            await self._ticketing_port.add_private_note(ticket_id=ticket_id, text=note_content)
 
         _log.info(
             "escalation_completed",

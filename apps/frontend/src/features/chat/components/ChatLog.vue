@@ -1,12 +1,32 @@
 <script setup lang="ts">
+import { ref, watch, nextTick, onMounted } from 'vue';
 import { renderMarkdown } from '@/features/chat/markdown';
 import { useChatStore } from '@/features/chat/store/chat.store';
 
 const chat = useChatStore();
+const logEl = ref<HTMLElement | null>(null);
+
+const scrollToBottom = () => {
+  if (logEl.value) {
+    logEl.value.scrollTop = logEl.value.scrollHeight;
+  }
+};
+
+watch(
+  () => chat.messages.length,
+  async () => {
+    await nextTick();
+    scrollToBottom();
+  }
+);
+
+onMounted(() => {
+  scrollToBottom();
+});
 </script>
 
 <template>
-  <div class="log">
+  <div ref="logEl" class="log">
     <article
       v-for="(msg, i) in chat.messages"
       :key="i"

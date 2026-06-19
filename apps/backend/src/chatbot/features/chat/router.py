@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -12,8 +13,13 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from chatbot.features.chat.handoff_bridge import HandoffBridge
+from chatbot.features.chat.models import AgentMessageEvent
 from chatbot.features.chat.ports import HumanAgentBridgePort
-from chatbot.features.chat.schemas import ChatwootWebhookPayload, ZendeskWebhookPayload
+from chatbot.features.chat.schemas import (
+    ChatwootWebhookPayload,
+    ZendeskSupportWebhookPayload,
+    ZendeskWebhookPayload,
+)
 from chatbot.features.chat.service import OrchestratorService
 
 _log = structlog.get_logger(__name__)
@@ -58,14 +64,11 @@ class ChatRouter:
         self._human_agent_bridge = human_agent_bridge
         self.router = APIRouter(tags=["chat"])
 
+        self.router.add_api_route("/webhooks/chatwoot", self.chatwoot_webhook, methods=["POST"])
+        self.router.add_api_route("/webhooks/zendesk", self.zendesk_webhook, methods=["POST"])
+        self.router.add_api_route("/webhooks/sunshine", self.sunshine_webhook, methods=["POST"])
         self.router.add_api_route(
-            "/webhooks/chatwoot", self.chatwoot_webhook, methods=["POST"]
-        )
-        self.router.add_api_route(
-            "/webhooks/zendesk", self.zendesk_webhook, methods=["POST"]
-        )
-        self.router.add_api_route(
-            "/webhooks/sunshine", self.sunshine_webhook, methods=["POST"]
+            "/webhooks/zendesk-support", self.zendesk_support_webhook, methods=["POST"]
         )
         self.router.add_api_route(
             "/chat/turn",
@@ -169,14 +172,62 @@ class ChatRouter:
         _log.info("sunshine_webhook_received", event_count=len(events))
         return {"status": "ok", "delivered": str(len(events))}
 
+    async def zendesk_support_webhook(
+        self,
+        payload: ZendeskSupportWebhookPayload,
+        x_proton_webhook_secret: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        """Receive a Zendesk Support webhook comment payload.
+
+        Triggers on public agent replies on standard Support tickets, and
+        relays them to the active SSE channel.
+        """
+        if self._handoff_bridge is None:
+            raise HTTPException(status_code=503, detail="Handoff bridge not configured")
+
+        expected_secret = self.orchestrator._settings.zendesk_support_webhook_secret
+        if expected_secret and (
+            not x_proton_webhook_secret or x_proton_webhook_secret != expected_secret
+        ):
+            _log.warning("zendesk_support_webhook_signature_invalid")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
+        session_id = payload.session_id
+        if not session_id or not session_id.strip() or not session_id.startswith("sim-"):
+            return {"status": "ignored"}
+
+        # Check if the session is actually handed off / active in our bridge
+        is_active = await self._handoff_bridge.is_handed_off(session_id)
+        if not is_active:
+            _log.info("zendesk_support_webhook_session_not_active", session_id=session_id)
+            return {"status": "session_not_active"}
+
+        conversation_id = await self._handoff_bridge.conversation_id_for(session_id)
+        if not conversation_id:
+            conversation_id = session_id
+
+        event = AgentMessageEvent(
+            conversation_id=conversation_id,
+            author_name=payload.author_name,
+            text=payload.text,
+            timestamp=datetime.now(UTC),
+        )
+
+        # Populate cache mapping if missing
+        if conversation_id not in self._handoff_bridge._conv_cache:
+            self._handoff_bridge._conv_cache[conversation_id] = session_id
+            self._handoff_bridge._session_cache[session_id] = conversation_id
+
+        await self._handoff_bridge.publish(event)
+        _log.info("zendesk_support_webhook_processed", session_id=session_id)
+        return {"status": "ok"}
+
     # --- Frontend-facing API (consumed by the Vue app) ----------------------
 
     async def chat_turn(self, req: ChatTurnRequest) -> ChatTurnResponse:
         """Run a single text chat turn and return the assistant's reply."""
         _log.info("chat_turn_received", session_id=req.session_id, text_length=len(req.text))
-        result = await self.orchestrator.handle_turn(
-            session_id=req.session_id, text=req.text
-        )
+        result = await self.orchestrator.handle_turn(session_id=req.session_id, text=req.text)
         return ChatTurnResponse(
             reply=result.reply,
             language=result.language,
@@ -263,13 +314,9 @@ class ChatRouter:
             headers["X-Handoff-Reason"] = turn_result.handoff.reason
             headers["X-Handoff-Urgency"] = turn_result.handoff.urgency
             headers["X-Handoff-Language"] = turn_result.handoff.language
-            headers["X-Handoff-Live-Chat"] = (
-                "1" if turn_result.handoff.live_chat_available else "0"
-            )
+            headers["X-Handoff-Live-Chat"] = "1" if turn_result.handoff.live_chat_available else "0"
             if turn_result.handoff.summary:
-                headers["X-Handoff-Summary"] = quote(
-                    turn_result.handoff.summary, safe=""
-                )
+                headers["X-Handoff-Summary"] = quote(turn_result.handoff.summary, safe="")
 
         return Response(content=audio_reply, media_type="audio/mpeg", headers=headers)
 

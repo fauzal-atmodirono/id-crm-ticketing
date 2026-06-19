@@ -59,3 +59,9 @@ class ZendeskWebhookEvent(BaseModel):
 
 class ZendeskWebhookPayload(BaseModel):
     events: list[ZendeskWebhookEvent]
+
+
+class ZendeskSupportWebhookPayload(BaseModel):
+    session_id: str
+    text: str
+    author_name: str

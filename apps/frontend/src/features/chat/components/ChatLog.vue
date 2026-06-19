@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { renderMarkdown } from '@/features/chat/markdown';
 import { useChatStore } from '@/features/chat/store/chat.store';
 
 const chat = useChatStore();
@@ -13,7 +14,14 @@ const chat = useChatStore();
       :class="msg.role"
     >
       <header class="who">{{ msg.role }}</header>
-      <p class="text">{{ msg.text }}</p>
+      <!-- Assistant/agent replies are markdown (links, bold); render them
+           safely. User/system text stays literal. -->
+      <p
+        v-if="msg.role === 'assistant' || msg.role === 'agent'"
+        class="text md"
+        v-html="renderMarkdown(msg.text)"
+      ></p>
+      <p v-else class="text">{{ msg.text }}</p>
       <footer v-if="msg.meta" class="meta">{{ msg.meta }}</footer>
     </article>
   </div>
@@ -56,6 +64,28 @@ const chat = useChatStore();
   border: 1px solid var(--border);
   line-height: 1.45;
   margin: 0;
+}
+
+/* Markdown-rendered replies: marked emits its own block elements, so drop the
+   pre-wrap used for literal text and style the generated nodes instead. */
+.text.md {
+  white-space: normal;
+}
+.text.md :first-child { margin-top: 0; }
+.text.md :last-child { margin-bottom: 0; }
+.text.md :where(p, ul, ol) { margin: 0.5rem 0; }
+.text.md :where(ul, ol) { padding-left: 1.25rem; }
+.text.md a {
+  color: var(--assistant);
+  text-decoration: underline;
+  word-break: break-word;
+}
+.text.md a:hover { text-decoration: none; }
+.text.md code {
+  background: var(--surface);
+  padding: 0.1rem 0.3rem;
+  border-radius: var(--radius-sm, 4px);
+  font-size: 0.9em;
 }
 
 .meta {

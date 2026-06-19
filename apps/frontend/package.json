@@ -10,6 +10,8 @@
     "type-check": "vue-tsc --noEmit"
   },
   "dependencies": {
+    "dompurify": "^3.4.11",
+    "marked": "^18.0.5",
     "pinia": "^2.3.0",
     "vue": "^3.5.13"
   },

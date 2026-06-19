@@ -21,4 +21,5 @@ def test_extract_generic_strips_chrome_and_keeps_main() -> None:
     assert "TEST DRIVE" not in doc.body
     assert "Footer links" not in doc.body
     assert "var x" not in doc.body
+    assert "chromePhraseInsideMain" not in doc.body
     assert doc.sections == ["About PROTON", "Our Mission"]

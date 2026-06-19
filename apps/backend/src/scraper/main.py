@@ -16,7 +16,6 @@ from scraper.transport import Transport
 _log = structlog.get_logger(__name__)
 
 JSONL_PATH = Path(__file__).parent.parent.parent / "scraped_data" / "proton-kb.jsonl"
-_HTTP_OK = 200
 
 
 def cmd_scrape(settings: ScraperSettings) -> None:
@@ -25,11 +24,7 @@ def cmd_scrape(settings: ScraperSettings) -> None:
     transport = Transport(settings)
 
     def pdf_fetcher(pdf_url: str) -> bytes | None:
-        try:
-            res = transport._client.get(pdf_url)  # reuse the httpx client
-            return res.content if res.status_code == _HTTP_OK else None
-        except Exception:
-            return None
+        return transport.get_bytes(pdf_url)
 
     docs = []
     try:

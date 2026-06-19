@@ -65,8 +65,8 @@ class Transport:
                 _log.info("fetch_non_200", url=url, status=res.status_code)
                 return None
             html = res.text
-        except Exception:  # broad catch: httpx can raise many error subtypes
-            _log.warning("httpx_fetch_failed", url=url)
+        except Exception as e:  # broad catch: httpx can raise many error subtypes
+            _log.warning("httpx_fetch_failed", url=url, error=str(e))
             return None
 
         if not needs_render(html, self._settings):
@@ -78,14 +78,23 @@ class Transport:
             driver.get(url)
             time.sleep(2.0)
             return str(driver.page_source)
-        except Exception:  # broad catch: Selenium can raise many error subtypes
-            _log.warning("selenium_fetch_failed", url=url)
+        except Exception as e:  # broad catch: Selenium can raise many error subtypes
+            _log.warning("selenium_fetch_failed", url=url, error=str(e))
             return html  # better than nothing
+
+    def get_bytes(self, url: str) -> bytes | None:
+        """Fetch raw bytes (e.g. a PDF) via the httpx client. Returns None on failure."""
+        try:
+            res = self._client.get(url)
+            return res.content if res.status_code == _HTTP_OK else None
+        except Exception as e:
+            _log.warning("get_bytes_failed", url=url, error=str(e))
+            return None
 
     def close(self) -> None:
         self._client.close()
         if self._driver is not None:
             try:
                 self._driver.quit()
-            except Exception:  # broad catch: driver may already be dead
-                _log.warning("selenium_quit_failed")
+            except Exception as e:  # broad catch: driver may already be dead
+                _log.warning("selenium_quit_failed", error=str(e))

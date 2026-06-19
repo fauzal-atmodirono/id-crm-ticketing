@@ -108,6 +108,7 @@ export const useChatStore = defineStore('chat', () => {
           role: 'assistant',
           text: result.reply,
           meta: metaBits.length ? metaBits.join(' · ') : undefined,
+          products: result.products?.length ? result.products : undefined,
         });
       } else {
         messages.value.push({

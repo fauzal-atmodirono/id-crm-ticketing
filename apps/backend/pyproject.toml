@@ -21,6 +21,9 @@ dependencies = [
   "google-cloud-discoveryengine>=0.20.0",
   "google-cloud-firestore>=2.21.0",
   "google-cloud-storage>=3.12.0",
+  "selenium>=4.20",
+  "webdriver-manager>=4.0",
+  "pypdf>=5.0",
 ]
 
 [dependency-groups]

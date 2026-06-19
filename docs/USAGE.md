@@ -109,19 +109,43 @@ grep -i '^x-reply-text:' headers.txt
 
 Edit `apps/backend/.env`:
 
-| To enable…             | Set                                                                       |
-|------------------------|---------------------------------------------------------------------------|
-| Live Zendesk           | `CRM_PROVIDER=zendesk` + all `ZENDESK_*` keys (incl. `ZENDESK_EMAIL`)     |
-| Live Chatwoot + Zammad | `CRM_PROVIDER=chatwoot` + real `CHATWOOT_API_URL` / `_TOKEN` / `_ACCOUNT_ID` |
-| Live Gemini TTS        | `VOICE_PROVIDER=gcp` + `gcloud auth application-default login`            |
-| Vertex AI Gemini       | `GOOGLE_GENAI_USE_VERTEXAI=true` + `VERTEX_PROJECT_ID`                    |
+| To enable…                       | Set                                                                                                          |
+|----------------------------------|--------------------------------------------------------------------------------------------------------------|
+| Live Zendesk                     | `CRM_PROVIDER=zendesk` + all `ZENDESK_*` keys (incl. `ZENDESK_EMAIL`)                                        |
+| Live Chatwoot + Zammad           | `CRM_PROVIDER=chatwoot` + real `CHATWOOT_API_URL` / `_TOKEN` / `_ACCOUNT_ID`                                |
+| Live Gemini TTS                  | `VOICE_PROVIDER=gcp` + `gcloud auth application-default login`                                              |
+| Vertex AI Gemini                 | `GOOGLE_GENAI_USE_VERTEXAI=true` + `VERTEX_PROJECT_ID`                                                       |
+| **Vertex AI Search KB grounding**| `KNOWLEDGE_PROVIDER=vertex_search` + `VERTEX_SEARCH_PROJECT_ID` / `_DATA_STORE_ID` / `_ENGINE_ID`; populate the data store via `scripts/scrape_proton.py` |
+| **Inline human-agent chat**      | Register a Sunshine Conversations webhook at `POST /webhooks/sunshine`, copy the secret into `SUNSHINE_WEBHOOK_SECRET` |
+| **Persistent handoff state**     | `HANDOFF_STORE=firestore` + `FIRESTORE_PROJECT_ID` + `FIRESTORE_DATABASE_ID` (the database must exist; ADC handles auth) |
 
 CRM webhooks remain available for production traffic (where customers chat directly through Chatwoot/Zendesk widgets rather than your Vue app):
 
 - **Chatwoot**: *Settings → Integrations → Webhooks* → `https://<your-host>/webhooks/chatwoot`
 - **Zendesk**: *Admin Center → Apps and integrations → Webhooks* → `https://<your-host>/webhooks/zendesk`
+- **Sunshine Conversations** (for live agent → customer messages): SC dashboard → Integrations → Webhooks → target `https://<your-host>/webhooks/sunshine`, triggers `conversation:message`, copy the generated secret into `.env` as `SUNSHINE_WEBHOOK_SECRET`.
 
 For external testing, expose your local backend with `ngrok http 8000` or `cloudflared tunnel --url http://localhost:8000`.
+
+### Vertex AI Search KB pipeline
+
+```bash
+cd apps/backend
+.venv/bin/python scripts/scrape_proton.py               # scrape → JSONL → GCS → import
+.venv/bin/python scripts/scrape_proton.py --purge       # wipe + re-import (after schema changes)
+.venv/bin/python scripts/scrape_proton.py --import-only # re-import existing GCS JSONL
+```
+
+The script writes structured Documents (one per line) to `apps/backend/scraped_data/proton-kb.jsonl`, uploads alongside the raw HTML, and imports with `data_schema="document"`. The adapter then queries `proton-kb-engine` and uses our explicit `struct_data.{title,link,body_excerpt}` for the citation + content.
+
+### Inline human-agent flow
+
+1. Customer types something like "I need to talk to a human" in the Vue chat.
+2. Backend's `_escalate_handoff` runs: creates a Zendesk Support ticket (with AI transcript summary) AND opens a Sunshine Conversations conversation via the bridge. The session ↔ conversation mapping is written to `proton-db/handoff_sessions/<session_id>` if `HANDOFF_STORE=firestore`.
+3. Backend returns `handoff: {..., live_chat_available: true}`. The frontend opens `EventSource(/chat/stream/<session_id>)` and shows a thin "Connected to a human agent" banner above the chat log.
+4. Customer's next `/chat/turn` is short-circuited and forwarded to Sunshine Conversations instead of Gemini (`{forwarded_to_agent: true}` in the response). The user message renders normally; the agent's reply will arrive via SSE.
+5. Agent replies in Zendesk Agent Workspace. The reply triggers a `conversation:message` webhook to `POST /webhooks/sunshine`, which the bridge fans out to every open EventSource for that session. The reply renders inline as a purple "agent" card.
+6. "New session" closes the EventSource, clears the Firestore document, and resets the chat.
 
 ---
 

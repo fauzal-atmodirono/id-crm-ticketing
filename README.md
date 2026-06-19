@@ -1,6 +1,6 @@
 # Proton Conversational AI
 
-A Gemini-powered conversational AI agent for customer support, serving **text chat** and **voice** through a single agent core, with pluggable CRM integration (**Zendesk** or **Chatwoot + Zammad**).
+A Gemini-powered conversational AI agent for customer support, serving **text chat** and **voice** through a single agent core, with pluggable CRM integration (**Zendesk** or **Chatwoot + Zammad**), Knowledge-Base grounding via **Vertex AI Search**, and **inline human-agent handoff** via the Sunshine Conversations bridge.
 
 Two apps in one repo:
 
@@ -16,10 +16,13 @@ Voice goes end-to-end through Gemini: the browser captures audio with `MediaReco
 - **Unified agent core** — one Gemini instruction + tool pipeline drives both channels.
 - **Gemini native audio** — 16 kHz mono WAV blob → ADK Part → Gemini TTS MP3 → browser playback. One model, one round trip.
 - **Interactive voice UX** — tap-to-talk with live canvas waveform, auto-stop on silence (built-in VAD), and a four-state status machine (`idle → listening → processing → speaking`). Keyboard `Space` toggles the mic.
+- **Grounded answers via Vertex AI Search** — the agent queries the `proton-kb` Discovery Engine data store on every turn and cites the source URL in Markdown link form. Empty searches return the literal `NO_MATCHES` token so the agent never invents facts.
+- **Inline human-agent handoff** — on escalation the backend opens a Sunshine Conversations conversation, posts the AI transcript as a business message, and the customer keeps typing in the same Vue chat UI. Agent replies stream back over Server-Sent Events and render inline alongside the AI turns. No separate Zendesk widget panel.
+- **Persistent handoff state** — `HandoffBridge` is backed by Firestore (`proton-db / handoff_sessions`), so a uvicorn reload or deploy roll preserves the `session_id ↔ conversation_id` mapping. Restart-safe routing of customer messages to the agent's conversation.
 - **Pluggable CRM** — swap Zendesk for Chatwoot/Zammad via configuration.
-- **Tool-using LLM** — knowledge-base search, ticket classification, and human escalation as Gemini tools.
-- **Automated handoff** — keyword/sentiment-triggered escalation produces a structured JSON summary for the receiving human agent.
-- **Local-first** — in-memory mock adapters let the full backend test suite run with zero external dependencies.
+- **Tool-using LLM** — knowledge-base search and human escalation as Gemini tools, with explicit prompt rules for `NO_MATCHES`, direct human requests, and negative sentiment.
+- **Automated handoff** — keyword/sentiment-triggered escalation produces a structured JSON summary, attaches it to a Zendesk Support ticket attributed to a session-scoped pseudo-user, AND opens the Sunshine Conversations conversation for live chat.
+- **Local-first** — in-memory mock adapters let the full backend test suite run with zero external dependencies. `HANDOFF_STORE=memory` keeps Firestore optional in dev.
 
 ---
 
@@ -29,21 +32,26 @@ Decisions live as ADRs:
 
 - [docs/decisions/0001-python-fastapi-gemini-adk-stack.md](docs/decisions/0001-python-fastapi-gemini-adk-stack.md) — backend stack
 - [docs/decisions/0002-monorepo-vue-frontend-gemini-audio.md](docs/decisions/0002-monorepo-vue-frontend-gemini-audio.md) — monorepo, Vue, Gemini end-to-end audio
+- [docs/decisions/0003-sunshine-conversations-bridge-vertex-search-firestore.md](docs/decisions/0003-sunshine-conversations-bridge-vertex-search-firestore.md) — inline human-agent bridge, Vertex AI Search KB, Firestore handoff persistence
 - [.agents/rules/architectural-pattern.md](.agents/rules/architectural-pattern.md) — testability-first ports & adapters
 
 ```
 proton-conversational-ai/
 ├── apps/
 │   ├── backend/                          # Python FastAPI service
+│   │   ├── scripts/scrape_proton.py      # KB scraper → JSONL Documents → Vertex AI Search
 │   │   └── src/chatbot/
-│   │       ├── main.py                   FastAPI bootstrap, DI, CORS
+│   │       ├── main.py                   FastAPI bootstrap, DI, CORS, store/bridge wiring
 │   │       ├── platform/                 Config, structlog, ASGI setup
 │   │       └── features/chat/
-│   │           ├── ports.py              ChatPort, TicketingPort, KnowledgePort, TextToSpeechPort
+│   │           ├── ports.py              Chat/Ticketing/Knowledge/TTS/HumanAgentBridge/HandoffStore
 │   │           ├── service.py            handle_turn + handle_voice_turn orchestrator
 │   │           ├── agents.py             ADK support + summarizer agents
-│   │           ├── router.py             /webhooks/*, /chat/turn, /voice/turn
-│   │           └── adapters/             mock, chatwoot_zammad, zendesk, gcp_voice (Gemini TTS)
+│   │           ├── prompts.py            Proton-grounded instruction with citation + NO_MATCHES rules
+│   │           ├── handoff_bridge.py     session ↔ conversation map + per-session SSE queues
+│   │           ├── router.py             /webhooks/*, /chat/turn, /chat/stream, /voice/turn
+│   │           └── adapters/             mock, chatwoot_zammad, zendesk, gcp_voice (Gemini TTS),
+│   │                                     sunshine_conversations, vertex_search, handoff_store
 │   └── frontend/                         # Vue 3 + Vite + Pinia
 │       └── src/
 │           ├── features/chat/            # vertical slice: api, store, components, types
@@ -62,13 +70,15 @@ proton-conversational-ai/
 
 All backend routes:
 
-| Method | Path                    | Purpose                                              |
-|--------|-------------------------|------------------------------------------------------|
-| GET    | `/`                     | Health check (providers + model)                     |
-| POST   | `/chat/turn`            | Text turn — JSON in, JSON out (used by the Vue app)  |
-| POST   | `/voice/turn`           | Voice turn — multipart audio in, `audio/mpeg` out    |
-| POST   | `/webhooks/chatwoot`    | Chatwoot inbound message webhook                     |
-| POST   | `/webhooks/zendesk`     | Zendesk / Sunshine Conversations webhook             |
+| Method | Path                          | Purpose                                                      |
+|--------|-------------------------------|--------------------------------------------------------------|
+| GET    | `/`                           | Health check (providers + model)                             |
+| POST   | `/chat/turn`                  | Text turn — JSON in, JSON out (used by the Vue app). Returns `{reply, language, sentiment, handoff, forwarded_to_agent}`. |
+| GET    | `/chat/stream/{session_id}`   | Server-Sent Events stream of `agent_message` events for a handed-off session. |
+| POST   | `/voice/turn`                 | Voice turn — multipart audio in, `audio/mpeg` out + `X-Reply-Text` / `X-Handoff-*` headers. |
+| POST   | `/webhooks/chatwoot`          | Chatwoot inbound message webhook.                            |
+| POST   | `/webhooks/zendesk`           | Zendesk Sunshine Conversations webhook (incoming-to-bot direction). |
+| POST   | `/webhooks/sunshine`          | Sunshine Conversations message events (agent → customer direction; HMAC-verified). |
 
 `/voice/turn` adds two response headers: `X-Reply-Text` (URL-encoded reply text) and `X-Handoff-Reason` (set when escalation triggers).
 
@@ -126,6 +136,12 @@ Backend settings load from `apps/backend/.env`. See [.env.example](apps/backend/
 | `CRM_PROVIDER`              | `chatwoot` or `zendesk`                                | `chatwoot`                      |
 | `VOICE_PROVIDER`            | `mock` or `gcp`                                        | `mock`                          |
 | `FRONTEND_ORIGINS`          | JSON list of CORS origins (covers Vite port fallbacks) | `["http://localhost:5173",…5180]`|
+| `KNOWLEDGE_PROVIDER`        | `mock`, `zendesk`, or `vertex_search`                  | `mock`                          |
+| `VERTEX_SEARCH_*`           | Project / location / engine / data store ids           | —                               |
+| `SUNSHINE_WEBHOOK_SECRET`   | HMAC secret to verify inbound `/webhooks/sunshine` POSTs | —                               |
+| `HANDOFF_STORE`             | `memory` (dev) or `firestore` (prod-grade persistence) | `memory`                        |
+| `FIRESTORE_PROJECT_ID`      | GCP project hosting the Firestore database             | `lv-playground-genai`           |
+| `FIRESTORE_DATABASE_ID`     | Firestore database id (e.g. `proton-db`)               | `proton-db`                     |
 | `GEMINI_MODEL`              | Gemini model id                                        | `gemini-2.5-flash`              |
 | `GEMINI_TTS_MODEL`          | TTS model (via Cloud TTS API)                          | `gemini-2.5-flash-tts`          |
 | `GEMINI_TTS_VOICE`          | Voice name (e.g. `Kore`, `Charon`, `Callirrhoe`)       | `Kore`                          |
@@ -191,7 +207,9 @@ Key rules:
 ## Roadmap
 
 - Safari `MediaRecorder` support (transcoder or polyfill)
-- Persistent session store (currently in-memory)
+- JWT-based `loginUser` so the Sunshine Messenger pre-chat form is bypassed and customer identity is verified end-to-end
+- Vertex AI Search Enterprise tier for snippets / extractive answers (cleaner content than our pre-extracted `body_excerpt`)
+- Persistent conversation history (currently in-memory; only the handoff `session ↔ conversation` mapping is in Firestore)
 - Frontend unit tests via Vitest
 - Observability dashboards + alert wiring
 

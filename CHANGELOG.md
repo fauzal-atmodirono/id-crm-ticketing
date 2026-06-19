@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — handoff bridge, KB grounding, persistence (2026-06-19)
+
+- **Sunshine Conversations bridge** for inline human-agent handoff. `SunshineConversationsAdapter` (httpx, v2 REST) opens a conversation per session and posts the AI summary + recent transcript as a business message; `forward_customer_message` relays subsequent customer turns. Reuses the existing `ZENDESK_KEY_ID` / `ZENDESK_SECRET_KEY` for HTTP Basic auth.
+- **`HandoffBridge`** coordinator with per-session `asyncio.Queue` subscribers and a pluggable `HandoffStorePort` backing.
+- **`GET /chat/stream/{session_id}`** — Server-Sent Events stream that yields `agent_message` events with a 30 s heartbeat.
+- **`POST /webhooks/sunshine`** — HMAC-SHA256-verified webhook handler. Customer-authored events are dropped (we already showed them in the UI when the user pressed Send); business-authored events are published to the matching session's queue.
+- **Frontend `ChatMessage.role` extended with `'agent'`** + purple-tinted card styling. `chat.store` opens an `EventSource` on handoff when `live_chat_available` is true, appends incoming agent messages to the same log, and closes the stream on `resetSession`.
+- **`HandoffStatePort`** — persistence boundary for the bridge. Two implementations: `InMemoryHandoffStore` (dev/tests) and `FirestoreHandoffStore` (one doc per active handoff in `proton-db/handoff_sessions/<session_id>` with indexed reverse-lookup). The bridge keeps a read-through in-process cache; a backend restart costs one Firestore round-trip per session before warm.
+- **`KNOWLEDGE_PROVIDER=vertex_search` path** — `VertexAISearchAdapter` queries the `proton-kb-engine` Discovery Engine over the `proton-kb` data store and reads `struct_data` (our authoritative fields) ahead of `derived_struct_data`. Falls back to the pre-extracted `body_excerpt` for content because Standard tier doesn't return snippets.
+- **`scripts/scrape_proton.py` rewritten as a structured KB pipeline** — produces JSONL Documents (one per line) with `{id, struct_data: {title, link, language, body_excerpt, sections}, content: {uri, mime_type}}` from the Proton website sitemap, uploads JSONL + HTML to GCS, creates the data store + engine if missing, and imports with `data_schema="document"`. Discrete CLI stages (`--scrape-only`, `--upload-only`, `--import-only`, `--purge`).
+- **Agent prompt** rewritten as a three-step playbook (Search → Answer → optionally Escalate). Explicit `NO_MATCHES` branching, Markdown-link citations from `Source URL`, replies in the customer's language (en / ms / zh). Grounds the agent in Proton's product domain.
+- **Settings** — `SUNSHINE_WEBHOOK_SECRET`, `HANDOFF_STORE`, `FIRESTORE_PROJECT_ID`, `FIRESTORE_DATABASE_ID`, `FIRESTORE_HANDOFF_COLLECTION`, `KNOWLEDGE_PROVIDER`, `VERTEX_SEARCH_*`.
+- **ADR-0003** — coupled decision for the Sunshine Conversations bridge, Vertex AI Search KB, and Firestore handoff persistence.
+
+### Changed — handoff & KB (2026-06-19)
+
+- **BREAKING — handoff UX is no longer the Zendesk Messenger widget.** `<script id="ze-snippet">`, `zESettings`, `plugins/zendesk.ts`, and the `HandoffStatus.vue` full-panel swap are removed. Handoff now keeps the existing chat log + input visible and renders agent replies inline as a new `'agent'` message role. Deployments that depended on the embedded widget must switch to registering a Sunshine Conversations webhook integration pointing at `POST /webhooks/sunshine`.
+- **BREAKING — `ChatTurnResponse` adds `forwarded_to_agent: bool`** and `HandoffPayload` adds `live_chat_available: bool`. The voice `X-Handoff-*` headers gain `X-Handoff-Live-Chat`.
+- **`OrchestratorService` constructor** takes new optional `human_agent_bridge: HumanAgentBridgePort | None` and `handoff_bridge: HandoffBridge | None` parameters. When both are present and the session is already handed off, `/chat/turn` text is forwarded to Sunshine Conversations instead of Gemini.
+- **Zendesk Support tickets** are now attributed to a session-scoped pseudo-user (`Proton AI Customer (<session-id>)` with email `<session-id>@proton.devoteam.example`) instead of defaulting to the API token owner. Stops escalation emails from landing in the admin's inbox.
+- **`InMemoryKnowledgeAdapter`** is now a development fallback only — the production path is `KNOWLEDGE_PROVIDER=vertex_search`.
+- **Agent tool set** — `classify_ticket_tool` is dropped from the registered tools because its result was stored only in `tool_context.state` (unread downstream) and Gemini was treating the classify call as the turn's terminal action, silently skipping the customer-facing text reply. The function stays defined so it can be re-enabled once its state is wired into the handoff payload.
+
+### Fixed — handoff & KB (2026-06-19)
+
+- **Empty replies on grounded questions.** Root cause: Gemini 2.5 Flash treating `classify_ticket_tool` as the terminal call. Fixed by dropping the tool from the registered set.
+- **GCS object URI surfaced to the customer as the citation link.** Vertex's `derived_struct_data.link` overrides our canonical Proton URL with the bucket URI. Adapter now prefers our explicit `struct_data` before falling back to derived.
+- **Two-ticket fragmentation on handoff.** The Zendesk Support ticket (with AI transcript) and the Messenger conversation (live chat) are still distinct records, but now share a `session-<id>` tag and external_id linkage so agents can correlate. The user-facing UI no longer shows two chat surfaces.
+- **Handoff state lost on backend restart.** `HandoffBridge`'s `session_id ↔ conversation_id` map is now persisted in Firestore (`HANDOFF_STORE=firestore`). Subscribers (SSE queues) are still in-process; clients reconnect after a restart.
+
 ### Added
 - **Monorepo structure** (`apps/backend/` + `apps/frontend/`) per `project-structure-vue-frontend.md`.
 - **Vue 3 frontend** at `apps/frontend/` (Vite + TypeScript + Pinia, `<script setup lang="ts">` exclusively). Vertical feature slices for `chat/` and `voice/`, each with its own `api/`, `store/`, `components/`, and `types/`.

@@ -211,11 +211,45 @@ class OrchestratorService:
             products=products,
         )
 
+    async def _transcribe_audio(
+        self,
+        audio_bytes: bytes,
+        audio_mime_type: str,
+        session_id: str,
+    ) -> str:
+        """Call Gemini to transcribe user audio verbatim."""
+        try:
+            contents = [
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_bytes(data=audio_bytes, mime_type=audio_mime_type),
+                        types.Part.from_text(
+                            text="Transcribe this audio verbatim. Output only the transcription, "
+                            "without any extra text, corrections, or formatting."
+                        ),
+                    ],
+                )
+            ]
+            response = await self._genai_client.aio.models.generate_content(
+                model=self._settings.gemini_model,
+                contents=contents,
+            )
+            transcription = (response.text or "").strip()
+            _log.info(
+                "voice_turn_transcription_completed",
+                session_id=session_id,
+                length=len(transcription),
+            )
+            return transcription
+        except Exception as e:
+            _log.error("voice_turn_transcription_failed", session_id=session_id, error=str(e))
+            return ""
+
     async def _handle_voice_handoff(
         self,
         session_id: str,
-        audio_bytes: bytes,
-        audio_mime_type: str,
+        transcription: str,
     ) -> tuple[bytes, TurnResult] | None:
         """Helper to transcribe and forward voice message to agent if AI is paused."""
         if not await self._ticketing_port.is_ai_paused(session_id):
@@ -226,54 +260,29 @@ class OrchestratorService:
             if conv_id is not None:
                 _log.info("ai_paused_transcribing_voice_turn_for_agent", session_id=session_id)
                 try:
-                    contents = [
-                        types.Content(
-                            role="user",
-                            parts=[
-                                types.Part.from_bytes(
-                                    data=audio_bytes, mime_type=audio_mime_type
-                                ),
-                                types.Part.from_text(
-                                    text="Transcribe this audio verbatim. Output only the transcription, "
-                                    "without any extra text, corrections, or formatting."
-                                ),
-                            ],
+                    text_to_forward = transcription or "[audio]"
+                    # Append user message to history
+                    self._history.setdefault(session_id, []).append(
+                        Message(
+                            role="user", text=text_to_forward, timestamp=datetime.now(UTC)
                         )
-                    ]
-                    response = await self._genai_client.aio.models.generate_content(
-                        model=self._settings.gemini_model,
-                        contents=contents,
                     )
-                    transcription = (response.text or "").strip()
-                    _log.info(
-                        "voice_turn_transcription_completed",
-                        session_id=session_id,
-                        length=len(transcription),
+                    # Forward message to Sunshine/Zendesk agent
+                    await self._human_agent_bridge.forward_customer_message(
+                        conversation_id=conv_id,
+                        user_external_id=session_id,
+                        text=text_to_forward,
+                    )
+                    # Save message to Firestore
+                    await self._handoff_bridge.save_message(
+                        session_id, "user", text_to_forward
                     )
 
-                    if transcription:
-                        # Append user message to history
-                        self._history.setdefault(session_id, []).append(
-                            Message(
-                                role="user", text=transcription, timestamp=datetime.now(UTC)
-                            )
-                        )
-                        # Forward message to Sunshine/Zendesk agent
-                        await self._human_agent_bridge.forward_customer_message(
-                            conversation_id=conv_id,
-                            user_external_id=session_id,
-                            text=transcription,
-                        )
-                        # Save message to Firestore
-                        await self._handoff_bridge.save_message(
-                            session_id, "user", transcription
-                        )
-
-                        return b"", TurnResult(
-                            reply=None,
-                            forwarded_to_agent=True,
-                            user_transcription=transcription,
-                        )
+                    return b"", TurnResult(
+                        reply=None,
+                        forwarded_to_agent=True,
+                        user_transcription=text_to_forward,
+                    )
                 except Exception as e:
                     _log.error(
                         "forward_customer_voice_message_failed",
@@ -302,16 +311,21 @@ class OrchestratorService:
             mime_type=audio_mime_type,
         )
 
-        handoff_res = await self._handle_voice_handoff(
-            session_id=session_id,
+        transcription = await self._transcribe_audio(
             audio_bytes=audio_bytes,
             audio_mime_type=audio_mime_type,
+            session_id=session_id,
+        )
+
+        handoff_res = await self._handle_voice_handoff(
+            session_id=session_id,
+            transcription=transcription,
         )
         if handoff_res is not None:
             return handoff_res
 
         self._history.setdefault(session_id, []).append(
-            Message(role="user", text="[audio]", timestamp=datetime.now(UTC))
+            Message(role="user", text=transcription or "[audio]", timestamp=datetime.now(UTC))
         )
 
         session = await self._adk_sessions.get_session(
@@ -382,6 +396,7 @@ class OrchestratorService:
             language=session_state.get("language", "unknown"),
             sentiment=session_state.get("sentiment"),
             handoff=handoff_payload,
+            user_transcription=transcription or None,
         )
         return audio_reply, turn_result
 

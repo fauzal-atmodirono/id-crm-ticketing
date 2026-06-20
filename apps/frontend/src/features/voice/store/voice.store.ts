@@ -95,13 +95,22 @@ export const useVoiceStore = defineStore('voice', () => {
     const userAudioUrl = URL.createObjectURL(blob);
     entries.value.push({
       kind: 'user',
-      text: `[voice · ${Math.round(blob.size / 1024)} kB]`,
+      text: 'Voice message',
       audioUrl: userAudioUrl,
     });
     isSending.value = true;
     phase.value = 'processing';
     try {
       const result = await postVoiceTurn(sessionId.value, blob);
+      
+      // Update user voice entry to show the transcribed text if available
+      if (result.userTranscription) {
+        const userEntry = [...entries.value].reverse().find(e => e.kind === 'user');
+        if (userEntry) {
+          userEntry.text = result.userTranscription;
+        }
+      }
+
       if (result.handoff) {
         const summary = result.handoff.summary ?? result.handoff.reason;
         entries.value.push({
@@ -114,11 +123,6 @@ export const useVoiceStore = defineStore('voice', () => {
           attachAgentStream();
         }
       } else if (result.forwardedToAgent) {
-        // Update user voice entry to show the transcribed text
-        const lastEntry = entries.value[entries.value.length - 1];
-        if (lastEntry && lastEntry.kind === 'user') {
-          lastEntry.text = result.userTranscription || '[voice message forwarded]';
-        }
         phase.value = 'idle';
       } else if (result.audioBlob.size > 0) {
         const replyUrl = URL.createObjectURL(result.audioBlob);

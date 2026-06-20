@@ -86,11 +86,12 @@ def extract_model(html: str, url: str) -> ScrapedDoc:
     images = _image_urls(main, url)
     brochure = _brochure_url(main, url)
 
-    # Derive price from raw text before chrome removal can drop it.
-    price = _find_price(main.get_text(separator=" "))
-
+    # Strip chrome BEFORE extracting price so the header nav's model-switcher
+    # (which lists ALL models' prices) cannot pollute the match.  Images must be
+    # collected first because the model thumbnail lives inside the c-header.
     strip_chrome(main)
     body = clean_text(main.get_text(separator=" "))
+    price = _find_price(body)
 
     return ScrapedDoc(
         doc_id="",

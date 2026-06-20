@@ -100,15 +100,20 @@ export const useChatStore = defineStore('chat', () => {
         return;
       }
 
-      if (result.reply) {
+      const hasProducts = !!result.products?.length;
+      if (result.reply || hasProducts) {
         const metaBits: string[] = [];
         if (result.language && result.language !== 'unknown') metaBits.push(`lang=${result.language}`);
         if (result.sentiment) metaBits.push(`sentiment=${result.sentiment}`);
+        // When the agent answers purely by showing the product carousel, the
+        // tool call is its terminal action and `reply` comes back empty — fall
+        // back to a short intro so the cards aren't presented bare.
+        const text = result.reply || (hasProducts ? 'Here are some models you might like:' : '');
         messages.value.push({
           role: 'assistant',
-          text: result.reply,
+          text,
           meta: metaBits.length ? metaBits.join(' · ') : undefined,
-          products: result.products?.length ? result.products : undefined,
+          products: hasProducts ? result.products : undefined,
         });
       } else {
         messages.value.push({

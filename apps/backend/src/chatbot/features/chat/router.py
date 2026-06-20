@@ -17,6 +17,7 @@ from chatbot.features.chat.models import AgentMessageEvent
 from chatbot.features.chat.ports import HumanAgentBridgePort
 from chatbot.features.chat.schemas import (
     ChatwootWebhookPayload,
+    TtsRequest,
     ZendeskSupportWebhookPayload,
     ZendeskWebhookPayload,
 )
@@ -98,6 +99,11 @@ class ChatRouter:
         self.router.add_api_route(
             "/voice/turn",
             self.voice_turn,
+            methods=["POST"],
+        )
+        self.router.add_api_route(
+            "/voice/tts",
+            self.voice_tts,
             methods=["POST"],
         )
 
@@ -333,7 +339,24 @@ class ChatRouter:
             if turn_result.handoff.summary:
                 headers["X-Handoff-Summary"] = quote(turn_result.handoff.summary, safe="")
 
+        if turn_result.forwarded_to_agent:
+            headers["X-Forwarded-To-Agent"] = "1"
+        if turn_result.user_transcription:
+            headers["X-User-Transcription"] = quote(turn_result.user_transcription, safe="")
+
         return Response(content=audio_reply, media_type="audio/mpeg", headers=headers)
+
+    async def voice_tts(self, payload: TtsRequest) -> Response:
+        """Synthesize text into speech audio."""
+        _log.info("voice_tts_received", text_length=len(payload.text), language=payload.language)
+        try:
+            audio_bytes = await self.orchestrator._tts_port.synthesize(
+                text=payload.text, language_code=payload.language
+            )
+            return Response(content=audio_bytes, media_type="audio/mpeg")
+        except Exception as e:
+            _log.error("voice_tts_synthesis_failed", error=str(e))
+            raise HTTPException(status_code=500, detail="Voice synthesis failed") from e
 
 
 def build_chat_router(

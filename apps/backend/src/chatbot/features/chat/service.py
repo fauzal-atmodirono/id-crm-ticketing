@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
-from google.genai import types
+from google.genai import Client, types
 
 from chatbot.features.chat.agents import build_ai_agent, build_summarizer_agent
 from chatbot.features.chat.handoff_bridge import HandoffBridge
@@ -74,6 +74,16 @@ class OrchestratorService:
         # Initialize ADK agents
         self._support_agent = build_ai_agent(settings, ticketing_port, knowledge_port)
         self._summarizer_agent = build_summarizer_agent(settings)
+
+        # Initialize raw GenAI client for transcription/STT
+        if settings.google_genai_use_vertexai:
+            self._genai_client = Client(
+                vertexai=True,
+                project=settings.vertex_project_id,
+                location=settings.vertex_location,
+            )
+        else:
+            self._genai_client = Client()
 
         # ADK runner session storage
         self._adk_sessions = InMemorySessionService()  # type: ignore[no-untyped-call]
@@ -201,6 +211,78 @@ class OrchestratorService:
             products=products,
         )
 
+    async def _handle_voice_handoff(
+        self,
+        session_id: str,
+        audio_bytes: bytes,
+        audio_mime_type: str,
+    ) -> tuple[bytes, TurnResult] | None:
+        """Helper to transcribe and forward voice message to agent if AI is paused."""
+        if not await self._ticketing_port.is_ai_paused(session_id):
+            return None
+
+        if self._handoff_bridge is not None and self._human_agent_bridge is not None:
+            conv_id = await self._handoff_bridge.conversation_id_for(session_id)
+            if conv_id is not None:
+                _log.info("ai_paused_transcribing_voice_turn_for_agent", session_id=session_id)
+                try:
+                    contents = [
+                        types.Content(
+                            role="user",
+                            parts=[
+                                types.Part.from_bytes(
+                                    data=audio_bytes, mime_type=audio_mime_type
+                                ),
+                                types.Part.from_text(
+                                    text="Transcribe this audio verbatim. Output only the transcription, "
+                                    "without any extra text, corrections, or formatting."
+                                ),
+                            ],
+                        )
+                    ]
+                    response = await self._genai_client.aio.models.generate_content(
+                        model=self._settings.gemini_model,
+                        contents=contents,
+                    )
+                    transcription = (response.text or "").strip()
+                    _log.info(
+                        "voice_turn_transcription_completed",
+                        session_id=session_id,
+                        length=len(transcription),
+                    )
+
+                    if transcription:
+                        # Append user message to history
+                        self._history.setdefault(session_id, []).append(
+                            Message(
+                                role="user", text=transcription, timestamp=datetime.now(UTC)
+                            )
+                        )
+                        # Forward message to Sunshine/Zendesk agent
+                        await self._human_agent_bridge.forward_customer_message(
+                            conversation_id=conv_id,
+                            user_external_id=session_id,
+                            text=transcription,
+                        )
+                        # Save message to Firestore
+                        await self._handoff_bridge.save_message(
+                            session_id, "user", transcription
+                        )
+
+                        return b"", TurnResult(
+                            reply=None,
+                            forwarded_to_agent=True,
+                            user_transcription=transcription,
+                        )
+                except Exception as e:
+                    _log.error(
+                        "forward_customer_voice_message_failed",
+                        session_id=session_id,
+                        error=str(e),
+                    )
+        _log.info("ai_paused_short_circuiting_voice_turn", session_id=session_id)
+        return b"", TurnResult(reply=None)
+
     async def handle_voice_turn(
         self,
         session_id: str,
@@ -220,9 +302,13 @@ class OrchestratorService:
             mime_type=audio_mime_type,
         )
 
-        if await self._ticketing_port.is_ai_paused(session_id):
-            _log.info("ai_paused_short_circuiting_voice_turn", session_id=session_id)
-            return b"", TurnResult(reply=None)
+        handoff_res = await self._handle_voice_handoff(
+            session_id=session_id,
+            audio_bytes=audio_bytes,
+            audio_mime_type=audio_mime_type,
+        )
+        if handoff_res is not None:
+            return handoff_res
 
         self._history.setdefault(session_id, []).append(
             Message(role="user", text="[audio]", timestamp=datetime.now(UTC))
@@ -431,7 +517,9 @@ class OrchestratorService:
             {
                 "role": msg.role,
                 "text": msg.text,
-                "timestamp": msg.timestamp.isoformat() if msg.timestamp else datetime.now(UTC).isoformat(),
+                "timestamp": msg.timestamp.isoformat()
+                if msg.timestamp
+                else datetime.now(UTC).isoformat(),
             }
             for msg in self._history.get(session_id, [])
         ]

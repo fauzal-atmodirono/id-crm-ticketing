@@ -24,12 +24,31 @@ export async function postVoiceTurn(sessionId: string, audio: Blob): Promise<Voi
   }
   const audioBlob = await res.blob();
   const encodedReply = res.headers.get('X-Reply-Text') ?? '';
+  const forwarded = res.headers.get('X-Forwarded-To-Agent') === '1';
+  const encodedTranscription = res.headers.get('X-User-Transcription') ?? '';
 
   return {
     replyText: encodedReply ? decodeURIComponent(encodedReply) : '',
     handoff: parseHandoffHeaders(res.headers),
     audioBlob,
+    forwardedToAgent: forwarded,
+    userTranscription: encodedTranscription ? decodeURIComponent(encodedTranscription) : '',
   };
+}
+
+export async function postVoiceTts(text: string, language: string = 'en-US'): Promise<Blob> {
+  const res = await fetch(`${API_BASE_URL}/voice/tts`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ text, language }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`voice/tts ${res.status}: ${body}`);
+  }
+  return await res.blob();
 }
 
 function parseHandoffHeaders(headers: Headers): HandoffPayload | null {

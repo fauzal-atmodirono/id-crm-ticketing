@@ -4,6 +4,8 @@ export interface VoiceTurnResult {
   replyText: string;
   handoff: HandoffPayload | null;
   audioBlob: Blob;
+  forwardedToAgent?: boolean;
+  userTranscription?: string;
 }
 
 export interface VoiceEntry {

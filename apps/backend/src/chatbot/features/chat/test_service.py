@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -201,10 +202,19 @@ async def test_handle_voice_turn_happy_path() -> None:
         runner_factory=fake_runner_factory,
     )
 
+    # Mock transcription call
+    mock_response = MagicMock()
+    mock_response.text = "Hello, I need help with my car."
+    svc._genai_client = MagicMock()
+    svc._genai_client.aio = MagicMock()
+    svc._genai_client.aio.models = MagicMock()
+    svc._genai_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
     # Ingest mock audio bytes
     audio_reply, result = await svc.handle_voice_turn(session_id="v1", audio_bytes=b"mock_audio")
 
     # Verify text outputs
     assert result.reply == reply_text
+    assert result.user_transcription == "Hello, I need help with my car."
     # Verify voice synthesis output (MockVoiceAdapter echoes code + text)
     assert audio_reply == b"mock_voice_audio:en-US:This is a voice reply."

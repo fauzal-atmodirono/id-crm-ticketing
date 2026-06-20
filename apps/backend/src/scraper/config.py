@@ -21,8 +21,17 @@ class ScraperSettings(BaseSettings):
     # Render with Selenium only when httpx content looks empty.
     min_main_chars: int = 200
 
-    # Only crawl these path prefixes; drop everything else.
-    allow_prefixes: tuple[str, ...] = ("/models", "/all-new", "/after-sales", "/ownership")
-    deny_substrings: tuple[str, ...] = ("/privacy", "/thank-you", "/cookie", "/terms")
+    # Path prefixes to crawl. EMPTY means "crawl the entire sitemap" (only the
+    # deny-list below is applied). Set a non-empty tuple to restrict coverage.
+    allow_prefixes: tuple[str, ...] = ()
+    # Drop functional / non-content pages (auth, search, form thank-you, cookie).
+    deny_substrings: tuple[str, ...] = (
+        "/login",
+        "/forget-password",
+        "/search-results",
+        "/count-down",
+        "/thank-you",
+        "/cookie",
+    )
 
     model_config = SettingsConfigDict(env_prefix="SCRAPER_", extra="ignore")

@@ -7,10 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — voice handoff STT & TTS (2026-06-20)
+
+- **Voice handoff Speech-to-Text (STT) transcription:** Integrated Gemini GenAI verbatim audio transcription in `OrchestratorService.handle_voice_turn` when the session is handed off to a live agent. Transcribed text is saved to Firestore history and forwarded to Zendesk Support/Sunshine conversations inline.
+- **Backend TTS replay endpoint:** Added `POST /voice/tts` to synthesize plain text replies into speech MP3 using `GeminiTextToSpeechAdapter`.
+- **Frontend TTS autoplay and manual audio replay:** Updated `useVoiceStore` to attach the SSE agent stream during live handoffs, fetch agent reply audio via `postVoiceTts`, and play it back automatically.
+- **Clean Voice bubble UI with play/replay icons:** Redesigned `VoiceLog.vue` to show clear speech bubble cards instead of raw HTML5 media players. Integrated a custom SVG speaker icon that indicates playback, triggers manual replays, and animates/pulses when audio is active.
+- **Transcribed voice placeholder swap:** Replaces the frontend user's audio placeholder bubble with the transcribed text verbatim once the backend returns the `X-User-Transcription` header.
+- **Automated tests:** Added `test_voice_handoff.py` to verify end-to-end voice handoff transcription, message forwarding, and data persistence.
+
 ### Added — frontend UX & Zendesk webhook (2026-06-19)
 
 - **Frontend chat autoscroll UX:** Added automated scrolling to the bottom of the chat container in `ChatLog.vue` when new messages (from the user, AI, or agent) are appended.
 - **Zendesk Support Webhook route:** Added `/webhooks/zendesk-support` to backend router to synchronize agent public comments on standard Support tickets into the SSE stream (for backward compatibility when fallback ticketing is active).
+- **Handoff conversation transcript persistence in Firestore:** Automatically saves the initial AI-to-user conversation history when registering a handoff session in `handoff_sessions/<session_id>` document.
+- **Dynamic message logging in Firestore during handoff:** Stores subsequent user turns (relayed to agent) and agent replies (received via Sunshine and Support webhook) in real time under the same document.
 
 ### Fixed — duplicate tickets & immediate handoff routing (2026-06-19)
 

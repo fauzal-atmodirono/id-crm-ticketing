@@ -68,6 +68,8 @@ class TurnResult:
     # was relayed to the human-agent bridge instead of Gemini. The reply
     # arrives asynchronously over /chat/stream/{session_id}, not in this call.
     forwarded_to_agent: bool = False
+    # Set if the turn involved transcribing user voice audio (transcription text)
+    user_transcription: str | None = None
 
 
 @dataclass(frozen=True)

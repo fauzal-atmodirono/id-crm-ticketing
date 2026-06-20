@@ -129,14 +129,34 @@ For external testing, expose your local backend with `ngrok http 8000` or `cloud
 
 ### Vertex AI Search KB pipeline
 
+The modular scraper lives at `apps/backend/src/scraper/`. It renders each page
+with headless Chrome (Selenium) + scroll to capture Proton's lazy-loaded
+content — hero images, news, and the **pricelist/brochure PDFs** — then extracts
+structured fields and imports them into the `proton-kb` data store. Auth uses
+**Application Default Credentials** (`gcloud auth application-default login`); no
+service-account key is needed.
+
 ```bash
 cd apps/backend
-.venv/bin/python scripts/scrape_proton.py               # scrape → JSONL → GCS → import
-.venv/bin/python scripts/scrape_proton.py --purge       # wipe + re-import (after schema changes)
-.venv/bin/python scripts/scrape_proton.py --import-only # re-import existing GCS JSONL
+.venv/bin/python -m scraper.main scrape   # crawl sitemap → render+extract → JSONL + per-page HTML
+.venv/bin/python -m scraper.main index    # upload HTML + JSONL to GCS → FULL re-import into proton-kb
 ```
 
-The script writes structured Documents (one per line) to `apps/backend/scraped_data/proton-kb.jsonl`, uploads alongside the raw HTML, and imports with `data_schema="document"`. The adapter then queries `proton-kb-engine` and uses our explicit `struct_data.{title,link,body_excerpt}` for the citation + content.
+Per page the scraper writes one structured Document to
+`apps/backend/scraped_data/proton-kb.jsonl` plus a cleaned `<slug>.html` (so each
+document's `content.uri` resolves on the CONTENT_REQUIRED data store), then
+imports with `data_schema="document"` and `ReconciliationMode.FULL`. On Standard
+tier Vertex returns only `struct_data`, so all agent-readable text — including
+brochure PDF text extracted locally — is packed into `struct_data.body_excerpt`,
+with `title`, `link`, `price`, `image_urls`, `brochure_url`, and `source_type`
+alongside. The adapter queries `proton-kb-engine` and grounds the reply + citation
+on those fields; `source_type=model` records also drive the product carousel.
+
+Tuning via `SCRAPER_*` env vars (see `scraper/config.py`): `SCRAPER_RENDER=false`
+for a fast httpx-only crawl (skips lazy content); `SCRAPER_ALLOW_PREFIXES` to
+restrict coverage (empty = whole sitemap); `SCRAPER_SCROLL_PASSES` /
+`SCRAPER_RENDER_WAIT` to tune lazy-load capture. A full render crawl of the site
+is ~12–15 min (serial Selenium); httpx-only is ~40s.
 
 ### Inline human-agent flow
 

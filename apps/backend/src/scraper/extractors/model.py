@@ -27,16 +27,45 @@ def _find_price(text: str) -> str | None:
     return clean_text(raw)
 
 
+def _model_tokens(url: str) -> tuple[str, str]:
+    """Return ``(slug, short_token)`` derived from the page URL.
+
+    Examples::
+
+        "https://www.proton.com/models/all-new-x50"
+            → ("all-new-x50", "x50")
+        "https://www.proton.com/models/x70"
+            → ("x70", "x70")
+    """
+    slug = url.rstrip("/").split("/")[-1].lower()
+    short_token = slug.split("-")[-1]
+    return slug, short_token
+
+
 def _image_urls(node: Tag, base_url: str) -> list[str]:
-    out: list[str] = []
+    """Return absolute image URLs from *node*, excluding SVGs, logos, and icons.
+
+    Model-token-matching images are returned first (in document order), making
+    ``image_urls[0]`` the model's own hero image rather than a nav leftover.
+    """
+    slug, short_token = _model_tokens(base_url)
+
+    all_urls: list[str] = []
     for img in node.find_all("img"):
         src = str(img.get("src") or "")
         if not src or src.endswith(".svg"):
             continue
         absolute = urljoin(base_url, src)
-        if absolute not in out:
-            out.append(absolute)
-    return out
+        lo = absolute.lower()
+        if "logo" in lo or "/icon" in lo:
+            continue
+        if absolute not in all_urls:
+            all_urls.append(absolute)
+
+    # Prioritize images whose URL contains the model token.
+    matching = [u for u in all_urls if short_token in u.lower() or slug in u.lower()]
+    other = [u for u in all_urls if u not in matching]
+    return matching + other
 
 
 def _brochure_url(node: Tag, base_url: str) -> str | None:
@@ -57,11 +86,12 @@ def extract_model(html: str, url: str) -> ScrapedDoc:
     images = _image_urls(main, url)
     brochure = _brochure_url(main, url)
 
-    # Derive price from raw text before chrome removal can drop it.
-    price = _find_price(main.get_text(separator=" "))
-
+    # Strip chrome BEFORE extracting price so the header nav's model-switcher
+    # (which lists ALL models' prices) cannot pollute the match.  Images must be
+    # collected first because the model thumbnail lives inside the c-header.
     strip_chrome(main)
     body = clean_text(main.get_text(separator=" "))
+    price = _find_price(body)
 
     return ScrapedDoc(
         doc_id="",

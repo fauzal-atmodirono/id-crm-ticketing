@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { postVoiceTurn } from '@/features/voice/api/voice.api';
+import { openAgentStream } from '@/features/chat/api/chat.api';
+import type { AgentMessageEvent } from '@/features/chat/types';
+import { postVoiceTurn, postVoiceTts } from '@/features/voice/api/voice.api';
 import type { HandoffPayload } from '@/features/chat/types';
 import type { VoiceEntry } from '@/features/voice/types';
 
@@ -18,7 +20,62 @@ export const useVoiceStore = defineStore('voice', () => {
   const phase = ref<ConversationPhase>('idle');
   const handoff = ref<HandoffPayload | null>(null);
 
+  let agentStream: EventSource | null = null;
+
+  function closeAgentStream(): void {
+    if (agentStream) {
+      agentStream.close();
+      agentStream = null;
+    }
+  }
+
+  function attachAgentStream(): void {
+    closeAgentStream();
+    const source = openAgentStream(sessionId.value);
+    source.addEventListener('agent_message', async (e: MessageEvent<string>) => {
+      try {
+        const evt = JSON.parse(e.data) as AgentMessageEvent;
+        phase.value = 'processing';
+        
+        // Fetch synthesized audio for the agent text
+        const audioBlob = await postVoiceTts(evt.text, 'en-US');
+        const replyUrl = URL.createObjectURL(audioBlob);
+
+        entries.value.push({
+          kind: 'assistant',
+          text: evt.text,
+          audioUrl: replyUrl,
+          meta: evt.author_name,
+        });
+
+        phase.value = 'speaking';
+        const audio = new Audio(replyUrl);
+        audio.addEventListener('ended', () => {
+          if (phase.value === 'speaking') phase.value = 'idle';
+        });
+        audio.addEventListener('error', () => {
+          if (phase.value === 'speaking') phase.value = 'idle';
+        });
+        await audio.play();
+      } catch (err) {
+        phase.value = 'idle';
+      }
+    });
+    
+    source.addEventListener('error', () => {
+      if (source.readyState === EventSource.CLOSED) {
+        entries.value.push({
+          kind: 'system',
+          text: 'Live agent connection lost — refresh to reconnect.',
+        });
+      }
+    });
+    
+    agentStream = source;
+  }
+
   function resetSession(): void {
+    closeAgentStream();
     sessionId.value = `voice-${Math.floor(Math.random() * 9999)}`;
     entries.value = [{ kind: 'system', text: `New session: ${sessionId.value}` }];
     phase.value = 'idle';
@@ -49,11 +106,19 @@ export const useVoiceStore = defineStore('voice', () => {
         const summary = result.handoff.summary ?? result.handoff.reason;
         entries.value.push({
           kind: 'system',
-          text:
-            `Escalated to a human agent. ${summary}\n\n` +
-            `Switch to the Chat tab to keep talking with them — the agent's replies appear there in real time.`,
+          text: `Escalated to a human agent. ${summary}`,
         });
         handoff.value = result.handoff;
+        phase.value = 'idle';
+        if (result.handoff.live_chat_available) {
+          attachAgentStream();
+        }
+      } else if (result.forwardedToAgent) {
+        // Update user voice entry to show the transcribed text
+        const lastEntry = entries.value[entries.value.length - 1];
+        if (lastEntry && lastEntry.kind === 'user') {
+          lastEntry.text = result.userTranscription || '[voice message forwarded]';
+        }
         phase.value = 'idle';
       } else if (result.audioBlob.size > 0) {
         const replyUrl = URL.createObjectURL(result.audioBlob);

@@ -21,8 +21,11 @@ def filter_urls(urls: list[str], settings: ScraperSettings) -> list[str]:
     for url in urls:
         if any(s in url for s in settings.deny_substrings):
             continue
+        # Empty allow_prefixes => crawl everything (deny-list still applies).
         path = urlparse(url).path
-        if not any(path.startswith(p) for p in settings.allow_prefixes):
+        if settings.allow_prefixes and not any(
+            path.startswith(p) for p in settings.allow_prefixes
+        ):
             continue
         if url not in kept:
             kept.append(url)

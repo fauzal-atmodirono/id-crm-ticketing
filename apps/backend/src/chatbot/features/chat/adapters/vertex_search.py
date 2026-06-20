@@ -90,12 +90,16 @@ class VertexAISearchAdapter(KnowledgePort):
                     if not content:
                         content = f"See: {title}"
 
-                    raw_images = struct_data.get("image_urls") or []
-                    image_urls = (
-                        [str(u) for u in raw_images]
-                        if isinstance(raw_images, list)
-                        else []
-                    )
+                    # Vertex returns repeated fields as a protobuf
+                    # RepeatedComposite (not a list), so accept any non-string
+                    # iterable rather than checking `isinstance(..., list)`.
+                    raw_images = struct_data.get("image_urls")
+                    image_urls: list[str] = []
+                    if raw_images is not None and not isinstance(raw_images, str | bytes):
+                        try:
+                            image_urls = [str(u) for u in raw_images]
+                        except TypeError:
+                            image_urls = []
                     articles.append(
                         KbArticle(
                             title=title,

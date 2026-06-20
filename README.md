@@ -39,7 +39,7 @@ Decisions live as ADRs:
 proton-conversational-ai/
 ├── apps/
 │   ├── backend/                          # Python FastAPI service
-│   │   ├── scripts/scrape_proton.py      # KB scraper → JSONL Documents → Vertex AI Search
+│   │   ├── src/scraper/                   # Render-first KB scraper → JSONL Documents → Vertex AI Search
 │   │   └── src/chatbot/
 │   │       ├── main.py                   FastAPI bootstrap, DI, CORS, store/bridge wiring
 │   │       ├── platform/                 Config, structlog, ASGI setup

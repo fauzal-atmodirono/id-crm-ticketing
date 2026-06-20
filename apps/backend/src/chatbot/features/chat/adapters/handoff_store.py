@@ -12,6 +12,7 @@ Two implementations:
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -31,10 +32,29 @@ class InMemoryHandoffStore(HandoffStorePort):
     def __init__(self) -> None:
         self._session_to_conv: dict[str, str] = {}
         self._conv_to_session: dict[str, str] = {}
+        self._transcripts: dict[str, list[dict[str, Any]]] = {}
 
-    async def register(self, session_id: str, conversation_id: str) -> None:
+    async def register(
+        self,
+        session_id: str,
+        conversation_id: str,
+        transcript: list[dict[str, Any]] | None = None,
+    ) -> None:
         self._session_to_conv[session_id] = conversation_id
         self._conv_to_session[conversation_id] = session_id
+        if transcript:
+            self._transcripts[session_id] = list(transcript)
+        else:
+            self._transcripts[session_id] = []
+
+    async def save_message(self, session_id: str, role: str, text: str) -> None:
+        if session_id not in self._transcripts:
+            self._transcripts[session_id] = []
+        self._transcripts[session_id].append({
+            "role": role,
+            "text": text,
+            "timestamp": datetime.now(UTC).isoformat(),
+        })
 
     async def get_conversation_id(self, session_id: str) -> str | None:
         return self._session_to_conv.get(session_id)
@@ -46,6 +66,7 @@ class InMemoryHandoffStore(HandoffStorePort):
         conv = self._session_to_conv.pop(session_id, None)
         if conv:
             self._conv_to_session.pop(conv, None)
+        self._transcripts.pop(session_id, None)
 
 
 class FirestoreHandoffStore(HandoffStorePort):
@@ -77,16 +98,37 @@ class FirestoreHandoffStore(HandoffStorePort):
     def _collection(self) -> Any:
         return self._client.collection(self._collection_name)
 
-    async def register(self, session_id: str, conversation_id: str) -> None:
+    async def register(
+        self,
+        session_id: str,
+        conversation_id: str,
+        transcript: list[dict[str, Any]] | None = None,
+    ) -> None:
         def _write() -> None:
-            self._collection().document(session_id).set(
+            doc_data = {
+                "conversation_id": conversation_id,
+                "created_at": self._server_ts,
+            }
+            if transcript:
+                doc_data["messages"] = transcript
+            self._collection().document(session_id).set(doc_data)
+
+        await asyncio.to_thread(_write)
+
+    async def save_message(self, session_id: str, role: str, text: str) -> None:
+        def _append() -> None:
+            msg_data = {
+                "role": role,
+                "text": text,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            self._collection().document(session_id).update(
                 {
-                    "conversation_id": conversation_id,
-                    "created_at": self._server_ts,
+                    "messages": firestore.ArrayUnion([msg_data])
                 }
             )
 
-        await asyncio.to_thread(_write)
+        await asyncio.to_thread(_append)
 
     async def get_conversation_id(self, session_id: str) -> str | None:
         def _read() -> str | None:

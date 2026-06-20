@@ -57,30 +57,51 @@ class Transport:
             )
         return self._driver
 
-    def fetch(self, url: str) -> str | None:
-        time.sleep(self._settings.delay_seconds)
+    def _render(self, url: str) -> str | None:
+        """Load with Selenium and scroll to trigger lazy content (hero images,
+        brochure/pricelist PDFs, news). Returns rendered HTML or None on error.
+        """
+        try:
+            driver = self._selenium_driver()
+            driver.get(url)
+            time.sleep(self._settings.render_wait)
+            for _ in range(self._settings.scroll_passes):
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(self._settings.scroll_wait)
+            return str(driver.page_source)
+        except Exception as e:  # broad catch: Selenium can raise many error subtypes
+            _log.warning("selenium_render_failed", url=url, error=str(e))
+            return None
+
+    def _http_get(self, url: str) -> str | None:
         try:
             res = self._client.get(url)
             if res.status_code != _HTTP_OK:
                 _log.info("fetch_non_200", url=url, status=res.status_code)
                 return None
-            html = res.text
+            return res.text
         except Exception as e:  # broad catch: httpx can raise many error subtypes
             _log.warning("httpx_fetch_failed", url=url, error=str(e))
             return None
 
-        if not needs_render(html, self._settings):
-            return html
+    def fetch(self, url: str) -> str | None:
+        time.sleep(self._settings.delay_seconds)
 
-        # Fallback: render with Selenium.
-        try:
-            driver = self._selenium_driver()
-            driver.get(url)
-            time.sleep(2.0)
-            return str(driver.page_source)
-        except Exception as e:  # broad catch: Selenium can raise many error subtypes
-            _log.warning("selenium_fetch_failed", url=url, error=str(e))
-            return html  # better than nothing
+        # Render-first: Selenium + scroll captures JS/lazy content. Fall back to
+        # httpx if rendering fails (or is disabled).
+        if self._settings.render:
+            rendered = self._render(url)
+            if rendered is not None:
+                return rendered
+            return self._http_get(url)
+
+        # Render disabled: httpx, with a render fallback only when content is thin.
+        html = self._http_get(url)
+        if html is not None and needs_render(html, self._settings):
+            rendered = self._render(url)
+            if rendered is not None:
+                return rendered
+        return html
 
     def get_bytes(self, url: str) -> bytes | None:
         """Fetch raw bytes (e.g. a PDF) via the httpx client. Returns None on failure."""

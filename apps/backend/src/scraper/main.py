@@ -34,11 +34,16 @@ def cmd_scrape(settings: ScraperSettings) -> None:
             html = transport.fetch(url)
             if not html:
                 continue
+            doc = build_doc(url, html, settings, pdf_fetcher)
+            # Skip pages that strip down to no usable content (e.g. the /models
+            # index, which is all nav/cards) — they only add noise to the KB.
+            if not doc.body.strip():
+                _log.info("skipped_empty_body", url=url)
+                continue
             slug = slug_for(url)
             # Write cleaned HTML alongside the JSONL so content.uri resolves.
             html_path = html_dir / f"{slug}.html"
             html_path.write_text(clean_html_for_storage(html, url), encoding="utf-8")
-            doc = build_doc(url, html, settings, pdf_fetcher)
             docs.append(doc)
             _log.info("scraped", n=f"{i}/{len(urls)}", url=url)
     finally:

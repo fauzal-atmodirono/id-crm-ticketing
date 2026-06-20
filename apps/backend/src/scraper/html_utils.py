@@ -7,6 +7,14 @@ from bs4 import BeautifulSoup, Tag
 _CHROME_TAGS = ["script", "style", "noscript", "nav", "header", "footer", "iframe", "svg"]
 _STORAGE_STRIP_TAGS = ["script", "style", "noscript", "iframe", "svg"]
 
+# Matches class tokens used for site chrome on Proton pages, which use div-based
+# chrome (e.g. <div class="c-header"> / <div class="c-footer">) rather than
+# semantic <nav>/<header>/<footer> tags.
+_CHROME_CLASS_RE = re.compile(
+    r"^(c-)?(header|footer|nav|navbar|menu|cookie|breadcrumb)$",
+    re.IGNORECASE,
+)
+
 
 def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
@@ -34,7 +42,42 @@ def main_container(soup: BeautifulSoup) -> Tag:
 
 
 def strip_chrome(node: Tag) -> None:
+    """Remove chrome (nav, header, footer, hidden widgets) from *node* in-place.
+
+    Three passes are applied:
+
+    1. **Tag-based**: decompose ``<script>``, ``<style>``, ``<noscript>``,
+       ``<nav>``, ``<header>``, ``<footer>``, ``<iframe>``, ``<svg>``.
+    2. **Class-based**: decompose any element whose class list contains a
+       token matching ``_CHROME_CLASS_RE`` (covers Proton's div-based chrome,
+       e.g. ``c-header``, ``c-footer``).  Only the listed token prefixes are
+       checked; generic content classes are left untouched.
+    3. **Hidden widgets**: decompose elements with ``display:none`` in their
+       inline ``style`` attribute (hidden nav fly-outs and brochure drawers).
+    """
+    # Pass 1: semantic tag removal (original behaviour).
     for el in node(_CHROME_TAGS):
+        el.decompose()
+
+    # Pass 2: Proton div-based chrome (c-header, c-footer, etc.).
+    # Collect first to avoid mutating the tree while iterating.
+    chrome_els = [
+        el
+        for el in node.find_all(True)
+        if isinstance(el, Tag)
+        and any(_CHROME_CLASS_RE.match(c) for c in (el.get("class") or []))
+    ]
+    for el in chrome_els:
+        el.decompose()
+
+    # Pass 3: hidden nav fly-outs / brochure widgets (display:none).
+    hidden_els = [
+        el
+        for el in node.find_all(True)
+        if isinstance(el, Tag)
+        and "display:none" in str(el.get("style") or "").replace(" ", "").lower()
+    ]
+    for el in hidden_els:
         el.decompose()
 
 

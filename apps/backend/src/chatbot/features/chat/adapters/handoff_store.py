@@ -50,11 +50,13 @@ class InMemoryHandoffStore(HandoffStorePort):
     async def save_message(self, session_id: str, role: str, text: str) -> None:
         if session_id not in self._transcripts:
             self._transcripts[session_id] = []
-        self._transcripts[session_id].append({
-            "role": role,
-            "text": text,
-            "timestamp": datetime.now(UTC).isoformat(),
-        })
+        self._transcripts[session_id].append(
+            {
+                "role": role,
+                "text": text,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+        )
 
     async def get_conversation_id(self, session_id: str) -> str | None:
         return self._session_to_conv.get(session_id)
@@ -123,9 +125,7 @@ class FirestoreHandoffStore(HandoffStorePort):
                 "timestamp": datetime.now(UTC).isoformat(),
             }
             self._collection().document(session_id).update(
-                {
-                    "messages": firestore.ArrayUnion([msg_data])
-                }
+                {"messages": firestore.ArrayUnion([msg_data])}
             )
 
         await asyncio.to_thread(_append)
@@ -143,10 +143,7 @@ class FirestoreHandoffStore(HandoffStorePort):
     async def get_session_id(self, conversation_id: str) -> str | None:
         def _query() -> str | None:
             docs = (
-                self._collection()
-                .where("conversation_id", "==", conversation_id)
-                .limit(1)
-                .stream()
+                self._collection().where("conversation_id", "==", conversation_id).limit(1).stream()
             )
             for doc in docs:
                 doc_id: str = doc.id

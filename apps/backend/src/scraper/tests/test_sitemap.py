@@ -18,9 +18,7 @@ def test_parse_sitemap_extracts_locs() -> None:
 
 
 def test_filter_urls_restricts_when_allow_prefixes_set() -> None:
-    settings = ScraperSettings(
-        allow_prefixes=("/models",), deny_substrings=("/privacy",)
-    )
+    settings = ScraperSettings(allow_prefixes=("/models",), deny_substrings=("/privacy",))
     urls = parse_sitemap(SITEMAP)
     kept = filter_urls(urls, settings)
     assert "https://www.proton.com/models/all-new-x50" in kept

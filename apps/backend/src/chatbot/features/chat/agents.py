@@ -60,11 +60,40 @@ def build_ai_agent(
         tool_context.state["subcategory"] = subcategory
         tool_context.state["priority"] = priority
         tool_context.state["sla_minutes"] = sla_minutes
-        
+
         return (
             f"[internal] ticket classified as {category} -> {subcategory} "
             f"({priority}, SLA {sla_minutes}m)."
         )
+
+    async def book_test_drive_tool(
+        tool_context: ToolContext,
+        full_name: str,
+        phone_number: str,
+        email: str,
+        preferred_model: str,
+        preferred_dealer: str,
+    ) -> str:
+        """Register customer interest and book a test drive for a Proton vehicle.
+
+        Args:
+            tool_context: Context injected by the ADK runner.
+            full_name: The customer's full name.
+            phone_number: The customer's contact phone number.
+            email: The customer's contact email address.
+            preferred_model: The Proton model of interest (e.g. Saga, Persona, Iriz, X50, X70, X90, S70).
+            preferred_dealer: Customer's preferred dealer location or city/state.
+        """
+        lead_data = {
+            "customer_name": full_name,
+            "customer_phone": phone_number,
+            "customer_email": email,
+            "preferred_model": preferred_model,
+            "preferred_dealer": preferred_dealer,
+        }
+        tool_context.state["lead_captured"] = True
+        tool_context.state["lead_details"] = lead_data
+        return f"[internal] test drive registration processed for {full_name} ({preferred_model})."
 
     async def show_models_tool(tool_context: ToolContext, query: str) -> str:
         """Fetch Proton model cards to display as a visual carousel.
@@ -106,13 +135,6 @@ def build_ai_agent(
         tool_context.state["handoff_reason"] = reason
         return f"[internal] handoff triggered (Reason: {reason})."
 
-    # Instantiate the ADK Agent. `classify_ticket_tool` is intentionally
-    # excluded from `tools` for now — its result is stored only in
-    # tool_context.state which nothing downstream consumes, and Gemini was
-    # treating the classify call as the turn's terminal action and skipping
-    # the customer-facing text reply. It stays defined above so we can
-    # re-enable once we wire its state into the handoff payload.
-    _ = classify_ticket_tool  # keep referenced for ruff
     return Agent(
         name="support_agent",
         model=settings.gemini_model,
@@ -120,7 +142,13 @@ def build_ai_agent(
         generate_content_config=types.GenerateContentConfig(
             temperature=0.3,
         ),
-        tools=[search_kb_tool, emit_handoff_tool, show_models_tool],
+        tools=[
+            search_kb_tool,
+            emit_handoff_tool,
+            show_models_tool,
+            classify_ticket_tool,
+            book_test_drive_tool,
+        ],
     )
 
 

@@ -94,3 +94,44 @@ def test_voice_turn_returns_mp3_with_reply_header(client: TestClient) -> None:
     assert response.headers["content-type"] == "audio/mpeg"
     # FakeRunner yields nothing → reply is "" → no audio_reply, no X-Reply-Text
     assert response.content == b""
+
+
+@pytest.mark.asyncio
+async def test_zendesk_handback_webhook_success() -> None:
+    settings = get_settings()
+    chat_port = InMemoryChatAdapter()
+    ticketing_port = InMemoryTicketingAdapter()
+    knowledge_port = InMemoryKnowledgeAdapter()
+    voice_client = MockVoiceAdapter()
+
+    orchestrator = OrchestratorService(
+        settings=settings,
+        chat_port=chat_port,
+        ticketing_port=ticketing_port,
+        knowledge_port=knowledge_port,
+        tts_port=voice_client,
+        runner_factory=lambda _agent: _FakeRunner(),
+    )
+
+    app = create_app(settings)
+    app.include_router(build_chat_router(orchestrator))
+    local_client = TestClient(app)
+
+    # 1. Pause the AI
+    await ticketing_port.pause_ai_for_session("session-handback-test")
+    assert await ticketing_port.is_ai_paused("session-handback-test") is True
+
+    # 2. Call handback endpoint
+    payload = {"session_id": "session-handback-test", "status": "solved"}
+
+    # Send secret header if required by settings
+    headers = {}
+    if settings.zendesk_support_webhook_secret:
+        headers["x-proton-webhook-secret"] = settings.zendesk_support_webhook_secret
+
+    response = local_client.post("/webhooks/zendesk-handback", json=payload, headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {"status": "unpaused", "session_id": "session-handback-test"}
+
+    # 3. Verify AI is unpaused
+    assert await ticketing_port.is_ai_paused("session-handback-test") is False

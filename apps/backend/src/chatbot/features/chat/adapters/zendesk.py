@@ -56,26 +56,44 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort):
         _log.info("sending_zendesk_messaging_reply", conversation_id=conversation_id)
         try:
             async with httpx.AsyncClient() as client:
-                res = await client.post(url, json=payload, headers=self._sunshine_headers(), timeout=10.0)
+                res = await client.post(
+                    url, json=payload, headers=self._sunshine_headers(), timeout=10.0
+                )
                 res.raise_for_status()
         except Exception as e:
-            _log.error("zendesk_messaging_reply_failed", conversation_id=conversation_id, error=str(e))
+            _log.error(
+                "zendesk_messaging_reply_failed", conversation_id=conversation_id, error=str(e)
+            )
 
     # --- TicketingPort Implementation (Zendesk Support) ---
     async def create_ticket(
-        self, session_id: str, title: str, body: str, urgency: str
+        self,
+        session_id: str,
+        title: str,
+        body: str,
+        urgency: str,
+        customer_name: str | None = None,
+        customer_email: str | None = None,
+        customer_phone: str | None = None,
     ) -> str:
         subdomain = self._settings.zendesk_subdomain
         url = f"https://{subdomain}.zendesk.com/api/v2/tickets.json"
-        
+
         priority_map = {"low": "low", "medium": "normal", "high": "high", "urgent": "urgent"}
         priority = priority_map.get(urgency.lower(), "normal")
 
         # Attribute the ticket to a session-scoped pseudo-user so it isn't
         # filed under the API token owner. Zendesk auto-creates an end-user
         # for the email on first sight.
-        requester_email = f"{session_id}@proton.devoteam.example"
-        requester_name = f"Proton AI Customer ({session_id})"
+        requester_email = customer_email or f"{session_id}@proton.devoteam.example"
+        requester_name = customer_name or f"Proton AI Customer ({session_id})"
+
+        requester: dict[str, str] = {
+            "name": requester_name,
+            "email": requester_email,
+        }
+        if customer_phone:
+            requester["phone"] = customer_phone
 
         payload = {
             "ticket": {
@@ -86,17 +104,16 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort):
                 },
                 "priority": priority,
                 "external_id": session_id,
-                "requester": {
-                    "name": requester_name,
-                    "email": requester_email,
-                },
+                "requester": requester,
             }
         }
 
         _log.info("creating_zendesk_support_ticket", session_id=session_id)
         try:
             async with httpx.AsyncClient() as client:
-                res = await client.post(url, json=payload, headers=self._support_headers(), timeout=10.0)
+                res = await client.post(
+                    url, json=payload, headers=self._support_headers(), timeout=10.0
+                )
                 res.raise_for_status()
                 data = res.json()
                 return str(data.get("ticket", {}).get("id", "MOCK-ZEN-TKT"))
@@ -107,7 +124,7 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort):
     async def add_private_note(self, ticket_id: str, text: str) -> None:
         subdomain = self._settings.zendesk_subdomain
         url = f"https://{subdomain}.zendesk.com/api/v2/tickets/{ticket_id}.json"
-        
+
         payload = {
             "ticket": {
                 "comment": {
@@ -120,7 +137,9 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort):
         _log.info("adding_zendesk_private_note", ticket_id=ticket_id)
         try:
             async with httpx.AsyncClient() as client:
-                res = await client.put(url, json=payload, headers=self._support_headers(), timeout=10.0)
+                res = await client.put(
+                    url, json=payload, headers=self._support_headers(), timeout=10.0
+                )
                 res.raise_for_status()
         except Exception as e:
             _log.error("zendesk_add_private_note_failed", ticket_id=ticket_id, error=str(e))
@@ -141,24 +160,24 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort):
         subdomain = self._settings.zendesk_subdomain
         encoded_query = urllib.parse.quote(query)
         url = f"https://{subdomain}.zendesk.com/api/v2/help_center/articles/search.json?query={encoded_query}&per_page={limit}"
-        
+
         _log.info("searching_zendesk_guide", query=query)
         try:
             async with httpx.AsyncClient() as client:
-                res = await client.get(url, headers={"Content-Type": "application/json"}, timeout=10.0)
+                res = await client.get(
+                    url, headers={"Content-Type": "application/json"}, timeout=10.0
+                )
                 res.raise_for_status()
                 data = res.json()
                 results = data.get("results") or []
-                
+
                 articles = []
                 for res_item in results:
                     title = res_item.get("title") or ""
                     body = res_item.get("body") or ""
                     html_url = res_item.get("html_url")
-                    
-                    articles.append(
-                        KbArticle(title=title, content=body, url=html_url)
-                    )
+
+                    articles.append(KbArticle(title=title, content=body, url=html_url))
                 return articles
         except Exception as e:
             _log.error("zendesk_guide_search_failed", query=query, error=str(e))

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 Language = Literal["en", "ms", "zh", "unknown"]
 Sentiment = Literal["positive", "neutral", "negative"]
-HandoffReason = Literal["negative_sentiment", "keyword", "help_request", "unknown_retry_limit"]
+HandoffReason = Literal[
+    "negative_sentiment", "keyword", "help_request", "unknown_retry_limit", "sales_lead"
+]
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,8 @@ class HandoffPayload:
     # False means the session is paused but no live-chat channel is available
     # (agent will reply via the Support ticket asynchronously).
     live_chat_available: bool = False
+    lead_details: dict[str, Any] | None = None
+    classification: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,8 @@ class HandoffOpenPayload:
     transcript: tuple[Message, ...]
     urgency: Literal["low", "medium", "high"] = "medium"
     language: Language = "unknown"
+    customer_phone: str | None = None
+    preferred_model: str | None = None
 
 
 @dataclass(frozen=True)

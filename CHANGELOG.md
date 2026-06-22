@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — car sales qualification, handoff CRM user sync, and handback webhook (2026-06-22)
+
+- **Car Sales Qualification & Test-Drive Tool:** Added a new `book_test_drive_tool` in `agents.py` to capture lead information (name, phone, email, preferred model, preferred dealer) when users show intent to buy or book test drives.
+- **Ticket Classification Mandate:** Enabled `classify_ticket_tool` in the ADK agent, instructing it to classify the conversation (category, subcategory, priority) before triggering any human handoff.
+- **CRM User Profile Synchronization:** Integrated lead capture details directly into Zendesk and Sunshine Conversations user records. When handoff triggers, the customer's name, email, phone number, and preferred model are synchronized with Zendesk and Sunshine profile APIs.
+- **Zendesk Handback Webhook:** Implemented `POST /webhooks/zendesk-handback` in `router.py` to receive solved/closed ticket updates from Zendesk. The webhook automatically unpauses the AI and unregisters the handoff session to seamlessly resume AI support.
+- **Automated Tests & Quality Checks:** Added service-level lead-capture and classification tests in `test_service.py` and handback webhook routing tests in `test_router.py`. All tests, Mypy type-checking, and Ruff linting pass with zero issues.
+
 ### Added — voice handoff STT & TTS (2026-06-20)
 
 - **Voice handoff Speech-to-Text (STT) transcription:** Integrated Gemini GenAI verbatim audio transcription in `OrchestratorService.handle_voice_turn` when the session is handed off to a live agent. Transcribed text is saved to Firestore history and forwarded to Zendesk Support/Sunshine conversations inline.

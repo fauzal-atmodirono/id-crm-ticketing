@@ -76,10 +76,17 @@ class ChatwootZammadAdapter(ChatPort, TicketingPort):
 
     # --- TicketingPort Implementation ---
     async def create_ticket(
-        self, session_id: str, title: str, body: str, urgency: str
+        self,
+        session_id: str,
+        title: str,
+        body: str,
+        urgency: str,
+        customer_name: str | None = None,  # noqa: ARG002
+        customer_email: str | None = None,  # noqa: ARG002
+        customer_phone: str | None = None,  # noqa: ARG002
     ) -> str:
         conv_id = session_id.replace("chatwoot-conv-", "")
-        
+
         priority_map = {"low": 1, "medium": 2, "high": 3, "urgent": 3}
         prio_id = priority_map.get(urgency.lower(), 2)
 
@@ -99,14 +106,14 @@ class ChatwootZammadAdapter(ChatPort, TicketingPort):
         }
         _log.info("creating_zammad_ticket", session_id=session_id)
         res = await self._zammad_request("POST", path, payload)
-        
+
         ticket_id = "MOCK-ZAM-TKT"
         if res and "id" in res:
             ticket_id = str(res["id"])
 
         cw_path = f"/api/v1/accounts/{self._settings.chatwoot_account_id}/conversations/{conv_id}"
         await self._chatwoot_request("PUT", cw_path, {"status": "open"})
-        
+
         return ticket_id
 
     async def add_private_note(self, ticket_id: str, text: str) -> None:

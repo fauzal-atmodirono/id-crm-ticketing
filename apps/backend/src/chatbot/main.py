@@ -55,6 +55,8 @@ def bootstrap_application() -> FastAPI:
             "X-Handoff-Urgency",
             "X-Handoff-Language",
             "X-Handoff-Live-Chat",
+            "X-User-Transcription",
+            "X-Forwarded-To-Agent",
         ],
     )
 
@@ -93,11 +95,7 @@ def bootstrap_application() -> FastAPI:
     # SC keys still boot.
     human_agent_bridge: HumanAgentBridgePort | None = None
     handoff_bridge: HandoffBridge | None = None
-    if (
-        settings.zendesk_app_id
-        and settings.zendesk_key_id
-        and settings.zendesk_secret_key
-    ):
+    if settings.zendesk_app_id and settings.zendesk_key_id and settings.zendesk_secret_key:
         human_agent_bridge = SunshineConversationsAdapter(settings)
         handoff_bridge = HandoffBridge(store=build_handoff_store(settings))
 

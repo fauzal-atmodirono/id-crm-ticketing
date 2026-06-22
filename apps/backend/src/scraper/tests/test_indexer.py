@@ -16,8 +16,14 @@ def test_slug_and_doc_id() -> None:
 def test_write_jsonl(tmp_path: Path) -> None:
     docs = [
         ScrapedDoc(
-            doc_id="d1", title="t", link="u", source_type="model",
-            language="en", body="b", gcs_uri="gs://x/d1.html", price="RM 1",
+            doc_id="d1",
+            title="t",
+            link="u",
+            source_type="model",
+            language="en",
+            body="b",
+            gcs_uri="gs://x/d1.html",
+            price="RM 1",
         )
     ]
     out = tmp_path / "out.jsonl"

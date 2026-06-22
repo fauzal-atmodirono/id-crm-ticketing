@@ -70,3 +70,8 @@ class ZendeskSupportWebhookPayload(BaseModel):
 class TtsRequest(BaseModel):
     text: str
     language: str = "en-US"
+
+
+class ZendeskHandbackPayload(BaseModel):
+    session_id: str
+    status: str | None = None

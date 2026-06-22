@@ -187,13 +187,19 @@ class SunshineConversationsAdapter(HumanAgentBridgePort):
         # POST /users is idempotent on externalId — Sunshine will 409 if the user
         # already exists; treat that as success.
         url = f"{self.BASE}/apps/{self._app_id}/users"
+        profile: dict[str, Any] = {
+            "givenName": payload.customer_name,
+            "email": payload.customer_email,
+            "locale": payload.language if payload.language != "unknown" else "en",
+        }
+        if payload.customer_phone:
+            profile["phones"] = [{"type": "mobile", "value": payload.customer_phone}]
+        if payload.preferred_model:
+            profile["metadata"] = {"preferred_model": payload.preferred_model}
+
         body = {
             "externalId": external_id,
-            "profile": {
-                "givenName": payload.customer_name,
-                "email": payload.customer_email,
-                "locale": payload.language if payload.language != "unknown" else "en",
-            },
+            "profile": profile,
         }
         res = await client.post(url, json=body, headers=self._headers())
         if res.status_code == HTTPStatus.CONFLICT:

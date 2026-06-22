@@ -98,10 +98,21 @@ export const useVoiceStore = defineStore('voice', () => {
       text: `[voice · ${Math.round(blob.size / 1024)} kB]`,
       audioUrl: userAudioUrl,
     });
+    // Capture the *reactive proxy* for this entry synchronously (no await yet, so
+    // it is guaranteed to be the one we just pushed). Mutating this proxy later
+    // triggers re-render and is immune to the agent SSE stream pushing entries in
+    // between — unlike re-reading "the last entry" after the await.
+    const userEntry = entries.value[entries.value.length - 1]!;
     isSending.value = true;
     phase.value = 'processing';
     try {
       const result = await postVoiceTurn(sessionId.value, blob);
+
+      // Replace the placeholder with the transcribed text if available.
+      if (result.userTranscription) {
+        userEntry.text = result.userTranscription;
+      }
+
       if (result.handoff) {
         const summary = result.handoff.summary ?? result.handoff.reason;
         entries.value.push({
@@ -114,10 +125,10 @@ export const useVoiceStore = defineStore('voice', () => {
           attachAgentStream();
         }
       } else if (result.forwardedToAgent) {
-        // Update user voice entry to show the transcribed text
-        const lastEntry = entries.value[entries.value.length - 1];
-        if (lastEntry && lastEntry.kind === 'user') {
-          lastEntry.text = result.userTranscription || '[voice message forwarded]';
+        // Forwarded to a live agent but transcription came back empty — leave a
+        // readable placeholder rather than the raw "[voice · N kB]" byte count.
+        if (userEntry.text.startsWith('[')) {
+          userEntry.text = result.userTranscription || '[voice message forwarded]';
         }
         phase.value = 'idle';
       } else if (result.audioBlob.size > 0) {

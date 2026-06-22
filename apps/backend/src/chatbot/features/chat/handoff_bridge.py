@@ -30,8 +30,8 @@ class HandoffBridge:
         self._store = store
         self._session_cache: dict[str, str] = {}
         self._conv_cache: dict[str, str] = {}
-        self._subscribers: dict[str, list[asyncio.Queue[AgentMessageEvent | None]]] = (
-            defaultdict(list)
+        self._subscribers: dict[str, list[asyncio.Queue[AgentMessageEvent | None]]] = defaultdict(
+            list
         )
 
     # --- Registration --------------------------------------------------------

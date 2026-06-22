@@ -11,6 +11,7 @@ This test uses a synthetic fixture that mimics the real pattern:
 
 After the fix the Persona page must yield RM 47,800, not RM 89,800.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

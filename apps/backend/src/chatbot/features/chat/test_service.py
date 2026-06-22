@@ -208,3 +208,100 @@ async def test_handle_voice_turn_happy_path() -> None:
     assert result.reply == reply_text
     # Verify voice synthesis output (MockVoiceAdapter echoes code + text)
     assert audio_reply == b"mock_voice_audio:en-US:This is a voice reply."
+
+
+class _FakeLeadRunner:
+    """Fake ADK Runner that sets lead capture and ticket classification states."""
+
+    def __init__(self, reply: str, session_service: Any, session_id: str) -> None:
+        self._reply = reply
+        self._session_service = session_service
+        self._session_id = session_id
+
+    async def run_async(self, **_: Any) -> AsyncIterator[_FakeEvent]:
+        session = self._session_service.sessions["chatbot"][self._session_id][self._session_id]
+        session.state["handoff_triggered"] = True
+        session.state["handoff_reason"] = "sales_lead"
+        session.state["lead_captured"] = True
+        session.state["lead_details"] = {
+            "customer_name": "Ahmad Ali",
+            "customer_phone": "60123456789",
+            "customer_email": "ahmad@example.com",
+            "preferred_model": "Proton X50",
+            "preferred_dealer": "Proton Edar Glenmarie",
+        }
+        session.state["category"] = "Sales"
+        session.state["subcategory"] = "Test Drive Booking"
+        session.state["priority"] = "HIGH"
+        session.state["sla_minutes"] = 120
+
+        yield _FakeEvent(self._reply)
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_triggers_escalation_with_lead_and_classification() -> None:
+    settings = get_settings()
+    chat_port = InMemoryChatAdapter()
+    ticketing_port = InMemoryTicketingAdapter()
+    knowledge_port = InMemoryKnowledgeAdapter()
+    voice_client = MockVoiceAdapter()
+
+    summarizer_output = json.dumps(
+        {
+            "summary": "Customer wishes to book a test drive for a Proton X50.",
+            "urgency": "high",
+            "language": "ms",
+        }
+    )
+
+    runner_calls = 0
+
+    def fake_runner_factory(_agent: Any) -> Any:
+        nonlocal runner_calls
+        runner_calls += 1
+        if runner_calls == 1:
+            return _FakeLeadRunner(
+                reply="Registering your interest now.",
+                session_service=svc._adk_sessions,
+                session_id="s4",
+            )
+        return _FakeRunner(
+            reply=summarizer_output, session_service=svc._adk_sessions, session_id="sum-s4"
+        )
+
+    svc = OrchestratorService(
+        settings=settings,
+        chat_port=chat_port,
+        ticketing_port=ticketing_port,
+        knowledge_port=knowledge_port,
+        tts_port=voice_client,
+        runner_factory=fake_runner_factory,
+    )
+
+    result = await svc.handle_turn(session_id="s4", text="I want to test drive the X50")
+
+    handoff = result.handoff
+    assert handoff is not None
+    assert handoff.reason == "sales_lead"
+    assert handoff.urgency == "high"
+    assert handoff.language == "ms"
+    
+    lead = handoff.lead_details
+    assert lead is not None
+    assert lead["customer_name"] == "Ahmad Ali"
+    
+    cls_details = handoff.classification
+    assert cls_details is not None
+    assert cls_details["category"] == "Sales"
+    assert cls_details["priority"] == "HIGH"
+
+    # Verify Ticketing adapter actions
+    assert len(ticketing_port.tickets) == 1
+    tkt_id = next(iter(ticketing_port.tickets.keys()))
+    tkt = ticketing_port.tickets[tkt_id]
+    assert tkt["customer_name"] == "Ahmad Ali"
+    assert tkt["customer_email"] == "ahmad@example.com"
+    assert tkt["customer_phone"] == "60123456789"
+    assert "Ahmad Ali" in tkt["body"]
+    assert "Glenmarie" in tkt["body"]
+    assert "Category: Sales" in ticketing_port.notes[tkt_id][0]

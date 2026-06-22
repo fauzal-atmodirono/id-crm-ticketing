@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from chatbot.features.chat.models import KbArticle
 from chatbot.features.chat.ports import ChatPort, KnowledgePort, TextToSpeechPort, TicketingPort
 
@@ -18,12 +20,21 @@ class InMemoryTicketingAdapter(TicketingPort):
     """In-memory TicketingPort simulating ticket lifecycles and handoff pauses."""
 
     def __init__(self) -> None:
-        self.tickets: dict[str, dict[str, str]] = {}
+        self.tickets: dict[str, dict[str, Any]] = {}
         self.notes: dict[str, list[str]] = {}
         self.paused_sessions: set[str] = set()
         self.ticket_counter = 0
 
-    async def create_ticket(self, session_id: str, title: str, body: str, urgency: str) -> str:
+    async def create_ticket(
+        self,
+        session_id: str,
+        title: str,
+        body: str,
+        urgency: str,
+        customer_name: str | None = None,
+        customer_email: str | None = None,
+        customer_phone: str | None = None,
+    ) -> str:
         self.ticket_counter += 1
         ticket_id = f"TKT-MOCK-{self.ticket_counter:03d}"
         self.tickets[ticket_id] = {
@@ -32,6 +43,9 @@ class InMemoryTicketingAdapter(TicketingPort):
             "body": body,
             "urgency": urgency,
             "status": "new",
+            "customer_name": customer_name,
+            "customer_email": customer_email,
+            "customer_phone": customer_phone,
         }
         return ticket_id
 

@@ -26,7 +26,8 @@ class _FakeClient:
     def __init__(self, response: _FakeResponse) -> None:
         self._response = response
 
-    def get(self, url: str) -> _FakeResponse:          return self._response
+    def get(self, url: str) -> _FakeResponse:
+        return self._response
 
     def close(self) -> None:
         pass
@@ -53,7 +54,8 @@ def test_get_bytes_returns_none_on_non_200() -> None:
 
 def test_get_bytes_returns_none_on_exception() -> None:
     class _ErrorClient:
-        def get(self, url: str) -> _FakeResponse:              raise ConnectionError("network down")
+        def get(self, url: str) -> _FakeResponse:
+            raise ConnectionError("network down")
 
         def close(self) -> None:
             pass

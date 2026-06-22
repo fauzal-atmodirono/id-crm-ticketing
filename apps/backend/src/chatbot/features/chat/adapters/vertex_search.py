@@ -30,15 +30,15 @@ class VertexAISearchAdapter(KnowledgePort):
             limit: Maximum search results to return.
         """
         _log.info("searching_vertex_ai_search", query=query, limit=limit)
-        
+
         try:
             # Note: client init can be cached if needed, but creating it is lightweight.
-            # We don't make async calls inside Google clients directly unless using an async stub, 
-            # so we run it synchronously (or in a threadpool if it blocks the loop). 
-            # FastAPI's route handler is async, but calling synchronous library methods works fine 
+            # We don't make async calls inside Google clients directly unless using an async stub,
+            # so we run it synchronously (or in a threadpool if it blocks the loop).
+            # FastAPI's route handler is async, but calling synchronous library methods works fine
             # for low concurrency. To prevent blocking the main event loop, we can run it in a separate thread.
             import asyncio
-            
+
             def run_search() -> list[KbArticle]:
                 client = discoveryengine.SearchServiceClient()
 
@@ -58,9 +58,7 @@ class VertexAISearchAdapter(KnowledgePort):
                     # overrides `link` with the GCS URI, which is useless to
                     # the agent — prefer ours, fall back to Vertex's view.
                     struct_data = dict(doc.struct_data) if doc.struct_data else {}
-                    derived_data = (
-                        dict(doc.derived_struct_data) if doc.derived_struct_data else {}
-                    )
+                    derived_data = dict(doc.derived_struct_data) if doc.derived_struct_data else {}
 
                     title = (
                         struct_data.get("title")
@@ -127,7 +125,7 @@ class VertexAISearchAdapter(KnowledgePort):
 
             # Execute run_search in the default event loop executor to prevent blocking the async event loop
             return await asyncio.to_thread(run_search)
-            
+
         except Exception as e:
             _log.error("vertex_ai_search_failed", query=query, error=str(e))
             return []

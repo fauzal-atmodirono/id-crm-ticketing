@@ -18,6 +18,7 @@ from chatbot.features.chat.ports import HumanAgentBridgePort
 from chatbot.features.chat.schemas import (
     ChatwootWebhookPayload,
     TtsRequest,
+    ZendeskHandbackPayload,
     ZendeskSupportWebhookPayload,
     ZendeskWebhookPayload,
 )
@@ -49,6 +50,8 @@ def _handoff_dict(turn_result: Any) -> dict[str, Any] | None:
         "summary": turn_result.handoff.summary,
         "urgency": turn_result.handoff.urgency,
         "live_chat_available": turn_result.handoff.live_chat_available,
+        "lead_details": turn_result.handoff.lead_details,
+        "classification": turn_result.handoff.classification,
     }
 
 
@@ -84,6 +87,9 @@ class ChatRouter:
         self.router.add_api_route("/webhooks/sunshine", self.sunshine_webhook, methods=["POST"])
         self.router.add_api_route(
             "/webhooks/zendesk-support", self.zendesk_support_webhook, methods=["POST"]
+        )
+        self.router.add_api_route(
+            "/webhooks/zendesk-handback", self.zendesk_handback_webhook, methods=["POST"]
         )
         self.router.add_api_route(
             "/chat/turn",
@@ -241,6 +247,38 @@ class ChatRouter:
         await self._handoff_bridge.publish(event)
         _log.info("zendesk_support_webhook_processed", session_id=session_id)
         return {"status": "ok"}
+
+    async def zendesk_handback_webhook(
+        self,
+        payload: ZendeskHandbackPayload,
+        x_proton_webhook_secret: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        """Receive a Zendesk/CRM ticket status update webhook.
+
+        When a ticket is resolved or closed, this webhook unpauses the AI
+        for the session so the bot takes back control of subsequent messages.
+        """
+        expected_secret = self.orchestrator._settings.zendesk_support_webhook_secret
+        if expected_secret and (
+            not x_proton_webhook_secret or x_proton_webhook_secret != expected_secret
+        ):
+            _log.warning("zendesk_handback_webhook_signature_invalid")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
+        session_id = payload.session_id
+        if not session_id or not session_id.strip():
+            return {"status": "ignored"}
+
+        _log.info("zendesk_handback_webhook_received", session_id=session_id, status=payload.status)
+
+        # Unpause AI for the session
+        await self.orchestrator._ticketing_port.unpause_ai_for_session(session_id)
+
+        # If we have a handoff bridge, unregister the session so the stream is closed
+        if self._handoff_bridge is not None:
+            await self._handoff_bridge.unregister(session_id)
+
+        return {"status": "unpaused", "session_id": session_id}
 
     # --- Frontend-facing API (consumed by the Vue app) ----------------------
 

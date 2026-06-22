@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CRM User Profile Synchronization:** Integrated lead capture details directly into Zendesk and Sunshine Conversations user records. When handoff triggers, the customer's name, email, phone number, and preferred model are synchronized with Zendesk and Sunshine profile APIs.
 - **Zendesk Handback Webhook:** Implemented `POST /webhooks/zendesk-handback` in `router.py` to receive solved/closed ticket updates from Zendesk. The webhook automatically unpauses the AI and unregisters the handoff session to seamlessly resume AI support.
 - **Automated Tests & Quality Checks:** Added service-level lead-capture and classification tests in `test_service.py` and handback webhook routing tests in `test_router.py`. All tests, Mypy type-checking, and Ruff linting pass with zero issues.
+- **Mock Customer Seeding Script:** Added `import_mock_users.py` and `test_zendesk_auth.py` in `apps/backend/scripts/` to generate 100 randomized Malaysian mock customer profiles (containing ethnic names, phone numbers, and vehicle interest/buyer status tags) and import them concurrently via the Zendesk API.
 
 ### Added — voice handoff STT & TTS (2026-06-20)
 

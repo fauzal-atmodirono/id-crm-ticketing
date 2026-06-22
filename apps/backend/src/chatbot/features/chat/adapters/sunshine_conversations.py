@@ -203,6 +203,17 @@ class SunshineConversationsAdapter(HumanAgentBridgePort):
         }
         res = await client.post(url, json=body, headers=self._headers())
         if res.status_code == HTTPStatus.CONFLICT:
+            # User already exists, update their profile
+            patch_url = f"{self.BASE}/apps/{self._app_id}/users/{external_id}"
+            patch_body = {"profile": profile}
+            patch_res = await client.patch(patch_url, json=patch_body, headers=self._headers())
+            if patch_res.status_code >= HTTPStatus.BAD_REQUEST:
+                _log.error(
+                    "sunshine_update_user_failed",
+                    status=patch_res.status_code,
+                    body=patch_res.text[:300],
+                )
+                patch_res.raise_for_status()
             return
         if res.status_code >= HTTPStatus.BAD_REQUEST:
             _log.error("sunshine_upsert_user_failed", status=res.status_code, body=res.text[:300])

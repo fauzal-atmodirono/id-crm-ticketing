@@ -423,7 +423,7 @@ class OrchestratorService:
         # 2. Extract recent transcript history for context
         history = self._history.get(session_id, [])
         chat_log = []
-        for msg in history[-6:]:
+        for msg in history:
             chat_log.append({"role": msg.role, "text": msg.text})
 
         # 3. Call summarizer agent to generate structured details

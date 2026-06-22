@@ -263,9 +263,7 @@ class OrchestratorService:
                     text_to_forward = transcription or "[audio]"
                     # Append user message to history
                     self._history.setdefault(session_id, []).append(
-                        Message(
-                            role="user", text=text_to_forward, timestamp=datetime.now(UTC)
-                        )
+                        Message(role="user", text=text_to_forward, timestamp=datetime.now(UTC))
                     )
                     # Forward message to Sunshine/Zendesk agent
                     await self._human_agent_bridge.forward_customer_message(
@@ -274,9 +272,7 @@ class OrchestratorService:
                         text=text_to_forward,
                     )
                     # Save message to Firestore
-                    await self._handoff_bridge.save_message(
-                        session_id, "user", text_to_forward
-                    )
+                    await self._handoff_bridge.save_message(session_id, "user", text_to_forward)
 
                     return b"", TurnResult(
                         reply=None,
@@ -409,7 +405,7 @@ class OrchestratorService:
         # 2. Extract recent transcript history for context
         history = self._history.get(session_id, [])
         chat_log = []
-        for msg in history[-6:]:
+        for msg in history:
             chat_log.append({"role": msg.role, "text": msg.text})
 
         # 3. Call summarizer agent to generate structured details
@@ -443,6 +439,26 @@ class OrchestratorService:
         except Exception as e:
             _log.warning("handoff_summarization_failed", error=str(e))
 
+        # Retrieve ADK session state to gather tools modifications
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        session_state = session.state if session else {}
+        lead_details = session_state.get("lead_details") or {}
+
+        # Override urgency if ticket classification priority is set
+        priority = session_state.get("priority")
+        if priority:
+            priority_mapping = {
+                "low": "low",
+                "medium": "medium",
+                "high": "high",
+                "normal": "medium",
+                "urgent": "high",
+                "critical": "high",
+            }
+            urgency = priority_mapping.get(priority.lower(), urgency)
+
         # 4. Open a live Sunshine Conversations bridge (if configured) so the
         #    customer can continue talking to the agent inside our own UI.
         live_chat_available = await self._open_live_bridge(
@@ -451,6 +467,7 @@ class OrchestratorService:
             urgency=urgency,
             language=lang,
             chat_log=chat_log,
+            lead_details=lead_details,
         )
 
         ticket_id = None
@@ -461,21 +478,44 @@ class OrchestratorService:
                 f"Reason: {reason}\n"
                 f"Urgency: {urgency.upper()}\n"
                 f"Transcript Summary: {summary_text}\n\n"
-                f"Recent Transcript Logs:\n"
             )
+            if lead_details:
+                body += (
+                    "--- CUSTOMER LEAD DETAILS ---\n"
+                    f"Name: {lead_details.get('customer_name')}\n"
+                    f"Phone: {lead_details.get('customer_phone')}\n"
+                    f"Email: {lead_details.get('customer_email')}\n"
+                    f"Preferred Model: {lead_details.get('preferred_model')}\n"
+                    f"Preferred Dealer: {lead_details.get('preferred_dealer')}\n"
+                    "-----------------------------\n\n"
+                )
+
+            body += "Recent Transcript Logs:\n"
             for log_msg in chat_log:
                 body += f"- {log_msg['role'].upper()}: {log_msg['text']}\n"
 
             ticket_id = await self._ticketing_port.create_ticket(
-                session_id=session_id, title=title, body=body, urgency=urgency
+                session_id=session_id,
+                title=title,
+                body=body,
+                urgency=urgency,
+                customer_name=lead_details.get("customer_name"),
+                customer_email=lead_details.get("customer_email"),
+                customer_phone=lead_details.get("customer_phone"),
             )
 
             # Add private note banner
             note_content = (
                 f"⚠️ AI ASSISTANT SUMMARY:\n"
                 f"{summary_text}\n\n"
-                f"Urgency: {urgency.upper()} | Language: {lang.upper()}"
+                f"Urgency: {urgency.upper()} | Language: {lang.upper()}\n"
             )
+            category = session_state.get("category")
+            if category:
+                note_content += (
+                    f"Category: {category} | Subcategory: {session_state.get('subcategory')}\n"
+                    f"Priority: {session_state.get('priority')} | SLA: {session_state.get('sla_minutes')}m\n"
+                )
             await self._ticketing_port.add_private_note(ticket_id=ticket_id, text=note_content)
 
         _log.info(
@@ -490,6 +530,15 @@ class OrchestratorService:
             summary=summary_text,
             urgency=urgency,  # type: ignore[arg-type]
             live_chat_available=live_chat_available,
+            lead_details=lead_details or None,
+            classification={
+                "category": session_state.get("category"),
+                "subcategory": session_state.get("subcategory"),
+                "priority": session_state.get("priority"),
+                "sla_minutes": session_state.get("sla_minutes"),
+            }
+            if session_state.get("category")
+            else None,
         )
 
     async def _open_live_bridge(
@@ -499,6 +548,7 @@ class OrchestratorService:
         urgency: str,
         language: str,
         chat_log: list[dict[str, str]],
+        lead_details: dict[str, Any] | None = None,
     ) -> bool:
         if self._human_agent_bridge is None or self._handoff_bridge is None:
             return False
@@ -507,14 +557,23 @@ class OrchestratorService:
             Message(role=entry["role"], text=entry["text"], timestamp=datetime.now(UTC))  # type: ignore[arg-type]
             for entry in chat_log
         )
+
+        lead = lead_details or {}
+        customer_name = lead.get("customer_name") or f"Proton AI Customer ({session_id})"
+        customer_email = lead.get("customer_email") or f"{session_id}@proton.devoteam.example"
+        customer_phone = lead.get("customer_phone")
+        preferred_model = lead.get("preferred_model")
+
         payload = HandoffOpenPayload(
             session_id=session_id,
-            customer_name=f"Proton AI Customer ({session_id})",
-            customer_email=f"{session_id}@proton.devoteam.example",
+            customer_name=customer_name,
+            customer_email=customer_email,
             ai_summary=summary_text,
             transcript=transcript,
             urgency=urgency,  # type: ignore[arg-type]
             language=language,  # type: ignore[arg-type]
+            customer_phone=customer_phone,
+            preferred_model=preferred_model,
         )
 
         try:

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted } from 'vue';
+import { renderMarkdown } from '@/features/chat/markdown';
 import { useVoiceStore } from '@/features/voice/store/voice.store';
 
 const voice = useVoiceStore();
@@ -68,7 +69,12 @@ onMounted(() => {
     >
       <header class="who">{{ entry.kind }}</header>
       <div class="bubble-container">
-        <p class="text">{{ entry.text }}</p>
+        <p
+          v-if="entry.kind === 'assistant'"
+          class="text md"
+          v-html="renderMarkdown(entry.text)"
+        ></p>
+        <p v-else class="text">{{ entry.text }}</p>
         <button 
           v-if="entry.audioUrl" 
           class="play-btn" 
@@ -196,5 +202,33 @@ onMounted(() => {
   border-style: dashed;
   color: var(--text-muted);
   font-size: 0.85rem;
+}
+
+.entry.agent .who { color: #c4b5fd; }
+.entry.agent .text {
+  background: linear-gradient(180deg, rgba(168, 85, 247, 0.1), rgba(168, 85, 247, 0.04));
+  border-color: rgba(168, 85, 247, 0.45);
+}
+
+/* Markdown-rendered replies: marked emits its own block elements, so drop the
+   pre-wrap used for literal text and style the generated nodes instead. */
+.text.md {
+  white-space: normal;
+}
+.text.md :first-child { margin-top: 0; }
+.text.md :last-child { margin-bottom: 0; }
+.text.md :where(p, ul, ol) { margin: 0.5rem 0; }
+.text.md :where(ul, ol) { padding-left: 1.25rem; }
+.text.md a {
+  color: var(--assistant);
+  text-decoration: underline;
+  word-break: break-word;
+}
+.text.md a:hover { text-decoration: none; }
+.text.md code {
+  background: var(--surface);
+  padding: 0.1rem 0.3rem;
+  border-radius: var(--radius-sm, 4px);
+  font-size: 0.9em;
 }
 </style>

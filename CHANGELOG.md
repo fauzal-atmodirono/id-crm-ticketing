@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — car sales qualification, handoff CRM user sync, and handback webhook (2026-06-22)
+
+- **Car Sales Qualification & Test-Drive Tool:** Added a new `book_test_drive_tool` in `agents.py` to capture lead information (name, phone, email, preferred model, preferred dealer) when users show intent to buy or book test drives.
+- **Ticket Classification Mandate:** Enabled `classify_ticket_tool` in the ADK agent, instructing it to classify the conversation (category, subcategory, priority) before triggering any human handoff.
+- **CRM User Profile Synchronization:** Integrated lead capture details directly into Zendesk and Sunshine Conversations user records. When handoff triggers, the customer's name, email, phone number, and preferred model are synchronized with Zendesk and Sunshine profile APIs.
+- **Zendesk Handback Webhook:** Implemented `POST /webhooks/zendesk-handback` in `router.py` to receive solved/closed ticket updates from Zendesk. The webhook automatically unpauses the AI and unregisters the handoff session to seamlessly resume AI support.
+- **Automated Tests & Quality Checks:** Added service-level lead-capture and classification tests in `test_service.py` and handback webhook routing tests in `test_router.py`. All tests, Mypy type-checking, and Ruff linting pass with zero issues.
+- **Mock Customer Seeding Script:** Added `import_mock_users.py` and `test_zendesk_auth.py` in `apps/backend/scripts/` to generate 100 randomized Malaysian mock customer profiles (containing ethnic names, phone numbers, and vehicle interest/buyer status tags) and import them concurrently via the Zendesk API.
+- **Frontend Cloud Run Deployment Config:** Added multi-stage `Dockerfile`, `nginx.conf.template`, `.dockerignore`, and `.gcloudignore` in `apps/frontend/` to containerize and serve Vue/Vite static assets via Nginx on Cloud Run with dynamic port binding. Deployed frontend and redeployed backend with updated CORS configuration.
+
 ### Added — voice handoff STT & TTS (2026-06-20)
 
 - **Voice Speech-to-Text (STT) transcription:** Integrated Gemini GenAI verbatim audio transcription in `OrchestratorService.handle_voice_turn` for both normal AI turns and human-agent handoffs. Transcribed text is saved to Firestore history/history lists.

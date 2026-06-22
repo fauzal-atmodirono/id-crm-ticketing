@@ -64,8 +64,7 @@ def strip_chrome(node: Tag) -> None:
     chrome_els = [
         el
         for el in node.find_all(True)
-        if isinstance(el, Tag)
-        and any(_CHROME_CLASS_RE.match(c) for c in (el.get("class") or []))
+        if isinstance(el, Tag) and any(_CHROME_CLASS_RE.match(c) for c in (el.get("class") or []))
     ]
     for el in chrome_els:
         el.decompose()

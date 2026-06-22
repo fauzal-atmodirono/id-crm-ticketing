@@ -141,9 +141,7 @@ async def test_search_kb_handles_repeated_composite_image_urls() -> None:
         "link": "https://www.proton.com/models/all-new-x50",
         "source_type": "model",
         "price": "RM 89,800",
-        "image_urls": _RepeatedComposite(
-            ["https://img/x50-a.jpg", "https://img/x50-b.jpg"]
-        ),
+        "image_urls": _RepeatedComposite(["https://img/x50-a.jpg", "https://img/x50-b.jpg"]),
         "body_excerpt": "Compact SUV.",
     }
     mock_doc.derived_struct_data = {}

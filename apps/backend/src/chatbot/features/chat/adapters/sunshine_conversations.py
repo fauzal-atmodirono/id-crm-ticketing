@@ -187,16 +187,33 @@ class SunshineConversationsAdapter(HumanAgentBridgePort):
         # POST /users is idempotent on externalId — Sunshine will 409 if the user
         # already exists; treat that as success.
         url = f"{self.BASE}/apps/{self._app_id}/users"
+        profile: dict[str, Any] = {
+            "givenName": payload.customer_name,
+            "email": payload.customer_email,
+            "locale": payload.language if payload.language != "unknown" else "en",
+        }
+        if payload.customer_phone:
+            profile["phones"] = [{"type": "mobile", "value": payload.customer_phone}]
+        if payload.preferred_model:
+            profile["metadata"] = {"preferred_model": payload.preferred_model}
+
         body = {
             "externalId": external_id,
-            "profile": {
-                "givenName": payload.customer_name,
-                "email": payload.customer_email,
-                "locale": payload.language if payload.language != "unknown" else "en",
-            },
+            "profile": profile,
         }
         res = await client.post(url, json=body, headers=self._headers())
         if res.status_code == HTTPStatus.CONFLICT:
+            # User already exists, update their profile
+            patch_url = f"{self.BASE}/apps/{self._app_id}/users/{external_id}"
+            patch_body = {"profile": profile}
+            patch_res = await client.patch(patch_url, json=patch_body, headers=self._headers())
+            if patch_res.status_code >= HTTPStatus.BAD_REQUEST:
+                _log.error(
+                    "sunshine_update_user_failed",
+                    status=patch_res.status_code,
+                    body=patch_res.text[:300],
+                )
+                patch_res.raise_for_status()
             return
         if res.status_code >= HTTPStatus.BAD_REQUEST:
             _log.error("sunshine_upsert_user_failed", status=res.status_code, body=res.text[:300])

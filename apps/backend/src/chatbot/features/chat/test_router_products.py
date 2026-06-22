@@ -9,8 +9,10 @@ def test_products_list_serializes_cards() -> None:
         reply="Here are some models:",
         products=[
             ProductCard(
-                title="X50", description="Compact SUV",
-                image_url="https://img/x50.jpg", price="RM 89,800",
+                title="X50",
+                description="Compact SUV",
+                image_url="https://img/x50.jpg",
+                price="RM 89,800",
                 url="https://www.proton.com/models/all-new-x50",
             )
         ],

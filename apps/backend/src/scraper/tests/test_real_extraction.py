@@ -4,6 +4,7 @@ The fixture is a cleaned copy of the live page saved via ``clean_html_for_storag
 It exercises the div-based chrome patterns (``c-header``, ``c-footer``,
 ``display:none`` fly-outs) that the synthetic fixtures do not cover.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

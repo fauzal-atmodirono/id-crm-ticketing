@@ -18,7 +18,11 @@ async def test_handoff_bridge_saves_transcript_and_messages() -> None:
     conv_id = "test-conv"
     initial_transcript = [
         {"role": "user", "text": "hello", "timestamp": datetime.now(UTC).isoformat()},
-        {"role": "assistant", "text": "how can I help?", "timestamp": datetime.now(UTC).isoformat()}
+        {
+            "role": "assistant",
+            "text": "how can I help?",
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
     ]
 
     # Register handoff
@@ -38,7 +42,7 @@ async def test_handoff_bridge_saves_transcript_and_messages() -> None:
         conversation_id=conv_id,
         author_name="Agent Joe",
         text="Hello, I am Joe",
-        timestamp=datetime.now(UTC)
+        timestamp=datetime.now(UTC),
     )
     await bridge.publish(event)
 

@@ -98,17 +98,19 @@ export const useVoiceStore = defineStore('voice', () => {
       text: 'Voice message',
       audioUrl: userAudioUrl,
     });
+    // Capture the *reactive proxy* for this entry synchronously (no await yet, so
+    // it is guaranteed to be the one we just pushed). Mutating this proxy later
+    // triggers re-render and is immune to the agent SSE stream pushing entries in
+    // between — unlike re-reading "the last entry" after the await.
+    const userEntry = entries.value[entries.value.length - 1]!;
     isSending.value = true;
     phase.value = 'processing';
     try {
       const result = await postVoiceTurn(sessionId.value, blob);
-      
-      // Update user voice entry to show the transcribed text if available
+
+      // Replace the placeholder with the transcribed text if available.
       if (result.userTranscription) {
-        const userEntry = [...entries.value].reverse().find(e => e.kind === 'user');
-        if (userEntry) {
-          userEntry.text = result.userTranscription;
-        }
+        userEntry.text = result.userTranscription;
       }
 
       if (result.handoff) {

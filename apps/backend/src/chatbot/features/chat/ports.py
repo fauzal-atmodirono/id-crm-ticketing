@@ -20,7 +20,16 @@ class ChatPort(Protocol):
 class TicketingPort(Protocol):
     """Port interface for ticketing and customer escalation systems (Zammad, Zendesk Support)."""
 
-    async def create_ticket(self, session_id: str, title: str, body: str, urgency: str) -> str:
+    async def create_ticket(
+        self,
+        session_id: str,
+        title: str,
+        body: str,
+        urgency: str,
+        customer_name: str | None = None,
+        customer_email: str | None = None,
+        customer_phone: str | None = None,
+    ) -> str:
         """Create a new customer ticket. Returns the created ticket's ID."""
         ...
 

@@ -187,25 +187,34 @@ class SunshineConversationsAdapter(HumanAgentBridgePort):
         # POST /users is idempotent on externalId — Sunshine will 409 if the user
         # already exists; treat that as success.
         url = f"{self.BASE}/apps/{self._app_id}/users"
+        # Sunshine's user `profile` only persists givenName/surname/email/avatarUrl/
+        # locale — `phones` and `metadata` are NOT profile fields and are silently
+        # dropped if nested there. Phone and preferred_model must travel as
+        # top-level user `metadata` instead so the agent can see them.
         profile: dict[str, Any] = {
             "givenName": payload.customer_name,
             "email": payload.customer_email,
             "locale": payload.language if payload.language != "unknown" else "en",
         }
+        metadata: dict[str, Any] = {}
         if payload.customer_phone:
-            profile["phones"] = [{"type": "mobile", "value": payload.customer_phone}]
+            metadata["customer_phone"] = payload.customer_phone
         if payload.preferred_model:
-            profile["metadata"] = {"preferred_model": payload.preferred_model}
+            metadata["preferred_model"] = payload.preferred_model
 
-        body = {
+        body: dict[str, Any] = {
             "externalId": external_id,
             "profile": profile,
         }
+        if metadata:
+            body["metadata"] = metadata
         res = await client.post(url, json=body, headers=self._headers())
         if res.status_code == HTTPStatus.CONFLICT:
-            # User already exists, update their profile
+            # User already exists, update their profile + metadata
             patch_url = f"{self.BASE}/apps/{self._app_id}/users/{external_id}"
-            patch_body = {"profile": profile}
+            patch_body: dict[str, Any] = {"profile": profile}
+            if metadata:
+                patch_body["metadata"] = metadata
             patch_res = await client.patch(patch_url, json=patch_body, headers=self._headers())
             if patch_res.status_code >= HTTPStatus.BAD_REQUEST:
                 _log.error(
@@ -249,7 +258,7 @@ class SunshineConversationsAdapter(HumanAgentBridgePort):
         payload: HandoffOpenPayload,
     ) -> None:
         transcript_lines = ["Recent conversation with the AI assistant:", ""]
-        for msg in payload.transcript[-6:]:
+        for msg in payload.transcript:
             transcript_lines.append(f"- {msg.role.upper()}: {msg.text}")
 
         summary_message = (

@@ -23,6 +23,7 @@ from chatbot.platform.config import get_settings
 def force_memory_session_store() -> None:
     get_settings().session_store = "memory"
 
+
 # --- Fake ADK runner classes to replay pre-recorded events ---
 
 

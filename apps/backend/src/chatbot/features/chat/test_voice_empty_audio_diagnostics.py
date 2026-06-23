@@ -59,6 +59,36 @@ class _FakeRunner:
         yield _FakeEvent(self._reply)
 
 
+class _FunctionCallPart:
+    """A part carrying a function call and NO text (text in parts[0] is None)."""
+
+    text = None
+    function_call = object()
+
+
+class _MultiPartContent:
+    def __init__(self, parts: list[Any]) -> None:
+        self.parts = parts
+
+
+class _MultiPartEvent:
+    def __init__(self, parts: list[Any]) -> None:
+        self.content = _MultiPartContent(parts)
+
+    def is_final_response(self) -> bool:
+        return True
+
+
+class _MultiPartRunner:
+    """Final response whose text lives AFTER a function-call part, not in parts[0]."""
+
+    def __init__(self, reply: str) -> None:
+        self._reply = reply
+
+    async def run_async(self, **_: Any) -> AsyncIterator[_MultiPartEvent]:
+        yield _MultiPartEvent([_FunctionCallPart(), _FakePart(self._reply)])
+
+
 class _EmptyBytesVoiceAdapter(TextToSpeechPort):
     """TTS that succeeds but returns zero bytes (the silent edge of case 3)."""
 
@@ -83,6 +113,19 @@ def _build_service(reply_text: str, tts_port: TextToSpeechPort) -> OrchestratorS
         runner_factory=lambda _agent: _FakeRunner(reply=reply_text),
     )
     # Skip the real Gemini transcription call; return a fixed transcription.
+    svc._transcribe_audio = _stub_transcribe  # type: ignore[method-assign,assignment]
+    return svc
+
+
+def _build_service_with_runner(runner: Any, tts_port: TextToSpeechPort) -> OrchestratorService:
+    svc = OrchestratorService(
+        settings=get_settings(),
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=InMemoryTicketingAdapter(),
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=tts_port,
+        runner_factory=lambda _agent: runner,
+    )
     svc._transcribe_audio = _stub_transcribe  # type: ignore[method-assign,assignment]
     return svc
 
@@ -147,3 +190,26 @@ async def test_tts_raises_logs_existing_diagnostic() -> None:
     assert audio_reply == b""
     assert result.reply == "Sure, here is your answer."
     assert "voice_tts_synthesis_failed" in _events(captured)
+
+
+@pytest.mark.asyncio
+async def test_reply_text_recovered_from_non_first_part() -> None:
+    """Regression: text after a function-call part must still be spoken.
+
+    Observed on voice-579 — a real transcription but no assistant reply, because
+    the loop read only parts[0].text. Scanning all parts recovers the reply so
+    audio is synthesized instead of the empty-audio message.
+    """
+    runner = _MultiPartRunner(reply="Proton X50 is an SUV.")
+    svc = _build_service_with_runner(runner, tts_port=MockVoiceAdapter())
+
+    with capture_logs() as captured:
+        audio_reply, result = await svc.handle_voice_turn(
+            session_id="diag-multipart",
+            audio_bytes=b"fake wav",
+            audio_mime_type="audio/wav",
+        )
+
+    assert result.reply == "Proton X50 is an SUV."
+    assert audio_reply != b""
+    assert "voice_turn_empty_reply_text" not in _events(captured)

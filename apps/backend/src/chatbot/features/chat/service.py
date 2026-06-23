@@ -51,6 +51,19 @@ def _cards_from_state(raw: list[dict[str, Any]]) -> list[ProductCard]:
     return cards
 
 
+def _part_kind(part: Any) -> str:
+    """Classify an ADK content Part for diagnostics (text / function_call / ...)."""
+    if getattr(part, "text", None):
+        return "text"
+    if getattr(part, "function_call", None):
+        return "function_call"
+    if getattr(part, "function_response", None):
+        return "function_response"
+    if getattr(part, "inline_data", None):
+        return "inline_data"
+    return "other"
+
+
 class OrchestratorService:
     """Core orchestrator driving conversational turns for both Chatbot and Voicebot."""
 
@@ -229,7 +242,11 @@ class OrchestratorService:
                 new_message=new_message,
             ):
                 if event.is_final_response() and event.content and event.content.parts:
-                    reply_text = event.content.parts[0].text or ""
+                    # Scan ALL parts for text — the reply can sit after a
+                    # function-call part, so reading parts[0] alone drops it.
+                    texts = [p.text for p in event.content.parts if p.text]
+                    if texts:
+                        reply_text = "".join(texts)
         except Exception as e:
             _log.exception("adk_execution_loop_failed", session_id=session_id, error=str(e))
             return TurnResult(reply="Maaf, terjadi kendala teknis. Mohon coba beberapa saat lagi.")
@@ -398,6 +415,8 @@ class OrchestratorService:
 
         runner = self._runner_factory(self._support_agent)
         reply_text: str | None = ""
+        final_event_seen = False
+        final_part_kinds: list[str] = []
         try:
             async for event in runner.run_async(
                 user_id=session_id,
@@ -405,7 +424,14 @@ class OrchestratorService:
                 new_message=new_message,
             ):
                 if event.is_final_response() and event.content and event.content.parts:
-                    reply_text = event.content.parts[0].text or ""
+                    final_event_seen = True
+                    # Scan ALL parts for text — Gemini can place the spoken reply
+                    # outside parts[0] (e.g. after function-call parts), so reading
+                    # parts[0] alone silently drops it and yields empty audio.
+                    final_part_kinds = [_part_kind(p) for p in event.content.parts]
+                    texts = [p.text for p in event.content.parts if p.text]
+                    if texts:
+                        reply_text = "".join(texts)
         except Exception as e:
             _log.exception("adk_voice_execution_failed", session_id=session_id, error=str(e))
             fallback_text = "Maaf, terjadi kendala teknis. Mohon coba beberapa saat lagi."
@@ -461,6 +487,8 @@ class OrchestratorService:
                 session_id=session_id,
                 handoff_triggered=session_state.get("handoff_triggered"),
                 has_transcription=bool(transcription),
+                final_event_seen=final_event_seen,
+                final_part_kinds=final_part_kinds,
             )
 
         turn_result = TurnResult(

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useVoiceCapture } from '@/features/voice/composables/useVoiceCapture';
 import { useVoiceStore } from '@/features/voice/store/voice.store';
 import WaveformDisplay from './WaveformDisplay.vue';
@@ -7,59 +7,110 @@ import WaveformDisplay from './WaveformDisplay.vue';
 const voice = useVoiceStore();
 const capture = useVoiceCapture();
 
+const isContinuousMode = ref<boolean>(false);
+
 const buttonLabel = computed<string>(() => {
-  if (capture.isActive.value) {
+  if (capture.isActive.value && voice.phase !== 'speaking') {
     if (capture.status.value === 'finalizing') return 'Sending…';
     if (capture.status.value === 'silence') return 'Heard you. Wrapping up…';
     if (capture.hasSpeech.value) return 'Listening — tap to send';
     return 'Listening — speak up';
   }
   if (voice.phase === 'processing') return 'Thinking…';
-  if (voice.phase === 'speaking') return 'Replying — tap to interrupt';
+  if (voice.phase === 'speaking') return 'Replying — speak to interrupt';
   return 'Tap to talk';
 });
 
 const statusText = computed<string>(() => {
   if (capture.error.value) return capture.error.value;
-  if (capture.isActive.value) {
+  if (capture.isActive.value && voice.phase !== 'speaking') {
     if (capture.status.value === 'silence') return 'Pause detected — finishing turn…';
     if (capture.hasSpeech.value) return 'I’ll auto-send when you stop talking.';
     return 'Waiting for your voice…';
   }
   if (voice.phase === 'processing') return 'Sending audio to the assistant…';
-  if (voice.phase === 'speaking') return 'Assistant is replying.';
+  if (voice.phase === 'speaking') return 'Assistant is replying. Speak to interrupt.';
   return 'Tap the mic and start talking. I’ll reply with text + voice.';
 });
 
 const isHot = computed<boolean>(
-  () => capture.hasSpeech.value && capture.status.value !== 'silence',
+  () => capture.hasSpeech.value && capture.status.value !== 'silence' && voice.phase !== 'speaking',
 );
 
 async function onMicClick(): Promise<void> {
-  if (capture.isActive.value) {
-    // Mid-turn tap → manual stop & submit whatever was captured.
-    await capture.stop();
+  // If session is active, stop it all and go back to idle.
+  if (isContinuousMode.value || voice.phase !== 'idle' || capture.isActive.value) {
+    isContinuousMode.value = false;
+    voice.stopAssistantAudio();
+    capture.cancel();
+    voice.setPhase('idle');
     return;
   }
-  if (voice.phase === 'speaking' || voice.phase === 'processing') {
-    // No-op while the assistant is talking; the next click after that will
-    // start a fresh turn.
-    return;
-  }
+
+  // Otherwise, start a continuous voice session
   try {
+    isContinuousMode.value = true;
     voice.setPhase('listening');
     await capture.start((wav) => {
       void voice.submitAudio(wav);
     });
   } catch {
     voice.setPhase('idle');
+    isContinuousMode.value = false;
   }
 }
+
+// Watch voice phase to manage continuous listening and barge-in activation
+watch(
+  () => voice.phase,
+  async (newPhase, oldPhase) => {
+    if (newPhase === 'speaking') {
+      // Start microphone monitoring for barge-in
+      try {
+        await capture.start((_wav) => {
+          // Discard output of barge-in monitor
+        });
+      } catch (err) {
+        console.warn('Failed to start microphone for barge-in monitoring:', err);
+      }
+    } else if (newPhase === 'idle') {
+      // Auto-restart listening if continuous mode is active
+      if ((oldPhase === 'speaking' || oldPhase === 'processing') && isContinuousMode.value) {
+        voice.setPhase('listening');
+        try {
+          await capture.start((wav) => {
+            void voice.submitAudio(wav);
+          });
+        } catch {
+          voice.setPhase('idle');
+        }
+      }
+    }
+  }
+);
+
+// Watch microphone audio levels during speaking phase for barge-in (interruption)
+watch(capture.level, async (newLevel) => {
+  if (voice.phase === 'speaking' && newLevel > 0.045) {
+    // User spoke over the assistant -> trigger barge-in interruption!
+    voice.stopAssistantAudio();
+    capture.cancel();
+
+    // Immediately start fresh recording capture for user speech
+    voice.setPhase('listening');
+    try {
+      await capture.start((wav) => {
+        void voice.submitAudio(wav);
+      });
+    } catch {
+      voice.setPhase('idle');
+    }
+  }
+});
 
 function onKeydown(e: KeyboardEvent): void {
   if (e.code !== 'Space' || e.repeat) return;
   const target = e.target as HTMLElement | null;
-  // Don't fight with text inputs (only relevant if voice tab is rendered alongside one).
   if (
     target &&
     (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
@@ -73,6 +124,8 @@ function onKeydown(e: KeyboardEvent): void {
 onMounted(() => window.addEventListener('keydown', onKeydown));
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown);
+  isContinuousMode.value = false;
+  voice.stopAssistantAudio();
   capture.cancel();
 });
 </script>
@@ -89,7 +142,7 @@ onBeforeUnmount(() => {
       type="button"
       class="mic"
       :class="{
-        listening: capture.isActive.value,
+        listening: capture.isActive.value && voice.phase !== 'speaking',
         hot: isHot,
         processing: voice.phase === 'processing',
         speaking: voice.phase === 'speaking',

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 import httpx
 import structlog
+from google.cloud import firestore
 
 from chatbot.features.chat.ports import ChatPort, TicketingPort
 
@@ -131,10 +133,52 @@ class ChatwootZammadAdapter(ChatPort, TicketingPort):
     async def pause_ai_for_session(self, session_id: str) -> None:
         _log.info("pausing_ai_for_session", session_id=session_id)
         self._paused_sessions.add(session_id)
+        if self._settings.handoff_store == "firestore":
+            try:
+                client = firestore.Client(
+                    project=self._settings.firestore_project_id,
+                    database=self._settings.firestore_database_id,
+                )
+                await asyncio.to_thread(
+                    lambda: (
+                        client.collection("paused_sessions")
+                        .document(session_id)
+                        .set({"paused": True})
+                    )
+                )
+            except Exception as e:
+                _log.error("failed_to_persist_pause_state", session_id=session_id, error=str(e))
 
     async def unpause_ai_for_session(self, session_id: str) -> None:
         _log.info("unpausing_ai_for_session", session_id=session_id)
         self._paused_sessions.discard(session_id)
+        if self._settings.handoff_store == "firestore":
+            try:
+                client = firestore.Client(
+                    project=self._settings.firestore_project_id,
+                    database=self._settings.firestore_database_id,
+                )
+                await asyncio.to_thread(
+                    lambda: client.collection("paused_sessions").document(session_id).delete()
+                )
+            except Exception as e:
+                _log.error("failed_to_delete_pause_state", session_id=session_id, error=str(e))
 
     async def is_ai_paused(self, session_id: str) -> bool:
-        return session_id in self._paused_sessions
+        if session_id in self._paused_sessions:
+            return True
+        if self._settings.handoff_store == "firestore":
+            try:
+                client = firestore.Client(
+                    project=self._settings.firestore_project_id,
+                    database=self._settings.firestore_database_id,
+                )
+                snap = await asyncio.to_thread(
+                    lambda: client.collection("paused_sessions").document(session_id).get()
+                )
+                if snap.exists and snap.get("paused") is True:  # type: ignore[union-attr]
+                    self._paused_sessions.add(session_id)
+                    return True
+            except Exception as e:
+                _log.error("failed_to_read_pause_state", session_id=session_id, error=str(e))
+        return False

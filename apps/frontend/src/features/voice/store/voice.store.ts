@@ -19,6 +19,14 @@ export const useVoiceStore = defineStore('voice', () => {
   const isSending = ref<boolean>(false);
   const phase = ref<ConversationPhase>('idle');
   const handoff = ref<HandoffPayload | null>(null);
+  const activeAudio = ref<HTMLAudioElement | null>(null);
+
+  function stopAssistantAudio(): void {
+    if (activeAudio.value) {
+      activeAudio.value.pause();
+      activeAudio.value = null;
+    }
+  }
 
   let agentStream: EventSource | null = null;
 
@@ -48,13 +56,21 @@ export const useVoiceStore = defineStore('voice', () => {
           meta: evt.author_name,
         });
 
+        stopAssistantAudio();
         phase.value = 'speaking';
         const audio = new Audio(replyUrl);
+        activeAudio.value = audio;
         audio.addEventListener('ended', () => {
-          if (phase.value === 'speaking') phase.value = 'idle';
+          if (activeAudio.value === audio) {
+            activeAudio.value = null;
+            if (phase.value === 'speaking') phase.value = 'idle';
+          }
         });
         audio.addEventListener('error', () => {
-          if (phase.value === 'speaking') phase.value = 'idle';
+          if (activeAudio.value === audio) {
+            activeAudio.value = null;
+            if (phase.value === 'speaking') phase.value = 'idle';
+          }
         });
         await audio.play();
       } catch (err) {
@@ -76,6 +92,7 @@ export const useVoiceStore = defineStore('voice', () => {
 
   function resetSession(): void {
     closeAgentStream();
+    stopAssistantAudio();
     sessionId.value = `voice-${Math.floor(Math.random() * 9999)}`;
     entries.value = [{ kind: 'system', text: `New session: ${sessionId.value}` }];
     phase.value = 'idle';
@@ -133,16 +150,27 @@ export const useVoiceStore = defineStore('voice', () => {
           text: result.replyText || '[audio reply]',
           audioUrl: replyUrl,
         });
+        stopAssistantAudio();
         phase.value = 'speaking';
         const audio = new Audio(replyUrl);
+        activeAudio.value = audio;
         audio.addEventListener('ended', () => {
-          if (phase.value === 'speaking') phase.value = 'idle';
+          if (activeAudio.value === audio) {
+            activeAudio.value = null;
+            if (phase.value === 'speaking') phase.value = 'idle';
+          }
         });
         audio.addEventListener('error', () => {
-          if (phase.value === 'speaking') phase.value = 'idle';
+          if (activeAudio.value === audio) {
+            activeAudio.value = null;
+            if (phase.value === 'speaking') phase.value = 'idle';
+          }
         });
         audio.play().catch(() => {
-          phase.value = 'idle';
+          if (activeAudio.value === audio) {
+            activeAudio.value = null;
+            phase.value = 'idle';
+          }
         });
       } else {
         entries.value.push({
@@ -173,5 +201,7 @@ export const useVoiceStore = defineStore('voice', () => {
     submitAudio,
     resetSession,
     setPhase,
+    activeAudio,
+    stopAssistantAudio,
   };
 });

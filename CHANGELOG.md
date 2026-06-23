@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Cloud Run Firestore persistence, continuous listening, and voice barge-in (2026-06-23)
+
+- **Cloud Run Session & Pause State Persistence (Firestore):**
+  - Added a `session_store` configuration setting to control the ADK runner session persistence backend.
+  - Implemented `FirestoreSessionService` to store ADK runner session states (variables, flags, events) inside a GCP Firestore collection.
+  - Updated Zendesk and Chatwoot/Zammad adapters to store and query the AI pause status in Firestore when `handoff_store == "firestore"`.
+  - Synchronized chat transcript history inside `session.state["chat_history"]` to preserve conversation context across stateless container instances.
+  - Refactored `OrchestratorService` to extract DRY helper methods, resolving type checking errors and reducing the statement count below Ruff's limit.
+  - Added unit/mock integration tests in `test_service.py` verifying all Firestore session service database CRUD operations.
+- **Hands-Free Continuous Listening & Barge-in Voice Interruption:**
+  - Implemented a continuous hands-free voice loop in the frontend Vue application.
+  - Updated `voice.store.ts` to track and control the active assistant audio playback (`activeAudio`, `stopAssistantAudio()`).
+  - Added `isContinuousMode` in `VoiceRecorder.vue` to manage the continuous session toggle.
+  - Implemented a watcher on `voice.phase` to automatically restart the recording capture when the assistant finishes speaking naturally, ensuring no button clicks are required between turns.
+  - Implemented a watcher on `capture.level` to support barge-in: detecting user speech during assistant playback immediately stops the playback, discards the recorder buffer containing echo, and starts a fresh recording capture for the user's speech.
+  - Enhanced UI button labels and status texts to display voice interruption instructions (e.g., *"Replying — speak to interrupt"*).
+
 ### Added — car sales qualification, handoff CRM user sync, and handback webhook (2026-06-22)
 
 - **Car Sales Qualification & Test-Drive Tool:** Added a new `book_test_drive_tool` in `agents.py` to capture lead information (name, phone, email, preferred model, preferred dealer) when users show intent to buy or book test drives.

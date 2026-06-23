@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from google.adk.sessions.session import Event
 
+from chatbot.features.chat.adapters.firestore_session_service import FirestoreSessionService
 from chatbot.features.chat.adapters.mock import (
     InMemoryChatAdapter,
     InMemoryKnowledgeAdapter,
@@ -295,11 +297,11 @@ async def test_handle_turn_triggers_escalation_with_lead_and_classification() ->
     assert handoff.reason == "sales_lead"
     assert handoff.urgency == "high"
     assert handoff.language == "ms"
-    
+
     lead = handoff.lead_details
     assert lead is not None
     assert lead["customer_name"] == "Ahmad Ali"
-    
+
     cls_details = handoff.classification
     assert cls_details is not None
     assert cls_details["category"] == "Sales"
@@ -315,3 +317,106 @@ async def test_handle_turn_triggers_escalation_with_lead_and_classification() ->
     assert "Ahmad Ali" in tkt["body"]
     assert "Glenmarie" in tkt["body"]
     assert "Category: Sales" in ticketing_port.notes[tkt_id][0]
+
+
+@pytest.mark.asyncio
+async def test_firestore_session_service() -> None:
+    mock_settings = MagicMock()
+    mock_settings.firestore_project_id = "test-project"
+    mock_settings.firestore_database_id = "test-db"
+
+    # We store the documents mock dict
+    stored_docs = {}
+
+    class MockDocumentRef:
+        def __init__(self, doc_id: str) -> None:
+            self.id = doc_id
+
+        def set(self, data: dict[str, Any]) -> None:
+            stored_docs[self.id] = data
+
+        def get(self) -> MagicMock:
+            mock_snap = MagicMock()
+            if self.id in stored_docs:
+                mock_snap.exists = True
+                mock_snap.to_dict.return_value = stored_docs[self.id]
+            else:
+                mock_snap.exists = False
+            return mock_snap
+
+        def delete(self) -> None:
+            stored_docs.pop(self.id, None)
+
+    class MockCollectionRef:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def document(self, doc_id: str) -> MockDocumentRef:
+            return MockDocumentRef(doc_id)
+
+        def where(self, *args: Any, **kwargs: Any) -> MockCollectionRef:
+            return self
+
+        def stream(self) -> list[MagicMock]:
+            mock_docs = []
+            for doc_id, data in stored_docs.items():
+                mock_doc = MagicMock()
+                mock_doc.id = doc_id
+                mock_doc.to_dict.return_value = data
+                mock_docs.append(mock_doc)
+            return mock_docs
+
+    mock_client = MagicMock()
+    mock_client.collection.side_effect = MockCollectionRef
+
+    with patch("google.cloud.firestore.Client", return_value=mock_client):
+        service = FirestoreSessionService(mock_settings)
+
+        # 1. Test create_session
+        session = await service.create_session(
+            app_name="test-app",
+            user_id="user-123",
+            session_id="session-123",
+            state={"foo": "bar"},
+        )
+        assert session.id == "session-123"
+        assert session.state == {"foo": "bar"}
+        assert "session-123" in stored_docs
+
+        # 2. Test get_session
+        loaded = await service.get_session(
+            app_name="test-app",
+            user_id="user-123",
+            session_id="session-123",
+        )
+        assert loaded is not None
+        assert loaded.id == "session-123"
+        assert loaded.state == {"foo": "bar"}
+
+        # 3. Test append_event
+        event = Event(id="event-1", invocation_id="inv-1", author="model")
+        await service.append_event(session, event)
+        assert len(session.events) == 1
+        assert session.events[0].id == "event-1"
+
+        # Check updated firestore document has the event
+        updated_data = stored_docs["session-123"]
+        assert len(updated_data["events"]) == 1
+        assert updated_data["events"][0]["id"] == "event-1"
+
+        # 4. Test list_sessions
+        resp = await service.list_sessions(app_name="test-app", user_id="user-123")
+        assert len(resp.sessions) == 1
+        assert resp.sessions[0].id == "session-123"
+
+        # 5. Test delete_session
+        await service.delete_session(
+            app_name="test-app",
+            user_id="user-123",
+            session_id="session-123",
+        )
+        assert "session-123" not in stored_docs
+
+        # 6. Test get_user_state
+        user_state = await service.get_user_state(app_name="test-app", user_id="user-123")
+        assert user_state == {}

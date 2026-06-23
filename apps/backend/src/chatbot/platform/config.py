@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     crm_provider: Literal["chatwoot", "zendesk"] = "chatwoot"
     voice_provider: Literal["mock", "gcp"] = "mock"
     knowledge_provider: Literal["mock", "zendesk", "vertex_search"] = "mock"
+    session_store: Literal["memory", "firestore"] = "memory"
 
     # Server settings
     port: int = 8000

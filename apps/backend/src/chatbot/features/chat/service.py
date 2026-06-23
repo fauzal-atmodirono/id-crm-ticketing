@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
+from google.adk.sessions import BaseSessionService, InMemorySessionService, Session
 from google.genai import Client, types
 
+from chatbot.features.chat.adapters.firestore_session_service import FirestoreSessionService
 from chatbot.features.chat.agents import build_ai_agent, build_summarizer_agent
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.models import (
@@ -86,7 +88,11 @@ class OrchestratorService:
             self._genai_client = Client()
 
         # ADK runner session storage
-        self._adk_sessions = InMemorySessionService()  # type: ignore[no-untyped-call]
+        self._adk_sessions: BaseSessionService
+        if settings.session_store == "firestore":
+            self._adk_sessions = FirestoreSessionService(settings)
+        else:
+            self._adk_sessions = InMemorySessionService()  # type: ignore[no-untyped-call]
         self._runner_factory = runner_factory or self._default_runner_factory
 
         # Shared conversation history dictionary (session_id -> list of Messages)
@@ -99,6 +105,66 @@ class OrchestratorService:
             session_service=self._adk_sessions,
         )
 
+    def _sync_history_from_state(self, session_id: str, session: Session) -> list[dict[str, Any]]:
+        state_history = session.state.setdefault("chat_history", [])
+        self._history[session_id] = [
+            Message(
+                role=m["role"],
+                text=m["text"],
+                timestamp=datetime.fromisoformat(m["timestamp"])
+                if "timestamp" in m
+                else datetime.now(UTC),
+            )
+            for m in state_history
+        ]
+        return state_history
+
+    async def _get_or_create_session(self, session_id: str) -> tuple[Session, list[dict[str, Any]]]:
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        if not session:
+            session = await self._adk_sessions.create_session(
+                app_name="chatbot",
+                user_id=session_id,
+                session_id=session_id,
+                state={
+                    "session_id": session_id,
+                    "handoff_triggered": False,
+                    "handoff_reason": "",
+                    "chat_history": [],
+                },
+            )
+        state_history = self._sync_history_from_state(session_id, session)
+        return session, state_history
+
+    async def _append_history_message(
+        self,
+        session_id: str,
+        session: Session,
+        state_history: list[dict[str, Any]],
+        role: Literal["user", "assistant", "system"],
+        text: str,
+    ) -> None:
+        msg = Message(role=role, text=text, timestamp=datetime.now(UTC))
+        self._history.setdefault(session_id, []).append(msg)
+        state_history.append(
+            {
+                "role": role,
+                "text": text,
+                "timestamp": msg.timestamp.isoformat(),
+            }
+        )
+        sessions_service = self._adk_sessions
+        if isinstance(sessions_service, FirestoreSessionService):
+
+            def _write_state() -> None:
+                sessions_service._collection().document(session.id).set(
+                    session.model_dump(mode="json")
+                )
+
+            await asyncio.to_thread(_write_state)
+
     async def handle_turn(self, session_id: str, text: str) -> TurnResult:
         """Process a single text-based chatbot turn."""
         _log.info("processing_chatbot_turn", session_id=session_id, text_length=len(text))
@@ -109,9 +175,10 @@ class OrchestratorService:
         if self._handoff_bridge is not None and self._human_agent_bridge is not None:
             conv_id = await self._handoff_bridge.conversation_id_for(session_id)
             if conv_id is not None:
-                self._history.setdefault(session_id, []).append(
-                    Message(role="user", text=text, timestamp=datetime.now(UTC))
-                )
+                # Load or create session to write history
+                session, state_history = await self._get_or_create_session(session_id)
+                await self._append_history_message(session_id, session, state_history, "user", text)
+
                 try:
                     await self._human_agent_bridge.forward_customer_message(
                         conversation_id=conv_id,
@@ -140,26 +207,11 @@ class OrchestratorService:
             _log.info("ai_paused_short_circuiting_turn", session_id=session_id)
             return TurnResult(reply=None)
 
-        # 2. Append user message to history
-        self._history.setdefault(session_id, []).append(
-            Message(role="user", text=text, timestamp=datetime.now(UTC))
-        )
+        # Retrieve or create the ADK session state so we have the persistent context
+        session, state_history = await self._get_or_create_session(session_id)
 
-        # 3. Retrieve or create the ADK session state
-        session = await self._adk_sessions.get_session(
-            app_name="chatbot", user_id=session_id, session_id=session_id
-        )
-        if not session:
-            await self._adk_sessions.create_session(
-                app_name="chatbot",
-                user_id=session_id,
-                session_id=session_id,
-                state={
-                    "session_id": session_id,
-                    "handoff_triggered": False,
-                    "handoff_reason": "",
-                },
-            )
+        # 2. Append user message to history
+        await self._append_history_message(session_id, session, state_history, "user", text)
 
         # 4. Formulate the GenAI content structure
         new_message = types.Content(
@@ -184,14 +236,19 @@ class OrchestratorService:
 
         # 6. Append assistant message to history if generated
         if reply_text:
-            self._history[session_id].append(
-                Message(role="assistant", text=reply_text, timestamp=datetime.now(UTC))
+            updated_session = await self._adk_sessions.get_session(
+                app_name="chatbot", user_id=session_id, session_id=session_id
             )
+            if updated_session:
+                state_history = updated_session.state.setdefault("chat_history", [])
+                await self._append_history_message(
+                    session_id, updated_session, state_history, "assistant", reply_text
+                )
 
-        session = await self._adk_sessions.get_session(
+        final_session = await self._adk_sessions.get_session(
             app_name="chatbot", user_id=session_id, session_id=session_id
         )
-        session_state = session.state if session else {}
+        session_state = final_session.state if final_session else {}
 
         handoff_payload = None
         if session_state.get("handoff_triggered") is True:
@@ -261,10 +318,15 @@ class OrchestratorService:
                 _log.info("ai_paused_transcribing_voice_turn_for_agent", session_id=session_id)
                 try:
                     text_to_forward = transcription or "[audio]"
-                    # Append user message to history
-                    self._history.setdefault(session_id, []).append(
-                        Message(role="user", text=text_to_forward, timestamp=datetime.now(UTC))
+                    handoff_session = await self._adk_sessions.get_session(
+                        app_name="chatbot", user_id=session_id, session_id=session_id
                     )
+                    if handoff_session:
+                        state_history = handoff_session.state.setdefault("chat_history", [])
+                        await self._append_history_message(
+                            session_id, handoff_session, state_history, "user", text_to_forward
+                        )
+
                     # Forward message to Sunshine/Zendesk agent
                     await self._human_agent_bridge.forward_customer_message(
                         conversation_id=conv_id,
@@ -307,6 +369,9 @@ class OrchestratorService:
             mime_type=audio_mime_type,
         )
 
+        # Retrieve or create the ADK session state first so we have the persistent context
+        session, state_history = await self._get_or_create_session(session_id)
+
         transcription = await self._transcribe_audio(
             audio_bytes=audio_bytes,
             audio_mime_type=audio_mime_type,
@@ -320,24 +385,11 @@ class OrchestratorService:
         if handoff_res is not None:
             return handoff_res
 
-        self._history.setdefault(session_id, []).append(
-            Message(role="user", text=transcription or "[audio]", timestamp=datetime.now(UTC))
+        # Append user voice input to history
+        text_for_history = transcription or "[audio]"
+        await self._append_history_message(
+            session_id, session, state_history, "user", text_for_history
         )
-
-        session = await self._adk_sessions.get_session(
-            app_name="chatbot", user_id=session_id, session_id=session_id
-        )
-        if not session:
-            await self._adk_sessions.create_session(
-                app_name="chatbot",
-                user_id=session_id,
-                session_id=session_id,
-                state={
-                    "session_id": session_id,
-                    "handoff_triggered": False,
-                    "handoff_reason": "",
-                },
-            )
 
         new_message = types.Content(
             role="user",
@@ -363,14 +415,20 @@ class OrchestratorService:
             return err_audio, TurnResult(reply=fallback_text)
 
         if reply_text:
-            self._history[session_id].append(
-                Message(role="assistant", text=reply_text, timestamp=datetime.now(UTC))
+            # Re-fetch session to make sure we don't overwrite changes made by tools
+            updated_session = await self._adk_sessions.get_session(
+                app_name="chatbot", user_id=session_id, session_id=session_id
             )
+            if updated_session:
+                state_history = updated_session.state.setdefault("chat_history", [])
+                await self._append_history_message(
+                    session_id, updated_session, state_history, "assistant", reply_text
+                )
 
-        session = await self._adk_sessions.get_session(
+        final_session = await self._adk_sessions.get_session(
             app_name="chatbot", user_id=session_id, session_id=session_id
         )
-        session_state = session.state if session else {}
+        session_state = final_session.state if final_session else {}
 
         handoff_payload = None
         if session_state.get("handoff_triggered") is True:

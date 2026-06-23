@@ -18,6 +18,11 @@ from chatbot.features.chat.adapters.mock import (
 from chatbot.features.chat.service import OrchestratorService
 from chatbot.platform.config import get_settings
 
+
+@pytest.fixture(autouse=True)
+def force_memory_session_store() -> None:
+    get_settings().session_store = "memory"
+
 # --- Fake ADK runner classes to replay pre-recorded events ---
 
 

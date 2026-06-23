@@ -460,11 +460,23 @@ class OrchestratorService:
         # 1. Update session state first to prevent concurrent responses
         await self._ticketing_port.pause_ai_for_session(session_id)
 
+        # Retrieve ADK session state to gather history and tools modifications
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        session_state = session.state if session else {}
+
         # 2. Extract recent transcript history for context
-        history = self._history.get(session_id, [])
+        state_history = session_state.get("chat_history", [])
         chat_log = []
-        for msg in history:
-            chat_log.append({"role": msg.role, "text": msg.text})
+        for msg in state_history:
+            chat_log.append(
+                {
+                    "role": msg["role"],
+                    "text": msg["text"],
+                    "timestamp": msg.get("timestamp") or datetime.now(UTC).isoformat(),
+                }
+            )
 
         # 3. Call summarizer agent to generate structured details
         summary_text = "Customer requested human agent assistance."
@@ -497,11 +509,6 @@ class OrchestratorService:
         except Exception as e:
             _log.warning("handoff_summarization_failed", error=str(e))
 
-        # Retrieve ADK session state to gather tools modifications
-        session = await self._adk_sessions.get_session(
-            app_name="chatbot", user_id=session_id, session_id=session_id
-        )
-        session_state = session.state if session else {}
         lead_details = session_state.get("lead_details") or {}
 
         # Override urgency if ticket classification priority is set
@@ -612,7 +619,13 @@ class OrchestratorService:
             return False
 
         transcript = tuple(
-            Message(role=entry["role"], text=entry["text"], timestamp=datetime.now(UTC))  # type: ignore[arg-type]
+            Message(
+                role=entry["role"],  # type: ignore[arg-type]
+                text=entry["text"],
+                timestamp=datetime.fromisoformat(entry["timestamp"])
+                if isinstance(entry.get("timestamp"), str)
+                else datetime.now(UTC),
+            )
             for entry in chat_log
         )
 
@@ -653,7 +666,7 @@ class OrchestratorService:
                 if msg.timestamp
                 else datetime.now(UTC).isoformat(),
             }
-            for msg in self._history.get(session_id, [])
+            for msg in transcript
         ]
         await self._handoff_bridge.register(session_id, conversation_id, transcript=full_transcript)
         return True

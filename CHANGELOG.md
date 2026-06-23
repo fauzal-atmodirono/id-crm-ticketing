@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — handoff history, lead profile sync, and empty voice replies (2026-06-23)
+
+- **Agent received only the last 6 messages on handoff.** Commit `3eb8ab2` made `_escalate_handoff` pass the full transcript, but `SunshineConversationsAdapter._post_business_summary` independently re-sliced it to `[-6:]`, so the agent's summary message still showed only the tail. Removed the slice — the entire conversation is now posted. (The full transcript was already persisted to Firestore; this only affected what the agent saw in-conversation.)
+- **Customer phone and preferred model never reached the Zendesk user profile.** `_upsert_user` nested `phones` and `metadata` inside the Sunshine `profile` object, but Sunshine's profile schema only persists `givenName`/`surname`/`email`/`avatarUrl`/`locale` and silently drops everything else (confirmed against the live record — `givenName`/`email` survived, top-level `metadata` was empty). Phone and `preferred_model` now travel as **top-level user `metadata`** (`metadata.customer_phone`, `metadata.preferred_model`) on both the create (`POST`) and 409 conflict (`PATCH`) paths. Existing user records only pick this up on their next handoff.
+- **Hands-free voice could return "(no audio reply — AI may be paused or the model returned nothing)" despite a successful turn.** The ADK run loop read only `event.content.parts[0].text`, so when Gemini placed the spoken reply after a function-call part the text was dropped and no audio was synthesized (observed on session `voice-579`: a clean transcription with no assistant reply). Both `handle_voice_turn` and `handle_turn` now scan **all** response parts and join their text.
+- **Diagnostics for the empty-audio path.** Added structured warnings so any remaining occurrence is unambiguous: `voice_turn_empty_reply_text` (with `final_event_seen` + `final_part_kinds`) and `voice_tts_returned_empty_audio`, alongside reproduction tests in `test_voice_empty_audio_diagnostics.py` and `adapters/test_sunshine_conversations.py`.
+
 ### Added — Cloud Run Firestore persistence, continuous listening, and voice barge-in (2026-06-23)
 
 - **Cloud Run Session & Pause State Persistence (Firestore):**

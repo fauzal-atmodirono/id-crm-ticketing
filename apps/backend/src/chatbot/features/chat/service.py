@@ -469,8 +469,8 @@ class OrchestratorService:
                     text=reply_text, language_code=language_code
                 )
                 if not audio_reply:
-                    # TODO(diagnostic): TTS returned no bytes without raising — remove once
-                    # the empty-audio-reply issue is resolved.
+                    # TTS returned no bytes without raising — surfaces as an empty
+                    # audio reply in the UI; log so the cause is visible.
                     _log.warning(
                         "voice_tts_returned_empty_audio",
                         session_id=session_id,
@@ -479,9 +479,10 @@ class OrchestratorService:
             except Exception as e:
                 _log.error("voice_tts_synthesis_failed", session_id=session_id, error=str(e))
         else:
-            # TODO(diagnostic): the model produced no text part, so the UI shows
+            # The model produced no text part, so the UI shows
             # "(no audio reply — AI may be paused or the model returned nothing)".
-            # Remove once the empty-audio-reply issue is resolved.
+            # final_part_kinds disambiguates a tool-only turn from a genuinely
+            # empty generation.
             _log.warning(
                 "voice_turn_empty_reply_text",
                 session_id=session_id,

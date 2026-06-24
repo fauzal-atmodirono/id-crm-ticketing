@@ -243,18 +243,11 @@ class OrchestratorService:
         if reply_text or await self._handoff_triggered(session_id):
             return reply_text
 
-        # Product-browse turn: the carousel IS the answer. Use a brief intro and do
-        # NOT retry — retrying tends to make the model re-describe the cars in long
-        # prose. The carousel stays a clean add-on.
-        if await self._has_product_carousel(session_id):
-            return _PRODUCT_INTRO
-
-        # Genuine empty (no carousel): an intermittent Gemini miss. Retry once so the
-        # agent can answer, then fall back gracefully — never a blank turn.
         _log.warning("chat_turn_empty_reply_text", session_id=session_id, attempt=1)
         reply_text, _kinds, _seen = await self._run_support_agent(session_id, new_message)
         if reply_text or await self._handoff_triggered(session_id):
             return reply_text
+
         if await self._has_product_carousel(session_id):
             return _PRODUCT_INTRO
         _log.warning("chat_turn_empty_reply_after_retry", session_id=session_id)

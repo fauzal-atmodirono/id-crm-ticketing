@@ -477,3 +477,59 @@ async def test_handle_turn_empty_reply_falls_back_after_retry() -> None:
 
     assert result.reply == _EMPTY_REPLY_FALLBACK
     assert result.handoff is None
+
+
+class _CarouselRunner:
+    """Fake runner that sets product_carousel in state on its first use only."""
+
+    def __init__(self, reply: str, session_service: Any, session_id: str, set_carousel: bool):
+        self._reply = reply
+        self._ss = session_service
+        self._sid = session_id
+        self._set = set_carousel
+
+    async def run_async(self, **_: Any) -> AsyncIterator[_FakeEvent]:
+        if self._set:
+            sess = self._ss.sessions["chatbot"][self._sid][self._sid]
+            sess.state["product_carousel"] = [
+                {
+                    "title": "Proton X50",
+                    "description": "SUV",
+                    "image_url": None,
+                    "price": None,
+                    "url": None,
+                }
+            ]
+        yield _FakeEvent(self._reply)
+
+
+@pytest.mark.asyncio
+async def test_product_carousel_is_one_shot() -> None:
+    """The carousel must appear only on the turn show_models ran, not stick around."""
+    settings = get_settings()
+    call = 0
+
+    def factory(_agent: Any) -> _CarouselRunner:
+        nonlocal call
+        call += 1
+        return _CarouselRunner(
+            reply="Here are some models." if call == 1 else "Sure thing.",
+            session_service=svc._adk_sessions,
+            session_id="carousel-1",
+            set_carousel=(call == 1),
+        )
+
+    svc = OrchestratorService(
+        settings=settings,
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=InMemoryTicketingAdapter(),
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=MockVoiceAdapter(),
+        runner_factory=factory,
+    )
+
+    r1 = await svc.handle_turn(session_id="carousel-1", text="show me SUVs")
+    assert r1.products and r1.products[0].title == "Proton X50"
+
+    r2 = await svc.handle_turn(session_id="carousel-1", text="thanks")
+    assert not r2.products  # cleared — does not stick to later replies

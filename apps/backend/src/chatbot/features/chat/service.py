@@ -218,6 +218,37 @@ class OrchestratorService:
         )
         return bool(session and session.state.get("handoff_triggered") is True)
 
+    async def _clear_session_key(self, session_id: str, key: str) -> None:
+        """Remove a one-shot key from persisted session state (e.g. product_carousel).
+
+        Re-fetches so it doesn't clobber writes made earlier in the turn. Persists
+        for both the Firestore store (production) and the in-memory store (which
+        hands back copies, so the backing object must be mutated directly).
+        """
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        if not session or key not in session.state:
+            return
+        session.state.pop(key, None)
+        if isinstance(self._adk_sessions, FirestoreSessionService):
+            sessions_service = self._adk_sessions
+
+            def _write() -> None:
+                sessions_service._collection().document(session.id).set(
+                    session.model_dump(mode="json")
+                )
+
+            await asyncio.to_thread(_write)
+        else:
+            # In-memory store: get_session returns a copy, so mutate the backing
+            # object directly (best-effort; no-op if the layout differs).
+            store = getattr(self._adk_sessions, "sessions", None)
+            if isinstance(store, dict):
+                stored = store.get("chatbot", {}).get(session_id, {}).get(session_id)
+                if stored is not None:
+                    stored.state.pop(key, None)
+
     async def handle_turn(self, session_id: str, text: str) -> TurnResult:
         """Process a single text-based chatbot turn."""
         _log.info("processing_chatbot_turn", session_id=session_id, text_length=len(text))
@@ -324,6 +355,10 @@ class OrchestratorService:
                 )
 
         products = _cards_from_state(session_state.get("product_carousel", []) or [])
+        if products:
+            # The carousel is a one-shot for the turn that produced it — clear it so
+            # it doesn't ride along on every subsequent reply.
+            await self._clear_session_key(session_id, "product_carousel")
 
         return TurnResult(
             reply=reply_text,

@@ -39,6 +39,8 @@ class SunshineConversationsAdapter(HumanAgentBridgePort):
     """REST-based bridge to Sunshine Conversations v2."""
 
     BASE = "https://api.smooch.io/v2"
+    # Sunshine rejects a message whose content.text is longer than this.
+    _MAX_MESSAGE_CHARS = 4096
 
     def __init__(self, settings: Settings) -> None:
         self._app_id = settings.zendesk_app_id
@@ -61,7 +63,16 @@ class SunshineConversationsAdapter(HumanAgentBridgePort):
         async with httpx.AsyncClient(timeout=10.0) as client:
             await self._upsert_user(client, payload, external_id)
             conversation_id = await self._create_conversation(client, external_id)
-            await self._post_business_summary(client, conversation_id, payload)
+            try:
+                await self._post_business_summary(client, conversation_id, payload)
+            except Exception as e:
+                # The live bridge is already usable (user + conversation exist); a
+                # failed summary message must NOT collapse the handoff to ticket-only.
+                _log.error(
+                    "sunshine_post_business_summary_skipped",
+                    conversation_id=conversation_id,
+                    error=str(e),
+                )
 
         _log.info(
             "sunshine_handoff_opened",
@@ -257,15 +268,32 @@ class SunshineConversationsAdapter(HumanAgentBridgePort):
         conversation_id: str,
         payload: HandoffOpenPayload,
     ) -> None:
-        transcript_lines = ["Recent conversation with the AI assistant:", ""]
-        for msg in payload.transcript:
-            transcript_lines.append(f"- {msg.role.upper()}: {msg.text}")
-
-        summary_message = (
+        header = (
             f"AI handoff for session {payload.session_id}\n"
             f"Urgency: {payload.urgency.upper()} · Language: {payload.language}\n"
-            f"Summary: {payload.ai_summary}\n\n" + "\n".join(transcript_lines)
+            f"Summary: {payload.ai_summary}\n\n"
+            "Recent conversation with the AI assistant:\n\n"
         )
+
+        # Sunshine rejects messages whose content.text exceeds 4096 characters.
+        # Keep the MOST RECENT transcript lines that fit under a safe budget — the
+        # full transcript is also persisted to Firestore via handoff_bridge.register.
+        budget = self._MAX_MESSAGE_CHARS - len(header)
+        kept: list[str] = []
+        used = 0
+        truncated = False
+        for msg in reversed(payload.transcript):
+            line = f"- {msg.role.upper()}: {msg.text}"
+            if used + len(line) + 1 > budget:
+                truncated = True
+                break
+            kept.append(line)
+            used += len(line) + 1
+        kept.reverse()
+        if truncated:
+            kept.insert(0, "[… earlier messages truncated …]")
+
+        summary_message = header + "\n".join(kept)
 
         url = f"{self.BASE}/apps/{self._app_id}/conversations/{conversation_id}/messages"
         body = {

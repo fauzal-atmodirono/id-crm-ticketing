@@ -88,6 +88,42 @@ async def test_business_summary_includes_full_transcript() -> None:
         assert f"line-{i:02d}" in posted_text, f"message {i} missing from handoff summary"
 
 
+@pytest.mark.asyncio
+async def test_business_summary_caps_at_sunshine_message_limit() -> None:
+    """A long transcript must be trimmed to <= 4096 chars (Sunshine's limit).
+
+    Regression guard: sending the full transcript unbounded produced a 400
+    ".content.text: should not be longer than 4096 characters", which collapsed
+    the live handoff to ticket-only mode. Keep the MOST RECENT messages.
+    """
+    adapter = _adapter()
+
+    # 200 long messages — far over the 4096-char limit.
+    transcript = tuple(
+        Message(role="user" if i % 2 == 0 else "assistant", text=f"msg-{i:03d} " + "x" * 60)
+        for i in range(200)
+    )
+    payload = HandoffOpenPayload(
+        session_id="sim-681",
+        customer_name="Test Customer",
+        customer_email="test@example.com",
+        ai_summary="Customer needs help.",
+        transcript=transcript,
+    )
+
+    client = MagicMock()
+    client.post = AsyncMock(return_value=MagicMock(status_code=201))
+
+    await adapter._post_business_summary(client, "conv-1", payload)
+
+    posted_text = client.post.call_args.kwargs["json"]["content"]["text"]
+    assert len(posted_text) <= 4096
+    # Most recent message kept, oldest dropped, truncation noted.
+    assert "msg-199" in posted_text
+    assert "msg-000" not in posted_text
+    assert "earlier messages truncated" in posted_text
+
+
 def _lead_payload() -> HandoffOpenPayload:
     return HandoffOpenPayload(
         session_id="sim-9714",

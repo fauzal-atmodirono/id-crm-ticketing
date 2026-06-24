@@ -567,19 +567,20 @@ async def test_carousel_with_empty_reply_uses_product_intro_not_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_carousel_empty_then_retry_gives_relevant_answer() -> None:
-    """Primary path: an empty carousel turn is retried, and the agent's real
-    answer (not a canned intro) is what the user sees."""
+async def test_carousel_empty_does_not_retry_into_prose() -> None:
+    """A carousel turn with no text uses a brief intro and does NOT retry (which
+    would make the model re-describe the cars in long prose). Carousel = add-on."""
     settings = get_settings()
     call = 0
 
     def factory(_agent: Any) -> _CarouselRunner:
         nonlocal call
         call += 1
+        # If a retry happened, this would return long prose — assert it does not.
         return _CarouselRunner(
-            reply="" if call == 1 else "Yes — Proton offers the S70 and Saga sedans.",
+            reply="" if call == 1 else "LONG PROSE describing every car at length...",
             session_service=svc._adk_sessions,
-            session_id="carousel-retry",
+            session_id="carousel-noretry",
             set_carousel=(call == 1),
         )
 
@@ -592,7 +593,8 @@ async def test_carousel_empty_then_retry_gives_relevant_answer() -> None:
         runner_factory=factory,
     )
 
-    result = await svc.handle_turn(session_id="carousel-retry", text="proton have other sedan?")
+    result = await svc.handle_turn(session_id="carousel-noretry", text="show me sedans")
 
-    assert result.reply == "Yes — Proton offers the S70 and Saga sedans."
+    assert result.reply == "Here are some models you might like:"  # brief intro, no prose
+    assert call == 1  # no retry happened
     assert result.products and result.products[0].title == "Proton X50"

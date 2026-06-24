@@ -64,6 +64,15 @@ def _part_kind(part: Any) -> str:
     return "other"
 
 
+# Shown when the agent returns no text twice in a row (intermittent Gemini empty
+# generation) and the turn is not a deliberate handoff — never leave the user with
+# a blank reply / the frontend's "(no reply…)" placeholder.
+_EMPTY_REPLY_FALLBACK = (
+    "Maaf, saya tidak dapat memproses balasan tadi. Boleh anda ulang semula? "
+    "(Sorry, I couldn't process that — could you please repeat?)"
+)
+
+
 class OrchestratorService:
     """Core orchestrator driving conversational turns for both Chatbot and Voicebot."""
 
@@ -178,6 +187,37 @@ class OrchestratorService:
 
             await asyncio.to_thread(_write_state)
 
+    async def _run_support_agent(
+        self, session_id: str, new_message: types.Content
+    ) -> tuple[str, list[str], bool]:
+        """Run the support agent once and extract reply text from ALL final parts.
+
+        Returns ``(reply_text, final_part_kinds, final_event_seen)``. Gemini can
+        place the reply after a function-call part (so reading ``parts[0]`` alone
+        drops it) or, intermittently, return a final response with no text part at
+        all — callers retry/fall back on an empty ``reply_text``.
+        """
+        runner = self._runner_factory(self._support_agent)
+        reply_text = ""
+        final_part_kinds: list[str] = []
+        final_event_seen = False
+        async for event in runner.run_async(
+            user_id=session_id, session_id=session_id, new_message=new_message
+        ):
+            if event.is_final_response() and event.content and event.content.parts:
+                final_event_seen = True
+                final_part_kinds = [_part_kind(p) for p in event.content.parts]
+                texts = [p.text for p in event.content.parts if p.text]
+                if texts:
+                    reply_text = "".join(texts)
+        return reply_text, final_part_kinds, final_event_seen
+
+    async def _handoff_triggered(self, session_id: str) -> bool:
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        return bool(session and session.state.get("handoff_triggered") is True)
+
     async def handle_turn(self, session_id: str, text: str) -> TurnResult:
         """Process a single text-based chatbot turn."""
         _log.info("processing_chatbot_turn", session_id=session_id, text_length=len(text))
@@ -233,34 +273,32 @@ class OrchestratorService:
         )
 
         # 5. Run the ADK Agent
-        runner = self._runner_factory(self._support_agent)
         reply_text: str | None = ""
         try:
-            async for event in runner.run_async(
-                user_id=session_id,
-                session_id=session_id,
-                new_message=new_message,
-            ):
-                if event.is_final_response() and event.content and event.content.parts:
-                    # Scan ALL parts for text — the reply can sit after a
-                    # function-call part, so reading parts[0] alone drops it.
-                    texts = [p.text for p in event.content.parts if p.text]
-                    if texts:
-                        reply_text = "".join(texts)
+            reply_text, part_kinds, _seen = await self._run_support_agent(session_id, new_message)
+            # An empty reply that ISN'T a deliberate handoff is almost always an
+            # intermittent Gemini generation miss — retry once, then fall back, so
+            # the user never sees a blank turn / the "(no reply…)" placeholder.
+            if not reply_text and not await self._handoff_triggered(session_id):
+                _log.warning(
+                    "chat_turn_empty_reply_text",
+                    session_id=session_id,
+                    final_part_kinds=part_kinds,
+                    attempt=1,
+                )
+                reply_text, part_kinds, _seen = await self._run_support_agent(
+                    session_id, new_message
+                )
+                if not reply_text and not await self._handoff_triggered(session_id):
+                    _log.warning(
+                        "chat_turn_empty_reply_after_retry",
+                        session_id=session_id,
+                        final_part_kinds=part_kinds,
+                    )
+                    reply_text = _EMPTY_REPLY_FALLBACK
         except Exception as e:
             _log.exception("adk_execution_loop_failed", session_id=session_id, error=str(e))
             return TurnResult(reply="Maaf, terjadi kendala teknis. Mohon coba beberapa saat lagi.")
-
-        # 6. Append assistant message to history if generated
-        if reply_text:
-            updated_session = await self._adk_sessions.get_session(
-                app_name="chatbot", user_id=session_id, session_id=session_id
-            )
-            if updated_session:
-                state_history = updated_session.state.setdefault("chat_history", [])
-                await self._append_history_message(
-                    session_id, updated_session, state_history, "assistant", reply_text
-                )
 
         final_session = await self._adk_sessions.get_session(
             app_name="chatbot", user_id=session_id, session_id=session_id
@@ -274,6 +312,16 @@ class OrchestratorService:
             # Execute human escalation handoff
             handoff_payload = await self._escalate_handoff(session_id, reason)
             reply_text = None  # Clear reply so chatbot doesn't post text when handing off
+        elif reply_text:
+            # 6. Append assistant message to history (skip when handing off).
+            updated_session = await self._adk_sessions.get_session(
+                app_name="chatbot", user_id=session_id, session_id=session_id
+            )
+            if updated_session:
+                state_history = updated_session.state.setdefault("chat_history", [])
+                await self._append_history_message(
+                    session_id, updated_session, state_history, "assistant", reply_text
+                )
 
         products = _cards_from_state(session_state.get("product_carousel", []) or [])
 
@@ -413,25 +461,33 @@ class OrchestratorService:
             parts=[types.Part.from_bytes(data=audio_bytes, mime_type=audio_mime_type)],
         )
 
-        runner = self._runner_factory(self._support_agent)
         reply_text: str | None = ""
         final_event_seen = False
         final_part_kinds: list[str] = []
         try:
-            async for event in runner.run_async(
-                user_id=session_id,
-                session_id=session_id,
-                new_message=new_message,
-            ):
-                if event.is_final_response() and event.content and event.content.parts:
-                    final_event_seen = True
-                    # Scan ALL parts for text — Gemini can place the spoken reply
-                    # outside parts[0] (e.g. after function-call parts), so reading
-                    # parts[0] alone silently drops it and yields empty audio.
-                    final_part_kinds = [_part_kind(p) for p in event.content.parts]
-                    texts = [p.text for p in event.content.parts if p.text]
-                    if texts:
-                        reply_text = "".join(texts)
+            reply_text, final_part_kinds, final_event_seen = await self._run_support_agent(
+                session_id, new_message
+            )
+            # Retry once on an empty (non-handoff) reply — see handle_turn; an empty
+            # reply here would otherwise yield silent audio and the UI placeholder.
+            if not reply_text and not await self._handoff_triggered(session_id):
+                _log.warning(
+                    "voice_turn_empty_reply_text",
+                    session_id=session_id,
+                    final_part_kinds=final_part_kinds,
+                    final_event_seen=final_event_seen,
+                    attempt=1,
+                )
+                reply_text, final_part_kinds, final_event_seen = await self._run_support_agent(
+                    session_id, new_message
+                )
+                if not reply_text and not await self._handoff_triggered(session_id):
+                    _log.warning(
+                        "voice_turn_empty_reply_after_retry",
+                        session_id=session_id,
+                        final_part_kinds=final_part_kinds,
+                    )
+                    reply_text = _EMPTY_REPLY_FALLBACK
         except Exception as e:
             _log.exception("adk_voice_execution_failed", session_id=session_id, error=str(e))
             fallback_text = "Maaf, terjadi kendala teknis. Mohon coba beberapa saat lagi."
@@ -478,15 +534,13 @@ class OrchestratorService:
                     )
             except Exception as e:
                 _log.error("voice_tts_synthesis_failed", session_id=session_id, error=str(e))
-        else:
-            # The model produced no text part, so the UI shows
-            # "(no audio reply — AI may be paused or the model returned nothing)".
-            # final_part_kinds disambiguates a tool-only turn from a genuinely
-            # empty generation.
+        elif handoff_payload is None:
+            # Unexpected: empty reply that wasn't a handoff and survived the
+            # retry + fallback above. final_part_kinds disambiguates a tool-only
+            # turn from a genuinely empty generation.
             _log.warning(
-                "voice_turn_empty_reply_text",
+                "voice_turn_empty_reply_unexpected",
                 session_id=session_id,
-                handoff_triggered=session_state.get("handoff_triggered"),
                 has_transcription=bool(transcription),
                 final_event_seen=final_event_seen,
                 final_part_kinds=final_part_kinds,

@@ -21,7 +21,7 @@ from chatbot.features.chat.adapters.mock import (
     MockVoiceAdapter,
 )
 from chatbot.features.chat.ports import TextToSpeechPort
-from chatbot.features.chat.service import OrchestratorService
+from chatbot.features.chat.service import _EMPTY_REPLY_FALLBACK, OrchestratorService
 from chatbot.platform.config import get_settings
 
 
@@ -139,8 +139,12 @@ def _events(captured: list[MutableMapping[str, Any]]) -> set[str]:
 
 
 @pytest.mark.asyncio
-async def test_empty_reply_text_logs_diagnostic() -> None:
-    """Case 2: model returns no text -> TTS skipped, empty audio, warning logged."""
+async def test_empty_reply_text_retries_then_falls_back() -> None:
+    """Case 2: model returns no text twice -> retry, then a synthesized fallback.
+
+    The user must never get a blank turn: an empty (non-handoff) reply is retried
+    once, and if still empty the fallback reply is spoken instead.
+    """
     svc = _build_service(reply_text="", tts_port=MockVoiceAdapter())
 
     with capture_logs() as captured:
@@ -150,10 +154,11 @@ async def test_empty_reply_text_logs_diagnostic() -> None:
             audio_mime_type="audio/wav",
         )
 
-    assert audio_reply == b""
-    assert not result.reply
-    assert result.forwarded_to_agent is False
-    assert "voice_turn_empty_reply_text" in _events(captured)
+    assert result.reply == _EMPTY_REPLY_FALLBACK
+    assert audio_reply != b""  # fallback was synthesized, not a blank turn
+    events = _events(captured)
+    assert "voice_turn_empty_reply_text" in events
+    assert "voice_turn_empty_reply_after_retry" in events
 
 
 @pytest.mark.asyncio

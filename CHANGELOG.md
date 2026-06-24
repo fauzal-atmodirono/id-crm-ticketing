@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — intermittent empty agent replies (2026-06-24)
+
+- **"(no reply — AI may be paused or response was empty)" on text chat and "(no audio reply…)" on voice, despite a healthy turn.** Gemini occasionally returns a final response with no text part at all (an intermittent generation miss, distinct from the non-first-part case already handled). Reproduced on session `sim-7157` ("saya ingin test drive bisa?") — a clean turn with no tool effect in state and no assistant reply; the same prompt returned a proper reply 6/6 times locally, confirming non-determinism. Added a safety net in `OrchestratorService`: an empty reply that is **not** a deliberate handoff is retried once, and if still empty the user gets a graceful fallback ("Maaf, saya tidak dapat memproses balasan tadi…") instead of a blank turn. Shared by both `handle_turn` and `handle_voice_turn` via a new `_run_support_agent` helper; chat now emits `chat_turn_empty_reply_text` / `chat_turn_empty_reply_after_retry` diagnostics mirroring voice.
+
 ### Fixed — handoff history, lead profile sync, and empty voice replies (2026-06-23)
 
 - **Agent received only the last 6 messages on handoff.** Commit `3eb8ab2` made `_escalate_handoff` pass the full transcript, but `SunshineConversationsAdapter._post_business_summary` independently re-sliced it to `[-6:]`, so the agent's summary message still showed only the tail. Removed the slice — the entire conversation is now posted. (The full transcript was already persisted to Firestore; this only affected what the agent saw in-conversation.)

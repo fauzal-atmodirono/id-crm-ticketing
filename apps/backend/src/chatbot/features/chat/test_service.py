@@ -15,7 +15,7 @@ from chatbot.features.chat.adapters.mock import (
     InMemoryTicketingAdapter,
     MockVoiceAdapter,
 )
-from chatbot.features.chat.service import OrchestratorService
+from chatbot.features.chat.service import _EMPTY_REPLY_FALLBACK, OrchestratorService
 from chatbot.platform.config import get_settings
 
 
@@ -426,3 +426,54 @@ async def test_firestore_session_service() -> None:
         # 6. Test get_user_state
         user_state = await service.get_user_state(app_name="test-app", user_id="user-123")
         assert user_state == {}
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_retries_empty_reply_then_recovers() -> None:
+    """An intermittent empty (non-handoff) reply is retried once; text on the
+    second attempt is returned to the user — no blank turn."""
+    settings = get_settings()
+    replies = iter(["", "Here is the answer on the second try."])
+
+    def fake_runner_factory(_agent: Any) -> _FakeRunner:
+        return _FakeRunner(
+            reply=next(replies), session_service=svc._adk_sessions, session_id="retry-ok"
+        )
+
+    svc = OrchestratorService(
+        settings=settings,
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=InMemoryTicketingAdapter(),
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=MockVoiceAdapter(),
+        runner_factory=fake_runner_factory,
+    )
+
+    result = await svc.handle_turn(session_id="retry-ok", text="I need a test drive")
+
+    assert result.reply == "Here is the answer on the second try."
+    assert result.handoff is None
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_empty_reply_falls_back_after_retry() -> None:
+    """When both attempts are empty (non-handoff), the user gets the graceful
+    fallback instead of a blank reply."""
+    settings = get_settings()
+
+    def fake_runner_factory(_agent: Any) -> _FakeRunner:
+        return _FakeRunner(reply="", session_service=svc._adk_sessions, session_id="retry-empty")
+
+    svc = OrchestratorService(
+        settings=settings,
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=InMemoryTicketingAdapter(),
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=MockVoiceAdapter(),
+        runner_factory=fake_runner_factory,
+    )
+
+    result = await svc.handle_turn(session_id="retry-empty", text="saya ingin test drive bisa?")
+
+    assert result.reply == _EMPTY_REPLY_FALLBACK
+    assert result.handoff is None

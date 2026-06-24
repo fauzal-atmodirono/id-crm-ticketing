@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from typing import Any
+from urllib.parse import unquote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,7 +14,7 @@ from chatbot.features.chat.adapters.mock import (
     MockVoiceAdapter,
 )
 from chatbot.features.chat.router import build_chat_router
-from chatbot.features.chat.service import OrchestratorService
+from chatbot.features.chat.service import _EMPTY_REPLY_FALLBACK, OrchestratorService
 from chatbot.platform.config import get_settings
 from chatbot.platform.server import create_app
 
@@ -92,8 +93,10 @@ def test_voice_turn_returns_mp3_with_reply_header(client: TestClient) -> None:
     )
     assert response.status_code == 200
     assert response.headers["content-type"] == "audio/mpeg"
-    # FakeRunner yields nothing → reply is "" → no audio_reply, no X-Reply-Text
-    assert response.content == b""
+    # FakeRunner yields nothing → empty reply → retry → graceful fallback reply,
+    # which IS synthesized so the user never gets a blank turn.
+    assert unquote(response.headers["X-Reply-Text"]) == _EMPTY_REPLY_FALLBACK
+    assert response.content != b""
 
 
 @pytest.mark.asyncio

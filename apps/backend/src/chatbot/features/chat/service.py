@@ -72,11 +72,6 @@ _EMPTY_REPLY_FALLBACK = (
     "(Sorry, I couldn't process that — could you please repeat?)"
 )
 
-# Non-empty intro used only when the model produced a product carousel but no
-# text even after a retry — the carousel is the answer, so a brief intro fits
-# (never leave the reply blank, never use the error fallback above).
-_PRODUCT_INTRO = "Here are some models you might like:"
-
 
 class OrchestratorService:
     """Core orchestrator driving conversational turns for both Chatbot and Voicebot."""
@@ -223,36 +218,6 @@ class OrchestratorService:
         )
         return bool(session and session.state.get("handoff_triggered") is True)
 
-    async def _has_product_carousel(self, session_id: str) -> bool:
-        session = await self._adk_sessions.get_session(
-            app_name="chatbot", user_id=session_id, session_id=session_id
-        )
-        return bool(session and session.state.get("product_carousel"))
-
-    async def _resolve_empty_reply(
-        self, session_id: str, new_message: types.Content, reply_text: str
-    ) -> str | None:
-        """Ensure a non-empty reply for a non-handoff turn.
-
-        An empty reply is almost always an intermittent Gemini miss (often a
-        terminal tool call with no accompanying text). Retry once so the agent can
-        actually answer the user; if it's still empty, fall back without ever
-        leaving the turn blank — a brief product intro when a carousel was produced
-        (the carousel is the answer), otherwise a graceful generic fallback.
-        """
-        if reply_text or await self._handoff_triggered(session_id):
-            return reply_text
-
-        _log.warning("chat_turn_empty_reply_text", session_id=session_id, attempt=1)
-        reply_text, _kinds, _seen = await self._run_support_agent(session_id, new_message)
-        if reply_text or await self._handoff_triggered(session_id):
-            return reply_text
-
-        if await self._has_product_carousel(session_id):
-            return _PRODUCT_INTRO
-        _log.warning("chat_turn_empty_reply_after_retry", session_id=session_id)
-        return _EMPTY_REPLY_FALLBACK
-
     async def _clear_session_key(self, session_id: str, key: str) -> None:
         """Remove a one-shot key from persisted session state (e.g. product_carousel).
 
@@ -341,8 +306,27 @@ class OrchestratorService:
         # 5. Run the ADK Agent
         reply_text: str | None = ""
         try:
-            reply_text, _kinds, _seen = await self._run_support_agent(session_id, new_message)
-            reply_text = await self._resolve_empty_reply(session_id, new_message, reply_text)
+            reply_text, part_kinds, _seen = await self._run_support_agent(session_id, new_message)
+            # An empty reply that ISN'T a deliberate handoff is almost always an
+            # intermittent Gemini generation miss — retry once, then fall back, so
+            # the user never sees a blank turn / the "(no reply…)" placeholder.
+            if not reply_text and not await self._handoff_triggered(session_id):
+                _log.warning(
+                    "chat_turn_empty_reply_text",
+                    session_id=session_id,
+                    final_part_kinds=part_kinds,
+                    attempt=1,
+                )
+                reply_text, part_kinds, _seen = await self._run_support_agent(
+                    session_id, new_message
+                )
+                if not reply_text and not await self._handoff_triggered(session_id):
+                    _log.warning(
+                        "chat_turn_empty_reply_after_retry",
+                        session_id=session_id,
+                        final_part_kinds=part_kinds,
+                    )
+                    reply_text = _EMPTY_REPLY_FALLBACK
         except Exception as e:
             _log.exception("adk_execution_loop_failed", session_id=session_id, error=str(e))
             return TurnResult(reply="Maaf, terjadi kendala teknis. Mohon coba beberapa saat lagi.")

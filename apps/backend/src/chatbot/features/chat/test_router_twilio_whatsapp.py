@@ -40,6 +40,9 @@ def setup() -> tuple[TestClient, AsyncMock, str]:
     settings.twilio_auth_token = "test_token"
     settings.twilio_account_sid = "AC1"
     settings.twilio_whatsapp_number = "whatsapp:+60111"
+    # Pin to empty so the handler verifies against request.url, independent of
+    # whatever TWILIO_WEBHOOK_BASE_URL the real .env happens to carry.
+    settings.twilio_webhook_base_url = ""
 
     orchestrator = OrchestratorService(
         settings=settings,

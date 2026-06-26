@@ -56,6 +56,33 @@ def _handoff_dict(turn_result: Any) -> dict[str, Any] | None:
     }
 
 
+def _whatsapp_reply_text(turn_result: Any) -> str:
+    """Flatten a turn's reply + product carousel into WhatsApp-friendly text.
+
+    WhatsApp can't render the product carousel (it's a frontend widget), so the
+    model cards are serialized as a numbered text list — with description, price,
+    and link — appended under the agent's reply. Other channels keep the rich
+    carousel via `_products_list`.
+    """
+    text = (turn_result.reply or "").rstrip()
+    products = getattr(turn_result, "products", None) or []
+    if not products:
+        return text
+
+    blocks: list[str] = [text] if text else []
+    for i, p in enumerate(products, start=1):
+        header = f"{i}. {p.title}"
+        if p.price:
+            header += f" — {p.price}"
+        block = [header]
+        if p.description:
+            block.append(f"   {p.description.strip()}")
+        if p.url:
+            block.append(f"   {p.url}")
+        blocks.append("\n".join(block))
+    return "\n\n".join(blocks)
+
+
 def _products_list(turn_result: Any) -> list[dict[str, Any]]:
     return [
         {
@@ -173,8 +200,9 @@ class ChatRouter:
 
         result = await self.orchestrator.handle_turn(session_id=session_id, text=body)
 
-        if result.reply and self._twilio_adapter is not None:
-            await self._twilio_adapter.send_message(conversation_id=from_addr, text=result.reply)
+        reply_text = _whatsapp_reply_text(result)
+        if reply_text and self._twilio_adapter is not None:
+            await self._twilio_adapter.send_message(conversation_id=from_addr, text=reply_text)
 
         await self.orchestrator.capture_conversation(
             session_id,

@@ -346,9 +346,27 @@ class ChatRouter:
         events = self._human_agent_bridge.parse_webhook_events(payload)
         for event in events:
             await self._handoff_bridge.publish(event)
+            await self._relay_agent_reply_to_whatsapp(event)
 
         _log.info("sunshine_webhook_received", event_count=len(events))
         return {"status": "ok", "delivered": str(len(events))}
+
+    async def _relay_agent_reply_to_whatsapp(self, event: AgentMessageEvent) -> None:
+        """Bridge a human agent's Sunshine reply back to the customer's WhatsApp.
+
+        Web chat receives agent replies over SSE (`/chat/stream/{session_id}`);
+        WhatsApp has no such subscriber, so for `whatsapp-*` sessions we push the
+        reply out through Twilio. Other channels are unaffected.
+        """
+        if self._twilio_adapter is None or self._handoff_bridge is None:
+            return
+        session_id = await self._handoff_bridge.session_id_for(event.conversation_id)
+        if not session_id or not session_id.startswith("whatsapp-"):
+            return
+        to = "whatsapp:" + session_id[len("whatsapp-") :]
+        await self._twilio_adapter.send_message(
+            conversation_id=to, text=_sanitize_for_whatsapp(event.text)
+        )
 
     async def zendesk_support_webhook(
         self,

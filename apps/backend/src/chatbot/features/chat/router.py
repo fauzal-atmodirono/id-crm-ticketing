@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -56,29 +57,48 @@ def _handoff_dict(turn_result: Any) -> dict[str, Any] | None:
     }
 
 
+_WHATSAPP_MARKDOWN_CHARS = re.compile(r"[*_~`]+")
+
+
+def _sanitize_for_whatsapp(text: str) -> str:
+    """Strip characters WhatsApp treats as formatting and collapse whitespace.
+
+    Scraped copy carries stray '*' footnote markers, '_' and backticks; left in,
+    WhatsApp interprets `*...*`/`_..._`/`` `...` `` as bold/italic/monospace
+    toggles and garbles the message. We replace them with a space (so adjacent
+    words don't fuse) and collapse the run-on whitespace from scraped HTML.
+    """
+    cleaned = _WHATSAPP_MARKDOWN_CHARS.sub(" ", text)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def _whatsapp_reply_text(turn_result: Any) -> str:
     """Flatten a turn's reply + product carousel into WhatsApp-friendly text.
 
     WhatsApp can't render the product carousel (it's a frontend widget), so the
-    model cards are serialized as a numbered text list — with description, price,
-    and link — appended under the agent's reply. Other channels keep the rich
+    model cards are serialized as a numbered list — bold title (WhatsApp `*...*`),
+    price, sanitized description, and link. Scraped text is sanitized so stray
+    markdown characters don't garble the message. Other channels keep the rich
     carousel via `_products_list`.
     """
-    text = (turn_result.reply or "").rstrip()
+    text = _sanitize_for_whatsapp(turn_result.reply or "")
     products = getattr(turn_result, "products", None) or []
     if not products:
         return text
 
     blocks: list[str] = [text] if text else []
     for i, p in enumerate(products, start=1):
-        header = f"{i}. {p.title}"
-        if p.price:
-            header += f" — {p.price}"
+        title = _sanitize_for_whatsapp(p.title)
+        header = f"*{i}. {title}*"
+        price = _sanitize_for_whatsapp(p.price or "")
+        if price:
+            header += f" — {price}"
         block = [header]
-        if p.description:
-            block.append(f"   {p.description.strip()}")
+        desc = _sanitize_for_whatsapp(p.description or "")
+        if desc:
+            block.append(desc)
         if p.url:
-            block.append(f"   {p.url}")
+            block.append(p.url)
         blocks.append("\n".join(block))
     return "\n\n".join(blocks)
 

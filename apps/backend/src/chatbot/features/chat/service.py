@@ -101,7 +101,6 @@ class OrchestratorService:
         self._conversation_log_port: ConversationLogPort = (
             conversation_log_port or NoOpConversationLog()
         )
-        self._logged_counts: dict[str, int] = {}
 
         # Initialize ADK agents
         self._support_agent = build_ai_agent(settings, ticketing_port, knowledge_port)
@@ -386,16 +385,21 @@ class OrchestratorService:
     ) -> None:
         """Mirror new conversation turns into the support system via the gate.
 
-        Appends only the messages added since the last capture. Opens the ticket
-        when the detection gate fires, otherwise logs as a solved record.
+        The ticket id and how many messages have already been logged are persisted
+        IN THE SESSION STATE (Firestore), so a single conversation maps to a single
+        ticket and only new turns are appended — even across backend restarts or
+        multiple instances. Opens the ticket when the detection gate fires,
+        otherwise logs as a solved record.
         """
         session = await self._adk_sessions.get_session(
             app_name="chatbot", user_id=session_id, session_id=session_id
         )
-        state = session.state if session else {}
+        if session is None:
+            return
+        state = session.state
         history = state.get("chat_history", []) or []
 
-        start = self._logged_counts.get(session_id, 0)
+        start = int(state.get("conversation_logged_count", 0) or 0)
         new_msgs = history[start:]
         if not new_msgs:
             return
@@ -403,19 +407,39 @@ class OrchestratorService:
         status = "open" if should_open_ticket(state) else "solved"
         subject = f"[{channel}] Conversation {session_id}"
         try:
-            ticket_id = await self._conversation_log_port.ensure_conversation_ticket(
-                session_id=session_id,
-                subject=subject,
-                customer_name=customer_name,
-                customer_phone=customer_phone,
-            )
+            ticket_id = state.get("conversation_ticket_id")
+            if not ticket_id:
+                ticket_id = await self._conversation_log_port.ensure_conversation_ticket(
+                    session_id=session_id,
+                    subject=subject,
+                    customer_name=customer_name,
+                    customer_phone=customer_phone,
+                )
             body = "\n".join(f"{m['role'].upper()}: {m['text']}" for m in new_msgs)
             await self._conversation_log_port.append_conversation_comment(
                 ticket_id, body, status=status
             )
-            self._logged_counts[session_id] = len(history)
+            state["conversation_ticket_id"] = ticket_id
+            state["conversation_logged_count"] = len(history)
+            await self._persist_session_state(session)
         except Exception as e:
             _log.error("capture_conversation_failed", session_id=session_id, error=str(e))
+
+    async def _persist_session_state(self, session: Any) -> None:
+        """Write back mutations to ``session.state``.
+
+        The in-memory store and test doubles hand back the live object (mutation
+        already sticks), so only the Firestore store needs an explicit write.
+        """
+        if isinstance(self._adk_sessions, FirestoreSessionService):
+            sessions_service = self._adk_sessions
+
+            def _write() -> None:
+                sessions_service._collection().document(session.id).set(
+                    session.model_dump(mode="json")
+                )
+
+            await asyncio.to_thread(_write)
 
     async def _transcribe_audio(
         self,

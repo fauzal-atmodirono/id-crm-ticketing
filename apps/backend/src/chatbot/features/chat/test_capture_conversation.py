@@ -63,7 +63,9 @@ class _FakeLog(ConversationLogPort):
         self.appended.append((ticket_id, text, status))
 
 
-def _orchestrator(log: ConversationLogPort) -> OrchestratorService:
+def _orchestrator(
+    log: ConversationLogPort, sessions: _LiveSessions | None = None
+) -> OrchestratorService:
     settings = get_settings()
     orch = OrchestratorService(
         settings=settings,
@@ -77,8 +79,9 @@ def _orchestrator(log: ConversationLogPort) -> OrchestratorService:
     # Pin to a live-session double so the tests' direct state mutations (which
     # simulate what the agent tool / handle_turn persist in production)
     # round-trip. Both the dev .env's firestore store and ADK's in-memory store
-    # deep-copy state on get_session, which would defeat the simulation.
-    orch._adk_sessions = _LiveSessions()  # type: ignore[assignment]
+    # deep-copy state on get_session, which would defeat the simulation. A shared
+    # `sessions` lets two orchestrators model a restart against the same store.
+    orch._adk_sessions = sessions or _LiveSessions()  # type: ignore[assignment]
     return orch
 
 
@@ -166,3 +169,34 @@ async def test_only_new_messages_appended() -> None:
     assert len(log.appended) == 2
     assert "second" in log.appended[1][1]
     assert "first" not in log.appended[1][1]
+
+
+@pytest.mark.asyncio
+async def test_ticket_reused_across_restart() -> None:
+    log = _FakeLog()
+    sessions = _LiveSessions()  # the persisted (Firestore-like) session store
+    orch1 = _orchestrator(log, sessions)
+    await _seed_history(
+        orch1,
+        "whatsapp-+60555",
+        [{"role": "user", "text": "hi"}, {"role": "assistant", "text": "hello"}],
+    )
+    await orch1.capture_conversation("whatsapp-+60555")
+    assert log.ensure_calls == 1
+
+    # Simulate a backend restart: brand-new orchestrator (empty in-memory caches)
+    # reading the SAME persisted session store.
+    orch2 = _orchestrator(log, sessions)
+    session = await sessions.get_session(
+        app_name="chatbot", user_id="whatsapp-+60555", session_id="whatsapp-+60555"
+    )
+    session.state["chat_history"].extend(
+        [{"role": "user", "text": "more"}, {"role": "assistant", "text": "sure"}]
+    )
+    await orch2.capture_conversation("whatsapp-+60555")
+
+    # No new ticket created after the restart; only the new turn is appended.
+    assert log.ensure_calls == 1
+    assert len(log.appended) == 2
+    assert "more" in log.appended[1][1]
+    assert "hi" not in log.appended[1][1]

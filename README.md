@@ -1,13 +1,13 @@
 # Proton Conversational AI
 
-A Gemini-powered conversational AI agent for customer support, serving **text chat** and **voice** through a single agent core, with pluggable CRM integration (**Zendesk** or **Chatwoot + Zammad**), Knowledge-Base grounding via **Vertex AI Search**, and **inline human-agent handoff** via the Sunshine Conversations bridge.
+A Gemini-powered conversational AI agent for customer support, serving **text chat**, **voice**, and **WhatsApp** (via Twilio) through a single agent core, with pluggable CRM integration (**Zendesk** or **Chatwoot + Zammad**), Knowledge-Base grounding via **Vertex AI Search**, and **inline human-agent handoff** — over Server-Sent Events in the web UI, or two-way through a single Zendesk ticket on WhatsApp, closing with a CSAT survey.
 
 Two apps in one repo:
 
 - **`apps/backend/`** — Python / FastAPI / Google ADK (over Gemini) — webhook handlers + frontend API.
 - **`apps/frontend/`** — Vue 3 / Vite / TypeScript / Pinia — browser UI with text chat and microphone-driven voice.
 
-Voice goes end-to-end through Gemini: the browser captures audio with `MediaRecorder`, decodes the Opus stream client-side and re-encodes to 16 kHz mono WAV (Gemini accepts WAV natively), the backend forwards it as a multimodal `Part` to the same ADK runner used for text turns, and Gemini TTS (`gemini-2.5-flash-tts`) synthesizes the reply. No Twilio, no separate Speech-to-Text step.
+Voice goes end-to-end through Gemini: the browser captures audio with `MediaRecorder`, decodes the Opus stream client-side and re-encodes to 16 kHz mono WAV (Gemini accepts WAV natively), the backend forwards it as a multimodal `Part` to the same ADK runner used for text turns, and Gemini TTS (`gemini-2.5-flash-tts`) synthesizes the reply. The voice path itself needs no separate Speech-to-Text step. **WhatsApp** is a separate inbound channel: Twilio posts to a signature-verified webhook, the same agent core answers, and replies go back out via the Twilio REST API (see Highlights).
 
 ---
 
@@ -22,6 +22,9 @@ Voice goes end-to-end through Gemini: the browser captures audio with `MediaReco
 - **Pluggable CRM** — swap Zendesk for Chatwoot/Zammad via configuration.
 - **Tool-using LLM** — knowledge-base search and human escalation as Gemini tools, with explicit prompt rules for `NO_MATCHES`, direct human requests, and negative sentiment.
 - **Automated handoff** — keyword/sentiment-triggered escalation produces a structured JSON summary, attaches it to a Zendesk Support ticket attributed to a session-scoped pseudo-user, AND opens the Sunshine Conversations conversation for live chat.
+- **WhatsApp channel (Twilio)** — `POST /webhooks/twilio-whatsapp` (HMAC-SHA1 signature-verified) routes `whatsapp-{E164}` sessions through the same agent core; replies (text, flattened product list, and image cards via Twilio media) go back over the Twilio REST API. Every conversation is mirrored into **one** Zendesk Support ticket via a detection gate — actionable → `open`, routine → `solved` log — keyed by `external_id = session_id`, deduped and restart-safe.
+- **Single-ticket two-way WhatsApp handoff** — on handoff the AI pauses and the customer is told a human is taking over; customer messages become private notes and the agent's public reply (via `POST /webhooks/zendesk-support`) relays back to WhatsApp. A persisted `active → paused → awaiting_survey → active` state machine routes each message. The web/Sunshine path is untouched.
+- **Channel-agnostic CSAT** — when the agent resolves the ticket (`POST /webhooks/zendesk-handback`), the customer gets a 1–5 survey: text on WhatsApp, a `CsatSurvey.vue` widget (driven by a `survey` SSE event + `POST /chat/csat`) in the web UI. Both share one `record_csat` path — `⭐` comment, `csat_N` tag, `csat_score` — then the AI resumes.
 - **Local-first** — in-memory mock adapters let the full backend test suite run with zero external dependencies. `HANDOFF_STORE=memory` keeps Firestore optional in dev.
 
 ---
@@ -74,8 +77,12 @@ All backend routes:
 |--------|-------------------------------|--------------------------------------------------------------|
 | GET    | `/`                           | Health check (providers + model)                             |
 | POST   | `/chat/turn`                  | Text turn — JSON in, JSON out (used by the Vue app). Returns `{reply, language, sentiment, handoff, forwarded_to_agent}`. |
-| GET    | `/chat/stream/{session_id}`   | Server-Sent Events stream of `agent_message` events for a handed-off session. |
+| GET    | `/chat/stream/{session_id}`   | Server-Sent Events stream of `agent_message` and `survey` events for a handed-off session. |
+| POST   | `/chat/csat`                  | Web CSAT submission — `{session_id, score}` (1–5) → records the rating. |
 | POST   | `/voice/turn`                 | Voice turn — multipart audio in, `audio/mpeg` out + `X-Reply-Text` / `X-Handoff-*` headers. |
+| POST   | `/webhooks/twilio-whatsapp`   | Inbound WhatsApp message from Twilio (signature-verified). Runs the agent, replies via Twilio, captures to Zendesk. |
+| POST   | `/webhooks/zendesk-support`   | Public agent reply on a Support ticket → relays to the SSE stream (web) or WhatsApp (Twilio). |
+| POST   | `/webhooks/zendesk-handback`  | Ticket solved/closed → unpauses the AI and starts the CSAT survey. |
 | POST   | `/webhooks/chatwoot`          | Chatwoot inbound message webhook.                            |
 | POST   | `/webhooks/zendesk`           | Zendesk Sunshine Conversations webhook (incoming-to-bot direction). |
 | POST   | `/webhooks/sunshine`          | Sunshine Conversations message events (agent → customer direction; HMAC-verified). |
@@ -139,6 +146,10 @@ Backend settings load from `apps/backend/.env`. See [.env.example](apps/backend/
 | `KNOWLEDGE_PROVIDER`        | `mock`, `zendesk`, or `vertex_search`                  | `mock`                          |
 | `VERTEX_SEARCH_*`           | Project / location / engine / data store ids           | —                               |
 | `SUNSHINE_WEBHOOK_SECRET`   | HMAC secret to verify inbound `/webhooks/sunshine` POSTs | —                               |
+| `ZENDESK_SUPPORT_WEBHOOK_SECRET` | Shared secret (`X-Proton-Webhook-Secret`) for `/webhooks/zendesk-support` + `/webhooks/zendesk-handback` | —                |
+| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | Twilio credentials — enable the WhatsApp channel when both are set | —                |
+| `TWILIO_WHATSAPP_NUMBER`    | WhatsApp sender, e.g. `whatsapp:+14155238886`          | —                               |
+| `TWILIO_WEBHOOK_BASE_URL`   | Public https base for signature verification behind a tunnel/proxy | —                    |
 | `HANDOFF_STORE`             | `memory` (dev) or `firestore` (prod-grade persistence) | `memory`                        |
 | `FIRESTORE_PROJECT_ID`      | GCP project hosting the Firestore database             | `lv-playground-genai`           |
 | `FIRESTORE_DATABASE_ID`     | Firestore database id (e.g. `proton-db`)               | `proton-db`                     |

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-from typing import Any
-from unittest.mock import AsyncMock
-
 import base64
 import hashlib
 import hmac
+from collections.abc import AsyncGenerator
+from typing import Any
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
@@ -78,5 +77,7 @@ def test_survey_valid_rating_records_and_thanks() -> None:
     _post(client, "5")
 
     orch.record_csat.assert_awaited_once()
-    assert orch.record_csat.await_args.args[1] == 5
+    call = orch.record_csat.await_args
+    assert call is not None
+    assert call.args[1] == 5
     twilio.send_message.assert_awaited()  # thank-you sent

@@ -194,6 +194,7 @@ async def test_ticket_reused_across_restart() -> None:
     session = await sessions.get_session(
         app_name="chatbot", user_id="whatsapp-+60555", session_id="whatsapp-+60555"
     )
+    assert session is not None
     session.state["chat_history"].extend(
         [{"role": "user", "text": "more"}, {"role": "assistant", "text": "sure"}]
     )

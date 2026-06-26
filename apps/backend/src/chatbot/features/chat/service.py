@@ -520,6 +520,39 @@ class OrchestratorService:
             ticket_id, f"Customer (WhatsApp): {text}"
         )
 
+    async def begin_survey(self, session_id: str) -> None:
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        if session is None:
+            return
+        session.state[_HANDOFF_STATE_KEY] = WHATSAPP_AWAITING_SURVEY
+        session.state.pop("csat_nudged", None)
+        await self._persist_session_state(session)
+
+    async def consume_survey_nudge(self, session_id: str) -> bool:
+        """Return True the first time (and mark nudged); False thereafter."""
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        if session is None:
+            return False
+        if session.state.get("csat_nudged"):
+            return False
+        session.state["csat_nudged"] = True
+        await self._persist_session_state(session)
+        return True
+
+    async def resume_ai(self, session_id: str) -> None:
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        if session is None:
+            return
+        session.state[_HANDOFF_STATE_KEY] = WHATSAPP_ACTIVE
+        session.state.pop("csat_nudged", None)
+        await self._persist_session_state(session)
+
     async def _persist_session_state(self, session: Any) -> None:
         """Write back mutations to ``session.state``.
 

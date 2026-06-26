@@ -86,6 +86,19 @@ def _sanitize_for_whatsapp(text: str) -> str:
 
 _MAX_WHATSAPP_CARDS = 5
 
+_HANDOFF_MESSAGE = (
+    "You're being connected to a human agent who will continue helping you here shortly. \U0001f9d1‍\U0001f4bc"
+)
+_SURVEY_MESSAGE = (
+    "Thanks for chatting with our support team! How would you rate your experience? "
+    "Reply with a number 1-5 (1 = poor, 5 = excellent)."
+)
+_CSAT_NUDGE = "Please reply with a number 1-5."
+_CSAT_THANKS = (
+    "Thank you for your feedback! \U0001f64f You're back with our automated assistant "
+    "whenever you need anything."
+)
+
 
 def _card_caption(product: Any) -> str:
     """Build the caption for a single WhatsApp image card (bold title + details)."""
@@ -247,17 +260,50 @@ class ChatRouter:
         profile_name = params.get("ProfileName")
         _log.info("twilio_whatsapp_received", session_id=session_id)
 
+        state = await self.orchestrator.whatsapp_state(session_id)
+        if state == "awaiting_survey":
+            await self._handle_whatsapp_survey(from_addr, session_id, body)
+            return Response(status_code=200)
+        if state == "paused":
+            await self.orchestrator.forward_whatsapp_to_agent(session_id, body)
+            return Response(status_code=200)
+
         result = await self.orchestrator.handle_turn(session_id=session_id, text=body)
 
-        await self._send_whatsapp_reply(from_addr, result)
+        if await self.orchestrator.needs_whatsapp_handoff(session_id):
+            summary = result.reply or "Customer requested a human agent."
+            await self.orchestrator.begin_whatsapp_handoff(
+                session_id, summary, customer_name=profile_name, customer_phone=e164
+            )
+            if self._twilio_adapter is not None:
+                await self._twilio_adapter.send_message(
+                    conversation_id=from_addr, text=_HANDOFF_MESSAGE
+                )
+        else:
+            await self._send_whatsapp_reply(from_addr, result)
 
         await self.orchestrator.capture_conversation(
-            session_id,
-            channel="WhatsApp",
-            customer_name=profile_name,
-            customer_phone=e164,
+            session_id, channel="WhatsApp", customer_name=profile_name, customer_phone=e164
         )
         return Response(status_code=200)
+
+    async def _handle_whatsapp_survey(self, from_addr: str, session_id: str, body: str) -> None:
+        score = OrchestratorService.parse_csat(body)
+        if score is not None:
+            await self.orchestrator.record_csat(session_id, score, channel="WhatsApp")
+            if self._twilio_adapter is not None:
+                await self._twilio_adapter.send_message(conversation_id=from_addr, text=_CSAT_THANKS)
+            return
+        # Invalid: nudge once, then stop trapping the customer.
+        if await self.orchestrator.consume_survey_nudge(session_id):
+            if self._twilio_adapter is not None:
+                await self._twilio_adapter.send_message(conversation_id=from_addr, text=_CSAT_NUDGE)
+            return
+        # Second invalid → resume AI and process this message normally.
+        await self.orchestrator.resume_ai(session_id)
+        result = await self.orchestrator.handle_turn(session_id=session_id, text=body)
+        await self._send_whatsapp_reply(from_addr, result)
+        await self.orchestrator.capture_conversation(session_id, channel="WhatsApp")
 
     async def _send_whatsapp_reply(self, to: str, result: Any) -> None:
         """Send the AI reply to WhatsApp.

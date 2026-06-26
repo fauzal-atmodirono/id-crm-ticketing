@@ -22,3 +22,6 @@ class NoOpConversationLog(ConversationLogPort):
         status: str | None = None,  # noqa: ARG002
     ) -> None:
         return None
+
+    async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:  # noqa: ARG002
+        return None

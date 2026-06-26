@@ -150,3 +150,7 @@ class ConversationLogPort(Protocol):
     ) -> None:
         """Append a private comment, optionally setting ticket status."""
         ...
+
+    async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:
+        """Add a single tag to the ticket (additive; does not replace tags)."""
+        ...

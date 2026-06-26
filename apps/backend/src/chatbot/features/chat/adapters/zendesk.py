@@ -212,6 +212,18 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
                 "zendesk_append_conversation_comment_failed", ticket_id=ticket_id, error=str(e)
             )
 
+    async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:
+        subdomain = self._settings.zendesk_subdomain
+        url = f"https://{subdomain}.zendesk.com/api/v2/tickets/{ticket_id}/tags.json"
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.put(
+                    url, json={"tags": [tag]}, headers=self._support_headers(), timeout=10.0
+                )
+                res.raise_for_status()
+        except Exception as e:
+            _log.error("zendesk_add_ticket_tag_failed", ticket_id=ticket_id, error=str(e))
+
     async def pause_ai_for_session(self, session_id: str) -> None:
         _log.info("pausing_ai_for_zendesk_session", session_id=session_id)
         self._paused_sessions.add(session_id)

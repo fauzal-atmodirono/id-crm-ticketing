@@ -6,6 +6,7 @@ from google.adk.agents import Agent
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
+from chatbot.features.chat.product_cleanup import clean_description, clean_title, dedupe_cards
 from chatbot.features.chat.prompts import AGENT_INSTRUCTION, SUMMARIZER_INSTRUCTION
 
 if TYPE_CHECKING:
@@ -109,8 +110,8 @@ def build_ai_agent(
         articles = await knowledge_port.search_kb(query, limit=6)
         cards = [
             {
-                "title": a.title,
-                "description": a.content[:200],
+                "title": clean_title(a.title),
+                "description": clean_description(a.content),
                 "image_url": a.image_urls[0] if a.image_urls else None,
                 "price": a.price,
                 "url": a.url,
@@ -118,7 +119,9 @@ def build_ai_agent(
             for a in articles
             if a.source_type == "model"
         ]
-        tool_context.state["product_carousel"] = cards
+        # Vertex Search returns the same model page more than once; dedupe so the
+        # carousel (and the WhatsApp text rendering) shows each model only once.
+        tool_context.state["product_carousel"] = dedupe_cards(cards)
         return f"[internal] prepared {len(cards)} model cards for the carousel."
 
     async def emit_handoff_tool(

@@ -11,7 +11,7 @@ from urllib.parse import quote
 import structlog
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.handoff_bridge import HandoffBridge, SurveyEvent
@@ -33,6 +33,11 @@ _log = structlog.get_logger(__name__)
 class ChatTurnRequest(BaseModel):
     session_id: str
     text: str
+
+
+class CsatRequest(BaseModel):
+    session_id: str
+    score: int = Field(ge=1, le=5)
 
 
 class ChatTurnResponse(BaseModel):
@@ -192,6 +197,7 @@ class ChatRouter:
             methods=["POST"],
             response_model=ChatTurnResponse,
         )
+        self.router.add_api_route("/chat/csat", self.chat_csat, methods=["POST"])
         self.router.add_api_route(
             "/chat/stream/{session_id}",
             self.chat_stream,
@@ -529,6 +535,13 @@ class ChatRouter:
             forwarded_to_agent=result.forwarded_to_agent,
             products=_products_list(result),
         )
+
+    async def chat_csat(self, payload: CsatRequest) -> dict[str, str]:
+        await self.orchestrator.record_csat(payload.session_id, payload.score, channel="web")
+        return {
+            "status": "ok",
+            "message": "Thank you for your feedback!",
+        }
 
     async def chat_stream(self, session_id: str) -> StreamingResponse:
         """SSE stream of human-agent messages for a handed-off session.

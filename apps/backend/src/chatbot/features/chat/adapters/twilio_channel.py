@@ -28,23 +28,31 @@ class TwilioChannelAdapter(ChatPort):
             f"{self._settings.twilio_account_sid}/Messages.json"
         )
 
-    async def _post_message(self, client: Any, to: str, text: str) -> None:
+    async def _post_message(
+        self, client: Any, to: str, text: str, media_url: str | None = None
+    ) -> None:
+        data = {
+            "From": self._settings.twilio_whatsapp_number,
+            "To": to,
+            "Body": text,
+        }
+        if media_url:
+            # WhatsApp renders the image as a card with the Body as its caption.
+            data["MediaUrl"] = media_url
         res = await client.post(
             self._messages_url(),
-            data={
-                "From": self._settings.twilio_whatsapp_number,
-                "To": to,
-                "Body": text,
-            },
+            data=data,
             auth=(self._settings.twilio_account_sid, self._settings.twilio_auth_token),
             timeout=10.0,
         )
         res.raise_for_status()
 
-    async def send_message(self, conversation_id: str, text: str) -> None:
-        _log.info("sending_twilio_whatsapp_reply", to=conversation_id)
+    async def send_message(
+        self, conversation_id: str, text: str, media_url: str | None = None
+    ) -> None:
+        _log.info("sending_twilio_whatsapp_reply", to=conversation_id, has_media=bool(media_url))
         try:
             async with httpx.AsyncClient() as client:
-                await self._post_message(client, conversation_id, text)
+                await self._post_message(client, conversation_id, text, media_url)
         except Exception as e:
             _log.error("twilio_whatsapp_reply_failed", to=conversation_id, error=str(e))

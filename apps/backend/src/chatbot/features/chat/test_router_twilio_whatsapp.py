@@ -16,6 +16,7 @@ from chatbot.features.chat.adapters.mock import (
     InMemoryTicketingAdapter,
     MockVoiceAdapter,
 )
+from chatbot.features.chat.models import ProductCard, TurnResult
 from chatbot.features.chat.router import build_chat_router
 from chatbot.features.chat.service import OrchestratorService
 from chatbot.platform.config import get_settings
@@ -80,6 +81,68 @@ def test_valid_request_runs_turn_and_replies(setup: tuple[TestClient, AsyncMock,
     # Empty FakeRunner → fallback reply is produced and sent via Twilio.
     assert twilio.send_message.await_count == 1
     assert twilio.send_message.await_args.kwargs["conversation_id"] == "whatsapp:+60123"
+
+
+def test_products_with_images_are_sent_as_image_cards() -> None:
+    settings = get_settings()
+    settings.twilio_auth_token = "test_token"
+    settings.twilio_account_sid = "AC1"
+    settings.twilio_whatsapp_number = "whatsapp:+60111"
+    settings.twilio_webhook_base_url = ""
+
+    orchestrator = OrchestratorService(
+        settings=settings,
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=InMemoryTicketingAdapter(),
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=MockVoiceAdapter(),
+        runner_factory=lambda _agent: _FakeRunner(),
+    )
+    cards = [
+        ProductCard(
+            title="Proton X50",
+            description="SUV",
+            price="RM 86,300",
+            image_url="https://img/x50.jpg",
+            url="https://p/x50",
+        ),
+        ProductCard(
+            title="Proton S70",
+            description="Sedan",
+            price="RM 73,800",
+            image_url="https://img/s70.jpg",
+            url="https://p/s70",
+        ),
+    ]
+    orchestrator.handle_turn = AsyncMock(  # type: ignore[method-assign]
+        return_value=TurnResult(
+            reply="Here are some models:",
+            language="en",
+            sentiment=None,
+            handoff=None,
+            products=cards,
+        )
+    )
+    orchestrator.capture_conversation = AsyncMock()  # type: ignore[method-assign]
+
+    twilio = AsyncMock()
+    app = create_app(settings)
+    app.include_router(build_chat_router(orchestrator, twilio_adapter=twilio))
+    client = TestClient(app)
+
+    params = {"From": "whatsapp:+60123", "Body": "models?", "MessageSid": "SM1"}
+    sig = _sign("test_token", "http://testserver/webhooks/twilio-whatsapp", params)
+    res = client.post("/webhooks/twilio-whatsapp", data=params, headers={"X-Twilio-Signature": sig})
+
+    assert res.status_code == 200
+    # 1 lead-in text + 2 image cards.
+    assert twilio.send_message.await_count == 3
+    media_calls = [c for c in twilio.send_message.await_args_list if c.kwargs.get("media_url")]
+    assert [c.kwargs["media_url"] for c in media_calls] == [
+        "https://img/x50.jpg",
+        "https://img/s70.jpg",
+    ]
+    assert "*Proton X50*" in media_calls[0].kwargs["text"]
 
 
 def test_signature_verified_against_public_base_url(

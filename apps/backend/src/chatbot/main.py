@@ -108,7 +108,7 @@ def bootstrap_application() -> FastAPI:
     )
 
     # --- Twilio channel (outbound WhatsApp) ---
-    twilio_adapter: ChatPort | None = None
+    twilio_adapter: TwilioChannelAdapter | None = None
     if settings.twilio_account_sid and settings.twilio_auth_token:
         twilio_adapter = TwilioChannelAdapter(settings)
 

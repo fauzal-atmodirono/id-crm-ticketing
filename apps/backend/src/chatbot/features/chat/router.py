@@ -13,9 +13,10 @@ from fastapi import APIRouter, File, Form, Header, HTTPException, Request, Respo
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.models import AgentMessageEvent
-from chatbot.features.chat.ports import ChatPort, HumanAgentBridgePort
+from chatbot.features.chat.ports import HumanAgentBridgePort
 from chatbot.features.chat.schemas import (
     ChatwootWebhookPayload,
     TtsRequest,
@@ -72,6 +73,23 @@ def _sanitize_for_whatsapp(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+_MAX_WHATSAPP_CARDS = 5
+
+
+def _card_caption(product: Any) -> str:
+    """Build the caption for a single WhatsApp image card (bold title + details)."""
+    caption = f"*{_sanitize_for_whatsapp(product.title)}*"
+    price = _sanitize_for_whatsapp(getattr(product, "price", "") or "")
+    if price:
+        caption += f" — {price}"
+    desc = _sanitize_for_whatsapp(getattr(product, "description", "") or "")
+    if desc:
+        caption += f"\n{desc}"
+    if getattr(product, "url", None):
+        caption += f"\n{product.url}"
+    return caption
+
+
 def _whatsapp_reply_text(turn_result: Any) -> str:
     """Flatten a turn's reply + product carousel into WhatsApp-friendly text.
 
@@ -124,7 +142,7 @@ class ChatRouter:
         orchestrator: OrchestratorService,
         handoff_bridge: HandoffBridge | None = None,
         human_agent_bridge: HumanAgentBridgePort | None = None,
-        twilio_adapter: ChatPort | None = None,
+        twilio_adapter: TwilioChannelAdapter | None = None,
     ) -> None:
         self.orchestrator = orchestrator
         self._handoff_bridge = handoff_bridge
@@ -220,9 +238,7 @@ class ChatRouter:
 
         result = await self.orchestrator.handle_turn(session_id=session_id, text=body)
 
-        reply_text = _whatsapp_reply_text(result)
-        if reply_text and self._twilio_adapter is not None:
-            await self._twilio_adapter.send_message(conversation_id=from_addr, text=reply_text)
+        await self._send_whatsapp_reply(from_addr, result)
 
         await self.orchestrator.capture_conversation(
             session_id,
@@ -231,6 +247,36 @@ class ChatRouter:
             customer_phone=e164,
         )
         return Response(status_code=200)
+
+    async def _send_whatsapp_reply(self, to: str, result: Any) -> None:
+        """Send the AI reply to WhatsApp.
+
+        When the turn produced model cards WITH images, send them as a sequence
+        of image cards (lead-in text + one media message per model) — the closest
+        thing to a carousel the WhatsApp sandbox allows without approved
+        templates. Otherwise fall back to a single flattened text reply.
+        """
+        adapter = self._twilio_adapter
+        if adapter is None:
+            return
+
+        products = getattr(result, "products", None) or []
+        cards = [p for p in products if getattr(p, "image_url", None)][:_MAX_WHATSAPP_CARDS]
+        if cards:
+            lead = _sanitize_for_whatsapp(result.reply or "")
+            if lead:
+                await adapter.send_message(conversation_id=to, text=lead)
+            for product in cards:
+                await adapter.send_message(
+                    conversation_id=to,
+                    text=_card_caption(product),
+                    media_url=product.image_url,
+                )
+            return
+
+        text = _whatsapp_reply_text(result)
+        if text:
+            await adapter.send_message(conversation_id=to, text=text)
 
     async def zendesk_webhook(self, payload: ZendeskWebhookPayload) -> dict[str, str]:
         for event in payload.events:
@@ -496,7 +542,7 @@ def build_chat_router(
     orchestrator: OrchestratorService,
     handoff_bridge: HandoffBridge | None = None,
     human_agent_bridge: HumanAgentBridgePort | None = None,
-    twilio_adapter: ChatPort | None = None,
+    twilio_adapter: TwilioChannelAdapter | None = None,
 ) -> APIRouter:
     """Builds and returns the configured FastAPI router instance."""
     return ChatRouter(

@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     zammad_api_token: str = ""
     zammad_enabled: bool = True
 
+    # Twilio (WhatsApp Phase A; Phone Phase C). Empty by default so dev
+    # environments without Twilio credentials still boot.
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_whatsapp_number: str = ""  # e.g. "whatsapp:+60123456789"
+    twilio_phone_number: str = ""  # e.g. "+60123456789"
+    twilio_webhook_base_url: str = ""  # public https base for webhooks (ngrok in dev)
+
     # Voice settings
     voice_default_lang: str = "en-US"
     gemini_tts_model: str = "gemini-2.5-flash-tts"

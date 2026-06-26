@@ -17,6 +17,7 @@ export const useChatStore = defineStore('chat', () => {
   ]);
   const isSending = ref<boolean>(false);
   const handoff = ref<HandoffPayload | null>(null);
+  const surveyRequested = ref<boolean>(false);
 
   // Computed: an agent stream is live whenever we hold a handoff payload that
   // advertised live_chat_available.
@@ -36,6 +37,9 @@ export const useChatStore = defineStore('chat', () => {
   function attachAgentStream(): void {
     closeAgentStream();
     const source = openAgentStream(sessionId.value);
+    source.addEventListener('survey', () => {
+      surveyRequested.value = true;
+    });
     source.addEventListener('agent_message', (e: MessageEvent<string>) => {
       try {
         const evt = JSON.parse(e.data) as AgentMessageEvent;
@@ -62,6 +66,10 @@ export const useChatStore = defineStore('chat', () => {
     agentStream = source;
   }
 
+  function dismissSurvey(): void {
+    surveyRequested.value = false;
+  }
+
   function resetSession(): void {
     closeAgentStream();
     sessionId.value = `sim-${Math.floor(Math.random() * 9999)}`;
@@ -69,6 +77,7 @@ export const useChatStore = defineStore('chat', () => {
       { role: 'system', text: `New session: ${sessionId.value}` },
     ];
     handoff.value = null;
+    surveyRequested.value = false;
   }
 
   async function send(text: string): Promise<void> {
@@ -138,7 +147,9 @@ export const useChatStore = defineStore('chat', () => {
     isSending,
     handoff,
     isLiveChatActive,
+    surveyRequested,
     send,
+    dismissSurvey,
     resetSession,
   };
 });

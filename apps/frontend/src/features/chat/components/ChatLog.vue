@@ -3,6 +3,7 @@ import { ref, watch, nextTick, onMounted } from 'vue';
 import { renderMarkdown } from '@/features/chat/markdown';
 import { useChatStore } from '@/features/chat/store/chat.store';
 import ProductCarousel from '@/features/chat/components/ProductCarousel.vue';
+import CsatSurvey from '@/features/chat/components/CsatSurvey.vue';
 
 const chat = useChatStore();
 const logEl = ref<HTMLElement | null>(null);
@@ -49,6 +50,11 @@ onMounted(() => {
       />
       <footer v-if="msg.meta" class="meta">{{ msg.meta }}</footer>
     </article>
+    <CsatSurvey
+      v-if="chat.surveyRequested"
+      :session-id="chat.sessionId"
+      @done="chat.dismissSurvey"
+    />
   </div>
 </template>
 

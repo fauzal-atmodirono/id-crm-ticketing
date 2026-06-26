@@ -82,9 +82,13 @@ def _orchestrator(log: ConversationLogPort) -> OrchestratorService:
     return orch
 
 
-async def _seed_history(orch: OrchestratorService, session_id: str, msgs: list[dict[str, Any]]) -> None:
+async def _seed_history(
+    orch: OrchestratorService, session_id: str, msgs: list[dict[str, Any]]
+) -> None:
     session = await orch._adk_sessions.create_session(
-        app_name="chatbot", user_id=session_id, session_id=session_id,
+        app_name="chatbot",
+        user_id=session_id,
+        session_id=session_id,
         state={"session_id": session_id, "chat_history": msgs},
     )
     assert session is not None
@@ -94,10 +98,14 @@ async def _seed_history(orch: OrchestratorService, session_id: str, msgs: list[d
 async def test_routine_conversation_logs_solved() -> None:
     log = _FakeLog()
     orch = _orchestrator(log)
-    await _seed_history(orch, "whatsapp-+60123", [
-        {"role": "user", "text": "what time do you open?"},
-        {"role": "assistant", "text": "9am-6pm daily."},
-    ])
+    await _seed_history(
+        orch,
+        "whatsapp-+60123",
+        [
+            {"role": "user", "text": "what time do you open?"},
+            {"role": "assistant", "text": "9am-6pm daily."},
+        ],
+    )
 
     await orch.capture_conversation("whatsapp-+60123", channel="WhatsApp")
 
@@ -112,14 +120,19 @@ async def test_routine_conversation_logs_solved() -> None:
 async def test_flagged_conversation_logs_open() -> None:
     log = _FakeLog()
     orch = _orchestrator(log)
-    await _seed_history(orch, "whatsapp-+60999", [
-        {"role": "user", "text": "my car broke down, this is unacceptable"},
-        {"role": "assistant", "text": "I'm sorry, let me help."},
-    ])
+    await _seed_history(
+        orch,
+        "whatsapp-+60999",
+        [
+            {"role": "user", "text": "my car broke down, this is unacceptable"},
+            {"role": "assistant", "text": "I'm sorry, let me help."},
+        ],
+    )
     # Simulate the gate firing via the agent tool.
     session = await orch._adk_sessions.get_session(
         app_name="chatbot", user_id="whatsapp-+60999", session_id="whatsapp-+60999"
     )
+    assert session is not None
     session.state["ticket_flagged"] = True
 
     await orch.capture_conversation("whatsapp-+60999")
@@ -131,15 +144,20 @@ async def test_flagged_conversation_logs_open() -> None:
 async def test_only_new_messages_appended() -> None:
     log = _FakeLog()
     orch = _orchestrator(log)
-    await _seed_history(orch, "whatsapp-+60777", [
-        {"role": "user", "text": "first"},
-        {"role": "assistant", "text": "reply one"},
-    ])
+    await _seed_history(
+        orch,
+        "whatsapp-+60777",
+        [
+            {"role": "user", "text": "first"},
+            {"role": "assistant", "text": "reply one"},
+        ],
+    )
     await orch.capture_conversation("whatsapp-+60777")
 
     session = await orch._adk_sessions.get_session(
         app_name="chatbot", user_id="whatsapp-+60777", session_id="whatsapp-+60777"
     )
+    assert session is not None
     session.state["chat_history"].extend(
         [{"role": "user", "text": "second"}, {"role": "assistant", "text": "reply two"}]
     )

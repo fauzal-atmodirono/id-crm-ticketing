@@ -4,7 +4,7 @@ from chatbot.platform.config import Settings
 
 
 def test_twilio_settings_default_to_empty() -> None:
-    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    settings = Settings(_env_file=None)
     assert settings.twilio_account_sid == ""
     assert settings.twilio_auth_token == ""
     assert settings.twilio_whatsapp_number == ""
@@ -13,7 +13,7 @@ def test_twilio_settings_default_to_empty() -> None:
 
 
 def test_twilio_settings_read_from_init() -> None:
-    settings = Settings(  # type: ignore[call-arg]
+    settings = Settings(
         _env_file=None,
         twilio_account_sid="AC123",
         twilio_auth_token="tok",

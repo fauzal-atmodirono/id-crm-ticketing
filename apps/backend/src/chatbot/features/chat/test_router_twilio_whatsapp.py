@@ -37,9 +37,9 @@ def _sign(token: str, url: str, params: dict[str, str]) -> str:
 @pytest.fixture
 def setup() -> tuple[TestClient, AsyncMock, str]:
     settings = get_settings()
-    settings.twilio_auth_token = "test_token"  # type: ignore[misc]
-    settings.twilio_account_sid = "AC1"  # type: ignore[misc]
-    settings.twilio_whatsapp_number = "whatsapp:+60111"  # type: ignore[misc]
+    settings.twilio_auth_token = "test_token"
+    settings.twilio_account_sid = "AC1"
+    settings.twilio_whatsapp_number = "whatsapp:+60111"
 
     orchestrator = OrchestratorService(
         settings=settings,
@@ -71,9 +71,7 @@ def test_valid_request_runs_turn_and_replies(setup: tuple[TestClient, AsyncMock,
     url = "http://testserver/webhooks/twilio-whatsapp"
     sig = _sign(token, url, params)
 
-    res = client.post(
-        "/webhooks/twilio-whatsapp", data=params, headers={"X-Twilio-Signature": sig}
-    )
+    res = client.post("/webhooks/twilio-whatsapp", data=params, headers={"X-Twilio-Signature": sig})
 
     assert res.status_code == 200
     # Empty FakeRunner → fallback reply is produced and sent via Twilio.

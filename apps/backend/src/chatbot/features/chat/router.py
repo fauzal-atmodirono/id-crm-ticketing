@@ -15,7 +15,6 @@ from pydantic import BaseModel
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.models import AgentMessageEvent
 from chatbot.features.chat.ports import ChatPort, HumanAgentBridgePort
-from chatbot.features.chat.twilio_signature import verify_twilio_signature
 from chatbot.features.chat.schemas import (
     ChatwootWebhookPayload,
     TtsRequest,
@@ -24,6 +23,7 @@ from chatbot.features.chat.schemas import (
     ZendeskWebhookPayload,
 )
 from chatbot.features.chat.service import OrchestratorService
+from chatbot.features.chat.twilio_signature import verify_twilio_signature
 
 _log = structlog.get_logger(__name__)
 
@@ -167,9 +167,7 @@ class ChatRouter:
         result = await self.orchestrator.handle_turn(session_id=session_id, text=body)
 
         if result.reply and self._twilio_adapter is not None:
-            await self._twilio_adapter.send_message(
-                conversation_id=from_addr, text=result.reply
-            )
+            await self._twilio_adapter.send_message(conversation_id=from_addr, text=result.reply)
 
         await self.orchestrator.capture_conversation(
             session_id,

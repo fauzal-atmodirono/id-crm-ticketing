@@ -8,14 +8,17 @@ class NoOpConversationLog(ConversationLogPort):
 
     async def ensure_conversation_ticket(
         self,
-        session_id: str,
-        subject: str,
-        customer_name: str | None,
-        customer_phone: str | None,
+        session_id: str,  # noqa: ARG002
+        subject: str,  # noqa: ARG002
+        customer_name: str | None,  # noqa: ARG002
+        customer_phone: str | None,  # noqa: ARG002
     ) -> str:
         return ""
 
     async def append_conversation_comment(
-        self, ticket_id: str, text: str, status: str | None = None
+        self,
+        ticket_id: str,  # noqa: ARG002
+        text: str,  # noqa: ARG002
+        status: str | None = None,  # noqa: ARG002
     ) -> None:
         return None

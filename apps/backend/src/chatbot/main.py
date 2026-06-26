@@ -9,12 +9,15 @@ from chatbot.features.chat.adapters.chatwoot_zammad import ChatwootZammadAdapter
 from chatbot.features.chat.adapters.gcp_voice import GeminiTextToSpeechAdapter
 from chatbot.features.chat.adapters.handoff_store import build_handoff_store
 from chatbot.features.chat.adapters.mock import InMemoryKnowledgeAdapter, MockVoiceAdapter
+from chatbot.features.chat.adapters.noop_conversation_log import NoOpConversationLog
 from chatbot.features.chat.adapters.sunshine_conversations import SunshineConversationsAdapter
+from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.adapters.vertex_search import VertexAISearchAdapter
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.ports import (
     ChatPort,
+    ConversationLogPort,
     HumanAgentBridgePort,
     KnowledgePort,
     TextToSpeechPort,
@@ -99,6 +102,16 @@ def bootstrap_application() -> FastAPI:
         human_agent_bridge = SunshineConversationsAdapter(settings)
         handoff_bridge = HandoffBridge(store=build_handoff_store(settings))
 
+    # --- Conversation capture (per-conversation Zendesk logging) ---
+    conversation_log_port: ConversationLogPort = (
+        zendesk_client if zendesk_client is not None else NoOpConversationLog()
+    )
+
+    # --- Twilio channel (outbound WhatsApp) ---
+    twilio_adapter: ChatPort | None = None
+    if settings.twilio_account_sid and settings.twilio_auth_token:
+        twilio_adapter = TwilioChannelAdapter(settings)
+
     orchestrator = OrchestratorService(
         settings=settings,
         chat_port=chat_port,
@@ -107,6 +120,7 @@ def bootstrap_application() -> FastAPI:
         tts_port=tts_port,
         human_agent_bridge=human_agent_bridge,
         handoff_bridge=handoff_bridge,
+        conversation_log_port=conversation_log_port,
     )
 
     app.include_router(
@@ -114,6 +128,7 @@ def bootstrap_application() -> FastAPI:
             orchestrator=orchestrator,
             handoff_bridge=handoff_bridge,
             human_agent_bridge=human_agent_bridge,
+            twilio_adapter=twilio_adapter,
         )
     )
 

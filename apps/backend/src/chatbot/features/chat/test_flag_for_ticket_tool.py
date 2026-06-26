@@ -22,9 +22,7 @@ def _find_tool(agent: object, name: str) -> object:
 
 @pytest.mark.asyncio
 async def test_flag_for_ticket_tool_sets_state() -> None:
-    agent = build_ai_agent(
-        get_settings(), InMemoryTicketingAdapter(), InMemoryKnowledgeAdapter()
-    )
+    agent = build_ai_agent(get_settings(), InMemoryTicketingAdapter(), InMemoryKnowledgeAdapter())
     tool = _find_tool(agent, "flag_for_ticket_tool")
     ctx = SimpleNamespace(state={})
 

@@ -500,10 +500,6 @@ class ChatRouter:
         # Unpause AI for the session
         await self.orchestrator._ticketing_port.unpause_ai_for_session(session_id)
 
-        # If we have a handoff bridge, unregister the session so the stream is closed
-        if self._handoff_bridge is not None:
-            await self._handoff_bridge.unregister(session_id)
-
         await self.orchestrator.begin_survey(session_id)
         if session_id.startswith("whatsapp-"):
             if self._twilio_adapter is not None:
@@ -511,6 +507,11 @@ class ChatRouter:
                 await self._twilio_adapter.send_message(conversation_id=to, text=_SURVEY_MESSAGE)
         elif self._handoff_bridge is not None:
             await self._handoff_bridge.publish_survey(session_id)
+
+        # Close the live agent stream AFTER the survey event is queued, so the
+        # web client receives the survey event before the stream terminates.
+        if self._handoff_bridge is not None:
+            await self._handoff_bridge.unregister(session_id)
 
         return {"status": "unpaused", "session_id": session_id}
 

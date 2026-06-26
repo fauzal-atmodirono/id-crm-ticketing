@@ -62,3 +62,36 @@ def test_handback_web_publishes_survey_event() -> None:
     orch.begin_survey.assert_awaited_once_with("sim-abc")
     handoff.publish_survey.assert_awaited_once_with("sim-abc")
     twilio.send_message.assert_not_awaited()
+
+
+def test_handback_web_survey_published_before_unregister() -> None:
+    """publish_survey must be called before unregister so the SSE event is queued
+    before the stream-closing None sentinel is pushed to subscribers."""
+    call_order: list[str] = []
+
+    orch = MagicMock()
+    orch._settings = get_settings()
+    orch._settings.zendesk_support_webhook_secret = ""
+    orch.begin_survey = AsyncMock()
+    orch._ticketing_port.unpause_ai_for_session = AsyncMock()
+
+    twilio = AsyncMock()
+
+    handoff = MagicMock()
+
+    async def _publish_survey(_session_id: str) -> None:
+        call_order.append("publish_survey")
+
+    async def _unregister(_session_id: str) -> None:
+        call_order.append("unregister")
+
+    handoff.publish_survey = AsyncMock(side_effect=_publish_survey)
+    handoff.unregister = AsyncMock(side_effect=_unregister)
+
+    client = _client(orch, twilio, handoff)
+    res = client.post("/webhooks/zendesk-handback", json={"session_id": "sim-abc"})
+
+    assert res.status_code == 200
+    assert call_order == ["publish_survey", "unregister"], (
+        f"Expected publish_survey before unregister, got: {call_order}"
+    )

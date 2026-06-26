@@ -39,3 +39,32 @@ async def test_record_csat_writes_comment_tag_and_resets_state() -> None:
     assert session.state["whatsapp_handoff_state"] == "active"
     assert any("4/5" in text for _t, text, _s in log.appended)
     assert ("T1", "csat_4") in log.tags
+
+
+@pytest.mark.asyncio
+async def test_record_csat_state_survives_log_failure() -> None:
+    class _FailLog(_FakeLog):
+        async def append_conversation_comment(
+            self, ticket_id: str, text: str, status: str | None = None
+        ) -> None:
+            raise RuntimeError("Zendesk connection failed")
+
+    log = _FailLog()
+    sessions = _LiveSessions()
+    orch = _orchestrator(log, sessions)
+    await sessions.create_session(
+        app_name="chatbot",
+        user_id="whatsapp-+60321",
+        session_id="whatsapp-+60321",
+        state={"conversation_ticket_id": "T2", "whatsapp_handoff_state": "awaiting_survey"},
+    )
+
+    ok = await orch.record_csat("whatsapp-+60321", 3, channel="whatsapp")
+
+    assert ok is True
+    session = await sessions.get_session(
+        app_name="chatbot", user_id="whatsapp-+60321", session_id="whatsapp-+60321"
+    )
+    assert session is not None
+    assert session.state["csat_score"] == 3
+    assert session.state["whatsapp_handoff_state"] == "active"

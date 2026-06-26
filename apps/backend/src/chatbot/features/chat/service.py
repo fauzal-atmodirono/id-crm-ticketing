@@ -449,10 +449,13 @@ class OrchestratorService:
         state = session.state
         ticket_id = state.get("conversation_ticket_id")
         if ticket_id:
-            await self._conversation_log_port.append_conversation_comment(
-                ticket_id, f"⭐ Customer satisfaction: {score}/5 (via {channel})"
-            )
-            await self._conversation_log_port.add_ticket_tag(ticket_id, f"csat_{score}")
+            try:
+                await self._conversation_log_port.append_conversation_comment(
+                    ticket_id, f"⭐ Customer satisfaction: {score}/5 (via {channel})"
+                )
+                await self._conversation_log_port.add_ticket_tag(ticket_id, f"csat_{score}")
+            except Exception as e:
+                _log.error("record_csat_log_failed", session_id=session_id, error=str(e))
         state["csat_score"] = score
         state[_HANDOFF_STATE_KEY] = WHATSAPP_ACTIVE
         state.pop("csat_nudged", None)

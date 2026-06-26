@@ -50,6 +50,7 @@ class _FakeLog(ConversationLogPort):
     def __init__(self) -> None:
         self.appended: list[tuple[str, str, str | None]] = []
         self.ensure_calls = 0
+        self.tags: list[tuple[str, str]] = []
 
     async def ensure_conversation_ticket(
         self, session_id: str, subject: str, customer_name: str | None, customer_phone: str | None
@@ -61,6 +62,9 @@ class _FakeLog(ConversationLogPort):
         self, ticket_id: str, text: str, status: str | None = None
     ) -> None:
         self.appended.append((ticket_id, text, status))
+
+    async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:
+        self.tags.append((ticket_id, tag))
 
 
 def _orchestrator(

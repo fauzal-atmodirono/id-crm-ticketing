@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
@@ -36,6 +37,11 @@ if TYPE_CHECKING:
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
+
+WHATSAPP_ACTIVE = "active"
+WHATSAPP_PAUSED = "paused"
+WHATSAPP_AWAITING_SURVEY = "awaiting_survey"
+_HANDOFF_STATE_KEY = "whatsapp_handoff_state"
 
 
 def _cards_from_state(raw: list[dict[str, Any]]) -> list[ProductCard]:
@@ -424,6 +430,34 @@ class OrchestratorService:
             await self._persist_session_state(session)
         except Exception as e:
             _log.error("capture_conversation_failed", session_id=session_id, error=str(e))
+
+    @staticmethod
+    def parse_csat(text: str) -> int | None:
+        """Return the first standalone 1-5 rating in the text, else None."""
+        for token in re.findall(r"\d+", text or ""):
+            if token in {"1", "2", "3", "4", "5"}:
+                return int(token)
+        return None
+
+    async def record_csat(self, session_id: str, score: int, channel: str = "whatsapp") -> bool:
+        """Record a CSAT score: private comment + tag + session state; resume AI."""
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        if session is None:
+            return False
+        state = session.state
+        ticket_id = state.get("conversation_ticket_id")
+        if ticket_id:
+            await self._conversation_log_port.append_conversation_comment(
+                ticket_id, f"⭐ Customer satisfaction: {score}/5 (via {channel})"
+            )
+            await self._conversation_log_port.add_ticket_tag(ticket_id, f"csat_{score}")
+        state["csat_score"] = score
+        state[_HANDOFF_STATE_KEY] = WHATSAPP_ACTIVE
+        state.pop("csat_nudged", None)
+        await self._persist_session_state(session)
+        return True
 
     async def _persist_session_state(self, session: Any) -> None:
         """Write back mutations to ``session.state``.

@@ -135,6 +135,24 @@ def build_ai_agent(
         tool_context.state["handoff_reason"] = reason
         return f"[internal] handoff triggered (Reason: {reason})."
 
+    async def flag_for_ticket_tool(
+        tool_context: ToolContext,
+        reason: str,
+    ) -> str:
+        """Mark this conversation as needing a tracked support ticket.
+
+        Call this when the conversation is actionable — a complaint, a
+        service/warranty request, a sales lead, or an unresolved issue — even if
+        the customer is NOT asking for a human yet.
+
+        Args:
+            tool_context: Context injected by the ADK runner.
+            reason: Short reason (e.g. complaint, service_request, sales_lead).
+        """
+        tool_context.state["ticket_flagged"] = True
+        tool_context.state["ticket_reason"] = reason
+        return f"[internal] conversation flagged for ticket (Reason: {reason})."
+
     return Agent(
         name="support_agent",
         model=settings.gemini_model,
@@ -145,6 +163,7 @@ def build_ai_agent(
         tools=[
             search_kb_tool,
             emit_handoff_tool,
+            flag_for_ticket_tool,
             show_models_tool,
             classify_ticket_tool,
             book_test_drive_tool,

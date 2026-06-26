@@ -489,18 +489,21 @@ class OrchestratorService:
         if session is None:
             return
         state = session.state
-        ticket_id = state.get("conversation_ticket_id")
-        if not ticket_id:
-            ticket_id = await self._conversation_log_port.ensure_conversation_ticket(
-                session_id=session_id,
-                subject=f"[WhatsApp] Conversation {session_id}",
-                customer_name=customer_name,
-                customer_phone=customer_phone,
+        try:
+            ticket_id = state.get("conversation_ticket_id")
+            if not ticket_id:
+                ticket_id = await self._conversation_log_port.ensure_conversation_ticket(
+                    session_id=session_id,
+                    subject=f"[WhatsApp] Conversation {session_id}",
+                    customer_name=customer_name,
+                    customer_phone=customer_phone,
+                )
+                state["conversation_ticket_id"] = ticket_id
+            await self._conversation_log_port.append_conversation_comment(
+                ticket_id, f"[Handoff to human agent]\n{summary}", status="open"
             )
-            state["conversation_ticket_id"] = ticket_id
-        await self._conversation_log_port.append_conversation_comment(
-            ticket_id, f"[Handoff to human agent]\n{summary}", status="open"
-        )
+        except Exception as e:
+            _log.error("begin_whatsapp_handoff_failed", session_id=session_id, error=str(e))
         state[_HANDOFF_STATE_KEY] = WHATSAPP_PAUSED
         await self._persist_session_state(session)
 

@@ -36,3 +36,8 @@ export interface AgentMessageEvent {
   text: string;
   timestamp: string;
 }
+
+export interface CsatResponse {
+  status: string;
+  message: string;
+}

@@ -25,14 +25,18 @@ from chatbot.features.chat.ports import HandoffStorePort
 _log = structlog.get_logger(__name__)
 
 
+class SurveyEvent:
+    """Sentinel pushed to SSE subscribers to request a CSAT rating."""
+
+
 class HandoffBridge:
     def __init__(self, store: HandoffStorePort) -> None:
         self._store = store
         self._session_cache: dict[str, str] = {}
         self._conv_cache: dict[str, str] = {}
-        self._subscribers: dict[str, list[asyncio.Queue[AgentMessageEvent | None]]] = defaultdict(
-            list
-        )
+        self._subscribers: dict[
+            str, list[asyncio.Queue[AgentMessageEvent | SurveyEvent | None]]
+        ] = defaultdict(list)
 
     # --- Registration --------------------------------------------------------
 
@@ -93,15 +97,15 @@ class HandoffBridge:
 
     # --- Pub-sub (in-process only) ------------------------------------------
 
-    def subscribe(self, session_id: str) -> asyncio.Queue[AgentMessageEvent | None]:
-        queue: asyncio.Queue[AgentMessageEvent | None] = asyncio.Queue(maxsize=64)
+    def subscribe(self, session_id: str) -> asyncio.Queue[AgentMessageEvent | SurveyEvent | None]:
+        queue: asyncio.Queue[AgentMessageEvent | SurveyEvent | None] = asyncio.Queue(maxsize=64)
         self._subscribers[session_id].append(queue)
         return queue
 
     def unsubscribe(
         self,
         session_id: str,
-        queue: asyncio.Queue[AgentMessageEvent | None],
+        queue: asyncio.Queue[AgentMessageEvent | SurveyEvent | None],
     ) -> None:
         subs = self._subscribers.get(session_id)
         if not subs:
@@ -133,3 +137,10 @@ class HandoffBridge:
                     "handoff_publish_queue_full",
                     session_id=session_id,
                 )
+
+    async def publish_survey(self, session_id: str) -> None:
+        for queue in list(self._subscribers.get(session_id, [])):
+            try:
+                queue.put_nowait(SurveyEvent())
+            except asyncio.QueueFull:
+                _log.warning("survey_publish_queue_full", session_id=session_id)

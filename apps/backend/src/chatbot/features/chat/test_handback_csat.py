@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+from fastapi.testclient import TestClient
+
+from chatbot.features.chat.router import build_chat_router
+from chatbot.platform.config import get_settings
+from chatbot.platform.server import create_app
+
+
+def _client(orch: MagicMock, twilio: AsyncMock, handoff: MagicMock) -> TestClient:
+    settings = get_settings()
+    app = create_app(settings)
+    app.include_router(
+        build_chat_router(orch, handoff_bridge=handoff, twilio_adapter=twilio)
+    )
+    return TestClient(app)
+
+
+def test_handback_whatsapp_starts_text_survey() -> None:
+    orch = MagicMock()
+    # Use real settings so zendesk_support_webhook_secret defaults to "" (avoids 401).
+    orch._settings = get_settings()
+    orch._settings.zendesk_support_webhook_secret = ""
+    orch.begin_survey = AsyncMock()
+    # The handler calls _ticketing_port.unpause_ai_for_session — must be awaitable.
+    orch._ticketing_port.unpause_ai_for_session = AsyncMock()
+    twilio = AsyncMock()
+    handoff = MagicMock()
+    # The handler calls _handoff_bridge.unregister — must be awaitable.
+    handoff.unregister = AsyncMock()
+    handoff.publish_survey = AsyncMock()
+
+    client = _client(orch, twilio, handoff)
+    res = client.post("/webhooks/zendesk-handback", json={"session_id": "whatsapp-+60123"})
+
+    assert res.status_code == 200
+    orch.begin_survey.assert_awaited_once_with("whatsapp-+60123")
+    twilio.send_message.assert_awaited_once()
+    handoff.publish_survey.assert_not_awaited()  # WhatsApp uses text, not SSE
+
+
+def test_handback_web_publishes_survey_event() -> None:
+    orch = MagicMock()
+    # Use real settings so zendesk_support_webhook_secret defaults to "" (avoids 401).
+    orch._settings = get_settings()
+    orch._settings.zendesk_support_webhook_secret = ""
+    orch.begin_survey = AsyncMock()
+    # The handler calls _ticketing_port.unpause_ai_for_session — must be awaitable.
+    orch._ticketing_port.unpause_ai_for_session = AsyncMock()
+    twilio = AsyncMock()
+    handoff = MagicMock()
+    # The handler calls _handoff_bridge.unregister — must be awaitable.
+    handoff.unregister = AsyncMock()
+    handoff.publish_survey = AsyncMock()
+
+    client = _client(orch, twilio, handoff)
+    res = client.post("/webhooks/zendesk-handback", json={"session_id": "sim-abc"})
+
+    assert res.status_code == 200
+    orch.begin_survey.assert_awaited_once_with("sim-abc")
+    handoff.publish_survey.assert_awaited_once_with("sim-abc")
+    twilio.send_message.assert_not_awaited()

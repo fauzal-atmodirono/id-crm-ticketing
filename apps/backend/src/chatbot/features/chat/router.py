@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
-from chatbot.features.chat.handoff_bridge import HandoffBridge
+from chatbot.features.chat.handoff_bridge import HandoffBridge, SurveyEvent
 from chatbot.features.chat.models import AgentMessageEvent
 from chatbot.features.chat.ports import HumanAgentBridgePort
 from chatbot.features.chat.schemas import (
@@ -504,6 +504,14 @@ class ChatRouter:
         if self._handoff_bridge is not None:
             await self._handoff_bridge.unregister(session_id)
 
+        await self.orchestrator.begin_survey(session_id)
+        if session_id.startswith("whatsapp-"):
+            if self._twilio_adapter is not None:
+                to = "whatsapp:" + session_id[len("whatsapp-"):]
+                await self._twilio_adapter.send_message(conversation_id=to, text=_SURVEY_MESSAGE)
+        elif self._handoff_bridge is not None:
+            await self._handoff_bridge.publish_survey(session_id)
+
         return {"status": "unpaused", "session_id": session_id}
 
     # --- Frontend-facing API (consumed by the Vue app) ----------------------
@@ -548,6 +556,10 @@ class ChatRouter:
                     if event is None:
                         # Session unregistered — close the stream.
                         return
+
+                    if isinstance(event, SurveyEvent):
+                        yield b'event: survey\ndata: {"type": "survey"}\n\n'
+                        continue
 
                     data = json.dumps(
                         {

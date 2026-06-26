@@ -435,7 +435,17 @@ class ChatRouter:
             raise HTTPException(status_code=401, detail="Invalid signature")
 
         session_id = payload.session_id
-        if not session_id or not session_id.strip() or not session_id.startswith("sim-"):
+        if not session_id or not session_id.strip():
+            return {"status": "ignored"}
+
+        if session_id.startswith("whatsapp-") and self._twilio_adapter is not None:
+            to = "whatsapp:" + session_id[len("whatsapp-"):]
+            await self._twilio_adapter.send_message(
+                conversation_id=to, text=_sanitize_for_whatsapp(payload.text)
+            )
+            return {"status": "relayed"}
+
+        if not session_id.startswith("sim-"):
             return {"status": "ignored"}
 
         # Check if the session is actually handed off / active in our bridge

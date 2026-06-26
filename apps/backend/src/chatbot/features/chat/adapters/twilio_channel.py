@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+import httpx
+import structlog
+
+from chatbot.features.chat.ports import ChatPort
+
+if TYPE_CHECKING:
+    from chatbot.platform.config import Settings
+
+_log = structlog.get_logger(__name__)
+
+
+class TwilioChannelAdapter(ChatPort):
+    """Sends outbound WhatsApp messages through the Twilio REST API.
+
+    `conversation_id` is the customer's WhatsApp address ("whatsapp:+E164").
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+
+    def _messages_url(self) -> str:
+        return (
+            "https://api.twilio.com/2010-04-01/Accounts/"
+            f"{self._settings.twilio_account_sid}/Messages.json"
+        )
+
+    async def _post_message(self, client: Any, to: str, text: str) -> None:
+        res = await client.post(
+            self._messages_url(),
+            data={
+                "From": self._settings.twilio_whatsapp_number,
+                "To": to,
+                "Body": text,
+            },
+            auth=(self._settings.twilio_account_sid, self._settings.twilio_auth_token),
+            timeout=10.0,
+        )
+        res.raise_for_status()
+
+    async def send_message(self, conversation_id: str, text: str) -> None:
+        _log.info("sending_twilio_whatsapp_reply", to=conversation_id)
+        try:
+            async with httpx.AsyncClient() as client:
+                await self._post_message(client, conversation_id, text)
+        except Exception as e:
+            _log.error("twilio_whatsapp_reply_failed", to=conversation_id, error=str(e))

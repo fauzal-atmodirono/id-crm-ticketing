@@ -350,7 +350,7 @@ class OrchestratorService:
         session_state = final_session.state if final_session else {}
 
         handoff_payload = None
-        if session_state.get("handoff_triggered") is True:
+        if session_state.get("handoff_triggered") is True and not session_id.startswith("whatsapp-"):
             reason = session_state.get("handoff_reason", "help_request")
 
             # Execute human escalation handoff
@@ -461,6 +461,48 @@ class OrchestratorService:
         state.pop("csat_nudged", None)
         await self._persist_session_state(session)
         return True
+
+    async def whatsapp_state(self, session_id: str) -> str:
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        if session is None:
+            return WHATSAPP_ACTIVE
+        return str(session.state.get(_HANDOFF_STATE_KEY) or WHATSAPP_ACTIVE)
+
+    async def needs_whatsapp_handoff(self, session_id: str) -> bool:
+        if await self.whatsapp_state(session_id) != WHATSAPP_ACTIVE:
+            return False
+        return await self._handoff_triggered(session_id)
+
+    async def begin_whatsapp_handoff(
+        self,
+        session_id: str,
+        summary: str,
+        *,
+        customer_name: str | None = None,
+        customer_phone: str | None = None,
+    ) -> None:
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        if session is None:
+            return
+        state = session.state
+        ticket_id = state.get("conversation_ticket_id")
+        if not ticket_id:
+            ticket_id = await self._conversation_log_port.ensure_conversation_ticket(
+                session_id=session_id,
+                subject=f"[WhatsApp] Conversation {session_id}",
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+            )
+            state["conversation_ticket_id"] = ticket_id
+        await self._conversation_log_port.append_conversation_comment(
+            ticket_id, f"[Handoff to human agent]\n{summary}", status="open"
+        )
+        state[_HANDOFF_STATE_KEY] = WHATSAPP_PAUSED
+        await self._persist_session_state(session)
 
     async def _persist_session_state(self, session: Any) -> None:
         """Write back mutations to ``session.state``.

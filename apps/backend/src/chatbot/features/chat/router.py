@@ -14,7 +14,8 @@ from pydantic import BaseModel
 
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.models import AgentMessageEvent
-from chatbot.features.chat.ports import HumanAgentBridgePort
+from chatbot.features.chat.ports import ChatPort, HumanAgentBridgePort
+from chatbot.features.chat.twilio_signature import verify_twilio_signature
 from chatbot.features.chat.schemas import (
     ChatwootWebhookPayload,
     TtsRequest,
@@ -76,10 +77,12 @@ class ChatRouter:
         orchestrator: OrchestratorService,
         handoff_bridge: HandoffBridge | None = None,
         human_agent_bridge: HumanAgentBridgePort | None = None,
+        twilio_adapter: ChatPort | None = None,
     ) -> None:
         self.orchestrator = orchestrator
         self._handoff_bridge = handoff_bridge
         self._human_agent_bridge = human_agent_bridge
+        self._twilio_adapter = twilio_adapter
         self.router = APIRouter(tags=["chat"])
 
         self.router.add_api_route("/webhooks/chatwoot", self.chatwoot_webhook, methods=["POST"])
@@ -90,6 +93,9 @@ class ChatRouter:
         )
         self.router.add_api_route(
             "/webhooks/zendesk-handback", self.zendesk_handback_webhook, methods=["POST"]
+        )
+        self.router.add_api_route(
+            "/webhooks/twilio-whatsapp", self.twilio_whatsapp_webhook, methods=["POST"]
         )
         self.router.add_api_route(
             "/chat/turn",
@@ -136,6 +142,42 @@ class ChatRouter:
             )
 
         return {"status": "ok"}
+
+    async def twilio_whatsapp_webhook(self, request: Request) -> Response:
+        """Inbound WhatsApp message from Twilio. Verify signature, run the AI,
+        reply via Twilio REST, and mirror the conversation into Zendesk."""
+        form = await request.form()
+        params = {k: str(v) for k, v in form.items()}
+        token = self.orchestrator._settings.twilio_auth_token
+        signature = request.headers.get("X-Twilio-Signature")
+        if token and not verify_twilio_signature(token, str(request.url), params, signature):
+            _log.warning("twilio_whatsapp_signature_invalid")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
+        from_addr = params.get("From", "")
+        body = (params.get("Body") or "").strip()
+        if not from_addr or not body:
+            return Response(status_code=200)
+
+        e164 = from_addr.replace("whatsapp:", "")
+        session_id = f"whatsapp-{e164}"
+        profile_name = params.get("ProfileName")
+        _log.info("twilio_whatsapp_received", session_id=session_id)
+
+        result = await self.orchestrator.handle_turn(session_id=session_id, text=body)
+
+        if result.reply and self._twilio_adapter is not None:
+            await self._twilio_adapter.send_message(
+                conversation_id=from_addr, text=result.reply
+            )
+
+        await self.orchestrator.capture_conversation(
+            session_id,
+            channel="WhatsApp",
+            customer_name=profile_name,
+            customer_phone=e164,
+        )
+        return Response(status_code=200)
 
     async def zendesk_webhook(self, payload: ZendeskWebhookPayload) -> dict[str, str]:
         for event in payload.events:
@@ -401,10 +443,12 @@ def build_chat_router(
     orchestrator: OrchestratorService,
     handoff_bridge: HandoffBridge | None = None,
     human_agent_bridge: HumanAgentBridgePort | None = None,
+    twilio_adapter: ChatPort | None = None,
 ) -> APIRouter:
     """Builds and returns the configured FastAPI router instance."""
     return ChatRouter(
         orchestrator=orchestrator,
         handoff_bridge=handoff_bridge,
         human_agent_bridge=human_agent_bridge,
+        twilio_adapter=twilio_adapter,
     ).router

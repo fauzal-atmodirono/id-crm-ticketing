@@ -12,7 +12,9 @@ from google.adk.sessions import BaseSessionService, InMemorySessionService, Sess
 from google.genai import Client, types
 
 from chatbot.features.chat.adapters.firestore_session_service import FirestoreSessionService
+from chatbot.features.chat.adapters.noop_conversation_log import NoOpConversationLog
 from chatbot.features.chat.agents import build_ai_agent, build_summarizer_agent
+from chatbot.features.chat.detection import should_open_ticket
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.models import (
     HandoffOpenPayload,
@@ -23,6 +25,7 @@ from chatbot.features.chat.models import (
 )
 from chatbot.features.chat.ports import (
     ChatPort,
+    ConversationLogPort,
     HumanAgentBridgePort,
     KnowledgePort,
     TextToSpeechPort,
@@ -85,6 +88,7 @@ class OrchestratorService:
         tts_port: TextToSpeechPort,
         human_agent_bridge: HumanAgentBridgePort | None = None,
         handoff_bridge: HandoffBridge | None = None,
+        conversation_log_port: ConversationLogPort | None = None,
         runner_factory: Callable[[Any], Any] | None = None,
     ) -> None:
         self._settings = settings
@@ -94,6 +98,10 @@ class OrchestratorService:
         self._tts_port = tts_port
         self._human_agent_bridge = human_agent_bridge
         self._handoff_bridge = handoff_bridge
+        self._conversation_log_port: ConversationLogPort = (
+            conversation_log_port or NoOpConversationLog()
+        )
+        self._logged_counts: dict[str, int] = {}
 
         # Initialize ADK agents
         self._support_agent = build_ai_agent(settings, ticketing_port, knowledge_port)
@@ -367,6 +375,47 @@ class OrchestratorService:
             handoff=handoff_payload,
             products=products,
         )
+
+    async def capture_conversation(
+        self,
+        session_id: str,
+        *,
+        channel: str = "whatsapp",
+        customer_name: str | None = None,
+        customer_phone: str | None = None,
+    ) -> None:
+        """Mirror new conversation turns into the support system via the gate.
+
+        Appends only the messages added since the last capture. Opens the ticket
+        when the detection gate fires, otherwise logs as a solved record.
+        """
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        state = session.state if session else {}
+        history = state.get("chat_history", []) or []
+
+        start = self._logged_counts.get(session_id, 0)
+        new_msgs = history[start:]
+        if not new_msgs:
+            return
+
+        status = "open" if should_open_ticket(state) else "solved"
+        subject = f"[{channel}] Conversation {session_id}"
+        try:
+            ticket_id = await self._conversation_log_port.ensure_conversation_ticket(
+                session_id=session_id,
+                subject=subject,
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+            )
+            body = "\n".join(f"{m['role'].upper()}: {m['text']}" for m in new_msgs)
+            await self._conversation_log_port.append_conversation_comment(
+                ticket_id, body, status=status
+            )
+            self._logged_counts[session_id] = len(history)
+        except Exception as e:
+            _log.error("capture_conversation_failed", session_id=session_id, error=str(e))
 
     async def _transcribe_audio(
         self,

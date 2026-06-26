@@ -149,8 +149,15 @@ class ChatRouter:
         form = await request.form()
         params = {k: str(v) for k, v in form.items()}
         token = self.orchestrator._settings.twilio_auth_token
+        # Twilio signs the exact PUBLIC url it POSTs to. Behind a tunnel/proxy
+        # (cloudflared, ngrok) request.url reports the local scheme/host, which
+        # breaks the signature. Prefer the configured public base when set.
+        base = self.orchestrator._settings.twilio_webhook_base_url
+        verify_url = (
+            f"{base.rstrip('/')}/webhooks/twilio-whatsapp" if base else str(request.url)
+        )
         signature = request.headers.get("X-Twilio-Signature")
-        if token and not verify_twilio_signature(token, str(request.url), params, signature):
+        if token and not verify_twilio_signature(token, verify_url, params, signature):
             _log.warning("twilio_whatsapp_signature_invalid")
             raise HTTPException(status_code=401, detail="Invalid signature")
 

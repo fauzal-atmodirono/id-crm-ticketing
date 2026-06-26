@@ -77,3 +77,27 @@ def test_valid_request_runs_turn_and_replies(setup: tuple[TestClient, AsyncMock,
     # Empty FakeRunner → fallback reply is produced and sent via Twilio.
     assert twilio.send_message.await_count == 1
     assert twilio.send_message.await_args.kwargs["conversation_id"] == "whatsapp:+60123"
+
+
+def test_signature_verified_against_public_base_url(
+    setup: tuple[TestClient, AsyncMock, str],
+) -> None:
+    # Behind a tunnel the request arrives as http://testserver/... but Twilio
+    # signed the public https URL. With TWILIO_WEBHOOK_BASE_URL set, the handler
+    # must verify against that base, not request.url.
+    client, twilio, token = setup
+    settings = get_settings()
+    base = "https://sky-analyzed-income-witnesses.trycloudflare.com"
+    settings.twilio_webhook_base_url = base
+    try:
+        params = {"From": "whatsapp:+60123", "Body": "hi", "MessageSid": "SM1"}
+        sig = _sign(token, f"{base}/webhooks/twilio-whatsapp", params)
+
+        res = client.post(
+            "/webhooks/twilio-whatsapp", data=params, headers={"X-Twilio-Signature": sig}
+        )
+
+        assert res.status_code == 200
+        assert twilio.send_message.await_count == 1
+    finally:
+        settings.twilio_webhook_base_url = ""

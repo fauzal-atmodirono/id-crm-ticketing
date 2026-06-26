@@ -459,6 +459,8 @@ class OrchestratorService:
         state["csat_score"] = score
         state[_HANDOFF_STATE_KEY] = WHATSAPP_ACTIVE
         state.pop("csat_nudged", None)
+        state["handoff_triggered"] = False
+        state["handoff_reason"] = ""
         await self._persist_session_state(session)
         return True
 
@@ -551,6 +553,8 @@ class OrchestratorService:
             return
         session.state[_HANDOFF_STATE_KEY] = WHATSAPP_ACTIVE
         session.state.pop("csat_nudged", None)
+        session.state["handoff_triggered"] = False
+        session.state["handoff_reason"] = ""
         await self._persist_session_state(session)
 
     async def _persist_session_state(self, session: Any) -> None:

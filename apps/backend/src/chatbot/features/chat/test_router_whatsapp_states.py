@@ -81,3 +81,37 @@ def test_survey_valid_rating_records_and_thanks() -> None:
     assert call is not None
     assert call.args[1] == 5
     twilio.send_message.assert_awaited()  # thank-you sent
+
+
+def test_survey_nudge_on_first_invalid_response() -> None:
+    """Non-rating first reply while awaiting_survey → _CSAT_NUDGE sent once."""
+    from chatbot.features.chat.router import _CSAT_NUDGE  # noqa: PLC0415
+
+    client, orch, twilio = _setup()
+    orch.whatsapp_state = AsyncMock(return_value="awaiting_survey")  # type: ignore[method-assign]
+    orch.consume_survey_nudge = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    _post(client, "hello")
+
+    orch.consume_survey_nudge.assert_awaited_once()
+    twilio.send_message.assert_awaited_once_with(
+        conversation_id="whatsapp:+60123", text=_CSAT_NUDGE
+    )
+
+
+def test_survey_resume_on_second_invalid_response() -> None:
+    """Second non-rating reply → resume_ai + handle_turn executed (back to AI)."""
+    from chatbot.features.chat.models import TurnResult  # noqa: PLC0415
+
+    client, orch, _twilio = _setup()
+    orch.whatsapp_state = AsyncMock(return_value="awaiting_survey")  # type: ignore[method-assign]
+    orch.consume_survey_nudge = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    orch.resume_ai = AsyncMock()  # type: ignore[method-assign]
+    orch.handle_turn = AsyncMock(return_value=TurnResult(reply="How can I help?"))  # type: ignore[method-assign]
+    orch.capture_conversation = AsyncMock()  # type: ignore[method-assign]
+
+    _post(client, "hello again")
+
+    orch.resume_ai.assert_awaited_once()
+    orch.handle_turn.assert_awaited_once()
+    orch.capture_conversation.assert_awaited_once()

@@ -42,6 +42,30 @@ async def test_record_csat_writes_comment_tag_and_resets_state() -> None:
 
 
 @pytest.mark.asyncio
+async def test_record_csat_clears_handoff_triggered() -> None:
+    """After CSAT, handoff_triggered must be cleared so the next inbound
+    WhatsApp message does not re-fire needs_whatsapp_handoff and loop."""
+    log = _FakeLog()
+    sessions = _LiveSessions()
+    orch = _orchestrator(log, sessions)
+    session = await sessions.create_session(
+        app_name="chatbot",
+        user_id="whatsapp-+60500",
+        session_id="whatsapp-+60500",
+        state={
+            "conversation_ticket_id": "T1",
+            "whatsapp_handoff_state": "paused",
+            "handoff_triggered": True,
+        },
+    )
+
+    await orch.record_csat("whatsapp-+60500", 5)
+
+    assert session.state["handoff_triggered"] is False
+    assert await orch.needs_whatsapp_handoff("whatsapp-+60500") is False
+
+
+@pytest.mark.asyncio
 async def test_record_csat_state_survives_log_failure() -> None:
     class _FailLog(_FakeLog):
         async def append_conversation_comment(

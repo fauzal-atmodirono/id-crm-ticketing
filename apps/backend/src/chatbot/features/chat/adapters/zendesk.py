@@ -10,7 +10,12 @@ import structlog
 from google.cloud import firestore
 
 from chatbot.features.chat.models import KbArticle
-from chatbot.features.chat.ports import ChatPort, KnowledgePort, TicketingPort
+from chatbot.features.chat.ports import (
+    ChatPort,
+    ConversationLogPort,
+    KnowledgePort,
+    TicketingPort,
+)
 
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
@@ -18,12 +23,13 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(__name__)
 
 
-class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort):
+class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort):
     """Production adapter integrating with Zendesk Guide, Support, and Sunshine Conversations APIs."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._paused_sessions: set[str] = set()
+        self._conv_tickets: dict[str, str] = {}
 
     def _sunshine_headers(self) -> dict[str, str]:
         auth_str = f"{self._settings.zendesk_key_id}:{self._settings.zendesk_secret_key}"
@@ -145,6 +151,66 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort):
                 res.raise_for_status()
         except Exception as e:
             _log.error("zendesk_add_private_note_failed", ticket_id=ticket_id, error=str(e))
+
+    # --- ConversationLogPort (per-conversation capture) ---
+    async def ensure_conversation_ticket(
+        self,
+        session_id: str,
+        subject: str,
+        customer_name: str | None,
+        customer_phone: str | None,
+    ) -> str:
+        cached = self._conv_tickets.get(session_id)
+        if cached:
+            return cached
+
+        subdomain = self._settings.zendesk_subdomain
+        url = f"https://{subdomain}.zendesk.com/api/v2/tickets.json"
+        requester: dict[str, str] = {
+            "name": customer_name or f"Proton AI Customer ({session_id})",
+            "email": f"{session_id}@proton.devoteam.example",
+        }
+        if customer_phone:
+            requester["phone"] = customer_phone
+        payload = {
+            "ticket": {
+                "subject": subject,
+                "external_id": session_id,
+                "requester": requester,
+                "comment": {"body": "Conversation started.", "public": False},
+            }
+        }
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.post(
+                    url, json=payload, headers=self._support_headers(), timeout=10.0
+                )
+                res.raise_for_status()
+                ticket_id = str(res.json().get("ticket", {}).get("id", "MOCK-ZEN-TKT"))
+        except Exception as e:
+            _log.error("zendesk_ensure_conversation_ticket_failed", error=str(e))
+            ticket_id = "MOCK-ZEN-TKT"
+        self._conv_tickets[session_id] = ticket_id
+        return ticket_id
+
+    async def append_conversation_comment(
+        self, ticket_id: str, text: str, status: str | None = None
+    ) -> None:
+        subdomain = self._settings.zendesk_subdomain
+        url = f"https://{subdomain}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+        ticket: dict[str, object] = {"comment": {"body": text, "public": False}}
+        if status:
+            ticket["status"] = status
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.put(
+                    url, json={"ticket": ticket}, headers=self._support_headers(), timeout=10.0
+                )
+                res.raise_for_status()
+        except Exception as e:
+            _log.error(
+                "zendesk_append_conversation_comment_failed", ticket_id=ticket_id, error=str(e)
+            )
 
     async def pause_ai_for_session(self, session_id: str) -> None:
         _log.info("pausing_ai_for_zendesk_session", session_id=session_id)

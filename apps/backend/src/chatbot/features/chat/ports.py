@@ -124,3 +124,29 @@ class HumanAgentBridgePort(Protocol):
     def parse_webhook_events(self, payload: dict[str, object]) -> list[AgentMessageEvent]:
         """Extract agent-authored message events from a webhook body."""
         ...
+
+
+class ConversationLogPort(Protocol):
+    """Port for mirroring a full conversation into the support system as a ticket.
+
+    Distinct from TicketingPort.create_ticket (which is escalation-shaped): this
+    is per-conversation capture, deciding open ticket vs solved log via the
+    detection gate.
+    """
+
+    async def ensure_conversation_ticket(
+        self,
+        session_id: str,
+        subject: str,
+        customer_name: str | None,
+        customer_phone: str | None,
+    ) -> str:
+        """Find-or-create the conversation's ticket (external_id == session_id).
+        Returns the ticket id."""
+        ...
+
+    async def append_conversation_comment(
+        self, ticket_id: str, text: str, status: str | None = None
+    ) -> None:
+        """Append a private comment, optionally setting ticket status."""
+        ...

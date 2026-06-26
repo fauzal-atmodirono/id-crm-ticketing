@@ -507,6 +507,19 @@ class OrchestratorService:
         state[_HANDOFF_STATE_KEY] = WHATSAPP_PAUSED
         await self._persist_session_state(session)
 
+    async def forward_whatsapp_to_agent(self, session_id: str, text: str) -> None:
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        if session is None:
+            return
+        ticket_id = session.state.get("conversation_ticket_id")
+        if not ticket_id:
+            return
+        await self._conversation_log_port.append_conversation_comment(
+            ticket_id, f"Customer (WhatsApp): {text}"
+        )
+
     async def _persist_session_state(self, session: Any) -> None:
         """Write back mutations to ``session.state``.
 

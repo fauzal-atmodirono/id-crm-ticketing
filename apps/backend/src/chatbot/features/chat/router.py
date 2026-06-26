@@ -506,13 +506,23 @@ class ChatRouter:
         # Unpause AI for the session
         await self.orchestrator._ticketing_port.unpause_ai_for_session(session_id)
 
-        await self.orchestrator.begin_survey(session_id)
         if session_id.startswith("whatsapp-"):
-            if self._twilio_adapter is not None:
-                to = "whatsapp:" + session_id[len("whatsapp-"):]
-                await self._twilio_adapter.send_message(conversation_id=to, text=_SURVEY_MESSAGE)
-        elif self._handoff_bridge is not None:
-            await self._handoff_bridge.publish_survey(session_id)
+            # The handback trigger fires on EVERY update to a solved ticket
+            # (including our own CSAT comment + tag writes), so only start the
+            # survey on a genuine handoff (paused) -> solved transition. Once the
+            # survey is sent (awaiting_survey) or completed (active), re-fires are
+            # ignored — preventing duplicate survey messages.
+            if await self.orchestrator.whatsapp_state(session_id) == "paused":
+                await self.orchestrator.begin_survey(session_id)
+                if self._twilio_adapter is not None:
+                    to = "whatsapp:" + session_id[len("whatsapp-"):]
+                    await self._twilio_adapter.send_message(
+                        conversation_id=to, text=_SURVEY_MESSAGE
+                    )
+        else:
+            await self.orchestrator.begin_survey(session_id)
+            if self._handoff_bridge is not None:
+                await self._handoff_bridge.publish_survey(session_id)
 
         # Close the live agent stream AFTER the survey event is queued, so the
         # web client receives the survey event before the stream terminates.

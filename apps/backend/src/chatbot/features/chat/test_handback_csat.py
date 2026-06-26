@@ -24,6 +24,8 @@ def test_handback_whatsapp_starts_text_survey() -> None:
     orch._settings = get_settings()
     orch._settings.zendesk_support_webhook_secret = ""
     orch.begin_survey = AsyncMock()
+    # Genuine handoff -> solved transition: session is currently paused.
+    orch.whatsapp_state = AsyncMock(return_value="paused")
     # The handler calls _ticketing_port.unpause_ai_for_session — must be awaitable.
     orch._ticketing_port.unpause_ai_for_session = AsyncMock()
     twilio = AsyncMock()
@@ -39,6 +41,30 @@ def test_handback_whatsapp_starts_text_survey() -> None:
     orch.begin_survey.assert_awaited_once_with("whatsapp-+60123")
     twilio.send_message.assert_awaited_once()
     handoff.publish_survey.assert_not_awaited()  # WhatsApp uses text, not SSE
+
+
+def test_handback_whatsapp_skips_survey_when_not_paused() -> None:
+    """Re-fires of the handback trigger (e.g. from our own CSAT comment/tag
+    writes on the solved ticket) must NOT re-send the survey: only a paused
+    session starts a survey."""
+    orch = MagicMock()
+    orch._settings = get_settings()
+    orch._settings.zendesk_support_webhook_secret = ""
+    orch.begin_survey = AsyncMock()
+    # Survey already sent (awaiting_survey) — not a fresh handoff.
+    orch.whatsapp_state = AsyncMock(return_value="awaiting_survey")
+    orch._ticketing_port.unpause_ai_for_session = AsyncMock()
+    twilio = AsyncMock()
+    handoff = MagicMock()
+    handoff.unregister = AsyncMock()
+    handoff.publish_survey = AsyncMock()
+
+    client = _client(orch, twilio, handoff)
+    res = client.post("/webhooks/zendesk-handback", json={"session_id": "whatsapp-+60123"})
+
+    assert res.status_code == 200
+    orch.begin_survey.assert_not_awaited()  # no duplicate survey
+    twilio.send_message.assert_not_awaited()
 
 
 def test_handback_web_publishes_survey_event() -> None:

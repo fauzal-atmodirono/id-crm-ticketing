@@ -59,17 +59,28 @@ def _handoff_dict(turn_result: Any) -> dict[str, Any] | None:
 
 
 _WHATSAPP_MARKDOWN_CHARS = re.compile(r"[*_~`]+")
+# `[label](https://url)` / `![label](https://url)` -> "label (url)". WhatsApp
+# renders the raw markdown otherwise and only auto-links bare URLs.
+_MARKDOWN_LINK = re.compile(r"!?\[([^\]]+)\]\((https?://[^\s)]+)\)")
+# Markdown headings / blockquotes / list bullets at the start of a line.
+_MARKDOWN_LINE_PREFIX = re.compile(r"(?m)^[ \t]*(?:#{1,6}|>|[-+])\s+")
 
 
 def _sanitize_for_whatsapp(text: str) -> str:
-    """Strip characters WhatsApp treats as formatting and collapse whitespace.
+    """Make agent/scraped text safe and readable on WhatsApp.
 
-    Scraped copy carries stray '*' footnote markers, '_' and backticks; left in,
-    WhatsApp interprets `*...*`/`_..._`/`` `...` `` as bold/italic/monospace
-    toggles and garbles the message. We replace them with a space (so adjacent
-    words don't fuse) and collapse the run-on whitespace from scraped HTML.
+    WhatsApp only auto-links bare URLs and uses single `*`/`_`/`` ` `` as
+    bold/italic/monospace toggles. LLM replies and scraped copy bring markdown
+    that WhatsApp renders literally or mis-toggles, so we:
+
+    - rewrite `[label](url)` links to "label (url)" (bare, clickable URL);
+    - drop heading/blockquote/list markers at line starts;
+    - strip stray `*_~`` formatting characters (footnote markers etc.);
+    - collapse the run-on whitespace from scraped HTML.
     """
-    cleaned = _WHATSAPP_MARKDOWN_CHARS.sub(" ", text)
+    delinked = _MARKDOWN_LINK.sub(r"\1 (\2)", text)
+    deprefixed = _MARKDOWN_LINE_PREFIX.sub("", delinked)
+    cleaned = _WHATSAPP_MARKDOWN_CHARS.sub(" ", deprefixed)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 

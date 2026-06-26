@@ -49,6 +49,24 @@ def test_stray_markdown_in_description_is_sanitized() -> None:
     assert "Free Labour Service RM 38,990" in text  # whitespace collapsed, asterisks gone
 
 
+def test_markdown_link_becomes_bare_clickable_url() -> None:
+    reply = "Maklumat lanjut di [laman web rasmi Proton](https://www.proton.com/models/saga)."
+    text = _whatsapp_reply_text(_result(reply, []))
+    assert "[laman web rasmi Proton]" not in text
+    assert "laman web rasmi Proton (https://www.proton.com/models/saga)" in text
+
+
+def test_markdown_headings_and_bullets_are_stripped() -> None:
+    text = _whatsapp_reply_text(_result("## Models\n- Proton Saga\n- Proton X50", []))
+    assert "##" not in text
+    assert "- Proton" not in text
+    assert text == "Models Proton Saga Proton X50"
+
+
+def test_markdown_bold_markers_removed() -> None:
+    assert _whatsapp_reply_text(_result("The **Saga** is great", [])) == "The Saga is great"
+
+
 def test_card_without_optional_fields_is_safe() -> None:
     card = ProductCard(title="Proton X90", description="")
     assert _whatsapp_reply_text(_result("", [card])) == "*1. Proton X90*"

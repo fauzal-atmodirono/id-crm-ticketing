@@ -1,0 +1,16 @@
+Scenario,Line Item,Calculation,Monthly USD
+Assumptions,WhatsApp message,1 inbound or 1 outbound (both billed by Twilio),
+Assumptions,Conversation,~8 messages (4 customer + 4 AI) all service-category,
+Assumptions,Call,~4 minutes average,
+Low (200 WA conv; 50 calls = 200 min),Shared number (local),1 x 4,4.00
+Low (200 WA conv; 50 calls = 200 min),WhatsApp Twilio (Meta = 0),200 x 8 x 0.005,8.00
+Low (200 WA conv; 50 calls = 200 min),Phone voice + ConversationRelay,200 x (0.0085 + 0.07),15.70
+Low (200 WA conv; 50 calls = 200 min),Email,-,0.00
+Low (200 WA conv; 50 calls = 200 min),TOTAL (ConversationRelay),,27.70
+Low (200 WA conv; 50 calls = 200 min),TOTAL (if Media Streams later),200 x 0.04 + 12,20.00
+Medium (500 WA conv; 200 calls = 800 min),Shared number (local),1 x 4,4.00
+Medium (500 WA conv; 200 calls = 800 min),WhatsApp Twilio (Meta = 0),500 x 8 x 0.005,20.00
+Medium (500 WA conv; 200 calls = 800 min),Phone voice + ConversationRelay,800 x (0.0085 + 0.07),62.80
+Medium (500 WA conv; 200 calls = 800 min),Email,-,0.00
+Medium (500 WA conv; 200 calls = 800 min),TOTAL (ConversationRelay),,86.80
+Medium (500 WA conv; 200 calls = 800 min),TOTAL (if Media Streams later),800 x 0.04 + 24,56.00

@@ -8,6 +8,7 @@ let device: Device | null = null
 let call: Call | null = null
 
 async function startCall() {
+  if (status.value !== 'idle' && status.value !== 'error') return
   try {
     status.value = 'connecting'
     const { token } = await fetchPhoneToken()
@@ -39,3 +40,15 @@ onBeforeUnmount(endCall)
     <span v-if="status === 'error'" class="err">Call failed</span>
   </div>
 </template>
+
+<style scoped>
+.phone-call {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.err {
+  color: #c0392b;
+  font-size: 0.875rem;
+}
+</style>

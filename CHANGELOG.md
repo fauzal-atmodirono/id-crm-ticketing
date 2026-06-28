@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Email channel via Zendesk-native email (2026-06-28)
+
+- **Email channel via Zendesk-native email** — inbound customer emails become Zendesk
+  tickets; a trigger delivers each end-user comment to `/webhooks/zendesk-email`. The AI
+  auto-replies as a public comment (Zendesk emails it), gated by the detection gate, with
+  email loop guards. Handoff pauses the AI and a human takes the ticket; on Solve the
+  unified CSAT survey runs over email (`record_csat(channel="email")`). Draft-assist mode
+  (`EMAIL_DRAFT_ASSIST=true`) posts AI replies as private notes for an agent to send.
+
 ### Added — WhatsApp channel via Twilio + detection-gated Zendesk capture (2026-06-26)
 
 - **WhatsApp as an inbound channel (Twilio).** Added `POST /webhooks/twilio-whatsapp`: signature-verified (`verify_twilio_signature`, HMAC-SHA1 over the form), it maps the sender to `session_id = whatsapp-{E164}`, runs the existing `OrchestratorService.handle_turn`, and replies via a new `TwilioChannelAdapter` (a `ChatPort`) over the Twilio REST API. Signature verification prefers `TWILIO_WEBHOOK_BASE_URL` so it works behind tunnels/proxies (cloudflared, ngrok) where `request.url` reports the wrong scheme/host.

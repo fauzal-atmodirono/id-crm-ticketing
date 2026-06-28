@@ -1,6 +1,6 @@
 # Proton Conversational AI
 
-A Gemini-powered conversational AI agent for customer support, serving **text chat**, **voice**, and **WhatsApp** (via Twilio) through a single agent core, with pluggable CRM integration (**Zendesk** or **Chatwoot + Zammad**), Knowledge-Base grounding via **Vertex AI Search**, and **inline human-agent handoff** — over Server-Sent Events in the web UI, or two-way through a single Zendesk ticket on WhatsApp, closing with a CSAT survey.
+A Gemini-powered conversational AI agent for customer support, serving **text chat**, **voice**, **WhatsApp** (via Twilio), and **Email** (via Zendesk) through a single agent core, with pluggable CRM integration (**Zendesk** or **Chatwoot + Zammad**), Knowledge-Base grounding via **Vertex AI Search**, and **inline human-agent handoff** — over Server-Sent Events in the web UI, or two-way through a single Zendesk ticket on WhatsApp/Email, closing with a CSAT survey.
 
 Two apps in one repo:
 
@@ -25,6 +25,7 @@ Voice goes end-to-end through Gemini: the browser captures audio with `MediaReco
 - **WhatsApp channel (Twilio)** — `POST /webhooks/twilio-whatsapp` (HMAC-SHA1 signature-verified) routes `whatsapp-{E164}` sessions through the same agent core; replies (text, flattened product list, and image cards via Twilio media) go back over the Twilio REST API. Every conversation is mirrored into **one** Zendesk Support ticket via a detection gate — actionable → `open`, routine → `solved` log — keyed by `external_id = session_id`, deduped and restart-safe.
 - **Single-ticket two-way WhatsApp handoff** — on handoff the AI pauses and the customer is told a human is taking over; customer messages become private notes and the agent's public reply (via `POST /webhooks/zendesk-support`) relays back to WhatsApp. A persisted `active → paused → awaiting_survey → active` state machine routes each message. The web/Sunshine path is untouched.
 - **Channel-agnostic CSAT** — when the agent resolves the ticket (`POST /webhooks/zendesk-handback`), the customer gets a 1–5 survey: text on WhatsApp, a `CsatSurvey.vue` widget (driven by a `survey` SSE event + `POST /chat/csat`) in the web UI. Both share one `record_csat` path — `⭐` comment, `csat_N` tag, `csat_score` — then the AI resumes.
+- **Email channel (Zendesk-native)** — inbound customer emails become Zendesk tickets; a Zendesk trigger delivers each end-user comment to `POST /webhooks/zendesk-email`. The AI auto-replies as a public comment (Zendesk emails it), gated by the detection gate, with email loop guards. Handoff pauses the AI and a human takes the ticket; on Solve the same CSAT path fires (`record_csat(channel="email")`). Set `EMAIL_DRAFT_ASSIST=true` to have the AI post replies as private notes for an agent to review before sending.
 - **Local-first** — in-memory mock adapters let the full backend test suite run with zero external dependencies. `HANDOFF_STORE=memory` keeps Firestore optional in dev.
 
 ---
@@ -83,6 +84,7 @@ All backend routes:
 | POST   | `/webhooks/twilio-whatsapp`   | Inbound WhatsApp message from Twilio (signature-verified). Runs the agent, replies via Twilio, captures to Zendesk. |
 | POST   | `/webhooks/zendesk-support`   | Public agent reply on a Support ticket → relays to the SSE stream (web) or WhatsApp (Twilio). |
 | POST   | `/webhooks/zendesk-handback`  | Ticket solved/closed → unpauses the AI and starts the CSAT survey. |
+| POST   | `/webhooks/zendesk-email`     | Inbound customer email (Zendesk trigger) → AI auto-reply as public comment. |
 | POST   | `/webhooks/chatwoot`          | Chatwoot inbound message webhook.                            |
 | POST   | `/webhooks/zendesk`           | Zendesk Sunshine Conversations webhook (incoming-to-bot direction). |
 | POST   | `/webhooks/sunshine`          | Sunshine Conversations message events (agent → customer direction; HMAC-verified). |
@@ -146,7 +148,8 @@ Backend settings load from `apps/backend/.env`. See [.env.example](apps/backend/
 | `KNOWLEDGE_PROVIDER`        | `mock`, `zendesk`, or `vertex_search`                  | `mock`                          |
 | `VERTEX_SEARCH_*`           | Project / location / engine / data store ids           | —                               |
 | `SUNSHINE_WEBHOOK_SECRET`   | HMAC secret to verify inbound `/webhooks/sunshine` POSTs | —                               |
-| `ZENDESK_SUPPORT_WEBHOOK_SECRET` | Shared secret (`X-Proton-Webhook-Secret`) for `/webhooks/zendesk-support` + `/webhooks/zendesk-handback` | —                |
+| `ZENDESK_SUPPORT_WEBHOOK_SECRET` | Shared secret (`X-Proton-Webhook-Secret`) for `/webhooks/zendesk-support`, `/webhooks/zendesk-handback`, and `/webhooks/zendesk-email` | —                |
+| `EMAIL_DRAFT_ASSIST`            | `true` → AI posts replies as private notes for an agent to send (draft-assist); `false` → auto-emails the customer. Reuses `ZENDESK_SUPPORT_WEBHOOK_SECRET` for webhook auth. | `false`          |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | Twilio credentials — enable the WhatsApp channel when both are set | —                |
 | `TWILIO_WHATSAPP_NUMBER`    | WhatsApp sender, e.g. `whatsapp:+14155238886`          | —                               |
 | `TWILIO_WEBHOOK_BASE_URL`   | Public https base for signature verification behind a tunnel/proxy | —                    |

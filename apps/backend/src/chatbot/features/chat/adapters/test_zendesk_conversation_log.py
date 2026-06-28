@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
+from chatbot.platform.config import get_settings
 
 
 def _adapter() -> ZendeskAdapter:
@@ -60,3 +62,40 @@ async def test_append_conversation_comment_sets_status_private() -> None:
     assert payload["comment"]["public"] is False
     assert payload["comment"]["body"] == "USER: hi"
     assert payload["status"] == "solved"
+
+
+async def test_post_public_reply_posts_public_comment_with_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _Resp:
+        def raise_for_status(self) -> None: ...
+
+    class _Client:
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: object) -> None: ...
+
+        async def put(
+            self,
+            url: str,
+            json: object,
+            headers: object,
+            timeout: object,  # noqa: ASYNC109
+        ) -> _Resp:
+            captured["url"] = url
+            captured["json"] = json
+            return _Resp()
+
+    monkeypatch.setattr("chatbot.features.chat.adapters.zendesk.httpx.AsyncClient", _Client)
+
+    adapter = ZendeskAdapter(get_settings())
+    await adapter.post_public_reply("123", "Hello from AI", status="pending")
+
+    assert "/tickets/123.json" in captured["url"]
+    comment = captured["json"]["ticket"]["comment"]
+    assert comment["body"] == "Hello from AI"
+    assert comment["public"] is True
+    assert captured["json"]["ticket"]["status"] == "pending"

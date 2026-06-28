@@ -154,3 +154,8 @@ class ConversationLogPort(Protocol):
     async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:
         """Add a single tag to the ticket (additive; does not replace tags)."""
         ...
+
+    async def post_public_reply(self, ticket_id: str, text: str, status: str | None = None) -> None:
+        """Post a PUBLIC comment to an existing ticket (emailed to the requester
+        by Zendesk), optionally setting ticket status."""
+        ...

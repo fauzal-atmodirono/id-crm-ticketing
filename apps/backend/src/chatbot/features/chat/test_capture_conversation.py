@@ -66,6 +66,9 @@ class _FakeLog(ConversationLogPort):
     async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:
         self.tags.append((ticket_id, tag))
 
+    async def post_public_reply(self, ticket_id: str, text: str, status: str | None = None) -> None:
+        return None
+
 
 def _orchestrator(
     log: ConversationLogPort, sessions: _LiveSessions | None = None

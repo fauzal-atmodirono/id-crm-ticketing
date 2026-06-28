@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import ChannelTabs, { type Channel } from '@/components/ui/ChannelTabs.vue';
 import { ChatLog, ChatInput, useChatStore } from '@/features/chat';
 import { VoiceLog, VoiceRecorder, useVoiceStore } from '@/features/voice';
+import { PhoneCall } from '@/features/phone';
 
 const channel = ref<Channel>('chat');
 const chat = useChatStore();
@@ -10,7 +11,7 @@ const voice = useVoiceStore();
 
 function reset(): void {
   if (channel.value === 'chat') chat.resetSession();
-  else voice.resetSession();
+  else if (channel.value === 'voice') voice.resetSession();
 }
 </script>
 
@@ -35,15 +36,16 @@ function reset(): void {
   </transition>
 
   <ChatLog v-if="channel === 'chat'" />
-  <VoiceLog v-else />
+  <VoiceLog v-else-if="channel === 'voice'" />
 
   <ChatInput v-if="channel === 'chat'" />
-  <VoiceRecorder v-else />
+  <VoiceRecorder v-else-if="channel === 'voice'" />
+  <PhoneCall v-else-if="channel === 'phone'" />
 
   <footer class="session-row">
     <span>
       Session:
-      <code>{{ channel === 'chat' ? chat.sessionId : voice.sessionId }}</code>
+      <code>{{ channel === 'chat' ? chat.sessionId : channel === 'voice' ? voice.sessionId : '—' }}</code>
     </span>
     <button type="button" @click="reset">New session</button>
   </footer>

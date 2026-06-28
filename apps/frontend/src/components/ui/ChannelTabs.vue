@@ -1,5 +1,5 @@
 <script setup lang="ts">
-export type Channel = 'chat' | 'voice';
+export type Channel = 'chat' | 'voice' | 'phone';
 
 defineProps<{ modelValue: Channel }>();
 defineEmits<{ 'update:modelValue': [value: Channel] }>();
@@ -24,6 +24,15 @@ defineEmits<{ 'update:modelValue': [value: Channel] }>();
       @click="$emit('update:modelValue', 'voice')"
     >
       Voice
+    </button>
+    <button
+      type="button"
+      role="tab"
+      :aria-selected="modelValue === 'phone'"
+      :class="{ active: modelValue === 'phone' }"
+      @click="$emit('update:modelValue', 'phone')"
+    >
+      Phone
     </button>
   </nav>
 </template>

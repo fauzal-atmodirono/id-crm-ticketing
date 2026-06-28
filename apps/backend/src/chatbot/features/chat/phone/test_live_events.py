@@ -2,9 +2,11 @@ from google.genai import types
 
 from chatbot.features.chat.phone.live_events import (
     AudioOut,
+    InputTranscript,
     Interrupted,
     OutputTranscript,
     ToolCall,
+    TurnComplete,
     normalize_server_message,
 )
 
@@ -33,6 +35,18 @@ def test_normalize_extracts_output_transcript_and_interrupt() -> None:
     events = normalize_server_message(msg)
     assert OutputTranscript("hello") in events
     assert Interrupted() in events
+
+
+def test_normalize_extracts_input_transcript_and_turn_complete() -> None:
+    msg = types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text="what is the warranty"),
+            turn_complete=True,
+        )
+    )
+    events = normalize_server_message(msg)
+    assert InputTranscript("what is the warranty") in events
+    assert TurnComplete() in events
 
 
 def test_normalize_extracts_tool_call() -> None:

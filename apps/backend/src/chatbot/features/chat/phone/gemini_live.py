@@ -77,4 +77,5 @@ async def connect_live(
         output_audio_transcription=types.AudioTranscriptionConfig(),
     )
     async with client.aio.live.connect(model=settings.gemini_live_model, config=config) as session:
+        _log.info("phone_live_session_connected", model=settings.gemini_live_model)
         yield _GeminiLiveSession(session)

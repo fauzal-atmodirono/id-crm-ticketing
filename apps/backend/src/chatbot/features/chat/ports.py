@@ -159,3 +159,7 @@ class ConversationLogPort(Protocol):
         """Post a PUBLIC comment to an existing ticket (emailed to the requester
         by Zendesk), optionally setting ticket status."""
         ...
+
+    async def set_ticket_external_id(self, ticket_id: str, external_id: str) -> None:
+        """Set the ticket's external_id so status-change triggers can route by session."""
+        ...

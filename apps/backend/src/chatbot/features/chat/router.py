@@ -614,6 +614,8 @@ class ChatRouter:
                     await port.append_conversation_comment(ticket_id, f"[AI draft]\n{reply}")
                 else:
                     await port.post_public_reply(ticket_id, reply, status="pending")
+            else:
+                _log.warning("zendesk_email_empty_reply", session_id=session_id)
         return {"status": "ok"}
 
     async def _handle_email_survey(self, ticket_id: str, session_id: str, body: str) -> None:
@@ -621,7 +623,7 @@ class ChatRouter:
         score = OrchestratorService.parse_csat(body)
         if score is not None:
             await self.orchestrator.record_csat(session_id, score, channel="email")
-            await port.post_public_reply(ticket_id, _EMAIL_CSAT_THANKS)
+            await port.post_public_reply(ticket_id, _EMAIL_CSAT_THANKS, status="solved")
             return
         if await self.orchestrator.consume_survey_nudge(session_id):
             await port.post_public_reply(ticket_id, _EMAIL_CSAT_NUDGE)

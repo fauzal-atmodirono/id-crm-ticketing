@@ -33,3 +33,10 @@ class NoOpConversationLog(ConversationLogPort):
         status: str | None = None,  # noqa: ARG002
     ) -> None:
         return None
+
+    async def set_ticket_external_id(
+        self,
+        ticket_id: str,  # noqa: ARG002
+        external_id: str,  # noqa: ARG002
+    ) -> None:
+        return None

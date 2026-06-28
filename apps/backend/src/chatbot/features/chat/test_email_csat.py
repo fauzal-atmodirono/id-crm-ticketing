@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from fastapi.testclient import TestClient
 
-from chatbot.features.chat.router import build_chat_router
+from chatbot.features.chat.router import _EMAIL_CSAT_THANKS, build_chat_router
 from chatbot.features.chat.service import OrchestratorService
 from chatbot.platform.config import get_settings
 from chatbot.platform.server import create_app
@@ -45,7 +45,11 @@ def test_valid_csat_records_email_channel() -> None:
     res = _client(orch).post("/webhooks/zendesk-email", json=_email("5"))
     assert res.status_code == 200
     orch.record_csat.assert_awaited_once_with("email-55", 5, channel="email")
-    orch._conversation_log_port.post_public_reply.assert_awaited_once()  # thank-you
+    # M2: thank-you must re-solve the ticket so the customer's reply doesn't
+    # leave it reopened after CSAT is recorded.
+    orch._conversation_log_port.post_public_reply.assert_awaited_once_with(
+        "55", _EMAIL_CSAT_THANKS, status="solved"
+    )
 
 
 def test_invalid_csat_nudges_once() -> None:

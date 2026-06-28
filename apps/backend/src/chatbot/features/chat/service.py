@@ -443,6 +443,7 @@ class OrchestratorService:
             return
         if session.state.get("conversation_ticket_id") != ticket_id:
             session.state["conversation_ticket_id"] = ticket_id
+            await self._conversation_log_port.set_ticket_external_id(ticket_id, session_id)
             await self._persist_session_state(session)
 
     @staticmethod

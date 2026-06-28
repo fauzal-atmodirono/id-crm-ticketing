@@ -69,6 +69,9 @@ class _FakeLog(ConversationLogPort):
     async def post_public_reply(self, ticket_id: str, text: str, status: str | None = None) -> None:
         return None
 
+    async def set_ticket_external_id(self, ticket_id: str, external_id: str) -> None:
+        return None
+
 
 def _orchestrator(
     log: ConversationLogPort, sessions: _LiveSessions | None = None

@@ -1,6 +1,12 @@
 """Create the Zendesk webhook target + trigger that delivers inbound customer
 emails to POST /webhooks/zendesk-email.
 
+The trigger fires on ticket create AND update (via_id 4 = email channel) so
+follow-up customer replies and CSAT number replies reach the webhook, not only
+the initial email. Runtime guards (_is_no_reply, paused no-op, state machine)
+correctly scope processing; the AI's own API replies are not via_id 4, so there
+is no reply loop.
+
 Usage (from apps/backend/):
     PUBLIC_BASE_URL=https://<tunnel>  .venv/bin/python scripts/provision_zendesk_email_webhook.py
 
@@ -66,7 +72,6 @@ def main() -> int:
                 "title": "AI: customer email -> webhook",
                 "conditions": {
                     "all": [
-                        {"field": "update_type", "operator": "is", "value": "Create"},
                         {"field": "comment_is_public", "operator": "is", "value": "true"},
                         {"field": "current_via_id", "operator": "is", "value": "4"},
                     ]

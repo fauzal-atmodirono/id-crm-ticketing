@@ -39,9 +39,12 @@ def _setup() -> tuple[TestClient, OrchestratorService, AsyncMock]:
     settings.twilio_whatsapp_number = "whatsapp:+60111"
     settings.twilio_webhook_base_url = ""
     orch = OrchestratorService(
-        settings=settings, chat_port=InMemoryChatAdapter(),
-        ticketing_port=InMemoryTicketingAdapter(), knowledge_port=InMemoryKnowledgeAdapter(),
-        tts_port=MockVoiceAdapter(), runner_factory=lambda _a: _FakeRunner(),
+        settings=settings,
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=InMemoryTicketingAdapter(),
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=MockVoiceAdapter(),
+        runner_factory=lambda _a: _FakeRunner(),
     )
     twilio = AsyncMock()
     app = create_app(settings)

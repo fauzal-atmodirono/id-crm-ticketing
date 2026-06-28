@@ -91,9 +91,7 @@ def _sanitize_for_whatsapp(text: str) -> str:
 
 _MAX_WHATSAPP_CARDS = 5
 
-_HANDOFF_MESSAGE = (
-    "You're being connected to a human agent who will continue helping you here shortly. \U0001f9d1‍\U0001f4bc"
-)
+_HANDOFF_MESSAGE = "You're being connected to a human agent who will continue helping you here shortly. \U0001f9d1‍\U0001f4bc"
 _SURVEY_MESSAGE = (
     "Thanks for chatting with our support team! How would you rate your experience? "
     "Reply with a number 1-5 (1 = poor, 5 = excellent)."
@@ -248,9 +246,7 @@ class ChatRouter:
         # (cloudflared, ngrok) request.url reports the local scheme/host, which
         # breaks the signature. Prefer the configured public base when set.
         base = self.orchestrator._settings.twilio_webhook_base_url
-        verify_url = (
-            f"{base.rstrip('/')}/webhooks/twilio-whatsapp" if base else str(request.url)
-        )
+        verify_url = f"{base.rstrip('/')}/webhooks/twilio-whatsapp" if base else str(request.url)
         signature = request.headers.get("X-Twilio-Signature")
         if token and not verify_twilio_signature(token, verify_url, params, signature):
             _log.warning("twilio_whatsapp_signature_invalid")
@@ -298,7 +294,9 @@ class ChatRouter:
         if score is not None:
             await self.orchestrator.record_csat(session_id, score, channel="WhatsApp")
             if self._twilio_adapter is not None:
-                await self._twilio_adapter.send_message(conversation_id=from_addr, text=_CSAT_THANKS)
+                await self._twilio_adapter.send_message(
+                    conversation_id=from_addr, text=_CSAT_THANKS
+                )
             return
         # Invalid: nudge once, then stop trapping the customer.
         if await self.orchestrator.consume_survey_nudge(session_id):
@@ -445,7 +443,7 @@ class ChatRouter:
             return {"status": "ignored"}
 
         if session_id.startswith("whatsapp-") and self._twilio_adapter is not None:
-            to = "whatsapp:" + session_id[len("whatsapp-"):]
+            to = "whatsapp:" + session_id[len("whatsapp-") :]
             await self._twilio_adapter.send_message(
                 conversation_id=to, text=_sanitize_for_whatsapp(payload.text)
             )
@@ -515,7 +513,7 @@ class ChatRouter:
             if await self.orchestrator.whatsapp_state(session_id) == "paused":
                 await self.orchestrator.begin_survey(session_id)
                 if self._twilio_adapter is not None:
-                    to = "whatsapp:" + session_id[len("whatsapp-"):]
+                    to = "whatsapp:" + session_id[len("whatsapp-") :]
                     await self._twilio_adapter.send_message(
                         conversation_id=to, text=_SURVEY_MESSAGE
                     )

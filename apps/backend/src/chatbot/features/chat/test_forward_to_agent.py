@@ -11,7 +11,9 @@ async def test_forward_posts_prefixed_private_note() -> None:
     sessions = _LiveSessions()
     orch = _orchestrator(log, sessions)
     await sessions.create_session(
-        app_name="chatbot", user_id="whatsapp-+60123", session_id="whatsapp-+60123",
+        app_name="chatbot",
+        user_id="whatsapp-+60123",
+        session_id="whatsapp-+60123",
         state={"conversation_ticket_id": "T1"},
     )
 

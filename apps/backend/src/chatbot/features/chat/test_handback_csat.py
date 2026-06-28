@@ -12,9 +12,7 @@ from chatbot.platform.server import create_app
 def _client(orch: MagicMock, twilio: AsyncMock, handoff: MagicMock) -> TestClient:
     settings = get_settings()
     app = create_app(settings)
-    app.include_router(
-        build_chat_router(orch, handoff_bridge=handoff, twilio_adapter=twilio)
-    )
+    app.include_router(build_chat_router(orch, handoff_bridge=handoff, twilio_adapter=twilio))
     return TestClient(app)
 
 

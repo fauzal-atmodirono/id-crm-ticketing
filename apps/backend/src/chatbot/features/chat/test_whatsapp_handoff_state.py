@@ -17,7 +17,9 @@ async def test_begin_handoff_opens_ticket_and_pauses() -> None:
     sessions = _LiveSessions()
     orch = _orchestrator(log, sessions)
     session = await sessions.create_session(
-        app_name="chatbot", user_id="whatsapp-+60123", session_id="whatsapp-+60123",
+        app_name="chatbot",
+        user_id="whatsapp-+60123",
+        session_id="whatsapp-+60123",
         state={"chat_history": [], "handoff_triggered": True},
     )
 
@@ -39,7 +41,9 @@ async def test_begin_handoff_reuses_cached_ticket() -> None:
     sessions = _LiveSessions()
     orch = _orchestrator(log, sessions)
     await sessions.create_session(
-        app_name="chatbot", user_id="whatsapp-+60999", session_id="whatsapp-+60999",
+        app_name="chatbot",
+        user_id="whatsapp-+60999",
+        session_id="whatsapp-+60999",
         state={"chat_history": [], "handoff_triggered": True, "conversation_ticket_id": "ZD-999"},
     )
 

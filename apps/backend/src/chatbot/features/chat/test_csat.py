@@ -28,7 +28,9 @@ async def test_record_csat_writes_comment_tag_and_resets_state() -> None:
     sessions = _LiveSessions()
     orch = _orchestrator(log, sessions)
     session = await sessions.create_session(
-        app_name="chatbot", user_id="whatsapp-+60123", session_id="whatsapp-+60123",
+        app_name="chatbot",
+        user_id="whatsapp-+60123",
+        session_id="whatsapp-+60123",
         state={"conversation_ticket_id": "T1", "whatsapp_handoff_state": "awaiting_survey"},
     )
 

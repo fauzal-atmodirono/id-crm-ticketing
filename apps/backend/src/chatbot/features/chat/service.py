@@ -350,7 +350,9 @@ class OrchestratorService:
         session_state = final_session.state if final_session else {}
 
         handoff_payload = None
-        if session_state.get("handoff_triggered") is True and not session_id.startswith("whatsapp-"):
+        if session_state.get("handoff_triggered") is True and not session_id.startswith(
+            "whatsapp-"
+        ):
             reason = session_state.get("handoff_reason", "help_request")
 
             # Execute human escalation handoff

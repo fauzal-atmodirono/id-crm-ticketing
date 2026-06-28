@@ -14,6 +14,7 @@ import audioop
 
 _WIDTH = 2  # 16-bit PCM
 _CHANNELS = 1
+_MAX_RESAMPLE_SHORTFALL = 2  # at most 1 sample (2 bytes) due to ratecv filter startup
 
 
 def mulaw8k_to_pcm16k(mulaw: bytes) -> bytes:
@@ -21,10 +22,14 @@ def mulaw8k_to_pcm16k(mulaw: bytes) -> bytes:
     pcm8k = audioop.ulaw2lin(mulaw, _WIDTH)
     pcm16k, _ = audioop.ratecv(pcm8k, _WIDTH, _CHANNELS, 8000, 16000, None)
     # ratecv may produce one sample fewer due to filter startup latency;
-    # zero-pad to the exact 2x sample count (at most 2 silent bytes added).
+    # zero-pad to the exact 2x sample count. The shortfall is expected to be at
+    # most one sample (2 bytes) — anything larger means a malformed input, so fail loudly.
     target = len(pcm8k) * 2
-    if len(pcm16k) < target:
-        pcm16k += b"\x00" * (target - len(pcm16k))
+    shortfall = target - len(pcm16k)
+    if shortfall > 0:
+        if shortfall > _MAX_RESAMPLE_SHORTFALL:
+            raise ValueError(f"unexpected resample shortfall: {shortfall} bytes")
+        pcm16k += b"\x00" * shortfall
     return pcm16k
 
 

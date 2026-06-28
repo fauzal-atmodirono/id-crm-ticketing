@@ -11,6 +11,10 @@ def test_mulaw8k_to_pcm16k_doubles_sample_count() -> None:
     mulaw = b"\xff" * 160
     pcm = mulaw8k_to_pcm16k(mulaw)
     assert len(pcm) == 640  # 320 samples * 2 bytes
+    # the non-padded portion is the genuine resampler output, not zero-fill
+    expected_body = audioop.ratecv(audioop.ulaw2lin(mulaw, 2), 2, 1, 8000, 16000, None)[0]
+    assert pcm[: len(expected_body)] == expected_body
+    assert len(expected_body) >= 638  # ratecv yields 638-640; padding tops up to 640
 
 
 def test_pcm24k_to_mulaw8k_thirds_sample_count() -> None:

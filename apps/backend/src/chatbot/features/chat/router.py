@@ -3,19 +3,34 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
 import structlog
-from fastapi import APIRouter, File, Form, Header, HTTPException, Request, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.handoff_bridge import HandoffBridge, SurveyEvent
 from chatbot.features.chat.models import AgentMessageEvent
+from chatbot.features.chat.phone.bridge import PhoneBridge
+from chatbot.features.chat.phone.gemini_live import LiveSession, connect_live
+from chatbot.features.chat.phone.kb_tool import KB_SEARCH_TOOL
 from chatbot.features.chat.phone.token import mint_voice_token
 from chatbot.features.chat.phone.twiml import connect_stream_twiml
 from chatbot.features.chat.ports import HumanAgentBridgePort
@@ -182,6 +197,9 @@ def _products_list(turn_result: Any) -> list[dict[str, Any]]:
     ]
 
 
+_LiveFactory = Callable[..., AbstractAsyncContextManager[LiveSession]]
+
+
 class ChatRouter:
     """Class-based router for CRM webhooks plus the frontend-facing chat/voice endpoints."""
 
@@ -191,11 +209,13 @@ class ChatRouter:
         handoff_bridge: HandoffBridge | None = None,
         human_agent_bridge: HumanAgentBridgePort | None = None,
         twilio_adapter: TwilioChannelAdapter | None = None,
+        live_session_factory: _LiveFactory | None = None,
     ) -> None:
         self.orchestrator = orchestrator
         self._handoff_bridge = handoff_bridge
         self._human_agent_bridge = human_agent_bridge
         self._twilio_adapter = twilio_adapter
+        self._live_session_factory: _LiveFactory = live_session_factory or connect_live
         self.router = APIRouter(tags=["chat"])
 
         self.router.add_api_route("/webhooks/chatwoot", self.chatwoot_webhook, methods=["POST"])
@@ -237,6 +257,7 @@ class ChatRouter:
         )
         self.router.add_api_route("/voice/phone/incoming", self.phone_incoming, methods=["POST"])
         self.router.add_api_route("/voice/phone/token", self.phone_token, methods=["POST"])
+        self.router.add_api_websocket_route("/voice/phone/stream", self.phone_stream)
 
     # --- CRM webhooks -------------------------------------------------------
 
@@ -805,12 +826,67 @@ class ChatRouter:
             _log.error("voice_tts_synthesis_failed", error=str(e))
             raise HTTPException(status_code=500, detail="Voice synthesis failed") from e
 
+    async def phone_stream(self, websocket: WebSocket) -> None:
+        """WebSocket endpoint that Twilio Media Streams connects to.
+
+        Opens a Gemini Live session, constructs a PhoneBridge, then:
+        1. Reads the mandatory Twilio "start" event synchronously so stream_sid
+           is guaranteed to be set before the pump begins forwarding audio frames.
+        2. Runs two concurrent tasks: receiving remaining Twilio messages and
+           pumping Gemini live events back to Twilio.
+        3. On either task completing (pump exhausted or caller hung up), cancels
+           the pending task and finalises the bridge.
+        """
+        await websocket.accept()
+        system_instruction = (
+            "You are Proton's friendly phone support agent. Answer spoken questions "
+            "concisely and naturally. Use the kb_search tool to ground answers in the "
+            "Proton knowledge base before giving facts. No markdown — this is spoken aloud."
+        )
+        try:
+            async with self._live_session_factory(
+                self.orchestrator._settings, system_instruction, [KB_SEARCH_TOOL]
+            ) as live:
+                bridge = PhoneBridge(
+                    live,
+                    self.orchestrator._knowledge_port,
+                    self.orchestrator._conversation_log_port,
+                    websocket.send_json,
+                )
+
+                # The Twilio Media Streams protocol always sends a "start" event
+                # as the very first message. Handle it synchronously here so that
+                # bridge.stream_sid is set before pump_task begins forwarding
+                # audio frames — avoiding a race between the two concurrent tasks.
+                start_raw = await websocket.receive_text()
+                await bridge.handle_twilio(json.loads(start_raw))
+
+                async def from_twilio() -> None:
+                    while True:
+                        raw = await websocket.receive_text()
+                        await bridge.handle_twilio(json.loads(raw))
+
+                twilio_task = asyncio.create_task(from_twilio())
+                pump_task = asyncio.create_task(bridge.pump())
+                _, pending = await asyncio.wait(
+                    {pump_task, twilio_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                for t in pending:
+                    t.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                await bridge.finalize()
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            _log.error("phone_stream_failed", error=str(e))
+
 
 def build_chat_router(
     orchestrator: OrchestratorService,
     handoff_bridge: HandoffBridge | None = None,
     human_agent_bridge: HumanAgentBridgePort | None = None,
     twilio_adapter: TwilioChannelAdapter | None = None,
+    live_session_factory: _LiveFactory | None = None,
 ) -> APIRouter:
     """Builds and returns the configured FastAPI router instance."""
     return ChatRouter(
@@ -818,4 +894,5 @@ def build_chat_router(
         handoff_bridge=handoff_bridge,
         human_agent_bridge=human_agent_bridge,
         twilio_adapter=twilio_adapter,
+        live_session_factory=live_session_factory,
     ).router

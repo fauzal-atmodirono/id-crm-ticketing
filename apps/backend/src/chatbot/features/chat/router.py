@@ -532,13 +532,22 @@ class ChatRouter:
             # survey on a genuine handoff (paused) -> solved transition. Once the
             # survey is sent (awaiting_survey) or completed (active), re-fires are
             # ignored — preventing duplicate survey messages.
-            if await self.orchestrator.whatsapp_state(session_id) == "paused":
+            if await self.orchestrator.conversation_state(session_id) == "paused":
                 await self.orchestrator.begin_survey(session_id)
                 if self._twilio_adapter is not None:
                     to = "whatsapp:" + session_id[len("whatsapp-") :]
                     await self._twilio_adapter.send_message(
                         conversation_id=to, text=_SURVEY_MESSAGE
                     )
+        elif session_id.startswith("email-"):
+            # Only on a genuine handoff (paused) -> solved transition; re-fires
+            # from our own survey/CSAT writes are end-user-agnostic and ignored.
+            if await self.orchestrator.conversation_state(session_id) == "paused":
+                ticket_id = session_id[len("email-") :]
+                await self.orchestrator.begin_survey(session_id)
+                await self.orchestrator._conversation_log_port.post_public_reply(
+                    ticket_id, _EMAIL_SURVEY_MESSAGE
+                )
         else:
             await self.orchestrator.begin_survey(session_id)
             if self._handoff_bridge is not None:
@@ -607,10 +616,23 @@ class ChatRouter:
                     await port.post_public_reply(ticket_id, reply, status="pending")
         return {"status": "ok"}
 
-    async def _handle_email_survey(
-        self, ticket_id: str, session_id: str, body: str  # noqa: ARG002
-    ) -> None:
-        return None
+    async def _handle_email_survey(self, ticket_id: str, session_id: str, body: str) -> None:
+        port = self.orchestrator._conversation_log_port
+        score = OrchestratorService.parse_csat(body)
+        if score is not None:
+            await self.orchestrator.record_csat(session_id, score, channel="email")
+            await port.post_public_reply(ticket_id, _EMAIL_CSAT_THANKS)
+            return
+        if await self.orchestrator.consume_survey_nudge(session_id):
+            await port.post_public_reply(ticket_id, _EMAIL_CSAT_NUDGE)
+            return
+        # Second invalid → resume AI and process this message as a normal turn.
+        await self.orchestrator.resume_ai(session_id)
+        result = await self.orchestrator.handle_turn(session_id=session_id, text=body)
+        await self.orchestrator.bind_email_ticket(session_id, ticket_id)
+        reply = getattr(result, "reply", "") or ""
+        if reply:
+            await port.post_public_reply(ticket_id, reply, status="pending")
 
     # --- Frontend-facing API (consumed by the Vue app) ----------------------
 

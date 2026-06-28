@@ -23,7 +23,7 @@ def test_handback_whatsapp_starts_text_survey() -> None:
     orch._settings.zendesk_support_webhook_secret = ""
     orch.begin_survey = AsyncMock()
     # Genuine handoff -> solved transition: session is currently paused.
-    orch.whatsapp_state = AsyncMock(return_value="paused")
+    orch.conversation_state = AsyncMock(return_value="paused")
     # The handler calls _ticketing_port.unpause_ai_for_session — must be awaitable.
     orch._ticketing_port.unpause_ai_for_session = AsyncMock()
     twilio = AsyncMock()
@@ -50,7 +50,7 @@ def test_handback_whatsapp_skips_survey_when_not_paused() -> None:
     orch._settings.zendesk_support_webhook_secret = ""
     orch.begin_survey = AsyncMock()
     # Survey already sent (awaiting_survey) — not a fresh handoff.
-    orch.whatsapp_state = AsyncMock(return_value="awaiting_survey")
+    orch.conversation_state = AsyncMock(return_value="awaiting_survey")
     orch._ticketing_port.unpause_ai_for_session = AsyncMock()
     twilio = AsyncMock()
     handoff = MagicMock()

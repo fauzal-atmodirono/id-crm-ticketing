@@ -20,7 +20,7 @@ from chatbot.features.chat.ports import HumanAgentBridgePort
 from chatbot.features.chat.schemas import (
     ChatwootWebhookPayload,
     TtsRequest,
-    ZendeskEmailWebhookPayload,  # noqa: F401  (used by Task 5 email handler)
+    ZendeskEmailWebhookPayload,
     ZendeskHandbackPayload,
     ZendeskSupportWebhookPayload,
     ZendeskWebhookPayload,
@@ -204,6 +204,9 @@ class ChatRouter:
         )
         self.router.add_api_route(
             "/webhooks/zendesk-handback", self.zendesk_handback_webhook, methods=["POST"]
+        )
+        self.router.add_api_route(
+            "/webhooks/zendesk-email", self.zendesk_email_webhook, methods=["POST"]
         )
         self.router.add_api_route(
             "/webhooks/twilio-whatsapp", self.twilio_whatsapp_webhook, methods=["POST"]
@@ -547,6 +550,67 @@ class ChatRouter:
             await self._handoff_bridge.unregister(session_id)
 
         return {"status": "unpaused", "session_id": session_id}
+
+    async def zendesk_email_webhook(
+        self,
+        payload: ZendeskEmailWebhookPayload,
+        x_proton_webhook_secret: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        """Inbound customer email, delivered by a Zendesk trigger.
+
+        The ticket IS the conversation (session_id = email-<ticket_id>). We run
+        the AI, post the reply as a public comment (Zendesk emails it), and route
+        by conversation state. Paused sessions are handled by a human in Zendesk,
+        so we no-op.
+        """
+        expected_secret = self.orchestrator._settings.zendesk_support_webhook_secret
+        if expected_secret and (
+            not x_proton_webhook_secret or x_proton_webhook_secret != expected_secret
+        ):
+            _log.warning("zendesk_email_webhook_signature_invalid")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
+        ticket_id = payload.ticket_id.strip()
+        text = (payload.text or "").strip()
+        if not ticket_id or not text:
+            return {"status": "ignored"}
+        if _is_no_reply(payload.requester_email):
+            _log.info("zendesk_email_webhook_no_reply_skipped", ticket_id=ticket_id)
+            return {"status": "ignored"}
+
+        session_id = f"email-{ticket_id}"
+        _log.info("zendesk_email_received", session_id=session_id)
+
+        state = await self.orchestrator.conversation_state(session_id)
+        if state == "awaiting_survey":
+            await self._handle_email_survey(ticket_id, session_id, text)
+            return {"status": "ok"}
+        if state == "paused":
+            return {"status": "paused"}
+
+        result = await self.orchestrator.handle_turn(session_id=session_id, text=text)
+        await self.orchestrator.bind_email_ticket(session_id, ticket_id)
+
+        port = self.orchestrator._conversation_log_port
+        if await self.orchestrator.needs_handoff(session_id):
+            summary = result.reply or "Customer requested a human agent."
+            await self.orchestrator.begin_handoff(
+                session_id, summary, channel="email", customer_name=payload.requester_name
+            )
+            await port.post_public_reply(ticket_id, _EMAIL_HANDOFF_MESSAGE)
+        else:
+            reply = result.reply or ""
+            if reply:
+                if self.orchestrator._settings.email_draft_assist:
+                    await port.append_conversation_comment(ticket_id, f"[AI draft]\n{reply}")
+                else:
+                    await port.post_public_reply(ticket_id, reply, status="pending")
+        return {"status": "ok"}
+
+    async def _handle_email_survey(
+        self, ticket_id: str, session_id: str, body: str  # noqa: ARG002
+    ) -> None:
+        return None
 
     # --- Frontend-facing API (consumed by the Vue app) ----------------------
 

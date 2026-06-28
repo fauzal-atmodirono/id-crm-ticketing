@@ -433,6 +433,18 @@ class OrchestratorService:
         except Exception as e:
             _log.error("capture_conversation_failed", session_id=session_id, error=str(e))
 
+    async def bind_email_ticket(self, session_id: str, ticket_id: str) -> None:
+        """Seed the existing Zendesk email ticket id into session state so the
+        handoff/CSAT paths reuse it instead of creating a duplicate ticket."""
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        if session is None:
+            return
+        if session.state.get("conversation_ticket_id") != ticket_id:
+            session.state["conversation_ticket_id"] = ticket_id
+            await self._persist_session_state(session)
+
     @staticmethod
     def parse_csat(text: str) -> int | None:
         """Return the first standalone 1-5 rating in the text, else None."""

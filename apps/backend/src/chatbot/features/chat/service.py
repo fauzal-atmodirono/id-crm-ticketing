@@ -350,8 +350,8 @@ class OrchestratorService:
         session_state = final_session.state if final_session else {}
 
         handoff_payload = None
-        if session_state.get("handoff_triggered") is True and not session_id.startswith(
-            "whatsapp-"
+        if session_state.get("handoff_triggered") is True and not (
+            session_id.startswith("whatsapp-") or session_id.startswith("email-")
         ):
             reason = session_state.get("handoff_reason", "help_request")
 
@@ -466,7 +466,7 @@ class OrchestratorService:
         await self._persist_session_state(session)
         return True
 
-    async def whatsapp_state(self, session_id: str) -> str:
+    async def conversation_state(self, session_id: str) -> str:
         session = await self._adk_sessions.get_session(
             app_name="chatbot", user_id=session_id, session_id=session_id
         )
@@ -474,16 +474,23 @@ class OrchestratorService:
             return WHATSAPP_ACTIVE
         return str(session.state.get(_HANDOFF_STATE_KEY) or WHATSAPP_ACTIVE)
 
-    async def needs_whatsapp_handoff(self, session_id: str) -> bool:
-        if await self.whatsapp_state(session_id) != WHATSAPP_ACTIVE:
+    async def whatsapp_state(self, session_id: str) -> str:
+        return await self.conversation_state(session_id)
+
+    async def needs_handoff(self, session_id: str) -> bool:
+        if await self.conversation_state(session_id) != WHATSAPP_ACTIVE:
             return False
         return await self._handoff_triggered(session_id)
 
-    async def begin_whatsapp_handoff(
+    async def needs_whatsapp_handoff(self, session_id: str) -> bool:
+        return await self.needs_handoff(session_id)
+
+    async def begin_handoff(
         self,
         session_id: str,
         summary: str,
         *,
+        channel: str = "whatsapp",
         customer_name: str | None = None,
         customer_phone: str | None = None,
     ) -> None:
@@ -498,7 +505,7 @@ class OrchestratorService:
             if not ticket_id:
                 ticket_id = await self._conversation_log_port.ensure_conversation_ticket(
                     session_id=session_id,
-                    subject=f"[WhatsApp] Conversation {session_id}",
+                    subject=f"[{channel}] Conversation {session_id}",
                     customer_name=customer_name,
                     customer_phone=customer_phone,
                 )
@@ -507,9 +514,25 @@ class OrchestratorService:
                 ticket_id, f"[Handoff to human agent]\n{summary}", status="open"
             )
         except Exception as e:
-            _log.error("begin_whatsapp_handoff_failed", session_id=session_id, error=str(e))
+            _log.error("begin_handoff_failed", session_id=session_id, error=str(e))
         state[_HANDOFF_STATE_KEY] = WHATSAPP_PAUSED
         await self._persist_session_state(session)
+
+    async def begin_whatsapp_handoff(
+        self,
+        session_id: str,
+        summary: str,
+        *,
+        customer_name: str | None = None,
+        customer_phone: str | None = None,
+    ) -> None:
+        await self.begin_handoff(
+            session_id,
+            summary,
+            channel="WhatsApp",
+            customer_name=customer_name,
+            customer_phone=customer_phone,
+        )
 
     async def forward_whatsapp_to_agent(self, session_id: str, text: str) -> None:
         session = await self._adk_sessions.get_session(

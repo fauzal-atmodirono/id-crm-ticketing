@@ -78,9 +78,15 @@ class PhoneBridge:
                 self.transcript.append(("USER", event.text))
             elif isinstance(event, OutputTranscript):
                 self.transcript.append(("ASSISTANT", event.text))
-            elif isinstance(event, ToolCall) and event.name == "kb_search":
-                result = await dispatch_kb_search(event.args, self._knowledge)
-                await self._live.send_tool_response(event.id, event.name, result)
+            elif isinstance(event, ToolCall):
+                if event.name == "kb_search":
+                    result = await dispatch_kb_search(event.args, self._knowledge)
+                    await self._live.send_tool_response(event.id, event.name, result)
+                else:
+                    _log.warning("phone_unknown_tool", name=event.name, call_id=event.id)
+                    await self._live.send_tool_response(
+                        event.id, event.name, {"error": f"unknown tool: {event.name}"}
+                    )
 
     async def finalize(self) -> None:
         if not self.transcript or not self.call_sid:

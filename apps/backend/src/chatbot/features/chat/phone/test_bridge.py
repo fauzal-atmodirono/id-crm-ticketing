@@ -23,9 +23,7 @@ class _FakeLive:
     async def send_audio(self, pcm16k: bytes) -> None:
         self.audio_sent.append(pcm16k)
 
-    async def send_tool_response(
-        self, call_id: str, name: str, response: dict[str, Any]
-    ) -> None:
+    async def send_tool_response(self, call_id: str, name: str, response: dict[str, Any]) -> None:
         self.tool_responses.append((call_id, name, response))
 
     async def events(self) -> AsyncIterator[LiveEvent]:
@@ -158,5 +156,25 @@ async def test_finalize_noop_without_transcript() -> None:
     log = _FakeLog()
     b = _bridge(_FakeLive([]), [], log)
     b.call_sid = "C1"
+    await b.finalize()
+    assert log.ticket_calls == []
+
+
+async def test_pump_unknown_tool_responds_with_error() -> None:
+    live = _FakeLive([ToolCall(id="c9", name="mystery_tool", args={})])
+    b = _bridge(live, [])
+    await b.pump()
+    assert live.tool_responses
+    call_id, name, response = live.tool_responses[0]
+    assert call_id == "c9"
+    assert name == "mystery_tool"
+    assert "error" in response
+
+
+async def test_finalize_noop_without_call_sid() -> None:
+    log = _FakeLog()
+    b = _bridge(_FakeLive([]), [], log)
+    b.transcript = [("USER", "hi")]
+    # call_sid stays None
     await b.finalize()
     assert log.ticket_calls == []

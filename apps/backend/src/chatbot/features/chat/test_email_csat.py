@@ -66,6 +66,8 @@ def test_second_invalid_resumes_ai() -> None:
     assert res.status_code == 200
     orch.resume_ai.assert_awaited_once_with("email-55")
     orch.handle_turn.assert_awaited_once()
+    orch.bind_email_ticket.assert_awaited_once_with("email-55", "55")
+    orch._conversation_log_port.post_public_reply.assert_awaited_once()
 
 
 def test_handback_email_starts_survey_when_paused() -> None:

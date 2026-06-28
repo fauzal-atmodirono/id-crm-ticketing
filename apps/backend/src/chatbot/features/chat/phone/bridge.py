@@ -59,6 +59,17 @@ class PhoneBridge:
                     await self._live.send_audio(pcm)
         # "stop"/"connected" need no action here; finalize() runs on socket close.
 
+    def _append_transcript(self, role: str, text: str) -> None:
+        # Gemini Live streams transcription as incremental deltas; concatenate
+        # consecutive same-role fragments into one coherent turn rather than many
+        # short rows. (If a live smoke test ever shows CUMULATIVE transcripts
+        # instead of deltas, switch this to replace-last instead of concatenate.)
+        if self.transcript and self.transcript[-1][0] == role:
+            prev_role, prev_text = self.transcript[-1]
+            self.transcript[-1] = (prev_role, prev_text + text)
+        else:
+            self.transcript.append((role, text))
+
     async def pump(self) -> None:
         async for event in self._live.events():
             if isinstance(event, AudioOut):
@@ -75,9 +86,9 @@ class PhoneBridge:
                 if self.stream_sid:
                     await self._send_twilio({"event": "clear", "streamSid": self.stream_sid})
             elif isinstance(event, InputTranscript):
-                self.transcript.append(("USER", event.text))
+                self._append_transcript("USER", event.text)
             elif isinstance(event, OutputTranscript):
-                self.transcript.append(("ASSISTANT", event.text))
+                self._append_transcript("ASSISTANT", event.text)
             elif isinstance(event, ToolCall):
                 if event.name == "kb_search":
                     result = await dispatch_kb_search(event.args, self._knowledge)
@@ -103,4 +114,6 @@ class PhoneBridge:
             await self._log_port.append_conversation_comment(ticket_id, body, status="solved")
             await self._log_port.set_ticket_external_id(ticket_id, session_id)
         except Exception as e:
-            _log.error("phone_finalize_failed", session_id=session_id, error=str(e))
+            _log.error(
+                "phone_finalize_failed", session_id=session_id, error=str(e), transcript=body
+            )

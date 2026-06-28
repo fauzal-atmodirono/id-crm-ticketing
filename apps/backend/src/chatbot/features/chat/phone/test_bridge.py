@@ -178,3 +178,17 @@ async def test_finalize_noop_without_call_sid() -> None:
     # call_sid stays None
     await b.finalize()
     assert log.ticket_calls == []
+
+
+async def test_pump_coalesces_same_role_transcript_fragments() -> None:
+    live = _FakeLive(
+        [
+            InputTranscript("what is"),
+            InputTranscript(" the warranty"),
+            OutputTranscript("five"),
+            OutputTranscript(" years"),
+        ]
+    )
+    b = _bridge(live, [])
+    await b.pump()
+    assert b.transcript == [("USER", "what is the warranty"), ("ASSISTANT", "five years")]

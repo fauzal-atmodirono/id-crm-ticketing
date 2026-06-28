@@ -868,12 +868,20 @@ class ChatRouter:
 
                 twilio_task = asyncio.create_task(from_twilio())
                 pump_task = asyncio.create_task(bridge.pump())
-                _, pending = await asyncio.wait(
+                done, pending = await asyncio.wait(
                     {pump_task, twilio_task}, return_when=asyncio.FIRST_COMPLETED
                 )
                 for t in pending:
                     t.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
+                # Retrieve the completed task's exception so it isn't lost: a normal
+                # caller hangup surfaces as WebSocketDisconnect (expected, ignore);
+                # anything else is a real error worth logging.
+                for t in done:
+                    if not t.cancelled():
+                        exc = t.exception()
+                        if exc is not None and not isinstance(exc, WebSocketDisconnect):
+                            _log.error("phone_stream_task_error", error=str(exc))
                 await bridge.finalize()
         except WebSocketDisconnect:
             pass

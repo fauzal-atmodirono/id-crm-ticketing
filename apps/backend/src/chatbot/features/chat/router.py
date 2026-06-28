@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.handoff_bridge import HandoffBridge, SurveyEvent
 from chatbot.features.chat.models import AgentMessageEvent
+from chatbot.features.chat.phone.twiml import connect_stream_twiml
 from chatbot.features.chat.ports import HumanAgentBridgePort
 from chatbot.features.chat.schemas import (
     ChatwootWebhookPayload,
@@ -233,6 +234,7 @@ class ChatRouter:
             self.voice_tts,
             methods=["POST"],
         )
+        self.router.add_api_route("/voice/phone/incoming", self.phone_incoming, methods=["POST"])
 
     # --- CRM webhooks -------------------------------------------------------
 
@@ -770,6 +772,18 @@ class ChatRouter:
             headers["X-User-Transcription"] = quote(turn_result.user_transcription, safe="")
 
         return Response(content=audio_reply, media_type="audio/mpeg", headers=headers)
+
+    def _phone_wss_url(self) -> str:
+        base = self.orchestrator._settings.public_wss_base_url
+        if not base:
+            https = self.orchestrator._settings.twilio_webhook_base_url
+            base = https.replace("https://", "wss://").replace("http://", "ws://")
+        return f"{base.rstrip('/')}/voice/phone/stream"
+
+    async def phone_incoming(self) -> Response:
+        """Twilio Voice webhook: bridge the call into a Media Stream."""
+        xml = connect_stream_twiml(self._phone_wss_url())
+        return Response(content=xml, media_type="application/xml")
 
     async def voice_tts(self, payload: TtsRequest) -> Response:
         """Synthesize text into speech audio."""

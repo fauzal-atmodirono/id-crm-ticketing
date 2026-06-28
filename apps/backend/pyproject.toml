@@ -24,6 +24,7 @@ dependencies = [
   "selenium>=4.20",
   "webdriver-manager>=4.0",
   "pypdf>=5.0",
+  "twilio>=9.10.9",
 ]
 
 [dependency-groups]

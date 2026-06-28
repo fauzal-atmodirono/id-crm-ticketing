@@ -84,6 +84,16 @@ class Settings(BaseSettings):
     gemini_tts_model: str = "gemini-2.5-flash-tts"
     gemini_tts_voice: str = "Kore"
 
+    # Phone (real-time Gemini Live) settings
+    gemini_live_model: str = "gemini-live-2.5-flash-preview"
+    gemini_live_voice: str = "Kore"
+    # Browser-softphone access tokens (Twilio Voice grant)
+    twilio_api_key_sid: str = ""
+    twilio_api_key_secret: str = ""
+    twilio_twiml_app_sid: str = ""
+    # Public wss base for the <Stream> URL; falls back to twilio_webhook_base_url with https->wss
+    public_wss_base_url: str = ""
+
     # Frontend CORS — origins of the Vue dev/prod app (comma-separated in env).
     # Defaults cover Vite's first few fallback ports (5173-5180) so a stale dev
     # server on 5173 doesn't break a fresh one bound to 5174+.

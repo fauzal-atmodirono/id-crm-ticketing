@@ -26,6 +26,7 @@ Voice goes end-to-end through Gemini: the browser captures audio with `MediaReco
 - **Single-ticket two-way WhatsApp handoff** — on handoff the AI pauses and the customer is told a human is taking over; customer messages become private notes and the agent's public reply (via `POST /webhooks/zendesk-support`) relays back to WhatsApp. A persisted `active → paused → awaiting_survey → active` state machine routes each message. The web/Sunshine path is untouched.
 - **Channel-agnostic CSAT** — when the agent resolves the ticket (`POST /webhooks/zendesk-handback`), the customer gets a 1–5 survey: text on WhatsApp, a `CsatSurvey.vue` widget (driven by a `survey` SSE event + `POST /chat/csat`) in the web UI. Both share one `record_csat` path — `⭐` comment, `csat_N` tag, `csat_score` — then the AI resumes.
 - **Email channel (Zendesk-native)** — inbound customer emails become Zendesk tickets; a Zendesk trigger delivers each end-user comment to `POST /webhooks/zendesk-email`. The AI auto-replies as a public comment (Zendesk emails it), gated by the detection gate, with email loop guards. Handoff pauses the AI and a human takes the ticket; on Solve the same CSAT path fires (`record_csat(channel="email")`). Set `EMAIL_DRAFT_ASSIST=true` to have the AI post replies as private notes for an agent to review before sending.
+- **Phone channel (real-time, via Twilio)** — in-app browser softphone ("Phone" tab → "Call support") using the Twilio Voice JS SDK; no PSTN number or SIM required in dev. Calls connect via Twilio Media Streams (`WS /voice/phone/stream`) to a Gemini Live session that streams µ-law audio bidirectionally, enabling sub-second barge-in. KB-grounded via `kb_search` (same Vertex AI Search engine as the other channels). On hang-up the call transcript is captured to a Zendesk ticket keyed by `session_id = phone-<CallSid>`. Handoff + CSAT are a follow-up.
 - **Local-first** — in-memory mock adapters let the full backend test suite run with zero external dependencies. `HANDOFF_STORE=memory` keeps Firestore optional in dev.
 
 ---
@@ -81,6 +82,9 @@ All backend routes:
 | GET    | `/chat/stream/{session_id}`   | Server-Sent Events stream of `agent_message` and `survey` events for a handed-off session. |
 | POST   | `/chat/csat`                  | Web CSAT submission — `{session_id, score}` (1–5) → records the rating. |
 | POST   | `/voice/turn`                 | Voice turn — multipart audio in, `audio/mpeg` out + `X-Reply-Text` / `X-Handoff-*` headers. |
+| POST   | `/voice/phone/incoming`       | Twilio Voice webhook — returns TwiML `<Connect><Stream>` to initiate a Media Stream to the backend. |
+| POST   | `/voice/phone/token`          | Issues a Twilio Voice access token for the in-app browser softphone.         |
+| WS     | `/voice/phone/stream`         | WebSocket Media Stream bridge — real-time µ-law ↔ Gemini Live bidirectional audio with barge-in. |
 | POST   | `/webhooks/twilio-whatsapp`   | Inbound WhatsApp message from Twilio (signature-verified). Runs the agent, replies via Twilio, captures to Zendesk. |
 | POST   | `/webhooks/zendesk-support`   | Public agent reply on a Support ticket → relays to the SSE stream (web) or WhatsApp (Twilio). |
 | POST   | `/webhooks/zendesk-handback`  | Ticket solved/closed → unpauses the AI and starts the CSAT survey. |
@@ -153,6 +157,12 @@ Backend settings load from `apps/backend/.env`. See [.env.example](apps/backend/
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | Twilio credentials — enable the WhatsApp channel when both are set | —                |
 | `TWILIO_WHATSAPP_NUMBER`    | WhatsApp sender, e.g. `whatsapp:+14155238886`          | —                               |
 | `TWILIO_WEBHOOK_BASE_URL`   | Public https base for signature verification behind a tunnel/proxy | —                    |
+| `GEMINI_LIVE_MODEL`         | Gemini Live model id for the phone channel                             | `gemini-live-2.5-flash-preview` |
+| `GEMINI_LIVE_VOICE`         | Voice name for Gemini Live TTS output on the phone channel             | `Kore`                          |
+| `TWILIO_API_KEY_SID`        | Twilio API Key SID — used to mint Voice access tokens for the browser softphone | —             |
+| `TWILIO_API_KEY_SECRET`     | Twilio API Key Secret (paired with `TWILIO_API_KEY_SID`)               | —                               |
+| `TWILIO_TWIML_APP_SID`      | TwiML App SID — the browser-to-Twilio call target (`outgoing_application_sid`) | —             |
+| `PUBLIC_WSS_BASE_URL`       | Public `wss://` base for the `<Stream>` URL (falls back to `TWILIO_WEBHOOK_BASE_URL` with `https→wss`) | —  |
 | `HANDOFF_STORE`             | `memory` (dev) or `firestore` (prod-grade persistence) | `memory`                        |
 | `FIRESTORE_PROJECT_ID`      | GCP project hosting the Firestore database             | `lv-playground-genai`           |
 | `FIRESTORE_DATABASE_ID`     | Firestore database id (e.g. `proton-db`)               | `proton-db`                     |

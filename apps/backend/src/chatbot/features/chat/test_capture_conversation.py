@@ -72,6 +72,9 @@ class _FakeLog(ConversationLogPort):
     async def set_ticket_external_id(self, ticket_id: str, external_id: str) -> None:
         return None
 
+    async def get_latest_public_comment(self, ticket_id: str) -> tuple[str, str | None, str | None]:
+        return ("", None, None)
+
 
 def _orchestrator(
     log: ConversationLogPort, sessions: _LiveSessions | None = None

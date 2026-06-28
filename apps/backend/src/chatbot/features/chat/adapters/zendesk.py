@@ -258,6 +258,47 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
                 error=str(e),
             )
 
+    async def get_latest_public_comment(self, ticket_id: str) -> tuple[str, str | None, str | None]:
+        subdomain = self._settings.zendesk_subdomain
+        base = f"https://{subdomain}.zendesk.com/api/v2"
+        try:
+            async with httpx.AsyncClient() as client:
+                t = await client.get(
+                    f"{base}/tickets/{ticket_id}.json?include=users",
+                    headers=self._support_headers(),
+                    timeout=10.0,
+                )
+                t.raise_for_status()
+                tdata = t.json()
+                requester_id = tdata.get("ticket", {}).get("requester_id")
+                name: str | None = None
+                email: str | None = None
+                for u in tdata.get("users", []) or []:
+                    if u.get("id") == requester_id:
+                        name = u.get("name")
+                        email = u.get("email")
+                        break
+                c = await client.get(
+                    f"{base}/tickets/{ticket_id}/comments.json",
+                    headers=self._support_headers(),
+                    timeout=10.0,
+                )
+                c.raise_for_status()
+                body = ""
+                for cm in c.json().get("comments", []) or []:
+                    if cm.get("public") and cm.get("author_id") == requester_id:
+                        body = (
+                            cm.get("body") or body
+                        )  # comments are chronological; keep the latest match
+                return (body, name, email)
+        except Exception as e:
+            _log.error(
+                "zendesk_get_latest_public_comment_failed",
+                ticket_id=ticket_id,
+                error=str(e),
+            )
+            return ("", None, None)
+
     async def pause_ai_for_session(self, session_id: str) -> None:
         _log.info("pausing_ai_for_zendesk_session", session_id=session_id)
         self._paused_sessions.add(session_id)

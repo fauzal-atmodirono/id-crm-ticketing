@@ -7,6 +7,12 @@ the initial email. Runtime guards (_is_no_reply, paused no-op, state machine)
 correctly scope processing; the AI's own API replies are not via_id 4, so there
 is no reply loop.
 
+The webhook body sends ONLY the numeric ticket id ({"ticket_id":"<id>"}), which
+is always valid JSON regardless of email content. The backend fetches the
+customer's comment text and requester details from the Zendesk API — this
+prevents arbitrary email content (quotes, backslashes, newlines) from corrupting
+the JSON payload and causing 422 errors.
+
 Usage (from apps/backend/):
     PUBLIC_BASE_URL=https://<tunnel>  .venv/bin/python scripts/provision_zendesk_email_webhook.py
 
@@ -81,12 +87,7 @@ def main() -> int:
                         "field": "notification_webhook",
                         "value": [
                             webhook_id,
-                            (
-                                '{"ticket_id":"{{ticket.id}}",'
-                                '"text":"{{ticket.latest_public_comment}}",'
-                                '"requester_name":"{{ticket.requester.name}}",'
-                                '"requester_email":"{{ticket.requester.email}}"}'
-                            ),
+                            '{"ticket_id":"{{ticket.id}}"}',
                         ],
                     }
                 ],

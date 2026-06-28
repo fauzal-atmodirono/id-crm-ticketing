@@ -79,6 +79,6 @@ class ZendeskHandbackPayload(BaseModel):
 
 class ZendeskEmailWebhookPayload(BaseModel):
     ticket_id: str
-    text: str
+    text: str = ""
     requester_name: str | None = None
     requester_email: str | None = None

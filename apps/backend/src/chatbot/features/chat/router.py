@@ -580,22 +580,39 @@ class ChatRouter:
             raise HTTPException(status_code=401, detail="Invalid signature")
 
         ticket_id = payload.ticket_id.strip()
-        text = (payload.text or "").strip()
-        if not ticket_id or not text:
+        if not ticket_id:
             return {"status": "ignored"}
-        if _is_no_reply(payload.requester_email):
+        session_id = f"email-{ticket_id}"
+
+        state = await self.orchestrator.conversation_state(session_id)
+        if state == "paused":
+            return {"status": "paused"}
+
+        # The trigger sends only the ticket id (safe JSON); fetch the customer's
+        # message from Zendesk. Payload text, if present, is preferred (tests / legacy).
+        text = (payload.text or "").strip()
+        requester_name = payload.requester_name
+        requester_email = payload.requester_email
+        if not text:
+            (
+                fetched_text,
+                fetched_name,
+                fetched_email,
+            ) = await self.orchestrator._conversation_log_port.get_latest_public_comment(ticket_id)
+            text = (fetched_text or "").strip()
+            requester_name = requester_name or fetched_name
+            requester_email = requester_email or fetched_email
+        if not text:
+            return {"status": "ignored"}
+        if _is_no_reply(requester_email):
             _log.info("zendesk_email_webhook_no_reply_skipped", ticket_id=ticket_id)
             return {"status": "ignored"}
 
-        session_id = f"email-{ticket_id}"
         _log.info("zendesk_email_received", session_id=session_id)
 
-        state = await self.orchestrator.conversation_state(session_id)
         if state == "awaiting_survey":
             await self._handle_email_survey(ticket_id, session_id, text)
             return {"status": "ok"}
-        if state == "paused":
-            return {"status": "paused"}
 
         result = await self.orchestrator.handle_turn(session_id=session_id, text=text)
         await self.orchestrator.bind_email_ticket(session_id, ticket_id)
@@ -604,19 +621,22 @@ class ChatRouter:
         if await self.orchestrator.needs_handoff(session_id):
             summary = result.reply or "Customer requested a human agent."
             await self.orchestrator.begin_handoff(
-                session_id, summary, channel="email", customer_name=payload.requester_name
+                session_id, summary, channel="email", customer_name=requester_name
             )
             await port.post_public_reply(ticket_id, _EMAIL_HANDOFF_MESSAGE)
         else:
-            reply = result.reply or ""
-            if reply:
-                if self.orchestrator._settings.email_draft_assist:
-                    await port.append_conversation_comment(ticket_id, f"[AI draft]\n{reply}")
-                else:
-                    await port.post_public_reply(ticket_id, reply, status="pending")
-            else:
-                _log.warning("zendesk_email_empty_reply", session_id=session_id)
+            await self._post_email_active_reply(ticket_id, session_id, result.reply or "")
         return {"status": "ok"}
+
+    async def _post_email_active_reply(self, ticket_id: str, session_id: str, reply: str) -> None:
+        port = self.orchestrator._conversation_log_port
+        if not reply:
+            _log.warning("zendesk_email_empty_reply", session_id=session_id)
+            return
+        if self.orchestrator._settings.email_draft_assist:
+            await port.append_conversation_comment(ticket_id, f"[AI draft]\n{reply}")
+        else:
+            await port.post_public_reply(ticket_id, reply, status="pending")
 
     async def _handle_email_survey(self, ticket_id: str, session_id: str, body: str) -> None:
         port = self.orchestrator._conversation_log_port

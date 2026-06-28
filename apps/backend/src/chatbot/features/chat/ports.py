@@ -163,3 +163,8 @@ class ConversationLogPort(Protocol):
     async def set_ticket_external_id(self, ticket_id: str, external_id: str) -> None:
         """Set the ticket's external_id so status-change triggers can route by session."""
         ...
+
+    async def get_latest_public_comment(self, ticket_id: str) -> tuple[str, str | None, str | None]:
+        """Fetch the requester's most recent PUBLIC comment body plus their
+        name and email. Returns ("", None, None) if none/failure."""
+        ...

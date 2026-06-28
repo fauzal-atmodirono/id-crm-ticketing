@@ -40,3 +40,9 @@ class NoOpConversationLog(ConversationLogPort):
         external_id: str,  # noqa: ARG002
     ) -> None:
         return None
+
+    async def get_latest_public_comment(
+        self,
+        ticket_id: str,  # noqa: ARG002
+    ) -> tuple[str, str | None, str | None]:
+        return ("", None, None)

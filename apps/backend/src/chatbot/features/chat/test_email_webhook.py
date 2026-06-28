@@ -18,6 +18,7 @@ def _orch() -> MagicMock:
     orch._conversation_log_port = MagicMock()
     orch._conversation_log_port.post_public_reply = AsyncMock()
     orch._conversation_log_port.append_conversation_comment = AsyncMock()
+    orch._conversation_log_port.get_latest_public_comment = AsyncMock(return_value=("", None, None))
     orch.bind_email_ticket = AsyncMock()
     orch.conversation_state = AsyncMock(return_value="active")
     orch.needs_handoff = AsyncMock(return_value=False)
@@ -112,3 +113,21 @@ def test_wrong_secret_rejected() -> None:
     orch._settings.zendesk_support_webhook_secret = "expected"
     res = _client(orch).post("/webhooks/zendesk-email", json=_body())
     assert res.status_code == 401
+
+
+def test_active_fetches_comment_when_text_absent() -> None:
+    """When the trigger sends only ticket_id (no text field), the handler must
+    fetch the customer's comment from Zendesk and use it as the turn text."""
+    orch = _orch()
+    orch._conversation_log_port.get_latest_public_comment = AsyncMock(
+        return_value=("Reset my password", "Bob", "bob@acme.com")
+    )
+    # body without text or requester fields (ticket-id-only trigger payload)
+    body_no_text: dict[str, str] = {"ticket_id": "55"}
+    res = _client(orch).post("/webhooks/zendesk-email", json=body_no_text)
+    assert res.status_code == 200
+    orch._conversation_log_port.get_latest_public_comment.assert_awaited_once_with("55")
+    orch.handle_turn.assert_awaited_once_with(session_id="email-55", text="Reset my password")
+    orch._conversation_log_port.post_public_reply.assert_awaited_once_with(
+        "55", "Here is your answer.", status="pending"
+    )

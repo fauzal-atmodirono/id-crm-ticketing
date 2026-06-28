@@ -17,6 +17,7 @@ def _orch() -> MagicMock:
     orch._settings.zendesk_support_webhook_secret = ""
     orch._conversation_log_port = MagicMock()
     orch._conversation_log_port.post_public_reply = AsyncMock()
+    orch._conversation_log_port.get_latest_public_comment = AsyncMock(return_value=("", None, None))
     orch.parse_csat = OrchestratorService.parse_csat  # real staticmethod
     orch.record_csat = AsyncMock(return_value=True)
     orch.consume_survey_nudge = AsyncMock(return_value=True)

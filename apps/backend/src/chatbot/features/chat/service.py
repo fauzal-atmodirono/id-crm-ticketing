@@ -15,6 +15,7 @@ from google.genai import Client, types
 from chatbot.features.chat.adapters.firestore_session_service import FirestoreSessionService
 from chatbot.features.chat.adapters.noop_conversation_log import NoOpConversationLog
 from chatbot.features.chat.agents import build_ai_agent, build_summarizer_agent
+from chatbot.features.chat.csat import record_csat_on_ticket
 from chatbot.features.chat.detection import should_open_ticket
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.models import (
@@ -464,13 +465,7 @@ class OrchestratorService:
         state = session.state
         ticket_id = state.get("conversation_ticket_id")
         if ticket_id:
-            try:
-                await self._conversation_log_port.append_conversation_comment(
-                    ticket_id, f"⭐ Customer satisfaction: {score}/5 (via {channel})"
-                )
-                await self._conversation_log_port.add_ticket_tag(ticket_id, f"csat_{score}")
-            except Exception as e:
-                _log.error("record_csat_log_failed", session_id=session_id, error=str(e))
+            await record_csat_on_ticket(self._conversation_log_port, ticket_id, score, channel)
         state["csat_score"] = score
         state[_HANDOFF_STATE_KEY] = WHATSAPP_ACTIVE
         state.pop("csat_nudged", None)

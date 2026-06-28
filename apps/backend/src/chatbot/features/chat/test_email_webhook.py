@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 from fastapi.testclient import TestClient
 
-from chatbot.features.chat.router import build_chat_router
+from chatbot.features.chat.router import _EMAIL_HANDOFF_MESSAGE, build_chat_router
 from chatbot.platform.config import get_settings
 from chatbot.platform.server import create_app
 
@@ -53,6 +53,7 @@ def test_active_posts_public_reply_pending() -> None:
     orch._conversation_log_port.post_public_reply.assert_awaited_once_with(
         "55", "Here is your answer.", status="pending"
     )
+    orch.bind_email_ticket.assert_awaited_once_with("email-55", "55")
 
 
 def test_handoff_pauses_and_posts_ack() -> None:
@@ -60,10 +61,13 @@ def test_handoff_pauses_and_posts_ack() -> None:
     orch.needs_handoff = AsyncMock(return_value=True)
     res = _client(orch).post("/webhooks/zendesk-email", json=_body())
     assert res.status_code == 200
-    orch.begin_handoff.assert_awaited_once()
     # the ack email is the LAST public reply; no status forced to solved
     args, _kwargs = orch._conversation_log_port.post_public_reply.await_args
     assert args[0] == "55"
+    assert args[1] == _EMAIL_HANDOFF_MESSAGE
+    orch.begin_handoff.assert_awaited_once_with(
+        "email-55", ANY, channel="email", customer_name="Alice"
+    )
 
 
 def test_draft_assist_posts_private_note() -> None:
@@ -72,7 +76,9 @@ def test_draft_assist_posts_private_note() -> None:
     res = _client(orch).post("/webhooks/zendesk-email", json=_body())
     assert res.status_code == 200
     orch._conversation_log_port.post_public_reply.assert_not_awaited()
-    orch._conversation_log_port.append_conversation_comment.assert_awaited_once()
+    orch._conversation_log_port.append_conversation_comment.assert_awaited_once_with(
+        "55", "[AI draft]\nHere is your answer."
+    )
 
 
 def test_paused_is_noop() -> None:

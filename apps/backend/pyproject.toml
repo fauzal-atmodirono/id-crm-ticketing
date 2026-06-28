@@ -59,6 +59,10 @@ plugins = ["pydantic.mypy"]
 module = ["google.adk.*", "google.cloud.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["twilio.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["src"]

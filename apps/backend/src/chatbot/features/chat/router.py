@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.handoff_bridge import HandoffBridge, SurveyEvent
 from chatbot.features.chat.models import AgentMessageEvent
+from chatbot.features.chat.phone.token import mint_voice_token
 from chatbot.features.chat.phone.twiml import connect_stream_twiml
 from chatbot.features.chat.ports import HumanAgentBridgePort
 from chatbot.features.chat.schemas import (
@@ -235,6 +236,7 @@ class ChatRouter:
             methods=["POST"],
         )
         self.router.add_api_route("/voice/phone/incoming", self.phone_incoming, methods=["POST"])
+        self.router.add_api_route("/voice/phone/token", self.phone_token, methods=["POST"])
 
     # --- CRM webhooks -------------------------------------------------------
 
@@ -784,6 +786,12 @@ class ChatRouter:
         """Twilio Voice webhook: bridge the call into a Media Stream."""
         xml = connect_stream_twiml(self._phone_wss_url())
         return Response(content=xml, media_type="application/xml")
+
+    async def phone_token(self) -> dict[str, str]:
+        """Mint a Twilio Voice access token for the browser softphone."""
+        identity = "proton-web-caller"
+        token = mint_voice_token(self.orchestrator._settings, identity)
+        return {"token": token, "identity": identity}
 
     async def voice_tts(self, payload: TtsRequest) -> Response:
         """Synthesize text into speech audio."""

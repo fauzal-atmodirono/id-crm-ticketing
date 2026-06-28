@@ -20,6 +20,7 @@ from chatbot.features.chat.ports import HumanAgentBridgePort
 from chatbot.features.chat.schemas import (
     ChatwootWebhookPayload,
     TtsRequest,
+    ZendeskEmailWebhookPayload,  # noqa: F401  (used by Task 5 email handler)
     ZendeskHandbackPayload,
     ZendeskSupportWebhookPayload,
     ZendeskWebhookPayload,
@@ -101,6 +102,24 @@ _CSAT_THANKS = (
     "Thank you for your feedback! \U0001f64f You're back with our automated assistant "
     "whenever you need anything."
 )
+
+_EMAIL_HANDOFF_MESSAGE = (
+    "Thanks for reaching out. I'm connecting you with a specialist from our team "
+    "who will reply to this email shortly."
+)
+_EMAIL_SURVEY_MESSAGE = (
+    "Thanks for contacting Proton support! How would you rate your experience? "
+    "Reply with a number from 1 to 5 (1 = poor, 5 = excellent)."
+)
+_EMAIL_CSAT_NUDGE = "Please reply with a single number from 1 to 5 to rate your experience."
+_EMAIL_CSAT_THANKS = "Thank you for your feedback! Reply any time if you need further help."
+
+_NO_REPLY_RE = re.compile(r"(no-?reply|do-?not-?reply|mailer-daemon|postmaster)", re.IGNORECASE)
+
+
+def _is_no_reply(email: str | None) -> bool:
+    """True for automated/system senders we must never auto-reply to (loop guard)."""
+    return bool(email and _NO_REPLY_RE.search(email))
 
 
 def _card_caption(product: Any) -> str:

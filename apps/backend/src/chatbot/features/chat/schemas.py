@@ -75,3 +75,10 @@ class TtsRequest(BaseModel):
 class ZendeskHandbackPayload(BaseModel):
     session_id: str
     status: str | None = None
+
+
+class ZendeskEmailWebhookPayload(BaseModel):
+    ticket_id: str
+    text: str
+    requester_name: str | None = None
+    requester_email: str | None = None

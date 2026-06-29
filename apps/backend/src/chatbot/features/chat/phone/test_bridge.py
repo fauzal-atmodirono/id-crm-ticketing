@@ -41,6 +41,7 @@ class _FakeLog:
         self.ticket_calls: list[tuple[str, str]] = []
         self.comments: list[tuple[str, str, str | None]] = []
         self.external_ids: list[tuple[str, str]] = []
+        self.tags: list[tuple[str, str]] = []
 
     async def ensure_conversation_ticket(
         self,
@@ -57,8 +58,8 @@ class _FakeLog:
     ) -> None:
         self.comments.append((ticket_id, text, status))
 
-    async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:  # unused here
-        ...
+    async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:
+        self.tags.append((ticket_id, tag))
 
     async def set_ticket_external_id(self, ticket_id: str, external_id: str) -> None:
         self.external_ids.append((ticket_id, external_id))
@@ -192,3 +193,72 @@ async def test_pump_coalesces_same_role_transcript_fragments() -> None:
     b = _bridge(live, [])
     await b.pump()
     assert b.transcript == [("USER", "what is the warranty"), ("ASSISTANT", "five years")]
+
+
+async def test_pump_request_handoff_sets_state_and_responds() -> None:
+    live = _FakeLive(
+        [
+            ToolCall(
+                id="h1",
+                name="request_human_handoff",
+                args={"reason": "billing", "summary": "double charge"},
+            )
+        ]
+    )
+    b = _bridge(live, [])
+    await b.pump()
+    assert b.handoff == {"reason": "billing", "summary": "double charge"}
+    assert live.tool_responses and live.tool_responses[0][0] == "h1"
+
+
+async def test_pump_submit_csat_sets_score() -> None:
+    live = _FakeLive([ToolCall(id="c1", name="submit_csat", args={"score": 5})])
+    b = _bridge(live, [])
+    await b.pump()
+    assert b.csat_score == 5
+    assert live.tool_responses and live.tool_responses[0][1] == "submit_csat"
+
+
+async def test_pump_submit_csat_ignores_out_of_range() -> None:
+    live = _FakeLive([ToolCall(id="c2", name="submit_csat", args={"score": 9})])
+    b = _bridge(live, [])
+    await b.pump()
+    assert b.csat_score is None
+    assert live.tool_responses  # still answered so the Live turn isn't stalled
+
+
+async def test_finalize_handoff_opens_ticket_with_note_and_no_csat() -> None:
+    log = _FakeLog()
+    b = _bridge(_FakeLive([]), [], log)
+    b.call_sid = "C1"
+    b.transcript = [("USER", "I want a human")]
+    b.handoff = {"reason": "complaint", "summary": "angry about delay"}
+    b.csat_score = 5  # must be ignored on a handoff
+    await b.finalize()
+    # the handoff note + transcript are posted; the handoff note carries status "open"
+    assert any("[Handoff to human agent]" in c[1] for c in log.comments)
+    assert any(c[2] == "open" for c in log.comments)
+    assert log.external_ids == [("T-1", "phone-C1")]
+    assert log.tags == []  # NO csat tag on a handoff
+
+
+async def test_finalize_resolved_with_score_solves_and_records_csat() -> None:
+    log = _FakeLog()
+    b = _bridge(_FakeLive([]), [], log)
+    b.call_sid = "C1"
+    b.transcript = [("USER", "thanks"), ("ASSISTANT", "you're welcome")]
+    b.csat_score = 4
+    await b.finalize()
+    assert any(c[2] == "solved" for c in log.comments)
+    assert ("T-1", "csat_4") in log.tags
+    assert any("Customer satisfaction: 4/5 (via phone)" in c[1] for c in log.comments)
+
+
+async def test_finalize_resolved_without_score_solves_no_csat() -> None:
+    log = _FakeLog()
+    b = _bridge(_FakeLive([]), [], log)
+    b.call_sid = "C1"
+    b.transcript = [("USER", "ok")]
+    await b.finalize()
+    assert any(c[2] == "solved" for c in log.comments)
+    assert log.tags == []

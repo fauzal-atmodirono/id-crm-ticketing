@@ -5,6 +5,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from chatbot.features.chat.adapters.bigquery_metrics import build_metrics_port
 from chatbot.features.chat.adapters.chatwoot_zammad import ChatwootZammadAdapter
 from chatbot.features.chat.adapters.gcp_voice import GeminiTextToSpeechAdapter
 from chatbot.features.chat.adapters.handoff_store import build_handoff_store
@@ -112,6 +113,9 @@ def bootstrap_application() -> FastAPI:
     if settings.twilio_account_sid and settings.twilio_auth_token:
         twilio_adapter = TwilioChannelAdapter(settings)
 
+    # --- Metrics port (per-turn BigQuery streaming) ---
+    metrics_port = build_metrics_port(settings)
+
     orchestrator = OrchestratorService(
         settings=settings,
         chat_port=chat_port,
@@ -121,6 +125,7 @@ def bootstrap_application() -> FastAPI:
         human_agent_bridge=human_agent_bridge,
         handoff_bridge=handoff_bridge,
         conversation_log_port=conversation_log_port,
+        metrics_port=metrics_port,
     )
 
     app.include_router(

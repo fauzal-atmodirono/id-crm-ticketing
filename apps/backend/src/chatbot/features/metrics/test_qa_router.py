@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -42,6 +43,7 @@ def test_qa_label_records_with_valid_key() -> None:
     assert label.quality == 92
     assert label.reviewer == "alice"
     assert label.notes == "ok"
+    assert label.labeled_at.tzinfo is UTC
 
 
 def test_qa_label_rejects_wrong_key() -> None:
@@ -57,6 +59,7 @@ def test_qa_label_rejects_missing_key() -> None:
     client = _client(port, "secret")
     res = client.post("/qa/label", json=_body())
     assert res.status_code == 401
+    port.record_label.assert_not_awaited()
 
 
 def test_qa_label_locked_when_api_key_unset() -> None:
@@ -64,6 +67,7 @@ def test_qa_label_locked_when_api_key_unset() -> None:
     client = _client(port, "")
     res = client.post("/qa/label", json=_body(), headers={"X-API-Key": ""})
     assert res.status_code == 401
+    port.record_label.assert_not_awaited()
 
 
 def test_qa_label_rejects_out_of_range_score() -> None:
@@ -73,3 +77,14 @@ def test_qa_label_rejects_out_of_range_score() -> None:
     low = {**_body(), "quality": -1}
     assert client.post("/qa/label", json=high, headers={"X-API-Key": "secret"}).status_code == 422
     assert client.post("/qa/label", json=low, headers={"X-API-Key": "secret"}).status_code == 422
+
+
+def test_qa_label_rejects_non_ascii_key() -> None:
+    port = AsyncMock()
+    client = _client(port, "secret")
+    # httpx refuses to encode non-ASCII str headers; pass raw latin-1 bytes instead.
+    # Starlette decodes these bytes as latin-1, producing a non-ASCII str ("\xe9")
+    # that would make hmac.compare_digest(str, str) raise TypeError → 500 pre-fix.
+    res = client.post("/qa/label", json=_body(), headers={"X-API-Key": b"\xe9"})
+    assert res.status_code == 401
+    port.record_label.assert_not_awaited()

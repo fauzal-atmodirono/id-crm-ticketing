@@ -33,7 +33,11 @@ def build_qa_router(qa_port: QaLabelPort, settings: Settings) -> APIRouter:
         x_api_key: str | None = Header(default=None),
     ) -> dict[str, str]:
         key = settings.qa_api_key
-        if not key or x_api_key is None or not hmac.compare_digest(x_api_key, key):
+        if (
+            not key
+            or x_api_key is None
+            or not hmac.compare_digest(x_api_key.encode("utf-8"), key.encode("utf-8"))
+        ):
             raise HTTPException(status_code=401, detail="Unauthorized")
         await qa_port.record_label(
             QaLabel(

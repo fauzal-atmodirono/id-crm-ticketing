@@ -238,6 +238,81 @@ charts.
 
 ---
 
+## 5.1 Phase 4 — Accuracy and Quality (QA)
+
+The Accuracy and Quality tiles are enabled in Phase 4 once the QA endpoint is live.
+
+### 5.1.1 Create the Looker data source
+
+1. [ ] Go to [Looker Studio](https://lookerstudio.google.com) → **Create** → **Report**.
+2. [ ] Add a new BigQuery data source:
+   - Select **BigQuery**.
+   - Choose `lv-playground-genai` → `demo_proton` → `v_quality` view.
+   - Name it `Proton — Accuracy/Quality`.
+3. [ ] Looker will auto-detect the columns: `channel`, `labels`, `avg_accuracy`, `avg_quality`.
+
+### 5.1.2 Build Accuracy and Quality Scorecards
+
+#### 5.1.2a — Accuracy scorecard
+
+1. [ ] Insert a **Scorecard** tile.
+2. [ ] Data source: `Proton — Accuracy/Quality`.
+3. [ ] Metric: `avg_accuracy` (AVG across rows, or SUM if only one aggregated row).
+       Set number format to **Percent** with 0 decimals.
+4. [ ] Label: **Average Accuracy (0–100)**.
+
+#### 5.1.2b — Quality scorecard
+
+1. [ ] Insert another **Scorecard**.
+2. [ ] Data source: `Proton — Accuracy/Quality`.
+3. [ ] Metric: `avg_quality` (AVG or SUM).
+       Set number format to **Percent** with 0 decimals.
+4. [ ] Label: **Average Quality (0–100)**.
+
+#### 5.1.2c — Optional breakdown by channel
+
+1. [ ] Insert a **Table** or **Bar chart**.
+2. [ ] Data source: `Proton — Accuracy/Quality`.
+3. [ ] Dimension: `channel`; Metrics: `labels`, `avg_accuracy`, `avg_quality`.
+4. [ ] Title: **Accuracy & Quality by Channel**.
+
+---
+
+## 5.2 Live-enable Phase 4 QA
+
+To start collecting accuracy and quality scores:
+
+1. [ ] **Run the Phase-1 sync FIRST** (so the `conversations` table exists for the JOIN):
+   ```bash
+   cd apps/backend
+   .venv/bin/python scripts/sync_zendesk_metrics.py
+   ```
+
+2. [ ] **Start the backend** with QA enabled:
+   ```bash
+   QA_PROVIDER=bigquery QA_API_KEY=<your-secret-key> .venv/bin/uvicorn chatbot.main:app --reload
+   ```
+   The backend will create the `qa_labels` table and `v_quality` view on startup.
+
+3. [ ] **Submit a few labels** for real ticket ids:
+   ```bash
+   curl -X POST http://localhost:8000/qa/label \
+     -H "Content-Type: application/json" \
+     -H "X-API-Key: <your-secret-key>" \
+     -d '{"conversation_id": "<ticket-id>", "accuracy": 85, "quality": 90, "reviewer": "qa_team", "notes": "Clear and helpful reply"}'
+   ```
+   Response (on success): `{"status":"ok","message":"QA label recorded."}`
+
+4. [ ] **Verify `v_quality` returns rows:**
+   ```sql
+   SELECT * FROM `lv-playground-genai.demo_proton.v_quality` LIMIT 10
+   ```
+
+5. [ ] **Refresh the Looker dashboard:**
+   - Click the **Refresh data** button (circular arrow) in Looker Studio to pick up the new labels.
+
+---
+
 ## 6. Refresh the dashboard data
 
 Looker Studio caches BigQuery results. Two ways to get fresh data:

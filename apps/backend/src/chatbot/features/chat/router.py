@@ -59,6 +59,11 @@ class CsatRequest(BaseModel):
     score: int = Field(ge=1, le=5)
 
 
+class NpsRequest(BaseModel):
+    session_id: str
+    score: int = Field(ge=0, le=10)
+
+
 class ChatTurnResponse(BaseModel):
     reply: str | None
     language: str | None = None
@@ -241,6 +246,7 @@ class ChatRouter:
             response_model=ChatTurnResponse,
         )
         self.router.add_api_route("/chat/csat", self.chat_csat, methods=["POST"])
+        self.router.add_api_route("/chat/nps", self.chat_nps, methods=["POST"])
         self.router.add_api_route(
             "/chat/stream/{session_id}",
             self.chat_stream,
@@ -732,6 +738,13 @@ class ChatRouter:
 
     async def chat_csat(self, payload: CsatRequest) -> dict[str, str]:
         await self.orchestrator.record_csat(payload.session_id, payload.score, channel="web")
+        return {
+            "status": "ok",
+            "message": "Thank you for your feedback!",
+        }
+
+    async def chat_nps(self, payload: NpsRequest) -> dict[str, str]:
+        await self.orchestrator.record_nps(payload.session_id, payload.score, channel="web")
         return {
             "status": "ok",
             "message": "Thank you for your feedback!",

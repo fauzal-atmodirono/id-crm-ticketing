@@ -18,6 +18,7 @@ def mint_voice_token(settings: Settings, identity: str) -> str:
         settings.twilio_api_key_sid,
         settings.twilio_api_key_secret,
         identity=identity,
+        ttl=settings.phone_token_ttl_seconds,
     )
     token.add_grant(
         VoiceGrant(

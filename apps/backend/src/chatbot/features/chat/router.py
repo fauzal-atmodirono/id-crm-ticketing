@@ -32,6 +32,7 @@ from chatbot.features.chat.phone.bridge import PhoneBridge
 from chatbot.features.chat.phone.gemini_live import LiveSession, connect_live
 from chatbot.features.chat.phone.handoff_csat_tools import REQUEST_HANDOFF_TOOL, SUBMIT_CSAT_TOOL
 from chatbot.features.chat.phone.kb_tool import KB_SEARCH_TOOL
+from chatbot.features.chat.phone.rate_limit import RateLimiter
 from chatbot.features.chat.phone.token import mint_voice_token
 from chatbot.features.chat.phone.twiml import connect_stream_twiml
 from chatbot.features.chat.ports import HumanAgentBridgePort
@@ -222,6 +223,10 @@ class ChatRouter:
         self._human_agent_bridge = human_agent_bridge
         self._twilio_adapter = twilio_adapter
         self._live_session_factory: _LiveFactory = live_session_factory or connect_live
+        self._phone_token_limiter = RateLimiter(
+            orchestrator._settings.phone_token_rate_limit,
+            orchestrator._settings.phone_token_rate_window_seconds,
+        )
         self.router = APIRouter(tags=["chat"])
 
         self.router.add_api_route("/webhooks/chatwoot", self.chatwoot_webhook, methods=["POST"])
@@ -855,10 +860,26 @@ class ChatRouter:
         xml = connect_stream_twiml(self._phone_wss_url())
         return Response(content=xml, media_type="application/xml")
 
-    async def phone_token(self) -> dict[str, str]:
-        """Mint a Twilio Voice access token for the browser softphone."""
+    async def phone_token(self, request: Request) -> dict[str, str]:
+        """Mint a Twilio Voice access token for the browser softphone.
+
+        Unauthenticated by nature (a public SPA calls it), so it is hardened with
+        defense-in-depth: an Origin allowlist (blocks cross-site browser abuse), a
+        per-IP rate limit (bounds the billing blast radius), and a short token TTL
+        (set in mint_voice_token). None is airtight alone; together they make
+        leaked-token abuse low-value and self-limiting.
+        """
+        settings = self.orchestrator._settings
+        origin = request.headers.get("origin")
+        if origin not in settings.frontend_origins:
+            _log.warning("phone_token_origin_rejected", origin=origin)
+            raise HTTPException(status_code=403, detail="Origin not allowed")
+        client_ip = request.client.host if request.client else "unknown"
+        if not self._phone_token_limiter.allow(client_ip):
+            _log.warning("phone_token_rate_limited", client_ip=client_ip)
+            raise HTTPException(status_code=429, detail="Too many token requests")
         identity = "proton-web-caller"
-        token = mint_voice_token(self.orchestrator._settings, identity)
+        token = mint_voice_token(settings, identity)
         return {"token": token, "identity": identity}
 
     async def voice_tts(self, payload: TtsRequest) -> Response:
@@ -887,14 +908,22 @@ class ChatRouter:
         await websocket.accept()
         system_instruction = (
             "You are Proton's friendly phone support agent. Answer spoken questions "
-            "concisely and naturally. Use the kb_search tool to ground answers in the "
+            "concisely and naturally. You are fully multilingual: ALWAYS reply in the SAME "
+            "language the caller uses — English, Bahasa Melayu, or Chinese — and switch "
+            "immediately if they switch. You speak Bahasa Melayu fluently; NEVER say you cannot "
+            "speak a language and NEVER hand off merely because of language. "
+            "Use the kb_search tool to ground answers in the "
             "Proton knowledge base before giving facts. If you cannot resolve the caller's "
             "issue, they ask for a human, or it is a complaint or sensitive matter, call "
             "request_human_handoff with a short reason and summary, then tell the caller a "
-            "specialist will follow up. When you have fully resolved the caller's question and "
-            "the call is wrapping up, ask 'How would you rate your experience from 1 to 5?' and "
-            "then call submit_csat with the number they say. Do NOT ask for a rating if you "
-            "handed off to a human. No markdown — this is spoken aloud."
+            "specialist will follow up. After you answer, ask if there is anything else you can "
+            "help with, and keep helping across as many questions as the caller has. Do NOT ask "
+            "for a rating mid-conversation. ONLY once the caller clearly signals they are finished "
+            "(e.g. 'no, that's all', 'nothing else', 'goodbye'), ask 'How would you rate your "
+            "experience from 1 to 5?' then STOP and wait — do not thank them, wrap up, or say "
+            "anything else until the caller replies with a number. Only after they say a number, "
+            "call submit_csat with it and then give a brief thank-you. Do NOT ask for a rating if "
+            "you handed off to a human. No markdown — this is spoken aloud."
         )
         try:
             async with self._live_session_factory(

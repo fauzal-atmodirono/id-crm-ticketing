@@ -102,15 +102,26 @@ class Settings(BaseSettings):
     gemini_tts_model: str = "gemini-2.5-flash-tts"
     gemini_tts_voice: str = "Kore"
 
-    # Phone (real-time Gemini Live) settings
-    gemini_live_model: str = "gemini-live-2.5-flash-preview"
+    # Phone (real-time Gemini Live) settings. Vertex publisher model id — the
+    # AI-Studio name "gemini-live-2.5-flash-preview" is rejected by Vertex (1008).
+    gemini_live_model: str = "gemini-live-2.5-flash-native-audio"
     gemini_live_voice: str = "Kore"
+    # Optional output language hint (e.g. "ms-MY" for Bahasa Melayu). Empty = let
+    # the model auto-detect. Only honored by half-cascade Live models; native-audio
+    # models auto-detect language and ignore it.
+    gemini_live_language: str = ""
     # Browser-softphone access tokens (Twilio Voice grant)
     twilio_api_key_sid: str = ""
     twilio_api_key_secret: str = ""
     twilio_twiml_app_sid: str = ""
     # Public wss base for the <Stream> URL; falls back to twilio_webhook_base_url with https->wss
     public_wss_base_url: str = ""
+    # Browser-softphone token endpoint hardening (a public SPA calls it, so it is
+    # unauthenticated by nature). Short TTL limits a leaked token's lifetime; the
+    # per-IP rate limit bounds the billing blast radius if the endpoint is abused.
+    phone_token_ttl_seconds: int = 300
+    phone_token_rate_limit: int = 10
+    phone_token_rate_window_seconds: int = 60
 
     # Frontend CORS — origins of the Vue dev/prod app (comma-separated in env).
     # Defaults cover Vite's first few fallback ports (5173-5180) so a stale dev

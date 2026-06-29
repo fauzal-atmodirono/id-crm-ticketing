@@ -82,7 +82,7 @@ def load_conversations(settings: Settings, rows: list[ConversationRow]) -> None:
 
 
 def ensure_views(settings: Settings) -> None:
-    """Create/replace the three Looker views (live)."""
+    """Create/replace the Looker views (live)."""
     client = bigquery.Client(project=settings.bigquery_project_id)
     for ddl in view_ddls(
         settings.bigquery_project_id,

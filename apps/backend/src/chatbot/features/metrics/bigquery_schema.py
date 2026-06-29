@@ -20,7 +20,7 @@ CONVERSATIONS_SCHEMA: list[bigquery.SchemaField] = [
 
 
 def view_ddls(project: str, dataset: str, table: str = "conversations") -> dict[str, str]:
-    """The three CREATE OR REPLACE VIEW statements for the Looker tiles."""
+    """The CREATE OR REPLACE VIEW statements for the Looker tiles."""
     fq = f"`{project}.{dataset}.{table}`"
     return {
         "v_volume_by_month_channel": (

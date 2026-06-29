@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Bot-metrics dashboard Phase 1 (2026-06-29)
+
+- **Bot-metrics dashboard (Phase 1).** A Zendesk → BigQuery sync
+  (`scripts/sync_zendesk_metrics.py`) lands every conversation (ticket) into
+  `lv-playground-genai.demo_proton.conversations` with channel, resolution
+  (bot/agent), and CSAT, plus three views (`v_volume_by_month_channel`,
+  `v_resolution_split`, `v_csat`) for a Looker Studio dashboard (Volume,
+  Transfer-vs-Closed, CSAT). NPS/fallback/bounce/speed and accuracy/quality are
+  later phases. See `docs/dashboards/looker-bot-metrics-phase1.md`.
+
 ### Added — Phone channel (real-time Gemini Live + Twilio Media Streams) (2026-06-29)
 
 - **Real-time phone channel via Twilio Media Streams and Gemini Live.** Added `POST /voice/phone/incoming` (Twilio Voice webhook that returns TwiML `<Connect><Stream>` to open a Media Stream to the backend), `WS /voice/phone/stream` (WebSocket endpoint that bridges raw µ-law audio bidirectionally between Twilio and a Gemini Live session), and `POST /voice/phone/token` (mints a Twilio Voice access token so the browser softphone can place calls without a real PSTN number or SIM). The Gemini Live session (`GEMINI_LIVE_MODEL`, `GEMINI_LIVE_VOICE`) streams µ-law audio in both directions with sub-second barge-in — the caller can interrupt the AI mid-utterance and it responds immediately. Each call is grounded through the existing `kb_search` tool (same Vertex AI Search engine as the web and WhatsApp channels). On hang-up the full call transcript is written to a Zendesk Support ticket keyed by `session_id = phone-<CallSid>` via the existing `ConversationLogPort`. The Vue frontend gains a **Phone** tab housing a browser softphone ("Call support" button, Twilio Voice JS SDK). **Handoff and CSAT for the phone channel are a follow-up and are not included in this release.**

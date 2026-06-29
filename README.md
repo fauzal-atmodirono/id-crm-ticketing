@@ -174,6 +174,9 @@ Backend settings load from `apps/backend/.env`. See [.env.example](apps/backend/
 | `VERTEX_PROJECT_ID`         | Required if `GOOGLE_GENAI_USE_VERTEXAI=true`           | —                               |
 | `ZENDESK_*`                 | Sunshine Conversations + Support API + email           | —                               |
 | `CHATWOOT_*` / `ZAMMAD_*`   | self-hosted CRM credentials                            | `http://localhost:3000`         |
+| `BIGQUERY_PROJECT_ID`       | GCP project hosting the BigQuery dataset               | `lv-playground-genai`           |
+| `BIGQUERY_DATASET`          | BigQuery dataset name for bot metrics                  | `demo_proton`                   |
+| `BIGQUERY_CONVERSATIONS_TABLE` | BigQuery table for the Zendesk → BQ conversation sync | `conversations`              |
 
 Frontend reads `VITE_API_BASE_URL` at build/dev time (default `http://localhost:8000`).
 
@@ -225,6 +228,29 @@ Key rules:
 - Strict `mypy` + `ruff` (backend) and `vue-tsc` strict (frontend) on every commit.
 - Conventional commits: `<type>(<scope>): <description>`.
 - New architectural decisions get an ADR under `docs/decisions/`.
+
+---
+
+## Metrics / Dashboard
+
+A Zendesk → BigQuery sync populates a Looker Studio dashboard with volume, resolution, and CSAT metrics (Phase 1).
+
+**Run the sync** (from the backend directory):
+
+```bash
+cd apps/backend && .venv/bin/python scripts/sync_zendesk_metrics.py
+```
+
+**BigQuery destination** — dataset `lv-playground-genai.demo_proton`:
+
+| Object | Type | Description |
+|--------|------|-------------|
+| `conversations` | Table | One row per Zendesk ticket — channel, `resolved_by` (bot/agent), CSAT score |
+| `v_volume_by_month_channel` | View | Monthly ticket volume split by channel |
+| `v_resolution_split` | View | Bot-resolved vs agent-transferred count by month |
+| `v_csat` | View | Average CSAT score by month and channel |
+
+See [docs/dashboards/looker-bot-metrics-phase1.md](docs/dashboards/looker-bot-metrics-phase1.md) for the full Looker Studio setup guide (data source connection, tile definitions, and sharing steps).
 
 ---
 

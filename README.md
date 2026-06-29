@@ -271,6 +271,17 @@ Live per-turn events stream into a `turn_events` table when the backend runs wit
 
 See [docs/dashboards/looker-bot-metrics-phase2.md](docs/dashboards/looker-bot-metrics-phase2.md) for the Looker Studio setup guide.
 
+### Phase 3 — Net Promoter Score (NPS)
+
+A 0–10 Net Promoter Score is submitted via `POST /chat/nps` (`{session_id, score}`) 
+for web chat sessions with a Zendesk ticket. Scores are recorded as an `nps_<score>` 
+tag and comment. The Zendesk sync populates a `conversations.nps_score` INT64 column 
+and a `v_nps` view that classifies respondents into promoter (9–10), passive (7–8), 
+and detractor (0–6) buckets, then calculates the NPS metric (`%promoters − %detractors`). 
+Configuration reuses existing `BIGQUERY_*` settings (no new env vars required).
+
+See [docs/dashboards/looker-bot-metrics-phase1.md](docs/dashboards/looker-bot-metrics-phase1.md) for Looker setup.
+
 ---
 
 ## Roadmap

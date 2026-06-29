@@ -15,6 +15,7 @@ _CHANNEL_BY_PREFIX = {
 }
 _AGENT_STATUSES = {"new", "open", "pending", "hold"}
 _CSAT_TAG = re.compile(r"^csat_([1-5])$")
+_NPS_TAG = re.compile(r"^nps_(10|[0-9])$")
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class ConversationRow:
     status: str
     resolved_by: str
     csat_score: int | None
+    nps_score: int | None
 
 
 def channel_from_external_id(external_id: str | None) -> str:
@@ -47,6 +49,14 @@ def _csat_from_tags(tags: list[str]) -> int | None:
     return None
 
 
+def _nps_from_tags(tags: list[str]) -> int | None:
+    for tag in tags:
+        m = _NPS_TAG.match(tag)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 def map_ticket_to_row(ticket: dict[str, object]) -> ConversationRow | None:
     """Map one Zendesk ticket to a conversation row, or None to skip it."""
     external_id = ticket.get("external_id")
@@ -54,7 +64,8 @@ def map_ticket_to_row(ticket: dict[str, object]) -> ConversationRow | None:
     raw_tags = ticket.get("tags") or []
     tags = [str(t) for t in raw_tags] if isinstance(raw_tags, list) else []
     csat = _csat_from_tags(tags)
-    if external_id_str is None and csat is None:
+    nps = _nps_from_tags(tags)
+    if external_id_str is None and csat is None and nps is None:
         return None
     status = str(ticket.get("status") or "")
     created = ticket.get("created_at")
@@ -67,4 +78,5 @@ def map_ticket_to_row(ticket: dict[str, object]) -> ConversationRow | None:
         status=status,
         resolved_by=_resolved_by(status),
         csat_score=csat,
+        nps_score=nps,
     )

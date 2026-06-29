@@ -85,6 +85,30 @@ def test_csat_tag_out_of_range_ignored() -> None:
     assert row is not None and row.csat_score is None
 
 
+@pytest.mark.parametrize(
+    "tag,expected",
+    [("nps_0", 0), ("nps_6", 6), ("nps_7", 7), ("nps_9", 9), ("nps_10", 10)],
+)
+def test_nps_from_tag(tag: str, expected: int) -> None:
+    row = map_ticket_to_row(_ticket(tags=[tag]))
+    assert row is not None and row.nps_score == expected
+
+
+def test_nps_tag_out_of_range_ignored() -> None:
+    row = map_ticket_to_row(_ticket(tags=["nps_11"]))
+    assert row is not None and row.nps_score is None
+
+
+def test_no_nps_tag_is_none() -> None:
+    row = map_ticket_to_row(_ticket(tags=["foo"]))
+    assert row is not None and row.nps_score is None
+
+
+def test_keep_nps_only_ticket_even_without_external_id() -> None:
+    row = map_ticket_to_row({"id": 3, "status": "solved", "tags": ["nps_8"]})
+    assert row is not None and row.channel == "Other" and row.nps_score == 8
+
+
 def test_basic_fields_pass_through() -> None:
     row = map_ticket_to_row(_ticket())
     assert row == ConversationRow(
@@ -95,6 +119,7 @@ def test_basic_fields_pass_through() -> None:
         status="solved",
         resolved_by="bot",
         csat_score=None,
+        nps_score=None,
     )
 
 

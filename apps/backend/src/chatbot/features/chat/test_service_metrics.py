@@ -11,7 +11,11 @@ from chatbot.features.chat.adapters.mock import (
     InMemoryTicketingAdapter,
     MockVoiceAdapter,
 )
-from chatbot.features.chat.service import _EMPTY_REPLY_FALLBACK, OrchestratorService
+from chatbot.features.chat.service import (
+    _EMPTY_REPLY_FALLBACK,
+    _TECH_ERROR_FALLBACK,
+    OrchestratorService,
+)
 from chatbot.features.metrics.events import TurnEvent
 from chatbot.platform.config import get_settings
 
@@ -62,6 +66,14 @@ class _FakeRunner:
             session.state["handoff_triggered"] = True
             session.state["handoff_reason"] = "help_request"
         yield _FakeEvent(self._reply)
+
+
+class _RaisingRunner:
+    """Runner whose run_async raises before yielding — simulates ADK hard failure."""
+
+    async def run_async(self, **_: Any) -> AsyncIterator[_FakeEvent]:
+        raise RuntimeError("adk boom")
+        yield _FakeEvent("")  # type: ignore[unreachable]
 
 
 def _service(
@@ -121,3 +133,24 @@ async def test_second_turn_is_not_first() -> None:
     await svc.handle_turn(session_id="sim-d", text="two")
     assert metrics.events[0].is_first_turn is True
     assert metrics.events[1].is_first_turn is False
+
+
+async def test_tech_error_emits_fallback_event() -> None:
+    """handle_turn except-branch: ADK raises → TurnEvent(is_fallback=True, handed_off=False)."""
+    metrics = _CapturingMetrics()
+    svc = OrchestratorService(
+        settings=get_settings(),
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=InMemoryTicketingAdapter(),
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=MockVoiceAdapter(),
+        metrics_port=metrics,
+        runner_factory=lambda _a: _RaisingRunner(),
+    )
+    result = await svc.handle_turn(session_id="sim-e", text="trigger error")
+    assert result.reply == _TECH_ERROR_FALLBACK
+    assert len(metrics.events) == 1
+    ev = metrics.events[0]
+    assert ev.is_fallback is True
+    assert ev.handed_off is False
+    assert ev.is_first_turn is True

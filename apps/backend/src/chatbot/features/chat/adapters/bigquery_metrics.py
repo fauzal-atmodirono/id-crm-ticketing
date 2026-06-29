@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -61,7 +62,7 @@ class BigQueryMetricsAdapter:
                 "is_fallback": event.is_fallback,
                 "handed_off": event.handed_off,
             }
-            errors = self._client.insert_rows_json(self._table_id, [row])
+            errors = await asyncio.to_thread(self._client.insert_rows_json, self._table_id, [row])
             if errors:
                 _log.warning("metrics_insert_returned_errors", errors=str(errors))
         except Exception as e:  # best-effort: never break the turn
@@ -71,5 +72,9 @@ class BigQueryMetricsAdapter:
 def build_metrics_port(settings: Settings) -> MetricsPort:
     """Pick the MetricsPort implementation from settings."""
     if settings.metrics_provider == "bigquery":
-        return BigQueryMetricsAdapter(settings)
+        try:
+            return BigQueryMetricsAdapter(settings)
+        except Exception as e:  # never let metrics init crash the app
+            _log.error("metrics_adapter_init_failed_falling_back_to_noop", error=str(e))
+            return NoOpMetrics()
     return NoOpMetrics()

@@ -282,6 +282,23 @@ Configuration reuses existing `BIGQUERY_*` settings (no new env vars required).
 
 See [docs/dashboards/looker-bot-metrics-phase1.md](docs/dashboards/looker-bot-metrics-phase1.md) for Looker setup.
 
+### Phase 4 — Accuracy and Quality (QA)
+
+Human reviewers submit accuracy and quality labels via `POST /qa/label` with JSON body 
+`{conversation_id, accuracy, quality, reviewer, notes}` (each score 0–100 integer 
+percentage; `notes` optional). The endpoint requires an `X-API-Key` header; returns 
+HTTP 200 on success, 401 for missing/invalid key, 422 for out-of-range scores. Labels 
+are persisted to a `qa_labels` BigQuery table and surfaced through a `v_quality` view 
+(per-channel: `channel`, `labels` count, `avg_accuracy`, `avg_quality`). 
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `QA_PROVIDER` | `noop` | `bigquery` to record labels; `noop` to disable |
+| `BIGQUERY_QA_LABELS_TABLE` | `qa_labels` | Table name in `lv-playground-genai.demo_proton` |
+| `QA_API_KEY` | (empty) | API key for `POST /qa/label` (`X-API-Key` header); empty = endpoint locked |
+
+See [docs/dashboards/looker-bot-metrics-phase1.md](docs/dashboards/looker-bot-metrics-phase1.md) for Looker setup.
+
 ---
 
 ## Roadmap

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Bot-metrics dashboard Phase 4 (2026-06-29)
+
+- **Bot-metrics dashboard (Phase 4).** Accuracy and Quality QA entry point. A new 
+  `POST /qa/label` endpoint accepts reviewer annotations (`{conversation_id, accuracy, 
+  quality, reviewer, notes}`, each score 0–100 integer percentage) with X-API-Key 
+  authentication (constant-time). Returns HTTP 200 on success, 401 for missing/invalid 
+  key, 422 for out-of-range scores. Labels are written to a dedicated `qa_labels` 
+  BigQuery table (columns: `conversation_id`, `accuracy`, `quality`, `reviewer`, `notes`, 
+  `labeled_at`). A `v_quality` view JOINs `qa_labels` to the existing `conversations` 
+  table and aggregates per-channel: `channel`, `labels` (count), `avg_accuracy`, 
+  `avg_quality`. Configuration: `QA_PROVIDER` (`noop` default disables BigQuery write; 
+  `bigquery` enables), `BIGQUERY_QA_LABELS_TABLE` (default `qa_labels`), and 
+  `QA_API_KEY` (empty default = endpoint locked until set). **Out of scope:** frontend 
+  QA UI, CLI bulk-import, multi-rater workflows, and per-turn QA are deferred.
+
 ### Added — Bot-metrics dashboard Phase 3 (2026-06-29)
 
 - **Bot-metrics dashboard (Phase 3).** Net Promoter Score (NPS) collection and

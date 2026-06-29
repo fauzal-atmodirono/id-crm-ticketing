@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Instrument `handle_turn` to emit one `turn_events` row per text turn through a best-effort `MetricsPort`, so BigQuery views can derive speed-of-response, fallback rate, and bounce rate.
+**Goal:** (1) Instrument `handle_turn` to emit one `turn_events` row per text turn through a best-effort `MetricsPort`, so BigQuery views can derive speed-of-response, fallback rate, and bounce rate; and (2) automate the Phase-1 Zendesk→BigQuery sync with an in-app scheduler so the `conversations` table refreshes on a schedule.
 
-**Architecture:** Ports & adapters. A pure `build_turn_event` builds an immutable `TurnEvent`; a `MetricsPort` protocol (`emit_turn`) has two adapters — `NoOpMetrics` (default) and `BigQueryMetricsAdapter` (streaming `insert_rows_json`, ensures table + 3 views on init). `OrchestratorService.handle_turn` times each turn and emits best-effort, never letting an instrumentation error affect the user-facing result. Three BigQuery views over `turn_events` feed Looker.
+**Architecture:** Ports & adapters. A pure `build_turn_event` builds an immutable `TurnEvent`; a `MetricsPort` protocol (`emit_turn`) has two adapters — `NoOpMetrics` (default) and `BigQueryMetricsAdapter` (streaming `insert_rows_json`, ensures table + 3 views on init). `OrchestratorService.handle_turn` times each turn and emits best-effort, never letting an instrumentation error affect the user-facing result. Three BigQuery views over `turn_events` feed Looker. Separately, an APScheduler `BackgroundScheduler` (default OFF) runs the unchanged Phase-1 `run_sync` + `ensure_views` on an interval in its own thread.
 
-**Tech Stack:** Python 3.12, FastAPI, `google-cloud-bigquery` (already a dependency from Phase 1), pydantic-settings, structlog, pytest / pytest-asyncio (`asyncio_mode="auto"`), ruff, mypy --strict.
+**Tech Stack:** Python 3.12, FastAPI, `google-cloud-bigquery` (already a dependency from Phase 1), `apscheduler` (new), pydantic-settings, structlog, pytest / pytest-asyncio (`asyncio_mode="auto"`), ruff, mypy --strict.
 
 ## Global Constraints
 
@@ -15,6 +15,7 @@
 - `from __future__ import annotations` at the top of every new module (matches the repo).
 - Emit is **best-effort fire-and-forget**: a metrics failure (BQ down, schema drift, no creds) must be logged via structlog and swallowed — it must never change `handle_turn`'s return value or raise.
 - Default `metrics_provider="noop"` → `NoOpMetrics`; local/dev/tests never touch BigQuery.
+- The sync scheduler is **default OFF** (`metrics_sync_enabled=false`); it must not start during tests/dev. The scheduled job reuses Phase-1 `run_sync`/`ensure_views` **unchanged** and is best-effort (a failed run is logged + swallowed, never crashes the app).
 - DRY: there must be exactly **one** prefix→channel mapping (`channel_from_external_id`), reused by both Phase-1 `map_ticket_to_row` and Phase-2 `build_turn_event`.
 - `TurnEvent` is immutable (`@dataclass(frozen=True)`) and `build_turn_event` is pure (no `datetime.now`, no `uuid`, no I/O — callers pass `occurred_at`; the adapter mints `event_id`).
 - Never log or print secrets.
@@ -1028,7 +1029,266 @@ git commit -m "feat(metrics): wire metrics_provider config + build_metrics_port 
 
 ---
 
-### Task 8: Docs — env example, Looker guide addendum, changelog
+### Task 8: `apscheduler` dependency + `run_sync_job` + scheduler config
+
+**Files:**
+- Modify: `apps/backend/pyproject.toml` (add `apscheduler` dependency)
+- Modify: `apps/backend/src/chatbot/platform/config.py`
+- Create: `apps/backend/src/chatbot/features/metrics/scheduler.py`
+- Test: `apps/backend/src/chatbot/features/metrics/test_scheduler.py`
+
+**Interfaces:**
+- Consumes: `run_sync`, `ensure_views` (Phase-1 `features/metrics/sync.py`, unchanged).
+- Produces:
+  - `Settings.metrics_sync_enabled: bool` (default `False`), `Settings.metrics_sync_interval_hours: int` (default `6`).
+  - `run_sync_job(settings, *, sync=None, ensure=None) -> dict[str, int]` — best-effort: runs `run_sync` then `ensure_views`, logs, swallows errors (returns `{}` on failure). `sync`/`ensure` are injectable for tests. Used by Task 9.
+
+- [ ] **Step 1: Add the dependency**
+
+Run: `uv add apscheduler`
+Expected: `apscheduler` added to `pyproject.toml` `[project].dependencies` and `uv.lock` updated.
+
+- [ ] **Step 2: Write the failing test**
+
+Create `test_scheduler.py`:
+
+```python
+from types import SimpleNamespace
+from typing import Any, cast
+
+from chatbot.features.metrics.scheduler import run_sync_job
+from chatbot.platform.config import Settings
+
+
+def _settings() -> Settings:
+    return cast(Settings, SimpleNamespace(metrics_sync_enabled=True, metrics_sync_interval_hours=6))
+
+
+def test_run_sync_job_runs_sync_then_ensure() -> None:
+    calls: list[str] = []
+    result = run_sync_job(
+        _settings(),
+        sync=lambda _s: (calls.append("sync"), {"tickets": 2, "rows": 1})[1],
+        ensure=lambda _s: calls.append("ensure"),
+    )
+    assert result == {"tickets": 2, "rows": 1}
+    assert calls == ["sync", "ensure"]  # sync before ensure
+
+
+def test_run_sync_job_swallows_errors() -> None:
+    def boom(_s: Any) -> dict[str, int]:
+        raise RuntimeError("zendesk down")
+
+    assert run_sync_job(_settings(), sync=boom, ensure=lambda _s: None) == {}
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `.venv/bin/pytest src/chatbot/features/metrics/test_scheduler.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'chatbot.features.metrics.scheduler'`.
+
+- [ ] **Step 4: Add the config flags**
+
+In `config.py`, under the Phase-2 block added in Task 7 (after `bigquery_turn_events_table`), add:
+
+```python
+    # Bot-metrics Phase 2 (in-app Zendesk -> BQ sync scheduler / the "trigger")
+    metrics_sync_enabled: bool = False
+    metrics_sync_interval_hours: int = 6
+```
+
+- [ ] **Step 5: Implement `run_sync_job`**
+
+Create `scheduler.py`:
+
+```python
+"""In-app scheduler that periodically runs the Phase-1 Zendesk -> BigQuery sync."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+
+import structlog
+
+from chatbot.features.metrics.sync import ensure_views, run_sync
+
+if TYPE_CHECKING:
+    from chatbot.platform.config import Settings
+
+_log = structlog.get_logger(__name__)
+
+
+def run_sync_job(
+    settings: Settings,
+    *,
+    sync: Callable[[Settings], dict[str, int]] | None = None,
+    ensure: Callable[[Settings], None] | None = None,
+) -> dict[str, int]:
+    """Run the Zendesk->BQ sync + refresh views. Best-effort: never raises."""
+    try:
+        result = (sync or run_sync)(settings)
+        (ensure or ensure_views)(settings)
+        _log.info("metrics_sync_job_done", **result)
+        return result
+    except Exception as e:  # a failed scheduled run must never crash the app
+        _log.error("metrics_sync_job_failed", error=str(e))
+        return {}
+```
+
+(The `datetime`, `Any`, and APScheduler imports are added in Task 9 when `start_metrics_scheduler` lands; add only what `run_sync_job` needs now to keep ruff/mypy green.)
+
+- [ ] **Step 6: Run the test + config check to verify they pass**
+
+Run: `.venv/bin/pytest src/chatbot/features/metrics/test_scheduler.py -v`
+Expected: PASS.
+Run: `.venv/bin/python -c "from chatbot.platform.config import Settings; s=Settings(); print(s.metrics_sync_enabled, s.metrics_sync_interval_hours)"`
+Expected: `False 6`.
+
+- [ ] **Step 7: Quality gates + commit**
+
+```bash
+.venv/bin/ruff format . && .venv/bin/ruff check . --fix && .venv/bin/mypy src/ --strict
+git add pyproject.toml uv.lock src/chatbot/platform/config.py src/chatbot/features/metrics/scheduler.py src/chatbot/features/metrics/test_scheduler.py
+git commit -m "feat(metrics): apscheduler dep + run_sync_job + sync scheduler config"
+```
+
+---
+
+### Task 9: `start_metrics_scheduler` + `main.py` wiring
+
+**Files:**
+- Modify: `apps/backend/src/chatbot/features/metrics/scheduler.py`
+- Modify: `apps/backend/src/chatbot/main.py`
+- Test: `apps/backend/src/chatbot/features/metrics/test_scheduler.py`
+
+**Interfaces:**
+- Consumes: `run_sync_job` (Task 8); `Settings.metrics_sync_enabled` / `metrics_sync_interval_hours` (Task 8).
+- Produces: `start_metrics_scheduler(settings, *, scheduler=None, job=None) -> Any | None` — returns `None` when disabled; otherwise adds an interval job (running `run_sync_job`) with a near-immediate first run, starts the scheduler, and returns it. `scheduler`/`job` are injectable for tests. Wired into `main.py` bootstrap with a shutdown hook.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `test_scheduler.py`:
+
+```python
+from chatbot.features.metrics.scheduler import start_metrics_scheduler
+
+
+class _FakeScheduler:
+    def __init__(self) -> None:
+        self.jobs: list[dict[str, Any]] = []
+        self.started = False
+
+    def add_job(self, func: Any, **kwargs: Any) -> None:
+        self.jobs.append({"func": func, **kwargs})
+
+    def start(self) -> None:
+        self.started = True
+
+
+def test_scheduler_disabled_returns_none() -> None:
+    s = cast(Settings, SimpleNamespace(metrics_sync_enabled=False, metrics_sync_interval_hours=6))
+    assert start_metrics_scheduler(s) is None
+
+
+def test_scheduler_enabled_adds_interval_job_and_starts() -> None:
+    s = cast(Settings, SimpleNamespace(metrics_sync_enabled=True, metrics_sync_interval_hours=3))
+    fake = _FakeScheduler()
+    result = start_metrics_scheduler(s, scheduler=fake)
+    assert result is fake
+    assert fake.started is True
+    assert len(fake.jobs) == 1
+    job = fake.jobs[0]
+    assert job["trigger"] == "interval"
+    assert job["hours"] == 3
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/pytest src/chatbot/features/metrics/test_scheduler.py -v`
+Expected: FAIL with `ImportError: cannot import name 'start_metrics_scheduler'`.
+
+- [ ] **Step 3: Implement `start_metrics_scheduler`**
+
+In `scheduler.py`, update the imports at the top to add the scheduler import (place it after the existing imports):
+
+```python
+from apscheduler.schedulers.background import BackgroundScheduler
+```
+
+Append the function:
+
+```python
+def start_metrics_scheduler(
+    settings: Settings,
+    *,
+    scheduler: Any | None = None,
+    job: Callable[[], object] | None = None,
+) -> Any | None:
+    """Start the in-app Zendesk->BQ sync scheduler when enabled; else return None."""
+    if not settings.metrics_sync_enabled:
+        return None
+    sched = scheduler or BackgroundScheduler()
+    run = job or (lambda: run_sync_job(settings))
+    sched.add_job(
+        run,
+        trigger="interval",
+        hours=settings.metrics_sync_interval_hours,
+        id="zendesk_metrics_sync",
+        next_run_time=datetime.now(UTC),  # first run shortly after startup
+        replace_existing=True,
+    )
+    sched.start()
+    _log.info(
+        "metrics_sync_scheduler_started",
+        interval_hours=settings.metrics_sync_interval_hours,
+    )
+    return sched
+```
+
+- [ ] **Step 4: Run the scheduler tests to verify they pass**
+
+Run: `.venv/bin/pytest src/chatbot/features/metrics/test_scheduler.py -v`
+Expected: PASS (all four tests; the fake scheduler avoids starting a real thread).
+
+- [ ] **Step 5: Wire the scheduler into `main.py`**
+
+In `main.py`, add the import near the other metrics import:
+
+```python
+from chatbot.features.metrics.scheduler import start_metrics_scheduler
+```
+
+After `app.include_router(...)` and the `health_check` definition, before `return app` (main.py:144), add:
+
+```python
+    metrics_scheduler = start_metrics_scheduler(settings)
+    if metrics_scheduler is not None:
+
+        @app.on_event("shutdown")
+        def _stop_metrics_scheduler() -> None:
+            metrics_scheduler.shutdown(wait=False)
+```
+
+- [ ] **Step 6: Verify import/boot + full suite**
+
+Run: `.venv/bin/python -c "import chatbot.main"`
+Expected: no error (default `metrics_sync_enabled=False` → scheduler not started, no thread, no GCP/Zendesk calls at import).
+Run: `.venv/bin/pytest src/ -q`
+Expected: PASS (full suite).
+
+- [ ] **Step 7: Quality gates + commit**
+
+```bash
+.venv/bin/ruff format . && .venv/bin/ruff check . --fix && .venv/bin/mypy src/ --strict
+git add src/chatbot/features/metrics/scheduler.py src/chatbot/features/metrics/test_scheduler.py src/chatbot/main.py
+git commit -m "feat(metrics): start in-app Zendesk->BQ sync scheduler from bootstrap"
+```
+
+---
+
+### Task 10: Docs — env example, Looker guide addendum, changelog
 
 **Files:**
 - Modify: `apps/backend/.env.example`
@@ -1046,6 +1306,13 @@ Append under the existing BigQuery block:
 # emit; "bigquery" streams one row per turn into the turn_events table.
 METRICS_PROVIDER=noop
 BIGQUERY_TURN_EVENTS_TABLE=turn_events
+
+# Bot-metrics Phase 2 (in-app Zendesk->BQ sync scheduler / the "trigger").
+# false (default) = no scheduler; true = refresh the conversations table every
+# METRICS_SYNC_INTERVAL_HOURS while the backend runs. Needs the same Zendesk +
+# BigQuery creds the manual sync uses.
+METRICS_SYNC_ENABLED=false
+METRICS_SYNC_INTERVAL_HOURS=6
 ```
 
 - [ ] **Step 2: Write the Looker Phase-2 guide**
@@ -1060,7 +1327,7 @@ Create `docs/dashboards/looker-bot-metrics-phase2.md` documenting:
 
 - [ ] **Step 3: Update the changelog / README metrics section**
 
-Add a Phase-2 entry summarizing the per-turn MetricsPort, the `turn_events` table, the three views/tiles, and the `METRICS_PROVIDER` flag (default `noop`). Match the format of the existing Phase-1 entry.
+Add a Phase-2 entry summarizing: (a) the per-turn MetricsPort, the `turn_events` table, the three views/tiles, and the `METRICS_PROVIDER` flag (default `noop`); and (b) the in-app sync scheduler — the `METRICS_SYNC_ENABLED` / `METRICS_SYNC_INTERVAL_HOURS` flags (default off) that automate the Phase-1 Zendesk→BQ refresh. Match the format of the existing Phase-1 entry.
 
 - [ ] **Step 4: Commit**
 
@@ -1080,15 +1347,17 @@ git commit -m "docs(metrics): phase 2 env example, Looker guide, changelog"
 - `BigQueryMetricsAdapter` + `NoOpMetrics` → Tasks 4 (NoOp) + 5 (BQ) ✓
 - `turn_schema.py` (TURN_EVENTS_SCHEMA + turn_view_ddls) → Task 3 ✓
 - `service.py` emit + timing → Task 6 ✓
-- config + main.py wiring → Task 7 ✓
+- per-turn config + main.py wiring → Task 7 ✓
 - `turn_events` 8 columns → Task 3 schema ✓
 - three views (speed/fallback/bounce, with the exact aggregates) → Task 3 ✓
 - error handling best-effort (adapter + handle_turn) → Tasks 5 + 6 ✓
 - testing (pure build_turn_event, channel reuse, schema/views, handle_turn emit with fake port, NoOp) → Tasks 1–6 ✓
-- config (`metrics_provider`, `bigquery_turn_events_table`) → Task 7 ✓
-- Looker guide / live smoke documented → Task 8 ✓
-- Out of scope (voice/phone per-turn, NPS, accuracy/quality, Looker build, backfill) → untouched ✓
+- per-turn config (`metrics_provider`, `bigquery_turn_events_table`) → Task 7 ✓
+- **sync automation / the "trigger":** `apscheduler` dep + `run_sync_job` + scheduler config → Task 8; `start_metrics_scheduler` + bootstrap wiring + shutdown hook → Task 9; reuses Phase-1 `run_sync`/`ensure_views` unchanged ✓
+- **scheduler config** (`metrics_sync_enabled`, `metrics_sync_interval_hours`, default off) → Task 8 ✓
+- Looker guide / live smoke documented + scheduler env vars → Task 10 ✓
+- Out of scope (voice/phone per-turn, NPS, accuracy/quality, Looker build, backfill, Cloud Scheduler, changing Phase-1 sync logic) → untouched ✓
 
-**Type consistency:** `build_turn_event(session_id, occurred_at, latency_ms, turn_count, is_fallback, handed_off)` is defined in Task 2 and called with the same keyword arguments in Tasks 5 (tests) and 6. `TurnEvent` field set (no `event_id`) is consistent: the adapter mints `event_id` at emit (Task 5) — matches the schema's `event_id` column (Task 3). `MetricsPort.emit_turn(event)` signature consistent across Tasks 4/5/6. `build_metrics_port(settings)` defined in Task 5, consumed in Task 7. `metrics_provider` / `bigquery_turn_events_table` referenced in Task 5's factory and defined in Task 7 (Task 5's tests use a `SimpleNamespace`, so ordering is safe).
+**Type consistency:** `build_turn_event(session_id, occurred_at, latency_ms, turn_count, is_fallback, handed_off)` is defined in Task 2 and called with the same keyword arguments in Tasks 5 (tests) and 6. `TurnEvent` field set (no `event_id`) is consistent: the adapter mints `event_id` at emit (Task 5) — matches the schema's `event_id` column (Task 3). `MetricsPort.emit_turn(event)` signature consistent across Tasks 4/5/6. `build_metrics_port(settings)` defined in Task 5, consumed in Task 7. `metrics_provider` / `bigquery_turn_events_table` referenced in Task 5's factory and defined in Task 7 (Task 5's tests use a `SimpleNamespace`, so ordering is safe). Scheduler: `run_sync_job(settings, *, sync, ensure)` defined in Task 8, consumed by `start_metrics_scheduler` in Task 9; `metrics_sync_enabled` / `metrics_sync_interval_hours` defined in Task 8, read in Task 9; both reuse Phase-1 `run_sync`/`ensure_views` signatures verbatim.
 
-**Placeholder scan:** no TBD/TODO; every code step shows complete code; the only prose-only task (Task 8) is documentation, where prose is the deliverable.
+**Placeholder scan:** no TBD/TODO; every code step shows complete code; the only prose-only task (Task 10) is documentation, where prose is the deliverable.

@@ -2,11 +2,14 @@
 
 **Date:** 2026-06-29
 **Status:** Approved (brainstorm complete)
-**Scope:** Phase 2 of the cross-channel Bot-Metrics dashboard. Adds the per-event
-`MetricsPort` instrumentation pipeline and the three signals Zendesk can't give us —
-**speed of response, fallback rate, bounce rate** — for the **text channels** (everything
-that flows through `handle_turn`). Builds on Phase 1
-(`docs/superpowers/specs/2026-06-29-metrics-dashboard-phase1-design.md`).
+**Scope:** Phase 2 of the cross-channel Bot-Metrics dashboard. Two parts:
+1. The per-event `MetricsPort` instrumentation pipeline and the three signals Zendesk can't
+   give us — **speed of response, fallback rate, bounce rate** — for the **text channels**
+   (everything that flows through `handle_turn`).
+2. **Automate the Phase-1 Zendesk→BigQuery sync** with an in-app scheduler (the "trigger"),
+   so the `conversations` table refreshes on a schedule instead of a manual script run.
+
+Builds on Phase 1 (`docs/superpowers/specs/2026-06-29-metrics-dashboard-phase1-design.md`).
 
 ## Context
 
@@ -31,6 +34,11 @@ streaming paths with different timing semantics — out of scope here.
   per-event flag).
 - **Transport:** BigQuery **streaming insert** (`insert_rows_json`), best-effort fire-and-forget.
 - **One event type** (`turn_events`); all three signals are views over it (mirrors Phase 1).
+- **Sync automation (the "trigger"):** an **in-app `BackgroundScheduler`** (APScheduler) runs
+  the Phase-1 Zendesk→BQ sync on a fixed interval. Chosen over Cloud Scheduler because the POC
+  runs locally (not deployed); the scheduler runs the synchronous sync in its own thread, needs
+  no event loop, and starts at bootstrap. **Default OFF** (`METRICS_SYNC_ENABLED=false`) so
+  dev/tests/CI never fire it; opt-in per environment.
 
 ## Architecture & Data Flow
 
@@ -60,7 +68,8 @@ Looker Studio tiles (Initial/Subsequent Speed, Fallback Rate, Bounce Rate)
 | `features/chat/adapters/bigquery_metrics.py` | `BigQueryMetricsAdapter` — ensures the `turn_events` table + the 3 views exist on init; `emit_turn` does a best-effort `insert_rows_json`. `NoOpMetrics` (default) |
 | `features/metrics/turn_schema.py` | `TURN_EVENTS_SCHEMA: list[bigquery.SchemaField]` + `turn_view_ddls(project, dataset, table) -> dict[str, str]` (the 3 views) |
 | `features/chat/service.py` | `OrchestratorService.__init__` gains `metrics_port: MetricsPort = NoOpMetrics()`; `handle_turn` times the turn, computes `is_fallback`/`handed_off`/`turn_count`, and emits |
-| `platform/config.py` + `main.py` | `metrics_provider: Literal["noop","bigquery"] = "noop"`, `bigquery_turn_events_table: str = "turn_events"`; `main.py` builds the adapter and injects it |
+| `features/metrics/scheduler.py` | `run_sync_job(settings)` (best-effort `run_sync` + `ensure_views`, swallows errors) + `start_metrics_scheduler(settings)` (builds/starts a `BackgroundScheduler` running `run_sync_job` on an interval when `metrics_sync_enabled`, else returns `None`) |
+| `platform/config.py` + `main.py` | `metrics_provider: Literal["noop","bigquery"] = "noop"`, `bigquery_turn_events_table: str = "turn_events"`, `metrics_sync_enabled: bool = False`, `metrics_sync_interval_hours: int = 6`; `main.py` builds the metrics adapter, injects it, and starts the scheduler (stopping it on app shutdown) |
 
 ## `turn_events` table
 
@@ -85,6 +94,29 @@ Looker Studio tiles (Initial/Subsequent Speed, Fallback Rate, Bounce Rate)
 - `v_bounce_rate` — per `channel`, over a per-session turn count:
   `bounced = COUNT(DISTINCT session WHERE turns = 1)`, `total_sessions = COUNT(DISTINCT session)`,
   `bounce_rate = SAFE_DIVIDE(bounced, total_sessions)`.
+
+## Sync automation (the "trigger")
+
+The Phase-1 sync logic (`features/metrics/sync.py:run_sync` + `ensure_views`) is unchanged and
+fully reused. Phase 2 only adds a scheduler around it:
+
+```
+app bootstrap (METRICS_SYNC_ENABLED=true)
+  └─ BackgroundScheduler.start()        # APScheduler, own thread; no event loop needed
+       └─ every METRICS_SYNC_INTERVAL_HOURS:
+            run_sync_job(settings):
+              run_sync(settings)         # Phase-1: fetch Zendesk → map → WRITE_TRUNCATE load
+              ensure_views(settings)     # Phase-1: (re)create the conversations views
+              (any error logged + swallowed — a failed run never crashes the app)
+  └─ @app.on_event("shutdown") → scheduler.shutdown(wait=False)
+```
+
+- The job is **synchronous** (Phase-1 `run_sync` uses `httpx.Client` + the BigQuery client), so a
+  thread-based `BackgroundScheduler` is the right fit — it won't block FastAPI's event loop.
+- The first run fires shortly after startup (`next_run_time` ≈ now) so the dashboard refreshes
+  promptly, then repeats on the interval. The manual `scripts/sync_zendesk_metrics.py` still works
+  for an on-demand backfill.
+- Default OFF. Enabling requires the same Zendesk + BQ creds the manual sync already uses.
 
 ## Error Handling
 - `emit_turn` is best-effort: the adapter wraps `insert_rows_json` in try/except + structlog;
@@ -115,11 +147,16 @@ Quality gates: `ruff format`, `ruff check`, `mypy --strict`, `pytest`.
 |---|---|---|
 | `metrics_provider` | `noop` | `bigquery` enables per-turn emit |
 | `bigquery_turn_events_table` | `turn_events` | the event table |
+| `metrics_sync_enabled` | `false` | `true` starts the in-app Zendesk→BQ sync scheduler |
+| `metrics_sync_interval_hours` | `6` | how often the scheduled sync runs |
 | (reused) `bigquery_project_id` / `bigquery_dataset` | — | BQ target |
 
 ## Out of Scope
 - Voice (`handle_voice_turn`) and phone (Live bridge) per-turn metrics — separate streaming
   paths; a later add.
+- Cloud-native scheduling (Cloud Scheduler + Cloud Run Job) — the in-app scheduler covers the
+  POC; a cloud trigger is a deploy-time follow-up once the backend has a public URL.
+- Changing the Phase-1 sync logic itself (full `WRITE_TRUNCATE` reload) — reused as-is.
 - NPS survey (Phase 3); Accuracy / Quality manual entry (Phase 4).
 - The Looker dashboard build itself (guide only, as in Phase 1).
 - Backfill of historical turns (no per-turn history exists pre-instrumentation; `turn_events`

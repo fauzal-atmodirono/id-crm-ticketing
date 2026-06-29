@@ -1,6 +1,10 @@
 import pytest
 
-from chatbot.features.metrics.mapping import ConversationRow, map_ticket_to_row
+from chatbot.features.metrics.mapping import (
+    ConversationRow,
+    channel_from_external_id,
+    map_ticket_to_row,
+)
 
 
 def _ticket(**kw: object) -> dict[str, object]:
@@ -14,6 +18,23 @@ def _ticket(**kw: object) -> dict[str, object]:
     }
     base.update(kw)
     return base
+
+
+@pytest.mark.parametrize(
+    "external_id,expected",
+    [
+        ("whatsapp-+60123", "WhatsApp"),
+        ("email-55", "Email"),
+        ("phone-CA1", "Phone"),
+        ("sim-abc", "Web"),
+        ("zendesk-conv-9", "Web"),
+        ("chatwoot-conv-9", "Web"),
+        ("weird-1", "Other"),
+        (None, "Other"),
+    ],
+)
+def test_channel_from_external_id_public(external_id: str | None, expected: str) -> None:
+    assert channel_from_external_id(external_id) == expected
 
 
 @pytest.mark.parametrize(

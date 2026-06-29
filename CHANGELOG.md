@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Bot-metrics dashboard Phase 2 (2026-06-29)
+
+- **Bot-metrics dashboard (Phase 2).** A new `MetricsPort` abstraction enables 
+  per-turn streaming of events (latency, fallback, session metadata) into 
+  `lv-playground-genai.demo_proton.turn_events`, with `METRICS_PROVIDER=bigquery` 
+  (or `noop` to disable). Three aggregation views back Looker tiles: 
+  `v_speed_of_response` (initial vs. subsequent response latency by channel, p99), 
+  `v_fallback_rate` (intent-fallback rate by channel), and `v_bounce_rate` 
+  (single-turn session rate). **In-app sync scheduler:** `METRICS_SYNC_ENABLED=true` 
+  + `METRICS_SYNC_INTERVAL_HOURS=<N>` (default off) automatically refresh the 
+  Phase-1 `conversations` table on a schedule. See 
+  `docs/dashboards/looker-bot-metrics-phase2.md`.
+
 ### Added — Bot-metrics dashboard Phase 1 (2026-06-29)
 
 - **Bot-metrics dashboard (Phase 1).** A Zendesk → BigQuery sync

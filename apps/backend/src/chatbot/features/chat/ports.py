@@ -7,6 +7,7 @@ from chatbot.features.chat.models import (
     HandoffOpenPayload,
     KbArticle,
 )
+from chatbot.features.metrics.events import TurnEvent
 
 
 class ChatPort(Protocol):
@@ -167,4 +168,12 @@ class ConversationLogPort(Protocol):
     async def get_latest_public_comment(self, ticket_id: str) -> tuple[str, str | None, str | None]:
         """Fetch the requester's most recent PUBLIC comment body plus their
         name and email. Returns ("", None, None) if none/failure."""
+        ...
+
+
+class MetricsPort(Protocol):
+    """Port for emitting one analytics event per conversational turn."""
+
+    async def emit_turn(self, event: TurnEvent) -> None:
+        """Best-effort: record a single turn event. Must never raise."""
         ...

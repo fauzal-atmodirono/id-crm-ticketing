@@ -65,6 +65,14 @@ class Settings(BaseSettings):
     bigquery_dataset: str = "demo_proton"
     bigquery_conversations_table: str = "conversations"
 
+    # Bot-metrics Phase 2 (per-turn MetricsPort -> BigQuery streaming)
+    metrics_provider: Literal["noop", "bigquery"] = "noop"
+    bigquery_turn_events_table: str = "turn_events"
+
+    # Bot-metrics Phase 2 (in-app Zendesk -> BQ sync scheduler / the "trigger")
+    metrics_sync_enabled: bool = False
+    metrics_sync_interval_hours: int = 6
+
     # Chatwoot settings
     chatwoot_api_url: str = "http://localhost:3000"
     chatwoot_api_token: str = ""

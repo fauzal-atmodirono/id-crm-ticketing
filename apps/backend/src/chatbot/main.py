@@ -5,6 +5,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from chatbot.features.chat.adapters.bigquery_metrics import build_metrics_port
 from chatbot.features.chat.adapters.chatwoot_zammad import ChatwootZammadAdapter
 from chatbot.features.chat.adapters.gcp_voice import GeminiTextToSpeechAdapter
 from chatbot.features.chat.adapters.handoff_store import build_handoff_store
@@ -25,6 +26,7 @@ from chatbot.features.chat.ports import (
 )
 from chatbot.features.chat.router import build_chat_router
 from chatbot.features.chat.service import OrchestratorService
+from chatbot.features.metrics.scheduler import start_metrics_scheduler
 from chatbot.platform.config import get_settings
 from chatbot.platform.logger import configure_logging
 from chatbot.platform.server import create_app
@@ -112,6 +114,9 @@ def bootstrap_application() -> FastAPI:
     if settings.twilio_account_sid and settings.twilio_auth_token:
         twilio_adapter = TwilioChannelAdapter(settings)
 
+    # --- Metrics port (per-turn BigQuery streaming) ---
+    metrics_port = build_metrics_port(settings)
+
     orchestrator = OrchestratorService(
         settings=settings,
         chat_port=chat_port,
@@ -121,6 +126,7 @@ def bootstrap_application() -> FastAPI:
         human_agent_bridge=human_agent_bridge,
         handoff_bridge=handoff_bridge,
         conversation_log_port=conversation_log_port,
+        metrics_port=metrics_port,
     )
 
     app.include_router(
@@ -140,6 +146,13 @@ def bootstrap_application() -> FastAPI:
             "voice_provider": settings.voice_provider,
             "model": settings.gemini_model,
         }
+
+    metrics_scheduler = start_metrics_scheduler(settings)
+    if metrics_scheduler is not None:
+
+        @app.on_event("shutdown")
+        def _stop_metrics_scheduler() -> None:
+            metrics_scheduler.shutdown(wait=False)
 
     return app
 

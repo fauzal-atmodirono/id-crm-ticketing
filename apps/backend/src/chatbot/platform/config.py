@@ -89,8 +89,9 @@ class Settings(BaseSettings):
     gemini_tts_model: str = "gemini-2.5-flash-tts"
     gemini_tts_voice: str = "Kore"
 
-    # Phone (real-time Gemini Live) settings
-    gemini_live_model: str = "gemini-live-2.5-flash-preview"
+    # Phone (real-time Gemini Live) settings. Vertex publisher model id — the
+    # AI-Studio name "gemini-live-2.5-flash-preview" is rejected by Vertex (1008).
+    gemini_live_model: str = "gemini-live-2.5-flash-native-audio"
     gemini_live_voice: str = "Kore"
     # Browser-softphone access tokens (Twilio Voice grant)
     twilio_api_key_sid: str = ""

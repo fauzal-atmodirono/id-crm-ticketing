@@ -42,9 +42,15 @@ class _GeminiLiveSession:
         )
 
     async def events(self) -> AsyncIterator[LiveEvent]:
-        async for msg in self._session.receive():
-            for event in normalize_server_message(msg):
-                yield event
+        # The SDK's receive() yields one complete turn then returns; re-enter it
+        # for each subsequent turn so a multi-turn call keeps streaming instead of
+        # ending after the first AI reply. The loop is torn down by the caller
+        # (phone_stream cancels this task on hangup) or by receive() raising when
+        # the live connection closes.
+        while True:
+            async for msg in self._session.receive():
+                for event in normalize_server_message(msg):
+                    yield event
 
 
 @asynccontextmanager

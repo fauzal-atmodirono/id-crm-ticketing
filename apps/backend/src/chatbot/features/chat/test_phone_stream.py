@@ -76,3 +76,4 @@ def test_stream_opens_live_with_all_three_tools_and_handoff_instruction() -> Non
     assert {"kb_search", "request_human_handoff", "submit_csat"} <= set(names)
     instruction = str(captured["instruction"]).lower()
     assert "human" in instruction and "rate" in instruction
+    assert "do not ask for a rating if you handed off" in instruction

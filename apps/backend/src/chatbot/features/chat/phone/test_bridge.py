@@ -209,6 +209,7 @@ async def test_pump_request_handoff_sets_state_and_responds() -> None:
     await b.pump()
     assert b.handoff == {"reason": "billing", "summary": "double charge"}
     assert live.tool_responses and live.tool_responses[0][0] == "h1"
+    assert live.tool_responses[0][2] == {"status": "ticket_created"}
 
 
 async def test_pump_submit_csat_sets_score() -> None:
@@ -217,6 +218,7 @@ async def test_pump_submit_csat_sets_score() -> None:
     await b.pump()
     assert b.csat_score == 5
     assert live.tool_responses and live.tool_responses[0][1] == "submit_csat"
+    assert live.tool_responses[0][2] == {"status": "recorded"}
 
 
 async def test_pump_submit_csat_ignores_out_of_range() -> None:
@@ -225,6 +227,7 @@ async def test_pump_submit_csat_ignores_out_of_range() -> None:
     await b.pump()
     assert b.csat_score is None
     assert live.tool_responses  # still answered so the Live turn isn't stalled
+    assert live.tool_responses[0][2] == {"status": "ignored"}
 
 
 async def test_finalize_handoff_opens_ticket_with_note_and_no_csat() -> None:
@@ -240,6 +243,7 @@ async def test_finalize_handoff_opens_ticket_with_note_and_no_csat() -> None:
     assert any(c[2] == "open" for c in log.comments)
     assert log.external_ids == [("T-1", "phone-C1")]
     assert log.tags == []  # NO csat tag on a handoff
+    assert any("I want a human" in c[1] for c in log.comments)
 
 
 async def test_finalize_resolved_with_score_solves_and_records_csat() -> None:

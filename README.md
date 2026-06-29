@@ -233,7 +233,11 @@ Key rules:
 
 ## Metrics / Dashboard
 
-A Zendesk → BigQuery sync populates a Looker Studio dashboard with volume, resolution, and CSAT metrics (Phase 1).
+Two-phase instrumentation populates Looker Studio dashboards:
+
+### Phase 1 — Zendesk conversation metrics
+
+A Zendesk → BigQuery sync populates a dashboard with volume, resolution, and CSAT metrics.
 
 **Run the sync** (from the backend directory):
 
@@ -250,7 +254,22 @@ cd apps/backend && .venv/bin/python scripts/sync_zendesk_metrics.py
 | `v_resolution_split` | View | Bot-resolved vs agent-transferred count by channel |
 | `v_csat` | View | Average CSAT score by channel |
 
-See [docs/dashboards/looker-bot-metrics-phase1.md](docs/dashboards/looker-bot-metrics-phase1.md) for the full Looker Studio setup guide (data source connection, tile definitions, and sharing steps).
+See [docs/dashboards/looker-bot-metrics-phase1.md](docs/dashboards/looker-bot-metrics-phase1.md) for the full Looker Studio setup guide.
+
+### Phase 2 — Per-turn metrics (latency, fallback, bounce)
+
+Live per-turn events stream into a `turn_events` table when the backend runs with 
+`METRICS_PROVIDER=bigquery`. Three views aggregate the data by channel:
+`v_speed_of_response` (response latency), `v_fallback_rate`, and `v_bounce_rate`.
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `METRICS_PROVIDER` | `noop` | `bigquery` to stream per-turn events; `noop` to disable |
+| `BIGQUERY_TURN_EVENTS_TABLE` | `turn_events` | Table name in `lv-playground-genai.demo_proton` |
+| `METRICS_SYNC_ENABLED` | `false` | `true` to auto-refresh Phase-1 tables on a schedule |
+| `METRICS_SYNC_INTERVAL_HOURS` | `6` | Refresh interval (only used if `METRICS_SYNC_ENABLED=true`) |
+
+See [docs/dashboards/looker-bot-metrics-phase2.md](docs/dashboards/looker-bot-metrics-phase2.md) for the Looker Studio setup guide.
 
 ---
 

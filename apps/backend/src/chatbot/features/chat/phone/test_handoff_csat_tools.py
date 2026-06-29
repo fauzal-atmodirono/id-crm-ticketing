@@ -1,5 +1,3 @@
-from typing import Any
-
 import pytest
 
 from chatbot.features.chat.phone.handoff_csat_tools import (
@@ -30,5 +28,5 @@ def test_tools_declare_expected_function_names() -> None:
         ({"score": None}, None),
     ],
 )
-def test_parse_csat_score(args: dict[str, Any], expected: int | None) -> None:
+def test_parse_csat_score(args: dict[str, object], expected: int | None) -> None:
     assert parse_csat_score(args) == expected

@@ -29,9 +29,22 @@ from chatbot.features.chat.service import OrchestratorService
 from chatbot.features.metrics.qa_adapter import build_qa_label_port
 from chatbot.features.metrics.qa_router import build_qa_router
 from chatbot.features.metrics.scheduler import start_metrics_scheduler
-from chatbot.platform.config import get_settings
+from chatbot.platform.config import Settings, get_settings
 from chatbot.platform.logger import configure_logging
 from chatbot.platform.server import create_app
+
+
+def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
+    """Wire QA-labelling router and metrics-scheduler shutdown into *app*."""
+    qa_port = build_qa_label_port(settings)
+    app.include_router(build_qa_router(qa_port, settings))
+
+    metrics_scheduler = start_metrics_scheduler(settings)
+    if metrics_scheduler is not None:
+
+        @app.on_event("shutdown")
+        def _stop_metrics_scheduler() -> None:
+            metrics_scheduler.shutdown(wait=False)
 
 
 def bootstrap_application() -> FastAPI:
@@ -140,8 +153,7 @@ def bootstrap_application() -> FastAPI:
         )
     )
 
-    qa_port = build_qa_label_port(settings)
-    app.include_router(build_qa_router(qa_port, settings))
+    _wire_metrics_features(app, settings)
 
     @app.get("/")
     def health_check() -> dict[str, str]:
@@ -151,13 +163,6 @@ def bootstrap_application() -> FastAPI:
             "voice_provider": settings.voice_provider,
             "model": settings.gemini_model,
         }
-
-    metrics_scheduler = start_metrics_scheduler(settings)
-    if metrics_scheduler is not None:
-
-        @app.on_event("shutdown")
-        def _stop_metrics_scheduler() -> None:
-            metrics_scheduler.shutdown(wait=False)
 
     return app
 

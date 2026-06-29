@@ -204,12 +204,34 @@ class OrchestratorService:
     async def _run_support_agent(
         self, session_id: str, new_message: types.Content
     ) -> tuple[str, list[str], bool]:
+        """Run the support agent, retrying once on a transient run failure.
+
+        The ADK run can raise an intermittent connection error (e.g. the Gemini
+        endpoint closing the socket: ``RemoteDisconnected``) that would otherwise
+        send the customer the generic error fallback. Retry the whole run once
+        before letting the exception propagate to the caller's fallback handler.
+        Returns ``(reply_text, final_part_kinds, final_event_seen)``.
+        """
+        try:
+            return await self._invoke_support_agent(session_id, new_message)
+        except Exception as e:
+            _log.warning(
+                "adk_execution_transient_error_retrying",
+                session_id=session_id,
+                error=str(e),
+                attempt=1,
+            )
+            return await self._invoke_support_agent(session_id, new_message)
+
+    async def _invoke_support_agent(
+        self, session_id: str, new_message: types.Content
+    ) -> tuple[str, list[str], bool]:
         """Run the support agent once and extract reply text from ALL final parts.
 
-        Returns ``(reply_text, final_part_kinds, final_event_seen)``. Gemini can
-        place the reply after a function-call part (so reading ``parts[0]`` alone
-        drops it) or, intermittently, return a final response with no text part at
-        all — callers retry/fall back on an empty ``reply_text``.
+        Gemini can place the reply after a function-call part (so reading
+        ``parts[0]`` alone drops it) or, intermittently, return a final response
+        with no text part at all — callers retry/fall back on an empty
+        ``reply_text``.
         """
         runner = self._runner_factory(self._support_agent)
         reply_text = ""
@@ -445,6 +467,42 @@ class OrchestratorService:
         if session.state.get("conversation_ticket_id") != ticket_id:
             session.state["conversation_ticket_id"] = ticket_id
             await self._conversation_log_port.set_ticket_external_id(ticket_id, session_id)
+            await self._persist_session_state(session)
+
+    async def get_email_dedup(self, session_id: str) -> tuple[str | None, str | None]:
+        """Return ``(last_inbound_text, last_reply_text)`` recorded for this email
+        session, used by the router to skip re-fired triggers and AI-reply
+        feedback loops. ``(None, None)`` when there is no prior exchange."""
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        if session is None:
+            return (None, None)
+        return (
+            session.state.get("last_email_inbound"),
+            session.state.get("last_email_reply"),
+        )
+
+    async def remember_email_exchange(
+        self, session_id: str, *, inbound: str | None = None, reply: str | None = None
+    ) -> None:
+        """Persist the last customer message and/or AI reply for an email session
+        so the next trigger can dedup against them. Only writes (and persists)
+        when a value actually changes.
+
+        Creates the session if absent: the inbound claim happens on the FIRST
+        email of a ticket, before handle_turn has created the session, and the
+        claim must be durable so concurrent re-fired triggers see it and skip.
+        """
+        session, _ = await self._get_or_create_session(session_id)
+        changed = False
+        if inbound is not None and session.state.get("last_email_inbound") != inbound:
+            session.state["last_email_inbound"] = inbound
+            changed = True
+        if reply is not None and session.state.get("last_email_reply") != reply:
+            session.state["last_email_reply"] = reply
+            changed = True
+        if changed:
             await self._persist_session_state(session)
 
     @staticmethod

@@ -634,8 +634,37 @@ class ChatRouter:
             _log.info("zendesk_email_webhook_no_reply_skipped", ticket_id=ticket_id)
             return {"status": "ignored"}
 
-        _log.info("zendesk_email_received", session_id=session_id)
+        # Dedup guard: a Zendesk trigger can fire more than once for one comment
+        # (create+update, retries), and if the requester happens to BE a Zendesk
+        # agent, the AI's own public reply is re-delivered as customer input. In
+        # both cases the fetched text equals either the last inbound we processed
+        # or the last reply we posted — skip it so the AI never answers itself or
+        # double-answers a message.
+        last_inbound, last_reply = await self.orchestrator.get_email_dedup(session_id)
+        if text in (last_inbound, last_reply):
+            _log.info("zendesk_email_webhook_duplicate_skipped", ticket_id=ticket_id)
+            return {"status": "duplicate"}
 
+        # Claim this inbound BEFORE the (slow, multi-second) AI turn. Zendesk can
+        # re-fire the trigger several times for one email, all arriving while the
+        # first turn is still running; writing the marker now means those re-fires
+        # hit the dedup check above and skip instead of racing through.
+        await self.orchestrator.remember_email_exchange(session_id, inbound=text)
+
+        _log.info("zendesk_email_received", session_id=session_id)
+        return await self._handle_email_turn(ticket_id, session_id, state, text, requester_name)
+
+    async def _handle_email_turn(
+        self,
+        ticket_id: str,
+        session_id: str,
+        state: str,
+        text: str,
+        requester_name: str | None,
+    ) -> dict[str, str]:
+        """Run the AI turn for a (deduped, non-paused) inbound email and post the
+        reply, routing by conversation state. The inbound is already recorded by
+        the caller; here we record the reply so it is never fed back as input."""
         if state == "awaiting_survey":
             await self._handle_email_survey(ticket_id, session_id, text)
             return {"status": "ok"}
@@ -650,8 +679,12 @@ class ChatRouter:
                 session_id, summary, channel="email", customer_name=requester_name
             )
             await port.post_public_reply(ticket_id, _EMAIL_HANDOFF_MESSAGE)
+            await self.orchestrator.remember_email_exchange(
+                session_id, reply=_EMAIL_HANDOFF_MESSAGE
+            )
         else:
             await self._post_email_active_reply(ticket_id, session_id, result.reply or "")
+            await self.orchestrator.remember_email_exchange(session_id, reply=result.reply or "")
         return {"status": "ok"}
 
     async def _post_email_active_reply(self, ticket_id: str, session_id: str, reply: str) -> None:

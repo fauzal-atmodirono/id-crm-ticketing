@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -533,3 +534,121 @@ async def test_product_carousel_is_one_shot() -> None:
 
     r2 = await svc.handle_turn(session_id="carousel-1", text="thanks")
     assert not r2.products  # cleared — does not stick to later replies
+
+
+_TRANSIENT_ERROR = ConnectionError(
+    "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+)
+
+
+class _RaisingRunner:
+    """Fake ADK runner whose run_async raises a transient connection error.
+
+    Mirrors the real-world ``RemoteDisconnected`` we observed from the Gemini
+    call (live email smoke test, ticket #52).
+    """
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    async def run_async(self, **_: Any) -> AsyncIterator[_FakeEvent]:
+        raise self._error
+        # Unreachable, but its presence makes run_async an async generator (matching
+        # the real Runner.run_async contract the caller iterates with `async for`).
+        yield _FakeEvent("")  # type: ignore[unreachable]  # pragma: no cover
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_retries_transient_error_then_recovers() -> None:
+    """A transient connection error on the first agent run is retried once; the
+    successful second attempt is returned instead of the error fallback."""
+    settings = get_settings()
+    calls = iter(range(10))
+
+    def fake_runner_factory(_agent: Any) -> Any:
+        if next(calls) == 0:
+            return _RaisingRunner(_TRANSIENT_ERROR)
+        return _FakeRunner(
+            reply="Recovered on the second attempt.",
+            session_service=svc._adk_sessions,
+            session_id="transient-ok",
+        )
+
+    svc = OrchestratorService(
+        settings=settings,
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=InMemoryTicketingAdapter(),
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=MockVoiceAdapter(),
+        runner_factory=fake_runner_factory,
+    )
+
+    result = await svc.handle_turn(session_id="transient-ok", text="What is the warranty?")
+
+    assert result.reply == "Recovered on the second attempt."
+    assert result.handoff is None
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_transient_error_falls_back_after_retry() -> None:
+    """When both attempts raise, the user still gets the graceful fallback, and
+    the agent was retried exactly once (two runner constructions)."""
+    settings = get_settings()
+    constructions = 0
+
+    def fake_runner_factory(_agent: Any) -> Any:
+        nonlocal constructions
+        constructions += 1
+        return _RaisingRunner(_TRANSIENT_ERROR)
+
+    svc = OrchestratorService(
+        settings=settings,
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=InMemoryTicketingAdapter(),
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=MockVoiceAdapter(),
+        runner_factory=fake_runner_factory,
+    )
+
+    result = await svc.handle_turn(session_id="transient-fail", text="hello")
+
+    assert result.reply == "Maaf, terjadi kendala teknis. Mohon coba beberapa saat lagi."
+    assert constructions == 2  # initial attempt + exactly one retry
+
+
+@pytest.mark.asyncio
+async def test_email_dedup_persists_even_for_a_brand_new_session() -> None:
+    """The inbound claim must be durable on the FIRST email of a ticket — before
+    handle_turn has created the session. remember_email_exchange therefore has to
+    create the session if absent, otherwise concurrent re-fired triggers all read
+    empty dedup state and double-reply (observed live on ticket #54). Uses a
+    stateful session double mirroring the persisted (Firestore) store."""
+    orch = OrchestratorService.__new__(OrchestratorService)
+    orch._history = {}
+
+    store: dict[str, SimpleNamespace] = {}
+
+    async def _get_session(*, session_id: str, **_: object) -> object:
+        return store.get(session_id)
+
+    async def _create_session(*, session_id: str, state: dict[str, Any], **_: object) -> object:
+        store[session_id] = SimpleNamespace(state=dict(state))
+        return store[session_id]
+
+    orch._adk_sessions = SimpleNamespace(  # type: ignore[assignment]
+        get_session=AsyncMock(side_effect=_get_session),
+        create_session=AsyncMock(side_effect=_create_session),
+    )
+    orch._persist_session_state = AsyncMock()  # type: ignore[method-assign]
+
+    # No session exists yet for this id (mirrors the first inbound email).
+    assert await orch.get_email_dedup("email-new") == (None, None)
+
+    await orch.remember_email_exchange("email-new", inbound="How often to service the X50?")
+    assert await orch.get_email_dedup("email-new") == ("How often to service the X50?", None)
+
+    await orch.remember_email_exchange("email-new", reply="Every 10,000 km or 6 months.")
+    assert await orch.get_email_dedup("email-new") == (
+        "How often to service the X50?",
+        "Every 10,000 km or 6 months.",
+    )

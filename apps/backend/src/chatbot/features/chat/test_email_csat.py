@@ -25,6 +25,8 @@ def _orch() -> MagicMock:
     orch.begin_survey = AsyncMock()
     orch.bind_email_ticket = AsyncMock()
     orch.handle_turn = AsyncMock(return_value=SimpleNamespace(reply="ok"))
+    orch.get_email_dedup = AsyncMock(return_value=(None, None))
+    orch.remember_email_exchange = AsyncMock()
     orch._ticketing_port = MagicMock()
     orch._ticketing_port.unpause_ai_for_session = AsyncMock()
     return orch

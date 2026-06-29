@@ -24,6 +24,9 @@ def _orch() -> MagicMock:
     orch.needs_handoff = AsyncMock(return_value=False)
     orch.begin_handoff = AsyncMock()
     orch.handle_turn = AsyncMock(return_value=SimpleNamespace(reply="Here is your answer."))
+    # dedup guard: no prior exchange by default → nothing is skipped
+    orch.get_email_dedup = AsyncMock(return_value=(None, None))
+    orch.remember_email_exchange = AsyncMock()
     return orch
 
 
@@ -113,6 +116,66 @@ def test_wrong_secret_rejected() -> None:
     orch._settings.zendesk_support_webhook_secret = "expected"
     res = _client(orch).post("/webhooks/zendesk-email", json=_body())
     assert res.status_code == 401
+
+
+def test_duplicate_inbound_is_skipped() -> None:
+    """A re-fired trigger / Zendesk double-notification for the SAME customer
+    comment must not be processed twice (no duplicate AI reply)."""
+    orch = _orch()
+    orch.get_email_dedup = AsyncMock(return_value=("How do I reset my password?", None))
+    res = _client(orch).post("/webhooks/zendesk-email", json=_body())
+    assert res.status_code == 200
+    assert res.json()["status"] == "duplicate"
+    orch.handle_turn.assert_not_awaited()
+    orch._conversation_log_port.post_public_reply.assert_not_awaited()
+
+
+def test_own_reply_fed_back_is_skipped() -> None:
+    """If the AI's own public reply is fed back as customer input (requester ==
+    Zendesk agent identity collision), it must be ignored — no reply loop."""
+    orch = _orch()
+    orch.get_email_dedup = AsyncMock(return_value=(None, "Here is your answer."))
+    res = _client(orch).post("/webhooks/zendesk-email", json=_body(text="Here is your answer."))
+    assert res.status_code == 200
+    assert res.json()["status"] == "duplicate"
+    orch.handle_turn.assert_not_awaited()
+
+
+def test_new_followup_is_processed_and_remembered() -> None:
+    """A genuinely new follow-up (different from the last inbound and the last
+    reply) is processed, and both the inbound and the reply are recorded for
+    future dedup."""
+    orch = _orch()
+    orch.get_email_dedup = AsyncMock(return_value=("an older question", "an older reply"))
+    res = _client(orch).post("/webhooks/zendesk-email", json=_body(text="A brand new question"))
+    assert res.status_code == 200
+    orch.handle_turn.assert_awaited_once_with(session_id="email-55", text="A brand new question")
+    orch.remember_email_exchange.assert_any_await("email-55", inbound="A brand new question")
+    orch.remember_email_exchange.assert_any_await("email-55", reply="Here is your answer.")
+
+
+def test_inbound_is_claimed_before_the_turn_runs() -> None:
+    """The inbound must be recorded BEFORE the (slow) AI turn so concurrent
+    re-fired triggers — which arrive while the first turn is still running — see
+    the claim and dedup, instead of all racing through and double-replying."""
+    orch = _orch()
+    order: list[str] = []
+
+    async def _remember(*_a: object, **kwargs: object) -> None:
+        if "inbound" in kwargs:
+            order.append("remember_inbound")
+
+    async def _turn(*_a: object, **_k: object) -> SimpleNamespace:
+        order.append("turn")
+        return SimpleNamespace(reply="Here is your answer.")
+
+    orch.remember_email_exchange = AsyncMock(side_effect=_remember)
+    orch.handle_turn = AsyncMock(side_effect=_turn)
+
+    res = _client(orch).post("/webhooks/zendesk-email", json=_body())
+    assert res.status_code == 200
+    assert order[0] == "remember_inbound", f"inbound claimed too late: {order}"
+    assert "turn" in order
 
 
 def test_active_fetches_comment_when_text_absent() -> None:

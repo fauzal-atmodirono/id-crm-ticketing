@@ -59,7 +59,7 @@ def main() -> int:
             "http_method": "POST",
             "request_format": "json",
             "status": "active",
-            "subscriptions": ["conditional_ticket_event"],
+            "subscriptions": ["conditional_ticket_events"],
             "authentication": {
                 "type": "api_key",
                 "data": {"name": "X-Proton-Webhook-Secret", "value": secret},

@@ -70,6 +70,7 @@ def load_conversations(settings: Settings, rows: list[ConversationRow]) -> None:
             "status": r.status,
             "resolved_by": r.resolved_by,
             "csat_score": r.csat_score,
+            "nps_score": r.nps_score,
             "synced_at": now,
         }
         for r in rows

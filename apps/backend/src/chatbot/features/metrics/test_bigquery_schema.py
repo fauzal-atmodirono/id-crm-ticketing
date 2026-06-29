@@ -11,13 +11,14 @@ def test_schema_has_expected_fields() -> None:
         "status",
         "resolved_by",
         "csat_score",
+        "nps_score",
         "synced_at",
     }
 
 
 def test_view_ddls_keys_and_targets() -> None:
     ddls = view_ddls("proj", "ds", "conversations")
-    assert set(ddls) == {"v_volume_by_month_channel", "v_resolution_split", "v_csat"}
+    assert set(ddls) == {"v_volume_by_month_channel", "v_resolution_split", "v_csat", "v_nps"}
     assert "`proj.ds.v_volume_by_month_channel`" in ddls["v_volume_by_month_channel"]
     assert "`proj.ds.conversations`" in ddls["v_volume_by_month_channel"]
 
@@ -29,3 +30,21 @@ def test_view_ddls_contain_expected_aggregates() -> None:
     assert "transfer_to_agent" in ddls["v_resolution_split"]
     assert "satisfied_rate" in ddls["v_csat"]
     assert "csat_score >= 4" in ddls["v_csat"].replace(">=4", ">= 4")
+
+
+def test_schema_includes_nps_score() -> None:
+    by_name = {f.name: f for f in CONVERSATIONS_SCHEMA}
+    assert "nps_score" in by_name
+    assert by_name["nps_score"].field_type == "INT64"
+
+
+def test_v_nps_view_present_with_buckets_and_formula() -> None:
+    ddls = view_ddls("proj", "ds", "conversations")
+    assert "v_nps" in ddls
+    sql = ddls["v_nps"]
+    assert "`proj.ds.v_nps`" in sql
+    assert "`proj.ds.conversations`" in sql
+    assert "COUNTIF(nps_score >= 9)" in sql  # promoters
+    assert "COUNTIF(nps_score BETWEEN 7 AND 8)" in sql  # passives
+    assert "nps_score <= 6" in sql  # detractors
+    assert "SAFE_DIVIDE" in sql and "* 100 AS nps" in sql

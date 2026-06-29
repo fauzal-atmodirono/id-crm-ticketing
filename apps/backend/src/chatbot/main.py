@@ -26,6 +26,8 @@ from chatbot.features.chat.ports import (
 )
 from chatbot.features.chat.router import build_chat_router
 from chatbot.features.chat.service import OrchestratorService
+from chatbot.features.metrics.qa_adapter import build_qa_label_port
+from chatbot.features.metrics.qa_router import build_qa_router
 from chatbot.features.metrics.scheduler import start_metrics_scheduler
 from chatbot.platform.config import get_settings
 from chatbot.platform.logger import configure_logging
@@ -137,6 +139,9 @@ def bootstrap_application() -> FastAPI:
             twilio_adapter=twilio_adapter,
         )
     )
+
+    qa_port = build_qa_label_port(settings)
+    app.include_router(build_qa_router(qa_port, settings))
 
     @app.get("/")
     def health_check() -> dict[str, str]:

@@ -28,7 +28,7 @@ class ConversationRow:
     csat_score: int | None
 
 
-def _channel(external_id: str | None) -> str:
+def channel_from_external_id(external_id: str | None) -> str:
     if not external_id:
         return "Other"
     prefix = external_id.split("-", 1)[0]
@@ -61,7 +61,7 @@ def map_ticket_to_row(ticket: dict[str, object]) -> ConversationRow | None:
     updated = ticket.get("updated_at")
     return ConversationRow(
         conversation_id=str(ticket.get("id")),
-        channel=_channel(external_id_str),
+        channel=channel_from_external_id(external_id_str),
         created_at=str(created) if created else None,
         updated_at=str(updated) if updated else None,
         status=status,

@@ -52,8 +52,8 @@ def _settings() -> Settings:
 
 async def test_noop_emit_turn_is_a_noop() -> None:
     ev = build_turn_event("sim-1", datetime.now(UTC), 100, 1, False, False)
-    # Must not raise and must return None.
-    assert await NoOpMetrics().emit_turn(ev) is None
+    # Must not raise (returns None by type).
+    await NoOpMetrics().emit_turn(ev)
 
 
 def test_init_ensures_dataset_table_and_views() -> None:
@@ -88,8 +88,8 @@ async def test_emit_turn_swallows_insert_errors() -> None:
     fake.insert_error = RuntimeError("BQ down")
     adapter = BigQueryMetricsAdapter(_settings(), client=fake)
     ev = build_turn_event("sim-1", datetime.now(UTC), 100, 1, False, False)
-    # Must not raise.
-    assert await adapter.emit_turn(ev) is None
+    # Must not raise (returns None by type).
+    await adapter.emit_turn(ev)
 
 
 def test_build_metrics_port_selects_noop_by_default() -> None:

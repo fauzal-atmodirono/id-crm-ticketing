@@ -5,6 +5,7 @@ import json
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
@@ -12,6 +13,7 @@ from google.adk.runners import Runner
 from google.adk.sessions import BaseSessionService, InMemorySessionService, Session
 from google.genai import Client, types
 
+from chatbot.features.chat.adapters.bigquery_metrics import NoOpMetrics
 from chatbot.features.chat.adapters.firestore_session_service import FirestoreSessionService
 from chatbot.features.chat.adapters.noop_conversation_log import NoOpConversationLog
 from chatbot.features.chat.agents import build_ai_agent, build_summarizer_agent
@@ -30,9 +32,11 @@ from chatbot.features.chat.ports import (
     ConversationLogPort,
     HumanAgentBridgePort,
     KnowledgePort,
+    MetricsPort,
     TextToSpeechPort,
     TicketingPort,
 )
+from chatbot.features.metrics.events import build_turn_event
 
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
@@ -82,6 +86,14 @@ _EMPTY_REPLY_FALLBACK = (
     "(Sorry, I couldn't process that — could you please repeat?)"
 )
 
+# Shown when the ADK execution loop raises (Gemini/transport error). Kept as a
+# module constant so the metrics layer can classify the turn as a fallback.
+_TECH_ERROR_FALLBACK = "Maaf, terjadi kendala teknis. Mohon coba beberapa saat lagi."
+
+# A turn counts as a fallback when the bot produced one of these canned replies
+# (no real answer) rather than a genuine response.
+_FALLBACK_REPLIES = frozenset({_EMPTY_REPLY_FALLBACK, _TECH_ERROR_FALLBACK})
+
 
 class OrchestratorService:
     """Core orchestrator driving conversational turns for both Chatbot and Voicebot."""
@@ -97,6 +109,7 @@ class OrchestratorService:
         handoff_bridge: HandoffBridge | None = None,
         conversation_log_port: ConversationLogPort | None = None,
         runner_factory: Callable[[Any], Any] | None = None,
+        metrics_port: MetricsPort | None = None,
     ) -> None:
         self._settings = settings
         self._chat_port = chat_port
@@ -108,6 +121,7 @@ class OrchestratorService:
         self._conversation_log_port: ConversationLogPort = (
             conversation_log_port or NoOpConversationLog()
         )
+        self._metrics: MetricsPort = metrics_port or NoOpMetrics()
 
         # Initialize ADK agents
         self._support_agent = build_ai_agent(settings, ticketing_port, knowledge_port)
@@ -133,6 +147,13 @@ class OrchestratorService:
 
         # Shared conversation history dictionary (session_id -> list of Messages)
         self._history: dict[str, list[Message]] = {}
+
+        # Per-session user-turn counter — incremented each time handle_turn appends a
+        # user message. Maintained separately from self._history because
+        # InMemorySessionService.get_session uses deepcopy, which means
+        # _sync_history_from_state resets self._history on every turn; this counter
+        # accumulates reliably for the lifetime of the service instance.
+        self._user_turn_counts: dict[str, int] = {}
 
     def _default_runner_factory(self, agent: Any) -> Runner:
         return Runner(
@@ -263,9 +284,33 @@ class OrchestratorService:
                 if stored is not None:
                     stored.state.pop(key, None)
 
+    async def _emit_turn_metrics(
+        self,
+        session_id: str,
+        t0: float,
+        *,
+        bot_reply: str | None,
+        handed_off: bool,
+    ) -> None:
+        """Best-effort: emit one turn event. Never raises into the turn."""
+        try:
+            turn_count = self._user_turn_counts.get(session_id, 1)
+            event = build_turn_event(
+                session_id=session_id,
+                occurred_at=datetime.now(UTC),
+                latency_ms=int((perf_counter() - t0) * 1000),
+                turn_count=turn_count,
+                is_fallback=bot_reply in _FALLBACK_REPLIES,
+                handed_off=handed_off,
+            )
+            await self._metrics.emit_turn(event)
+        except Exception as e:  # instrumentation must never break the turn
+            _log.error("emit_turn_metrics_failed", session_id=session_id, error=str(e))
+
     async def handle_turn(self, session_id: str, text: str) -> TurnResult:
         """Process a single text-based chatbot turn."""
         _log.info("processing_chatbot_turn", session_id=session_id, text_length=len(text))
+        t0 = perf_counter()
 
         # 0. If the session is already handed off to a human agent and we have
         #    a live bridge, relay this turn straight to Sunshine Conversations
@@ -310,6 +355,7 @@ class OrchestratorService:
 
         # 2. Append user message to history
         await self._append_history_message(session_id, session, state_history, "user", text)
+        self._user_turn_counts[session_id] = self._user_turn_counts.get(session_id, 0) + 1
 
         # 4. Formulate the GenAI content structure
         new_message = types.Content(
@@ -343,7 +389,10 @@ class OrchestratorService:
                     reply_text = _EMPTY_REPLY_FALLBACK
         except Exception as e:
             _log.exception("adk_execution_loop_failed", session_id=session_id, error=str(e))
-            return TurnResult(reply="Maaf, terjadi kendala teknis. Mohon coba beberapa saat lagi.")
+            await self._emit_turn_metrics(
+                session_id, t0, bot_reply=_TECH_ERROR_FALLBACK, handed_off=False
+            )
+            return TurnResult(reply=_TECH_ERROR_FALLBACK)
 
         final_session = await self._adk_sessions.get_session(
             app_name="chatbot", user_id=session_id, session_id=session_id
@@ -376,6 +425,12 @@ class OrchestratorService:
             # it doesn't ride along on every subsequent reply.
             await self._clear_session_key(session_id, "product_carousel")
 
+        await self._emit_turn_metrics(
+            session_id,
+            t0,
+            bot_reply=reply_text,
+            handed_off=handoff_payload is not None,
+        )
         return TurnResult(
             reply=reply_text,
             language=session_state.get("language", "unknown"),

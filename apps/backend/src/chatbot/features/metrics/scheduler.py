@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 import structlog
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from chatbot.features.metrics.sync import ensure_views, run_sync
 
@@ -13,6 +15,33 @@ if TYPE_CHECKING:
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
+
+
+def start_metrics_scheduler(
+    settings: Settings,
+    *,
+    scheduler: Any | None = None,
+    job: Callable[[], object] | None = None,
+) -> Any | None:
+    """Start the in-app Zendesk->BQ sync scheduler when enabled; else return None."""
+    if not settings.metrics_sync_enabled:
+        return None
+    sched = scheduler or BackgroundScheduler()
+    run = job or (lambda: run_sync_job(settings))
+    sched.add_job(
+        run,
+        trigger="interval",
+        hours=settings.metrics_sync_interval_hours,
+        id="zendesk_metrics_sync",
+        next_run_time=datetime.now(UTC),  # first run shortly after startup
+        replace_existing=True,
+    )
+    sched.start()
+    _log.info(
+        "metrics_sync_scheduler_started",
+        interval_hours=settings.metrics_sync_interval_hours,
+    )
+    return sched
 
 
 def run_sync_job(

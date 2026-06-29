@@ -26,6 +26,7 @@ from chatbot.features.chat.ports import (
 )
 from chatbot.features.chat.router import build_chat_router
 from chatbot.features.chat.service import OrchestratorService
+from chatbot.features.metrics.scheduler import start_metrics_scheduler
 from chatbot.platform.config import get_settings
 from chatbot.platform.logger import configure_logging
 from chatbot.platform.server import create_app
@@ -145,6 +146,13 @@ def bootstrap_application() -> FastAPI:
             "voice_provider": settings.voice_provider,
             "model": settings.gemini_model,
         }
+
+    metrics_scheduler = start_metrics_scheduler(settings)
+    if metrics_scheduler is not None:
+
+        @app.on_event("shutdown")
+        def _stop_metrics_scheduler() -> None:
+            metrics_scheduler.shutdown(wait=False)
 
     return app
 

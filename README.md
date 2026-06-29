@@ -247,8 +247,8 @@ cd apps/backend && .venv/bin/python scripts/sync_zendesk_metrics.py
 |--------|------|-------------|
 | `conversations` | Table | One row per Zendesk ticket — channel, `resolved_by` (bot/agent), CSAT score |
 | `v_volume_by_month_channel` | View | Monthly ticket volume split by channel |
-| `v_resolution_split` | View | Bot-resolved vs agent-transferred count by month |
-| `v_csat` | View | Average CSAT score by month and channel |
+| `v_resolution_split` | View | Bot-resolved vs agent-transferred count by channel |
+| `v_csat` | View | Average CSAT score by channel |
 
 See [docs/dashboards/looker-bot-metrics-phase1.md](docs/dashboards/looker-bot-metrics-phase1.md) for the full Looker Studio setup guide (data source connection, tile definitions, and sharing steps).
 

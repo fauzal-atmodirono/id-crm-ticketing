@@ -21,7 +21,7 @@
 - [ ] You have **BigQuery Data Viewer** (or higher) on the `lv-playground-genai` project,
       and access to [Looker Studio](https://lookerstudio.google.com) under the same
       Google account.
-- [ ] The backend `.env` has `BIGQUERY_PROJECT=lv-playground-genai` and
+- [ ] The backend `.env` has `BIGQUERY_PROJECT_ID=lv-playground-genai` and
       `BIGQUERY_DATASET=demo_proton` set correctly.
 
 ---
@@ -35,20 +35,16 @@ cd apps/backend
 .venv/bin/python scripts/sync_zendesk_metrics.py
 ```
 
-What it does: pulls every resolved Zendesk ticket (all channels), upserts rows into
-`conversations`, then materialises the three views via `CREATE OR REPLACE VIEW`.
-Re-run this command any time you want fresher data.
+What it does: performs a **full reload (`WRITE_TRUNCATE`)** of **all** tickets (open
+and solved, all channels) into `conversations`, then materialises the three views via
+`CREATE OR REPLACE VIEW`. The sync pulls ALL history (`start_time=0`); there are no
+flags. Re-run this command any time you want fresher data.
 
 Expected terminal output (no errors):
 
 ```
-syncing zendesk tickets …
-upserted N conversations
-views created/updated: v_volume_by_month_channel, v_resolution_split, v_csat
+synced: <N> tickets -> <M> rows into lv-playground-genai.demo_proton.conversations; views refreshed
 ```
-
-> **Tip:** for a full historical backfill pass `--days 365` (or however many days back
-> your Zendesk account holds tickets). The default window is 90 days.
 
 ---
 
@@ -210,7 +206,7 @@ To reduce stale-data risk set a shorter cache TTL:
 | View | Field | Type | Meaning |
 |---|---|---|---|
 | `v_volume_by_month_channel` | `month` | Text (`YYYY-MM`) | Calendar month |
-| `v_volume_by_month_channel` | `channel` | Text | `whatsapp`, `web`, `email`, … |
+| `v_volume_by_month_channel` | `channel` | Text | `WhatsApp`, `Web`, `Email`, `Phone` |
 | `v_volume_by_month_channel` | `volume` | Integer | Conversation count |
 | `v_resolution_split` | `closed_by_bot` | Integer | Conversations auto-resolved by bot |
 | `v_resolution_split` | `transfer_to_agent` | Integer | Conversations handed off to a human |

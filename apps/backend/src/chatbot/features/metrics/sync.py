@@ -53,6 +53,9 @@ def fetch_tickets(
 def load_conversations(settings: Settings, rows: list[ConversationRow]) -> None:
     """WRITE_TRUNCATE-load the conversation rows into BigQuery (live)."""
     client = bigquery.Client(project=settings.bigquery_project_id)
+    client.create_dataset(
+        f"{settings.bigquery_project_id}.{settings.bigquery_dataset}", exists_ok=True
+    )
     table_id = (
         f"{settings.bigquery_project_id}.{settings.bigquery_dataset}."
         f"{settings.bigquery_conversations_table}"

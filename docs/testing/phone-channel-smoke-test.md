@@ -159,7 +159,58 @@
 
 ---
 
-## 5. Teardown (when done testing)
+## 5. Scenario E — Handoff: AI escalates to a human agent
+
+1. [ ] Start a call (follow Scenario A steps 1–3 to connect).
+2. [ ] Once connected, say something that triggers a handoff, for example:
+       *"I need to speak to a human"* or *"This is a complaint — I want a manager."*
+
+**Expected:**
+- [ ] The AI acknowledges the request and says a specialist will follow up, e.g.
+      *"I've flagged this for a human agent — someone will follow up with you soon."*
+- [ ] After hanging up, a Zendesk ticket exists with:
+  - [ ] **External ID** = `phone-<CallSid>`.
+  - [ ] **Status** = `open` (not solved — a human must close it).
+  - [ ] An **internal note** beginning with `[Handoff to human agent]` that includes
+        the reason the caller gave plus a brief summary of the conversation.
+  - [ ] The full USER / ASSISTANT **transcript** of the call appended to the ticket.
+  - [ ] **No** `csat_*` tag — handed-off calls are not surveyed.
+
+> If the ticket status is `solved` instead of `open`: confirm the bridge's finalize
+> path checks `self.handoff is not None` and creates the ticket as `open` on handoff.
+> If no handoff note appears: check backend logs for `tool_call: request_human_handoff`
+> and confirm the `request_human_handoff` Live tool is registered in the Gemini Live
+> session.
+
+---
+
+## 6. Scenario F — CSAT: in-call satisfaction rating on an AI-resolved call
+
+1. [ ] Start a **fresh** call (follow Scenario A steps 1–3).
+2. [ ] Ask a question the AI can fully answer (e.g. a KB question from Scenario B).
+3. [ ] Let the AI complete its answer — it will then ask you to rate the experience
+       from 1 to 5.
+4. [ ] Say a digit, e.g. *"four"* or *"4"*.
+
+**Expected:**
+- [ ] The AI confirms the rating and thanks you before the call ends.
+- [ ] After hanging up, the Zendesk ticket:
+  - [ ] **Status** = `solved`.
+  - [ ] Has a `csat_<N>` tag (e.g. `csat_4`).
+  - [ ] Has an **internal comment** `⭐ Customer satisfaction: N/5 (via phone)`.
+- [ ] Open the ticket from Scenario E (the handed-off call) and confirm it has
+      **no** `csat_*` tag — the `submit_csat` tool is suppressed when a handoff
+      was already recorded for the session.
+
+> If no CSAT tag appears after an AI-resolved call: check backend logs for
+> `tool_call: submit_csat` and confirm the `submit_csat` Live tool is registered
+> in the Gemini Live session's tool set.
+> If a handed-off ticket unexpectedly receives a CSAT tag: confirm the bridge's
+> finalize path guards on `self.handoff is None` before invoking `submit_csat`.
+
+---
+
+## 7. Teardown (when done testing)
 
 - [ ] Close any open test browser tabs to avoid stray WebSocket connections.
 - [ ] Close or suspend the tunnel to prevent unauthenticated token minting while

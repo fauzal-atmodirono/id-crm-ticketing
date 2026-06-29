@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Real-time phone channel via Twilio Media Streams and Gemini Live.** Added `POST /voice/phone/incoming` (Twilio Voice webhook that returns TwiML `<Connect><Stream>` to open a Media Stream to the backend), `WS /voice/phone/stream` (WebSocket endpoint that bridges raw µ-law audio bidirectionally between Twilio and a Gemini Live session), and `POST /voice/phone/token` (mints a Twilio Voice access token so the browser softphone can place calls without a real PSTN number or SIM). The Gemini Live session (`GEMINI_LIVE_MODEL`, `GEMINI_LIVE_VOICE`) streams µ-law audio in both directions with sub-second barge-in — the caller can interrupt the AI mid-utterance and it responds immediately. Each call is grounded through the existing `kb_search` tool (same Vertex AI Search engine as the web and WhatsApp channels). On hang-up the full call transcript is written to a Zendesk Support ticket keyed by `session_id = phone-<CallSid>` via the existing `ConversationLogPort`. The Vue frontend gains a **Phone** tab housing a browser softphone ("Call support" button, Twilio Voice JS SDK). **Handoff and CSAT for the phone channel are a follow-up and are not included in this release.**
 
+### Added — Phone channel — human handoff + CSAT (2026-06-29)
+
+- **Phone channel — human handoff + CSAT.** The phone AI can now escalate via a
+  `request_human_handoff` Live tool (creates an **open** Zendesk ticket with a handoff note
+  + transcript for a human to follow up), and collects an in-call spoken 1–5 rating on
+  AI-resolved calls via a `submit_csat` tool (recorded as the same `csat_N` tag + comment as
+  every other channel, `channel="phone"`). Handed-off calls are not surveyed.
+
 ### Added — Email channel via Zendesk-native email (2026-06-28)
 
 - **Email channel via Zendesk-native email** — inbound customer emails become Zendesk

@@ -60,7 +60,7 @@ synced: <N> tickets -> <M> rows into lv-playground-genai.demo_proton.conversatio
 
 ## 3. Create BigQuery data sources in Looker Studio
 
-You need one data source per view. Repeat these steps three times.
+You need one data source per view. Repeat these steps four times (three for Phase 1, one for Phase 3).
 
 1. [ ] Go to [Looker Studio](https://lookerstudio.google.com) → **Create** → **Report**.
 2. [ ] In the "Add data to report" panel select **BigQuery**.
@@ -74,6 +74,7 @@ You need one data source per view. Repeat these steps three times.
 | `Proton — Volume by Month/Channel` | `v_volume_by_month_channel` |
 | `Proton — Resolution Split` | `v_resolution_split` |
 | `Proton — CSAT` | `v_csat` |
+| `Proton — NPS` | `v_nps` |
 
 > Looker Studio will auto-detect field types. Verify that `month` is recognised as
 > **Text** (not Date) since the view stores it as `YYYY-MM` string. If Looker treats
@@ -164,6 +165,60 @@ You need one data source per view. Repeat these steps three times.
 
 ---
 
+### 4.4 NPS (Net Promoter Score)
+
+**Tile type:** Two Scorecards + optional breakdown by channel
+
+#### 4.4a — NPS metric scorecard
+
+1. [ ] Insert a **Scorecard** tile.
+2. [ ] Set the data source to `Proton — NPS`.
+3. [ ] Configure the scorecard:
+
+   | Field | Setting |
+   |---|---|
+   | Metric | `nps` (AVG for a per-channel aggregate, or SUM for total) |
+   | Number format | **Number** with 0 decimals |
+   | Label | **NPS (Net Promoter Score)** |
+
+> The `nps` column is calculated as `(%promoters − %detractors) × 100`, expressed
+> as an integer (e.g., +45, −10, 0).
+
+#### 4.4b — Respondents scorecard
+
+1. [ ] Insert another **Scorecard**.
+2. [ ] Data source: `Proton — NPS`.
+3. [ ] Metric: `respondents` (SUM).
+4. [ ] Label: **NPS Respondents**.
+
+#### 4.4c — Optional breakdown by channel
+
+1. [ ] Insert a **Table** or **Bar chart**.
+2. [ ] Data source: `Proton — NPS`.
+3. [ ] Dimension: `channel`; Metrics: `nps`, `respondents`, `promoters`, `passives`, `detractors`.
+4. [ ] Title: **NPS by Channel**.
+
+---
+
+## Live-enable NPS
+
+To start collecting NPS scores on the web UI:
+
+1. [ ] Submit scores via `POST /chat/nps` with JSON body `{"session_id": "...", "score": <0-10>}` 
+       for a session that has a Zendesk ticket. HTTP 422 is returned for out-of-range scores.
+2. [ ] Re-run the sync to populate the `nps_score` column and the `v_nps` view:
+
+```bash
+cd apps/backend
+.venv/bin/python scripts/sync_zendesk_metrics.py
+```
+
+The script performs a full reload (`WRITE_TRUNCATE`) of all tickets and materialises
+the views (including `v_nps`, which adds the `nps_score` column to the base table and
+calculates the NPS metrics per channel).
+
+---
+
 ## 5. Tiles NOT in Phase 1 (greyed out)
 
 The following tiles are placeholders on the XLSMART board. **Do not build them yet** —
@@ -171,7 +226,6 @@ the underlying instrumentation arrives in later phases:
 
 | Tile | Phase |
 |---|---|
-| NPS (Net Promoter Score) | Phase 3 — requires NPS survey flow |
 | Fallback Rate | Phase 2 — requires intent-classification logging |
 | Bounce Rate | Phase 2 — requires session-start / no-response logging |
 | Speed of Response | Phase 2 — requires `first_response_at` timestamp on conversations |
@@ -216,6 +270,12 @@ To reduce stale-data risk set a shorter cache TTL:
 | `v_csat` | `respondents` | Integer | Conversations with a CSAT score |
 | `v_csat` | `avg_score` | Float | Mean score (1–5) |
 | `v_csat` | `satisfied_rate` | Float [0–1] | Fraction with score ≥ 4 |
+| `v_nps` | `channel` | Text | `WhatsApp`, `Web`, `Email`, `Phone` |
+| `v_nps` | `respondents` | Integer | Conversations with an NPS score |
+| `v_nps` | `promoters` | Integer | Respondents with score 9–10 |
+| `v_nps` | `passives` | Integer | Respondents with score 7–8 |
+| `v_nps` | `detractors` | Integer | Respondents with score 0–6 |
+| `v_nps` | `nps` | Integer | Net Promoter Score (`%promoters − %detractors × 100`) |
 
 ---
 

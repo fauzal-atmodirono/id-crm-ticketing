@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Bot-metrics dashboard Phase 3 (2026-06-29)
+
+- **Bot-metrics dashboard (Phase 3).** Net Promoter Score (NPS) collection and
+  aggregation. A shared `record_nps_on_ticket` recorder posts a `📣 Net Promoter Score:
+  {score}/10 (via {channel})` comment and an `nps_<score>` tag (0–10) to Zendesk
+  tickets. The web UI submits scores via `POST /chat/nps` (`{session_id, score}`;
+  HTTP 422 for out-of-range). The Zendesk sync adds a `conversations.nps_score`
+  INT64 column and materialises a `v_nps` view with promoter/passive/detractor
+  buckets (9–10 / 7–8 / 0–6) and the NPS metric calculation (`%promoters −
+  %detractors`). See `docs/dashboards/looker-bot-metrics-phase1.md` for Looker
+  setup. **Out of scope:** WhatsApp/Email/Phone NPS prompts and a frontend survey
+  widget are deferred.
+
 ### Added — Bot-metrics dashboard Phase 2 (2026-06-29)
 
 - **Bot-metrics dashboard (Phase 2).** A new `MetricsPort` abstraction enables 

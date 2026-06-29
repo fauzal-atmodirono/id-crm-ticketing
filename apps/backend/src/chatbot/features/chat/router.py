@@ -899,10 +899,14 @@ class ChatRouter:
             "Proton knowledge base before giving facts. If you cannot resolve the caller's "
             "issue, they ask for a human, or it is a complaint or sensitive matter, call "
             "request_human_handoff with a short reason and summary, then tell the caller a "
-            "specialist will follow up. When you have fully resolved the caller's question and "
-            "the call is wrapping up, ask 'How would you rate your experience from 1 to 5?' and "
-            "then call submit_csat with the number they say. Do NOT ask for a rating if you "
-            "handed off to a human. No markdown — this is spoken aloud."
+            "specialist will follow up. After you answer, ask if there is anything else you can "
+            "help with, and keep helping across as many questions as the caller has. Do NOT ask "
+            "for a rating mid-conversation. ONLY once the caller clearly signals they are finished "
+            "(e.g. 'no, that's all', 'nothing else', 'goodbye'), ask 'How would you rate your "
+            "experience from 1 to 5?' then STOP and wait — do not thank them, wrap up, or say "
+            "anything else until the caller replies with a number. Only after they say a number, "
+            "call submit_csat with it and then give a brief thank-you. Do NOT ask for a rating if "
+            "you handed off to a human. No markdown — this is spoken aloud."
         )
         try:
             async with self._live_session_factory(

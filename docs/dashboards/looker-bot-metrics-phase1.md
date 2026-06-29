@@ -275,7 +275,7 @@ To reduce stale-data risk set a shorter cache TTL:
 | `v_nps` | `promoters` | Integer | Respondents with score 9–10 |
 | `v_nps` | `passives` | Integer | Respondents with score 7–8 |
 | `v_nps` | `detractors` | Integer | Respondents with score 0–6 |
-| `v_nps` | `nps` | Integer | Net Promoter Score (`%promoters − %detractors × 100`) |
+| `v_nps` | `nps` | Integer | Net Promoter Score (`(%promoters − %detractors) × 100`) |
 
 ---
 

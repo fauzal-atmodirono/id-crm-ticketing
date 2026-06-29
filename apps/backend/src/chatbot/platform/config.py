@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     metrics_sync_enabled: bool = False
     metrics_sync_interval_hours: int = 6
 
+    # Bot-metrics Phase 4 (manual QA accuracy/quality entry)
+    qa_provider: Literal["noop", "bigquery"] = "noop"
+    bigquery_qa_labels_table: str = "qa_labels"
+    qa_api_key: str = ""
+
     # Chatwoot settings
     chatwoot_api_url: str = "http://localhost:3000"
     chatwoot_api_token: str = ""

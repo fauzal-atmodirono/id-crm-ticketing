@@ -16,7 +16,9 @@ class _FakeLive:
         self._scripted = scripted
 
     async def send_audio(self, pcm16k: bytes) -> None: ...
-    async def send_tool_response(self, call_id: str, name: str, response: dict[str, object]) -> None: ...
+    async def send_tool_response(
+        self, call_id: str, name: str, response: dict[str, object]
+    ) -> None: ...
 
     async def events(self) -> AsyncIterator[LiveEvent]:
         for e in self._scripted:
@@ -34,7 +36,9 @@ def _orch() -> MagicMock:
 
 def test_stream_plays_live_audio_back_to_twilio() -> None:
     @asynccontextmanager
-    async def factory(_settings: Any, _system_instruction: Any, _tools: Any) -> AsyncIterator[_FakeLive]:
+    async def factory(
+        _settings: Any, _system_instruction: Any, _tools: Any
+    ) -> AsyncIterator[_FakeLive]:
         yield _FakeLive([AudioOut(b"\x00\x00" * 240)])
 
     orch = _orch()
@@ -48,3 +52,27 @@ def test_stream_plays_live_audio_back_to_twilio() -> None:
         msg = ws.receive_json()
         assert msg["event"] == "media"
         assert msg["streamSid"] == "S1"
+
+
+def test_stream_opens_live_with_all_three_tools_and_handoff_instruction() -> None:
+    captured: dict[str, Any] = {}
+
+    @asynccontextmanager
+    async def factory(
+        _settings: Any, system_instruction: Any, tools: Any
+    ) -> AsyncIterator[_FakeLive]:
+        captured["tools"] = tools
+        captured["instruction"] = system_instruction
+        yield _FakeLive([])
+
+    orch = _orch()
+    app = create_app(get_settings())
+    app.include_router(build_chat_router(orch, live_session_factory=factory))
+    client = TestClient(app)
+    with client.websocket_connect("/voice/phone/stream") as ws:
+        ws.send_json({"event": "start", "start": {"streamSid": "S1", "callSid": "C1"}})
+
+    names = [fd.name for tool in captured["tools"] for fd in (tool.function_declarations or [])]
+    assert {"kb_search", "request_human_handoff", "submit_csat"} <= set(names)
+    instruction = str(captured["instruction"]).lower()
+    assert "human" in instruction and "rate" in instruction

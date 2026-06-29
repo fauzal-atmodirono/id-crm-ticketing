@@ -30,6 +30,7 @@ from chatbot.features.chat.handoff_bridge import HandoffBridge, SurveyEvent
 from chatbot.features.chat.models import AgentMessageEvent
 from chatbot.features.chat.phone.bridge import PhoneBridge
 from chatbot.features.chat.phone.gemini_live import LiveSession, connect_live
+from chatbot.features.chat.phone.handoff_csat_tools import REQUEST_HANDOFF_TOOL, SUBMIT_CSAT_TOOL
 from chatbot.features.chat.phone.kb_tool import KB_SEARCH_TOOL
 from chatbot.features.chat.phone.token import mint_voice_token
 from chatbot.features.chat.phone.twiml import connect_stream_twiml
@@ -841,11 +842,19 @@ class ChatRouter:
         system_instruction = (
             "You are Proton's friendly phone support agent. Answer spoken questions "
             "concisely and naturally. Use the kb_search tool to ground answers in the "
-            "Proton knowledge base before giving facts. No markdown — this is spoken aloud."
+            "Proton knowledge base before giving facts. If you cannot resolve the caller's "
+            "issue, they ask for a human, or it is a complaint or sensitive matter, call "
+            "request_human_handoff with a short reason and summary, then tell the caller a "
+            "specialist will follow up. When you have fully resolved the caller's question and "
+            "the call is wrapping up, ask 'How would you rate your experience from 1 to 5?' and "
+            "then call submit_csat with the number they say. Do NOT ask for a rating if you "
+            "handed off to a human. No markdown — this is spoken aloud."
         )
         try:
             async with self._live_session_factory(
-                self.orchestrator._settings, system_instruction, [KB_SEARCH_TOOL]
+                self.orchestrator._settings,
+                system_instruction,
+                [KB_SEARCH_TOOL, REQUEST_HANDOFF_TOOL, SUBMIT_CSAT_TOOL],
             ) as live:
                 bridge = PhoneBridge(
                     live,

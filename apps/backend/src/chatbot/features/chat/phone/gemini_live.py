@@ -53,6 +53,32 @@ class _GeminiLiveSession:
                     yield event
 
 
+def _build_live_config(
+    settings: Settings,
+    system_instruction: str,
+    tools: list[types.Tool],
+) -> types.LiveConnectConfig:
+    """Build the LiveConnectConfig. Sets an output language_code only when
+    configured (e.g. ms-MY for a Bahasa Melayu demo); left unset, the model
+    auto-detects language. Extracted so it is unit-testable without a live SDK
+    connection."""
+    speech_config = types.SpeechConfig(
+        voice_config=types.VoiceConfig(
+            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=settings.gemini_live_voice)
+        ),
+    )
+    if settings.gemini_live_language:
+        speech_config.language_code = settings.gemini_live_language
+    return types.LiveConnectConfig(
+        response_modalities=["AUDIO"],
+        system_instruction=system_instruction,
+        tools=tools,
+        speech_config=speech_config,
+        input_audio_transcription=types.AudioTranscriptionConfig(),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+    )
+
+
 @asynccontextmanager
 async def connect_live(
     settings: Settings,
@@ -68,20 +94,7 @@ async def connect_live(
         )
     else:
         client = Client()
-    config = types.LiveConnectConfig(
-        response_modalities=["AUDIO"],
-        system_instruction=system_instruction,
-        tools=tools,
-        speech_config=types.SpeechConfig(
-            voice_config=types.VoiceConfig(
-                prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                    voice_name=settings.gemini_live_voice
-                )
-            )
-        ),
-        input_audio_transcription=types.AudioTranscriptionConfig(),
-        output_audio_transcription=types.AudioTranscriptionConfig(),
-    )
+    config = _build_live_config(settings, system_instruction, tools)
     async with client.aio.live.connect(model=settings.gemini_live_model, config=config) as session:
         _log.info("phone_live_session_connected", model=settings.gemini_live_model)
         yield _GeminiLiveSession(session)

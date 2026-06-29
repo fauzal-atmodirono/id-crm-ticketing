@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — User guide (2026-06-29)
+
+- **Comprehensive user guide** at `docs/USER_GUIDE.md` covering technical setup,
+  every channel (chat, voice, phone, email, WhatsApp) for both operators and end
+  users, the full API/endpoint reference, CRM/handoff/CSAT/NPS behaviour, the
+  metrics dashboard, and per-channel testing scenarios + known limitations.
+
+### Changed — Phone call UI (2026-06-29)
+
+- **Redesigned the browser softphone UI** (`features/phone/components/PhoneCall.vue`
+  + new `PhoneVisualizer.vue`). Replaces the bare button with a themed call card
+  with four states (idle / connecting / in-call / error), a live call timer, an
+  agent label, and an **audio-reactive equalizer** that visualises the AI's voice
+  (tapped from the Twilio remote stream via an `AnalyserNode`, with a "breathing"
+  fallback). Uses the app's design tokens, mirrors the voice waveform, and respects
+  `prefers-reduced-motion`.
+
+### Fixed — Phone channel hardening + live-test fixes (2026-06-29)
+
+- **Secured the token endpoint.** `POST /voice/phone/token` (called by a public
+  SPA, so unauthenticated by nature) is hardened with defense-in-depth: an Origin
+  allowlist (reuses `FRONTEND_ORIGINS`), a per-IP sliding-window rate limit
+  (`PHONE_TOKEN_RATE_LIMIT` / `PHONE_TOKEN_RATE_WINDOW_SECONDS`), and a short token
+  TTL (`PHONE_TOKEN_TTL_SECONDS`, default 300s vs Twilio's 3600s).
+- **Multi-turn calls.** The Gemini Live event loop re-enters `session.receive()`
+  per turn, so a call streams across turns instead of dropping after the first AI
+  reply.
+- **Correct Vertex model id.** Default `GEMINI_LIVE_MODEL` is now
+  `gemini-live-2.5-flash-native-audio` (the AI-Studio name `…-preview` is rejected
+  by Vertex with a 1008 policy violation).
+- **Multilingual phone agent.** The phone system instruction now tells the agent
+  it speaks English/Bahasa Melayu/Chinese, must match the caller's language, and
+  must never claim it cannot speak a language or hand off over language. Optional
+  `GEMINI_LIVE_LANGUAGE` (e.g. `ms-MY`) sets an output language hint (honoured by
+  half-cascade models; native-audio auto-detects).
+- **CSAT prompt.** The agent keeps helping until the caller signals they are done
+  before asking for a 1–5 rating (no mid-conversation surveys). *Known limitation:
+  the native-audio model tends to bundle the rating ask with a thank-you rather
+  than pausing — the score is still recorded correctly.*
+
 ### Added — Bot-metrics dashboard Phase 2 (2026-06-29)
 
 - **Bot-metrics dashboard (Phase 2).** A new `MetricsPort` abstraction enables 

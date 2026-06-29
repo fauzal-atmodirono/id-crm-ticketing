@@ -101,6 +101,10 @@ class Settings(BaseSettings):
     # AI-Studio name "gemini-live-2.5-flash-preview" is rejected by Vertex (1008).
     gemini_live_model: str = "gemini-live-2.5-flash-native-audio"
     gemini_live_voice: str = "Kore"
+    # Optional output language hint (e.g. "ms-MY" for Bahasa Melayu). Empty = let
+    # the model auto-detect. Only honored by half-cascade Live models; native-audio
+    # models auto-detect language and ignore it.
+    gemini_live_language: str = ""
     # Browser-softphone access tokens (Twilio Voice grant)
     twilio_api_key_sid: str = ""
     twilio_api_key_secret: str = ""

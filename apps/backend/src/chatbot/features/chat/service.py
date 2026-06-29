@@ -27,6 +27,7 @@ from chatbot.features.chat.models import (
     ProductCard,
     TurnResult,
 )
+from chatbot.features.chat.nps import record_nps_on_ticket
 from chatbot.features.chat.ports import (
     ChatPort,
     ConversationLogPort,
@@ -584,6 +585,26 @@ class OrchestratorService:
         state.pop("csat_nudged", None)
         state["handoff_triggered"] = False
         state["handoff_reason"] = ""
+        await self._persist_session_state(session)
+        return True
+
+    async def record_nps(self, session_id: str, score: int, channel: str = "web") -> bool:
+        """Record an NPS score: comment + `nps_<score>` tag + session state.
+
+        Decoupled from the handoff/CSAT survey flow — does NOT touch handoff
+        state. Tags the conversation ticket only when one exists (web `sim-`
+        sessions without a ticket store the score in state but post no tag).
+        """
+        session = await self._adk_sessions.get_session(
+            app_name="chatbot", user_id=session_id, session_id=session_id
+        )
+        if session is None:
+            return False
+        state = session.state
+        ticket_id = state.get("conversation_ticket_id")
+        if ticket_id:
+            await record_nps_on_ticket(self._conversation_log_port, ticket_id, score, channel)
+        state["nps_score"] = score
         await self._persist_session_state(session)
         return True
 

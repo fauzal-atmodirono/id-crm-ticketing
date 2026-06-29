@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     firestore_database_id: str = "proton-db"
     firestore_handoff_collection: str = "handoff_sessions"
 
+    # Bot-metrics dashboard (Zendesk -> BigQuery sync)
+    bigquery_project_id: str = "lv-playground-genai"
+    bigquery_dataset: str = "demo_proton"
+    bigquery_conversations_table: str = "conversations"
+
     # Chatwoot settings
     chatwoot_api_url: str = "http://localhost:3000"
     chatwoot_api_token: str = ""

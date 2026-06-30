@@ -2,6 +2,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import BaseChart from './BaseChart.vue';
+import { themed } from './chartTheme';
 import type { VolumeRow } from '@/features/dashboard/types';
 
 const props = defineProps<{ rows: VolumeRow[] }>();
@@ -18,12 +19,14 @@ const series = computed(() =>
   })),
 );
 
-const options = computed(() => ({
-  chart: { type: 'bar', stacked: true, toolbar: { show: false } },
-  xaxis: { categories: months.value },
-  legend: { position: 'top' as const },
-  dataLabels: { enabled: false },
-}));
+const options = computed(() =>
+  themed({
+    chart: { type: 'bar', stacked: true, toolbar: { show: false } },
+    xaxis: { categories: months.value },
+    legend: { position: 'top' as const },
+    dataLabels: { enabled: false },
+  }),
+);
 </script>
 
 <template>

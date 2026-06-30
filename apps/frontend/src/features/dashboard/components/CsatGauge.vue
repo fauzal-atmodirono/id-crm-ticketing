@@ -2,6 +2,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import BaseChart from './BaseChart.vue';
+import { themed, CHART_TEXT, CHART_TEXT_MUTED } from './chartTheme';
 import type { CsatRow } from '@/features/dashboard/types';
 
 const props = defineProps<{ rows: CsatRow[] }>();
@@ -15,13 +16,20 @@ const avg = computed(() => {
   return Math.round((mean / 5) * 100);
 });
 const series = computed(() => [avg.value]);
-const options = computed(() => ({
-  chart: { type: 'radialBar' },
-  plotOptions: {
-    radialBar: { dataLabels: { value: { formatter: () => `${avg.value}%` } } },
-  },
-  labels: ['CSAT'],
-}));
+const options = computed(() =>
+  themed({
+    chart: { type: 'radialBar' },
+    plotOptions: {
+      radialBar: {
+        dataLabels: {
+          name: { color: CHART_TEXT_MUTED },
+          value: { color: CHART_TEXT, formatter: () => `${avg.value}%` },
+        },
+      },
+    },
+    labels: ['CSAT'],
+  }),
+);
 </script>
 
 <template>

@@ -2,6 +2,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import BaseChart from './BaseChart.vue';
+import { themed } from './chartTheme';
 
 const props = defineProps<{
   title: string;
@@ -15,12 +16,14 @@ const series = computed(() => [
     data: props.rows.map((r) => Math.round((props.rate(r) ?? 0) * 100)),
   },
 ]);
-const options = computed(() => ({
-  chart: { type: 'bar', toolbar: { show: false } },
-  xaxis: { categories: props.rows.map((r) => r.channel) },
-  yaxis: { max: 100, title: { text: '%' } },
-  dataLabels: { enabled: true, formatter: (v: number) => `${v}%` },
-}));
+const options = computed(() =>
+  themed({
+    chart: { type: 'bar', toolbar: { show: false } },
+    xaxis: { categories: props.rows.map((r) => r.channel) },
+    yaxis: { max: 100, title: { text: '%' } },
+    dataLabels: { enabled: true, formatter: (v: number) => `${v}%` },
+  }),
+);
 </script>
 
 <template>

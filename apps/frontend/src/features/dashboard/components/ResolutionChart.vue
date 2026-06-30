@@ -2,6 +2,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import BaseChart from './BaseChart.vue';
+import { themed } from './chartTheme';
 import type { ResolutionRow } from '@/features/dashboard/types';
 
 const props = defineProps<{ rows: ResolutionRow[] }>();
@@ -9,11 +10,13 @@ const props = defineProps<{ rows: ResolutionRow[] }>();
 const bot = computed(() => props.rows.reduce((s, r) => s + r.closed_by_bot, 0));
 const agent = computed(() => props.rows.reduce((s, r) => s + r.transfer_to_agent, 0));
 const series = computed(() => [bot.value, agent.value]);
-const options = computed(() => ({
-  chart: { type: 'donut' },
-  labels: ['Closed by bot', 'Transferred to agent'],
-  legend: { position: 'bottom' as const },
-}));
+const options = computed(() =>
+  themed({
+    chart: { type: 'donut' },
+    labels: ['Closed by bot', 'Transferred to agent'],
+    legend: { position: 'bottom' as const },
+  }),
+);
 </script>
 
 <template>

@@ -26,8 +26,10 @@ from chatbot.features.chat.ports import (
 )
 from chatbot.features.chat.router import build_chat_router
 from chatbot.features.chat.service import OrchestratorService
+from chatbot.features.metrics.dashboard_router import build_metrics_query_router
 from chatbot.features.metrics.qa_adapter import build_qa_label_port
 from chatbot.features.metrics.qa_router import build_qa_router
+from chatbot.features.metrics.query_adapter import build_metrics_query_port
 from chatbot.features.metrics.scheduler import start_metrics_scheduler
 from chatbot.platform.config import Settings, get_settings
 from chatbot.platform.logger import configure_logging
@@ -35,9 +37,12 @@ from chatbot.platform.server import create_app
 
 
 def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
-    """Wire QA-labelling router and metrics-scheduler shutdown into *app*."""
+    """Wire QA-labelling router, dashboard read API, and metrics-scheduler shutdown."""
     qa_port = build_qa_label_port(settings)
     app.include_router(build_qa_router(qa_port, settings))
+
+    query_port = build_metrics_query_port(settings)
+    app.include_router(build_metrics_query_router(query_port))
 
     metrics_scheduler = start_metrics_scheduler(settings)
     if metrics_scheduler is not None:

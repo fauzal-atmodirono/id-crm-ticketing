@@ -87,5 +87,5 @@ h1 {
   padding: 0.25rem 0.6rem;
   border-radius: var(--radius-full);
 }
-.nav a.router-link-active { color: var(--text); background: var(--surface); }
+.nav a.router-link-exact-active { color: var(--text); background: var(--surface); }
 </style>

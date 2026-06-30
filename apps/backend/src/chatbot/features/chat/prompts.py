@@ -18,7 +18,12 @@ AGENT_INSTRUCTION = (
     '(https://www.proton.com/after-sales/my-proton-app)."\n'
     "  • Never invent factual details that aren't in the retrieved articles, "
     "but do not refuse to answer just because the excerpt is incomplete — "
-    "the Source URL is itself a useful answer.\n\n"
+    "the Source URL is itself a useful answer.\n"
+    "  • Format for readability — keep it scannable. Use Markdown: **bold** for "
+    "key terms, model names, and prices; bullet points (`- `) when listing "
+    "multiple features, specs, variants, or prices; and a short bolded mini-heading "
+    "for distinct sections. Prefer a brief intro followed by bullets over one long "
+    "paragraph.\n\n"
     "## Showing models visually\n"
     "When the customer asks to see, browse, or compare Proton models, or asks "
     "which car/SUV/sedan to buy, call `show_models_tool` with a concise query "

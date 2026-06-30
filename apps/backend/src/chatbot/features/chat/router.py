@@ -114,6 +114,35 @@ def _sanitize_for_whatsapp(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+# Convert (rather than strip) Markdown to WhatsApp formatting for the agent reply,
+# so answers stay structured/scannable: **x**/__x__ -> *x* (WhatsApp bold),
+# `# Heading` -> *Heading*, `- item`/`* item` -> `• item`, links -> "label (url)".
+# Line breaks are preserved (only intra-line space runs and 3+ blank lines collapse).
+_MD_BOLD = re.compile(r"(\*\*|__)(.+?)\1", re.DOTALL)
+_MD_HEADING = re.compile(r"(?m)^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$")
+_MD_BLOCKQUOTE = re.compile(r"(?m)^[ \t]*>[ \t]?")
+_MD_BULLET = re.compile(r"(?m)^[ \t]*[-+*][ \t]+")
+_INLINE_WS = re.compile(r"[^\S\n]{2,}")
+_MANY_NEWLINES = re.compile(r"\n{3,}")
+
+
+def _md_to_whatsapp(text: str) -> str:
+    """Render the agent's Markdown reply as WhatsApp-native formatting.
+
+    Unlike `_sanitize_for_whatsapp` (which strips structure from noisy scraped
+    card copy), this preserves the reply's structure — bold, headings, bullet
+    lists, and line breaks — converted to what WhatsApp actually renders.
+    """
+    t = _MARKDOWN_LINK.sub(r"\1 (\2)", text)
+    t = _MD_BOLD.sub(r"*\2*", t)
+    t = _MD_HEADING.sub(r"*\1*", t)
+    t = _MD_BLOCKQUOTE.sub("", t)
+    t = _MD_BULLET.sub("• ", t)
+    t = _INLINE_WS.sub(" ", t)
+    t = _MANY_NEWLINES.sub("\n\n", t)
+    return "\n".join(line.rstrip() for line in t.split("\n")).strip()
+
+
 _MAX_WHATSAPP_CARDS = 5
 
 _HANDOFF_MESSAGE = "You're being connected to a human agent who will continue helping you here shortly. \U0001f9d1‍\U0001f4bc"
@@ -169,7 +198,7 @@ def _whatsapp_reply_text(turn_result: Any) -> str:
     markdown characters don't garble the message. Other channels keep the rich
     carousel via `_products_list`.
     """
-    text = _sanitize_for_whatsapp(turn_result.reply or "")
+    text = _md_to_whatsapp(turn_result.reply or "")
     products = getattr(turn_result, "products", None) or []
     if not products:
         return text

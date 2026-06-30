@@ -2,6 +2,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import BaseChart from './BaseChart.vue';
+import { themed } from './chartTheme';
 import type { SpeedRow } from '@/features/dashboard/types';
 
 const props = defineProps<{ rows: SpeedRow[] }>();
@@ -13,13 +14,15 @@ const series = computed(() => [
   { name: 'First turn', data: channels.value.map((c) => pick(c, true)) },
   { name: 'Follow-up', data: channels.value.map((c) => pick(c, false)) },
 ]);
-const options = computed(() => ({
-  chart: { type: 'bar', toolbar: { show: false } },
-  xaxis: { categories: channels.value },
-  yaxis: { title: { text: 'p99 latency (ms)' } },
-  legend: { position: 'top' as const },
-  dataLabels: { enabled: false },
-}));
+const options = computed(() =>
+  themed({
+    chart: { type: 'bar', toolbar: { show: false } },
+    xaxis: { categories: channels.value },
+    yaxis: { title: { text: 'p99 latency (ms)' } },
+    legend: { position: 'top' as const },
+    dataLabels: { enabled: false },
+  }),
+);
 </script>
 
 <template>

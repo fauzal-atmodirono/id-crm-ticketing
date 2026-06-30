@@ -2,6 +2,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import BaseChart from './BaseChart.vue';
+import { themed } from './chartTheme';
 import type { NpsRow } from '@/features/dashboard/types';
 
 const props = defineProps<{ rows: NpsRow[] }>();
@@ -16,12 +17,14 @@ const nps = computed(() =>
     : Math.round(((promoters.value - detractors.value) / respondents.value) * 100),
 );
 const series = computed(() => [promoters.value, passives.value, detractors.value]);
-const options = computed(() => ({
-  chart: { type: 'donut' },
-  labels: ['Promoters', 'Passives', 'Detractors'],
-  colors: ['#16a34a', '#eab308', '#dc2626'],
-  legend: { position: 'bottom' as const },
-}));
+const options = computed(() =>
+  themed({
+    chart: { type: 'donut' },
+    labels: ['Promoters', 'Passives', 'Detractors'],
+    colors: ['#16a34a', '#eab308', '#dc2626'],
+    legend: { position: 'bottom' as const },
+  }),
+);
 </script>
 
 <template>

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import structlog
 from google.cloud import bigquery
@@ -27,6 +28,8 @@ if TYPE_CHECKING:
 
 _log = structlog.get_logger(__name__)
 
+_T = TypeVar("_T")
+
 
 class BigQueryMetricsQuery:
     """Reads the 8 dashboard views. Each SELECT is wrapped in asyncio.to_thread
@@ -37,24 +40,24 @@ class BigQueryMetricsQuery:
         self._prefix = f"{settings.bigquery_project_id}.{settings.bigquery_dataset}"
         self._client = client or bigquery.Client(project=settings.bigquery_project_id)
 
-    def _rows(self, view: str) -> list[dict[str, Any]]:
+    def _block(self, view: str, row_type: Callable[..., _T]) -> list[_T]:
         try:
             job = self._client.query(f"SELECT * FROM `{self._prefix}.{view}`")  # noqa: S608
-            return [dict(r) for r in job.result()]
-        except Exception as e:  # a single bad view must not blank the whole page
+            return [row_type(**dict(r)) for r in job.result()]
+        except Exception as e:  # one bad/drifted view degrades to an empty block, never 500s the page
             _log.error("metrics_view_query_failed", view=view, error=str(e))
             return []
 
     def _fetch_sync(self) -> DashboardMetrics:
         return DashboardMetrics(
-            volume=[VolumeRow(**r) for r in self._rows("v_volume_by_month_channel")],
-            resolution=[ResolutionRow(**r) for r in self._rows("v_resolution_split")],
-            csat=[CsatRow(**r) for r in self._rows("v_csat")],
-            nps=[NpsRow(**r) for r in self._rows("v_nps")],
-            speed=[SpeedRow(**r) for r in self._rows("v_speed_of_response")],
-            fallback=[FallbackRow(**r) for r in self._rows("v_fallback_rate")],
-            bounce=[BounceRow(**r) for r in self._rows("v_bounce_rate")],
-            quality=[QualityRow(**r) for r in self._rows("v_quality")],
+            volume=self._block("v_volume_by_month_channel", VolumeRow),
+            resolution=self._block("v_resolution_split", ResolutionRow),
+            csat=self._block("v_csat", CsatRow),
+            nps=self._block("v_nps", NpsRow),
+            speed=self._block("v_speed_of_response", SpeedRow),
+            fallback=self._block("v_fallback_rate", FallbackRow),
+            bounce=self._block("v_bounce_rate", BounceRow),
+            quality=self._block("v_quality", QualityRow),
         )
 
     async def fetch_dashboard(self) -> DashboardMetrics:

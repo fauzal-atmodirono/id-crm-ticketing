@@ -116,3 +116,36 @@ async def test_adapter_handles_null_aggregates() -> None:
 def test_build_factory_returns_mock_for_noop() -> None:
     port = build_metrics_query_port(Settings(metrics_provider="noop"))
     assert isinstance(port, MockMetricsQuery)
+
+
+@pytest.mark.asyncio
+async def test_drifted_view_degrades_to_empty_block_without_raising() -> None:
+    """A view whose columns drift (unexpected extra key) must degrade to []
+    rather than propagating TypeError and 500-ing the whole dashboard."""
+    client = _FakeClient(
+        {
+            # drifted: extra key "unexpected_col" causes TypeError in row_type(**r)
+            "v_volume_by_month_channel": [
+                {
+                    "month": "2026-06",
+                    "channel": "web",
+                    "volume": 99,
+                    "unexpected_col": "oops",
+                }
+            ],
+            # valid view — must still be populated
+            "v_csat": [
+                {"channel": "web", "respondents": 10, "avg_score": 4.5, "satisfied_rate": 0.9}
+            ],
+        }
+    )
+    adapter = BigQueryMetricsQuery(Settings(), client=client)
+
+    # Must not raise
+    metrics = await adapter.fetch_dashboard()
+
+    assert metrics.volume == [], "drifted view must degrade to empty block"
+    assert len(metrics.csat) == 1, "valid view must still be populated"
+    assert metrics.csat[0].avg_score == 4.5
+    # All 8 queries still issued
+    assert len(client.queries) == 8

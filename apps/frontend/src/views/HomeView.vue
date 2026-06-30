@@ -16,39 +16,41 @@ function reset(): void {
 </script>
 
 <template>
-  <ChannelTabs v-model="channel" />
+  <div class="home-shell">
+    <ChannelTabs v-model="channel" />
 
-  <transition name="fade">
-    <aside
-      v-if="chat.handoff && channel === 'chat'"
-      class="handoff-banner"
-      :data-live="chat.isLiveChatActive ? 'true' : 'false'"
-    >
-      <span class="dot" />
-      <div class="info">
-        <strong>{{ chat.isLiveChatActive ? 'Connected to a human agent' : 'Handed off to a human agent' }}</strong>
-        <span>
-          {{ chat.handoff.summary || chat.handoff.reason }}
-          <span class="pill">urgency · {{ chat.handoff.urgency }}</span>
-        </span>
-      </div>
-    </aside>
-  </transition>
+    <transition name="fade">
+      <aside
+        v-if="chat.handoff && channel === 'chat'"
+        class="handoff-banner"
+        :data-live="chat.isLiveChatActive ? 'true' : 'false'"
+      >
+        <span class="dot" />
+        <div class="info">
+          <strong>{{ chat.isLiveChatActive ? 'Connected to a human agent' : 'Handed off to a human agent' }}</strong>
+          <span>
+            {{ chat.handoff.summary || chat.handoff.reason }}
+            <span class="pill">urgency · {{ chat.handoff.urgency }}</span>
+          </span>
+        </div>
+      </aside>
+    </transition>
 
-  <ChatLog v-if="channel === 'chat'" />
-  <VoiceLog v-else-if="channel === 'voice'" />
+    <ChatLog v-if="channel === 'chat'" />
+    <VoiceLog v-else-if="channel === 'voice'" />
 
-  <ChatInput v-if="channel === 'chat'" />
-  <VoiceRecorder v-else-if="channel === 'voice'" />
-  <PhoneCall v-else-if="channel === 'phone'" />
+    <ChatInput v-if="channel === 'chat'" />
+    <VoiceRecorder v-else-if="channel === 'voice'" />
+    <PhoneCall v-else-if="channel === 'phone'" />
 
-  <footer class="session-row">
-    <span>
-      Session:
-      <code>{{ channel === 'chat' ? chat.sessionId : channel === 'voice' ? voice.sessionId : '—' }}</code>
-    </span>
-    <button type="button" @click="reset">New session</button>
-  </footer>
+    <footer class="session-row">
+      <span>
+        Session:
+        <code>{{ channel === 'chat' ? chat.sessionId : channel === 'voice' ? voice.sessionId : '—' }}</code>
+      </span>
+      <button type="button" @click="reset">New session</button>
+    </footer>
+  </div>
 </template>
 
 <style scoped>
@@ -149,5 +151,14 @@ button:hover {
 @keyframes blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
+}
+
+.home-shell {
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
 }
 </style>

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — In-app Vue metrics dashboard (2026-06-30)
+
+- **In-app metrics dashboard.** A new `/dashboard` route renders the 8 Bot-Metrics 
+  aggregates (volume, resolution, CSAT, NPS, speed, fallback, bounce, quality) in a 
+  responsive grid of metric tiles and KPI cards. The frontend fetches `GET /metrics/dashboard`, 
+  which reads from BigQuery when `metrics_provider=bigquery` is configured, and returns 
+  `MockMetricsQuery` data when `metrics_provider=noop` (default). The endpoint is 
+  unauthenticated by design (POC: channel-level aggregates only, no PII or message content). 
+  A client-side channel filter (`useDashboardStore`) drills into a single channel. 
+  **Out of scope:** date-range picker, auth gate, and drill-down links are deferred. 
+  See `docs/dashboards/in-app-vue-dashboard.md`.
+
 ### Added — Bot-metrics dashboard Phase 4 (2026-06-29)
 
 - **Bot-metrics dashboard (Phase 4).** Accuracy and Quality QA entry point. A new 

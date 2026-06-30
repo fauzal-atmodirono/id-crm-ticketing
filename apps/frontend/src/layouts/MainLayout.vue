@@ -12,8 +12,6 @@ import AppHeader from '@/components/layout/AppHeader.vue';
 <style scoped>
 main {
   flex: 1;
-  max-width: 820px;
-  margin: 0 auto;
   width: 100%;
   padding: var(--space-lg);
   display: flex;

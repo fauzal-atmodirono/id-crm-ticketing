@@ -16,7 +16,13 @@ onMounted(async () => {
 
 <template>
   <header class="app-header">
-    <h1>Proton Conversational AI</h1>
+    <div class="brand">
+      <h1>Proton Conversational AI</h1>
+      <nav class="nav">
+        <router-link to="/">Channels</router-link>
+        <router-link to="/dashboard">Dashboard</router-link>
+      </nav>
+    </div>
     <div v-if="health" class="badges">
       <span class="badge">CRM: <strong>{{ health.crm_provider }}</strong></span>
       <span class="badge">Voice: <strong>{{ health.voice_provider }}</strong></span>
@@ -71,4 +77,15 @@ h1 {
   color: var(--danger);
   border-color: var(--danger);
 }
+
+.brand { display: flex; align-items: center; gap: var(--space-md); }
+.nav { display: flex; gap: var(--space-sm); }
+.nav a {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: 0.25rem 0.6rem;
+  border-radius: var(--radius-full);
+}
+.nav a.router-link-active { color: var(--text); background: var(--surface); }
 </style>

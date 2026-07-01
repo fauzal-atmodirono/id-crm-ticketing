@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chatbot.features.chat.ports import ConversationLogPort
+from chatbot.features.chat.ports import ConversationLogPort, ConversationLogResult
 
 
 class NoOpConversationLog(ConversationLogPort):
@@ -15,13 +15,22 @@ class NoOpConversationLog(ConversationLogPort):
     ) -> str:
         return ""
 
+    async def rotate_conversation_ticket(
+        self,
+        session_id: str,  # noqa: ARG002
+        subject: str,  # noqa: ARG002
+        customer_name: str | None,  # noqa: ARG002
+        customer_phone: str | None,  # noqa: ARG002
+    ) -> str:
+        return ""
+
     async def append_conversation_comment(
         self,
         ticket_id: str,  # noqa: ARG002
         text: str,  # noqa: ARG002
         status: str | None = None,  # noqa: ARG002
-    ) -> None:
-        return None
+    ) -> ConversationLogResult:
+        return ConversationLogResult.OK
 
     async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:  # noqa: ARG002
         return None

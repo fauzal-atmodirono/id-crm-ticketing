@@ -13,6 +13,7 @@ from chatbot.features.chat.models import KbArticle
 from chatbot.features.chat.ports import (
     ChatPort,
     ConversationLogPort,
+    ConversationLogResult,
     KnowledgePort,
     TicketingPort,
 )
@@ -153,17 +154,13 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
             _log.error("zendesk_add_private_note_failed", ticket_id=ticket_id, error=str(e))
 
     # --- ConversationLogPort (per-conversation capture) ---
-    async def ensure_conversation_ticket(
+    async def _create_conversation_ticket(
         self,
         session_id: str,
         subject: str,
         customer_name: str | None,
         customer_phone: str | None,
     ) -> str:
-        cached = self._conv_tickets.get(session_id)
-        if cached:
-            return cached
-
         subdomain = self._settings.zendesk_subdomain
         url = f"https://{subdomain}.zendesk.com/api/v2/tickets.json"
         requester: dict[str, str] = {
@@ -186,16 +183,51 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
                     url, json=payload, headers=self._support_headers(), timeout=10.0
                 )
                 res.raise_for_status()
-                ticket_id = str(res.json().get("ticket", {}).get("id", "MOCK-ZEN-TKT"))
+                return str(res.json().get("ticket", {}).get("id", "MOCK-ZEN-TKT"))
         except Exception as e:
             _log.error("zendesk_ensure_conversation_ticket_failed", error=str(e))
-            ticket_id = "MOCK-ZEN-TKT"
+            return "MOCK-ZEN-TKT"
+
+    async def ensure_conversation_ticket(
+        self,
+        session_id: str,
+        subject: str,
+        customer_name: str | None,
+        customer_phone: str | None,
+    ) -> str:
+        cached = self._conv_tickets.get(session_id)
+        if cached:
+            return cached
+        ticket_id = await self._create_conversation_ticket(
+            session_id, subject, customer_name, customer_phone
+        )
+        self._conv_tickets[session_id] = ticket_id
+        return ticket_id
+
+    async def rotate_conversation_ticket(
+        self,
+        session_id: str,
+        subject: str,
+        customer_name: str | None,
+        customer_phone: str | None,
+    ) -> str:
+        # Always create a new ticket (the prior one is closed) and replace the
+        # cached mapping so subsequent ensure()s use the fresh ticket.
+        ticket_id = await self._create_conversation_ticket(
+            session_id, subject, customer_name, customer_phone
+        )
+        _log.info(
+            "zendesk_rotated_conversation_ticket",
+            session_id=session_id,
+            old_ticket_id=self._conv_tickets.get(session_id),
+            new_ticket_id=ticket_id,
+        )
         self._conv_tickets[session_id] = ticket_id
         return ticket_id
 
     async def append_conversation_comment(
         self, ticket_id: str, text: str, status: str | None = None
-    ) -> None:
+    ) -> ConversationLogResult:
         subdomain = self._settings.zendesk_subdomain
         url = f"https://{subdomain}.zendesk.com/api/v2/tickets/{ticket_id}.json"
         ticket: dict[str, object] = {"comment": {"body": text, "public": False}}
@@ -207,10 +239,31 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
                     url, json={"ticket": ticket}, headers=self._support_headers(), timeout=10.0
                 )
                 res.raise_for_status()
+            return ConversationLogResult.OK
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code
+            # Log Zendesk's response body — the actual error code lives there, not
+            # in httpx's generic message.
+            _log.error(
+                "zendesk_append_conversation_comment_failed",
+                ticket_id=ticket_id,
+                status_code=code,
+                error=str(e),
+                zendesk_response=e.response.text,
+            )
+            # A closed ticket (422 "closed") or a deleted one (404) can never take
+            # a comment again → signal the caller to rotate to a fresh ticket.
+            is_closed = code == httpx.codes.NOT_FOUND or (
+                code == httpx.codes.UNPROCESSABLE_ENTITY and "closed" in e.response.text.lower()
+            )
+            if is_closed:
+                return ConversationLogResult.TICKET_CLOSED
+            return ConversationLogResult.FAILED
         except Exception as e:
             _log.error(
                 "zendesk_append_conversation_comment_failed", ticket_id=ticket_id, error=str(e)
             )
+            return ConversationLogResult.FAILED
 
     async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:
         subdomain = self._settings.zendesk_subdomain

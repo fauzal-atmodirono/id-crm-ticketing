@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from chatbot.features.chat.ports import ConversationLogResult
 from chatbot.features.chat.test_capture_conversation import (  # reuse doubles
     _FakeLog,
     _LiveSessions,
@@ -66,7 +67,7 @@ async def test_record_nps_state_survives_log_failure() -> None:
     class _FailLog(_FakeLog):
         async def append_conversation_comment(
             self, ticket_id: str, text: str, status: str | None = None
-        ) -> None:
+        ) -> ConversationLogResult:
             raise RuntimeError("Zendesk connection failed")
 
     log = _FailLog()

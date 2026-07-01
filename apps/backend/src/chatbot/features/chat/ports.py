@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Any, Protocol
 
 from chatbot.features.chat.models import (
@@ -8,6 +9,19 @@ from chatbot.features.chat.models import (
     KbArticle,
 )
 from chatbot.features.metrics.events import TurnEvent
+
+
+class ConversationLogResult(StrEnum):
+    """Outcome of appending a comment to a conversation ticket.
+
+    Lets the caller distinguish a ticket that can no longer accept comments
+    (closed/deleted → rotate to a fresh ticket) from a transient failure
+    (retry later; do NOT spawn a replacement ticket).
+    """
+
+    OK = "ok"
+    TICKET_CLOSED = "ticket_closed"
+    FAILED = "failed"
 
 
 class ChatPort(Protocol):
@@ -146,10 +160,23 @@ class ConversationLogPort(Protocol):
         Returns the ticket id."""
         ...
 
+    async def rotate_conversation_ticket(
+        self,
+        session_id: str,
+        subject: str,
+        customer_name: str | None,
+        customer_phone: str | None,
+    ) -> str:
+        """Force-create a FRESH conversation ticket, bypassing any cache, and make
+        it the current one for the session. Used when the prior ticket is closed
+        and can no longer accept comments. Returns the new ticket id."""
+        ...
+
     async def append_conversation_comment(
         self, ticket_id: str, text: str, status: str | None = None
-    ) -> None:
-        """Append a private comment, optionally setting ticket status."""
+    ) -> ConversationLogResult:
+        """Append a private comment, optionally setting ticket status. Returns
+        whether it succeeded, or that the ticket can no longer be commented on."""
         ...
 
     async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:

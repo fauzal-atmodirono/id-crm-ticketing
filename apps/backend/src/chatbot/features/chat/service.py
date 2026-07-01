@@ -31,6 +31,7 @@ from chatbot.features.chat.nps import record_nps_on_ticket
 from chatbot.features.chat.ports import (
     ChatPort,
     ConversationLogPort,
+    ConversationLogResult,
     HumanAgentBridgePort,
     KnowledgePort,
     MetricsPort,
@@ -503,11 +504,39 @@ class OrchestratorService:
                     customer_phone=customer_phone,
                 )
             body = "\n".join(f"{m['role'].upper()}: {m['text']}" for m in new_msgs)
-            await self._conversation_log_port.append_conversation_comment(
+            result = await self._conversation_log_port.append_conversation_comment(
                 ticket_id, body, status=status
             )
+            if result == ConversationLogResult.TICKET_CLOSED:
+                # The pinned ticket was closed and can't take comments anymore.
+                # Rotate to a fresh ticket and retry once so the turn still mirrors.
+                _log.info(
+                    "rotating_closed_conversation_ticket",
+                    session_id=session_id,
+                    closed_ticket_id=ticket_id,
+                )
+                ticket_id = await self._conversation_log_port.rotate_conversation_ticket(
+                    session_id=session_id,
+                    subject=subject,
+                    customer_name=customer_name,
+                    customer_phone=customer_phone,
+                )
+                result = await self._conversation_log_port.append_conversation_comment(
+                    ticket_id, body, status=status
+                )
+            # Always keep the (possibly rotated) ticket id, but only mark the turns
+            # logged when the append actually landed — a transient failure leaves
+            # the count unadvanced so the next capture retries these messages.
             state["conversation_ticket_id"] = ticket_id
-            state["conversation_logged_count"] = len(history)
+            if result == ConversationLogResult.OK:
+                state["conversation_logged_count"] = len(history)
+            else:
+                _log.warning(
+                    "conversation_mirror_incomplete",
+                    session_id=session_id,
+                    ticket_id=ticket_id,
+                    result=result.value,
+                )
             await self._persist_session_state(session)
         except Exception as e:
             _log.error("capture_conversation_failed", session_id=session_id, error=str(e))

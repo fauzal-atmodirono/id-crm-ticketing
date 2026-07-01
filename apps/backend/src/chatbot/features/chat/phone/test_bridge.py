@@ -12,6 +12,7 @@ from chatbot.features.chat.phone.live_events import (
     OutputTranscript,
     ToolCall,
 )
+from chatbot.features.chat.ports import ConversationLogResult
 
 
 class _FakeLive:
@@ -53,10 +54,21 @@ class _FakeLog:
         self.ticket_calls.append((session_id, subject))
         return "T-1"
 
+    async def rotate_conversation_ticket(
+        self,
+        session_id: str,
+        subject: str,
+        customer_name: str | None,
+        customer_phone: str | None,
+    ) -> str:
+        self.ticket_calls.append((session_id, subject))
+        return "T-2"
+
     async def append_conversation_comment(
         self, ticket_id: str, text: str, status: str | None = None
-    ) -> None:
+    ) -> ConversationLogResult:
         self.comments.append((ticket_id, text, status))
+        return ConversationLogResult.OK
 
     async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:
         self.tags.append((ticket_id, tag))

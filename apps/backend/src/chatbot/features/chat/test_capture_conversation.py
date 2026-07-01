@@ -10,7 +10,7 @@ from chatbot.features.chat.adapters.mock import (
     InMemoryTicketingAdapter,
     MockVoiceAdapter,
 )
-from chatbot.features.chat.ports import ConversationLogPort
+from chatbot.features.chat.ports import ConversationLogPort, ConversationLogResult
 from chatbot.features.chat.service import OrchestratorService
 from chatbot.platform.config import get_settings
 
@@ -50,7 +50,11 @@ class _FakeLog(ConversationLogPort):
     def __init__(self) -> None:
         self.appended: list[tuple[str, str, str | None]] = []
         self.ensure_calls = 0
+        self.rotate_calls = 0
         self.tags: list[tuple[str, str]] = []
+        # Per-ticket append result; defaults to OK for any ticket not listed.
+        self.results: dict[str, ConversationLogResult] = {}
+        self._next_ticket = 2
 
     async def ensure_conversation_ticket(
         self, session_id: str, subject: str, customer_name: str | None, customer_phone: str | None
@@ -58,10 +62,19 @@ class _FakeLog(ConversationLogPort):
         self.ensure_calls += 1
         return "T1"
 
+    async def rotate_conversation_ticket(
+        self, session_id: str, subject: str, customer_name: str | None, customer_phone: str | None
+    ) -> str:
+        self.rotate_calls += 1
+        ticket = f"T{self._next_ticket}"
+        self._next_ticket += 1
+        return ticket
+
     async def append_conversation_comment(
         self, ticket_id: str, text: str, status: str | None = None
-    ) -> None:
+    ) -> ConversationLogResult:
         self.appended.append((ticket_id, text, status))
+        return self.results.get(ticket_id, ConversationLogResult.OK)
 
     async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:
         self.tags.append((ticket_id, tag))
@@ -214,3 +227,57 @@ async def test_ticket_reused_across_restart() -> None:
     assert len(log.appended) == 2
     assert "more" in log.appended[1][1]
     assert "hi" not in log.appended[1][1]
+
+
+@pytest.mark.asyncio
+async def test_closed_ticket_is_rotated_and_comment_retried() -> None:
+    # A conversation pinned to a ticket that has since been CLOSED (Zendesk
+    # rejects comments on it) must rotate to a fresh ticket and retry, so the
+    # customer's messages still get mirrored.
+    log = _FakeLog()
+    log.results["49"] = ConversationLogResult.TICKET_CLOSED  # cached ticket is closed
+    orch = _orchestrator(log)
+    await _seed_history(
+        orch,
+        "whatsapp-+6281112117038",
+        [{"role": "user", "text": "mau tanya proton S70"}],
+    )
+    session = await orch._adk_sessions.get_session(
+        app_name="chatbot", user_id="whatsapp-+6281112117038", session_id="whatsapp-+6281112117038"
+    )
+    assert session is not None
+    session.state["conversation_ticket_id"] = "49"  # pinned to the now-closed ticket
+
+    await orch.capture_conversation("whatsapp-+6281112117038", channel="WhatsApp")
+
+    # Rotated once, and the comment was retried against the fresh ticket.
+    assert log.rotate_calls == 1
+    assert [t for t, _b, _s in log.appended] == ["49", "T2"]
+    # State now points at the new ticket and the turn is marked logged.
+    assert session.state["conversation_ticket_id"] == "T2"
+    assert session.state["conversation_logged_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_transient_failure_does_not_rotate_or_advance_count() -> None:
+    # A transient (non-closed) failure must NOT spawn a replacement ticket, and
+    # must leave the logged count unadvanced so the turn retries next time.
+    log = _FakeLog()
+    log.results["T1"] = ConversationLogResult.FAILED
+    orch = _orchestrator(log)
+    await _seed_history(
+        orch,
+        "whatsapp-+60123",
+        [{"role": "user", "text": "hello"}],
+    )
+
+    await orch.capture_conversation("whatsapp-+60123", channel="WhatsApp")
+
+    assert log.rotate_calls == 0
+    assert len(log.appended) == 1
+    session = await orch._adk_sessions.get_session(
+        app_name="chatbot", user_id="whatsapp-+60123", session_id="whatsapp-+60123"
+    )
+    assert session is not None
+    # Count NOT advanced → the unlogged message is retried on the next capture.
+    assert int(session.state.get("conversation_logged_count", 0)) == 0

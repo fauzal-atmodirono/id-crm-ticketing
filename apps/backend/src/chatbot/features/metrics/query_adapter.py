@@ -44,7 +44,9 @@ class BigQueryMetricsQuery:
         try:
             job = self._client.query(f"SELECT * FROM `{self._prefix}.{view}`")  # noqa: S608
             return [row_type(**dict(r)) for r in job.result()]
-        except Exception as e:  # one bad/drifted view degrades to an empty block, never 500s the page
+        except (
+            Exception
+        ) as e:  # one bad/drifted view degrades to an empty block, never 500s the page
             _log.error("metrics_view_query_failed", view=view, error=str(e))
             return []
 

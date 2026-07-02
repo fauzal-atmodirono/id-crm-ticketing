@@ -40,6 +40,16 @@ class Settings(BaseSettings):
     zendesk_secret_key: str = ""
     zendesk_api_token: str = ""
 
+    # Per-customer identity for tickets on a SHARED Zendesk instance. The
+    # domain is used to synthesize the requester email for session-scoped
+    # pseudo-users; the name prefix labels the auto-created end-user; the tag
+    # (when set) is applied to every ticket so Zendesk triggers can route
+    # webhooks back to the correct backend. Override all three per fork so
+    # Proton and Wah Chan tickets/end-users stay distinguishable in one tenant.
+    zendesk_requester_domain: str = "proton.devoteam.example"
+    zendesk_customer_name_prefix: str = "Proton AI Customer"
+    zendesk_ticket_tag: str = ""
+
     # Sunshine Conversations webhook integration secret (used to HMAC-verify
     # inbound /webhooks/sunshine requests). Configured in the Sunshine
     # Conversations dashboard alongside the webhook URL.

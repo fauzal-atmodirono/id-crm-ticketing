@@ -26,6 +26,9 @@ def _adapter() -> ZendeskAdapter:
         zendesk_subdomain="proton",
         zendesk_email="agent@proton.test",
         zendesk_api_token="tok",
+        zendesk_requester_domain="proton.devoteam.example",
+        zendesk_customer_name_prefix="Proton AI Customer",
+        zendesk_ticket_tag="",
         handoff_store="memory",
     )
     return ZendeskAdapter(settings)  # type: ignore[arg-type]

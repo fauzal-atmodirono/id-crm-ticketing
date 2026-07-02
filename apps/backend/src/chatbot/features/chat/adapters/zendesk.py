@@ -94,8 +94,10 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
         # Attribute the ticket to a session-scoped pseudo-user so it isn't
         # filed under the API token owner. Zendesk auto-creates an end-user
         # for the email on first sight.
-        requester_email = customer_email or f"{session_id}@proton.devoteam.example"
-        requester_name = customer_name or f"Proton AI Customer ({session_id})"
+        domain = self._settings.zendesk_requester_domain
+        name_prefix = self._settings.zendesk_customer_name_prefix
+        requester_email = customer_email or f"{session_id}@{domain}"
+        requester_name = customer_name or f"{name_prefix} ({session_id})"
 
         requester: dict[str, str] = {
             "name": requester_name,
@@ -104,18 +106,19 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
         if customer_phone:
             requester["phone"] = customer_phone
 
-        payload = {
-            "ticket": {
-                "subject": f"[Escalated] {title}",
-                "comment": {
-                    "body": body,
-                    "public": True,
-                },
-                "priority": priority,
-                "external_id": session_id,
-                "requester": requester,
-            }
+        ticket: dict[str, object] = {
+            "subject": f"[Escalated] {title}",
+            "comment": {
+                "body": body,
+                "public": True,
+            },
+            "priority": priority,
+            "external_id": session_id,
+            "requester": requester,
         }
+        if self._settings.zendesk_ticket_tag:
+            ticket["tags"] = [self._settings.zendesk_ticket_tag]
+        payload = {"ticket": ticket}
 
         _log.info("creating_zendesk_support_ticket", session_id=session_id)
         try:
@@ -163,20 +166,23 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
     ) -> str:
         subdomain = self._settings.zendesk_subdomain
         url = f"https://{subdomain}.zendesk.com/api/v2/tickets.json"
+        domain = self._settings.zendesk_requester_domain
+        name_prefix = self._settings.zendesk_customer_name_prefix
         requester: dict[str, str] = {
-            "name": customer_name or f"Proton AI Customer ({session_id})",
-            "email": f"{session_id}@proton.devoteam.example",
+            "name": customer_name or f"{name_prefix} ({session_id})",
+            "email": f"{session_id}@{domain}",
         }
         if customer_phone:
             requester["phone"] = customer_phone
-        payload = {
-            "ticket": {
-                "subject": subject,
-                "external_id": session_id,
-                "requester": requester,
-                "comment": {"body": "Conversation started.", "public": False},
-            }
+        ticket: dict[str, object] = {
+            "subject": subject,
+            "external_id": session_id,
+            "requester": requester,
+            "comment": {"body": "Conversation started.", "public": False},
         }
+        if self._settings.zendesk_ticket_tag:
+            ticket["tags"] = [self._settings.zendesk_ticket_tag]
+        payload = {"ticket": ticket}
         try:
             async with httpx.AsyncClient() as client:
                 res = await client.post(

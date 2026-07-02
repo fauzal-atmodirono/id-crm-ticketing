@@ -137,14 +137,37 @@ Because each trigger is gated on the customer tag, that customer's events only
 ever reach that customer's backend. **This is what makes one shared Zendesk safe
 to route to many bots.**
 
+### 4. (Optional) Brand assignment — Option A (no code)
+
+Brands are cosmetic (branded help-center + a visible "Brand" column) and route
+nothing, but they make the demo read as three distinct desks. The bot stamps a
+**tag** but not a brand, so tickets otherwise default to the **Devoteam** brand.
+To file them under the right customer brand without code, add a small
+**create-scoped** trigger per customer:
+
+**Trigger "Brand: Demo Wah Chan":**
+- Conditions → *Meet ALL*:
+  - *Ticket · is · Created*
+  - *Ticket · Tags · Contains at least one of the following · `source_wahchan`*
+- Actions → *Set brand · Demo Wah Chan*
+
+Keep this **separate** from the notify trigger (which fires on updates too) —
+brand only needs setting once at creation. Repeat per customer
+(`source_proton` → Demo Proton, etc.). This is the chosen approach for the POC.
+
+> Alternative (Option B, not used for the POC): add a `zendesk_brand_id` env var
+> and include `brand_id` in the ticket payload so tickets are born under the
+> right brand. More explicit/self-contained but needs a code change + each
+> brand's numeric ID.
+
 ---
 
 ## Adding a new customer (e.g. Bank Jago) — the repeatable recipe
 
 1. Pick a tag: `source_bankjago`.
 2. Deploy the Bank Jago fork with the four `ZENDESK_*` lane vars above.
-3. In Zendesk: add **1 View** + **1 Webhook** + **1 Trigger**, all keyed on
-   `source_bankjago`.
+3. In Zendesk: add **1 View** + **1 Webhook** + **1 Trigger** (+ optional
+   **1 brand trigger**), all keyed on `source_bankjago`.
 
 That's it. Existing Proton/Wah Chan lanes are untouched — no risk to live
 customers when onboarding a new one.

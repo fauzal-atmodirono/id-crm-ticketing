@@ -122,9 +122,9 @@ gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=<your-gcp-pr
 sudo /opt/platform/deploy/scripts/bootstrap-vm.sh
 ```
 
-`bootstrap-vm.sh` prints the four `nip.io` URLs (crm/tickets/agent/mail) once
-it's done. Give the containers a minute to finish starting before hitting
-them.
+`bootstrap-vm.sh` prints the four `nip.io` URLs (crm/tickets/agent/mail) and the
+Mailpit web UI password (save it now — it is not stored) once it's done. Give the
+containers a minute to finish starting before hitting them.
 
 ## 5. Phase-2 wiring: Chatwoot ⇄ Zammad sync
 

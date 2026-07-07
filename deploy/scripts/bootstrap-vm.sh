@@ -113,7 +113,10 @@ fill_if_blank() {
   local current
   current="$(grep -E "^${var}=" .env | head -n1 | cut -d= -f2-)"
   if [[ -z "${current}" || "${current}" == "changeme" ]]; then
-    sed -i "s|^${var}=.*|${var}=${value}|" .env
+    # Use printf to safely write values with special characters (e.g., $ in bcrypt hashes)
+    # Delete old line and append new one to preserve file order
+    sed -i -e '/^'"${var}"'=/d' .env
+    printf '%s=%s\n' "${var}" "${value}" >> .env
     echo "==> Filled ${var}"
   fi
 }
@@ -123,6 +126,22 @@ fill_if_blank ZAMMAD_DB_PASSWORD "$(openssl rand -hex 16)"
 fill_if_blank AGENT_DB_PASSWORD "$(openssl rand -hex 16)"
 fill_if_blank REDIS_PASSWORD "$(openssl rand -hex 16)"
 fill_if_blank SECRET_KEY_BASE "$(openssl rand -hex 64)"
+
+# Mailpit authentication: generate password and hash it with Caddy
+fill_if_blank MAILPIT_AUTH_USER "admin"
+
+# Generate random password and hash it with Caddy's hash-password
+MAILPIT_PW="$(openssl rand -hex 12)"
+MAILPIT_HASH="$(echo "$MAILPIT_PW" | docker run --rm -i caddy:2-alpine caddy hash-password --plaintext - 2>/dev/null | tail -1)"
+
+if [[ -n "${MAILPIT_HASH}" ]]; then
+  # Escape $ for Docker Compose's .env parser: $$ becomes $ in the parsed value
+  MAILPIT_HASH_ESCAPED="${MAILPIT_HASH//\$/\$\$}"
+  fill_if_blank MAILPIT_AUTH_HASH "${MAILPIT_HASH_ESCAPED}"
+  echo "==> Mailpit UI password (save this now, it is not stored): ${MAILPIT_PW}"
+else
+  echo "WARNING: Failed to generate Mailpit password hash; check Docker" >&2
+fi
 
 # ---------------------------------------------------------------------------
 # 5. Auto-detect PUBLIC_IP from GCE metadata (dash form for nip.io)

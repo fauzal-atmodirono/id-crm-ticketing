@@ -175,7 +175,7 @@ linked conversation.
 Once `agent/scripts/register_bot.py` exists (ships with the agent service),
 run it from the VM (or anywhere with network access to the Chatwoot
 platform API and `.env` populated with `CHATWOOT_PLATFORM_TOKEN`,
-`CHATWOOT_API_TOKEN`, `CHATWOOT_ACCOUNT_ID`, `CHATWOOT_URL`):
+`CHATWOOT_API_TOKEN`, `CHATWOOT_ACCOUNT_ID`, `CHATWOOT_URL`, and `AGENT_PUBLIC_URL`):
 
 ```bash
 cd /opt/platform/agent

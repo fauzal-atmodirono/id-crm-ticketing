@@ -1,0 +1,21 @@
+{
+	# Plain HTTP + nip.io hostnames only — no TLS cert to manage yet.
+	# remove when a real domain lands
+	auto_https off
+}
+
+http://crm.{$PUBLIC_IP}.nip.io {
+	reverse_proxy chatwoot-rails:3000
+}
+
+http://tickets.{$PUBLIC_IP}.nip.io {
+	reverse_proxy zammad-nginx:8080
+}
+
+http://agent.{$PUBLIC_IP}.nip.io {
+	reverse_proxy agent:8000
+}
+
+http://mail.{$PUBLIC_IP}.nip.io {
+	reverse_proxy mailpit:8025
+}

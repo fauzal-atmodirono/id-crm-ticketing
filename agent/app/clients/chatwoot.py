@@ -75,6 +75,30 @@ class ChatwootClient:
         response.raise_for_status()
         return response.json()
 
+    async def get_agent_bot(self, agent_bot_id: int) -> Any:
+        """Account-scoped agent bot lookup — used only by
+        `scripts.register_bot` to read back the bot's `secret`, which the
+        Platform API's create/show response doesn't include (see
+        `crm/chatwoot/app/views/api/v1/models/_agent_bot.json.jbuilder`:
+        `secret` is only serialized here, gated on the caller being an
+        account administrator)."""
+        response = await self._client.get(
+            f"/api/v1/accounts/{self.account_id}/agent_bots/{agent_bot_id}"
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def set_agent_bot(self, inbox_id: int, agent_bot_id: int) -> Any:
+        """Assign an agent bot to an inbox (`scripts.register_bot`'s last
+        step) — see `crm/chatwoot/config/routes.rb:259`
+        (`post :set_agent_bot, on: :member` under `resources :inboxes`)."""
+        response = await self._client.post(
+            f"/api/v1/accounts/{self.account_id}/inboxes/{inbox_id}/set_agent_bot",
+            json={"agent_bot": agent_bot_id},
+        )
+        response.raise_for_status()
+        return response.json() if response.content else None
+
 
 class ChatwootPlatformClient:
     def __init__(

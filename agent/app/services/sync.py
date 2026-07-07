@@ -25,6 +25,7 @@ from app.clients.deps import get_chatwoot_client, get_zammad_client
 from app.config import get_settings
 from app.db.models import ContactLink, ConversationLink
 from app.db.session import async_session_maker
+from app.services import responder
 
 logger = logging.getLogger(__name__)
 
@@ -354,8 +355,12 @@ async def escalate_conversation(
 
 async def on_ticket_event(payload: dict) -> None:
     """Handle a Zammad ticket trigger webhook: propagate state changes back
-    to the linked Chatwoot conversation as a private note, and optionally
-    auto-resolve when the ticket closes."""
+    to the linked Chatwoot conversation as a private note, optionally
+    auto-resolve when the ticket closes, and (Task 5) draft an AI-suggested
+    reply when the event is a new customer article. Drafting doesn't depend
+    on a Chatwoot conversation link existing -- it runs for any ticket."""
+    await responder.draft_ticket_reply(payload)
+
     ticket = payload.get("ticket") or {}
     ticket_id = ticket.get("id")
     state = ticket.get("state")

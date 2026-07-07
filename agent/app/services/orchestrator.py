@@ -1,0 +1,186 @@
+"""Gemini-powered orchestration for incoming Chatwoot agent-bot events.
+
+`handle_bot_event` is the entry point the `/webhooks/chatwoot/bot` route
+background-dispatches to. It only acts on a genuinely actionable event — an
+incoming customer message on a `pending` conversation, not authored by the
+bot itself — then debounces per conversation: rapid-fire messages from the
+same customer coalesce into a single Gemini call fired `DEBOUNCE_SECONDS`
+after the *last* one for that conversation, which re-fetches the
+conversation's current message history at that point rather than replaying
+whatever payload originally tripped the debounce.
+
+Every Gemini decision is logged to `ai_actions` before it's executed.
+Execution never sends a reply automatically unless `AGENT_MODE=auto`; in
+`suggest` mode (the default) a reply is posted as a private note and the
+conversation is reopened for a human to review — the AI never auto-sends.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+
+from app.ai import gemini
+from app.clients.deps import get_chatwoot_client
+from app.config import get_settings
+from app.db.models import AiAction
+from app.db.session import async_session_maker
+from app.services import sync
+
+logger = logging.getLogger(__name__)
+
+# One in-flight debounce task per Chatwoot conversation id. A new eligible
+# event for the same conversation cancels whatever's pending and reschedules,
+# so a burst of customer messages only ever triggers one Gemini call.
+DEBOUNCE_SECONDS = 3.0
+
+_pending_tasks: dict[int, asyncio.Task] = {}
+
+SYSTEM_PROMPT = (
+    "You are a support agent for the company, handling a live customer "
+    "conversation. Decide exactly one action by calling a function: "
+    "send_reply to answer the customer directly, escalate_to_ticket if this "
+    "needs a human specialist or can't be resolved from the conversation "
+    "alone, or handoff_to_human for anything else you're unsure about. Keep "
+    "replies short, friendly, and strictly grounded in what the conversation "
+    "actually says — never invent facts, prices, policies, or commitments "
+    "you can't verify from it."
+)
+
+
+def _sender_type(payload: dict) -> str | None:
+    return (payload.get("sender") or {}).get("type")
+
+
+def _is_eligible(payload: dict) -> bool:
+    if payload.get("event") != "message_created":
+        return False
+    if payload.get("message_type") != "incoming":
+        return False
+    if _sender_type(payload) == "agent_bot":
+        return False
+    conversation = payload.get("conversation") or {}
+    if conversation.get("status") != "pending":
+        return False
+    return conversation.get("id") is not None
+
+
+async def handle_bot_event(payload: dict) -> asyncio.Task | None:
+    """Filter the event, then (re)schedule the debounced processing task for
+    its conversation. Returns the scheduled task (mainly so tests can await
+    it deterministically) or None if the event wasn't actionable."""
+    if not _is_eligible(payload):
+        return None
+
+    conversation_id = payload["conversation"]["id"]
+
+    existing = _pending_tasks.get(conversation_id)
+    if existing is not None and not existing.done():
+        existing.cancel()
+
+    task = asyncio.ensure_future(_debounced_process(conversation_id))
+    _pending_tasks[conversation_id] = task
+    return task
+
+
+async def _debounced_process(conversation_id: int) -> None:
+    try:
+        await asyncio.sleep(DEBOUNCE_SECONDS)
+    except asyncio.CancelledError:
+        # Superseded by a newer event for the same conversation; the newer
+        # task is the one that'll actually process it.
+        return
+    await _process_conversation(conversation_id)
+
+
+async def _build_context(conversation_id: int) -> str:
+    """Last 20 non-private messages plus the contact's name/email, fetched
+    fresh (not from whatever payload originally triggered the debounce)."""
+    chatwoot = get_chatwoot_client()
+    raw_messages = await chatwoot.get_messages(conversation_id)
+    if isinstance(raw_messages, dict):
+        message_list = raw_messages.get("payload") or []
+    else:
+        message_list = raw_messages or []
+
+    lines: list[str] = []
+    contact_name: str | None = None
+    contact_email: str | None = None
+    for message in message_list[-20:]:
+        if message.get("private"):
+            continue
+        sender = message.get("sender") or {}
+        sender_name = sender.get("name", "Unknown")
+        text = message.get("content") or ""
+        lines.append(f"{sender_name}: {text}")
+
+        if message.get("message_type") == 0 and contact_name is None:
+            contact_name = sender.get("name")
+            contact_email = sender.get("email")
+
+    header = f"Customer: {contact_name or 'unknown'} <{contact_email or 'unknown'}>"
+    transcript = "\n".join(lines) or "(no messages)"
+    return f"{header}\n\n{transcript}"
+
+
+async def _log_decision(conversation_id: int, decision: gemini.Decision) -> None:
+    settings = get_settings()
+    output = decision.raw_text if decision.raw_text is not None else json.dumps(decision.args)
+    async with async_session_maker() as session:
+        session.add(
+            AiAction(
+                conversation_ref=f"chatwoot:{conversation_id}",
+                decision=decision.action,
+                model=settings.gemini_model,
+                prompt_tokens=decision.prompt_tokens,
+                output=output,
+            )
+        )
+        await session.commit()
+
+
+async def _process_conversation(conversation_id: int) -> None:
+    settings = get_settings()
+    chatwoot = get_chatwoot_client()
+
+    context = await _build_context(conversation_id)
+    decision = gemini.decide(SYSTEM_PROMPT, context)
+    await _log_decision(conversation_id, decision)
+
+    if decision.action == "send_reply":
+        text = decision.args.get("text", "")
+        if settings.agent_mode == "auto":
+            await chatwoot.create_message(
+                conversation_id,
+                text,
+                private=False,
+                token_override=settings.chatwoot_bot_token,
+            )
+            # Stays pending — auto-sent replies don't hand off to a human.
+        else:
+            await chatwoot.create_message(
+                conversation_id,
+                f"🤖 Suggested reply:\n\n{text}",
+                private=True,
+            )
+            await chatwoot.toggle_status(conversation_id, "open")
+    elif decision.action == "escalate_to_ticket":
+        await sync.escalate_conversation(
+            conversation_id,
+            reason=decision.args.get("reason"),
+            priority=decision.args.get("priority"),
+            summary=decision.args.get("summary"),
+        )
+        await chatwoot.toggle_status(conversation_id, "open")
+    else:
+        # handoff_to_human, or any unrecognized action -- always hand off
+        # rather than doing nothing.
+        if decision.action != "handoff_to_human":
+            logger.warning(
+                "orchestrator: unrecognized decision action %r for conversation %s, "
+                "handing off",
+                decision.action,
+                conversation_id,
+            )
+        await chatwoot.toggle_status(conversation_id, "open")

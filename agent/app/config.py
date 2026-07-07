@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     zammad_api_token: str
     zammad_webhook_secret: str
     zammad_integration_login: str = "integration@local"
+    # Feature flag for the Zammad -> Gemini draft-reply flow (services.responder)
+    zammad_ai_drafts: bool = True
 
     # Gemini / AI behavior
     gemini_api_key: str

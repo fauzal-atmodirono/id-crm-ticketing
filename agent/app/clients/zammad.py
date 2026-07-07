@@ -70,6 +70,13 @@ class ZammadClient:
         response.raise_for_status()
         return response.json()
 
+    async def get_articles(self, ticket_id: int) -> Any:
+        response = await self._client.get(
+            f"/api/v1/ticket_articles/by_ticket/{ticket_id}"
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def find_or_create_organization(self, name: str) -> Any:
         search_response = await self._client.get(
             "/api/v1/organizations/search", params={"query": name}

@@ -121,6 +121,50 @@ async def test_maybe_escalate_is_idempotent_for_repeated_event():
 
 
 @respx.mock
+async def test_escalation_note_failure_does_not_raise_and_keeps_ticket_and_link():
+    """The private "Escalated to ticket #N" note is posted only after the
+    ticket and conversation_links row are committed. If that final Chatwoot
+    call fails, the escalation itself already succeeded — the background
+    task must log and swallow the error, not raise, and the link must stay
+    intact (a lost note is strictly better than a crashed task)."""
+    respx.get(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages"
+    ).mock(return_value=httpx.Response(200, json=MESSAGES_RESPONSE))
+    respx.get(f"{ZAMMAD}/api/v1/users/search").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.post(f"{ZAMMAD}/api/v1/users").mock(
+        return_value=httpx.Response(201, json={"id": 88})
+    )
+    create_ticket = respx.post(f"{ZAMMAD}/api/v1/tickets").mock(
+        return_value=httpx.Response(201, json={"id": 777, "number": "10777"})
+    )
+    respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages"
+    ).mock(return_value=httpx.Response(500, json={"error": "boom"}))
+
+    payload = {
+        "event": "conversation_updated",
+        "id": 42,
+        "labels": ["escalate"],
+        "meta": {},
+        "messages": [],
+    }
+    await sync.maybe_escalate(payload)  # must not raise
+
+    assert create_ticket.call_count == 1
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(ConversationLink).where(
+                ConversationLink.chatwoot_conversation_id == 42
+            )
+        )
+        link = result.scalar_one_or_none()
+    assert link is not None
+    assert link.zammad_ticket_id == 777
+
+
+@respx.mock
 async def test_maybe_escalate_ignores_payload_without_escalate_label():
     create_user, create_ticket, create_message = _mock_escalation_routes()
 

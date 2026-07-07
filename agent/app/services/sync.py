@@ -17,6 +17,7 @@ those are logged and skipped, not treated as errors.
 import logging
 from datetime import datetime, timezone
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -106,7 +107,42 @@ async def _ensure_zammad_customer(
                     email=email,
                 )
             )
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            # Lost a race on one of the unique columns: either a concurrent
+            # duplicate delivery inserted the same chatwoot_contact_id, or
+            # another Chatwoot contact already links this zammad_user_id
+            # (e.g. two contacts sharing an email). Recover by re-fetching:
+            # if our contact's row now exists, refresh it; otherwise the
+            # Zammad user is claimed by another link and we leave it alone.
+            await session.rollback()
+            result = await session.execute(
+                select(ContactLink).where(
+                    ContactLink.chatwoot_contact_id == chatwoot_contact_id
+                )
+            )
+            link = result.scalar_one_or_none()
+            if link is not None:
+                link.zammad_user_id = user_id
+                link.email = email
+                try:
+                    await session.commit()
+                except IntegrityError:
+                    await session.rollback()
+                    logger.warning(
+                        "contact_links refresh for chatwoot contact %s still "
+                        "conflicts on zammad user %s; leaving existing link",
+                        chatwoot_contact_id,
+                        user_id,
+                    )
+            else:
+                logger.warning(
+                    "contact_links upsert for chatwoot contact %s collided "
+                    "with an existing link for zammad user %s; skipping link",
+                    chatwoot_contact_id,
+                    user_id,
+                )
 
     return user_id
 
@@ -297,11 +333,23 @@ async def escalate_conversation(
             return
 
     ticket_url = f"{settings.zammad_url}/#ticket/zoom/{ticket_id}"
-    await chatwoot.create_message(
-        conversation_id,
-        f"Escalated to Zammad ticket #{ticket_number}: {ticket_url}",
-        private=True,
-    )
+    try:
+        await chatwoot.create_message(
+            conversation_id,
+            f"Escalated to Zammad ticket #{ticket_number}: {ticket_url}",
+            private=True,
+        )
+    except httpx.HTTPError:
+        # The ticket and link are already committed — the escalation itself
+        # succeeded. A failed confirmation note must not crash the background
+        # task (and the idempotency pre-checks mean a retry wouldn't repost
+        # it anyway), so log and move on.
+        logger.exception(
+            "escalate_conversation: escalated conversation %s to ticket %s "
+            "but failed to post the confirmation note to Chatwoot",
+            conversation_id,
+            ticket_id,
+        )
 
 
 async def on_ticket_event(payload: dict) -> None:
@@ -345,4 +393,15 @@ async def on_ticket_event(payload: dict) -> None:
     settings = get_settings()
     if state == "closed" and settings.auto_resolve:
         chatwoot = get_chatwoot_client()
-        await chatwoot.toggle_status(conversation_id, "resolved")
+        try:
+            await chatwoot.toggle_status(conversation_id, "resolved")
+        except httpx.HTTPError:
+            # State note and last_synced_state are already committed; a
+            # failed auto-resolve is a degraded outcome (conversation stays
+            # open in Chatwoot), not a reason to crash the background task.
+            logger.exception(
+                "on_ticket_event: failed to auto-resolve conversation %s "
+                "after ticket %s closed",
+                conversation_id,
+                ticket_id,
+            )

@@ -93,6 +93,35 @@ async def test_on_ticket_event_closed_with_auto_resolve_toggles_status(monkeypat
 
 
 @respx.mock
+async def test_on_ticket_event_toggle_status_failure_does_not_raise(monkeypatch):
+    """The AUTO_RESOLVE toggle runs after the state note and link update are
+    already committed. A failure there must be logged and swallowed — the
+    background task must not raise, and the synced state must stay
+    committed."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "auto_resolve", True)
+
+    await _seed_link(conversation_id=46, ticket_id=781, last_synced_state="open")
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/46/messages").mock(
+        return_value=httpx.Response(200, json={"id": 1})
+    )
+    toggle_route = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/46/toggle_status"
+    ).mock(return_value=httpx.Response(500, json={"error": "boom"}))
+
+    payload = {"ticket": {"id": 781, "number": "10781", "state": "closed"}}
+    await sync.on_ticket_event(payload)  # must not raise
+
+    assert toggle_route.call_count == 1
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(ConversationLink).where(ConversationLink.zammad_ticket_id == 781)
+        )
+        link = result.scalar_one_or_none()
+    assert link.last_synced_state == "closed"
+
+
+@respx.mock
 async def test_on_ticket_event_closed_without_auto_resolve_does_not_toggle():
     settings = get_settings()
     assert settings.auto_resolve is False  # default from conftest env

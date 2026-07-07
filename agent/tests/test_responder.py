@@ -26,7 +26,10 @@ async def test_customer_article_gets_an_internal_draft_reply(monkeypatch):
         return_value=httpx.Response(201, json={"id": 1})
     )
 
-    monkeypatch.setattr(gemini, "generate", lambda system_prompt, context, client=None: "Your order is on its way.")
+    async def _fake_generate(system_prompt, context, client=None):
+        return "Your order is on its way."
+
+    monkeypatch.setattr(gemini, "generate", _fake_generate)
 
     payload = {
         "ticket": {"id": 501, "number": "10501", "state": "open"},

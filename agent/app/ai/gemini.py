@@ -9,11 +9,15 @@ Two entry points:
   - `generate`: plain text generation (no tools), used by the Zammad
     draft-reply flow.
 
-Both accept an injectable `client` so tests never touch the real API.
+Both accept an injectable `client` so tests never touch the real API. The
+google-genai SDK's `generate_content` call is synchronous, so both entry
+points run it via `asyncio.to_thread` — a real Gemini round-trip must never
+block the event loop (and with it every other request on the worker).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import NamedTuple
 
@@ -83,7 +87,7 @@ def _extract_decision(response: object) -> Decision:
     return _handoff_fallback(raw_text=text, prompt_tokens=prompt_tokens)
 
 
-def decide(
+async def decide(
     system_prompt: str,
     conversation_context: str,
     client: genai.Client | None = None,
@@ -102,7 +106,8 @@ def decide(
     last_error: Exception | None = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
-            response = genai_client.models.generate_content(
+            response = await asyncio.to_thread(
+                genai_client.models.generate_content,
                 model=settings.gemini_model,
                 contents=conversation_context,
                 config=config,
@@ -116,7 +121,7 @@ def decide(
     return _handoff_fallback()
 
 
-def generate(
+async def generate(
     system_prompt: str,
     context: str,
     client: genai.Client | None = None,
@@ -131,7 +136,8 @@ def generate(
     last_error: Exception | None = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
-            response = genai_client.models.generate_content(
+            response = await asyncio.to_thread(
+                genai_client.models.generate_content,
                 model=settings.gemini_model,
                 contents=context,
                 config=config,

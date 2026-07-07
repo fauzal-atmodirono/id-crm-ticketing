@@ -3,6 +3,11 @@ plain-text responses fall back to a `handoff_to_human` decision, and
 transient errors get one retry before falling back. The real SDK is never
 invoked — a fake client object with the same `.models.generate_content(...)`
 shape stands in for `google.genai.Client`.
+
+`decide`/`generate` are async: the sync SDK call runs via
+`asyncio.to_thread` so a real Gemini round-trip never blocks the event
+loop. These tests exercise that full async path — the fake client's sync
+`generate_content` genuinely runs in the to_thread executor.
 """
 
 from types import SimpleNamespace
@@ -50,10 +55,10 @@ class _FakeClient:
         self.models = _FakeModels(responses)
 
 
-def test_decide_parses_function_call_to_decision():
+async def test_decide_parses_function_call_to_decision():
     client = _FakeClient([_function_call_response("send_reply", {"text": "Hi there"})])
 
-    decision = gemini.decide("system prompt", "conversation context", client=client)
+    decision = await gemini.decide("system prompt", "conversation context", client=client)
 
     assert decision.action == "send_reply"
     assert decision.args == {"text": "Hi there"}
@@ -63,51 +68,51 @@ def test_decide_parses_function_call_to_decision():
     assert client.models.calls[0]["contents"] == "conversation context"
 
 
-def test_decide_plain_text_response_falls_back_to_handoff():
+async def test_decide_plain_text_response_falls_back_to_handoff():
     client = _FakeClient([_text_response("I'm not sure what you mean")])
 
-    decision = gemini.decide("system prompt", "context", client=client)
+    decision = await gemini.decide("system prompt", "context", client=client)
 
     assert decision.action == "handoff_to_human"
     assert decision.args == {"reason": "model returned no action"}
     assert decision.raw_text == "I'm not sure what you mean"
 
 
-def test_decide_retries_once_on_error_then_succeeds():
+async def test_decide_retries_once_on_error_then_succeeds():
     client = _FakeClient(
         [RuntimeError("transient"), _function_call_response("handoff_to_human", {"reason": "ok"})]
     )
 
-    decision = gemini.decide("system prompt", "context", client=client)
+    decision = await gemini.decide("system prompt", "context", client=client)
 
     assert decision.action == "handoff_to_human"
     assert decision.args == {"reason": "ok"}
     assert len(client.models.calls) == 2
 
 
-def test_decide_gives_up_after_retry_and_hands_off():
+async def test_decide_gives_up_after_retry_and_hands_off():
     client = _FakeClient([RuntimeError("boom"), RuntimeError("boom again")])
 
-    decision = gemini.decide("system prompt", "context", client=client)
+    decision = await gemini.decide("system prompt", "context", client=client)
 
     assert decision.action == "handoff_to_human"
     assert decision.args == {"reason": "model returned no action"}
     assert len(client.models.calls) == 2
 
 
-def test_generate_returns_stripped_text():
+async def test_generate_returns_stripped_text():
     client = _FakeClient([SimpleNamespace(text="  Draft reply text  \n", candidates=[], usage_metadata=None)])
 
-    text = gemini.generate("system prompt", "context", client=client)
+    text = await gemini.generate("system prompt", "context", client=client)
 
     assert text == "Draft reply text"
 
 
-def test_generate_raises_after_retry_exhausted():
+async def test_generate_raises_after_retry_exhausted():
     client = _FakeClient([RuntimeError("boom"), RuntimeError("boom again")])
 
     try:
-        gemini.generate("system prompt", "context", client=client)
+        await gemini.generate("system prompt", "context", client=client)
         assert False, "expected RuntimeError"
     except RuntimeError:
         pass

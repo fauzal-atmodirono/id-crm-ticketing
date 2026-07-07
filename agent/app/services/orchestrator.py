@@ -21,6 +21,8 @@ import asyncio
 import json
 import logging
 
+import httpx
+
 from app.ai import gemini
 from app.clients.deps import get_chatwoot_client
 from app.config import get_settings
@@ -30,12 +32,31 @@ from app.services import sync
 
 logger = logging.getLogger(__name__)
 
-# One in-flight debounce task per Chatwoot conversation id. A new eligible
-# event for the same conversation cancels whatever's pending and reschedules,
-# so a burst of customer messages only ever triggers one Gemini call.
 DEBOUNCE_SECONDS = 3.0
 
-_pending_tasks: dict[int, asyncio.Task] = {}
+
+class _DebounceState:
+    """One conversation's scheduled debounce task plus whether it has moved
+    past the cancellable sleep into processing. Cancellation from
+    `handle_bot_event` is only allowed while `processing` is False: once a
+    task starts talking to Gemini/Chatwoot it must run to completion, or a
+    burst of messages could leave partial side effects behind (e.g. an
+    `ai_actions` row logged but the reply never posted). The event loop is
+    single-threaded, so the flag flip in `_debounced_process` is atomic with
+    respect to the flag check in `handle_bot_event`."""
+
+    __slots__ = ("task", "processing")
+
+    def __init__(self) -> None:
+        self.task: asyncio.Task | None = None
+        self.processing = False
+
+
+# One in-flight debounce per Chatwoot conversation id. A new eligible event
+# for the same conversation cancels a still-sleeping task and reschedules
+# (coalescing a burst into a single Gemini call); if the task is already
+# processing it's left to finish and a fresh debounce is scheduled instead.
+_pending_tasks: dict[int, _DebounceState] = {}
 
 SYSTEM_PROMPT = (
     "You are a support agent for the company, handling a live customer "
@@ -76,22 +97,41 @@ async def handle_bot_event(payload: dict) -> asyncio.Task | None:
     conversation_id = payload["conversation"]["id"]
 
     existing = _pending_tasks.get(conversation_id)
-    if existing is not None and not existing.done():
-        existing.cancel()
+    if (
+        existing is not None
+        and existing.task is not None
+        and not existing.task.done()
+        and not existing.processing
+    ):
+        # Still in the debounce sleep: coalesce by cancelling and rescheduling.
+        # If it's already processing we leave it to run to completion and just
+        # schedule a fresh debounce for this newer message.
+        existing.task.cancel()
 
-    task = asyncio.ensure_future(_debounced_process(conversation_id))
-    _pending_tasks[conversation_id] = task
-    return task
+    state = _DebounceState()
+    state.task = asyncio.ensure_future(_debounced_process(conversation_id, state))
+    _pending_tasks[conversation_id] = state
+    return state.task
 
 
-async def _debounced_process(conversation_id: int) -> None:
+async def _debounced_process(conversation_id: int, state: _DebounceState) -> None:
     try:
         await asyncio.sleep(DEBOUNCE_SECONDS)
     except asyncio.CancelledError:
         # Superseded by a newer event for the same conversation; the newer
         # task is the one that'll actually process it.
         return
-    await _process_conversation(conversation_id)
+
+    # Past the sleep: from here on this task must run to completion —
+    # handle_bot_event checks this flag before cancelling.
+    state.processing = True
+    try:
+        await _process_conversation(conversation_id)
+    finally:
+        # Drop our own bookkeeping entry unless a newer debounce has already
+        # replaced it, so the dict doesn't grow with finished conversations.
+        if _pending_tasks.get(conversation_id) is state:
+            _pending_tasks.pop(conversation_id, None)
 
 
 async def _build_context(conversation_id: int) -> str:
@@ -144,10 +184,31 @@ async def _process_conversation(conversation_id: int) -> None:
     settings = get_settings()
     chatwoot = get_chatwoot_client()
 
-    context = await _build_context(conversation_id)
-    decision = gemini.decide(SYSTEM_PROMPT, context)
+    try:
+        context = await _build_context(conversation_id)
+    except httpx.HTTPError:
+        # Runs as (part of) a background task -- a transient Chatwoot failure
+        # must be logged, not die as "Task exception was never retrieved".
+        logger.exception(
+            "orchestrator: failed to fetch messages for conversation %s, skipping",
+            conversation_id,
+        )
+        return
+
+    decision = await gemini.decide(SYSTEM_PROMPT, context)
     await _log_decision(conversation_id, decision)
 
+    try:
+        await _execute_decision(conversation_id, decision, settings, chatwoot)
+    except httpx.HTTPError:
+        logger.exception(
+            "orchestrator: failed executing decision %r for conversation %s",
+            decision.action,
+            conversation_id,
+        )
+
+
+async def _execute_decision(conversation_id, decision, settings, chatwoot) -> None:
     if decision.action == "send_reply":
         text = decision.args.get("text", "")
         if settings.agent_mode == "auto":

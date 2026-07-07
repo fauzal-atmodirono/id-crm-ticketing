@@ -80,7 +80,7 @@ async def draft_ticket_reply(payload: dict) -> None:
     context = _build_context(articles)
 
     try:
-        text = gemini.generate(SYSTEM_PROMPT, context)
+        text = await gemini.generate(SYSTEM_PROMPT, context)
     except Exception:
         logger.exception(
             "draft_ticket_reply: gemini.generate failed for ticket %s", ticket_id

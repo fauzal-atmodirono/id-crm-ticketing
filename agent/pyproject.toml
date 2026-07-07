@@ -1,0 +1,32 @@
+[project]
+name = "agent-service"
+version = "0.1.0"
+description = "FastAPI integration service tying Chatwoot (CRM) and Zammad (ticketing) together with a Gemini-powered agent"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "sqlalchemy[asyncio]>=2",
+    "psycopg[binary]",
+    "pydantic-settings",
+    "google-genai",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "respx",
+    "aiosqlite",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

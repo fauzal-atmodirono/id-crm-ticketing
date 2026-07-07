@@ -60,6 +60,8 @@ services:
       - "443:443"
     environment:
       PUBLIC_IP: ${PUBLIC_IP}
+      MAILPIT_AUTH_USER: ${MAILPIT_AUTH_USER}
+      MAILPIT_AUTH_HASH: ${MAILPIT_AUTH_HASH}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -102,6 +104,8 @@ services:
     restart: unless-stopped
     command: redis-server --requirepass ${REDIS_PASSWORD}
     mem_limit: 300m
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD}"
     volumes:
       - redis_data:/data
     networks:

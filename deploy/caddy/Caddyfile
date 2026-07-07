@@ -17,5 +17,11 @@ http://agent.{$PUBLIC_IP}.nip.io {
 }
 
 http://mail.{$PUBLIC_IP}.nip.io {
+	# Mailpit has no auth of its own and catches real password-reset/invite
+	# emails from both apps, so gate it behind HTTP basic auth. Credentials
+	# come from MAILPIT_AUTH_USER / MAILPIT_AUTH_HASH (see .env.example).
+	basic_auth {
+		{$MAILPIT_AUTH_USER} {$MAILPIT_AUTH_HASH}
+	}
 	reverse_proxy mailpit:8025
 }

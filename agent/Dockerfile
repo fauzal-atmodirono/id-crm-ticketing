@@ -6,6 +6,10 @@ WORKDIR /app
 # layers cache independently of application code changes.
 COPY pyproject.toml ./
 COPY app ./app
+# scripts/ ships one-time ops scripts (e.g. register_bot.py) run via
+# `docker compose exec agent python -m scripts.register_bot ...`, which
+# needs the package present in the image relative to WORKDIR.
+COPY scripts ./scripts
 
 RUN pip install --no-cache-dir .
 

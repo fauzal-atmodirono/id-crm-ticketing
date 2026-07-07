@@ -83,6 +83,9 @@ cp .env.example .env
 # (see the "generate" comments in .env.example for realistic ones):
 #   openssl rand -hex 16   # for the *_PASSWORD vars
 #   openssl rand -hex 64   # for SECRET_KEY_BASE
+# MAILPIT_AUTH_USER / MAILPIT_AUTH_HASH gate the Mailpit UI behind basic
+# auth (it has no auth of its own and catches real password-reset emails):
+#   docker run --rm caddy:2-alpine caddy hash-password --plaintext 'yourpassword'
 docker compose up -d
 ```
 
@@ -94,7 +97,10 @@ First-run notes:
   walks you through creating the first admin and organization.
 - **Mailpit**: visit `http://mail.<PUBLIC_IP>.nip.io` to see all outbound
   mail from both apps (no real SMTP is configured; everything is caught
-  locally).
+  locally). Mailpit has no auth of its own — this endpoint catches real
+  password-reset/invite emails, so Caddy gates it behind HTTP basic auth
+  using `MAILPIT_AUTH_USER` / `MAILPIT_AUTH_HASH` from `.env` (see
+  `.env.example` for how to generate the hash).
 - **Agent**: `http://agent.<PUBLIC_IP>.nip.io/healthz` should return
   `{"status": "ok"}` once the agent service and its dependencies are up.
 
@@ -143,12 +149,19 @@ Restart the agent service after editing `.env`: `docker compose up -d agent`.
 
 - URL: `http://agent.<PUBLIC_IP>.nip.io/webhooks/chatwoot`
 - Subscribe to events: `contact_created`, `contact_updated`,
-  `conversation_updated`, `conversation_status_changed`,
-  `conversation_resolved`
+  `conversation_updated`, `conversation_status_changed`
 
-Set `CHATWOOT_WEBHOOK_SECRET` in `.env` to a random value and configure the
-same value wherever Chatwoot lets you set a webhook signing secret (used to
-verify the `X-Chatwoot-Signature` header).
+Chatwoot auto-generates the webhook's signing secret server-side
+(`has_secure_token`) — you cannot set your own. After creating the webhook
+above, fetch it back via the API and copy its `secret` field into `.env` as
+`CHATWOOT_WEBHOOK_SECRET`:
+
+```bash
+curl -H "api_access_token: <CHATWOOT_API_TOKEN>" \
+  http://crm.<PUBLIC_IP>.nip.io/api/v1/accounts/1/webhooks
+```
+
+Then restart the agent service to pick it up: `docker compose up -d agent`.
 
 ### Zammad → agent webhook + trigger
 

@@ -252,6 +252,8 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      AGENT_DATABASE_URL: ${AGENT_DATABASE_URL:-postgresql+psycopg://agent:${AGENT_DB_PASSWORD}@postgres:5432/agent}
     networks:
       - platform
     depends_on:

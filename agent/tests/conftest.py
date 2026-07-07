@@ -35,3 +35,23 @@ os.environ.setdefault("ZAMMAD_INTEGRATION_LOGIN", "integration@local")
 os.environ.setdefault("AGENT_MODE", "suggest")
 os.environ.setdefault("AUTO_RESOLVE", "false")
 os.environ.setdefault("AGENT_DATABASE_URL", f"sqlite+aiosqlite:///{_TEST_DB_PATH}")
+
+import pytest
+
+from app.db.models import Base
+from app.db.session import async_session_maker, init_db
+
+
+@pytest.fixture(autouse=True)
+async def _reset_agent_db():
+    """Task 4 tests write rows to contact_links/conversation_links/
+    processed_deliveries. Create the tables once (idempotent) and wipe rows
+    after each test so tests sharing the session-scoped sqlite file stay
+    isolated from each other's unique-constrained rows.
+    """
+    await init_db()
+    yield
+    async with async_session_maker() as session:
+        for table in reversed(Base.metadata.sorted_tables):
+            await session.execute(table.delete())
+        await session.commit()

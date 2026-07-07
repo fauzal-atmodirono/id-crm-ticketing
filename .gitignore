@@ -1,0 +1,12 @@
+# Upstream clones — reference only, not part of this repo
+crm/
+ticketing/
+
+# Local env & scratch
+.env
+*.env.local
+.superpowers/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/

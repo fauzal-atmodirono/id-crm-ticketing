@@ -82,7 +82,15 @@ async def test_maybe_escalate_creates_ticket_link_and_private_note():
 
     assert create_ticket.call_count == 1
     ticket_request = create_ticket.calls.last.request
-    assert b"from-chatwoot" in ticket_request.content
+    # Zammad's tickets_controller does `params[:tags].split(',')` -- it
+    # expects a comma-separated string, not a JSON array. Assert the exact
+    # scalar-string encoding, not just that the substring appears (a JSON
+    # array `["from-chatwoot"]` would also contain this substring but 500s
+    # against real Zammad).
+    assert (
+        b'"tags": "from-chatwoot"' in ticket_request.content
+        or b'"tags":"from-chatwoot"' in ticket_request.content
+    )
     assert b"Users" in ticket_request.content
 
     assert create_message.call_count == 1
@@ -162,6 +170,58 @@ async def test_escalation_note_failure_does_not_raise_and_keeps_ticket_and_link(
         link = result.scalar_one_or_none()
     assert link is not None
     assert link.zammad_ticket_id == 777
+
+
+@respx.mock
+async def test_escalate_conversation_maps_priority_to_zammad_name():
+    """`escalate_conversation`'s `priority` arg (the AI tool's low/normal/high
+    vocabulary) must be mapped to Zammad's priority-by-name convention and
+    threaded into the ticket create payload."""
+    create_user, create_ticket, create_message = _mock_escalation_routes()
+
+    await sync.escalate_conversation(42, priority="high")
+
+    assert create_ticket.call_count == 1
+    ticket_request = create_ticket.calls.last.request
+    assert (
+        b'"priority": "3 high"' in ticket_request.content
+        or b'"priority":"3 high"' in ticket_request.content
+    )
+
+
+@respx.mock
+async def test_escalate_conversation_without_priority_omits_field():
+    create_user, create_ticket, create_message = _mock_escalation_routes()
+
+    await sync.escalate_conversation(42)
+
+    assert create_ticket.call_count == 1
+    ticket_request = create_ticket.calls.last.request
+    assert b'"priority"' not in ticket_request.content
+
+
+@respx.mock
+async def test_escalate_conversation_uses_public_urls_for_human_facing_links(monkeypatch):
+    """Links embedded in notes for humans (the Zammad ticket body linking
+    back to Chatwoot, the Chatwoot note linking to the Zammad ticket) should
+    use the public URLs when configured, not the internal docker hostnames
+    -- API calls themselves still go to the internal ZAMMAD/CHATWOOT constants
+    since the respx routes above are keyed on those internal hosts."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "chatwoot_public_url", "http://crm.1-2-3-4.nip.io")
+    monkeypatch.setattr(settings, "zammad_public_url", "http://tickets.1-2-3-4.nip.io")
+
+    create_user, create_ticket, create_message = _mock_escalation_routes()
+
+    await sync.escalate_conversation(42)
+
+    ticket_request = create_ticket.calls.last.request
+    assert b"http://crm.1-2-3-4.nip.io/app/accounts/1/conversations/42" in ticket_request.content
+
+    note_body = create_message.calls.last.request.content
+    assert b"http://tickets.1-2-3-4.nip.io/#ticket/zoom/777" in note_body
 
 
 @respx.mock

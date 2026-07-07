@@ -29,6 +29,15 @@ from app.services import responder
 
 logger = logging.getLogger(__name__)
 
+# Maps the AI tool's low/normal/high priority vocabulary onto Zammad's
+# built-in priority names (Zammad's ticket priority field is set by name,
+# not by the raw value the model produces).
+_ZAMMAD_PRIORITY_NAMES = {
+    "low": "1 low",
+    "normal": "2 normal",
+    "high": "3 high",
+}
+
 
 def _format_timestamp(value: object) -> str:
     if isinstance(value, (int, float)):
@@ -233,11 +242,11 @@ async def escalate_conversation(
     unique constraint (belt-and-suspenders against a concurrent duplicate
     call racing past the pre-check).
 
-    `reason` and `priority` are accepted for forward compatibility with the
-    Task 5 AI layer (which will derive them and call this directly) but
-    aren't threaded into the Zammad payload yet: `ZammadClient.create_ticket`
-    doesn't expose ticket-priority/reason fields, and extending that
-    interface is out of scope here.
+    `priority` (the AI tool's low/normal/high vocabulary) is mapped to a
+    Zammad priority name and threaded into the ticket payload. `reason` is
+    accepted for forward compatibility with the Task 5 AI layer but isn't
+    surfaced on the ticket itself -- `summary` (used as the title) already
+    captures the human-relevant context.
     """
     if await _conversation_link_by_chatwoot_id(conversation_id) is not None:
         logger.info(
@@ -297,7 +306,7 @@ async def escalate_conversation(
         return
 
     conversation_url = (
-        f"{settings.chatwoot_url}/app/accounts/{settings.chatwoot_account_id}"
+        f"{settings.chatwoot_display_url}/app/accounts/{settings.chatwoot_account_id}"
         f"/conversations/{conversation_id}"
     )
     article = {
@@ -311,6 +320,7 @@ async def escalate_conversation(
         customer_id=customer_id,
         article=article,
         tags=["from-chatwoot"],
+        priority=_ZAMMAD_PRIORITY_NAMES.get(priority) if priority else None,
     )
     ticket_id = ticket["id"]
     ticket_number = ticket.get("number", ticket_id)
@@ -333,7 +343,7 @@ async def escalate_conversation(
             )
             return
 
-    ticket_url = f"{settings.zammad_url}/#ticket/zoom/{ticket_id}"
+    ticket_url = f"{settings.zammad_display_url}/#ticket/zoom/{ticket_id}"
     try:
         await chatwoot.create_message(
             conversation_id,
@@ -387,11 +397,22 @@ async def on_ticket_event(payload: dict) -> None:
         ticket_number = ticket.get("number", ticket_id)
 
         chatwoot = get_chatwoot_client()
-        await chatwoot.create_message(
-            conversation_id,
-            f"Ticket #{ticket_number} moved to {state}",
-            private=True,
-        )
+        try:
+            await chatwoot.create_message(
+                conversation_id,
+                f"Ticket #{ticket_number} moved to {state}",
+                private=True,
+            )
+        except httpx.HTTPError:
+            # The state-change note is best-effort; the sync-state update
+            # below must land regardless so on_ticket_event doesn't re-post
+            # (or get stuck) on the next delivery for the same ticket.
+            logger.exception(
+                "on_ticket_event: failed to post state-change note for "
+                "ticket %s to conversation %s",
+                ticket_id,
+                conversation_id,
+            )
         link.last_synced_state = state
         await session.commit()
 

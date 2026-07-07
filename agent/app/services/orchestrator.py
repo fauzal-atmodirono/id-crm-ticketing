@@ -22,6 +22,7 @@ import json
 import logging
 
 import httpx
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.ai import gemini
 from app.clients.deps import get_chatwoot_client
@@ -167,17 +168,27 @@ async def _build_context(conversation_id: int) -> str:
 async def _log_decision(conversation_id: int, decision: gemini.Decision) -> None:
     settings = get_settings()
     output = decision.raw_text if decision.raw_text is not None else json.dumps(decision.args)
-    async with async_session_maker() as session:
-        session.add(
-            AiAction(
-                conversation_ref=f"chatwoot:{conversation_id}",
-                decision=decision.action,
-                model=settings.gemini_model,
-                prompt_tokens=decision.prompt_tokens,
-                output=output,
+    try:
+        async with async_session_maker() as session:
+            session.add(
+                AiAction(
+                    conversation_ref=f"chatwoot:{conversation_id}",
+                    decision=decision.action,
+                    model=settings.gemini_model,
+                    prompt_tokens=decision.prompt_tokens,
+                    output=output,
+                )
             )
+            await session.commit()
+    except SQLAlchemyError:
+        # Logging the decision is an audit trail, not a precondition for
+        # executing it -- a DB blip here must not abort the decision itself.
+        logger.exception(
+            "orchestrator: failed to log ai_actions row for conversation %s "
+            "(decision %r); continuing to execute it anyway",
+            conversation_id,
+            decision.action,
         )
-        await session.commit()
 
 
 async def _process_conversation(conversation_id: int) -> None:

@@ -47,6 +47,7 @@ class ZammadClient:
         customer_id: int,
         article: dict[str, Any],
         tags: list[str] | None = None,
+        priority: str | None = None,
     ) -> Any:
         payload: dict[str, Any] = {
             "title": title,
@@ -55,7 +56,13 @@ class ZammadClient:
             "article": article,
         }
         if tags:
-            payload["tags"] = tags
+            # Zammad's tickets_controller does `params[:tags].split(',')` --
+            # it expects a comma-separated string, not a JSON array. Sending
+            # an array 500s every ticket create.
+            payload["tags"] = ",".join(tags)
+        if priority:
+            # Zammad accepts ticket priority by name (e.g. "2 normal").
+            payload["priority"] = priority
         response = await self._client.post("/api/v1/tickets", json=payload)
         response.raise_for_status()
         return response.json()

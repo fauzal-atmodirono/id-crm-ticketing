@@ -286,6 +286,50 @@ async def test_second_event_during_processing_does_not_cancel_in_flight_work(mon
 
 
 @respx.mock
+async def test_log_decision_db_failure_does_not_block_execution(monkeypatch, caplog):
+    """`_log_decision`'s DB write (the ai_actions audit row) is not a
+    precondition for executing the decision -- a DB blip there must be
+    logged and swallowed, and the decision must still execute normally."""
+
+    class _BoomSession:
+        def add(self, obj):
+            pass
+
+        async def commit(self):
+            from sqlalchemy.exc import SQLAlchemyError
+
+            raise SQLAlchemyError("boom")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+    monkeypatch.setattr(orchestrator, "async_session_maker", lambda: _BoomSession())
+
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    create_message = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages"
+    ).mock(return_value=httpx.Response(200, json={"id": 999}))
+    respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status"
+    ).mock(return_value=httpx.Response(200, json={"success": True}))
+
+    monkeypatch.setattr(
+        gemini, "decide", _stub_decide(gemini.Decision("send_reply", {"text": "Hi."}, None, 2))
+    )
+
+    task = await orchestrator.handle_bot_event(_payload())
+    await task  # must not raise
+
+    assert "failed to log ai_actions row" in caplog.text
+    assert create_message.call_count == 1
+
+
+@respx.mock
 async def test_create_message_failure_in_suggest_mode_is_logged_not_raised(monkeypatch, caplog):
     """A transient Chatwoot 500 while executing the decision must be logged
     (logger.exception, consistent with responder/sync conventions), never

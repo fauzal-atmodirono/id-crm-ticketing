@@ -12,9 +12,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Internal service URLs
+    # Internal service URLs — used for all API calls (resolve via the
+    # platform docker network)
     chatwoot_url: str
     zammad_url: str
+
+    # Public URLs — used only for human-facing links embedded in notes
+    # (Zammad ticket body linking back to the Chatwoot conversation, Chatwoot
+    # note linking to the Zammad ticket). Optional: fall back to the internal
+    # URLs above so nothing breaks if unset (links just won't be clickable
+    # from outside the docker network).
+    chatwoot_public_url: str | None = None
+    zammad_public_url: str | None = None
 
     # Chatwoot
     chatwoot_api_token: str
@@ -39,6 +48,20 @@ class Settings(BaseSettings):
 
     # Agent service's own database
     agent_database_url: str
+
+    @property
+    def chatwoot_display_url(self) -> str:
+        """Chatwoot base URL for human-facing links: public if configured,
+        otherwise the internal URL (still valid inside the docker network,
+        just not clickable from outside it)."""
+        return self.chatwoot_public_url or self.chatwoot_url
+
+    @property
+    def zammad_display_url(self) -> str:
+        """Zammad base URL for human-facing links: public if configured,
+        otherwise the internal URL (still valid inside the docker network,
+        just not clickable from outside it)."""
+        return self.zammad_public_url or self.zammad_url
 
 
 @lru_cache

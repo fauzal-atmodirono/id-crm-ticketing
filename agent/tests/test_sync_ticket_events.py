@@ -52,6 +52,29 @@ async def test_on_ticket_event_posts_note_on_state_change():
 
 
 @respx.mock
+async def test_on_ticket_event_note_failure_does_not_raise_and_state_still_commits():
+    """The state-change note (`Ticket #N moved to X`) isn't wrapped in
+    try/except like the rest of the module -- a 500 posting it must be
+    logged and swallowed, and `last_synced_state` must still be committed so
+    the next delivery for this ticket doesn't re-post."""
+    await _seed_link(conversation_id=47, ticket_id=782, last_synced_state="open")
+    note_route = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/47/messages"
+    ).mock(return_value=httpx.Response(500, json={"error": "boom"}))
+
+    payload = {"ticket": {"id": 782, "number": "10782", "state": "closed"}}
+    await sync.on_ticket_event(payload)  # must not raise
+
+    assert note_route.call_count == 1
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(ConversationLink).where(ConversationLink.zammad_ticket_id == 782)
+        )
+        link = result.scalar_one_or_none()
+    assert link.last_synced_state == "closed"
+
+
+@respx.mock
 async def test_on_ticket_event_unknown_ticket_is_ignored():
     note_route = respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages")
 

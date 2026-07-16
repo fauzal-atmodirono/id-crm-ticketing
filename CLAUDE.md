@@ -7,8 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A unified CRM + ticketing platform: **Chatwoot** (CRM/live chat) and **Zammad**
 (ticketing) run side by side behind a **Caddy** reverse proxy, with a small
 **FastAPI `agent` service** that keeps them in sync and layers Gemini AI on top
-(auto-drafted replies, auto-escalation). Everything runs as one Docker Compose
-project on a single GCE VM. See `README.md` for the full deploy/wiring runbook.
+(auto-drafted replies, auto-escalation). It is multi-tenant: each customer gets its own isolated Chatwoot + Zammad + agent stack, with a shared Caddy/Postgres/Mailpit, all as Docker Compose on a single GCE VM. See `README.md` for the full deploy/wiring runbook.
 
 The **only** first-party code you edit lives in `agent/`. `deploy/` is runtime
 config/ops scripts. Chatwoot and Zammad are upstream apps pulled as Docker
@@ -30,7 +29,9 @@ pytest tests/test_orchestrator.py::test_name       # one test
 Tests never hit postgres, the real Chatwoot/Zammad APIs, or Gemini:
 `tests/conftest.py` sets all required env vars and points `AGENT_DATABASE_URL`
 at a throwaway sqlite file (aiosqlite); HTTP is stubbed with `respx`; Gemini
-clients are injected. The platform is multi-tenant: shared infra (`docker compose -p platform-infra
+clients are injected.
+
+The platform is multi-tenant: shared infra (`docker compose -p platform-infra
 -f deploy/docker-compose.infra.yml --env-file deploy/infra.env up -d`) plus one
 app stack per customer, provisioned with `deploy/scripts/add-tenant.sh <name>`
 (see `docs/superpowers/specs/2026-07-16-per-tenant-isolation-design.md`).

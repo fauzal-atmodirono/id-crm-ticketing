@@ -5,7 +5,7 @@ single Caddy reverse proxy, with a small FastAPI **agent** service that keeps
 contacts and conversations in sync between the two and adds a Gemini-powered
 AI layer (auto-drafted replies, auto-escalation to tickets).
 
-Everything runs as one Docker Compose project on a single GCE VM.
+Each customer gets its own isolated Chatwoot + Zammad + agent stack on its own subdomains; a shared Caddy, Postgres, and Mailpit back them all, running as Docker Compose on a single GCE VM.
 
 ## 1. Architecture
 
@@ -30,7 +30,7 @@ Everything runs as one Docker Compose project on a single GCE VM.
               └──────────────►│◄──────────────┘
                               │
                      ┌────────▼────────┐
-                     │ postgres (+pgvector) │  databases: chatwoot, zammad, agent
+                     │ postgres (+pgvector) │  databases: chatwoot_<t>, zammad_<t>, agent_<t>
                      │ redis, memcached     │
                      └──────────────────────┘
 ```
@@ -220,7 +220,7 @@ Zammad version) → provider **Custom OpenAI**:
 - Endpoint: `https://generativelanguage.googleapis.com/v1beta/openai`
 - API key: your `GEMINI_API_KEY` (same one used by the agent service, from
   [Google AI Studio](https://aistudio.google.com/apikey))
-- Model: match `GEMINI_MODEL` in `.env` (default `gemini-2.5-flash`)
+- Model: match `GEMINI_MODEL` in `tenants/<tenant>.env` (default `gemini-2.5-flash`)
 
 With this enabled, Zammad's own "suggest a reply" / ticket AI features call
 Gemini directly, independent of the agent service's own Chatwoot-side bot.
@@ -251,9 +251,7 @@ a real domain with TLS:
 
 ## 8. Backups & restore
 
-`deploy/scripts/backup.sh` dumps the `chatwoot`, `zammad`, and `agent`
-Postgres databases (`pg_dump -Fc`) and archives the `chatwoot_storage` and
-`zammad_storage` volumes into `/backups/YYYY-MM-DD/`, then prunes backup
+`deploy/scripts/backup.sh` iterates over every tenant in `deploy/tenants/*.env` and, for each, dumps its `chatwoot_<tenant>`, `zammad_<tenant>`, and `agent_<tenant>` Postgres databases (`pg_dump -Fc`) and archives its `<tenant>_chatwoot_storage` and `<tenant>_zammad_storage` volumes into `/backups/YYYY-MM-DD/`, then prunes backup
 directories older than 7 days.
 
 Install as a nightly cron job (as root, or a user with docker access):

@@ -48,7 +48,15 @@ def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
     app.include_router(build_metrics_query_router(query_port))
     app.include_router(build_metrics_export_router(query_port))
     app.include_router(build_metrics_anomaly_router(query_port, settings))
-    start_report_scheduler(settings, query_port, build_email_report_port(settings))
+
+    report_scheduler = start_report_scheduler(
+        settings, query_port, build_email_report_port(settings)
+    )
+    if report_scheduler is not None:
+
+        @app.on_event("shutdown")
+        def _stop_report_scheduler() -> None:
+            report_scheduler.shutdown(wait=False)
 
     metrics_scheduler = start_metrics_scheduler(settings)
     if metrics_scheduler is not None:

@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     # Bot-metrics anomaly detection thresholds
     # Z-score multiplier for channel-volume anomaly detection
     anomaly_zscore_k: float = 3.0
-    # Minimum number of baseline observations before anomaly detection activates
+    # Minimum baseline mean volume before a channel can be flagged (low-traffic guard)
     anomaly_min_baseline: int = 20
 
     def report_recipient_list(self) -> list[str]:

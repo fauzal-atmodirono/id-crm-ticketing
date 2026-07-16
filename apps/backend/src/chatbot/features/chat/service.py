@@ -39,6 +39,7 @@ from chatbot.features.chat.ports import (
     TicketingPort,
 )
 from chatbot.features.metrics.events import build_turn_event
+from chatbot.features.metrics.mapping import CATEGORY_TO_DIVISION
 
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
@@ -1096,6 +1097,7 @@ class OrchestratorService:
             for log_msg in chat_log:
                 body += f"- {log_msg['role'].upper()}: {log_msg['text']}\n"
 
+            _raw_cat = session_state.get("category")
             ticket_id = await self._ticketing_port.create_ticket(
                 session_id=session_id,
                 title=title,
@@ -1104,6 +1106,10 @@ class OrchestratorService:
                 customer_name=lead_details.get("customer_name"),
                 customer_email=lead_details.get("customer_email"),
                 customer_phone=lead_details.get("customer_phone"),
+                category=_raw_cat,
+                subcategory=session_state.get("subcategory"),
+                division=(CATEGORY_TO_DIVISION.get(str(_raw_cat).lower()) if _raw_cat else None),
+                sla_minutes=session_state.get("sla_minutes"),
             )
 
             # Add private note banner

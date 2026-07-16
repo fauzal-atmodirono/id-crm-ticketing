@@ -44,6 +44,11 @@ class TicketingPort(Protocol):
         customer_name: str | None = None,
         customer_email: str | None = None,
         customer_phone: str | None = None,
+        category: str | None = None,
+        subcategory: str | None = None,
+        division: str | None = None,
+        department: str | None = None,
+        sla_minutes: int | None = None,
     ) -> str:
         """Create a new customer ticket. Returns the created ticket's ID."""
         ...

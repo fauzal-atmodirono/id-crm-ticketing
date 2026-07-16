@@ -34,6 +34,11 @@ class InMemoryTicketingAdapter(TicketingPort):
         customer_name: str | None = None,
         customer_email: str | None = None,
         customer_phone: str | None = None,
+        category: str | None = None,
+        subcategory: str | None = None,
+        division: str | None = None,
+        department: str | None = None,
+        sla_minutes: int | None = None,
     ) -> str:
         self.ticket_counter += 1
         ticket_id = f"TKT-MOCK-{self.ticket_counter:03d}"
@@ -46,6 +51,11 @@ class InMemoryTicketingAdapter(TicketingPort):
             "customer_name": customer_name,
             "customer_email": customer_email,
             "customer_phone": customer_phone,
+            "category": category,
+            "subcategory": subcategory,
+            "division": division,
+            "department": department,
+            "sla_minutes": sla_minutes,
         }
         return ticket_id
 

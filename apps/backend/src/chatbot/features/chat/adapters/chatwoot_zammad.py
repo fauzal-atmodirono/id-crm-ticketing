@@ -86,6 +86,11 @@ class ChatwootZammadAdapter(ChatPort, TicketingPort):
         customer_name: str | None = None,  # noqa: ARG002
         customer_email: str | None = None,  # noqa: ARG002
         customer_phone: str | None = None,  # noqa: ARG002
+        category: str | None = None,  # noqa: ARG002
+        subcategory: str | None = None,  # noqa: ARG002
+        division: str | None = None,  # noqa: ARG002
+        department: str | None = None,  # noqa: ARG002
+        sla_minutes: int | None = None,  # noqa: ARG002
     ) -> str:
         conv_id = session_id.replace("chatwoot-conv-", "")
 

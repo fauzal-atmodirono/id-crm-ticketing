@@ -84,6 +84,11 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
         customer_name: str | None = None,
         customer_email: str | None = None,
         customer_phone: str | None = None,
+        category: str | None = None,
+        subcategory: str | None = None,
+        division: str | None = None,
+        department: str | None = None,
+        sla_minutes: int | None = None,
     ) -> str:
         subdomain = self._settings.zendesk_subdomain
         url = f"https://{subdomain}.zendesk.com/api/v2/tickets.json"
@@ -116,8 +121,25 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
             "external_id": session_id,
             "requester": requester,
         }
+
+        def _norm(v: str) -> str:
+            return v.strip().lower().replace(" ", "_")
+
+        tags: list[str] = []
         if self._settings.zendesk_ticket_tag:
-            ticket["tags"] = [self._settings.zendesk_ticket_tag]
+            tags.append(self._settings.zendesk_ticket_tag)
+        if category:
+            tags.append(f"category_{_norm(category)}")
+        if subcategory:
+            tags.append(f"subcat_{_norm(subcategory)}")
+        if division:
+            tags.append(f"division_{_norm(division)}")
+        if department:
+            tags.append(f"dept_{_norm(department)}")
+        if sla_minutes is not None:
+            tags.append(f"sla_{sla_minutes}")
+        if tags:
+            ticket["tags"] = tags
         payload = {"ticket": ticket}
 
         _log.info("creating_zendesk_support_ticket", session_id=session_id)

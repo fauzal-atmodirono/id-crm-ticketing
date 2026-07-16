@@ -171,3 +171,27 @@ def test_dimension_fields_default_none() -> None:
     row = map_ticket_to_row(_ticket(tags=[]))
     assert row is not None
     assert row.category is None and row.division is None and row.sla_minutes is None
+
+
+def test_metric_set_timing_and_reopens() -> None:
+    row = map_ticket_to_row(
+        _ticket(
+            created_at="2026-06-21T09:00:00Z",
+            metric_set={
+                "solved_at": "2026-06-21T10:30:00Z",
+                "reopens": 2,
+                "reply_time_in_minutes": {"calendar": 15},
+            },
+        )
+    )
+    assert row is not None
+    assert row.resolved_at == "2026-06-21T10:30:00Z"
+    assert row.reopen_count == 2
+    assert row.first_response_at == "2026-06-21T09:15:00+00:00"
+
+
+def test_no_metric_set_leaves_timing_none() -> None:
+    row = map_ticket_to_row(_ticket())
+    assert row is not None
+    assert row.resolved_at is None and row.reopen_count is None
+    assert row.first_response_at is None

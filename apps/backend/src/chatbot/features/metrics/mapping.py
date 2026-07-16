@@ -53,6 +53,9 @@ class ConversationRow:
     agent_id: str | None = None
     sla_minutes: int | None = None
     sla_deadline: str | None = None
+    first_response_at: str | None = None
+    resolved_at: str | None = None
+    reopen_count: int | None = None
 
 
 def channel_from_external_id(external_id: str | None) -> str:
@@ -97,6 +100,28 @@ def _sla_deadline(created_at: str | None, sla_minutes: int | None) -> str | None
     return (base + timedelta(minutes=sla_minutes)).astimezone(UTC).isoformat()
 
 
+def _timing_from_metric_set(
+    metric_set: object, created_at: str | None
+) -> tuple[str | None, str | None, int | None]:
+    if not isinstance(metric_set, dict):
+        return (None, None, None)
+    resolved_at = metric_set.get("solved_at")
+    reopens = metric_set.get("reopens")
+    reopen_count = int(reopens) if reopens is not None else None
+    first_response_at: str | None = None
+    reply = metric_set.get("reply_time_in_minutes")
+    if created_at and isinstance(reply, dict) and reply.get("calendar") is not None:
+        base = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        first_response_at = (
+            (base + timedelta(minutes=int(reply["calendar"]))).astimezone(UTC).isoformat()
+        )
+    return (
+        str(resolved_at) if resolved_at else None,
+        first_response_at,
+        reopen_count,
+    )
+
+
 def map_ticket_to_row(ticket: dict[str, object]) -> ConversationRow | None:
     """Map one Zendesk ticket to a conversation row, or None to skip it."""
     external_id = ticket.get("external_id")
@@ -122,6 +147,10 @@ def map_ticket_to_row(ticket: dict[str, object]) -> ConversationRow | None:
     pic = _first_tag(tags, _PIC_TAG) or agent_id
     division = CATEGORY_TO_DIVISION.get(category.lower()) if category else None
 
+    resolved_at, first_response_at, reopen_count = _timing_from_metric_set(
+        ticket.get("metric_set"), str(created) if created else None
+    )
+
     return ConversationRow(
         conversation_id=str(ticket.get("id")),
         channel=channel_from_external_id(external_id_str),
@@ -139,4 +168,7 @@ def map_ticket_to_row(ticket: dict[str, object]) -> ConversationRow | None:
         agent_id=agent_id,
         sla_minutes=sla_minutes,
         sla_deadline=_sla_deadline(str(created) if created else None, sla_minutes),
+        first_response_at=first_response_at,
+        resolved_at=resolved_at,
+        reopen_count=reopen_count,
     )

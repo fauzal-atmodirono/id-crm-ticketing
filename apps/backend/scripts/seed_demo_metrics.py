@@ -39,6 +39,10 @@ from chatbot.platform.config import get_settings
 
 random.seed(42)
 
+DIVISIONS = ["Apps", "Sales", "Aftersales", "Charging"]
+AGENTS = ["agent_ali", "agent_siti", "agent_raj", "agent_mei"]
+DEPTS = ["service", "sales", "technical", "charging"]
+
 CHANNELS = ["WhatsApp", "Email", "Phone", "Web"]
 # session_id prefix per channel so channel_from_external_id maps turn_events correctly
 PREFIX = {"WhatsApp": "whatsapp", "Email": "email", "Phone": "phone", "Web": "sim"}
@@ -94,6 +98,14 @@ def generate(n: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[d
         nps = random.choices(
             [None, 10, 9, 8, 7, 6, 5, 3, 0], weights=[45, 14, 13, 8, 6, 5, 4, 3, 2]
         )[0]
+        # Deterministic dimension values via index-based cycling (no new randomness).
+        division = DIVISIONS[i % len(DIVISIONS)]
+        agent_id = AGENTS[i % len(AGENTS)]
+        dept = DEPTS[i % len(DEPTS)]
+        # Derive SLA / response timestamps from the conversation's created_at datetime.
+        created_dt = _BASE - timedelta(days=days)
+        first_response_dt = created_dt + timedelta(minutes=(i % 30) + 1)
+        resolved_dt = created_dt + timedelta(minutes=(i % 300) + 30) if bot else None
         conv.append(
             {
                 "conversation_id": cid,
@@ -105,6 +117,18 @@ def generate(n: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[d
                 "csat_score": csat,
                 "nps_score": nps,
                 "synced_at": now,
+                # CRM reporting dimensions (Task 7).
+                "division": division,
+                "category": division.lower(),
+                "subcategory": f"{division.lower()}_general",
+                "department": dept,
+                "agent_id": agent_id,
+                "pic": agent_id,
+                "sla_minutes": 480,
+                "sla_deadline": (created_dt + timedelta(minutes=480)).isoformat(),
+                "first_response_at": first_response_dt.isoformat(),
+                "resolved_at": resolved_dt.isoformat() if resolved_dt else None,
+                "reopen_count": 1 if i % 11 == 0 else 0,
             }
         )
         n_turns = random.choices([1, 2, 3, 4, 5, 6], weights=[18, 22, 22, 16, 12, 10])[0]

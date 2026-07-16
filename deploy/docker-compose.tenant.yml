@@ -1,0 +1,250 @@
+# One tenant's full application stack: Chatwoot + Zammad + agent, plus a
+# dedicated Redis and memcached. Attaches to the shared external `platform`
+# network created by docker-compose.infra.yml and reaches the shared Postgres
+# by name. Every container name/alias is prefixed with ${TENANT} so multiple
+# tenant projects coexist on the one shared network without DNS collisions.
+#
+# Usage (normally via scripts/add-tenant.sh):
+#   docker compose -p <tenant> -f docker-compose.tenant.yml --env-file tenants/<tenant>.env up -d
+
+x-chatwoot-env: &chatwoot-env
+  RAILS_ENV: production
+  NODE_ENV: production
+  INSTALLATION_ENV: docker
+  RAILS_LOG_TO_STDOUT: "true"
+  SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+  FRONTEND_URL: http://${TENANT}.crm.${PUBLIC_IP}.nip.io
+  POSTGRES_HOST: postgres
+  POSTGRES_USERNAME: chatwoot_${TENANT}
+  POSTGRES_PASSWORD: ${CHATWOOT_DB_PASSWORD}
+  POSTGRES_DATABASE: chatwoot_${TENANT}
+  REDIS_URL: redis://:${REDIS_PASSWORD}@${TENANT}-redis:6379
+  REDIS_PASSWORD: ${REDIS_PASSWORD}
+  ACTIVE_STORAGE_SERVICE: local
+  SMTP_ADDRESS: mailpit
+  SMTP_PORT: 1025
+  SMTP_AUTHENTICATION: ""
+  SMTP_ENABLE_STARTTLS_AUTO: "false"
+  MAILER_SENDER_EMAIL: "Chatwoot <noreply@localhost>"
+  ENABLE_ACCOUNT_SIGNUP: "false"
+  WEB_CONCURRENCY: 1
+  RAILS_MAX_THREADS: 5
+
+x-zammad-env: &zammad-env
+  POSTGRESQL_DB_CREATE: "false"
+  POSTGRESQL_HOST: postgres
+  POSTGRESQL_PORT: 5432
+  POSTGRESQL_DB: zammad_${TENANT}
+  POSTGRESQL_USER: zammad_${TENANT}
+  POSTGRESQL_PASS: ${ZAMMAD_DB_PASSWORD}
+  REDIS_URL: redis://:${REDIS_PASSWORD}@${TENANT}-redis:6379/1
+  MEMCACHE_SERVERS: ${TENANT}-memcached:11211
+  ELASTICSEARCH_ENABLED: "false"
+  TZ: Asia/Jakarta
+
+networks:
+  platform:
+    external: true
+    name: platform
+
+volumes:
+  chatwoot_storage:
+  zammad_storage:
+  redis_data:
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ${TENANT}-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    mem_limit: 256m
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD}"
+    volumes:
+      - redis_data:/data
+    networks:
+      platform:
+        aliases:
+          - ${TENANT}-redis
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  memcached:
+    image: memcached:1.6-alpine
+    container_name: ${TENANT}-memcached
+    restart: unless-stopped
+    command: memcached -m 64
+    mem_limit: 64m
+    networks:
+      platform:
+        aliases:
+          - ${TENANT}-memcached
+
+  chatwoot-rails:
+    image: chatwoot/chatwoot:v4.15.1
+    container_name: ${TENANT}-chatwoot-rails
+    restart: unless-stopped
+    mem_limit: 1500m
+    entrypoint: docker/entrypoints/rails.sh
+    command: ["bundle", "exec", "rails", "s", "-p", "3000", "-b", "0.0.0.0"]
+    environment:
+      <<: *chatwoot-env
+    volumes:
+      - chatwoot_storage:/app/storage
+    networks:
+      platform:
+        aliases:
+          - ${TENANT}-chatwoot-rails
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api > /dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  chatwoot-sidekiq:
+    image: chatwoot/chatwoot:v4.15.1
+    container_name: ${TENANT}-chatwoot-sidekiq
+    restart: unless-stopped
+    mem_limit: 1024m
+    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+    environment:
+      <<: *chatwoot-env
+    volumes:
+      - chatwoot_storage:/app/storage
+    networks:
+      platform:
+        aliases:
+          - ${TENANT}-chatwoot-sidekiq
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  zammad-init:
+    image: ghcr.io/zammad/zammad:7.1.1-0027
+    container_name: ${TENANT}-zammad-init
+    command: ["zammad-init"]
+    restart: on-failure
+    environment:
+      <<: *zammad-env
+    volumes:
+      - zammad_storage:/opt/zammad/storage
+    networks:
+      - platform
+
+  zammad-railsserver:
+    image: ghcr.io/zammad/zammad:7.1.1-0027
+    container_name: ${TENANT}-zammad-railsserver
+    command: ["zammad-railsserver"]
+    restart: unless-stopped
+    mem_limit: 1500m
+    environment:
+      <<: *zammad-env
+    volumes:
+      - zammad_storage:/opt/zammad/storage
+    networks:
+      platform:
+        aliases:
+          - ${TENANT}-zammad-railsserver
+    depends_on:
+      zammad-init:
+        condition: service_completed_successfully
+
+  zammad-scheduler:
+    image: ghcr.io/zammad/zammad:7.1.1-0027
+    container_name: ${TENANT}-zammad-scheduler
+    command: ["zammad-scheduler"]
+    restart: unless-stopped
+    mem_limit: 1024m
+    environment:
+      <<: *zammad-env
+    volumes:
+      - zammad_storage:/opt/zammad/storage
+    networks:
+      - platform
+    depends_on:
+      zammad-init:
+        condition: service_completed_successfully
+
+  zammad-websocket:
+    image: ghcr.io/zammad/zammad:7.1.1-0027
+    container_name: ${TENANT}-zammad-websocket
+    command: ["zammad-websocket"]
+    restart: unless-stopped
+    mem_limit: 384m
+    environment:
+      <<: *zammad-env
+    volumes:
+      - zammad_storage:/opt/zammad/storage
+    networks:
+      - platform
+    depends_on:
+      zammad-init:
+        condition: service_completed_successfully
+
+  zammad-nginx:
+    image: ghcr.io/zammad/zammad:7.1.1-0027
+    container_name: ${TENANT}-zammad-nginx
+    command: ["zammad-nginx"]
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      <<: *zammad-env
+      NGINX_SERVER_SCHEME: http
+      ZAMMAD_RAILSSERVER_HOST: ${TENANT}-zammad-railsserver
+      ZAMMAD_WEBSOCKET_HOST: ${TENANT}-zammad-websocket
+    volumes:
+      - zammad_storage:/opt/zammad/storage
+    networks:
+      platform:
+        aliases:
+          - ${TENANT}-zammad-nginx
+    depends_on:
+      - zammad-railsserver
+      - zammad-websocket
+
+  agent:
+    build: ../agent
+    image: platform-agent:latest
+    container_name: ${TENANT}-agent
+    restart: unless-stopped
+    mem_limit: 384m
+    environment:
+      CHATWOOT_URL: http://${TENANT}-chatwoot-rails:3000
+      ZAMMAD_URL: http://${TENANT}-zammad-nginx:8080
+      CHATWOOT_PUBLIC_URL: http://${TENANT}.crm.${PUBLIC_IP}.nip.io
+      ZAMMAD_PUBLIC_URL: http://${TENANT}.tickets.${PUBLIC_IP}.nip.io
+      AGENT_PUBLIC_URL: http://${TENANT}.agent.${PUBLIC_IP}.nip.io
+      CHATWOOT_API_TOKEN: ${CHATWOOT_API_TOKEN}
+      CHATWOOT_PLATFORM_TOKEN: ${CHATWOOT_PLATFORM_TOKEN}
+      CHATWOOT_ACCOUNT_ID: ${CHATWOOT_ACCOUNT_ID}
+      CHATWOOT_WEBHOOK_SECRET: ${CHATWOOT_WEBHOOK_SECRET}
+      CHATWOOT_BOT_TOKEN: ${CHATWOOT_BOT_TOKEN}
+      CHATWOOT_BOT_SECRET: ${CHATWOOT_BOT_SECRET}
+      ZAMMAD_API_TOKEN: ${ZAMMAD_API_TOKEN}
+      ZAMMAD_WEBHOOK_SECRET: ${ZAMMAD_WEBHOOK_SECRET}
+      ZAMMAD_INTEGRATION_LOGIN: ${ZAMMAD_INTEGRATION_LOGIN}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL}
+      AGENT_MODE: ${AGENT_MODE}
+      AUTO_RESOLVE: ${AUTO_RESOLVE}
+      ZAMMAD_AI_DRAFTS: ${ZAMMAD_AI_DRAFTS}
+      AGENT_DATABASE_URL: postgresql+psycopg://agent_${TENANT}:${AGENT_DB_PASSWORD}@postgres:5432/agent_${TENANT}
+    networks:
+      platform:
+        aliases:
+          - ${TENANT}-agent
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s

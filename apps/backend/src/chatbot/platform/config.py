@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     bigquery_qa_labels_table: str = "qa_labels"
     qa_api_key: str = ""
 
+    # Bot-metrics Phase 5 (FAQ feedback recording)
+    bigquery_faq_feedback_table: str = "faq_feedback"
+
     # Bot-metrics export: SMTP settings for emailing scheduled reports
     smtp_host: str = ""
     smtp_port: int = 587

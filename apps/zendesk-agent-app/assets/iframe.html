@@ -260,26 +260,29 @@
           return;
         }
 
-        // Render suggestions
+        // Render suggestions (HTML structure without inline onclick handlers)
         contentDiv.innerHTML = suggestions.map((suggestion, idx) => `
           <div class="suggestion" data-article-id="${escapeHtml(suggestion.title)}" data-index="${idx}">
             <div class="suggestion-title">${escapeHtml(suggestion.title)}</div>
             <div class="suggestion-snippet">${escapeHtml(suggestion.snippet || '')}</div>
             <div class="suggestion-source">Source: ${escapeHtml(suggestion.source_type || 'unknown')}</div>
             <div class="suggestion-actions">
-              <button class="insert-btn" onclick="insertSuggestion(${idx}, '${escapeAttr(suggestion.title)}', '${escapeAttr(suggestion.url || '')}')">
+              <button class="insert-btn" data-action="insert" data-idx="${idx}" title="Insert">
                 Insert
               </button>
-              <button class="feedback-btn helpful" onclick="sendFeedback('${escapeAttr(suggestion.title)}', true)" title="Helpful">
+              <button class="feedback-btn helpful" data-action="feedback-helpful" data-idx="${idx}" title="Helpful">
                 👍
               </button>
-              <button class="feedback-btn unhelpful" onclick="sendFeedback('${escapeAttr(suggestion.title)}', false)" title="Not helpful">
+              <button class="feedback-btn unhelpful" data-action="feedback-unhelpful" data-idx="${idx}" title="Not helpful">
                 👎
               </button>
             </div>
             <div class="feedback-status" id="feedback-${idx}"></div>
           </div>
         `).join('');
+
+        // Attach event listeners using dataset attributes
+        attachSuggestionHandlers(suggestions);
 
       } catch (error) {
         console.error('Fetch error:', error);
@@ -288,7 +291,42 @@
       }
     }
 
-    async function insertSuggestion(index, title, url) {
+    function attachSuggestionHandlers(suggestions) {
+      // Attach listeners to all Insert buttons
+      document.querySelectorAll('button[data-action="insert"]').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          const idx = parseInt(btn.dataset.idx, 10);
+          if (idx >= 0 && idx < suggestions.length) {
+            const suggestion = suggestions[idx];
+            await insertSuggestion(suggestion.title, suggestion.url || '');
+          }
+        });
+      });
+
+      // Attach listeners to helpful feedback buttons
+      document.querySelectorAll('button[data-action="feedback-helpful"]').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          const idx = parseInt(btn.dataset.idx, 10);
+          if (idx >= 0 && idx < suggestions.length) {
+            const suggestion = suggestions[idx];
+            await sendFeedback(suggestion.title, true);
+          }
+        });
+      });
+
+      // Attach listeners to unhelpful feedback buttons
+      document.querySelectorAll('button[data-action="feedback-unhelpful"]').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          const idx = parseInt(btn.dataset.idx, 10);
+          if (idx >= 0 && idx < suggestions.length) {
+            const suggestion = suggestions[idx];
+            await sendFeedback(suggestion.title, false);
+          }
+        });
+      });
+    }
+
+    async function insertSuggestion(title, url) {
       try {
         const text = `**FAQ: ${title}**\n${url ? `Link: ${url}` : ''}`;
         await client.invoke('ticket.comment.appendText', text);

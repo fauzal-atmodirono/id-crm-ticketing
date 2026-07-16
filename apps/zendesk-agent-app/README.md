@@ -126,7 +126,7 @@ Test with your Zendesk subdomain's actual origin in browser DevTools (Network ta
 
 2. Verify `GET /kb/suggest?q=test&limit=5` works:
    ```bash
-   curl http://localhost:8000/kb/suggest?q=test&limit=5
+   curl "http://localhost:8000/kb/suggest?q=test&limit=5"
    ```
 
 3. To test the app locally without uploading to Zendesk, you can:
@@ -187,8 +187,7 @@ curl -X POST 'http://localhost:8000/kb/feedback' \
 **Response** (200):
 ```json
 {
-  "status": "ok",
-  "message": "Feedback recorded"
+  "status": "ok"
 }
 ```
 

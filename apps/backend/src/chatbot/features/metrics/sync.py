@@ -39,7 +39,10 @@ def fetch_tickets(
                 return dict(res.json())
 
     sub = settings.zendesk_subdomain
-    url: str | None = f"https://{sub}.zendesk.com/api/v2/incremental/tickets.json?start_time=0"
+    url: str | None = (
+        f"https://{sub}.zendesk.com/api/v2/incremental/tickets.json"
+        f"?start_time=0&include=metric_sets"
+    )
     tickets: list[dict[str, Any]] = []
     while url:
         page = get_page(url)

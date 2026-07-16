@@ -5,6 +5,7 @@ import json
 import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
@@ -288,6 +289,11 @@ class ChatRouter:
             "/webhooks/zendesk-sla-escalation",
             self.sla_escalation_webhook,
             methods=["POST"],
+        )
+        self.router.add_api_route(
+            "/cases/{ticket_id}/audit",
+            self.case_audit,
+            methods=["GET"],
         )
         self.router.add_api_route(
             "/chat/turn",
@@ -671,6 +677,13 @@ class ChatRouter:
                 text=f"⚠️ SLA {payload.level} on case {payload.ticket_id}. Please action.",
             )
         return {"status": "recorded"}
+
+    async def case_audit(self, ticket_id: str) -> dict[str, Any]:
+        """Retrieve audit trail for a case (ticket)."""
+        if self._audit_log is None:
+            raise HTTPException(status_code=503, detail="Audit log not configured")
+        rows = await self._audit_log.list_for_ticket(ticket_id)
+        return {"ticket_id": ticket_id, "audit": [asdict(r) for r in rows]}
 
     async def zendesk_email_webhook(
         self,

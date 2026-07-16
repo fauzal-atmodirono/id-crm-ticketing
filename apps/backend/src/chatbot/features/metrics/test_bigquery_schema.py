@@ -29,7 +29,20 @@ def test_schema_has_expected_fields() -> None:
 
 def test_view_ddls_keys_and_targets() -> None:
     ddls = view_ddls("proj", "ds", "conversations")
-    assert set(ddls) == {"v_volume_by_month_channel", "v_resolution_split", "v_csat", "v_nps"}
+    assert set(ddls) == {
+        "v_volume_by_month_channel",
+        "v_resolution_split",
+        "v_csat",
+        "v_nps",
+        "v_volume_by_division",
+        "v_dept_pic_performance",
+        "v_sla_achievement",
+        "v_reopen_rate",
+        "v_resolution_time",
+        "v_nps_by_agent",
+        "v_volume_daily",
+        "v_volume_weekly",
+    }
     assert "`proj.ds.v_volume_by_month_channel`" in ddls["v_volume_by_month_channel"]
     assert "`proj.ds.conversations`" in ddls["v_volume_by_month_channel"]
 
@@ -80,3 +93,21 @@ def test_conversations_schema_has_dimension_columns() -> None:
     # new columns must be nullable
     by_name = {f.name: f for f in CONVERSATIONS_SCHEMA}
     assert by_name["division"].mode in ("NULLABLE", "")
+
+
+def test_view_ddls_include_report_views() -> None:
+    ddls = view_ddls("proj", "ds", "conversations")
+    for name in [
+        "v_volume_by_division",
+        "v_dept_pic_performance",
+        "v_sla_achievement",
+        "v_reopen_rate",
+        "v_resolution_time",
+        "v_nps_by_agent",
+        "v_volume_daily",
+        "v_volume_weekly",
+    ]:
+        assert name in ddls
+        assert name in ddls[name]  # DDL creates the view of that name
+    assert "division" in ddls["v_volume_by_division"]
+    assert "reopen_count" in ddls["v_reopen_rate"]

@@ -70,4 +70,63 @@ def view_ddls(project: str, dataset: str, table: str = "conversations") -> dict[
             f"COUNTIF(nps_score IS NOT NULL)) * 100 AS nps "
             f"FROM {fq} GROUP BY channel"
         ),
+        "v_volume_by_division": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_by_division` AS "
+            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, "
+            f"COALESCE(division, 'Unknown') AS division, COUNT(*) AS volume "
+            f"FROM {fq} GROUP BY month, division"
+        ),
+        "v_dept_pic_performance": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_dept_pic_performance` AS "
+            f"SELECT COALESCE(department, 'Unknown') AS department, "
+            f"COALESCE(pic, 'Unassigned') AS pic, COUNT(*) AS cases, "
+            f"AVG(TIMESTAMP_DIFF(first_response_at, created_at, MINUTE)) AS avg_first_response_min, "
+            f"AVG(TIMESTAMP_DIFF(resolved_at, created_at, MINUTE)) AS avg_resolution_min, "
+            f"SAFE_DIVIDE(COUNTIF(resolved_at IS NOT NULL), COUNT(*)) AS resolution_rate "
+            f"FROM {fq} GROUP BY department, pic ORDER BY cases DESC"
+        ),
+        "v_sla_achievement": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_sla_achievement` AS "
+            f"SELECT channel, COALESCE(division, 'Unknown') AS division, "
+            f"COUNTIF(sla_deadline IS NOT NULL) AS with_sla, "
+            f"COUNTIF(resolved_at IS NOT NULL AND resolved_at <= sla_deadline) AS met, "
+            f"SAFE_DIVIDE(COUNTIF(resolved_at IS NOT NULL AND resolved_at <= sla_deadline), "
+            f"COUNTIF(sla_deadline IS NOT NULL)) AS sla_achievement_rate "
+            f"FROM {fq} GROUP BY channel, division"
+        ),
+        "v_reopen_rate": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_reopen_rate` AS "
+            f"SELECT COALESCE(department, 'Unknown') AS department, "
+            f"COALESCE(pic, 'Unassigned') AS pic, COUNT(*) AS cases, "
+            f"COUNTIF(reopen_count > 0) AS reopened, "
+            f"SAFE_DIVIDE(COUNTIF(reopen_count > 0), COUNT(*)) AS reopen_rate "
+            f"FROM {fq} GROUP BY department, pic"
+        ),
+        "v_resolution_time": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_resolution_time` AS "
+            f"SELECT channel, COALESCE(division, 'Unknown') AS division, "
+            f"AVG(TIMESTAMP_DIFF(resolved_at, created_at, MINUTE)) AS avg_min, "
+            f"APPROX_QUANTILES(TIMESTAMP_DIFF(resolved_at, created_at, MINUTE), 100)[OFFSET(50)] AS p50_min, "
+            f"APPROX_QUANTILES(TIMESTAMP_DIFF(resolved_at, created_at, MINUTE), 100)[OFFSET(90)] AS p90_min "
+            f"FROM {fq} WHERE resolved_at IS NOT NULL GROUP BY channel, division"
+        ),
+        "v_nps_by_agent": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_nps_by_agent` AS "
+            f"SELECT COALESCE(agent_id, 'Unassigned') AS agent_id, channel, "
+            f"COUNTIF(nps_score IS NOT NULL) AS respondents, "
+            f"SAFE_DIVIDE("
+            f"COUNTIF(nps_score >= 9) - COUNTIF(nps_score IS NOT NULL AND nps_score <= 6), "
+            f"COUNTIF(nps_score IS NOT NULL)) * 100 AS nps "
+            f"FROM {fq} WHERE channel IN ('Phone', 'WhatsApp') GROUP BY agent_id, channel"
+        ),
+        "v_volume_daily": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_daily` AS "
+            f"SELECT DATE(created_at) AS day, channel, COUNT(*) AS volume "
+            f"FROM {fq} GROUP BY day, channel"
+        ),
+        "v_volume_weekly": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_weekly` AS "
+            f"SELECT DATE_TRUNC(DATE(created_at), WEEK) AS week, channel, COUNT(*) AS volume "
+            f"FROM {fq} GROUP BY week, channel"
+        ),
     }

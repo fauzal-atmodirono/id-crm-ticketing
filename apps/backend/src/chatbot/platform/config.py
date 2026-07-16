@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # Secret used to verify webhook calls from Zendesk Support (for standard ticket comment syncing)
     zendesk_support_webhook_secret: str = ""
 
+    # Secret used to verify webhook calls for SLA escalation notifications
+    sla_webhook_secret: str = ""
+
     # Email channel — when True, AI replies become private draft notes instead of
     # public replies (draft-assist mode). Default False = auto-reply (public).
     email_draft_assist: bool = False
@@ -69,6 +72,7 @@ class Settings(BaseSettings):
     firestore_project_id: str = "lv-playground-genai"
     firestore_database_id: str = "proton-db"
     firestore_handoff_collection: str = "handoff_sessions"
+    firestore_audit_collection: str = "case_audit_log"
 
     # Bot-metrics dashboard (Zendesk -> BigQuery sync)
     bigquery_project_id: str = "lv-playground-genai"

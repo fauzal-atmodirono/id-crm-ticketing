@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
 
@@ -209,3 +210,24 @@ class MetricsPort(Protocol):
     async def emit_turn(self, event: TurnEvent) -> None:
         """Best-effort: record a single turn event. Must never raise."""
         ...
+
+
+@dataclass(frozen=True)
+class AuditEntry:
+    """Append-only case status audit trail entry."""
+
+    ticket_id: str
+    session_id: str
+    actor: str
+    from_state: str
+    to_state: str
+    at: str
+    remark: str
+
+
+class AuditLogPort(Protocol):
+    """Append-only case status audit trail (agent / from→to / time / remark)."""
+
+    async def append(self, entry: AuditEntry) -> None: ...
+
+    async def list_for_ticket(self, ticket_id: str) -> list[AuditEntry]: ...

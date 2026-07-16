@@ -9,6 +9,42 @@ from chatbot.main import bootstrap_application
 from chatbot.platform.config import get_settings
 
 
+def test_kb_suggest_and_faq_feedback_wired(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Boot the full app and verify agent-assist FAQ routes are registered.
+
+    GET /kb/suggest?q=battery → 200 with a ``suggestions`` key (uses the in-memory
+    KnowledgeAdapter, which returns an empty list; the key must still be present).
+    POST /kb/feedback with no x-api-key → 401 (auth guard is active).
+
+    Forces HANDOFF_STORE=memory so no real Firestore is touched. Follows the same
+    hermetic pattern as ``test_sla_audit_wiring_end_to_end``.
+    """
+    monkeypatch.setenv("HANDOFF_STORE", "memory")
+    get_settings.cache_clear()
+    try:
+        app = bootstrap_application()
+        client = TestClient(app)
+
+        # GET /kb/suggest — open endpoint; must return 200 with suggestions key
+        suggest_res = client.get("/kb/suggest?q=battery")
+        assert suggest_res.status_code == 200
+        assert "suggestions" in suggest_res.json()
+
+        # POST /kb/feedback — no api key → 401
+        feedback_res = client.post(
+            "/kb/feedback",
+            json={
+                "article_id": "test-article",
+                "session_id": "",
+                "helpful": True,
+                "score": 5,
+            },
+        )
+        assert feedback_res.status_code == 401
+    finally:
+        get_settings.cache_clear()
+
+
 def test_twilio_whatsapp_route_is_registered() -> None:
     app = bootstrap_application()
     # FastAPI nests included routers rather than flattening app.routes, so assert

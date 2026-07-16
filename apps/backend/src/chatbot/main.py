@@ -17,6 +17,7 @@ from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.adapters.vertex_search import VertexAISearchAdapter
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
 from chatbot.features.chat.handoff_bridge import HandoffBridge
+from chatbot.features.chat.kb_suggest_router import build_kb_suggest_router
 from chatbot.features.chat.ports import (
     ChatPort,
     ConversationLogPort,
@@ -31,6 +32,8 @@ from chatbot.features.metrics.anomaly_router import build_metrics_anomaly_router
 from chatbot.features.metrics.dashboard_router import build_metrics_query_router
 from chatbot.features.metrics.email_port import build_email_report_port
 from chatbot.features.metrics.export_router import build_metrics_export_router
+from chatbot.features.metrics.faq_feedback_adapter import build_faq_feedback_port
+from chatbot.features.metrics.faq_router import build_faq_router
 from chatbot.features.metrics.qa_adapter import build_qa_label_port
 from chatbot.features.metrics.qa_router import build_qa_router
 from chatbot.features.metrics.query_adapter import build_metrics_query_port
@@ -38,6 +41,13 @@ from chatbot.features.metrics.scheduler import start_metrics_scheduler, start_re
 from chatbot.platform.config import Settings, get_settings
 from chatbot.platform.logger import configure_logging
 from chatbot.platform.server import create_app
+
+
+def _wire_agent_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings) -> None:
+    """Wire the agent-assist FAQ routers (kb-suggest + faq-feedback)."""
+    app.include_router(build_kb_suggest_router(knowledge_port))
+    faq_port = build_faq_feedback_port(settings)
+    app.include_router(build_faq_router(faq_port, settings))
 
 
 def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
@@ -176,6 +186,9 @@ def bootstrap_application() -> FastAPI:
             audit_log=audit_log,
         )
     )
+
+    # --- Agent-assist FAQ ---
+    _wire_agent_assist(app, knowledge_port, settings)
 
     _wire_metrics_features(app, settings)
 

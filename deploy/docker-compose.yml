@@ -29,6 +29,11 @@ x-chatwoot-env: &chatwoot-env
   RAILS_MAX_THREADS: 5
 
 x-zammad-env: &zammad-env
+  # The zammad DB is pre-created by postgres/init/01-databases.sh and the
+  # zammad role has no CREATEDB privilege, so the entrypoint must not run
+  # `rake db:create` (it fails with InsufficientPrivilege before the
+  # already-exists rescue).
+  POSTGRESQL_DB_CREATE: "false"
   POSTGRESQL_HOST: postgres
   POSTGRESQL_PORT: 5432
   POSTGRESQL_DB: zammad
@@ -146,7 +151,9 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api > /dev/null 2>&1 || exit 1"]
+      # 127.0.0.1, not localhost: puma binds IPv4 only and busybox wget
+      # resolves localhost to ::1 first -> connection refused
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api > /dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -173,7 +180,7 @@ services:
         condition: service_healthy
 
   zammad-init:
-    image: ghcr.io/zammad/zammad:7.2.1
+    image: ghcr.io/zammad/zammad:7.1.1-0027
     command: ["zammad-init"]
     restart: on-failure
     environment:
@@ -187,7 +194,7 @@ services:
         condition: service_healthy
 
   zammad-railsserver:
-    image: ghcr.io/zammad/zammad:7.2.1
+    image: ghcr.io/zammad/zammad:7.1.1-0027
     command: ["zammad-railsserver"]
     restart: unless-stopped
     mem_limit: 2g
@@ -202,7 +209,7 @@ services:
         condition: service_completed_successfully
 
   zammad-scheduler:
-    image: ghcr.io/zammad/zammad:7.2.1
+    image: ghcr.io/zammad/zammad:7.1.1-0027
     command: ["zammad-scheduler"]
     restart: unless-stopped
     mem_limit: 1500m
@@ -217,7 +224,7 @@ services:
         condition: service_completed_successfully
 
   zammad-websocket:
-    image: ghcr.io/zammad/zammad:7.2.1
+    image: ghcr.io/zammad/zammad:7.1.1-0027
     command: ["zammad-websocket"]
     restart: unless-stopped
     mem_limit: 512m
@@ -232,7 +239,7 @@ services:
         condition: service_completed_successfully
 
   zammad-nginx:
-    image: ghcr.io/zammad/zammad:7.2.1
+    image: ghcr.io/zammad/zammad:7.1.1-0027
     command: ["zammad-nginx"]
     restart: unless-stopped
     mem_limit: 256m

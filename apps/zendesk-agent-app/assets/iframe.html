@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Proton Agent-Assist FAQ</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f5f5f5;
+      color: #333;
+    }
+
+    .container {
+      padding: 16px;
+      max-width: 100%;
+    }
+
+    .header {
+      margin-bottom: 16px;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 12px;
+    }
+
+    .header h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #222;
+    }
+
+    .status {
+      font-size: 12px;
+      color: #666;
+      margin-top: 4px;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 20px;
+      font-size: 13px;
+      color: #999;
+    }
+
+    .error {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      border-radius: 4px;
+      padding: 12px;
+      margin: 12px 0;
+      font-size: 12px;
+      color: #991b1b;
+    }
+
+    .suggestion {
+      background: white;
+      border: 1px solid #e0e0e0;
+      border-radius: 4px;
+      padding: 12px;
+      margin-bottom: 12px;
+      font-size: 12px;
+    }
+
+    .suggestion-title {
+      font-weight: 600;
+      color: #1a73e8;
+      margin-bottom: 6px;
+      word-break: break-word;
+    }
+
+    .suggestion-snippet {
+      color: #555;
+      line-height: 1.4;
+      margin-bottom: 8px;
+      max-height: 60px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .suggestion-source {
+      font-size: 11px;
+      color: #999;
+      margin-bottom: 8px;
+    }
+
+    .suggestion-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      padding: 6px 12px;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      background: white;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+
+    button:hover {
+      background: #f5f5f5;
+      border-color: #999;
+    }
+
+    .insert-btn {
+      background: #1a73e8;
+      color: white;
+      border-color: #1a73e8;
+      flex: 1;
+      min-width: 80px;
+    }
+
+    .insert-btn:hover {
+      background: #1557b0;
+      border-color: #1557b0;
+    }
+
+    .feedback-btn {
+      padding: 6px 10px;
+      min-width: auto;
+    }
+
+    .feedback-btn.helpful {
+      color: #34a853;
+      border-color: #34a853;
+    }
+
+    .feedback-btn.helpful:hover {
+      background: #f1f8f5;
+    }
+
+    .feedback-btn.unhelpful {
+      color: #ea4335;
+      border-color: #ea4335;
+    }
+
+    .feedback-btn.unhelpful:hover {
+      background: #faf5f4;
+    }
+
+    .feedback-status {
+      font-size: 11px;
+      color: #666;
+      margin-top: 6px;
+      min-height: 16px;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 20px;
+      color: #999;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2>FAQ Suggestions</h2>
+      <div class="status" id="status">Initializing...</div>
+    </div>
+    <div id="content">
+      <div class="loading">Loading suggestions...</div>
+    </div>
+  </div>
+
+  <script src="https://static.zdassets.com/zendesk_app_framework_sdk/2.0/zaf_sdk.min.js"></script>
+  <script>
+    const client = ZAF.init();
+    let backendBaseUrl = 'http://localhost:8000';
+    let apiKey = '';
+    let sessionId = 'session_' + Math.random().toString(36).substr(2, 9);
+
+    async function init() {
+      try {
+        const settings = await client.metadata();
+        const appSettings = settings.app || {};
+
+        backendBaseUrl = appSettings.backendBaseUrl || 'http://localhost:8000';
+        apiKey = appSettings.apiKey || '';
+
+        await fetchSuggestions();
+      } catch (error) {
+        console.error('Initialization error:', error);
+        showError('Failed to initialize app: ' + error.message);
+      }
+    }
+
+    async function fetchSuggestions() {
+      const contentDiv = document.getElementById('content');
+      const statusDiv = document.getElementById('status');
+
+      try {
+        statusDiv.textContent = 'Loading suggestions...';
+        contentDiv.innerHTML = '<div class="loading">Fetching suggestions...</div>';
+
+        // Get ticket data
+        const ticketData = await client.get([
+          'ticket.subject',
+          'ticket.description',
+          'ticket.comments'
+        ]);
+
+        const subject = ticketData['ticket.subject'] || '';
+        const description = ticketData['ticket.description'] || '';
+        const comments = ticketData['ticket.comments'] || [];
+
+        // Build query from latest comment or subject
+        let query = subject;
+        if (comments && comments.length > 0) {
+          const latestComment = comments[comments.length - 1];
+          if (latestComment && latestComment.value) {
+            query = latestComment.value;
+          }
+        }
+
+        if (!query || query.trim() === '') {
+          query = subject;
+        }
+
+        if (!query || query.trim() === '') {
+          statusDiv.textContent = 'No ticket content to search';
+          contentDiv.innerHTML = '<div class="empty-state">No subject or recent comment to query. Please add content to the ticket.</div>';
+          return;
+        }
+
+        // Fetch suggestions from backend
+        const url = new URL(`${backendBaseUrl}/kb/suggest`);
+        url.searchParams.append('q', query);
+        url.searchParams.append('limit', '5');
+
+        const response = await fetch(url.toString(), {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error(`Backend returned ${response.status}: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        const suggestions = data.suggestions || [];
+
+        statusDiv.textContent = suggestions.length > 0
+          ? `${suggestions.length} suggestion(s) found`
+          : 'No suggestions found';
+
+        if (suggestions.length === 0) {
+          contentDiv.innerHTML = '<div class="empty-state">No relevant FAQ articles found for this ticket.</div>';
+          return;
+        }
+
+        // Render suggestions
+        contentDiv.innerHTML = suggestions.map((suggestion, idx) => `
+          <div class="suggestion" data-article-id="${escapeHtml(suggestion.title)}" data-index="${idx}">
+            <div class="suggestion-title">${escapeHtml(suggestion.title)}</div>
+            <div class="suggestion-snippet">${escapeHtml(suggestion.snippet || '')}</div>
+            <div class="suggestion-source">Source: ${escapeHtml(suggestion.source_type || 'unknown')}</div>
+            <div class="suggestion-actions">
+              <button class="insert-btn" onclick="insertSuggestion(${idx}, '${escapeAttr(suggestion.title)}', '${escapeAttr(suggestion.url || '')}')">
+                Insert
+              </button>
+              <button class="feedback-btn helpful" onclick="sendFeedback('${escapeAttr(suggestion.title)}', true)" title="Helpful">
+                👍
+              </button>
+              <button class="feedback-btn unhelpful" onclick="sendFeedback('${escapeAttr(suggestion.title)}', false)" title="Not helpful">
+                👎
+              </button>
+            </div>
+            <div class="feedback-status" id="feedback-${idx}"></div>
+          </div>
+        `).join('');
+
+      } catch (error) {
+        console.error('Fetch error:', error);
+        statusDiv.textContent = 'Error loading suggestions';
+        showError('Failed to fetch suggestions: ' + error.message);
+      }
+    }
+
+    async function insertSuggestion(index, title, url) {
+      try {
+        const text = `**FAQ: ${title}**\n${url ? `Link: ${url}` : ''}`;
+        await client.invoke('ticket.comment.appendText', text);
+      } catch (error) {
+        console.error('Insert error:', error);
+        alert('Failed to insert suggestion: ' + error.message);
+      }
+    }
+
+    async function sendFeedback(articleId, helpful) {
+      try {
+        const feedbackData = {
+          article_id: articleId,
+          session_id: sessionId,
+          helpful: helpful,
+          score: helpful ? 5 : 1
+        };
+
+        const response = await fetch(`${backendBaseUrl}/kb/feedback`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(apiKey ? { 'x-api-key': apiKey } : {})
+          },
+          body: JSON.stringify(feedbackData)
+        });
+
+        if (!response.ok) {
+          throw new Error(`Backend returned ${response.status}`);
+        }
+
+        // Show feedback confirmation
+        const statusIdx = Array.from(document.querySelectorAll('[data-article-id]')).findIndex(
+          el => el.dataset.articleId === articleId
+        );
+        if (statusIdx >= 0) {
+          const statusEl = document.getElementById(`feedback-${statusIdx}`);
+          if (statusEl) {
+            statusEl.textContent = helpful ? '✓ Marked helpful' : '✓ Marked unhelpful';
+            statusEl.style.color = helpful ? '#34a853' : '#ea4335';
+          }
+        }
+      } catch (error) {
+        console.error('Feedback error:', error);
+        alert('Failed to send feedback: ' + error.message);
+      }
+    }
+
+    function showError(message) {
+      document.getElementById('content').innerHTML = `<div class="error">${escapeHtml(message)}</div>`;
+    }
+
+    function escapeHtml(text) {
+      const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+      };
+      return text.replace(/[&<>"']/g, m => map[m]);
+    }
+
+    function escapeAttr(text) {
+      return text.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    }
+
+    // Initialize when page loads
+    document.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>

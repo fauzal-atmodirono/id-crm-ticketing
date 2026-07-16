@@ -355,6 +355,20 @@ class ChatRouter:
             _log.warning("chatwoot_webhook_secret_invalid")
             raise HTTPException(status_code=401, detail="Invalid secret")
 
+        # EMAIL branch: an email that arrives in the configured EMAIL-type inbox is
+        # a PARALLEL path to the API-channel handoff below — the conversation IS the
+        # email thread (session_id = email-<conv_id>), so we run the AI and post a
+        # PUBLIC reply for Chatwoot to email back. Checked BEFORE the API-inbox
+        # isolation guard because the email inbox is a *different* inbox than
+        # chatwoot_inbox_id and would otherwise be filtered out as "other inbox".
+        email_inbox = self.orchestrator._settings.chatwoot_email_inbox_id
+        if (
+            email_inbox
+            and payload.conversation.inbox_id is not None
+            and payload.conversation.inbox_id == email_inbox
+        ):
+            return await self._handle_chatwoot_email_event(payload)
+
         # Shared-account isolation: Chatwoot account webhooks fire for ALL inboxes.
         # When we are pinned to one inbox, ignore events for any other inbox so we
         # never act on another team's conversations.
@@ -429,6 +443,63 @@ class ChatRouter:
             )
 
         return {"status": "ok"}
+
+    async def _handle_chatwoot_email_event(  # noqa: PLR0911 — sequential loop/dedup guards each early-return
+        self, payload: ChatwootWebhookPayload
+    ) -> dict[str, str]:
+        """Route a Chatwoot EMAIL-inbox event to the shared email flow.
+
+        A Chatwoot conversation in the email inbox IS the email thread, exactly
+        like a Zendesk email ticket: the conversation id plays the role of the
+        ticket id and ``session_id = email-<conv_id>``. We run the AI and (unless
+        email_draft_assist) post a PUBLIC reply so Chatwoot emails it back to the
+        customer, reusing ``_handle_email_turn`` / ``_handle_email_survey`` so the
+        Zendesk-ticket and Chatwoot-conversation email paths share one implementation.
+
+        Loop/echo guards mirror the Zendesk email path: only incoming, non-private
+        customer messages are answered; agent/AI outgoing messages and no-reply
+        senders are ignored; a dedup marker skips re-fired webhooks and any reply
+        fed back as input. Paused conversations are owned by a human, so we no-op.
+        """
+        # Only conversation-message events carry customer text; resolves etc. no-op.
+        if payload.event != "message_created":
+            return {"status": "ignored"}
+        # Loop guard: only act on the customer's own inbound message. Our AI reply
+        # and any agent reply come back as outgoing (or private notes) — never
+        # answer those, or the bot talks to itself.
+        if payload.message_type != "incoming" or payload.private:
+            return {"status": "ignored"}
+
+        conv_id = str(payload.conversation.id)
+        session_id = f"email-{conv_id}"
+
+        state = await self.orchestrator.conversation_state(session_id)
+        if state == "paused":
+            return {"status": "paused"}
+
+        text = (payload.content or "").strip()
+        requester_name = payload.sender.name if payload.sender else None
+        requester_email = payload.sender.email if payload.sender else None
+        if not text:
+            return {"status": "ignored"}
+        if _is_no_reply(requester_email):
+            _log.info("chatwoot_email_no_reply_skipped", conv_id=conv_id)
+            return {"status": "ignored"}
+
+        # Dedup guard: a re-fired webhook, or the AI's own reply echoed back as an
+        # incoming message, equals either the last inbound we processed or the last
+        # reply we posted — skip it so the AI never answers itself or double-answers.
+        last_inbound, last_reply = await self.orchestrator.get_email_dedup(session_id)
+        if text in (last_inbound, last_reply):
+            _log.info("chatwoot_email_duplicate_skipped", conv_id=conv_id)
+            return {"status": "duplicate"}
+
+        # Claim the inbound BEFORE the (slow) AI turn so concurrent re-fired
+        # webhooks hit the dedup check above and skip instead of racing through.
+        await self.orchestrator.remember_email_exchange(session_id, inbound=text)
+
+        _log.info("chatwoot_email_received", session_id=session_id)
+        return await self._handle_email_turn(conv_id, session_id, state, text, requester_name)
 
     async def twilio_whatsapp_webhook(self, request: Request) -> Response:
         """Inbound WhatsApp message from Twilio. Verify signature, run the AI,

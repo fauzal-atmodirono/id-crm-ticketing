@@ -142,6 +142,16 @@ class Settings(BaseSettings):
     # False, or the escalation seed message / forwarded customer messages trigger the
     # bot and it re-escalates in an infinite loop.
     chatwoot_bot_replies_to_incoming: bool = False
+    # EMAIL-type Chatwoot inbox. When an email arrives, Chatwoot opens a
+    # conversation in this inbox and fires a message_created webhook; we run the
+    # AI and post a PUBLIC reply so Chatwoot emails it back to the customer. This
+    # is the Chatwoot equivalent of the (Zendesk-native) email channel and is the
+    # ONLY inbox on which incoming messages take the email path — the API-channel
+    # inbox (chatwoot_inbox_id) still uses the native-handoff branch.
+    # 0 = email-on-chatwoot disabled (no email routing). Set to the numeric id of
+    # the provisioned email inbox to enable it. Honours email_draft_assist just
+    # like the Zendesk email path (True = private draft note instead of a send).
+    chatwoot_email_inbox_id: int = 0
 
     # Zammad settings
     zammad_api_url: str = "http://localhost:3000"

@@ -543,7 +543,8 @@ class OrchestratorService:
             _log.error("capture_conversation_failed", session_id=session_id, error=str(e))
 
     async def bind_email_ticket(self, session_id: str, ticket_id: str) -> None:
-        """Seed the existing Zendesk email ticket id into session state so the
+        """Seed the existing email ticket id (a Zendesk ticket, or a Chatwoot
+        conversation id under the email inbox) into session state so the
         handoff/CSAT paths reuse it instead of creating a duplicate ticket."""
         session = await self._adk_sessions.get_session(
             app_name="chatbot", user_id=session_id, session_id=session_id

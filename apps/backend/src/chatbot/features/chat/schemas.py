@@ -10,6 +10,9 @@ from pydantic import BaseModel, model_validator
 class ChatwootSender(BaseModel):
     id: int | None = None
     name: str | None = None
+    # Email-inbox conversations carry the customer's real address on the sender.
+    # Used for the email flow's no-reply loop guard and (optionally) naming.
+    email: str | None = None
 
 
 class ChatwootConversation(BaseModel):

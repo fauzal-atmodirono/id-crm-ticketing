@@ -88,6 +88,27 @@ class Settings(BaseSettings):
     bigquery_qa_labels_table: str = "qa_labels"
     qa_api_key: str = ""
 
+    # Bot-metrics export: SMTP settings for emailing scheduled reports
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    # Comma-separated list of recipient email addresses
+    report_recipients: str = ""
+    # Set to True to enable scheduled report emails (disabled by default)
+    report_enabled: bool = False
+    report_interval_hours: int = 24
+
+    # Bot-metrics anomaly detection thresholds
+    # Z-score multiplier for channel-volume anomaly detection
+    anomaly_zscore_k: float = 3.0
+    # Minimum number of baseline observations before anomaly detection activates
+    anomaly_min_baseline: int = 20
+
+    def report_recipient_list(self) -> list[str]:
+        return [r.strip() for r in self.report_recipients.split(",") if r.strip()]
+
     # Chatwoot settings
     chatwoot_api_url: str = "http://localhost:3000"
     chatwoot_api_token: str = ""

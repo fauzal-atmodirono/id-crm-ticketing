@@ -39,8 +39,15 @@ if [[ ! -f infra.env ]]; then
   echo "ERROR: deploy/infra.env not found (needed for PUBLIC_IP + Mailpit auth)." >&2
   exit 1
 fi
-# shellcheck disable=SC1091
-set -a; . ./infra.env; set +a
+# Read infra.env values literally — do NOT `source` it: the Mailpit bcrypt
+# hash is stored unquoted (correct for Compose's dotenv parser), and shell
+# `source` would parameter-expand its `$2a$14$...` prefix and corrupt it.
+get_infra_var() {
+  grep -E "^$1=" infra.env | head -n1 | cut -d= -f2-
+}
+PUBLIC_IP="$(get_infra_var PUBLIC_IP)"
+MAILPIT_AUTH_USER="$(get_infra_var MAILPIT_AUTH_USER)"
+MAILPIT_AUTH_HASH="$(get_infra_var MAILPIT_AUTH_HASH)"
 : "${PUBLIC_IP:?PUBLIC_IP must be set in infra.env}"
 : "${MAILPIT_AUTH_USER:?MAILPIT_AUTH_USER must be set in infra.env}"
 : "${MAILPIT_AUTH_HASH:?MAILPIT_AUTH_HASH must be set in infra.env}"

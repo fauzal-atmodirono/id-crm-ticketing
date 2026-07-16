@@ -39,7 +39,11 @@ fi
 for env_file in "${tenant_envs[@]}"; do
   [[ "$(basename "${env_file}")" == "example.env" ]] && continue
   tenant="$(grep -E '^TENANT=' "${env_file}" | head -n1 | cut -d= -f2-)"
-  [[ -z "${tenant}" ]] && { echo "WARNING: no TENANT in ${env_file}, skipping" >&2; continue; }
+  tenant="${tenant//[[:space:]\"\']/}"
+  if [[ ! "${tenant}" =~ ^[a-z][a-z0-9]*$ ]]; then
+    echo "WARNING: ${env_file} has invalid/empty TENANT ('${tenant}'), skipping" >&2
+    continue
+  fi
 
   echo "==> Backing up tenant: ${tenant}"
   for app in chatwoot zammad agent; do

@@ -221,6 +221,11 @@ class Settings(BaseSettings):
         "http://localhost:5178",
         "http://localhost:5179",
         "http://localhost:5180",
+        # Chatwoot agent-assist FAQ dashboard app (apps/chatwoot-agent-app) is
+        # loaded as an iframe from the Chatwoot host and fetches /kb/suggest +
+        # /kb/feedback cross-origin. Allowlist the Chatwoot origin (override via
+        # FRONTEND_ORIGINS if the app is hosted elsewhere).
+        "http://crm.34-50-103-151.nip.io",
     ]
 
     # Settings configurations

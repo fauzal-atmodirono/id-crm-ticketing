@@ -104,7 +104,7 @@ http://${TENANT}.mail.${PUBLIC_IP}.nip.io {
 }
 CADDY
 echo "==> Wrote caddy/tenants/${TENANT}.caddy; reloading Caddy"
-docker compose -p "${INFRA_PROJECT}" -f "${INFRA_FILE}" exec caddy \
+docker compose -p "${INFRA_PROJECT}" -f "${INFRA_FILE}" exec -T caddy \
   caddy reload --config /etc/caddy/Caddyfile
 
 # --- 4. Bring up the tenant stack -------------------------------------------

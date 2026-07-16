@@ -10,6 +10,7 @@ import structlog
 from google.cloud import bigquery
 
 from chatbot.features.metrics.query_port import (
+    AnomalyRow,
     BounceRow,
     CsatRow,
     DashboardMetrics,
@@ -64,6 +65,12 @@ class BigQueryMetricsQuery:
 
     async def fetch_dashboard(self) -> DashboardMetrics:
         return await asyncio.to_thread(self._fetch_sync)
+
+    def _fetch_anomalies_sync(self) -> list[AnomalyRow]:
+        return self._block("v_channel_anomaly", AnomalyRow)
+
+    async def fetch_anomalies(self) -> list[AnomalyRow]:
+        return await asyncio.to_thread(self._fetch_anomalies_sync)
 
 
 def build_metrics_query_port(settings: Settings) -> MetricsQueryPort:

@@ -42,9 +42,16 @@ def test_view_ddls_keys_and_targets() -> None:
         "v_nps_by_agent",
         "v_volume_daily",
         "v_volume_weekly",
+        "v_channel_anomaly",
     }
     assert "`proj.ds.v_volume_by_month_channel`" in ddls["v_volume_by_month_channel"]
     assert "`proj.ds.conversations`" in ddls["v_volume_by_month_channel"]
+
+
+def test_view_ddls_include_anomaly_view() -> None:
+    ddls = view_ddls("proj", "ds", "conversations")
+    assert "v_channel_anomaly" in ddls
+    assert "v_channel_anomaly" in ddls["v_channel_anomaly"]
 
 
 def test_view_ddls_contain_expected_aggregates() -> None:

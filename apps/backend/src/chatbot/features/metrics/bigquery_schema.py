@@ -129,4 +129,17 @@ def view_ddls(project: str, dataset: str, table: str = "conversations") -> dict[
             f"SELECT DATE_TRUNC(DATE(created_at), WEEK) AS week, channel, COUNT(*) AS volume "
             f"FROM {fq} GROUP BY week, channel"
         ),
+        "v_channel_anomaly": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_channel_anomaly` AS "
+            f"WITH daily AS (SELECT channel, DATE(created_at) AS d, COUNT(*) AS v "
+            f"FROM {fq} WHERE created_at IS NOT NULL GROUP BY channel, d), "
+            f"cur AS (SELECT channel, v AS current_volume FROM daily "
+            f"WHERE d = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)), "
+            f"base AS (SELECT channel, AVG(v) AS baseline_mean, STDDEV(v) AS baseline_stddev "
+            f"FROM daily WHERE d BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 8 DAY) "
+            f"AND DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY) GROUP BY channel) "
+            f"SELECT b.channel, COALESCE(c.current_volume, 0) AS current_volume, "
+            f"b.baseline_mean, b.baseline_stddev "
+            f"FROM base b LEFT JOIN cur c USING (channel)"
+        ),
     }

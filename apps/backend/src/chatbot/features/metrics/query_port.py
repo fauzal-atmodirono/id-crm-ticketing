@@ -78,6 +78,14 @@ class QualityRow:
 
 
 @dataclass(frozen=True)
+class AnomalyRow:
+    channel: str
+    current_volume: int
+    baseline_mean: float | None
+    baseline_stddev: float | None
+
+
+@dataclass(frozen=True)
 class DashboardMetrics:
     volume: list[VolumeRow]
     resolution: list[ResolutionRow]
@@ -91,10 +99,17 @@ class DashboardMetrics:
 
 class MetricsQueryPort(Protocol):
     async def fetch_dashboard(self) -> DashboardMetrics: ...
+    async def fetch_anomalies(self) -> list[AnomalyRow]: ...
 
 
 class MockMetricsQuery:
     """Returns a representative payload so dev/tests never touch BigQuery."""
+
+    async def fetch_anomalies(self) -> list[AnomalyRow]:
+        return [
+            AnomalyRow("web", current_volume=130, baseline_mean=125.0, baseline_stddev=10.0),
+            AnomalyRow("whatsapp", current_volume=260, baseline_mean=90.0, baseline_stddev=15.0),
+        ]
 
     async def fetch_dashboard(self) -> DashboardMetrics:
         return DashboardMetrics(

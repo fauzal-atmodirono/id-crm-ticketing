@@ -106,11 +106,12 @@ Next steps:
   2. SSH in and run the bootstrap script:
        gcloud compute ssh --zone="${ZONE}" --project="${PROJECT_ID}" ${VM_NAME}
        sudo PUBLIC_IP=${PUBLIC_IP_DASH} /opt/platform/deploy/scripts/bootstrap-vm.sh
-  3. Once it prints the URLs, visit:
-       http://crm.${PUBLIC_IP_DASH}.nip.io
-       http://tickets.${PUBLIC_IP_DASH}.nip.io
-       http://agent.${PUBLIC_IP_DASH}.nip.io
-       http://mail.${PUBLIC_IP_DASH}.nip.io
+  3. Provision each customer, then visit their subdomains:
+       cd /opt/platform/deploy && ./scripts/add-tenant.sh <tenant-name>
+       http://<tenant>.crm.${PUBLIC_IP_DASH}.nip.io
+       http://<tenant>.tickets.${PUBLIC_IP_DASH}.nip.io
+       http://<tenant>.agent.${PUBLIC_IP_DASH}.nip.io
+       http://<tenant>.mail.${PUBLIC_IP_DASH}.nip.io
 
 See the root README.md "GCE deploy" section for the full walkthrough.
 EOF

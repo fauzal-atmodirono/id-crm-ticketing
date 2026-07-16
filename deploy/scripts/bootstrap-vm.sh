@@ -100,44 +100,32 @@ fi
 cd "${DEPLOY_DIR}"
 
 # ---------------------------------------------------------------------------
-# 4. .env: create from template, then fill in secrets that are still empty
-#    or "changeme".
+# 4. infra.env: create from template, fill blank/"changeme" secrets.
 # ---------------------------------------------------------------------------
-if [[ ! -f .env ]]; then
-  echo "==> Creating .env from .env.example"
-  cp .env.example .env
+if [[ ! -f infra.env ]]; then
+  echo "==> Creating infra.env from infra.env.example"
+  cp infra.env.example infra.env
 fi
 
 fill_if_blank() {
-  local var="$1" value="$2"
-  local current
-  current="$(grep -E "^${var}=" .env | head -n1 | cut -d= -f2-)"
+  local var="$1" value="$2" current
+  current="$(grep -E "^${var}=" infra.env | head -n1 | cut -d= -f2-)"
   if [[ -z "${current}" || "${current}" == "changeme" ]]; then
-    # Use printf to safely write values with special characters (e.g., $ in bcrypt hashes)
-    # Delete old line and append new one to preserve file order
-    sed -i -e '/^'"${var}"'=/d' .env
-    printf '%s=%s\n' "${var}" "${value}" >> .env
+    sed -i -e '/^'"${var}"'=/d' infra.env
+    printf '%s=%s\n' "${var}" "${value}" >> infra.env
     echo "==> Filled ${var}"
   fi
 }
 
 fill_if_blank POSTGRES_PASSWORD "$(openssl rand -hex 16)"
-fill_if_blank ZAMMAD_DB_PASSWORD "$(openssl rand -hex 16)"
-fill_if_blank AGENT_DB_PASSWORD "$(openssl rand -hex 16)"
-fill_if_blank REDIS_PASSWORD "$(openssl rand -hex 16)"
-fill_if_blank SECRET_KEY_BASE "$(openssl rand -hex 64)"
-
-# Mailpit authentication: generate password and hash it with Caddy
 fill_if_blank MAILPIT_AUTH_USER "admin"
 
-# Generate random password and hash it with Caddy's hash-password
 MAILPIT_PW="$(openssl rand -hex 12)"
 MAILPIT_HASH="$(echo "$MAILPIT_PW" | docker run --rm -i caddy:2-alpine caddy hash-password --plaintext - 2>/dev/null | tail -1)"
-
 if [[ -n "${MAILPIT_HASH}" ]]; then
-  # Escape $ for Docker Compose's .env parser: $$ becomes $ in the parsed value
-  MAILPIT_HASH_ESCAPED="${MAILPIT_HASH//\$/\$\$}"
-  fill_if_blank MAILPIT_AUTH_HASH "${MAILPIT_HASH_ESCAPED}"
+  # Caddy reads this hash from a rendered Caddyfile snippet (not via env), so
+  # store it literally — no $$ escaping needed here.
+  fill_if_blank MAILPIT_AUTH_HASH "${MAILPIT_HASH}"
   echo "==> Mailpit UI password (save this now, it is not stored): ${MAILPIT_PW}"
 else
   echo "WARNING: Failed to generate Mailpit password hash; check Docker" >&2
@@ -151,21 +139,22 @@ DETECTED_IP="$(curl -s -H "Metadata-Flavor: Google" \
 
 if [[ -n "${DETECTED_IP}" ]]; then
   PUBLIC_IP_DASH="${DETECTED_IP//./-}"
-  sed -i "s|^PUBLIC_IP=.*|PUBLIC_IP=${PUBLIC_IP_DASH}|" .env
+  sed -i "s|^PUBLIC_IP=.*|PUBLIC_IP=${PUBLIC_IP_DASH}|" infra.env
   echo "==> Detected external IP ${DETECTED_IP}, set PUBLIC_IP=${PUBLIC_IP_DASH}"
 else
-  echo "WARNING: could not auto-detect external IP from GCE metadata; check PUBLIC_IP in .env manually" >&2
-  PUBLIC_IP_DASH="$(grep -E '^PUBLIC_IP=' .env | head -n1 | cut -d= -f2-)"
+  echo "WARNING: could not auto-detect external IP from GCE metadata; check PUBLIC_IP in infra.env manually" >&2
+  PUBLIC_IP_DASH="$(grep -E '^PUBLIC_IP=' infra.env | head -n1 | cut -d= -f2-)"
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Bring up postgres/redis first, wait for health, prepare Chatwoot's DB,
-#    then start everything.
+# 6. Bring up shared infra, wait for postgres, then provision any tenants
+#    named in the TENANTS env var (space-separated). Tenants can also be added
+#    later with scripts/add-tenant.sh.
 # ---------------------------------------------------------------------------
 wait_healthy() {
   local service="$1" timeout="${2:-180}" waited=0 cid health
   echo "==> Waiting for ${service} to become healthy (timeout ${timeout}s)"
-  cid="$(docker compose ps -q "${service}")"
+  cid="$(docker compose -p platform-infra -f docker-compose.infra.yml ps -q "${service}")"
   while true; do
     health="$(docker inspect --format='{{.State.Health.Status}}' "${cid}" 2>/dev/null || echo unknown)"
     if [[ "${health}" == "healthy" ]]; then
@@ -174,7 +163,7 @@ wait_healthy() {
     fi
     if (( waited >= timeout )); then
       echo "ERROR: ${service} did not become healthy within ${timeout}s (last status: ${health})" >&2
-      docker compose logs --tail=50 "${service}" >&2 || true
+      docker compose -p platform-infra -f docker-compose.infra.yml logs --tail=50 "${service}" >&2 || true
       exit 1
     fi
     sleep 3
@@ -182,25 +171,27 @@ wait_healthy() {
   done
 }
 
-echo "==> Starting postgres + redis"
-docker compose up -d postgres redis
+echo "==> Starting shared infra (caddy, postgres, mailpit)"
+docker compose -p platform-infra -f docker-compose.infra.yml --env-file infra.env up -d
 wait_healthy postgres
-wait_healthy redis
 
-echo "==> Preparing Chatwoot database"
-docker compose run --rm chatwoot-rails bundle exec rails db:chatwoot_prepare
-
-echo "==> Starting the full stack"
-docker compose up -d
+for tenant in ${TENANTS:-}; do
+  echo "==> Provisioning tenant '${tenant}'"
+  ./scripts/add-tenant.sh "${tenant}"
+done
 
 cat <<EOF
 
-==> Bootstrap complete. Give services a minute to finish starting, then visit:
+==> Bootstrap complete. Shared infra is up.
 
-  http://crm.${PUBLIC_IP_DASH}.nip.io      (Chatwoot — onboarding wizard on first visit)
-  http://tickets.${PUBLIC_IP_DASH}.nip.io  (Zammad — setup wizard on first visit)
-  http://agent.${PUBLIC_IP_DASH}.nip.io    (agent service health/webhooks)
-  http://mail.${PUBLIC_IP_DASH}.nip.io     (Mailpit — catches all outbound mail)
+Provision customers with:
+  cd ${DEPLOY_DIR} && ./scripts/add-tenant.sh <tenant-name>
 
-See the root README.md for Phase-2/Phase-3 wiring steps.
+Each tenant is then reachable at (once its containers finish starting):
+  http://<tenant>.crm.${PUBLIC_IP_DASH}.nip.io      (Chatwoot)
+  http://<tenant>.tickets.${PUBLIC_IP_DASH}.nip.io  (Zammad)
+  http://<tenant>.agent.${PUBLIC_IP_DASH}.nip.io    (agent)
+  http://<tenant>.mail.${PUBLIC_IP_DASH}.nip.io     (shared Mailpit)
+
+See the root README.md for per-tenant Phase-2/Phase-3 wiring steps.
 EOF

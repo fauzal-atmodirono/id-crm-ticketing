@@ -121,6 +121,27 @@ class Settings(BaseSettings):
     chatwoot_api_token: str = ""
     chatwoot_account_id: int = 1
     chatwoot_enabled: bool = True
+    # API-channel inbox that our backend creates conversations in and receives
+    # agent-reply webhooks from. 0 = unset (fail fast in the adapter).
+    chatwoot_inbox_id: int = 0
+    # Team the escalated conversation is assigned to (the native-inbox handoff).
+    chatwoot_agent_team_id: int = 0
+    # Label applied to escalated conversations so agents can filter them.
+    chatwoot_escalation_label: str = "ai-escalation"
+    # Shared secret required on inbound /webhooks/chatwoot calls (Chatwoot has no
+    # built-in HMAC). Compared constant-time; empty leaves the endpoint open.
+    chatwoot_webhook_secret: str = ""
+    # Domain used to synthesize a customer email on Chatwoot contacts. Web/WhatsApp
+    # customers have no real email, but downstream ticketing that keys customers by
+    # email (e.g. a Chatwoot->Zammad sync) needs one. Deterministic per session:
+    # <sanitized session_id>@<domain>. Use a real TLD so email-format validation passes.
+    chatwoot_customer_email_domain: str = "proton-demo.my"
+    # Whether an INCOMING message in the Chatwoot inbox runs the AI. Only true when
+    # Chatwoot itself is the customer channel (website widget). For a handoff-console
+    # deployment (customers on WhatsApp/web, Chatwoot only for agents) this MUST stay
+    # False, or the escalation seed message / forwarded customer messages trigger the
+    # bot and it re-escalates in an infinite loop.
+    chatwoot_bot_replies_to_incoming: bool = False
 
     # Zammad settings
     zammad_api_url: str = "http://localhost:3000"

@@ -47,9 +47,11 @@ def client() -> TestClient:
     return TestClient(app)
 
 
-def test_chatwoot_webhook_ignored_if_not_message_created(client: TestClient) -> None:
+def test_chatwoot_webhook_ignored_for_unhandled_event(client: TestClient) -> None:
+    # A non-status, non-message event is ignored. (A bare status_changed with no
+    # status is treated as a resolve — covered by the chatwoot bridge tests.)
     payload = {
-        "event": "conversation_status_changed",
+        "event": "contact_updated",
         "conversation": {"id": 123},
         "sender": {"id": 456, "name": "Test"},
     }
@@ -58,7 +60,9 @@ def test_chatwoot_webhook_ignored_if_not_message_created(client: TestClient) -> 
     assert response.json() == {"status": "ignored"}
 
 
-def test_chatwoot_webhook_processed_correctly(client: TestClient) -> None:
+def test_chatwoot_webhook_incoming_ignored_in_console_mode(client: TestClient) -> None:
+    # Handoff-console mode (default chatwoot_bot_replies_to_incoming=False): an
+    # incoming customer message does NOT run the bot, so it re-escalation-loops.
     payload = {
         "event": "message_created",
         "message_type": "incoming",
@@ -68,7 +72,7 @@ def test_chatwoot_webhook_processed_correctly(client: TestClient) -> None:
     }
     response = client.post("/webhooks/chatwoot", json=payload)
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ignored_incoming"}
 
 
 def test_chat_turn_returns_shape(client: TestClient) -> None:

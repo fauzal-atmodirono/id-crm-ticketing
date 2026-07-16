@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import re
 from collections.abc import AsyncIterator, Callable
@@ -96,6 +97,20 @@ def _handoff_dict(turn_result: Any) -> dict[str, Any] | None:
         "lead_details": turn_result.handoff.lead_details,
         "classification": turn_result.handoff.classification,
     }
+
+
+def _webhook_secret_valid(expected: str, provided: str | None) -> bool:
+    """Constant-time check of a shared-secret webhook header.
+
+    Returns True when no secret is configured (endpoint open) or the provided
+    header matches. Each fork MUST use a secret distinct from the sibling tenants
+    sharing the Zendesk instance — a shared value defeats tenant isolation.
+    """
+    if not expected:
+        return True
+    if not provided:
+        return False
+    return hmac.compare_digest(provided, expected)
 
 
 _WHATSAPP_MARKDOWN_CHARS = re.compile(r"[*_~`]+")
@@ -324,15 +339,84 @@ class ChatRouter:
 
     # --- CRM webhooks -------------------------------------------------------
 
-    async def chatwoot_webhook(self, payload: ChatwootWebhookPayload) -> dict[str, str]:
-        if payload.event != "message_created" or payload.message_type != "incoming":
+    async def chatwoot_webhook(  # noqa: PLR0911, PLR0912 — webhook dispatcher fans out to several event branches
+        self,
+        payload: ChatwootWebhookPayload,
+        token: str | None = None,
+        x_chatwoot_webhook_secret: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        # Shared-secret gate: token query param is primary, header is fallback.
+        # Chatwoot's webhook UI cannot add custom headers, so we embed the secret
+        # in the webhook URL as ?token=<secret>. Gate on the configured secret
+        # directly (not on whether a bridge happens to be wired) so the endpoint
+        # is never left unauthenticated when chatwoot_enabled is False.
+        provided = token or x_chatwoot_webhook_secret
+        if not _webhook_secret_valid(self.orchestrator._settings.chatwoot_webhook_secret, provided):
+            _log.warning("chatwoot_webhook_secret_invalid")
+            raise HTTPException(status_code=401, detail="Invalid secret")
+
+        # Shared-account isolation: Chatwoot account webhooks fire for ALL inboxes.
+        # When we are pinned to one inbox, ignore events for any other inbox so we
+        # never act on another team's conversations.
+        our_inbox = self.orchestrator._settings.chatwoot_inbox_id
+        if (
+            our_inbox
+            and payload.conversation.inbox_id is not None
+            and payload.conversation.inbox_id != our_inbox
+        ):
+            return {"status": "ignored_other_inbox"}
+
+        conv_id = str(payload.conversation.id)
+
+        # Agent resolved the conversation → resume the AI.
+        if payload.event in ("conversation_resolved", "conversation_status_changed"):
+            # Only an actual resolve resumes the AI; a status change to open/pending
+            # (e.g. an agent re-opening) must NOT hand control back to the bot.
+            if (
+                payload.event == "conversation_status_changed"
+                and payload.conversation.status not in (None, "resolved")
+            ):
+                return {"status": "ignored"}
+            session_id = None
+            if self._handoff_bridge is not None:
+                session_id = await self._handoff_bridge.session_id_for(conv_id)
+            if session_id:
+                # Clear BOTH pause mechanisms: the adapter/web pause AND the ADK
+                # WhatsApp handoff state the WhatsApp inbound path checks; then tear
+                # down the mapping so a future handoff re-registers cleanly.
+                await self.orchestrator._ticketing_port.unpause_ai_for_session(session_id)
+                await self.orchestrator.resume_ai(session_id)
+                if self._handoff_bridge is not None:
+                    await self._handoff_bridge.unregister(session_id)
+                _log.info("chatwoot_resolved_unpaused", session_id=session_id)
+            return {"status": "resolved"}
+
+        if payload.event != "message_created":
             return {"status": "ignored"}
+
+        # Agent reply (outgoing, non-private) → relay to the customer channel.
+        if payload.message_type == "outgoing" and not payload.private:
+            if self._human_agent_bridge is None or self._handoff_bridge is None:
+                return {"status": "no_bridge"}
+            events = self._human_agent_bridge.parse_webhook_events(payload.model_dump())
+            for event in events:
+                await self._handoff_bridge.publish(event)
+                await self._relay_agent_reply_to_whatsapp(event)
+            return {"status": "relayed", "delivered": str(len(events))}
+
+        # Customer message into a Chatwoot-hosted inbox → run the bot. Only when
+        # Chatwoot is the customer channel; for a handoff-console deployment this is
+        # OFF, or the escalation seed message / forwarded customer messages trigger
+        # the bot and it re-escalates in an infinite loop.
+        if payload.message_type != "incoming":
+            return {"status": "ignored"}
+        if not self.orchestrator._settings.chatwoot_bot_replies_to_incoming:
+            return {"status": "ignored_incoming"}
 
         content = (payload.content or "").strip()
         if not content:
             return {"status": "empty_content"}
 
-        conv_id = str(payload.conversation.id)
         session_id = f"chatwoot-conv-{conv_id}"
 
         _log.info("chatwoot_webhook_received", conv_id=conv_id, session_id=session_id)

@@ -74,6 +74,51 @@ async def test_create_ticket_emits_classification_tags() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "urgency,expected_priority",
+    [
+        ("low", "low"),
+        ("medium", "normal"),
+        ("high", "high"),
+        ("urgent", "urgent"),
+        ("nonsense", "normal"),  # unknown urgency defaults to normal
+    ],
+)
+async def test_create_ticket_priority_matches_urgency(urgency: str, expected_priority: str) -> None:
+    """Routing/SLA views key on ticket priority — lock the urgency→priority contract."""
+    captured: dict[str, Any] = {}
+
+    class _Resp:
+        def raise_for_status(self) -> None: ...
+
+        def json(self) -> dict[str, Any]:
+            return {"ticket": {"id": 1}}
+
+    class _Client:
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: object) -> None: ...
+
+        async def post(
+            self,
+            url: str,
+            json: object,
+            headers: object,
+            timeout: object,  # noqa: ASYNC109
+        ) -> _Resp:
+            captured["json"] = json
+            return _Resp()
+
+    with patch("chatbot.features.chat.adapters.zendesk.httpx.AsyncClient", _Client):
+        await _adapter().create_ticket(
+            session_id="whatsapp-+60123", title="t", body="b", urgency=urgency
+        )
+
+    assert captured["json"]["ticket"]["priority"] == expected_priority
+
+
+@pytest.mark.asyncio
 async def test_create_ticket_no_classification_tags_when_absent() -> None:
     """When no classification args provided and no base tag, ticket has no tags key."""
     captured: dict[str, Any] = {}

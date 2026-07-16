@@ -196,6 +196,69 @@ async def test_create_ticket_applies_multiple_escalation_labels() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_ticket_writes_dimension_labels_in_single_final_call() -> None:
+    # The AI classification must land as labels using the SAME convention the
+    # metrics mapping parses (category_/subcat_/division_/dept_/sla_), and must
+    # ride in the ONE final labels call alongside the escalation labels — a second
+    # labels POST would re-fire the webhook and spawn a duplicate Zammad ticket.
+    fake = _FakeClient({("POST", "/conversations"): {"id": 99}})
+    adapter = ChatwootAdapter(
+        Settings(
+            chatwoot_account_id=1,
+            chatwoot_inbox_id=7,
+            chatwoot_escalation_label="ai-escalation, escalate",
+        )
+    )
+    adapter._request = fake._request  # type: ignore[method-assign]
+    await adapter.create_ticket(
+        session_id="whatsapp-+60123",
+        title="Battery fault",
+        body="help",
+        urgency="high",
+        category="Aftersales",
+        subcategory="Battery Health",
+        division="Aftersales",
+        department="Service Center",
+        sla_minutes=480,
+    )
+    labels_calls = [pl for _m, p, pl in fake.calls if p.endswith("/labels")]
+    assert len(labels_calls) == 1, "exactly one labels call (no duplicate-ticket trigger)"
+    labels = labels_calls[0]["labels"]  # type: ignore[index]
+    assert labels == [
+        "category_aftersales",
+        "subcat_battery_health",
+        "division_aftersales",
+        "dept_service_center",
+        "sla_480",
+        "ai-escalation",
+        "escalate",
+    ]
+    # sla_minutes also persisted as a numeric custom attribute
+    ca = next(pl for _m, p, pl in fake.calls if p.endswith("/custom_attributes"))
+    assert ca == {"custom_attributes": {"sla_minutes": 480}}
+
+
+@pytest.mark.asyncio
+async def test_create_ticket_without_dimensions_only_escalation_labels() -> None:
+    fake = _FakeClient({("POST", "/conversations"): {"id": 99}})
+    adapter = ChatwootAdapter(
+        Settings(
+            chatwoot_account_id=1,
+            chatwoot_inbox_id=7,
+            chatwoot_escalation_label="ai-escalation",
+        )
+    )
+    adapter._request = fake._request  # type: ignore[method-assign]
+    await adapter.create_ticket(
+        session_id="whatsapp-+60123", title="Refund", body="help", urgency="high"
+    )
+    labels_calls = [pl for _m, p, pl in fake.calls if p.endswith("/labels")]
+    assert len(labels_calls) == 1
+    assert labels_calls[0]["labels"] == ["ai-escalation"]  # type: ignore[index]
+    assert not any(p.endswith("/custom_attributes") for _m, p, _pl in fake.calls)
+
+
+@pytest.mark.asyncio
 async def test_create_ticket_does_not_cache_on_failed_create() -> None:
     # /conversations returns no id (e.g. network/auth failure) -> fallback used,
     # nothing cached so a later attempt can retry.

@@ -102,6 +102,13 @@ class HandoffOpenPayload:
     language: Language = "unknown"
     customer_phone: str | None = None
     preferred_model: str | None = None
+    # AI classification carried into the handoff so the bridge can persist it on
+    # the ticket/conversation for the downstream metrics sync to read back.
+    category: str | None = None
+    subcategory: str | None = None
+    division: str | None = None
+    department: str | None = None
+    sla_minutes: int | None = None
 
 
 @dataclass(frozen=True)

@@ -16,8 +16,8 @@ from __future__ import annotations
 import asyncio
 
 import httpx
-from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
 
+from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
 from chatbot.platform.config import Settings
 
 

@@ -1073,6 +1073,7 @@ class OrchestratorService:
             language=lang,
             chat_log=chat_log,
             lead_details=lead_details,
+            classification=session_state,
         )
 
         ticket_id = None
@@ -1159,6 +1160,7 @@ class OrchestratorService:
         language: str,
         chat_log: list[dict[str, str]],
         lead_details: dict[str, Any] | None = None,
+        classification: dict[str, Any] | None = None,
     ) -> bool:
         if self._human_agent_bridge is None or self._handoff_bridge is None:
             return False
@@ -1180,6 +1182,8 @@ class OrchestratorService:
         customer_phone = lead.get("customer_phone")
         preferred_model = lead.get("preferred_model")
 
+        cls = classification or {}
+        _raw_cat = cls.get("category")
         payload = HandoffOpenPayload(
             session_id=session_id,
             customer_name=customer_name,
@@ -1190,6 +1194,11 @@ class OrchestratorService:
             language=language,  # type: ignore[arg-type]
             customer_phone=customer_phone,
             preferred_model=preferred_model,
+            category=_raw_cat,
+            subcategory=cls.get("subcategory"),
+            division=(CATEGORY_TO_DIVISION.get(str(_raw_cat).lower()) if _raw_cat else None),
+            department=cls.get("department"),
+            sla_minutes=cls.get("sla_minutes"),
         )
 
         try:

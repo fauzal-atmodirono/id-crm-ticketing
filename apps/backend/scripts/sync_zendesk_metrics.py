@@ -1,32 +1,18 @@
-"""Sync Zendesk tickets into the BigQuery metrics table + refresh the views.
+"""Deprecated alias — PROTON migrated its CRM to Chatwoot+Zammad.
 
-Run once for backfill, re-run any time to refresh:
-    cd apps/backend
-    .venv/bin/python scripts/sync_zendesk_metrics.py
-
-Reads Zendesk creds + BigQuery target from settings/.env. Idempotent
-(WRITE_TRUNCATE full reload). Makes live Zendesk + BigQuery calls.
+The metrics batch sync now pages Chatwoot conversations, not Zendesk tickets.
+Use ``scripts/sync_chatwoot_metrics.py``. This shim forwards to it so existing
+references / cron entries keep working.
 """
 
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
-from chatbot.features.metrics.sync import ensure_views, run_sync
-from chatbot.platform.config import get_settings
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-
-def main() -> int:
-    settings = get_settings()
-    result = run_sync(settings)
-    ensure_views(settings)
-    print(
-        f"synced: {result['tickets']} tickets -> {result['rows']} rows "
-        f"into {settings.bigquery_project_id}.{settings.bigquery_dataset}."
-        f"{settings.bigquery_conversations_table}; views refreshed"
-    )
-    return 0
-
+from sync_chatwoot_metrics import main
 
 if __name__ == "__main__":
     sys.exit(main())

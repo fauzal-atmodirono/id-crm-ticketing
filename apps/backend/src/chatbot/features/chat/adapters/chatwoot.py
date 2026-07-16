@@ -97,6 +97,40 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             if label.strip()
         ]
 
+    @staticmethod
+    def _dimension_labels(
+        category: str | None,
+        subcategory: str | None,
+        division: str | None,
+        department: str | None,
+        sla_minutes: int | None,
+    ) -> list[str]:
+        """Encode the AI classification as Chatwoot conversation labels.
+
+        Uses the SAME tag-name convention the Zendesk metrics ``mapping.py``
+        already parses (``category_*``, ``subcat_*``, ``division_*``, ``dept_*``,
+        ``sla_<int>``) so the batch sync can read the dimensions straight back
+        off the conversation. These are merged into the SINGLE final labels call
+        alongside the escalation labels — a separate labels POST would re-fire the
+        conversation_updated webhook and spawn a duplicate Zammad ticket.
+        """
+
+        def _norm(v: str) -> str:
+            return v.strip().lower().replace(" ", "_")
+
+        labels: list[str] = []
+        if category:
+            labels.append(f"category_{_norm(category)}")
+        if subcategory:
+            labels.append(f"subcat_{_norm(subcategory)}")
+        if division:
+            labels.append(f"division_{_norm(division)}")
+        if department:
+            labels.append(f"dept_{_norm(department)}")
+        if sla_minutes is not None:
+            labels.append(f"sla_{sla_minutes}")
+        return labels
+
     def _base(self) -> str:
         return (
             f"{self._settings.chatwoot_api_url.rstrip('/')}"
@@ -254,11 +288,11 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         customer_name: str | None = None,
         customer_email: str | None = None,  # noqa: ARG002
         customer_phone: str | None = None,
-        category: str | None = None,  # noqa: ARG002
-        subcategory: str | None = None,  # noqa: ARG002
-        division: str | None = None,  # noqa: ARG002
-        department: str | None = None,  # noqa: ARG002
-        sla_minutes: int | None = None,  # noqa: ARG002
+        category: str | None = None,
+        subcategory: str | None = None,
+        division: str | None = None,
+        department: str | None = None,
+        sla_minutes: int | None = None,
     ) -> str:
         conv_id = await self._find_or_create_conversation(session_id, customer_name, customer_phone)
         # Post the customer's issue as an INCOMING message (before labelling, which
@@ -276,13 +310,28 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 {"team_id": self._settings.chatwoot_agent_team_id},
             )
         await self.add_private_note(conv_id, f"[AI escalation] {title}\n\n{body}")
+        # Also persist sla_minutes as a custom attribute — a plain number is
+        # cleaner there than encoded in a label, and it survives even if the label
+        # is later edited by an agent.
+        if sla_minutes is not None:
+            await self._request(
+                "POST",
+                f"/conversations/{conv_id}/custom_attributes",
+                {"custom_attributes": {"sla_minutes": sla_minutes}},
+            )
         # Apply the escalation labels LAST: a downstream sync escalates on a
         # conversation_updated carrying the escalate label, so nothing must update
         # the conversation after this or each update re-triggers a duplicate ticket.
+        # The AI-classification dimension labels ride in this SAME single call so
+        # the batch metrics sync can read them back — a separate labels POST would
+        # re-fire the webhook and spawn a duplicate Zammad ticket.
+        dimension_labels = self._dimension_labels(
+            category, subcategory, division, department, sla_minutes
+        )
         await self._request(
             "POST",
             f"/conversations/{conv_id}/labels",
-            {"labels": self._escalation_labels()},
+            {"labels": dimension_labels + self._escalation_labels()},
         )
         return conv_id
 
@@ -446,13 +495,29 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 f"/conversations/{conv_id}/assignments",
                 {"team_id": self._settings.chatwoot_agent_team_id},
             )
+        if payload.sla_minutes is not None:
+            await self._request(
+                "POST",
+                f"/conversations/{conv_id}/custom_attributes",
+                {"custom_attributes": {"sla_minutes": payload.sla_minutes}},
+            )
         # Apply the escalation labels LAST: a downstream sync escalates on a
         # conversation_updated carrying the escalate label, so nothing must update
         # the conversation after this or each update re-triggers a duplicate ticket.
+        # The AI-classification dimension labels ride in this SAME single call so
+        # the batch metrics sync can read them back — a separate labels POST would
+        # re-fire the webhook and spawn a duplicate Zammad ticket.
+        dimension_labels = self._dimension_labels(
+            payload.category,
+            payload.subcategory,
+            payload.division,
+            payload.department,
+            payload.sla_minutes,
+        )
         await self._request(
             "POST",
             f"/conversations/{conv_id}/labels",
-            {"labels": self._escalation_labels()},
+            {"labels": dimension_labels + self._escalation_labels()},
         )
         return conv_id
 

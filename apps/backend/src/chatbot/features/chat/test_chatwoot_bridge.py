@@ -110,3 +110,45 @@ async def test_open_handoff_posts_incoming_customer_message_before_labels() -> N
     assert inc < lbl, "incoming message must precede the label (webhook trigger)"
     inc_payload = calls[inc][2]
     assert inc_payload is not None and inc_payload["content"] == "my ring broke"
+
+
+@pytest.mark.asyncio
+async def test_open_handoff_writes_dimension_labels_in_single_final_call() -> None:
+    # The bridge path (Chatwoot escalation) must persist the AI classification as
+    # labels the metrics sync can read back, in the ONE final labels call — a
+    # second labels POST would spawn a duplicate Zammad ticket.
+    adapter = ChatwootAdapter(
+        Settings(
+            chatwoot_account_id=1,
+            chatwoot_inbox_id=7,
+            chatwoot_escalation_label="ai-escalation, escalate",
+        )
+    )
+    fake = _FakeClient({("POST", "/conversations"): {"id": 99}})
+    adapter._request = fake._request  # type: ignore[method-assign]
+    payload = HandoffOpenPayload(
+        session_id="sim-1",
+        customer_name="Aina",
+        customer_email="",
+        ai_summary="Customer wants a human.",
+        transcript=(Message(role="user", text="my battery is dead"),),
+        category="Aftersales",
+        subcategory="Battery",
+        division="Aftersales",
+        department="Service Center",
+        sla_minutes=480,
+    )
+    await adapter.open_handoff(payload)
+    labels_calls = [pl for _m, p, pl in fake.calls if p.endswith("/labels")]
+    assert len(labels_calls) == 1
+    assert labels_calls[0]["labels"] == [  # type: ignore[index]
+        "category_aftersales",
+        "subcat_battery",
+        "division_aftersales",
+        "dept_service_center",
+        "sla_480",
+        "ai-escalation",
+        "escalate",
+    ]
+    ca = next(pl for _m, p, pl in fake.calls if p.endswith("/custom_attributes"))
+    assert ca == {"custom_attributes": {"sla_minutes": 480}}

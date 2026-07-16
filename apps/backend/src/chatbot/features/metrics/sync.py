@@ -1,8 +1,14 @@
-"""Zendesk -> BigQuery sync: fetch tickets, map, load the conversations table."""
+"""Chatwoot -> BigQuery sync: fetch conversations, map, load the conversations table.
+
+PROTON migrated its CRM from Zendesk to Chatwoot+Zammad. The batch (Lane B) sync
+that populates the BigQuery ``conversations`` table now pages the Chatwoot
+conversations API instead of the Zendesk incremental-tickets export. The AI
+classification (division/category/subcategory/department/sla) is read back off the
+Chatwoot conversation LABELS that ``ChatwootAdapter`` writes at escalation time.
+"""
 
 from __future__ import annotations
 
-import base64
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -12,7 +18,10 @@ import structlog
 from google.cloud import bigquery
 
 from chatbot.features.metrics.bigquery_schema import CONVERSATIONS_SCHEMA, view_ddls
-from chatbot.features.metrics.mapping import ConversationRow, map_ticket_to_row
+from chatbot.features.metrics.mapping import (
+    ConversationRow,
+    map_chatwoot_conversation_to_row,
+)
 
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
@@ -20,17 +29,38 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(__name__)
 
 
-def _auth_header(settings: Settings) -> str:
-    raw = f"{settings.zendesk_email}/token:{settings.zendesk_api_token}"
-    return "Basic " + base64.b64encode(raw.encode()).decode()
+def _conversations_from_page(page: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract the conversation list from one Chatwoot list-response page.
+
+    The account conversations endpoint wraps results as
+    ``{"data": {"payload": [...], "meta": {...}}}``; tolerate a couple of shapes.
+    """
+    data = page.get("data")
+    if isinstance(data, dict):
+        payload = data.get("payload")
+        if isinstance(payload, list):
+            return [c for c in payload if isinstance(c, dict)]
+    payload = page.get("payload")
+    if isinstance(payload, list):
+        return [c for c in payload if isinstance(c, dict)]
+    return []
 
 
-def fetch_tickets(
+def fetch_conversations(
     settings: Settings, *, get_page: Callable[[str], dict[str, Any]] | None = None
 ) -> list[dict[str, Any]]:
-    """Page the Zendesk Incremental Ticket Export from the beginning."""
+    """Page the Chatwoot account conversations API, filtered to our inbox.
+
+    Auth MUST use the dashed ``Api-Access-Token`` header (some reverse proxies
+    strip underscore headers, mirroring the adapter). Pages 1..N until a page
+    returns fewer conversations than the previous non-empty one / an empty page.
+    """
     if get_page is None:
-        headers = {"Authorization": _auth_header(settings)}
+        token = settings.chatwoot_api_token
+        headers = {
+            "Api-Access-Token": token,
+            "api_access_token": token,
+        }
 
         def get_page(url: str) -> dict[str, Any]:
             with httpx.Client(timeout=30.0) as client:
@@ -38,19 +68,26 @@ def fetch_tickets(
                 res.raise_for_status()
                 return dict(res.json())
 
-    sub = settings.zendesk_subdomain
-    url: str | None = (
-        f"https://{sub}.zendesk.com/api/v2/incremental/tickets.json"
-        f"?start_time=0&include=metric_sets"
+    base = (
+        f"{settings.chatwoot_api_url.rstrip('/')}"
+        f"/api/v1/accounts/{settings.chatwoot_account_id}/conversations"
     )
-    tickets: list[dict[str, Any]] = []
-    while url:
+    inbox_id = settings.chatwoot_inbox_id
+    conversations: list[dict[str, Any]] = []
+    page_num = 1
+    while True:
+        url = f"{base}?status=all&inbox_id={inbox_id}&page={page_num}"
         page = get_page(url)
-        tickets.extend(page.get("tickets", []))
-        if page.get("end_of_stream"):
+        batch = _conversations_from_page(page)
+        if not batch:
             break
-        url = page.get("next_page")
-    return tickets
+        # Defensive inbox filter: the API filter should already scope this, but a
+        # shared instance may ignore an unknown param, so keep only our inbox.
+        conversations.extend(
+            c for c in batch if inbox_id in (0, None) or c.get("inbox_id") in (inbox_id, None)
+        )
+        page_num += 1
+    return conversations
 
 
 def load_conversations(settings: Settings, rows: list[ConversationRow]) -> None:
@@ -112,9 +149,9 @@ def run_sync(
     fetch: Callable[[Settings], list[dict[str, Any]]] | None = None,
     load: Callable[[Settings, list[ConversationRow]], None] | None = None,
 ) -> dict[str, int]:
-    """Fetch tickets, map to rows, load. Returns counts. Injectable for tests."""
-    tickets = (fetch or fetch_tickets)(settings)
-    rows = [row for t in tickets if (row := map_ticket_to_row(t)) is not None]
+    """Fetch conversations, map to rows, load. Returns counts. Injectable for tests."""
+    conversations = (fetch or fetch_conversations)(settings)
+    rows = [row for c in conversations if (row := map_chatwoot_conversation_to_row(c)) is not None]
     (load or load_conversations)(settings, rows)
-    _log.info("metrics_sync_done", tickets=len(tickets), rows=len(rows))
-    return {"tickets": len(tickets), "rows": len(rows)}
+    _log.info("metrics_sync_done", conversations=len(conversations), rows=len(rows))
+    return {"conversations": len(conversations), "rows": len(rows)}

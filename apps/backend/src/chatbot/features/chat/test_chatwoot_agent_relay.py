@@ -209,7 +209,9 @@ async def test_conversation_reopened_does_not_resume() -> None:
         },
     )
     assert res.status_code == 200
-    assert res.json() == {"status": "ignored"}
+    # The transition is now logged to the audit trail (status "logged"), but a
+    # re-open to a non-resolved status still must NOT hand control back to the AI.
+    assert res.json() == {"status": "logged"}
     orch.resume_ai.assert_not_awaited()
 
 

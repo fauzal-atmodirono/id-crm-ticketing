@@ -28,6 +28,7 @@ from chatbot.features.chat.ports import (
 )
 from chatbot.features.chat.router import build_chat_router
 from chatbot.features.chat.service import OrchestratorService
+from chatbot.features.chat.sla import start_sla_scheduler
 from chatbot.features.metrics.anomaly_router import build_metrics_anomaly_router
 from chatbot.features.metrics.dashboard_router import build_metrics_query_router
 from chatbot.features.metrics.email_port import build_email_report_port
@@ -196,6 +197,16 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     _wire_agent_assist(app, knowledge_port, settings)
 
     _wire_metrics_features(app, settings)
+
+    # --- SLA-timer escalation engine (Chatwoot has no native SLA engine) ---
+    # Guarded behind sla_engine_enabled (default OFF) exactly like the metrics
+    # scheduler, so nothing scans unless a deployment explicitly opts in.
+    sla_scheduler = start_sla_scheduler(settings, audit_log, twilio_adapter=twilio_adapter)
+    if sla_scheduler is not None:
+
+        @app.on_event("shutdown")
+        def _stop_sla_scheduler() -> None:
+            sla_scheduler.shutdown(wait=False)
 
     @app.get("/")
     def health_check() -> dict[str, str]:

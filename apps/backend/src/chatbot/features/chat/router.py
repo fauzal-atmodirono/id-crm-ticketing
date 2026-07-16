@@ -38,7 +38,7 @@ from chatbot.features.chat.phone.kb_tool import KB_SEARCH_TOOL
 from chatbot.features.chat.phone.rate_limit import RateLimiter
 from chatbot.features.chat.phone.token import mint_voice_token
 from chatbot.features.chat.phone.twiml import connect_stream_twiml
-from chatbot.features.chat.ports import AuditLogPort, HumanAgentBridgePort
+from chatbot.features.chat.ports import AuditEntry, AuditLogPort, HumanAgentBridgePort
 from chatbot.features.chat.schemas import (
     ChatwootWebhookPayload,
     TtsRequest,
@@ -48,6 +48,7 @@ from chatbot.features.chat.schemas import (
     ZendeskWebhookPayload,
 )
 from chatbot.features.chat.service import OrchestratorService
+from chatbot.features.chat.sla import FIRST_RESPONSE_STATE
 from chatbot.features.chat.twilio_signature import verify_twilio_signature
 
 _log = structlog.get_logger(__name__)
@@ -97,6 +98,22 @@ def _handoff_dict(turn_result: Any) -> dict[str, Any] | None:
         "lead_details": turn_result.handoff.lead_details,
         "classification": turn_result.handoff.classification,
     }
+
+
+# Chatwoot conversation status -> case audit state. Chatwoot's `pending` /
+# `snoozed` (an agent is actively working / waiting) map to the explicit WIP
+# ("work in progress") case state; `open` -> OPEN; `resolved` -> RESOLVED.
+_CHATWOOT_STATUS_TO_STATE: dict[str, CaseState] = {
+    "open": CaseState.OPEN,
+    "pending": CaseState.WIP,
+    "snoozed": CaseState.WIP,
+    "resolved": CaseState.SOLVED,
+}
+
+
+def _chatwoot_state(status: str | None) -> CaseState:
+    """Map a Chatwoot conversation status to a case audit state (default OPEN)."""
+    return _CHATWOOT_STATUS_TO_STATE.get((status or "").lower(), CaseState.OPEN)
 
 
 def _webhook_secret_valid(expected: str, provided: str | None) -> bool:
@@ -384,13 +401,18 @@ class ChatRouter:
 
         # Agent resolved the conversation → resume the AI.
         if payload.event in ("conversation_resolved", "conversation_status_changed"):
+            # Structured status audit log: record EVERY status transition (incl.
+            # open/pending/snoozed re-opens, which don't resume the AI) so the case
+            # has a from→to trail with a WIP state. from_state is the last recorded
+            # to_state for this case (unknown → empty on the first transition).
+            await self._log_status_transition(conv_id, payload)
             # Only an actual resolve resumes the AI; a status change to open/pending
             # (e.g. an agent re-opening) must NOT hand control back to the bot.
             if (
                 payload.event == "conversation_status_changed"
                 and payload.conversation.status not in (None, "resolved")
             ):
-                return {"status": "ignored"}
+                return {"status": "logged"}
             session_id = None
             if self._handoff_bridge is not None:
                 session_id = await self._handoff_bridge.session_id_for(conv_id)
@@ -410,6 +432,11 @@ class ChatRouter:
 
         # Agent reply (outgoing, non-private) → relay to the customer channel.
         if payload.message_type == "outgoing" and not payload.private:
+            # First-response marker for the SLA engine: an outgoing, non-private
+            # message IS an agent reply, so the 8h no-response scan can tell a
+            # responded case from an un-responded one. Deduped so re-fired webhooks
+            # / subsequent agent replies don't append duplicate markers.
+            await self._record_first_response(conv_id)
             if self._human_agent_bridge is None or self._handoff_bridge is None:
                 return {"status": "no_bridge"}
             events = self._human_agent_bridge.parse_webhook_events(payload.model_dump())
@@ -443,6 +470,55 @@ class ChatRouter:
             )
 
         return {"status": "ok"}
+
+    async def _log_status_transition(self, conv_id: str, payload: ChatwootWebhookPayload) -> None:
+        """Append a case status transition to the audit log (best-effort).
+
+        ``to_state`` is the WIP-aware mapping of the new Chatwoot status;
+        ``from_state`` is the last recorded ``to_state`` for this case (empty on
+        the first transition, since Chatwoot's webhook does not carry the prior
+        status). The actor is the sender/assignee name when present, else "agent".
+        No-op when no audit log is wired.
+        """
+        if self._audit_log is None:
+            return
+        to_state = _chatwoot_state(payload.conversation.status)
+        entries = await self._audit_log.list_for_ticket(conv_id)
+        from_state = entries[-1].to_state if entries else ""
+        actor = (payload.sender.name if payload.sender and payload.sender.name else None) or "agent"
+        await self._audit_log.append(
+            AuditEntry(
+                ticket_id=conv_id,
+                session_id=f"chatwoot-conv-{conv_id}",
+                actor=actor,
+                from_state=from_state,
+                to_state=to_state.value,
+                at=datetime.now(UTC).isoformat(),
+                remark=f"status_changed -> {payload.conversation.status}",
+            )
+        )
+        _log.info("chatwoot_status_transition_logged", conv_id=conv_id, to_state=to_state.value)
+
+    async def _record_first_response(self, conv_id: str) -> None:
+        """Record a FIRST_RESPONSE audit marker on the first agent reply (deduped)."""
+        if self._audit_log is None:
+            return
+        entries = await self._audit_log.list_for_ticket(conv_id)
+        if any(e.to_state == FIRST_RESPONSE_STATE for e in entries):
+            return  # already recorded — don't append duplicate markers
+        from_state = entries[-1].to_state if entries else ""
+        await self._audit_log.append(
+            AuditEntry(
+                ticket_id=conv_id,
+                session_id=f"chatwoot-conv-{conv_id}",
+                actor="agent",
+                from_state=from_state,
+                to_state=FIRST_RESPONSE_STATE,
+                at=datetime.now(UTC).isoformat(),
+                remark="first agent response",
+            )
+        )
+        _log.info("chatwoot_first_response_logged", conv_id=conv_id)
 
     async def _handle_chatwoot_email_event(  # noqa: PLR0911 — sequential loop/dedup guards each early-return
         self, payload: ChatwootWebhookPayload

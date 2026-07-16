@@ -61,6 +61,23 @@ class Settings(BaseSettings):
     # Secret used to verify webhook calls for SLA escalation notifications
     sla_webhook_secret: str = ""
 
+    # --- SLA-timer escalation engine (Chatwoot has no native SLA engine) ---
+    # Master switch: when False (default) the in-app SLA scan scheduler is NOT
+    # started, so nothing runs unless a deployment explicitly opts in.
+    sla_engine_enabled: bool = False
+    # First-response SLA: an OPEN conversation with no agent reply older than this
+    # many hours fires an SLA_BREACH_NO_RESPONSE audit transition.
+    sla_response_hours: int = 8
+    # Resolution SLA: a non-resolved conversation older than this many hours fires
+    # an SLA_BREACH_UNRESOLVED transition. A per-conversation sla_<int> label /
+    # custom attribute (minutes) overrides this default when present.
+    sla_resolution_hours: int = 48
+    # How often (minutes) the SLA scan job scans Chatwoot conversations.
+    sla_scan_interval_minutes: int = 15
+    # Optional PIC WhatsApp number (E.164, e.g. "+60123456789") alerted via Twilio
+    # on each breach. Empty (default) records the audit transition only, no alert.
+    sla_pic_whatsapp: str = ""
+
     # Email channel — when True, AI replies become private draft notes instead of
     # public replies (draft-assist mode). Default False = auto-reply (public).
     email_draft_assist: bool = False

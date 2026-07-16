@@ -1,7 +1,14 @@
 from types import SimpleNamespace
 from typing import Any, cast
 
-from chatbot.features.metrics.scheduler import run_sync_job, start_metrics_scheduler
+from chatbot.features.metrics.email_port import MockEmailReport
+from chatbot.features.metrics.query_port import MockMetricsQuery
+from chatbot.features.metrics.scheduler import (
+    run_report_job,
+    run_sync_job,
+    start_metrics_scheduler,
+    start_report_scheduler,
+)
 from chatbot.platform.config import Settings
 
 
@@ -58,3 +65,29 @@ def test_scheduler_enabled_adds_interval_job_and_starts() -> None:
     job = fake.jobs[0]
     assert job["trigger"] == "interval"
     assert job["hours"] == 3
+
+
+def test_run_report_job_emails_report_and_alert() -> None:
+    email = MockEmailReport()
+    s = Settings(report_recipients="mgmt@x.com")
+    run_report_job(s, MockMetricsQuery(), email)
+    # one report email (with 2 attachments) + one anomaly alert (mock has a spike)
+    assert len(email.sent) == 2
+    report = next(m for m in email.sent if len(m["attachments"]) == 2)
+    assert {a[0] for a in report["attachments"]} == {"bot-metrics.xlsx", "bot-metrics.pdf"}
+
+
+def test_run_report_job_no_recipients_no_report_email() -> None:
+    email = MockEmailReport()
+    run_report_job(Settings(report_recipients=""), MockMetricsQuery(), email)
+    # no report email; anomaly alert also needs recipients → nothing sent
+    assert email.sent == []
+
+
+def test_start_report_scheduler_disabled_returns_none() -> None:
+    assert (
+        start_report_scheduler(
+            Settings(report_enabled=False), MockMetricsQuery(), MockEmailReport()
+        )
+        is None
+    )

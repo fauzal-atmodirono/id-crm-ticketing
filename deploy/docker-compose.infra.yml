@@ -1,0 +1,60 @@
+# Shared infrastructure for the multi-tenant platform: one Caddy, Postgres,
+# and Mailpit serving every tenant. Creates the external `platform` network
+# that per-tenant app stacks (docker-compose.tenant.yml) attach to.
+#
+# Usage:
+#   docker compose -p platform-infra -f docker-compose.infra.yml --env-file infra.env up -d
+
+networks:
+  platform:
+    name: platform
+    driver: bridge
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PUBLIC_IP: ${PUBLIC_IP}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/tenants:/etc/caddy/tenants:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - platform
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    command: postgres -c shared_buffers=512MB
+    mem_limit: 1500m
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - platform
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  mailpit:
+    image: axllent/mailpit
+    restart: unless-stopped
+    mem_limit: 128m
+    networks:
+      - platform

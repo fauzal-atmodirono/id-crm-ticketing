@@ -13,7 +13,7 @@ x-chatwoot-env: &chatwoot-env
   INSTALLATION_ENV: docker
   RAILS_LOG_TO_STDOUT: "true"
   SECRET_KEY_BASE: ${SECRET_KEY_BASE}
-  FRONTEND_URL: http://${TENANT}.crm.${PUBLIC_IP}.nip.io
+  FRONTEND_URL: http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io
   POSTGRES_HOST: postgres
   POSTGRES_USERNAME: chatwoot_${TENANT}
   POSTGRES_PASSWORD: ${CHATWOOT_DB_PASSWORD}
@@ -222,9 +222,9 @@ services:
     environment:
       CHATWOOT_URL: http://${TENANT}-chatwoot-rails:3000
       ZAMMAD_URL: http://${TENANT}-zammad-nginx:8080
-      CHATWOOT_PUBLIC_URL: http://${TENANT}.crm.${PUBLIC_IP}.nip.io
-      ZAMMAD_PUBLIC_URL: http://${TENANT}.tickets.${PUBLIC_IP}.nip.io
-      AGENT_PUBLIC_URL: http://${TENANT}.agent.${PUBLIC_IP}.nip.io
+      CHATWOOT_PUBLIC_URL: http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io
+      ZAMMAD_PUBLIC_URL: http://${HOST_PREFIX}tickets.${PUBLIC_IP}.nip.io
+      AGENT_PUBLIC_URL: http://${HOST_PREFIX}agent.${PUBLIC_IP}.nip.io
       CHATWOOT_API_TOKEN: ${CHATWOOT_API_TOKEN}
       CHATWOOT_PLATFORM_TOKEN: ${CHATWOOT_PLATFORM_TOKEN}
       CHATWOOT_ACCOUNT_ID: ${CHATWOOT_ACCOUNT_ID}

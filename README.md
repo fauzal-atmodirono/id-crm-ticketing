@@ -88,6 +88,10 @@ docker compose -p platform-infra -f docker-compose.infra.yml --env-file infra.en
 
 # Provision a customer (repeat per customer):
 ./scripts/add-tenant.sh proton
+# One tenant may use the bare, un-prefixed hostnames (crm.<ip>.nip.io instead
+# of <tenant>.crm.<ip>.nip.io) via --bare; the tenant named "default" gets this
+# automatically:
+./scripts/add-tenant.sh default        # served at crm/tickets/agent/mail.<ip>.nip.io
 ```
 
 `add-tenant.sh` generates the tenant's secrets/DBs/Caddy route and brings its

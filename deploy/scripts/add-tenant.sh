@@ -5,7 +5,11 @@
 # is up.
 #
 # Usage:
-#   deploy/scripts/add-tenant.sh <tenant-name>
+#   deploy/scripts/add-tenant.sh <tenant-name> [--bare]
+#
+# --bare (also implied when <tenant-name> is "default") serves the tenant at the
+# un-prefixed hostnames crm/tickets/agent/mail.<ip>.nip.io instead of
+# <tenant>.crm.<ip>.nip.io. Use it for at most ONE tenant.
 set -euo pipefail
 
 DEPLOY_DIR="${DEPLOY_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -14,9 +18,24 @@ INFRA_FILE="docker-compose.infra.yml"
 TENANT_FILE="docker-compose.tenant.yml"
 
 TENANT="${1:-}"
+MODE="${2:-}"
 if [[ ! "${TENANT}" =~ ^[a-z][a-z0-9]*$ ]]; then
   echo "ERROR: tenant name must match ^[a-z][a-z0-9]*$ (got '${TENANT}')" >&2
   exit 1
+fi
+if [[ -n "${MODE}" && "${MODE}" != "--bare" ]]; then
+  echo "ERROR: unknown option '${MODE}' (only --bare is supported)" >&2
+  exit 1
+fi
+
+# Public-hostname prefix: bare (no "<tenant>." label) for a --bare tenant or the
+# conventional "default" tenant; "<tenant>." otherwise. Container aliases stay
+# ${TENANT}-prefixed regardless — this only affects the public Caddy vhosts and
+# the FRONTEND_URL / *_PUBLIC_URL values.
+if [[ "${MODE}" == "--bare" || "${TENANT}" == "default" ]]; then
+  HOST_PREFIX=""
+else
+  HOST_PREFIX="${TENANT}."
 fi
 
 cd "${DEPLOY_DIR}"
@@ -69,8 +88,9 @@ sed \
   -e "s/^AGENT_DB_PASSWORD=.*/AGENT_DB_PASSWORD=${AGENT_DB_PASSWORD}/" \
   -e "s/^REDIS_PASSWORD=.*/REDIS_PASSWORD=${REDIS_PASSWORD}/" \
   -e "s/^SECRET_KEY_BASE=.*/SECRET_KEY_BASE=${SECRET_KEY_BASE}/" \
+  -e "s|^HOST_PREFIX=.*|HOST_PREFIX=${HOST_PREFIX}|" \
   tenants/example.env > "${ENV_FILE}"
-echo "==> Wrote ${ENV_FILE}"
+echo "==> Wrote ${ENV_FILE} (hostnames: ${HOST_PREFIX:-<bare>}crm.${PUBLIC_IP}.nip.io)"
 
 # --- 2. Create Postgres roles + databases on the running server -------------
 echo "==> Creating databases chatwoot_${TENANT} / zammad_${TENANT} / agent_${TENANT}"
@@ -91,19 +111,19 @@ docker compose -p "${INFRA_PROJECT}" -f "${INFRA_FILE}" exec -T postgres \
 
 # --- 3. Render + install the Caddy route, then reload -----------------------
 cat > "caddy/tenants/${TENANT}.caddy" <<CADDY
-http://${TENANT}.crm.${PUBLIC_IP}.nip.io {
+http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io {
 	reverse_proxy ${TENANT}-chatwoot-rails:3000
 }
 
-http://${TENANT}.tickets.${PUBLIC_IP}.nip.io {
+http://${HOST_PREFIX}tickets.${PUBLIC_IP}.nip.io {
 	reverse_proxy ${TENANT}-zammad-nginx:8080
 }
 
-http://${TENANT}.agent.${PUBLIC_IP}.nip.io {
+http://${HOST_PREFIX}agent.${PUBLIC_IP}.nip.io {
 	reverse_proxy ${TENANT}-agent:8000
 }
 
-http://${TENANT}.mail.${PUBLIC_IP}.nip.io {
+http://${HOST_PREFIX}mail.${PUBLIC_IP}.nip.io {
 	basic_auth {
 		${MAILPIT_AUTH_USER} ${MAILPIT_AUTH_HASH}
 	}
@@ -132,10 +152,10 @@ cat <<EOF
 
 ==> Tenant '${TENANT}' is up. Give containers a minute, then visit:
 
-  http://${TENANT}.crm.${PUBLIC_IP}.nip.io      (Chatwoot — onboarding wizard)
-  http://${TENANT}.tickets.${PUBLIC_IP}.nip.io  (Zammad — setup wizard)
-  http://${TENANT}.agent.${PUBLIC_IP}.nip.io    (agent /healthz)
-  http://${TENANT}.mail.${PUBLIC_IP}.nip.io     (shared Mailpit, basic_auth)
+  http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io      (Chatwoot — onboarding wizard)
+  http://${HOST_PREFIX}tickets.${PUBLIC_IP}.nip.io  (Zammad — setup wizard)
+  http://${HOST_PREFIX}agent.${PUBLIC_IP}.nip.io    (agent /healthz)
+  http://${HOST_PREFIX}mail.${PUBLIC_IP}.nip.io     (shared Mailpit, basic_auth)
 
 Next: run each app's setup wizard, then fill the CHATWOOT_*/ZAMMAD_*/GEMINI_*
 tokens in ${ENV_FILE} (README §5–6) and re-apply the agent:

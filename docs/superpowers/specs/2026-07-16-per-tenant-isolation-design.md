@@ -65,12 +65,12 @@ Alternatives considered and rejected:
 ### 3.1 Two Compose projects sharing one network
 
 - **`platform-infra`** (one project, runs once): `caddy`, `postgres`
-  (pgvector), `redis`, `mailpit`. Declares and **creates** an external Docker
-  bridge network named `platform`.
+  (pgvector), `mailpit`. Declares and **creates** an external Docker bridge
+  network named `platform`.
 - **`platform-<tenant>`** (one project per customer): `chatwoot-rails`,
   `chatwoot-sidekiq`, `zammad-init`, `zammad-railsserver`, `zammad-scheduler`,
-  `zammad-websocket`, `zammad-nginx`, `memcached`, `agent`. Each **attaches** to
-  the external `platform` network (`external: true`).
+  `zammad-websocket`, `zammad-nginx`, `redis`, `memcached`, `agent`. Each
+  **attaches** to the external `platform` network (`external: true`).
 
 All containers share the one bridge network, so Caddy and the tenant apps reach
 the shared Postgres/Redis by name exactly as today.
@@ -112,11 +112,11 @@ multi-tenancy work.
   and roles are created by `add-tenant.sh` against the **running** server, not
   the init hook. The init hook is trimmed to only what the shared server needs
   at bootstrap.
-- **Redis:** shared instance, per-tenant **logical DB indexes**. Allocation is
-  recorded in each tenant env. Example: `proton` → Chatwoot `db 0`, Zammad
-  `db 1`; `wahchan` → Chatwoot `db 2`, Zammad `db 3`. 16 logical DBs support
-  ~8 tenants — ample. Set via the `REDIS_URL` path segment
-  (`redis://:<pass>@redis:6379/<n>`).
+- **Redis:** **per-tenant** container (`<tenant>-redis`) with its own password.
+  No shared instance and no cross-tenant DB-index bookkeeping — Chatwoot uses
+  `db 0` and Zammad `db 1` within the tenant's *own* Redis, exactly as the
+  current single-tenant compose does. `REDIS_URL` points at the tenant's Redis
+  alias (`redis://:<pass>@<tenant>-redis:6379/<n>`).
 - **memcached:** **per-tenant** container. Zammad offers no cache-key
   namespacing, so a shared memcached risks cross-tenant cache bleed. memcached
   is tiny (~64 MB), so a dedicated one per tenant is cheap insurance.
@@ -134,7 +134,7 @@ Each tenant is fully described by `tenants/<tenant>.env` (gitignored; a
 - `FRONTEND_URL=http://<tenant>.crm.<ip>.nip.io`
 - Postgres: `CHATWOOT_DB=chatwoot_<tenant>`, `ZAMMAD_DB=zammad_<tenant>`,
   `AGENT_DB=agent_<tenant>` and their per-tenant role passwords
-- Redis DB indexes for Chatwoot and Zammad
+- `REDIS_PASSWORD` for the tenant's own Redis
 - `SECRET_KEY_BASE` and other app secrets
 - Agent tokens/secrets: `CHATWOOT_API_TOKEN`, `CHATWOOT_PLATFORM_TOKEN`,
   `CHATWOOT_ACCOUNT_ID`, `CHATWOOT_WEBHOOK_SECRET`, `CHATWOOT_BOT_TOKEN`,
@@ -184,20 +184,21 @@ trigger.
 
 | Layer | Component | Tuned limit |
 |---|---|---|
-| Shared infra | postgres / redis / caddy / mailpit | ~2 GB total |
+| Shared infra | postgres / caddy / mailpit | ~1.7 GB total |
 | Per tenant | chatwoot-rails | 1.5 GB |
 | | chatwoot-sidekiq | 1 GB |
 | | zammad-railsserver | 1.5 GB |
 | | zammad-scheduler | 1 GB |
 | | zammad-websocket | 0.4 GB |
 | | zammad-nginx | 0.25 GB |
+| | redis | 0.25 GB |
 | | memcached | 0.06 GB |
 | | agent | 0.4 GB |
-| **Per tenant total** | | **~6 GB** |
+| **Per tenant total** | | **~6.3 GB** |
 
-- 2 tenants ≈ 2 + (2 × 6) = **~14 GB** — fits 16 GB with swap headroom (the
-  bootstrap script already adds swap).
-- 3 tenants ≈ ~20 GB ⇒ resize to `e2-standard-8` (8 vCPU / 32 GB), or move to
+- 2 tenants ≈ 1.7 + (2 × 6.3) = **~14.3 GB** — fits 16 GB with swap headroom
+  (the bootstrap script already adds swap).
+- 3 tenants ≈ ~21 GB ⇒ resize to `e2-standard-8` (8 vCPU / 32 GB), or move to
   the one-VM-per-tenant growth path.
 - `WEB_CONCURRENCY=1` (Chatwoot) stays; Zammad Elasticsearch stays disabled.
 
@@ -205,7 +206,7 @@ trigger.
 
 ```
 deploy/
-  docker-compose.infra.yml        # caddy, postgres, redis, mailpit + external `platform` net
+  docker-compose.infra.yml        # caddy, postgres, mailpit + external `platform` net
   docker-compose.tenant.yml       # one parameterized per-tenant app stack
   tenants/
     example.env                   # committed template
@@ -254,5 +255,3 @@ The current monolithic `deploy/docker-compose.yml` is split into
   server-level outage affects everyone (acceptable at this scale; the isolation
   goal is *data*, not *availability*).
 - **Shared Mailpit:** accepted, documented.
-- **Redis DB-index bookkeeping:** manual allocation per tenant; `add-tenant.sh`
-  must assign non-colliding indexes and record them.

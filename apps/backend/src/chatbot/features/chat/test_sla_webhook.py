@@ -28,9 +28,11 @@ class _FakeRunner:
 
 
 @pytest.fixture
-def sla_setup() -> tuple[TestClient, AsyncMock, InMemoryAuditLog]:
+def sla_setup(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, AsyncMock, InMemoryAuditLog]:
     settings = get_settings()
-    settings.sla_webhook_secret = "sla-secret-123"
+    # setattr (not direct assignment) so the mutation to the @cache'd singleton
+    # auto-reverts after the test — otherwise the secret leaks session-wide.
+    monkeypatch.setattr(settings, "sla_webhook_secret", "sla-secret-123")
 
     orchestrator = OrchestratorService(
         settings=settings,

@@ -26,6 +26,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
+from chatbot.features.chat.case_state import CaseState, record_transition
 from chatbot.features.chat.handoff_bridge import HandoffBridge, SurveyEvent
 from chatbot.features.chat.models import AgentMessageEvent
 from chatbot.features.chat.phone.bridge import PhoneBridge
@@ -35,7 +36,7 @@ from chatbot.features.chat.phone.kb_tool import KB_SEARCH_TOOL
 from chatbot.features.chat.phone.rate_limit import RateLimiter
 from chatbot.features.chat.phone.token import mint_voice_token
 from chatbot.features.chat.phone.twiml import connect_stream_twiml
-from chatbot.features.chat.ports import HumanAgentBridgePort
+from chatbot.features.chat.ports import AuditLogPort, HumanAgentBridgePort
 from chatbot.features.chat.schemas import (
     ChatwootWebhookPayload,
     TtsRequest,
@@ -63,6 +64,14 @@ class CsatRequest(BaseModel):
 class NpsRequest(BaseModel):
     session_id: str
     score: int = Field(ge=0, le=10)
+
+
+class SlaEscalationPayload(BaseModel):
+    ticket_id: str
+    session_id: str = ""
+    level: str = "escalate"
+    pic_whatsapp: str = ""
+    remark: str = ""
 
 
 class ChatTurnResponse(BaseModel):
@@ -246,12 +255,14 @@ class ChatRouter:
         human_agent_bridge: HumanAgentBridgePort | None = None,
         twilio_adapter: TwilioChannelAdapter | None = None,
         live_session_factory: _LiveFactory | None = None,
+        audit_log: AuditLogPort | None = None,
     ) -> None:
         self.orchestrator = orchestrator
         self._handoff_bridge = handoff_bridge
         self._human_agent_bridge = human_agent_bridge
         self._twilio_adapter = twilio_adapter
         self._live_session_factory: _LiveFactory = live_session_factory or connect_live
+        self._audit_log = audit_log
         self._phone_token_limiter = RateLimiter(
             orchestrator._settings.phone_token_rate_limit,
             orchestrator._settings.phone_token_rate_window_seconds,
@@ -272,6 +283,11 @@ class ChatRouter:
         )
         self.router.add_api_route(
             "/webhooks/twilio-whatsapp", self.twilio_whatsapp_webhook, methods=["POST"]
+        )
+        self.router.add_api_route(
+            "/webhooks/zendesk-sla-escalation",
+            self.sla_escalation_webhook,
+            methods=["POST"],
         )
         self.router.add_api_route(
             "/chat/turn",
@@ -625,6 +641,36 @@ class ChatRouter:
             await self._handoff_bridge.unregister(session_id)
 
         return {"status": "unpaused", "session_id": session_id}
+
+    async def sla_escalation_webhook(
+        self,
+        payload: SlaEscalationPayload,
+        x_proton_webhook_secret: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        """SLA escalation webhook — records an audit transition and optionally alerts PIC via WhatsApp."""
+        expected = self.orchestrator._settings.sla_webhook_secret
+        if expected and (not x_proton_webhook_secret or x_proton_webhook_secret != expected):
+            _log.warning("sla_escalation_webhook_signature_invalid")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+        if self._audit_log is None:
+            raise HTTPException(status_code=503, detail="Audit log not configured")
+        to_state = CaseState.WIP if payload.level == "escalate" else CaseState.PENDING
+        await record_transition(
+            self._audit_log,
+            ticket_id=payload.ticket_id,
+            session_id=payload.session_id,
+            actor="sla-automation",
+            from_state=CaseState.OPEN,
+            to_state=to_state,
+            at=datetime.now(UTC).isoformat(),
+            remark=payload.remark or f"SLA {payload.level}",
+        )
+        if payload.pic_whatsapp and self._twilio_adapter is not None:
+            await self._twilio_adapter.send_message(
+                conversation_id="whatsapp:" + payload.pic_whatsapp.removeprefix("whatsapp:"),
+                text=f"⚠️ SLA {payload.level} on case {payload.ticket_id}. Please action.",
+            )
+        return {"status": "recorded"}
 
     async def zendesk_email_webhook(
         self,
@@ -1008,6 +1054,7 @@ def build_chat_router(
     human_agent_bridge: HumanAgentBridgePort | None = None,
     twilio_adapter: TwilioChannelAdapter | None = None,
     live_session_factory: _LiveFactory | None = None,
+    audit_log: AuditLogPort | None = None,
 ) -> APIRouter:
     """Builds and returns the configured FastAPI router instance."""
     return ChatRouter(
@@ -1016,4 +1063,5 @@ def build_chat_router(
         human_agent_bridge=human_agent_bridge,
         twilio_adapter=twilio_adapter,
         live_session_factory=live_session_factory,
+        audit_log=audit_log,
     ).router

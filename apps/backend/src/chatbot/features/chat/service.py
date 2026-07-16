@@ -792,7 +792,9 @@ class OrchestratorService:
             ]
             response = await self._genai_client.aio.models.generate_content(
                 model=self._settings.gemini_model,
-                contents=contents,
+                # list[Content] is valid input; installing Pillow (via reportlab) shifts
+                # google-genai's overload resolution so mypy flags this valid call.
+                contents=contents,  # type: ignore[arg-type]
             )
             transcription = (response.text or "").strip()
             _log.info(

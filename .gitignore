@@ -4,6 +4,9 @@ ticketing/
 
 # Local env & scratch
 .env
+deploy/infra.env
+deploy/tenants/*.env
+!deploy/tenants/example.env
 *.env.local
 .superpowers/
 __pycache__/

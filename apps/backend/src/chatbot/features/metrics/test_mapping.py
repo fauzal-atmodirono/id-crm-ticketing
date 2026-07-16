@@ -15,6 +15,7 @@ def _ticket(**kw: object) -> dict[str, object]:
         "tags": [],
         "created_at": "2026-06-21T09:14:00Z",
         "updated_at": "2026-06-21T09:31:00Z",
+        "assignee_id": None,
     }
     base.update(kw)
     return base
@@ -120,6 +121,14 @@ def test_basic_fields_pass_through() -> None:
         resolved_by="bot",
         csat_score=None,
         nps_score=None,
+        category=None,
+        subcategory=None,
+        division=None,
+        department=None,
+        pic=None,
+        agent_id=None,
+        sla_minutes=None,
+        sla_deadline=None,
     )
 
 
@@ -131,3 +140,34 @@ def test_skip_non_conversation() -> None:
 def test_keep_csat_only_ticket_even_without_external_id() -> None:
     row = map_ticket_to_row({"id": 2, "status": "solved", "tags": ["csat_5"]})
     assert row is not None and row.channel == "Other" and row.csat_score == 5
+
+
+def test_division_derived_from_category_tag() -> None:
+    row = map_ticket_to_row(_ticket(tags=["category_aftersales"]))
+    assert row is not None and row.category == "aftersales"
+    assert row.division == "Aftersales"
+
+
+def test_subcategory_and_department_and_pic_tags() -> None:
+    row = map_ticket_to_row(_ticket(tags=["subcat_battery", "dept_service", "pic_alice"]))
+    assert row is not None
+    assert row.subcategory == "battery"
+    assert row.department == "service"
+    assert row.pic == "alice"
+
+
+def test_pic_falls_back_to_assignee_when_no_pic_tag() -> None:
+    row = map_ticket_to_row(_ticket(assignee_id=7007, tags=[]))
+    assert row is not None and row.agent_id == "7007" and row.pic == "7007"
+
+
+def test_sla_minutes_and_deadline_from_tag() -> None:
+    row = map_ticket_to_row(_ticket(tags=["sla_480"], created_at="2026-06-21T09:00:00Z"))
+    assert row is not None and row.sla_minutes == 480
+    assert row.sla_deadline == "2026-06-21T17:00:00+00:00"
+
+
+def test_dimension_fields_default_none() -> None:
+    row = map_ticket_to_row(_ticket(tags=[]))
+    assert row is not None
+    assert row.category is None and row.division is None and row.sla_minutes is None

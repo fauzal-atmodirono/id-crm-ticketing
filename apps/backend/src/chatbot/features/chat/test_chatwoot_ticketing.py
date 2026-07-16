@@ -176,15 +176,16 @@ async def test_contact_search_fallback_url_encodes_session_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_ticket_applies_multiple_escalation_labels() -> None:
-    # A comma-separated escalation label lets one escalation carry both our marker
-    # (ai-escalation) AND the label that triggers the CTO's Zammad sync (escalate).
+async def test_create_ticket_complaint_urgency_adds_ticketing_label() -> None:
+    # High urgency marks the case a complaint, so the Zammad-ticketing complaint
+    # label rides on top of the Chatwoot-only escalation marker.
     fake = _FakeClient({("POST", "/conversations"): {"id": 99}})
     adapter = ChatwootAdapter(
         Settings(
             chatwoot_account_id=1,
             chatwoot_inbox_id=7,
-            chatwoot_escalation_label="ai-escalation, escalate",
+            chatwoot_escalation_label="ai-escalation",
+            chatwoot_complaint_label="escalate",
         )
     )
     adapter._request = fake._request  # type: ignore[method-assign]
@@ -206,7 +207,8 @@ async def test_create_ticket_writes_dimension_labels_in_single_final_call() -> N
         Settings(
             chatwoot_account_id=1,
             chatwoot_inbox_id=7,
-            chatwoot_escalation_label="ai-escalation, escalate",
+            chatwoot_escalation_label="ai-escalation",
+            chatwoot_complaint_label="escalate",
         )
     )
     adapter._request = fake._request  # type: ignore[method-assign]
@@ -239,18 +241,21 @@ async def test_create_ticket_writes_dimension_labels_in_single_final_call() -> N
 
 
 @pytest.mark.asyncio
-async def test_create_ticket_without_dimensions_only_escalation_labels() -> None:
+async def test_create_ticket_non_complaint_stays_chatwoot_only() -> None:
+    # Medium urgency (non-complaint) -> only the Chatwoot escalation marker; the
+    # Zammad-ticketing complaint label is NOT applied.
     fake = _FakeClient({("POST", "/conversations"): {"id": 99}})
     adapter = ChatwootAdapter(
         Settings(
             chatwoot_account_id=1,
             chatwoot_inbox_id=7,
             chatwoot_escalation_label="ai-escalation",
+            chatwoot_complaint_label="escalate",
         )
     )
     adapter._request = fake._request  # type: ignore[method-assign]
     await adapter.create_ticket(
-        session_id="whatsapp-+60123", title="Refund", body="help", urgency="high"
+        session_id="whatsapp-+60123", title="Refund", body="help", urgency="medium"
     )
     labels_calls = [pl for _m, p, pl in fake.calls if p.endswith("/labels")]
     assert len(labels_calls) == 1

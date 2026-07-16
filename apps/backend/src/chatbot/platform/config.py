@@ -143,8 +143,20 @@ class Settings(BaseSettings):
     chatwoot_inbox_id: int = 0
     # Team the escalated conversation is assigned to (the native-inbox handoff).
     chatwoot_agent_team_id: int = 0
-    # Label applied to escalated conversations so agents can filter them.
+    # Label(s) applied to EVERY escalated conversation so agents can filter them
+    # in Chatwoot (the live-chat workspace). Kept CRM-neutral — does NOT create a
+    # downstream ticket.
     chatwoot_escalation_label: str = "ai-escalation"
+    # Complaint-only label: added on top of the escalation label ONLY when the
+    # handoff is a genuine complaint (see chatwoot_complaint_reasons / high
+    # urgency). This is the label the shared instance's sync turns into a Zammad
+    # ticket, so plain "talk to a human" handoffs stay Chatwoot-only and don't
+    # spawn a confusing back-office ticket. Empty disables Zammad ticketing.
+    chatwoot_complaint_label: str = "escalate"
+    # Comma-separated HandoffReason values treated as complaints (-> Zammad ticket).
+    # High urgency also counts. Non-complaint reasons (help_request, sales_lead,
+    # unknown_retry_limit) stay live-chat-only in Chatwoot.
+    chatwoot_complaint_reasons: str = "negative_sentiment"
     # Shared secret required on inbound /webhooks/chatwoot calls (Chatwoot has no
     # built-in HMAC). Compared constant-time; empty leaves the endpoint open.
     chatwoot_webhook_secret: str = ""

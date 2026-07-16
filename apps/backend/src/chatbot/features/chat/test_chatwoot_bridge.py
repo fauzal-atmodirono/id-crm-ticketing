@@ -121,7 +121,8 @@ async def test_open_handoff_writes_dimension_labels_in_single_final_call() -> No
         Settings(
             chatwoot_account_id=1,
             chatwoot_inbox_id=7,
-            chatwoot_escalation_label="ai-escalation, escalate",
+            chatwoot_escalation_label="ai-escalation",
+            chatwoot_complaint_label="escalate",
         )
     )
     fake = _FakeClient({("POST", "/conversations"): {"id": 99}})
@@ -130,13 +131,14 @@ async def test_open_handoff_writes_dimension_labels_in_single_final_call() -> No
         session_id="sim-1",
         customer_name="Aina",
         customer_email="",
-        ai_summary="Customer wants a human.",
+        ai_summary="Customer is unhappy.",
         transcript=(Message(role="user", text="my battery is dead"),),
         category="Aftersales",
         subcategory="Battery",
         division="Aftersales",
         department="Service Center",
         sla_minutes=480,
+        reason="negative_sentiment",  # complaint -> Zammad ticketing label
     )
     await adapter.open_handoff(payload)
     labels_calls = [pl for _m, p, pl in fake.calls if p.endswith("/labels")]
@@ -152,3 +154,33 @@ async def test_open_handoff_writes_dimension_labels_in_single_final_call() -> No
     ]
     ca = next(pl for _m, p, pl in fake.calls if p.endswith("/custom_attributes"))
     assert ca == {"custom_attributes": {"sla_minutes": 480}}
+
+
+@pytest.mark.asyncio
+async def test_open_handoff_plain_human_request_stays_chatwoot_only() -> None:
+    # A "talk to a human" handoff (help_request, non-urgent) must NOT get the
+    # complaint/Zammad label — it stays a live Chatwoot conversation only.
+    adapter = ChatwootAdapter(
+        Settings(
+            chatwoot_account_id=1,
+            chatwoot_inbox_id=7,
+            chatwoot_escalation_label="ai-escalation",
+            chatwoot_complaint_label="escalate",
+        )
+    )
+    fake = _FakeClient({("POST", "/conversations"): {"id": 99}})
+    adapter._request = fake._request  # type: ignore[method-assign]
+    payload = HandoffOpenPayload(
+        session_id="sim-2",
+        customer_name="Aina",
+        customer_email="",
+        ai_summary="Customer wants a human.",
+        transcript=(Message(role="user", text="connect me with a human agent"),),
+        urgency="medium",
+        reason="help_request",
+    )
+    await adapter.open_handoff(payload)
+    labels_calls = [pl for _m, p, pl in fake.calls if p.endswith("/labels")]
+    assert len(labels_calls) == 1
+    assert labels_calls[0]["labels"] == ["ai-escalation"]  # type: ignore[index]
+    assert "escalate" not in labels_calls[0]["labels"]  # type: ignore[operator]

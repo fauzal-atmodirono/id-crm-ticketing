@@ -97,6 +97,31 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             if label.strip()
         ]
 
+    def _is_complaint(self, reason: str | None, urgency: str | None) -> bool:
+        """A handoff is a complaint (-> back-office Zammad ticket) only when the AI
+        flagged dissatisfaction or high urgency. A plain "talk to a human" request
+        stays a live Chatwoot conversation, so agents aren't handed a confusing
+        ticket for a conversation they should be having in the chat.
+        """
+        if urgency and urgency.strip().lower() in {"high", "urgent", "critical"}:
+            return True
+        if reason:
+            complaint_reasons = {
+                r.strip().lower()
+                for r in self._settings.chatwoot_complaint_reasons.split(",")
+                if r.strip()
+            }
+            if reason.strip().lower() in complaint_reasons:
+                return True
+        return False
+
+    def _complaint_labels(self, reason: str | None, urgency: str | None) -> list[str]:
+        """The Zammad-ticketing label, applied only for complaints."""
+        label = self._settings.chatwoot_complaint_label.strip()
+        if label and self._is_complaint(reason, urgency):
+            return [label]
+        return []
+
     @staticmethod
     def _dimension_labels(
         category: str | None,
@@ -331,7 +356,15 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         await self._request(
             "POST",
             f"/conversations/{conv_id}/labels",
-            {"labels": dimension_labels + self._escalation_labels()},
+            {
+                "labels": list(
+                    dict.fromkeys(
+                        dimension_labels
+                        + self._escalation_labels()
+                        + self._complaint_labels(None, urgency)
+                    )
+                )
+            },
         )
         return conv_id
 
@@ -517,7 +550,15 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         await self._request(
             "POST",
             f"/conversations/{conv_id}/labels",
-            {"labels": dimension_labels + self._escalation_labels()},
+            {
+                "labels": list(
+                    dict.fromkeys(
+                        dimension_labels
+                        + self._escalation_labels()
+                        + self._complaint_labels(payload.reason, payload.urgency)
+                    )
+                )
+            },
         )
         return conv_id
 

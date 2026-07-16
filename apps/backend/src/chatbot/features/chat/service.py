@@ -1200,6 +1200,7 @@ class OrchestratorService:
             division=(CATEGORY_TO_DIVISION.get(str(_raw_cat).lower()) if _raw_cat else None),
             department=cls.get("department"),
             sla_minutes=cls.get("sla_minutes"),
+            reason=str(cls.get("handoff_reason") or "help_request"),
         )
 
         try:

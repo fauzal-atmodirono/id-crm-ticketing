@@ -185,7 +185,9 @@ services:
     volumes:
       - zammad_storage:/opt/zammad/storage
     networks:
-      - platform
+      platform:
+        aliases:
+          - ${TENANT}-zammad-websocket
     depends_on:
       zammad-init:
         condition: service_completed_successfully

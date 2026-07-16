@@ -195,3 +195,27 @@ def test_no_metric_set_leaves_timing_none() -> None:
     assert row is not None
     assert row.resolved_at is None and row.reopen_count is None
     assert row.first_response_at is None
+
+
+def test_malformed_created_at_yields_none_deadline() -> None:
+    """A malformed created_at should not raise; sla_deadline should be None."""
+    row = map_ticket_to_row(_ticket(created_at="not-a-date", tags=["sla_480"]))
+    assert row is not None
+    assert row.sla_deadline is None
+
+
+def test_malformed_metric_set_fields_skip_gracefully() -> None:
+    """Malformed reopens and reply_time_in_minutes should skip gracefully."""
+    row = map_ticket_to_row(
+        _ticket(metric_set={"reopens": "abc", "reply_time_in_minutes": {"calendar": "x"}})
+    )
+    assert row is not None
+    assert row.reopen_count is None
+    assert row.first_response_at is None
+
+
+def test_zero_assignee_id_is_kept() -> None:
+    """assignee_id=0 should be kept, not treated as falsy."""
+    row = map_ticket_to_row(_ticket(assignee_id=0))
+    assert row is not None
+    assert row.agent_id == "0"

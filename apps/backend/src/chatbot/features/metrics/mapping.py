@@ -96,8 +96,11 @@ def _first_tag(tags: list[str], pattern: re.Pattern[str]) -> str | None:
 def _sla_deadline(created_at: str | None, sla_minutes: int | None) -> str | None:
     if not created_at or sla_minutes is None:
         return None
-    base = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-    return (base + timedelta(minutes=sla_minutes)).astimezone(UTC).isoformat()
+    try:
+        base = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        return (base + timedelta(minutes=sla_minutes)).astimezone(UTC).isoformat()
+    except ValueError:
+        return None
 
 
 def _timing_from_metric_set(
@@ -107,14 +110,22 @@ def _timing_from_metric_set(
         return (None, None, None)
     resolved_at = metric_set.get("solved_at")
     reopens = metric_set.get("reopens")
-    reopen_count = int(reopens) if reopens is not None else None
+    reopen_count: int | None = None
+    if reopens is not None:
+        try:
+            reopen_count = int(reopens)
+        except (ValueError, TypeError):
+            reopen_count = None
     first_response_at: str | None = None
     reply = metric_set.get("reply_time_in_minutes")
     if created_at and isinstance(reply, dict) and reply.get("calendar") is not None:
-        base = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-        first_response_at = (
-            (base + timedelta(minutes=int(reply["calendar"]))).astimezone(UTC).isoformat()
-        )
+        try:
+            base = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            first_response_at = (
+                (base + timedelta(minutes=int(reply["calendar"]))).astimezone(UTC).isoformat()
+            )
+        except (ValueError, TypeError):
+            first_response_at = None
     return (
         str(resolved_at) if resolved_at else None,
         first_response_at,
@@ -143,7 +154,7 @@ def map_ticket_to_row(ticket: dict[str, object]) -> ConversationRow | None:
     sla_raw = _first_tag(tags, _SLA_TAG)
     sla_minutes = int(sla_raw) if sla_raw is not None else None
     assignee = ticket.get("assignee_id")
-    agent_id = str(assignee) if assignee else None
+    agent_id = str(assignee) if assignee is not None else None
     pic = _first_tag(tags, _PIC_TAG) or agent_id
     division = CATEGORY_TO_DIVISION.get(category.lower()) if category else None
 

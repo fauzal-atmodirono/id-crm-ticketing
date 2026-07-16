@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Bootstraps a freshly provisioned Debian 12 GCE VM to run the platform:
 # installs Docker CE + compose plugin from Docker's official apt repo,
-# adds swap, fills in .env secrets, and brings the stack up.
+# adds swap, fills in infra.env secrets, and brings the stack up.
 #
 # Run this ON the VM, as a sudo-capable user, AFTER copying the app there:
 #   gcloud compute scp --recurse deploy agent <vm-name>:/tmp/platform

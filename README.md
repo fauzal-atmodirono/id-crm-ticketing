@@ -54,16 +54,20 @@ Integration flows (implemented by the `agent` service):
 ## 2. Repo layout
 
 ```
-deploy/                 Runtime: docker-compose.yml, Caddyfile, postgres init,
-                         ops scripts (this is what you copy to the VM)
-  docker-compose.yml
-  .env.example
-  caddy/Caddyfile
-  postgres/init/01-databases.sh
+deploy/                 Runtime (this is what you copy to the VM)
+  docker-compose.infra.yml   shared Caddy + Postgres + Mailpit + platform network
+  docker-compose.tenant.yml  one parameterized tenant app stack
+  infra.env.example
+  tenants/example.env        per-tenant env template (real <tenant>.env gitignored)
+  caddy/Caddyfile            base globals + import tenants/*.caddy
+  caddy/tenants/             generated per-tenant route snippets
+  postgres/                   (init hook removed; tenant DBs made by add-tenant.sh)
   scripts/
     provision-gce.sh     create the GCE VM, static IP, firewall rule
-    bootstrap-vm.sh       install Docker, swap, fill secrets, bring stack up
-    backup.sh              cron job: DB dumps + storage volume archives
+    bootstrap-vm.sh       install Docker, swap, generate infra.env, bring infra up
+    add-tenant.sh         provision one customer end to end
+    remove-tenant.sh      decommission one customer
+    backup.sh              per-tenant DB dumps + storage volume archives
 agent/                  FastAPI integration + AI service (built by compose)
 crm/                    Upstream Chatwoot clone — reference only, do not edit
 ticketing/              Upstream Zammad clone — reference only, do not edit
@@ -72,37 +76,27 @@ docs/                   Design/planning docs
 
 ## 3. Local quickstart
 
-Requires Docker + the Compose plugin.
+Requires Docker + the Compose plugin. Bring up shared infra, then add tenants.
 
 ```bash
 cd deploy
-cp .env.example .env
-# For a local run, PUBLIC_IP can be your machine's LAN IP in dash form
-# (e.g. 192-168-1-50) or 127-0-0-1 if you only need it to resolve locally,
-# and the *_PASSWORD / SECRET_KEY_BASE values can be any non-empty string
-# (see the "generate" comments in .env.example for realistic ones):
-#   openssl rand -hex 16   # for the *_PASSWORD vars
-#   openssl rand -hex 64   # for SECRET_KEY_BASE
-# MAILPIT_AUTH_USER / MAILPIT_AUTH_HASH gate the Mailpit UI behind basic
-# auth (it has no auth of its own and catches real password-reset emails):
+cp infra.env.example infra.env
+# Set PUBLIC_IP (dash form, e.g. 127-0-0-1), POSTGRES_PASSWORD, and Mailpit auth:
+#   openssl rand -hex 16   # POSTGRES_PASSWORD
 #   docker run --rm caddy:2-alpine caddy hash-password --plaintext 'yourpassword'
-docker compose up -d
+docker compose -p platform-infra -f docker-compose.infra.yml --env-file infra.env up -d
+
+# Provision a customer (repeat per customer):
+./scripts/add-tenant.sh proton
 ```
 
-First-run notes:
-
-- **Chatwoot**: visit `http://crm.<PUBLIC_IP>.nip.io` — you'll land on the
-  account/admin onboarding wizard (create the first admin user and account).
-- **Zammad**: visit `http://tickets.<PUBLIC_IP>.nip.io` — the setup wizard
-  walks you through creating the first admin and organization.
-- **Mailpit**: visit `http://mail.<PUBLIC_IP>.nip.io` to see all outbound
-  mail from both apps (no real SMTP is configured; everything is caught
-  locally). Mailpit has no auth of its own — this endpoint catches real
-  password-reset/invite emails, so Caddy gates it behind HTTP basic auth
-  using `MAILPIT_AUTH_USER` / `MAILPIT_AUTH_HASH` from `.env` (see
-  `.env.example` for how to generate the hash).
-- **Agent**: `http://agent.<PUBLIC_IP>.nip.io/healthz` should return
-  `{"status": "ok"}` once the agent service and its dependencies are up.
+`add-tenant.sh` generates the tenant's secrets/DBs/Caddy route and brings its
+stack up, then prints its four `nip.io` URLs. First visit to
+`http://proton.crm.<PUBLIC_IP>.nip.io` lands on Chatwoot's onboarding wizard;
+`http://proton.tickets.<PUBLIC_IP>.nip.io` on Zammad's setup wizard;
+`http://proton.agent.<PUBLIC_IP>.nip.io/healthz` returns `{"status":"ok"}`.
+Mailpit is shared across tenants at `http://<tenant>.mail.<PUBLIC_IP>.nip.io`
+(basic-auth from `infra.env`).
 
 ## 4. GCE deploy
 
@@ -116,17 +110,25 @@ gcloud compute scp --recurse deploy agent crm-ticketing:/tmp/platform \
 gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=<your-gcp-project> \
   --command="sudo mkdir -p /opt/platform && sudo mv /tmp/platform/* /opt/platform/"
 
-# 3. SSH in and bootstrap: installs Docker, adds swap, fills .env secrets,
-#    detects PUBLIC_IP, and brings the whole stack up.
+# 3. SSH in and bootstrap: installs Docker, adds swap, generates infra.env,
+#    detects PUBLIC_IP, and brings shared infra up.
 gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=<your-gcp-project>
 sudo /opt/platform/deploy/scripts/bootstrap-vm.sh
 ```
 
-`bootstrap-vm.sh` prints the four `nip.io` URLs (crm/tickets/agent/mail) and the
-Mailpit web UI password (save it now — it is not stored) once it's done. Give the
-containers a minute to finish starting before hitting them.
+`bootstrap-vm.sh` installs Docker, adds swap, generates `infra.env` (detecting
+PUBLIC_IP), and brings shared infra up. It prints the Mailpit password (save
+it — not stored). To provision customers at bootstrap time, pass
+`TENANTS="proton wahchan"` in the environment; otherwise add them later on the
+VM with `cd /opt/platform/deploy && ./scripts/add-tenant.sh <name>`.
 
 ## 5. Phase-2 wiring: Chatwoot ⇄ Zammad sync
+
+> **Per tenant.** Do this once per customer, using that tenant's subdomains
+> (`<tenant>.crm.<ip>.nip.io`, `<tenant>.tickets.<ip>.nip.io`,
+> `<tenant>.agent.<ip>.nip.io`) and editing that tenant's
+> `deploy/tenants/<tenant>.env`. After editing the env, re-apply just the agent:
+> `docker compose -p <tenant> -f docker-compose.tenant.yml --env-file tenants/<tenant>.env up -d agent`.
 
 Do this once both apps have completed their setup wizards.
 
@@ -134,42 +136,45 @@ Do this once both apps have completed their setup wizards.
 
 - **Chatwoot**: log in → click your avatar (bottom-left) → **Profile
   Settings** → **Access Token** tab → copy the token into `CHATWOOT_API_TOKEN`
-  in `.env`. For the platform-level token (needed to register the AI bot in
-  Phase-3): **Super Admin console** (`/super_admin`) → **Platform Apps** →
-  create/copy the **Platform Token** into `CHATWOOT_PLATFORM_TOKEN`.
+  in `tenants/<tenant>.env`. For the platform-level token (needed to register
+  the AI bot in Phase-3): **Super Admin console** (`/super_admin`) →
+  **Platform Apps** → create/copy the **Platform Token** into
+  `CHATWOOT_PLATFORM_TOKEN`.
 - **Zammad**: log in as admin → avatar (top-right) → **Profile** → **Token
   Access** → generate a token with the permissions you need → copy into
-  `ZAMMAD_API_TOKEN` in `.env`.
+  `ZAMMAD_API_TOKEN` in `tenants/<tenant>.env`.
 
-Restart the agent service after editing `.env`: `docker compose up -d agent`.
+Restart the agent service after editing the tenant env:
+`docker compose -p <tenant> -f docker-compose.tenant.yml --env-file tenants/<tenant>.env up -d agent`.
 
 ### Chatwoot → agent webhook
 
 **Settings → Integrations → Webhooks** → **Add new webhook**:
 
-- URL: `http://agent.<PUBLIC_IP>.nip.io/webhooks/chatwoot`
+- URL: `http://<tenant>.agent.<PUBLIC_IP>.nip.io/webhooks/chatwoot`
 - Subscribe to events: `contact_created`, `contact_updated`,
   `conversation_updated`, `conversation_status_changed`
 
 Chatwoot auto-generates the webhook's signing secret server-side
 (`has_secure_token`) — you cannot set your own. After creating the webhook
-above, fetch it back via the API and copy its `secret` field into `.env` as
-`CHATWOOT_WEBHOOK_SECRET`:
+above, fetch it back via the API and copy its `secret` field into
+`tenants/<tenant>.env` as `CHATWOOT_WEBHOOK_SECRET`:
 
 ```bash
 curl -H "api_access_token: <CHATWOOT_API_TOKEN>" \
-  http://crm.<PUBLIC_IP>.nip.io/api/v1/accounts/1/webhooks
+  http://<tenant>.crm.<PUBLIC_IP>.nip.io/api/v1/accounts/1/webhooks
 ```
 
-Then restart the agent service to pick it up: `docker compose up -d agent`.
+Then restart the agent service to pick it up:
+`docker compose -p <tenant> -f docker-compose.tenant.yml --env-file tenants/<tenant>.env up -d agent`.
 
 ### Zammad → agent webhook + trigger
 
 **Admin → Manage → Webhook** → **Add Webhook**:
 
-- Endpoint: `http://agent.<PUBLIC_IP>.nip.io/webhooks/zammad`
+- Endpoint: `http://<tenant>.agent.<PUBLIC_IP>.nip.io/webhooks/zammad`
 - Set a signature token — put the same value in `ZAMMAD_WEBHOOK_SECRET` in
-  `.env` (verified via the `X-Hub-Signature` header).
+  `tenants/<tenant>.env` (verified via the `X-Hub-Signature` header).
 
 **Admin → Manage → Trigger** → **Add Trigger**:
 
@@ -187,20 +192,21 @@ linked conversation.
 
 Once `agent/scripts/register_bot.py` exists (ships with the agent service),
 run it from the VM (or anywhere with network access to the Chatwoot
-platform API and `.env` populated with `CHATWOOT_PLATFORM_TOKEN`,
+platform API and `tenants/<tenant>.env` populated with `CHATWOOT_PLATFORM_TOKEN`,
 `CHATWOOT_API_TOKEN`, `CHATWOOT_ACCOUNT_ID`, `CHATWOOT_URL`, and `AGENT_PUBLIC_URL`):
 
 ```bash
-cd /opt/platform/agent
-docker compose -f ../deploy/docker-compose.yml exec agent \
+docker compose -p <tenant> -f ../deploy/docker-compose.tenant.yml \
+  --env-file ../deploy/tenants/<tenant>.env exec agent \
   python -m scripts.register_bot --inbox-id <your-chatwoot-inbox-id>
 ```
 
 It creates a Chatwoot agent bot pointed at
-`http://agent.<PUBLIC_IP>.nip.io/webhooks/chatwoot/bot`, assigns it to the
-given inbox, and prints the bot's `access_token`/`secret` pair — copy those
-into `.env` as `CHATWOOT_BOT_TOKEN` / `CHATWOOT_BOT_SECRET` and restart the
-agent (`docker compose up -d agent`).
+`http://<tenant>.agent.<PUBLIC_IP>.nip.io/webhooks/chatwoot/bot`, assigns it
+to the given inbox, and prints the bot's `access_token`/`secret` pair — copy
+those into `tenants/<tenant>.env` as `CHATWOOT_BOT_TOKEN` / `CHATWOOT_BOT_SECRET`
+and restart the agent:
+`docker compose -p <tenant> -f docker-compose.tenant.yml --env-file tenants/<tenant>.env up -d agent`.
 
 ### Zammad AI provider (Custom OpenAI → Gemini)
 
@@ -237,11 +243,11 @@ a real domain with TLS:
    site blocks with your real hostnames, and remove the
    `{ auto_https off }` global block so Caddy provisions Let's Encrypt certs
    automatically.
-3. Update `FRONTEND_URL` in the Chatwoot environment block of
-   `deploy/docker-compose.yml` (or via `.env` if you promote it to a
-   variable) to `https://crm.example.com`.
-4. `docker compose up -d` to apply — Caddy will request certificates on
-   first request to each new hostname.
+3. Update `CHATWOOT_FRONTEND_URL` in `deploy/tenants/<tenant>.env` to
+   `https://crm.example.com` for each tenant.
+4. Re-apply each tenant stack:
+   `docker compose -p <tenant> -f docker-compose.tenant.yml --env-file tenants/<tenant>.env up -d`
+   — Caddy will request certificates on first request to each new hostname.
 
 ## 8. Backups & restore
 
@@ -260,24 +266,18 @@ Install as a nightly cron job (as root, or a user with docker access):
 
 ```bash
 cd /opt/platform/deploy
-DATE=2026-07-01   # the backup date to restore
+DATE=2026-07-01     # backup date to restore
+T=proton            # tenant to restore
 
-# Databases
-docker compose exec -T postgres pg_restore -U postgres -d chatwoot --clean --if-exists < /backups/$DATE/chatwoot.dump
-docker compose exec -T postgres pg_restore -U postgres -d zammad   --clean --if-exists < /backups/$DATE/zammad.dump
-docker compose exec -T postgres pg_restore -U postgres -d agent    --clean --if-exists < /backups/$DATE/agent.dump
+# Databases (dumps are named <tenant>-<app>.dump)
+for app in chatwoot zammad agent; do
+  docker compose -p platform-infra -f docker-compose.infra.yml exec -T postgres \
+    pg_restore -U postgres -d "${app}_${T}" --clean --if-exists < /backups/$DATE/$T-$app.dump
+done
 
-# Storage volumes (stop the consuming services first)
-docker compose stop chatwoot-rails chatwoot-sidekiq
-docker run --rm -v <project>_chatwoot_storage:/dest -v /backups/$DATE:/src alpine \
-  sh -c "rm -rf /dest/* && tar xzf /src/chatwoot_storage.tar.gz -C /dest"
-docker compose start chatwoot-rails chatwoot-sidekiq
-
-docker compose stop zammad-railsserver zammad-scheduler zammad-websocket zammad-nginx
-docker run --rm -v <project>_zammad_storage:/dest -v /backups/$DATE:/src alpine \
-  sh -c "rm -rf /dest/* && tar xzf /src/zammad_storage.tar.gz -C /dest"
-docker compose start zammad-railsserver zammad-scheduler zammad-websocket zammad-nginx
+# Storage volumes (stop the tenant's consuming services first)
+docker compose -p $T -f docker-compose.tenant.yml --env-file tenants/$T.env stop chatwoot-rails chatwoot-sidekiq
+docker run --rm -v ${T}_chatwoot_storage:/dest -v /backups/$DATE:/src alpine \
+  sh -c "rm -rf /dest/* && tar xzf /src/$T-chatwoot_storage.tar.gz -C /dest"
+docker compose -p $T -f docker-compose.tenant.yml --env-file tenants/$T.env start chatwoot-rails chatwoot-sidekiq
 ```
-
-(`<project>` is the Compose project name, normally `deploy` — run
-`docker volume ls` to confirm the exact volume names on your host.)

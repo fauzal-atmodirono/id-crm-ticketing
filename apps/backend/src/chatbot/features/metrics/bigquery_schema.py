@@ -16,6 +16,17 @@ CONVERSATIONS_SCHEMA: list[bigquery.SchemaField] = [
     bigquery.SchemaField("csat_score", "INT64"),
     bigquery.SchemaField("nps_score", "INT64"),
     bigquery.SchemaField("synced_at", "TIMESTAMP"),
+    bigquery.SchemaField("division", "STRING"),
+    bigquery.SchemaField("category", "STRING"),
+    bigquery.SchemaField("subcategory", "STRING"),
+    bigquery.SchemaField("department", "STRING"),
+    bigquery.SchemaField("agent_id", "STRING"),
+    bigquery.SchemaField("pic", "STRING"),
+    bigquery.SchemaField("sla_minutes", "INT64"),
+    bigquery.SchemaField("sla_deadline", "TIMESTAMP"),
+    bigquery.SchemaField("first_response_at", "TIMESTAMP"),
+    bigquery.SchemaField("resolved_at", "TIMESTAMP"),
+    bigquery.SchemaField("reopen_count", "INT64"),
 ]
 
 

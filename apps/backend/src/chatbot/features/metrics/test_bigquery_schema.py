@@ -13,6 +13,17 @@ def test_schema_has_expected_fields() -> None:
         "csat_score",
         "nps_score",
         "synced_at",
+        "division",
+        "category",
+        "subcategory",
+        "department",
+        "agent_id",
+        "pic",
+        "sla_minutes",
+        "sla_deadline",
+        "first_response_at",
+        "resolved_at",
+        "reopen_count",
     }
 
 
@@ -48,3 +59,24 @@ def test_v_nps_view_present_with_buckets_and_formula() -> None:
     assert "COUNTIF(nps_score BETWEEN 7 AND 8)" in sql  # passives
     assert "nps_score <= 6" in sql  # detractors
     assert "SAFE_DIVIDE" in sql and "* 100 AS nps" in sql
+
+
+def test_conversations_schema_has_dimension_columns() -> None:
+    names = {f.name for f in CONVERSATIONS_SCHEMA}
+    for col in [
+        "division",
+        "category",
+        "subcategory",
+        "agent_id",
+        "pic",
+        "department",
+        "sla_minutes",
+        "sla_deadline",
+        "first_response_at",
+        "resolved_at",
+        "reopen_count",
+    ]:
+        assert col in names, col
+    # new columns must be nullable
+    by_name = {f.name: f for f in CONVERSATIONS_SCHEMA}
+    assert by_name["division"].mode in ("NULLABLE", "")

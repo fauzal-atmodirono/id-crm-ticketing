@@ -72,6 +72,17 @@ def load_conversations(settings: Settings, rows: list[ConversationRow]) -> None:
             "csat_score": r.csat_score,
             "nps_score": r.nps_score,
             "synced_at": now,
+            "division": r.division,
+            "category": r.category,
+            "subcategory": r.subcategory,
+            "department": r.department,
+            "agent_id": r.agent_id,
+            "pic": r.pic,
+            "sla_minutes": r.sla_minutes,
+            "sla_deadline": r.sla_deadline,
+            "first_response_at": r.first_response_at,
+            "resolved_at": r.resolved_at,
+            "reopen_count": r.reopen_count,
         }
         for r in rows
     ]

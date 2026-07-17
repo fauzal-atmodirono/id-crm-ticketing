@@ -1,4 +1,9 @@
-"""Pure Zendesk-ticket → conversation-row mapping for the metrics sync."""
+"""Pure ticket/conversation → conversation-row mapping for the metrics sync.
+
+Handles both the legacy Zendesk ticket shape (``map_ticket_to_row``) and the
+Chatwoot conversation shape (``map_chatwoot_conversation_to_row``) that PROTON
+uses after the Chatwoot+Zammad migration.
+"""
 
 from __future__ import annotations
 
@@ -30,6 +35,7 @@ CATEGORY_TO_DIVISION = {
 }
 _CATEGORY_TAG = re.compile(r"^category_(.+)$")
 _SUBCAT_TAG = re.compile(r"^subcat_(.+)$")
+_DIVISION_TAG = re.compile(r"^division_(.+)$")
 _DEPT_TAG = re.compile(r"^dept_(.+)$")
 _PIC_TAG = re.compile(r"^pic_(.+)$")
 _SLA_TAG = re.compile(r"^sla_(\d+)$")
@@ -182,4 +188,143 @@ def map_ticket_to_row(ticket: dict[str, object]) -> ConversationRow | None:
         first_response_at=first_response_at,
         resolved_at=resolved_at,
         reopen_count=reopen_count,
+    )
+
+
+# --- Chatwoot conversation -> conversation-row mapping ---------------------------
+# A Chatwoot *conversation* is the unit of work (there is no ticket object). The
+# AI classification is written back onto it as LABELS by ChatwootAdapter using the
+# same tag-name convention parsed above (``category_*``, ``subcat_*``,
+# ``division_*``, ``dept_*``, ``sla_<int>``). Timestamps are unix epoch seconds.
+# A Chatwoot status of ``resolved`` means the AI/agent closed it; ``open`` /
+# ``pending`` / ``snoozed`` mean a human is still handling it.
+_CHATWOOT_AGENT_STATUSES = {"open", "pending", "snoozed"}
+
+
+def _epoch_to_iso(value: object) -> str | None:
+    """Convert a Chatwoot unix-epoch-seconds timestamp to an ISO-8601 string."""
+    if value is None or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        return datetime.fromtimestamp(float(value), tz=UTC).isoformat()
+    except (ValueError, TypeError, OSError):
+        return None
+
+
+def _chatwoot_source_id(conv: dict[str, object]) -> str | None:
+    """Best-effort recover the source_id (== session_id) for channel inference.
+
+    Chatwoot exposes it under a few shapes depending on the API surface; try the
+    common ones. Falls back to None (→ channel "Other") when unavailable.
+    """
+    for key in ("source_id",):
+        v = conv.get(key)
+        if v:
+            return str(v)
+    meta = conv.get("meta")
+    if isinstance(meta, dict):
+        sender = meta.get("sender")
+        if isinstance(sender, dict):
+            ident = sender.get("identifier")
+            if ident:
+                return str(ident)
+    add = conv.get("additional_attributes")
+    if isinstance(add, dict):
+        v = add.get("source_id") or add.get("session_id")
+        if v:
+            return str(v)
+    return None
+
+
+def _chatwoot_labels(conv: dict[str, object]) -> list[str]:
+    raw = conv.get("labels")
+    if isinstance(raw, list):
+        return [str(t) for t in raw]
+    return []
+
+
+def _chatwoot_agent_id(conv: dict[str, object]) -> str | None:
+    meta = conv.get("meta")
+    if not isinstance(meta, dict):
+        return None
+    assignee = meta.get("assignee")
+    if isinstance(assignee, dict) and assignee.get("id") is not None:
+        return str(assignee["id"])
+    return None
+
+
+def _chatwoot_sla_minutes(conv: dict[str, object], labels: list[str]) -> int | None:
+    """Prefer the sla_<int> label; fall back to the custom_attributes value."""
+    sla_raw = _first_tag(labels, _SLA_TAG)
+    if sla_raw is not None:
+        return int(sla_raw)
+    ca = conv.get("custom_attributes")
+    if isinstance(ca, dict) and ca.get("sla_minutes") is not None:
+        try:
+            return int(ca["sla_minutes"])
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow | None:
+    """Map one Chatwoot conversation to a conversation row, or None to skip it.
+
+    Reads the AI-classification LABELS (not Zendesk tags), ``meta.assignee.id``
+    (not ``assignee_id``), and unix-epoch timestamps. Output schema is identical
+    to ``map_ticket_to_row`` so ``bigquery_schema.CONVERSATIONS_SCHEMA`` fits.
+    """
+    labels = _chatwoot_labels(conv)
+    csat = _csat_from_tags(labels)
+    nps = _nps_from_tags(labels)
+    source_id = _chatwoot_source_id(conv)
+    if source_id is None and csat is None and nps is None and not labels:
+        return None
+
+    status = str(conv.get("status") or "")
+    created_iso = _epoch_to_iso(conv.get("created_at"))
+    updated_iso = _epoch_to_iso(conv.get("last_activity_at") or conv.get("updated_at"))
+
+    category = _first_tag(labels, _CATEGORY_TAG)
+    subcategory = _first_tag(labels, _SUBCAT_TAG)
+    department = _first_tag(labels, _DEPT_TAG)
+    # Prefer an explicit division_* label; else derive it from the category.
+    division = _first_tag(labels, _DIVISION_TAG) or (
+        CATEGORY_TO_DIVISION.get(category.lower()) if category else None
+    )
+    sla_minutes = _chatwoot_sla_minutes(conv, labels)
+
+    agent_id = _chatwoot_agent_id(conv)
+    pic = _first_tag(labels, _PIC_TAG) or agent_id
+
+    # Timings we can derive from the Chatwoot conversation itself:
+    #  - resolved_at  ← last_activity_at when the conversation is resolved
+    #  - first_response_at ← first agent reply, when Chatwoot surfaces it
+    # TODO(zammad-timing): the exact Zendesk-style metric_set (reply/resolution
+    # calendar minutes, reopen count) lives on the joined Zammad ticket, not on
+    # the Chatwoot conversation. A deep Zammad-ticket join is out of scope here;
+    # these fields stay best-effort until that join is added.
+    resolved_at = updated_iso if status == "resolved" else None
+    first_response_at = _epoch_to_iso(conv.get("first_reply_created_at"))
+
+    return ConversationRow(
+        conversation_id=str(conv.get("id")),
+        channel=channel_from_external_id(source_id),
+        created_at=created_iso,
+        updated_at=updated_iso,
+        status=status,
+        resolved_by="agent" if status in _CHATWOOT_AGENT_STATUSES else "bot",
+        csat_score=csat,
+        nps_score=nps,
+        category=category,
+        subcategory=subcategory,
+        division=division,
+        department=department,
+        pic=pic,
+        agent_id=agent_id,
+        sla_minutes=sla_minutes,
+        sla_deadline=_sla_deadline(created_iso, sla_minutes),
+        first_response_at=first_response_at,
+        resolved_at=resolved_at,
+        reopen_count=None,  # TODO(zammad-timing): reopen count is a Zammad metric
     )

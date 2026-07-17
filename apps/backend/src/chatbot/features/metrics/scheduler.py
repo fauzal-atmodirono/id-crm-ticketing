@@ -1,4 +1,4 @@
-"""In-app scheduler that periodically runs the Phase-1 Zendesk -> BigQuery sync."""
+"""In-app scheduler that periodically runs the Chatwoot -> BigQuery metrics sync."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def start_metrics_scheduler(
     scheduler: Any | None = None,
     job: Callable[[], object] | None = None,
 ) -> Any | None:
-    """Start the in-app Zendesk->BQ sync scheduler when enabled; else return None."""
+    """Start the in-app Chatwoot->BQ sync scheduler when enabled; else return None."""
     if not settings.metrics_sync_enabled:
         return None
     sched = scheduler or BackgroundScheduler()
@@ -39,7 +39,7 @@ def start_metrics_scheduler(
         run,
         trigger="interval",
         hours=settings.metrics_sync_interval_hours,
-        id="zendesk_metrics_sync",
+        id="chatwoot_metrics_sync",
         next_run_time=datetime.now(UTC),  # first run shortly after startup
         replace_existing=True,
     )
@@ -57,7 +57,7 @@ def run_sync_job(
     sync: Callable[[Settings], dict[str, int]] | None = None,
     ensure: Callable[[Settings], None] | None = None,
 ) -> dict[str, int]:
-    """Run the Zendesk->BQ sync + refresh views. Best-effort: never raises."""
+    """Run the Chatwoot->BQ sync + refresh views. Best-effort: never raises."""
     try:
         result = (sync or run_sync)(settings)
         (ensure or ensure_views)(settings)

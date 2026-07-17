@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Proton Agent-Assist FAQ</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f5f5f5;
+      color: #333;
+    }
+
+    .container {
+      padding: 16px;
+      max-width: 100%;
+    }
+
+    .header {
+      margin-bottom: 16px;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 12px;
+    }
+
+    .header h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #222;
+    }
+
+    .status {
+      font-size: 12px;
+      color: #666;
+      margin-top: 4px;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .toolbar button {
+      flex: 1;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 20px;
+      font-size: 13px;
+      color: #999;
+    }
+
+    .error {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      border-radius: 4px;
+      padding: 12px;
+      margin: 12px 0;
+      font-size: 12px;
+      color: #991b1b;
+    }
+
+    .query-box {
+      background: #eef4fd;
+      border: 1px solid #cfe0fb;
+      border-radius: 4px;
+      padding: 8px 10px;
+      margin-bottom: 12px;
+      font-size: 11px;
+      color: #33507a;
+      word-break: break-word;
+    }
+
+    .suggestion {
+      background: white;
+      border: 1px solid #e0e0e0;
+      border-radius: 4px;
+      padding: 12px;
+      margin-bottom: 12px;
+      font-size: 12px;
+    }
+
+    .suggestion-title {
+      font-weight: 600;
+      color: #1a73e8;
+      margin-bottom: 6px;
+      word-break: break-word;
+    }
+
+    .suggestion-snippet {
+      color: #555;
+      line-height: 1.4;
+      margin-bottom: 8px;
+      max-height: 80px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .suggestion-source {
+      font-size: 11px;
+      color: #999;
+      margin-bottom: 8px;
+    }
+
+    .suggestion-source a {
+      color: #1a73e8;
+      text-decoration: none;
+    }
+
+    .suggestion-source a:hover {
+      text-decoration: underline;
+    }
+
+    .suggestion-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      padding: 6px 12px;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      background: white;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+
+    button:hover {
+      background: #f5f5f5;
+      border-color: #999;
+    }
+
+    .copy-btn {
+      background: #1a73e8;
+      color: white;
+      border-color: #1a73e8;
+      flex: 1;
+      min-width: 80px;
+    }
+
+    .copy-btn:hover {
+      background: #1557b0;
+      border-color: #1557b0;
+    }
+
+    .feedback-btn {
+      padding: 6px 10px;
+      min-width: auto;
+    }
+
+    .feedback-btn.helpful {
+      color: #34a853;
+      border-color: #34a853;
+    }
+
+    .feedback-btn.helpful:hover {
+      background: #f1f8f5;
+    }
+
+    .feedback-btn.unhelpful {
+      color: #ea4335;
+      border-color: #ea4335;
+    }
+
+    .feedback-btn.unhelpful:hover {
+      background: #faf5f4;
+    }
+
+    .feedback-status {
+      font-size: 11px;
+      color: #666;
+      margin-top: 6px;
+      min-height: 16px;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 20px;
+      color: #999;
+      font-size: 12px;
+    }
+
+    .note {
+      font-size: 10px;
+      color: #999;
+      margin-top: 4px;
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2>FAQ Suggestions</h2>
+      <div class="status" id="status">Initializing...</div>
+    </div>
+    <div class="toolbar">
+      <button id="refresh-btn" type="button">Refresh</button>
+    </div>
+    <div id="query-box"></div>
+    <div id="content">
+      <div class="loading">Waiting for conversation context...</div>
+    </div>
+  </div>
+
+  <script>
+    // ------------------------------------------------------------------
+    // Config: backend base URL is overridable via ?backendBaseUrl=...
+    // (or ?apiKey=... for the feedback endpoint), otherwise defaults to
+    // the Cloud Run deployment.
+    // ------------------------------------------------------------------
+    const DEFAULT_BACKEND = 'https://proton-backend-247165654737.asia-southeast1.run.app';
+
+    const params = new URLSearchParams(window.location.search);
+    const backendBaseUrl = (params.get('backendBaseUrl') || DEFAULT_BACKEND).replace(/\/+$/, '');
+    const apiKey = params.get('apiKey') || '';
+    const sessionId = 'session_' + Math.random().toString(36).substr(2, 9);
+
+    let lastQuery = '';
+
+    // ------------------------------------------------------------------
+    // Chatwoot Dashboard App handshake.
+    // Chatwoot injects this iframe and, after we post
+    // 'chatwoot-dashboard-app:fetch-info', responds with a message whose
+    // data is { event: 'appContext', data: { conversation, contact, ... } }.
+    // The event.data may arrive as an object or a JSON string.
+    // ------------------------------------------------------------------
+    function requestContext() {
+      // Ask the Chatwoot parent to send us the current conversation context.
+      window.parent.postMessage('chatwoot-dashboard-app:fetch-info', '*');
+    }
+
+    function parseMessage(raw) {
+      if (typeof raw === 'string') {
+        try {
+          return JSON.parse(raw);
+        } catch (e) {
+          return null;
+        }
+      }
+      return raw;
+    }
+
+    window.addEventListener('message', (event) => {
+      const payload = parseMessage(event.data);
+      if (!payload || payload.event !== 'appContext') {
+        return;
+      }
+      const data = payload.data || {};
+      const query = extractLatestCustomerMessage(data);
+      if (query) {
+        lastQuery = query;
+        fetchSuggestions(query);
+      } else {
+        setStatus('No customer message found in this conversation');
+        renderEmpty('No incoming customer message to search. Wait for a customer reply.');
+      }
+    });
+
+    // ------------------------------------------------------------------
+    // Extract the latest INCOMING (customer) message text from the
+    // Chatwoot appContext payload. Chatwoot message shapes vary a little
+    // by version, so we defensively check the common fields:
+    //   message_type: 0 = incoming (customer), 1 = outgoing (agent)
+    // ------------------------------------------------------------------
+    function extractLatestCustomerMessage(data) {
+      const conversation = data.conversation || {};
+      const messages = conversation.messages || data.messages || [];
+
+      if (Array.isArray(messages) && messages.length > 0) {
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const m = messages[i] || {};
+          const isIncoming = m.message_type === 0 || m.message_type === 'incoming';
+          const content = (m.content || '').trim();
+          if (isIncoming && content) {
+            return content;
+          }
+        }
+        // Fall back to the newest non-empty message of any type.
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const content = ((messages[i] || {}).content || '').trim();
+          if (content) return content;
+        }
+      }
+
+      // Some Chatwoot versions expose a flattened last-message field.
+      const lm = conversation.last_non_activity_message || data.last_non_activity_message;
+      if (lm && typeof lm.content === 'string' && lm.content.trim()) {
+        return lm.content.trim();
+      }
+
+      return '';
+    }
+
+    async function fetchSuggestions(query) {
+      const contentDiv = document.getElementById('content');
+      try {
+        setStatus('Loading suggestions...');
+        contentDiv.innerHTML = '<div class="loading">Fetching suggestions...</div>';
+        renderQueryBox(query);
+
+        const url = new URL(`${backendBaseUrl}/kb/suggest`);
+        url.searchParams.append('q', query);
+        url.searchParams.append('limit', '5');
+
+        const response = await fetch(url.toString(), {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' }
+        });
+
+        if (!response.ok) {
+          throw new Error(`Backend returned ${response.status}: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        const suggestions = data.suggestions || [];
+
+        setStatus(suggestions.length > 0
+          ? `${suggestions.length} suggestion(s) found`
+          : 'No suggestions found');
+
+        if (suggestions.length === 0) {
+          renderEmpty('No relevant FAQ articles found for this conversation.');
+          return;
+        }
+
+        contentDiv.innerHTML = suggestions.map((suggestion, idx) => {
+          const url = suggestion.url || '';
+          const sourceLink = url
+            ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(suggestion.source_type || 'source')}</a>`
+            : escapeHtml(suggestion.source_type || 'unknown');
+          return `
+            <div class="suggestion" data-article-id="${escapeHtml(suggestion.title)}" data-index="${idx}">
+              <div class="suggestion-title">${escapeHtml(suggestion.title)}</div>
+              <div class="suggestion-snippet">${escapeHtml(suggestion.snippet || '')}</div>
+              <div class="suggestion-source">Source: ${sourceLink}</div>
+              <div class="suggestion-actions">
+                <button class="copy-btn" data-action="copy" data-idx="${idx}" title="Copy to clipboard">
+                  Copy
+                </button>
+                <button class="feedback-btn helpful" data-action="feedback-helpful" data-idx="${idx}" title="Helpful">
+                  &#128077;
+                </button>
+                <button class="feedback-btn unhelpful" data-action="feedback-unhelpful" data-idx="${idx}" title="Not helpful">
+                  &#128078;
+                </button>
+              </div>
+              <div class="feedback-status" id="feedback-${idx}"></div>
+            </div>
+          `;
+        }).join('');
+
+        attachSuggestionHandlers(suggestions);
+      } catch (error) {
+        console.error('Fetch error:', error);
+        setStatus('Error loading suggestions');
+        showError('Failed to fetch suggestions: ' + error.message);
+      }
+    }
+
+    function attachSuggestionHandlers(suggestions) {
+      document.querySelectorAll('button[data-action="copy"]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = parseInt(btn.dataset.idx, 10);
+          if (idx >= 0 && idx < suggestions.length) {
+            copySuggestion(suggestions[idx], idx);
+          }
+        });
+      });
+
+      document.querySelectorAll('button[data-action="feedback-helpful"]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = parseInt(btn.dataset.idx, 10);
+          if (idx >= 0 && idx < suggestions.length) {
+            sendFeedback(suggestions[idx].title, true);
+          }
+        });
+      });
+
+      document.querySelectorAll('button[data-action="feedback-unhelpful"]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = parseInt(btn.dataset.idx, 10);
+          if (idx >= 0 && idx < suggestions.length) {
+            sendFeedback(suggestions[idx].title, false);
+          }
+        });
+      });
+    }
+
+    // ------------------------------------------------------------------
+    // Copy-to-clipboard. Chatwoot dashboard apps run in a cross-origin
+    // iframe and CANNOT programmatically inject text into the agent's
+    // reply editor (no Chatwoot postMessage API for that today), so the
+    // best we can do is copy the suggestion for the agent to paste.
+    // ------------------------------------------------------------------
+    async function copySuggestion(suggestion, idx) {
+      const url = suggestion.url || '';
+      const text = `FAQ: ${suggestion.title}\n\n${suggestion.snippet || ''}${url ? `\n\nSource: ${url}` : ''}`;
+      const statusEl = document.getElementById(`feedback-${idx}`);
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          fallbackCopy(text);
+        }
+        if (statusEl) {
+          statusEl.textContent = '✓ Copied to clipboard — paste into your reply';
+          statusEl.style.color = '#1a73e8';
+        }
+      } catch (error) {
+        console.error('Copy error:', error);
+        if (statusEl) {
+          statusEl.textContent = 'Copy failed — select the text manually';
+          statusEl.style.color = '#ea4335';
+        }
+      }
+    }
+
+    function fallbackCopy(text) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+
+    async function sendFeedback(articleId, helpful) {
+      try {
+        const feedbackData = {
+          article_id: articleId,
+          session_id: sessionId,
+          helpful: helpful,
+          score: helpful ? 5 : 1
+        };
+
+        const response = await fetch(`${backendBaseUrl}/kb/feedback`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(apiKey ? { 'x-api-key': apiKey } : {})
+          },
+          body: JSON.stringify(feedbackData)
+        });
+
+        if (!response.ok) {
+          throw new Error(`Backend returned ${response.status}`);
+        }
+
+        const statusIdx = Array.from(document.querySelectorAll('[data-article-id]')).findIndex(
+          el => el.dataset.articleId === articleId
+        );
+        if (statusIdx >= 0) {
+          const statusEl = document.getElementById(`feedback-${statusIdx}`);
+          if (statusEl) {
+            statusEl.textContent = helpful ? '✓ Marked helpful' : '✓ Marked unhelpful';
+            statusEl.style.color = helpful ? '#34a853' : '#ea4335';
+          }
+        }
+      } catch (error) {
+        console.error('Feedback error:', error);
+        alert('Failed to send feedback: ' + error.message);
+      }
+    }
+
+    function setStatus(text) {
+      document.getElementById('status').textContent = text;
+    }
+
+    function renderQueryBox(query) {
+      const box = document.getElementById('query-box');
+      box.innerHTML = `<div class="query-box"><strong>Query:</strong> ${escapeHtml(query)}</div>`;
+    }
+
+    function renderEmpty(message) {
+      document.getElementById('content').innerHTML =
+        `<div class="empty-state">${escapeHtml(message)}</div>`;
+    }
+
+    function showError(message) {
+      document.getElementById('content').innerHTML =
+        `<div class="error">${escapeHtml(message)}</div>`;
+    }
+
+    function escapeHtml(text) {
+      const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+      return String(text).replace(/[&<>"']/g, m => map[m]);
+    }
+
+    function escapeAttr(text) {
+      return String(text).replace(/"/g, '&quot;');
+    }
+
+    // Manual refresh re-requests context from Chatwoot; if we already
+    // have a query cached, re-run it immediately for responsiveness.
+    document.getElementById('refresh-btn').addEventListener('click', () => {
+      requestContext();
+      if (lastQuery) fetchSuggestions(lastQuery);
+    });
+
+    // Kick off the handshake once the DOM is ready.
+    document.addEventListener('DOMContentLoaded', () => {
+      setStatus('Requesting conversation context...');
+      requestContext();
+    });
+  </script>
+</body>
+</html>

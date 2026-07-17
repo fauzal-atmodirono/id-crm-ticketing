@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import re
 from collections.abc import AsyncIterator, Callable
@@ -37,7 +38,7 @@ from chatbot.features.chat.phone.kb_tool import KB_SEARCH_TOOL
 from chatbot.features.chat.phone.rate_limit import RateLimiter
 from chatbot.features.chat.phone.token import mint_voice_token
 from chatbot.features.chat.phone.twiml import connect_stream_twiml
-from chatbot.features.chat.ports import AuditLogPort, HumanAgentBridgePort
+from chatbot.features.chat.ports import AuditEntry, AuditLogPort, HumanAgentBridgePort
 from chatbot.features.chat.schemas import (
     ChatwootWebhookPayload,
     TtsRequest,
@@ -47,6 +48,7 @@ from chatbot.features.chat.schemas import (
     ZendeskWebhookPayload,
 )
 from chatbot.features.chat.service import OrchestratorService
+from chatbot.features.chat.sla import FIRST_RESPONSE_STATE
 from chatbot.features.chat.twilio_signature import verify_twilio_signature
 
 _log = structlog.get_logger(__name__)
@@ -96,6 +98,36 @@ def _handoff_dict(turn_result: Any) -> dict[str, Any] | None:
         "lead_details": turn_result.handoff.lead_details,
         "classification": turn_result.handoff.classification,
     }
+
+
+# Chatwoot conversation status -> case audit state. Chatwoot's `pending` /
+# `snoozed` (an agent is actively working / waiting) map to the explicit WIP
+# ("work in progress") case state; `open` -> OPEN; `resolved` -> RESOLVED.
+_CHATWOOT_STATUS_TO_STATE: dict[str, CaseState] = {
+    "open": CaseState.OPEN,
+    "pending": CaseState.WIP,
+    "snoozed": CaseState.WIP,
+    "resolved": CaseState.SOLVED,
+}
+
+
+def _chatwoot_state(status: str | None) -> CaseState:
+    """Map a Chatwoot conversation status to a case audit state (default OPEN)."""
+    return _CHATWOOT_STATUS_TO_STATE.get((status or "").lower(), CaseState.OPEN)
+
+
+def _webhook_secret_valid(expected: str, provided: str | None) -> bool:
+    """Constant-time check of a shared-secret webhook header.
+
+    Returns True when no secret is configured (endpoint open) or the provided
+    header matches. Each fork MUST use a secret distinct from the sibling tenants
+    sharing the Zendesk instance — a shared value defeats tenant isolation.
+    """
+    if not expected:
+        return True
+    if not provided:
+        return False
+    return hmac.compare_digest(provided, expected)
 
 
 _WHATSAPP_MARKDOWN_CHARS = re.compile(r"[*_~`]+")
@@ -324,15 +356,108 @@ class ChatRouter:
 
     # --- CRM webhooks -------------------------------------------------------
 
-    async def chatwoot_webhook(self, payload: ChatwootWebhookPayload) -> dict[str, str]:
-        if payload.event != "message_created" or payload.message_type != "incoming":
+    async def chatwoot_webhook(  # noqa: PLR0911, PLR0912 — webhook dispatcher fans out to several event branches
+        self,
+        payload: ChatwootWebhookPayload,
+        token: str | None = None,
+        x_chatwoot_webhook_secret: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        # Shared-secret gate: token query param is primary, header is fallback.
+        # Chatwoot's webhook UI cannot add custom headers, so we embed the secret
+        # in the webhook URL as ?token=<secret>. Gate on the configured secret
+        # directly (not on whether a bridge happens to be wired) so the endpoint
+        # is never left unauthenticated when chatwoot_enabled is False.
+        provided = token or x_chatwoot_webhook_secret
+        if not _webhook_secret_valid(self.orchestrator._settings.chatwoot_webhook_secret, provided):
+            _log.warning("chatwoot_webhook_secret_invalid")
+            raise HTTPException(status_code=401, detail="Invalid secret")
+
+        # EMAIL branch: an email that arrives in the configured EMAIL-type inbox is
+        # a PARALLEL path to the API-channel handoff below — the conversation IS the
+        # email thread (session_id = email-<conv_id>), so we run the AI and post a
+        # PUBLIC reply for Chatwoot to email back. Checked BEFORE the API-inbox
+        # isolation guard because the email inbox is a *different* inbox than
+        # chatwoot_inbox_id and would otherwise be filtered out as "other inbox".
+        email_inbox = self.orchestrator._settings.chatwoot_email_inbox_id
+        if (
+            email_inbox
+            and payload.conversation.inbox_id is not None
+            and payload.conversation.inbox_id == email_inbox
+        ):
+            return await self._handle_chatwoot_email_event(payload)
+
+        # Shared-account isolation: Chatwoot account webhooks fire for ALL inboxes.
+        # When we are pinned to one inbox, ignore events for any other inbox so we
+        # never act on another team's conversations.
+        our_inbox = self.orchestrator._settings.chatwoot_inbox_id
+        if (
+            our_inbox
+            and payload.conversation.inbox_id is not None
+            and payload.conversation.inbox_id != our_inbox
+        ):
+            return {"status": "ignored_other_inbox"}
+
+        conv_id = str(payload.conversation.id)
+
+        # Agent resolved the conversation → resume the AI.
+        if payload.event in ("conversation_resolved", "conversation_status_changed"):
+            # Structured status audit log: record EVERY status transition (incl.
+            # open/pending/snoozed re-opens, which don't resume the AI) so the case
+            # has a from→to trail with a WIP state. from_state is the last recorded
+            # to_state for this case (unknown → empty on the first transition).
+            await self._log_status_transition(conv_id, payload)
+            # Only an actual resolve resumes the AI; a status change to open/pending
+            # (e.g. an agent re-opening) must NOT hand control back to the bot.
+            if (
+                payload.event == "conversation_status_changed"
+                and payload.conversation.status not in (None, "resolved")
+            ):
+                return {"status": "logged"}
+            session_id = None
+            if self._handoff_bridge is not None:
+                session_id = await self._handoff_bridge.session_id_for(conv_id)
+            if session_id:
+                # Clear BOTH pause mechanisms: the adapter/web pause AND the ADK
+                # WhatsApp handoff state the WhatsApp inbound path checks; then tear
+                # down the mapping so a future handoff re-registers cleanly.
+                await self.orchestrator._ticketing_port.unpause_ai_for_session(session_id)
+                await self.orchestrator.resume_ai(session_id)
+                if self._handoff_bridge is not None:
+                    await self._handoff_bridge.unregister(session_id)
+                _log.info("chatwoot_resolved_unpaused", session_id=session_id)
+            return {"status": "resolved"}
+
+        if payload.event != "message_created":
             return {"status": "ignored"}
+
+        # Agent reply (outgoing, non-private) → relay to the customer channel.
+        if payload.message_type == "outgoing" and not payload.private:
+            # First-response marker for the SLA engine: an outgoing, non-private
+            # message IS an agent reply, so the 8h no-response scan can tell a
+            # responded case from an un-responded one. Deduped so re-fired webhooks
+            # / subsequent agent replies don't append duplicate markers.
+            await self._record_first_response(conv_id)
+            if self._human_agent_bridge is None or self._handoff_bridge is None:
+                return {"status": "no_bridge"}
+            events = self._human_agent_bridge.parse_webhook_events(payload.model_dump())
+            for event in events:
+                await self._handoff_bridge.publish(event)
+                await self._relay_agent_reply_to_whatsapp(event)
+            return {"status": "relayed", "delivered": str(len(events))}
+
+        # Customer message into a Chatwoot-hosted inbox → run the bot. Only when
+        # Chatwoot is the customer channel; for a handoff-console deployment this is
+        # OFF, or the escalation seed message / forwarded customer messages trigger
+        # the bot and it re-escalates in an infinite loop.
+        if payload.message_type != "incoming":
+            return {"status": "ignored"}
+        if not self.orchestrator._settings.chatwoot_bot_replies_to_incoming:
+            return {"status": "ignored_incoming"}
 
         content = (payload.content or "").strip()
         if not content:
             return {"status": "empty_content"}
 
-        conv_id = str(payload.conversation.id)
         session_id = f"chatwoot-conv-{conv_id}"
 
         _log.info("chatwoot_webhook_received", conv_id=conv_id, session_id=session_id)
@@ -345,6 +470,112 @@ class ChatRouter:
             )
 
         return {"status": "ok"}
+
+    async def _log_status_transition(self, conv_id: str, payload: ChatwootWebhookPayload) -> None:
+        """Append a case status transition to the audit log (best-effort).
+
+        ``to_state`` is the WIP-aware mapping of the new Chatwoot status;
+        ``from_state`` is the last recorded ``to_state`` for this case (empty on
+        the first transition, since Chatwoot's webhook does not carry the prior
+        status). The actor is the sender/assignee name when present, else "agent".
+        No-op when no audit log is wired.
+        """
+        if self._audit_log is None:
+            return
+        to_state = _chatwoot_state(payload.conversation.status)
+        entries = await self._audit_log.list_for_ticket(conv_id)
+        from_state = entries[-1].to_state if entries else ""
+        actor = (payload.sender.name if payload.sender and payload.sender.name else None) or "agent"
+        await self._audit_log.append(
+            AuditEntry(
+                ticket_id=conv_id,
+                session_id=f"chatwoot-conv-{conv_id}",
+                actor=actor,
+                from_state=from_state,
+                to_state=to_state.value,
+                at=datetime.now(UTC).isoformat(),
+                remark=f"status_changed -> {payload.conversation.status}",
+            )
+        )
+        _log.info("chatwoot_status_transition_logged", conv_id=conv_id, to_state=to_state.value)
+
+    async def _record_first_response(self, conv_id: str) -> None:
+        """Record a FIRST_RESPONSE audit marker on the first agent reply (deduped)."""
+        if self._audit_log is None:
+            return
+        entries = await self._audit_log.list_for_ticket(conv_id)
+        if any(e.to_state == FIRST_RESPONSE_STATE for e in entries):
+            return  # already recorded — don't append duplicate markers
+        from_state = entries[-1].to_state if entries else ""
+        await self._audit_log.append(
+            AuditEntry(
+                ticket_id=conv_id,
+                session_id=f"chatwoot-conv-{conv_id}",
+                actor="agent",
+                from_state=from_state,
+                to_state=FIRST_RESPONSE_STATE,
+                at=datetime.now(UTC).isoformat(),
+                remark="first agent response",
+            )
+        )
+        _log.info("chatwoot_first_response_logged", conv_id=conv_id)
+
+    async def _handle_chatwoot_email_event(  # noqa: PLR0911 — sequential loop/dedup guards each early-return
+        self, payload: ChatwootWebhookPayload
+    ) -> dict[str, str]:
+        """Route a Chatwoot EMAIL-inbox event to the shared email flow.
+
+        A Chatwoot conversation in the email inbox IS the email thread, exactly
+        like a Zendesk email ticket: the conversation id plays the role of the
+        ticket id and ``session_id = email-<conv_id>``. We run the AI and (unless
+        email_draft_assist) post a PUBLIC reply so Chatwoot emails it back to the
+        customer, reusing ``_handle_email_turn`` / ``_handle_email_survey`` so the
+        Zendesk-ticket and Chatwoot-conversation email paths share one implementation.
+
+        Loop/echo guards mirror the Zendesk email path: only incoming, non-private
+        customer messages are answered; agent/AI outgoing messages and no-reply
+        senders are ignored; a dedup marker skips re-fired webhooks and any reply
+        fed back as input. Paused conversations are owned by a human, so we no-op.
+        """
+        # Only conversation-message events carry customer text; resolves etc. no-op.
+        if payload.event != "message_created":
+            return {"status": "ignored"}
+        # Loop guard: only act on the customer's own inbound message. Our AI reply
+        # and any agent reply come back as outgoing (or private notes) — never
+        # answer those, or the bot talks to itself.
+        if payload.message_type != "incoming" or payload.private:
+            return {"status": "ignored"}
+
+        conv_id = str(payload.conversation.id)
+        session_id = f"email-{conv_id}"
+
+        state = await self.orchestrator.conversation_state(session_id)
+        if state == "paused":
+            return {"status": "paused"}
+
+        text = (payload.content or "").strip()
+        requester_name = payload.sender.name if payload.sender else None
+        requester_email = payload.sender.email if payload.sender else None
+        if not text:
+            return {"status": "ignored"}
+        if _is_no_reply(requester_email):
+            _log.info("chatwoot_email_no_reply_skipped", conv_id=conv_id)
+            return {"status": "ignored"}
+
+        # Dedup guard: a re-fired webhook, or the AI's own reply echoed back as an
+        # incoming message, equals either the last inbound we processed or the last
+        # reply we posted — skip it so the AI never answers itself or double-answers.
+        last_inbound, last_reply = await self.orchestrator.get_email_dedup(session_id)
+        if text in (last_inbound, last_reply):
+            _log.info("chatwoot_email_duplicate_skipped", conv_id=conv_id)
+            return {"status": "duplicate"}
+
+        # Claim the inbound BEFORE the (slow) AI turn so concurrent re-fired
+        # webhooks hit the dedup check above and skip instead of racing through.
+        await self.orchestrator.remember_email_exchange(session_id, inbound=text)
+
+        _log.info("chatwoot_email_received", session_id=session_id)
+        return await self._handle_email_turn(conv_id, session_id, state, text, requester_name)
 
     async def twilio_whatsapp_webhook(self, request: Request) -> Response:
         """Inbound WhatsApp message from Twilio. Verify signature, run the AI,

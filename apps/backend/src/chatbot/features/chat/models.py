@@ -102,6 +102,17 @@ class HandoffOpenPayload:
     language: Language = "unknown"
     customer_phone: str | None = None
     preferred_model: str | None = None
+    # AI classification carried into the handoff so the bridge can persist it on
+    # the ticket/conversation for the downstream metrics sync to read back.
+    category: str | None = None
+    subcategory: str | None = None
+    division: str | None = None
+    department: str | None = None
+    sla_minutes: int | None = None
+    # Why the handoff fired. The bridge uses this to decide whether the case is a
+    # complaint (-> apply the Zammad-ticketing label) vs a plain "talk to a human"
+    # request that should stay a live Chatwoot conversation only.
+    reason: str = "help_request"
 
 
 @dataclass(frozen=True)

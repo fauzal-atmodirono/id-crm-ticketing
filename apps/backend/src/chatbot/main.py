@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from chatbot.features.chat.adapters.audit_log import build_audit_log
 from chatbot.features.chat.adapters.bigquery_metrics import build_metrics_port
-from chatbot.features.chat.adapters.chatwoot_zammad import ChatwootZammadAdapter
+from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
 from chatbot.features.chat.adapters.gcp_voice import GeminiTextToSpeechAdapter
 from chatbot.features.chat.adapters.handoff_store import build_handoff_store
 from chatbot.features.chat.adapters.mock import InMemoryKnowledgeAdapter, MockVoiceAdapter
@@ -28,6 +28,7 @@ from chatbot.features.chat.ports import (
 )
 from chatbot.features.chat.router import build_chat_router
 from chatbot.features.chat.service import OrchestratorService
+from chatbot.features.chat.sla import start_sla_scheduler
 from chatbot.features.metrics.anomaly_router import build_metrics_anomaly_router
 from chatbot.features.metrics.dashboard_router import build_metrics_query_router
 from chatbot.features.metrics.email_port import build_email_report_port
@@ -77,7 +78,7 @@ def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
             metrics_scheduler.shutdown(wait=False)
 
 
-def bootstrap_application() -> FastAPI:
+def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     """Bootstrap settings, structured logging, adapters, CORS, and routes."""
     settings = get_settings()
     configure_logging(settings.debug)
@@ -116,14 +117,24 @@ def bootstrap_application() -> FastAPI:
     knowledge_port: KnowledgePort
 
     zendesk_client: ZendeskAdapter | None = None
+    chatwoot_client: ChatwootAdapter | None = None
+    human_agent_bridge: HumanAgentBridgePort | None = None
+    handoff_bridge: HandoffBridge | None = None
+
     if settings.crm_provider == "zendesk":
         zendesk_client = ZendeskAdapter(settings)
         chat_port = zendesk_client
         ticketing_port = zendesk_client
+        if settings.zendesk_app_id and settings.zendesk_key_id and settings.zendesk_secret_key:
+            human_agent_bridge = SunshineConversationsAdapter(settings)
+            handoff_bridge = HandoffBridge(store=build_handoff_store(settings))
     else:
-        chatwoot_zammad_client = ChatwootZammadAdapter(settings)
-        chat_port = chatwoot_zammad_client
-        ticketing_port = chatwoot_zammad_client
+        chatwoot_client = ChatwootAdapter(settings)
+        chat_port = chatwoot_client
+        ticketing_port = chatwoot_client
+        if settings.chatwoot_enabled:
+            human_agent_bridge = chatwoot_client
+            handoff_bridge = HandoffBridge(store=build_handoff_store(settings))
 
     # --- Knowledge wiring ---
     if settings.knowledge_provider == "vertex_search":
@@ -140,19 +151,14 @@ def bootstrap_application() -> FastAPI:
     else:
         tts_port = MockVoiceAdapter()
 
-    # --- Human-agent bridge (Sunshine Conversations) ---
-    # Only wired when the credentials are present so dev environments without
-    # SC keys still boot.
-    human_agent_bridge: HumanAgentBridgePort | None = None
-    handoff_bridge: HandoffBridge | None = None
-    if settings.zendesk_app_id and settings.zendesk_key_id and settings.zendesk_secret_key:
-        human_agent_bridge = SunshineConversationsAdapter(settings)
-        handoff_bridge = HandoffBridge(store=build_handoff_store(settings))
-
-    # --- Conversation capture (per-conversation Zendesk logging) ---
-    conversation_log_port: ConversationLogPort = (
-        zendesk_client if zendesk_client is not None else NoOpConversationLog()
-    )
+    # --- Conversation capture ---
+    conversation_log_port: ConversationLogPort
+    if zendesk_client is not None:
+        conversation_log_port = zendesk_client
+    elif chatwoot_client is not None:
+        conversation_log_port = chatwoot_client
+    else:
+        conversation_log_port = NoOpConversationLog()
 
     # --- Twilio channel (outbound WhatsApp) ---
     twilio_adapter: TwilioChannelAdapter | None = None
@@ -191,6 +197,16 @@ def bootstrap_application() -> FastAPI:
     _wire_agent_assist(app, knowledge_port, settings)
 
     _wire_metrics_features(app, settings)
+
+    # --- SLA-timer escalation engine (Chatwoot has no native SLA engine) ---
+    # Guarded behind sla_engine_enabled (default OFF) exactly like the metrics
+    # scheduler, so nothing scans unless a deployment explicitly opts in.
+    sla_scheduler = start_sla_scheduler(settings, audit_log, twilio_adapter=twilio_adapter)
+    if sla_scheduler is not None:
+
+        @app.on_event("shutdown")
+        def _stop_sla_scheduler() -> None:
+            sla_scheduler.shutdown(wait=False)
 
     @app.get("/")
     def health_check() -> dict[str, str]:

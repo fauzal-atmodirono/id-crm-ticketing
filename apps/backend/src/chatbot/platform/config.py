@@ -61,6 +61,23 @@ class Settings(BaseSettings):
     # Secret used to verify webhook calls for SLA escalation notifications
     sla_webhook_secret: str = ""
 
+    # --- SLA-timer escalation engine (Chatwoot has no native SLA engine) ---
+    # Master switch: when False (default) the in-app SLA scan scheduler is NOT
+    # started, so nothing runs unless a deployment explicitly opts in.
+    sla_engine_enabled: bool = False
+    # First-response SLA: an OPEN conversation with no agent reply older than this
+    # many hours fires an SLA_BREACH_NO_RESPONSE audit transition.
+    sla_response_hours: int = 8
+    # Resolution SLA: a non-resolved conversation older than this many hours fires
+    # an SLA_BREACH_UNRESOLVED transition. A per-conversation sla_<int> label /
+    # custom attribute (minutes) overrides this default when present.
+    sla_resolution_hours: int = 48
+    # How often (minutes) the SLA scan job scans Chatwoot conversations.
+    sla_scan_interval_minutes: int = 15
+    # Optional PIC WhatsApp number (E.164, e.g. "+60123456789") alerted via Twilio
+    # on each breach. Empty (default) records the audit transition only, no alert.
+    sla_pic_whatsapp: str = ""
+
     # Email channel — when True, AI replies become private draft notes instead of
     # public replies (draft-assist mode). Default False = auto-reply (public).
     email_draft_assist: bool = False
@@ -121,6 +138,49 @@ class Settings(BaseSettings):
     chatwoot_api_token: str = ""
     chatwoot_account_id: int = 1
     chatwoot_enabled: bool = True
+    # API-channel inbox that our backend creates conversations in and receives
+    # agent-reply webhooks from. 0 = unset (fail fast in the adapter).
+    chatwoot_inbox_id: int = 0
+    # Team the escalated conversation is assigned to (the native-inbox handoff).
+    chatwoot_agent_team_id: int = 0
+    # Label(s) applied to EVERY escalated conversation so agents can filter them
+    # in Chatwoot (the live-chat workspace). Kept CRM-neutral — does NOT create a
+    # downstream ticket.
+    chatwoot_escalation_label: str = "ai-escalation"
+    # Complaint-only label: added on top of the escalation label ONLY when the
+    # handoff is a genuine complaint (see chatwoot_complaint_reasons / high
+    # urgency). This is the label the shared instance's sync turns into a Zammad
+    # ticket, so plain "talk to a human" handoffs stay Chatwoot-only and don't
+    # spawn a confusing back-office ticket. Empty disables Zammad ticketing.
+    chatwoot_complaint_label: str = "escalate"
+    # Comma-separated HandoffReason values treated as complaints (-> Zammad ticket).
+    # High urgency also counts. Non-complaint reasons (help_request, sales_lead,
+    # unknown_retry_limit) stay live-chat-only in Chatwoot.
+    chatwoot_complaint_reasons: str = "negative_sentiment"
+    # Shared secret required on inbound /webhooks/chatwoot calls (Chatwoot has no
+    # built-in HMAC). Compared constant-time; empty leaves the endpoint open.
+    chatwoot_webhook_secret: str = ""
+    # Domain used to synthesize a customer email on Chatwoot contacts. Web/WhatsApp
+    # customers have no real email, but downstream ticketing that keys customers by
+    # email (e.g. a Chatwoot->Zammad sync) needs one. Deterministic per session:
+    # <sanitized session_id>@<domain>. Use a real TLD so email-format validation passes.
+    chatwoot_customer_email_domain: str = "proton-demo.my"
+    # Whether an INCOMING message in the Chatwoot inbox runs the AI. Only true when
+    # Chatwoot itself is the customer channel (website widget). For a handoff-console
+    # deployment (customers on WhatsApp/web, Chatwoot only for agents) this MUST stay
+    # False, or the escalation seed message / forwarded customer messages trigger the
+    # bot and it re-escalates in an infinite loop.
+    chatwoot_bot_replies_to_incoming: bool = False
+    # EMAIL-type Chatwoot inbox. When an email arrives, Chatwoot opens a
+    # conversation in this inbox and fires a message_created webhook; we run the
+    # AI and post a PUBLIC reply so Chatwoot emails it back to the customer. This
+    # is the Chatwoot equivalent of the (Zendesk-native) email channel and is the
+    # ONLY inbox on which incoming messages take the email path — the API-channel
+    # inbox (chatwoot_inbox_id) still uses the native-handoff branch.
+    # 0 = email-on-chatwoot disabled (no email routing). Set to the numeric id of
+    # the provisioned email inbox to enable it. Honours email_draft_assist just
+    # like the Zendesk email path (True = private draft note instead of a send).
+    chatwoot_email_inbox_id: int = 0
 
     # Zammad settings
     zammad_api_url: str = "http://localhost:3000"
@@ -173,6 +233,11 @@ class Settings(BaseSettings):
         "http://localhost:5178",
         "http://localhost:5179",
         "http://localhost:5180",
+        # Chatwoot agent-assist FAQ dashboard app (apps/chatwoot-agent-app) is
+        # loaded as an iframe from the Chatwoot host and fetches /kb/suggest +
+        # /kb/feedback cross-origin. Allowlist the Chatwoot origin (override via
+        # FRONTEND_ORIGINS if the app is hosted elsewhere).
+        "http://crm.34-50-103-151.nip.io",
     ]
 
     # Settings configurations

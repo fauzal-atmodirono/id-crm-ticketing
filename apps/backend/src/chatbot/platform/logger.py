@@ -49,5 +49,10 @@ def configure_logging(debug: bool = True) -> None:
         processors=processors,
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
-        cache_logger_on_first_use=True,
+        # NOT cached: a cached module logger binds the active processor chain
+        # permanently, so once the app bootstraps mid-test-suite, structlog's
+        # `capture_logs` (used by the voice diagnostics tests) can no longer swap
+        # the chain to intercept those loggers' events. Leaving caching off keeps
+        # log-capture tests order-independent at negligible runtime cost.
+        cache_logger_on_first_use=False,
     )

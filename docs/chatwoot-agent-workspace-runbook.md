@@ -7,6 +7,20 @@ desktop/sound notifications — re-implementing that in our frontend would be
 redundant. This runbook is how the CRM team operates and how to finish the
 light configuration.
 
+## Where do I talk to the customer? → **Chatwoot, always**
+
+The customer is live in the chat, bridged to the **Chatwoot conversation** over
+SSE. **Reply in Chatwoot** and it reaches the customer in real time. A Zammad
+ticket (when one exists) is a **back-office tracking record only** — it is *not*
+connected to the live customer, so a reply typed in Zammad never reaches them.
+Use Zammad to track/resolve the case; talk to the customer in Chatwoot.
+
+**When does a Zammad ticket even appear?** Only for **complaints**
+(`negative_sentiment` reason or high urgency). A plain "connect me to a human"
+handoff stays a **Chatwoot-only** live conversation with no ticket — so agents
+aren't handed a confusing back-office ticket for a chat they should just have.
+Controlled by `chatwoot_complaint_label` / `chatwoot_complaint_reasons`.
+
 ## How the flow reaches an agent
 
 1. Customer talks to the AI in **our** frontend / WhatsApp / (email — see below).

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
 
@@ -76,6 +76,61 @@ class KnowledgePort(Protocol):
 
     async def search_kb(self, query: str, limit: int = 2) -> list[KbArticle]:
         """Search documentation articles matching query."""
+        ...
+
+
+@dataclass(frozen=True)
+class LiveFaqEntry:
+    """A CRM-authored FAQ entry with a precomputed semantic embedding.
+
+    The CRM team edits these in real time via the admin router; the embedding
+    is (re)computed on create/update so `/kb/suggest` can match by meaning.
+    """
+
+    id: str
+    question: str
+    answer: str
+    keywords: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    embedding: list[float] = field(default_factory=list)
+    active: bool = True
+    updated_at: str = ""
+
+
+class LiveFaqPort(Protocol):
+    """Port for the real-time, CRM-editable FAQ store with semantic search.
+
+    Writes recompute the entry embedding (via an injected Embedder); reads for
+    `search` operate over the currently-active entries so CRM edits reflect
+    instantly. Implementations must degrade cleanly (return empty / log) when
+    the backing store or embedder is unavailable — never break `/kb/suggest`.
+    """
+
+    async def create(self, entry: LiveFaqEntry) -> str:
+        """Persist a new entry (computing its embedding). Returns the new id."""
+        ...
+
+    async def update(self, entry_id: str, fields: dict[str, Any]) -> None:
+        """Patch an entry; recompute the embedding if question/answer changed."""
+        ...
+
+    async def delete(self, entry_id: str) -> None:
+        """Remove an entry."""
+        ...
+
+    async def list_all(self) -> list[LiveFaqEntry]:
+        """Return all entries (active + inactive) for the admin listing."""
+        ...
+
+    async def list_active(self) -> list[LiveFaqEntry]:
+        """Return only active entries (search corpus)."""
+        ...
+
+    async def search(
+        self, query_embedding: list[float], limit: int
+    ) -> list[tuple[LiveFaqEntry, float]]:
+        """Cosine-similarity search over active entries. Returns top-`limit`
+        `(entry, score)` pairs above a small score floor, best first."""
         ...
 
 

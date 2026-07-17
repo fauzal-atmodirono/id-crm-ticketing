@@ -91,6 +91,18 @@ class Settings(BaseSettings):
     firestore_handoff_collection: str = "handoff_sessions"
     firestore_audit_collection: str = "case_audit_log"
 
+    # --- Real-time, CRM-editable FAQ knowledge base (semantic matching) ---
+    # The CRM team authors FAQ entries via the admin router; each write embeds
+    # the entry (question + answer) with `embedding_model` and stores the vector
+    # in `live_faq_collection` (Firestore, same DB as the handoff store). Auto-
+    # created on first write — no manual provisioning or vector index needed,
+    # since `/kb/suggest` ranks entries with in-memory cosine similarity.
+    # Writes to the admin endpoints require `x-api-key == faq_admin_api_key`
+    # (constant-time compared); an empty key 401s every write.
+    faq_admin_api_key: str = ""
+    live_faq_collection: str = "live_faq"
+    embedding_model: str = "text-embedding-004"
+
     # Bot-metrics dashboard (Zendesk -> BigQuery sync)
     bigquery_project_id: str = "lv-playground-genai"
     bigquery_dataset: str = "demo_proton"

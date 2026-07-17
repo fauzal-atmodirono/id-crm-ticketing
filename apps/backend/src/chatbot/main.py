@@ -10,6 +10,7 @@ from chatbot.features.chat.adapters.bigquery_metrics import build_metrics_port
 from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
 from chatbot.features.chat.adapters.gcp_voice import GeminiTextToSpeechAdapter
 from chatbot.features.chat.adapters.handoff_store import build_handoff_store
+from chatbot.features.chat.adapters.live_faq import VertexEmbedder, build_live_faq_store
 from chatbot.features.chat.adapters.mock import InMemoryKnowledgeAdapter, MockVoiceAdapter
 from chatbot.features.chat.adapters.noop_conversation_log import NoOpConversationLog
 from chatbot.features.chat.adapters.sunshine_conversations import SunshineConversationsAdapter
@@ -17,6 +18,7 @@ from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.adapters.vertex_search import VertexAISearchAdapter
 from chatbot.features.chat.adapters.zammad import ZammadClient
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
+from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.kb_suggest_router import build_kb_suggest_router
 from chatbot.features.chat.ports import (
@@ -45,9 +47,38 @@ from chatbot.platform.logger import configure_logging
 from chatbot.platform.server import create_app
 
 
+def _build_genai_client(settings: Settings) -> object | None:
+    """Build a google-genai client for embeddings (ADC / Vertex), mirroring the
+    orchestrator. Returns None if the SDK/credentials are unavailable so live-FAQ
+    wiring falls back to Vertex-Search-only suggestions and boot never breaks."""
+    try:
+        from google.genai import Client  # noqa: PLC0415 — lazy: boot without the SDK
+
+        if settings.google_genai_use_vertexai:
+            return Client(
+                vertexai=True,
+                project=settings.vertex_project_id,
+                location=settings.vertex_location,
+            )
+        return Client()
+    except Exception:
+        return None
+
+
 def _wire_agent_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings) -> None:
-    """Wire the agent-assist FAQ routers (kb-suggest + faq-feedback)."""
-    app.include_router(build_kb_suggest_router(knowledge_port))
+    """Wire the agent-assist FAQ routers: kb-suggest (Vertex Search + live FAQ
+    semantic merge), faq-feedback, and the real-time FAQ admin CRUD."""
+    genai_client = _build_genai_client(settings)
+    live_faq_store = build_live_faq_store(settings, genai_client)  # type: ignore[arg-type]
+    embedder = (
+        VertexEmbedder(genai_client, settings.embedding_model)  # type: ignore[arg-type]
+        if genai_client is not None
+        else None
+    )
+
+    app.include_router(build_kb_suggest_router(knowledge_port, live_faq_store, embedder))
+    app.include_router(build_faq_admin_router(live_faq_store, settings))
+
     faq_port = build_faq_feedback_port(settings)
     app.include_router(build_faq_router(faq_port, settings))
 

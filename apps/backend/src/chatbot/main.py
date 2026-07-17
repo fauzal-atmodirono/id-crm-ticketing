@@ -15,6 +15,7 @@ from chatbot.features.chat.adapters.noop_conversation_log import NoOpConversatio
 from chatbot.features.chat.adapters.sunshine_conversations import SunshineConversationsAdapter
 from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.adapters.vertex_search import VertexAISearchAdapter
+from chatbot.features.chat.adapters.zammad import ZammadClient
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.kb_suggest_router import build_kb_suggest_router
@@ -129,7 +130,11 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             human_agent_bridge = SunshineConversationsAdapter(settings)
             handoff_bridge = HandoffBridge(store=build_handoff_store(settings))
     else:
-        chatwoot_client = ChatwootAdapter(settings)
+        # Own Zammad ticketing directly (when enabled) so a complaint escalation
+        # POSTs the back-office ticket ourselves instead of relying on the
+        # `escalate` label + external agent-service sync.
+        zammad_client = ZammadClient(settings) if settings.zammad_enabled else None
+        chatwoot_client = ChatwootAdapter(settings, zammad=zammad_client)
         chat_port = chatwoot_client
         ticketing_port = chatwoot_client
         if settings.chatwoot_enabled:

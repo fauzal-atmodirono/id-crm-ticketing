@@ -9,3 +9,9 @@ def test_chatwoot_settings_defaults() -> None:
     assert s.chatwoot_agent_team_id == 0
     assert s.chatwoot_escalation_label == "ai-escalation"
     assert s.chatwoot_webhook_secret == ""
+
+
+def test_zammad_direct_ticketing_defaults() -> None:
+    s = Settings()
+    assert s.zammad_direct_ticketing is True
+    assert s.zammad_group == "Users"

@@ -186,6 +186,16 @@ class Settings(BaseSettings):
     zammad_api_url: str = "http://localhost:3000"
     zammad_api_token: str = ""
     zammad_enabled: bool = True
+    # When True, our backend creates the Zammad ticket DIRECTLY (via the Zammad
+    # REST API) on a complaint escalation and does NOT apply the Chatwoot
+    # complaint/`escalate` label — so if the external agent-service sync is ever
+    # wired to that label there is no double-ticket. When False (legacy) we fall
+    # back to just applying the `escalate` label and let the agent service turn
+    # it into a ticket. Requires zammad_enabled.
+    zammad_direct_ticketing: bool = True
+    # Zammad group the direct-ticketing path files tickets into (must exist in
+    # Zammad). "Users" is the default group present on the shared instance.
+    zammad_group: str = "Users"
 
     # Twilio (WhatsApp Phase A; Phone Phase C). Empty by default so dev
     # environments without Twilio credentials still boot.

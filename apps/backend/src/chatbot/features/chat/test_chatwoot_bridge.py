@@ -183,4 +183,3 @@ async def test_open_handoff_plain_human_request_stays_chatwoot_only() -> None:
     labels_calls = [pl for _m, p, pl in fake.calls if p.endswith("/labels")]
     assert len(labels_calls) == 1
     assert labels_calls[0]["labels"] == ["ai-escalation"]  # type: ignore[index]
-    assert "escalate" not in labels_calls[0]["labels"]  # type: ignore[operator]

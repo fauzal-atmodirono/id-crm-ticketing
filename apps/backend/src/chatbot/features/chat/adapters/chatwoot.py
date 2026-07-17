@@ -21,6 +21,7 @@ from chatbot.features.chat.ports import (
 )
 
 if TYPE_CHECKING:
+    from chatbot.features.chat.adapters.zammad import ZammadClient
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
@@ -70,10 +71,21 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
     configured API-channel inbox.
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, zammad: ZammadClient | None = None) -> None:
         self._settings = settings
+        self._zammad = zammad
         self._paused_sessions: set[str] = set()
         self._conv_by_session: dict[str, str] = {}
+
+    def _direct_zammad_active(self) -> bool:
+        """True when this adapter owns Zammad ticketing directly.
+
+        In direct mode the backend POSTs the Zammad ticket itself and MUST NOT
+        also apply the `escalate` complaint label — that label is what the
+        external agent-service sync (if ever wired) turns into a ticket, so
+        applying both would spawn a duplicate ticket.
+        """
+        return self._settings.zammad_direct_ticketing and self._zammad is not None
 
     def _synth_customer_email(self, session_id: str) -> str:
         """Deterministic synthetic email for a session's Chatwoot contact.
@@ -116,11 +128,48 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         return False
 
     def _complaint_labels(self, reason: str | None, urgency: str | None) -> list[str]:
-        """The Zammad-ticketing label, applied only for complaints."""
+        """The Zammad-ticketing `escalate` label, applied only for complaints in
+        LEGACY mode. When direct Zammad ticketing is active the backend creates
+        the ticket itself, so this label is suppressed to avoid a double-ticket if
+        the external agent-service sync is ever wired to it.
+        """
+        if self._direct_zammad_active():
+            return []
         label = self._settings.chatwoot_complaint_label.strip()
         if label and self._is_complaint(reason, urgency):
             return [label]
         return []
+
+    async def _escalate_to_zammad(
+        self,
+        conv_id: str,
+        title: str,
+        body: str,
+        session_id: str,
+        urgency: str | None,
+        reason: str | None,
+    ) -> None:
+        """Create a Zammad ticket directly for a complaint and leave a Chatwoot
+        private note linking to it. No-op when direct ticketing is inactive or the
+        case is not a complaint. Errors are swallowed by ZammadClient (returns
+        None) so the turn never breaks.
+        """
+        if not self._direct_zammad_active() or self._zammad is None:
+            return
+        if not self._is_complaint(reason, urgency):
+            return
+        ticket = await self._zammad.create_ticket(
+            title=title,
+            body=body,
+            customer_email=self._synth_customer_email(session_id),
+            priority=(urgency or "medium"),
+        )
+        if ticket is None:
+            return
+        zoom_url = f"{self._settings.zammad_api_url.rstrip('/')}/#ticket/zoom/{ticket.id}"
+        await self.add_private_note(
+            conv_id, f"Escalated to Zammad ticket #{ticket.number}: {zoom_url}"
+        )
 
     @staticmethod
     def _dimension_labels(
@@ -335,6 +384,10 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 {"team_id": self._settings.chatwoot_agent_team_id},
             )
         await self.add_private_note(conv_id, f"[AI escalation] {title}\n\n{body}")
+        # Direct Zammad ticketing: on a complaint, POST the back-office ticket
+        # ourselves and drop a Chatwoot private note linking to it (instead of
+        # relying on the `escalate` label + external agent-service sync).
+        await self._escalate_to_zammad(conv_id, title, body, session_id, urgency, None)
         # Also persist sla_minutes as a custom attribute — a plain number is
         # cleaner there than encoded in a label, and it survives even if the label
         # is later edited by an agent.
@@ -519,6 +572,18 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         transcript = "\n".join(f"{m.role}: {m.text}" for m in payload.transcript)
         note = f"[AI handoff] {payload.ai_summary}\n\n--- transcript ---\n{transcript}"
         await self.add_private_note(conv_id, note)
+        # Direct Zammad ticketing: on a complaint, POST the back-office ticket
+        # ourselves and drop a Chatwoot private note linking to it (instead of
+        # relying on the `escalate` label + external agent-service sync). Title
+        # comes from the AI summary; body carries the summary + full transcript.
+        await self._escalate_to_zammad(
+            conv_id,
+            payload.ai_summary,
+            note,
+            payload.session_id,
+            payload.urgency,
+            payload.reason,
+        )
         await self._request(
             "POST", f"/conversations/{conv_id}/toggle_priority", {"priority": payload.urgency}
         )

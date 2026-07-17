@@ -82,7 +82,10 @@ class ZammadClient:
         payload = {
             "title": title,
             "group": group or self._settings.zammad_group,
-            "customer": customer_email,
+            # `guess:<email>` tells Zammad to look up the customer by email and
+            # auto-create the user if absent. A bare `customer: <email>` 422s with
+            # "No lookup value found" unless the user already exists.
+            "customer_id": f"guess:{customer_email}",
             "priority_id": _PRIORITY_ID_MAP.get(priority.lower(), 2),
             "state": "new",
             "article": {

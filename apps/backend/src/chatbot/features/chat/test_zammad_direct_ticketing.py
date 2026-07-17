@@ -275,7 +275,7 @@ async def test_zammad_create_ticket_payload_and_returns_number(
     assert captured["headers"]["Authorization"] == "Token token=tok"
     body = captured["json"]
     assert body["group"] == "Users"
-    assert body["customer"] == "sim1@proton-demo.my"
+    assert body["customer_id"] == "guess:sim1@proton-demo.my"
     assert body["priority_id"] == 3  # high
     assert body["state"] == "new"
     assert body["article"]["body"] == "summary + transcript"

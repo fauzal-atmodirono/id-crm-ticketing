@@ -104,10 +104,14 @@ CREATE DATABASE zammad_${TENANT}   OWNER zammad_${TENANT};
 CREATE DATABASE agent_${TENANT}    OWNER agent_${TENANT};
 SQL
 
-# Chatwoot uses pgvector; create the extension as superuser in its DB.
+# Chatwoot needs superuser-only extensions in its DB. It connects as the
+# non-superuser chatwoot_<tenant> role, so it cannot create these itself and
+# its `db:chatwoot_prepare` aborts unless they already exist: pgvector for
+# embeddings, and pg_stat_statements referenced by its schema. (Trusted
+# extensions like pg_trgm/pgcrypto the app can still create on its own.)
 docker compose -p "${INFRA_PROJECT}" -f "${INFRA_FILE}" exec -T postgres \
   psql -v ON_ERROR_STOP=1 -U postgres -d "chatwoot_${TENANT}" \
-  -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+  -c 'CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_stat_statements;'
 
 # --- 3. Render + install the Caddy route, then reload -----------------------
 cat > "caddy/tenants/${TENANT}.caddy" <<CADDY

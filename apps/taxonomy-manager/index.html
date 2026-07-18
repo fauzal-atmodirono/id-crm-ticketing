@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Proton Taxonomy Manager</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f5f5f5;
+      color: #333;
+      font-size: 13px;
+    }
+    .container { padding: 16px; max-width: 960px; margin: 0 auto; }
+    .header {
+      margin-bottom: 16px;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 12px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .header h2 { font-size: 16px; font-weight: 600; color: #222; }
+    .status { font-size: 12px; color: #666; }
+    .toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+    button {
+      padding: 6px 12px;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      background: white;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      transition: all 0.15s;
+    }
+    button:hover { background: #f5f5f5; border-color: #999; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: #1a73e8; color: white; border-color: #1a73e8; }
+    .btn-primary:hover { background: #1557b0; border-color: #1557b0; }
+    .btn-danger { color: #ea4335; border-color: #f2c4c0; }
+    .btn-danger:hover { background: #faf5f4; border-color: #ea4335; }
+    .banner { border-radius: 4px; padding: 12px; margin-bottom: 12px; font-size: 12px; line-height: 1.4; }
+    .banner.error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+    .banner.info { background: #eef4fd; border: 1px solid #cfe0fb; color: #33507a; }
+    .table-wrap {
+      background: white;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    thead th {
+      text-align: left;
+      padding: 10px 12px;
+      background: #fafafa;
+      border-bottom: 1px solid #e0e0e0;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: #666;
+      white-space: nowrap;
+    }
+    tbody td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+    tbody tr:last-child td { border-bottom: none; }
+    .color-swatch {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border-radius: 3px;
+      border: 1px solid rgba(0,0,0,0.1);
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    .label-name { font-weight: 600; color: #222; }
+    .cell-actions { white-space: nowrap; }
+    .cell-actions button { padding: 4px 8px; margin-right: 4px; font-size: 11px; }
+    .loading, .empty-state { text-align: center; padding: 28px; color: #999; font-size: 13px; }
+    #toasts {
+      position: fixed; top: 16px; right: 16px;
+      display: flex; flex-direction: column; gap: 8px; z-index: 1000; max-width: 320px;
+    }
+    .toast {
+      padding: 10px 14px; border-radius: 4px; font-size: 12px; color: white;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15); animation: slidein 0.2s ease-out;
+    }
+    .toast.success { background: #34a853; }
+    .toast.error { background: #ea4335; }
+    @keyframes slidein {
+      from { transform: translateX(20px); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+      display: flex; align-items: flex-start; justify-content: center;
+      padding: 40px 16px; z-index: 900; overflow-y: auto;
+    }
+    .modal-backdrop[hidden] { display: none; }
+    .modal {
+      background: white; border-radius: 8px; padding: 20px;
+      width: 100%; max-width: 480px;
+    }
+    .modal h3 { margin-bottom: 14px; font-size: 14px; font-weight: 600; }
+    .field { margin-bottom: 10px; }
+    .field label {
+      display: block; font-size: 11px; font-weight: 600; color: #555;
+      margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.03em;
+    }
+    .field input[type="text"], .field input[type="color"] {
+      width: 100%; padding: 8px 10px; border: 1px solid #ccc;
+      border-radius: 4px; font-size: 13px; font-family: inherit; color: #333;
+    }
+    .field input[type="color"] { padding: 2px 4px; height: 36px; cursor: pointer; }
+    .field input:focus { outline: none; border-color: #1a73e8; box-shadow: 0 0 0 2px rgba(26,115,232,0.15); }
+    .form-actions { display: flex; gap: 8px; margin-top: 12px; }
+    .group-header td {
+      background: #f9f9f9; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.05em; color: #888;
+      padding: 6px 12px; border-bottom: 1px solid #ececec;
+    }
+  </style>
+</head>
+<body>
+  <div id="toasts"></div>
+
+  <div class="container">
+    <div class="header">
+      <h2>Proton Taxonomy Manager</h2>
+      <div class="status" id="status">Initializing...</div>
+    </div>
+
+    <div id="banner"></div>
+
+    <div class="toolbar">
+      <button id="refresh-btn" type="button">Refresh</button>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Label name</th>
+            <th>Color</th>
+            <th>Description</th>
+            <th>Conv. count</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="label-body">
+          <tr><td colspan="5"><div class="loading">Loading labels...</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Edit modal -->
+  <div class="modal-backdrop" id="edit-modal" hidden>
+    <div class="modal">
+      <h3>Edit Label</h3>
+      <form id="edit-form">
+        <input type="hidden" id="edit-name">
+        <div class="field">
+          <label>Label name</label>
+          <input type="text" id="edit-name-display" disabled style="background:#f5f5f5; color:#888;">
+        </div>
+        <div class="field">
+          <label for="edit-color">Color</label>
+          <input type="color" id="edit-color">
+        </div>
+        <div class="field">
+          <label for="edit-description">Description</label>
+          <input type="text" id="edit-description" placeholder="Human-readable description">
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn-primary" id="edit-submit">Save</button>
+          <button type="button" id="edit-cancel">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    // ------------------------------------------------------------------
+    // Config from URL params — same pattern as chatwoot-faq-admin.
+    // ?chatwootUrl=http://crm.1.2.3.4.nip.io&apiToken=XXX&accountId=1
+    // ------------------------------------------------------------------
+    const params = new URLSearchParams(window.location.search);
+    const chatwootUrl = (params.get('chatwootUrl') || '').replace(/\/+$/, '');
+    const apiToken = params.get('apiToken') || '';
+    const accountId = params.get('accountId') || '1';
+
+    // ------------------------------------------------------------------
+    // Chatwoot Dashboard App postMessage handshake (harmless if not embedded)
+    // ------------------------------------------------------------------
+    function requestContext() {
+      try { window.parent.postMessage('chatwoot-dashboard-app:fetch-info', '*'); } catch (e) {}
+    }
+    window.addEventListener('message', () => { /* context ignored for global admin */ });
+
+    // ------------------------------------------------------------------
+    // HTTP helper — Chatwoot Application API uses api_access_token header
+    // ------------------------------------------------------------------
+    function cwHeaders() {
+      return {
+        'Content-Type': 'application/json',
+        ...(apiToken ? { 'api_access_token': apiToken } : {})
+      };
+    }
+
+    function accountUrl(path) {
+      return `${chatwootUrl}/api/v1/accounts/${accountId}/${path}`;
+    }
+
+    async function cwFetch(path, options) {
+      const res = await fetch(accountUrl(path), { ...options, headers: cwHeaders() });
+      if (!res.ok) {
+        if (res.status === 401) {
+          showBanner('error', 'Unauthorized (401). Check <code>?apiToken=</code> in the URL.');
+          throw new Error('unauthorized');
+        }
+        const text = await res.text().catch(() => res.statusText);
+        throw new Error(`${res.status}: ${text.slice(0, 200)}`);
+      }
+      const text = await res.text();
+      return text ? JSON.parse(text) : {};
+    }
+
+    // ------------------------------------------------------------------
+    // Load + render labels, grouped by prefix
+    // ------------------------------------------------------------------
+    const labelsById = new Map();
+
+    function prefixOf(name) {
+      const m = name.match(/^([a-z]+)_/);
+      return m ? m[1] : 'other';
+    }
+
+    async function loadLabels() {
+      setStatus('Loading...');
+      clearBanner();
+      const tbody = document.getElementById('label-body');
+      tbody.innerHTML = '<tr><td colspan="5"><div class="loading">Loading labels...</div></td></tr>';
+      try {
+        const data = await cwFetch('labels', { method: 'GET' });
+        const labels = Array.isArray(data) ? data : (data.payload || []);
+        labelsById.clear();
+        labels.forEach(l => labelsById.set(l.title, l));
+        renderLabels(labels);
+        setStatus(`${labels.length} label${labels.length !== 1 ? 's' : ''}`);
+      } catch (err) {
+        setStatus('Error');
+        if (err.message !== 'unauthorized') {
+          showBanner('error', 'Failed to load labels: ' + escapeHtml(err.message));
+        }
+        tbody.innerHTML = '<tr><td colspan="5"><div class="empty-state">Could not load labels.</div></td></tr>';
+      }
+    }
+
+    function renderLabels(labels) {
+      const tbody = document.getElementById('label-body');
+      if (!labels.length) {
+        tbody.innerHTML = '<tr><td colspan="5"><div class="empty-state">No labels found. Create labels via the provisioning script or Chatwoot Settings.</div></td></tr>';
+        return;
+      }
+
+      // Group by prefix
+      const groups = {};
+      for (const lbl of labels) {
+        const g = prefixOf(lbl.title);
+        if (!groups[g]) groups[g] = [];
+        groups[g].push(lbl);
+      }
+
+      let html = '';
+      for (const [group, items] of Object.entries(groups)) {
+        html += `<tr class="group-header"><td colspan="5">${escapeHtml(group)}</td></tr>`;
+        for (const lbl of items) {
+          const color = lbl.color || '#cccccc';
+          html += `
+            <tr data-name="${escapeAttr(lbl.title)}">
+              <td class="label-name">
+                <span class="color-swatch" style="background:${escapeAttr(color)}"></span>
+                ${escapeHtml(lbl.title)}
+              </td>
+              <td>${escapeHtml(color)}</td>
+              <td>${escapeHtml(lbl.description || '—')}</td>
+              <td>${escapeHtml(String(lbl.conversations_count ?? '—'))}</td>
+              <td class="cell-actions">
+                <button data-action="edit">Edit</button>
+              </td>
+            </tr>
+          `;
+        }
+      }
+      tbody.innerHTML = html;
+      attachRowHandlers();
+    }
+
+    function attachRowHandlers() {
+      document.querySelectorAll('#label-body tr[data-name]').forEach(row => {
+        const name = row.dataset.name;
+        const editBtn = row.querySelector('button[data-action="edit"]');
+        if (editBtn) editBtn.addEventListener('click', () => openEdit(name));
+      });
+    }
+
+    // ------------------------------------------------------------------
+    // Edit modal
+    // ------------------------------------------------------------------
+    function openEdit(name) {
+      const lbl = labelsById.get(name);
+      if (!lbl) return;
+      document.getElementById('edit-name').value = name;
+      document.getElementById('edit-name-display').value = name;
+      document.getElementById('edit-color').value = lbl.color || '#cccccc';
+      document.getElementById('edit-description').value = lbl.description || '';
+      document.getElementById('edit-modal').hidden = false;
+    }
+
+    function closeEdit() {
+      document.getElementById('edit-modal').hidden = true;
+    }
+
+    document.getElementById('edit-cancel').addEventListener('click', closeEdit);
+    document.getElementById('edit-modal').addEventListener('click', (ev) => {
+      if (ev.target.id === 'edit-modal') closeEdit();
+    });
+
+    document.getElementById('edit-form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const submit = document.getElementById('edit-submit');
+      const name = document.getElementById('edit-name').value;
+      const color = document.getElementById('edit-color').value;
+      const description = document.getElementById('edit-description').value.trim();
+
+      submit.disabled = true;
+      try {
+        await cwFetch(`labels/${encodeURIComponent(name)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ color, description, show_on_sidebar: true })
+        });
+        toast('success', `Label '${name}' updated.`);
+        closeEdit();
+        await loadLabels();
+      } catch (err) {
+        if (err.message !== 'unauthorized') toast('error', 'Update failed: ' + err.message);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+
+    // ------------------------------------------------------------------
+    // UI helpers
+    // ------------------------------------------------------------------
+    function setStatus(text) { document.getElementById('status').textContent = text; }
+    function showBanner(kind, htmlMsg) {
+      document.getElementById('banner').innerHTML = `<div class="banner ${kind}">${htmlMsg}</div>`;
+    }
+    function clearBanner() { document.getElementById('banner').innerHTML = ''; }
+    function toast(kind, msg) {
+      const el = document.createElement('div');
+      el.className = `toast ${kind}`;
+      el.textContent = msg;
+      document.getElementById('toasts').appendChild(el);
+      setTimeout(() => el.remove(), 3500);
+    }
+    function escapeHtml(text) {
+      const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+      return String(text).replace(/[&<>"']/g, m => map[m]);
+    }
+    function escapeAttr(text) { return String(text).replace(/"/g, '&quot;'); }
+
+    // ------------------------------------------------------------------
+    // Boot
+    // ------------------------------------------------------------------
+    document.getElementById('refresh-btn').addEventListener('click', loadLabels);
+    document.addEventListener('DOMContentLoaded', () => {
+      requestContext();
+      if (!chatwootUrl || !apiToken) {
+        showBanner('info',
+          'Missing config. Load this app with: ' +
+          '<code>?chatwootUrl=http://crm.x.x.x.x.nip.io&amp;apiToken=TOKEN&amp;accountId=1</code>');
+      }
+      if (chatwootUrl && apiToken) loadLabels();
+    });
+  </script>
+</body>
+</html>

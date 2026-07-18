@@ -51,7 +51,7 @@ def register_dashboard_app(
             print(f"  [SKIP] Dashboard app '{cfg.title}' already registered.")
             return "unchanged"
 
-        print(f"  [CREATE] Dashboard app '{cfg.title}' -> {cfg.url}")
+        print(f"  [CREATE] Dashboard app '{cfg.title}' -> {cfg.url.split('?')[0]}")
         if not dry_run:
             create_r = client._client.post(
                 client._url("dashboard_apps"),

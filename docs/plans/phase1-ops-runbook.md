@@ -13,6 +13,9 @@ tenant, either via the automated provisioning script or manually in the Chatwoot
 2. Python 3.12 installed.
 3. The tenant is already provisioned (`deploy/tenants/<tenant>.env` exists with
    `CHATWOOT_API_TOKEN` and `CHATWOOT_ACCOUNT_ID` filled in).
+4. `CHATWOOT_URL` is not stored in the tenant env file (it exists only as an internal
+   container hostname in docker-compose). The tenant's public Chatwoot URL must be
+   passed via `--chatwoot-url` (reachable from the VM), e.g. `http://crm.<PUBLIC_IP>.nip.io`.
 
 ### Install dependencies (once per machine)
 
@@ -24,7 +27,7 @@ pip install -r requirements.txt
 ### Dry-run first (see what will change)
 
 ```bash
-python provision_labels.py --tenant default --dry-run
+python provision_labels.py --tenant default --chatwoot-url http://crm.<PUBLIC_IP>.nip.io --dry-run
 ```
 
 Sample output:
@@ -42,14 +45,14 @@ Filters — created: 8, unchanged: 0
 ### Apply
 
 ```bash
-python provision_labels.py --tenant default
+python provision_labels.py --tenant default --chatwoot-url http://crm.<PUBLIC_IP>.nip.io
 ```
 
 ### Replicate to other tenants
 
 ```bash
-python provision_labels.py --tenant proton
-python provision_labels.py --tenant wahchan
+python provision_labels.py --tenant proton --chatwoot-url http://crm.<PUBLIC_IP>.nip.io
+python provision_labels.py --tenant wahchan --chatwoot-url http://crm.<PUBLIC_IP>.nip.io
 ```
 
 ### Adding a new label

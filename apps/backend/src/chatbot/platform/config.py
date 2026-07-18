@@ -262,6 +262,17 @@ class Settings(BaseSettings):
         "http://crm.34-50-103-151.nip.io",
     ]
 
+    # --- Proton assist endpoints -------------------------------------------
+    # Shared secret for /assist/* endpoints — must match PROTON_BACKEND_KEY
+    # in the tenant env. Empty means the endpoint is unconfigured; boot fails
+    # gracefully (endpoints return 503) rather than leaving them open.
+    proton_backend_key: str = ""
+    # Gemini model for summarize/ask; defaults to the same model as the main agent.
+    assist_gemini_model: str = "gemini-2.5-flash"
+    # Chatwoot origins allowed to call /assist/* cross-origin. Add each tenant's
+    # Chatwoot URL (e.g. http://crm.<IP>.nip.io and proton.crm.<IP>.nip.io).
+    assist_cors_origins: list[str] = []
+
     # Settings configurations
     model_config = SettingsConfigDict(
         env_file=".env",

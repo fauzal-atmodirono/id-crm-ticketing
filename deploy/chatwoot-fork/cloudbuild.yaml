@@ -1,0 +1,51 @@
+# Cloud Build pipeline for the Proton-patched Chatwoot image.
+# Trigger manually or on push to the chatwoot-fork/ subtree.
+#
+# Required substitutions (set in the Cloud Build trigger or --substitutions flag):
+#   _REGISTRY   e.g. asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images
+#
+# Run manually:
+#   gcloud builds submit deploy/chatwoot-fork/ \
+#     --config deploy/chatwoot-fork/cloudbuild.yaml \
+#     --substitutions _REGISTRY=asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images
+
+substitutions:
+  _REGISTRY: asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images
+
+steps:
+  - id: read-version
+    name: bash
+    script: |
+      VERSION=$(cat UPSTREAM_VERSION)
+      echo "UPSTREAM_VERSION=${VERSION}" >> /workspace/build.env
+      echo "Building proton-chatwoot:${VERSION}-custom"
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        source /workspace/build.env
+        docker build \
+          --build-arg UPSTREAM_VERSION=$${UPSTREAM_VERSION} \
+          -t $${_REGISTRY}/proton-chatwoot:$${UPSTREAM_VERSION}-custom \
+          .
+    env:
+      - _REGISTRY=${_REGISTRY}
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        source /workspace/build.env
+        docker push $${_REGISTRY}/proton-chatwoot:$${UPSTREAM_VERSION}-custom
+    env:
+      - _REGISTRY=${_REGISTRY}
+
+options:
+  machineType: E2_HIGHCPU_8
+  diskSizeGb: 50
+  logging: CLOUD_LOGGING_ONLY

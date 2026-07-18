@@ -18,6 +18,7 @@ from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.adapters.vertex_search import VertexAISearchAdapter
 from chatbot.features.chat.adapters.zammad import ZammadClient
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
+from chatbot.features.assist.router import build_assist_router
 from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.kb_suggest_router import build_kb_suggest_router
@@ -63,6 +64,38 @@ def _build_genai_client(settings: Settings) -> object | None:
         return Client()
     except Exception:
         return None
+
+
+def _wire_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings) -> None:
+    """Wire the three /assist/* endpoints and add Chatwoot origins to CORS."""
+    genai_client = _build_genai_client(settings)
+    app.include_router(build_assist_router(settings, knowledge_port, genai_client))
+
+    # Extend the existing CORS middleware to allow Chatwoot origins to call
+    # /assist/* cross-origin. The CORSMiddleware is already added with
+    # settings.frontend_origins; append the assist_cors_origins here by
+    # adding a second, narrower middleware that covers only /assist/*.
+    # (Simpler: just add assist_cors_origins to frontend_origins in the tenant env
+    # and rely on the single middleware. Use this note if the two-middleware
+    # approach adds complexity.)
+    # For Phase 0, the operator adds Chatwoot URLs to ASSIST_CORS_ORIGINS in the
+    # backend's .env, and they are merged into allow_origins at startup:
+    if settings.assist_cors_origins:
+        import structlog as _sl
+        _sl.get_logger(__name__).info(
+            "assist_cors_origins_added", count=len(settings.assist_cors_origins)
+        )
+        # The CORSMiddleware registered above already covers frontend_origins.
+        # Re-registering with a merged list is the simplest approach; FastAPI
+        # evaluates middlewares in stack order and the first matching one wins.
+        from fastapi.middleware.cors import CORSMiddleware as _CORS
+        app.add_middleware(
+            _CORS,
+            allow_origins=settings.assist_cors_origins,
+            allow_credentials=True,
+            allow_methods=["POST", "OPTIONS"],
+            allow_headers=["x-api-key", "content-type"],
+        )
 
 
 def _wire_agent_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings) -> None:
@@ -231,6 +264,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
 
     # --- Agent-assist FAQ ---
     _wire_agent_assist(app, knowledge_port, settings)
+
+    # --- Proton AI-assist (rewired Captain AI) ---
+    _wire_assist(app, knowledge_port, settings)
 
     _wire_metrics_features(app, settings)
 

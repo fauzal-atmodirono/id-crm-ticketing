@@ -26,7 +26,7 @@ index 0000000..186d0b8
 +  return response.json();
 +}
 diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
-index 15a007a..e1d8390 100644
+index 15a007a..3a0f3aa 100644
 --- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
 +++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
 @@ -10,6 +10,7 @@ import { useSidebarKeyboardShortcuts } from './useSidebarKeyboardShortcuts';
@@ -37,18 +37,17 @@ index 15a007a..e1d8390 100644
  
  import Button from 'dashboard/components-next/button/Button.vue';
  import SidebarGroup from './SidebarGroup.vue';
-@@ -61,6 +62,10 @@ const isFeatureEnabledonAccount = useMapGetter(
+@@ -61,6 +62,9 @@ const isFeatureEnabledonAccount = useMapGetter(
    'accounts/isFeatureEnabledonAccount'
  );
  
 +const { hasFeature: protonHasFeature } = useProtonConfig();
 +const protonAiAssistEnabled = computed(() => protonHasFeature('ai_assist'));
-+const protonNavMenuEnabled = computed(() => protonHasFeature('nav_menu'));
 +
  const hasAdvancedAssignment = computed(() => {
    return isFeatureEnabledonAccount.value(
      accountId.value,
-@@ -434,7 +439,7 @@ const menuItems = computed(() => {
+@@ -434,7 +438,7 @@ const menuItems = computed(() => {
          },
        ],
      },
@@ -57,7 +56,7 @@ index 15a007a..e1d8390 100644
        name: 'Captain',
        icon: 'i-woot-captain',
        label: t('SIDEBAR.CAPTAIN'),
-@@ -504,7 +509,7 @@ const menuItems = computed(() => {
+@@ -504,7 +508,7 @@ const menuItems = computed(() => {
            }),
          },
        ],
@@ -66,80 +65,112 @@ index 15a007a..e1d8390 100644
      {
        name: 'Contacts',
        label: t('SIDEBAR.CONTACTS'),
-@@ -843,6 +848,32 @@ const menuItems = computed(() => {
-         },
-       ],
-     },
-+    ...(protonNavMenuEnabled.value ? [
-+      {
-+        name: 'Proton Reports',
-+        label: t('PROTON_NAV.REPORTS'),
-+        icon: 'i-lucide-chart-bar',
-+        to: { name: 'proton-app', params: { appName: 'reports' } },
-+      },
-+      {
-+        name: 'Proton FAQ Admin',
-+        label: t('PROTON_NAV.FAQ_ADMIN'),
-+        icon: 'i-lucide-file-question',
-+        to: { name: 'proton-app', params: { appName: 'faq-admin' } },
-+      },
-+      {
-+        name: 'Proton Agents',
-+        label: t('PROTON_NAV.AGENTS'),
-+        icon: 'i-lucide-users',
-+        to: { name: 'proton-app', params: { appName: 'agents' } },
-+      },
-+      {
-+        name: 'Proton Cases',
-+        label: t('PROTON_NAV.CASES'),
-+        icon: 'i-lucide-ticket',
-+        to: { name: 'proton-app', params: { appName: 'cases' } },
-+      },
-+    ] : []),
-   ];
- });
- </script>
-diff --git a/app/javascript/dashboard/composables/useCopilotReply.js b/app/javascript/dashboard/composables/useCopilotReply.js
-index 42f506b..b8f5564 100644
---- a/app/javascript/dashboard/composables/useCopilotReply.js
-+++ b/app/javascript/dashboard/composables/useCopilotReply.js
-@@ -7,6 +7,8 @@ import {
-   CAPTAIN_ERROR_TYPES,
-   CAPTAIN_GENERATION_FAILURE_REASONS,
- } from 'dashboard/composables/captain/constants';
+diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+index bf45cdc..0140167 100644
+--- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
++++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+@@ -1,5 +1,5 @@
+ <script>
+-import { ref } from 'vue';
++import { ref, computed } from 'vue';
+ import { useKeyboardEvents } from 'dashboard/composables/useKeyboardEvents';
+ import { useCaptain } from 'dashboard/composables/useCaptain';
+ import { useTrack } from 'dashboard/composables';
+@@ -9,6 +9,15 @@ import { CAPTAIN_EVENTS } from 'dashboard/helper/AnalyticsHelper/events';
+ import NextButton from 'dashboard/components-next/button/Button.vue';
+ import EditorModeToggle from './EditorModeToggle.vue';
+ import CopilotMenuBar from './CopilotMenuBar.vue';
 +import { useProtonConfig } from 'composables/useProtonConfig';
 +import { callAssist } from 'dashboard/api/protonAssist';
++
++// Actions intercepted by Proton backend when ai_assist feature is enabled
++const PROTON_ACTIONS = {
++  reply_suggestion: 'suggest',
++  summarize: 'summarize',
++  ask_copilot: 'ask',
++};
  
- // Actions that map to REWRITE events (with operation attribute)
- const REWRITE_ACTIONS = [
-@@ -162,6 +164,30 @@ export function useCopilotReply() {
-       return;
-     }
+ export default {
+   name: 'ReplyTopPanel',
+@@ -58,7 +67,7 @@ export default {
+       default: false,
+     },
+   },
+-  emits: ['setReplyMode', 'toggleEditorSize', 'executeCopilotAction'],
++  emits: ['setReplyMode', 'toggleEditorSize', 'executeCopilotAction', 'protonAssistResult'],
+   setup(props, { emit }) {
+     const setReplyMode = mode => {
+       emit('setReplyMode', mode);
+@@ -79,17 +88,39 @@ export default {
+     };
  
-+    // Proton AI assist intercept
-+    const proton = useProtonConfig();
-+    if (proton.hasFeature('ai_assist') && proton.backendUrl) {
-+      reset(false);
-+      isGenerating.value = true;
-+      const actionMap = { reply_suggestion: 'suggest', summarize: 'summarize', ask_copilot: 'ask' };
-+      const protonAction = actionMap[action];
-+      if (protonAction) {
+     const { captainTasksEnabled } = useCaptain();
++    const { hasFeature } = useProtonConfig();
++    const protonEnabled = computed(() => hasFeature('ai_assist'));
++    const showAiButton = computed(
++      () => captainTasksEnabled.value || protonEnabled.value
++    );
++
+     const showCopilotMenu = ref(false);
+     const copilotToggleRef = ref(null);
+ 
+-    const handleCopilotAction = (actionKey, data) => {
+-      emit('executeCopilotAction', actionKey, data || props.editorContent);
++    const handleCopilotAction = async (actionKey, data) => {
+       showCopilotMenu.value = false;
++
++      if (protonEnabled.value && PROTON_ACTIONS[actionKey]) {
++        const protonAction = PROTON_ACTIONS[actionKey];
++        const payload = { conversation_id: props.conversationId };
++        if (actionKey === 'ask_copilot' && data) payload.question = data;
 +        try {
-+          const conversationIdValue = conversationId.value;
-+          const payload = protonAction === 'ask'
-+            ? { conversation_id: conversationIdValue, question: data }
-+            : { conversation_id: conversationIdValue };
 +          const result = await callAssist(protonAction, payload);
-+          generatedContent.value = result.draft || result.summary || result.answer || '';
-+          if (generatedContent.value) showEditor.value = true;
++          const text = result.draft || result.summary || result.answer || '';
++          if (text) emit('protonAssistResult', text);
 +        } catch (err) {
-+          console.error('[proton-assist] failed', err);
++          // eslint-disable-next-line no-console
++          console.error('[proton-assist]', actionKey, 'failed', err);
 +        }
-+        isGenerating.value = false;
 +        return;
 +      }
-+    }
 +
-     // Reset without tracking dismiss (starting new action)
-     reset(false);
-     const requestController = new AbortController();
++      emit('executeCopilotAction', actionKey, data || props.editorContent);
+     };
+ 
+     const toggleCopilotMenu = () => {
+       const isOpening = !showCopilotMenu.value;
+-      if (isOpening) {
++      if (isOpening && captainTasksEnabled.value) {
+         useTrack(CAPTAIN_EVENTS.EDITOR_AI_MENU_OPENED, {
+           conversationId: props.conversationId,
+           entryPoint: 'top_panel',
+@@ -120,6 +151,8 @@ export default {
+       handleNoteClick,
+       REPLY_EDITOR_MODES,
+       captainTasksEnabled,
++      protonEnabled,
++      showAiButton,
+       handleCopilotAction,
+       showCopilotMenu,
+       copilotToggleRef,
+@@ -167,7 +200,7 @@ export default {
+         </span>
+       </div>
+     </div>
+-    <div v-if="captainTasksEnabled" class="flex items-center gap-2">
++    <div v-if="showAiButton" class="flex items-center gap-2">
+       <div class="relative">
+         <NextButton
+           ref="copilotToggleRef"
+diff --git a/app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue b/app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue
+index 6af876c..8af042b 100644
+--- a/app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue
++++ b/app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue
+@@ -1263,6 +1263,7 @@ export default {
+       @toggle-editor-size="toggleEditorSize"
+       @toggle-copilot="copilot.toggleEditor"
+       @execute-copilot-action="executeCopilotAction"
++      @proton-assist-result="message = $event"
+     />
+     <ArticleSearchPopover
+       v-if="showArticleSearchPopover && connectedPortalSlug"

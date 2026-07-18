@@ -1,0 +1,46 @@
+# Local development infrastructure for Chatwoot fork development.
+# Provides Postgres and Redis for the Chatwoot dev instance.
+#
+# Usage:
+#   docker compose -f deploy/chatwoot-fork/dev-infra.yml up -d
+#   # Then configure Chatwoot .env with:
+#   # DATABASE_URL=postgres://postgres:password@localhost:5432/chatwoot_dev
+#   # REDIS_URL=redis://:password@localhost:6379
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: chatwoot_dev
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass password
+    volumes:
+      - redis_dev_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  postgres_dev_data:
+  redis_dev_data:

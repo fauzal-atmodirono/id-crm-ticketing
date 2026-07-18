@@ -1,0 +1,33 @@
+diff --git a/app/javascript/dashboard/composables/useProtonConfig.js b/app/javascript/dashboard/composables/useProtonConfig.js
+new file mode 100644
+index 0000000..8c72f82
+--- /dev/null
++++ b/app/javascript/dashboard/composables/useProtonConfig.js
+@@ -0,0 +1,9 @@
++export function useProtonConfig() {
++  const cfg = window.__PROTON_CONFIG__ || { backendUrl: '', backendKey: '', features: [] };
++  return {
++    backendUrl: cfg.backendUrl,
++    backendKey: cfg.backendKey,
++    features: Array.isArray(cfg.features) ? cfg.features : [],
++    hasFeature: (name) => Array.isArray(cfg.features) && cfg.features.includes(name),
++  };
++}
+diff --git a/app/views/layouts/vueapp.html.erb b/app/views/layouts/vueapp.html.erb
+index 954be9c..ad5d11f 100644
+--- a/app/views/layouts/vueapp.html.erb
++++ b/app/views/layouts/vueapp.html.erb
+@@ -64,6 +64,13 @@
+       }
+       window.errorLoggingConfig = '<%= ENV.fetch('SENTRY_FRONTEND_DSN', '') || ENV.fetch('SENTRY_DSN', '') %>'
+     </script>
++    <script>
++      window.__PROTON_CONFIG__ = {
++        backendUrl: "<%= ENV.fetch('PROTON_BACKEND_URL', '') %>",
++        backendKey: "<%= ENV.fetch('PROTON_BACKEND_KEY', '') %>",
++        features: "<%= ENV.fetch('PROTON_FEATURES', '') %>".split(',').filter(Boolean)
++      };
++    </script>
+     <% if @global_config['CLOUD_ANALYTICS_TOKEN'].present? %>
+     <script>
+       window.analyticsConfig = {

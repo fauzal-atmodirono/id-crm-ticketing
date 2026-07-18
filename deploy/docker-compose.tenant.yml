@@ -29,6 +29,9 @@ x-chatwoot-env: &chatwoot-env
   ENABLE_ACCOUNT_SIGNUP: "false"
   WEB_CONCURRENCY: 1
   RAILS_MAX_THREADS: 5
+  PROTON_BACKEND_URL: ${PROTON_BACKEND_URL:-}
+  PROTON_BACKEND_KEY: ${PROTON_BACKEND_KEY:-}
+  PROTON_FEATURES: ${PROTON_FEATURES:-}
 
 x-zammad-env: &zammad-env
   POSTGRESQL_DB_CREATE: "false"
@@ -86,7 +89,7 @@ services:
           - ${TENANT}-memcached
 
   chatwoot-rails:
-    image: chatwoot/chatwoot:v4.15.1
+    image: ${CHATWOOT_IMAGE:-chatwoot/chatwoot:v4.15.1}
     container_name: ${TENANT}-chatwoot-rails
     restart: unless-stopped
     mem_limit: 1500m
@@ -111,7 +114,7 @@ services:
       start_period: 60s
 
   chatwoot-sidekiq:
-    image: chatwoot/chatwoot:v4.15.1
+    image: ${CHATWOOT_IMAGE:-chatwoot/chatwoot:v4.15.1}
     container_name: ${TENANT}-chatwoot-sidekiq
     restart: unless-stopped
     mem_limit: 1024m

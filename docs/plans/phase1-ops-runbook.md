@@ -155,3 +155,34 @@ After provisioning (either method):
 - **Multi-tenant:** labels and saved views are per-account (per-tenant). Running
   `provision_labels.py --tenant proton` creates the taxonomy in the `proton` tenant;
   it does not touch the `default` tenant.
+
+---
+
+## Serving the Taxonomy Manager app (requires Phase 0)
+
+The `apps/taxonomy-manager/index.html` file must be served by Caddy.
+Add the following block to the tenant's Caddy snippet at
+`deploy/caddy/tenants/<tenant>.caddy`, inside the `agent.<ip>.nip.io` vhost block,
+**before** the reverse_proxy directive (Caddy matches first-matching):
+
+```caddyfile
+handle /apps/taxonomy-manager* {
+    root * /opt/id-crm-ticketing/apps/taxonomy-manager
+    file_server
+}
+```
+
+Then reload Caddy:
+```bash
+docker exec platform-infra-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+```
+
+Register the app as a Chatwoot dashboard app:
+```bash
+python chatwoot-config/register_taxonomy_app.py \
+    --tenant default \
+    --app-url http://agent.<PUBLIC_IP>.nip.io/apps/taxonomy-manager
+```
+
+The app will appear in Chatwoot under **Settings → Integrations → Dashboard Apps**
+and can be pinned to conversations via the right-panel "+" button.

@@ -1,0 +1,97 @@
+# Saved filter views — Phase 1
+# These are created as team-wide ("account"-scoped) saved views in Chatwoot.
+# Chatwoot filter operators: equal_to, not_equal_to, contains, does_not_contain,
+#   is_present, is_not_present, is_greater_than, is_less_than, days_before
+# attribute_key for labels: "labels"  (values: list of label names)
+# attribute_key for status: "status"  (values: "open","resolved","pending","snoozed","all")
+
+filters:
+  - name: "All Complaints"
+    filter_type: account
+    query:
+      payload:
+        - attribute_key: labels
+          filter_operator: contains
+          query_operator: null
+          values:
+            - category_complaint
+
+  - name: "All Inquiries"
+    filter_type: account
+    query:
+      payload:
+        - attribute_key: labels
+          filter_operator: contains
+          query_operator: null
+          values:
+            - category_inquiry
+
+  - name: "SLA Breach — Open"
+    filter_type: account
+    query:
+      payload:
+        - attribute_key: labels
+          filter_operator: contains
+          query_operator: AND
+          values:
+            - sla_breach
+        - attribute_key: status
+          filter_operator: equal_to
+          query_operator: null
+          values:
+            - open
+
+  - name: "Escalated — Open"
+    filter_type: account
+    query:
+      payload:
+        - attribute_key: labels
+          filter_operator: contains
+          query_operator: AND
+          values:
+            - escalate
+        - attribute_key: status
+          filter_operator: equal_to
+          query_operator: null
+          values:
+            - open
+
+  - name: "Division: Apps"
+    filter_type: account
+    query:
+      payload:
+        - attribute_key: labels
+          filter_operator: contains
+          query_operator: null
+          values:
+            - division_apps
+
+  - name: "Division: Aftersales"
+    filter_type: account
+    query:
+      payload:
+        - attribute_key: labels
+          filter_operator: contains
+          query_operator: null
+          values:
+            - division_aftersales
+
+  - name: "Division: Sales"
+    filter_type: account
+    query:
+      payload:
+        - attribute_key: labels
+          filter_operator: contains
+          query_operator: null
+          values:
+            - division_sales
+
+  - name: "Division: Charging"
+    filter_type: account
+    query:
+      payload:
+        - attribute_key: labels
+          filter_operator: contains
+          query_operator: null
+          values:
+            - division_charging

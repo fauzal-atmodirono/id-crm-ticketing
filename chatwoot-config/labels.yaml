@@ -1,0 +1,142 @@
+# Chatwoot label taxonomy — Phase 1
+# Convention: labels are lowercase with underscores; the AI emitter uses these
+# exact names. Do not rename existing labels — add new ones; the script is additive.
+#
+# Fields per label:
+#   name:        Chatwoot label identifier (snake_case, no spaces)
+#   color:       6-digit hex (e.g. "#1F93FF") — Chatwoot stores with leading #
+#   description: free text shown in Chatwoot label settings
+#   group:       logical grouping for the runbook / taxonomy manager UI
+
+labels:
+  # --- Category (top-level complaint type) ---
+  - name: category_complaint
+    color: "#E74C3C"
+    description: "AI-classified: general complaint"
+    group: category
+
+  - name: category_inquiry
+    color: "#3498DB"
+    description: "AI-classified: general inquiry"
+    group: category
+
+  - name: category_service_request
+    color: "#2ECC71"
+    description: "AI-classified: service request"
+    group: category
+
+  - name: category_feedback
+    color: "#9B59B6"
+    description: "AI-classified: customer feedback"
+    group: category
+
+  # --- Sub-category ---
+  - name: subcat_billing
+    color: "#E67E22"
+    description: "AI sub-category: billing issue"
+    group: subcat
+
+  - name: subcat_technical
+    color: "#1ABC9C"
+    description: "AI sub-category: technical issue"
+    group: subcat
+
+  - name: subcat_delivery
+    color: "#F39C12"
+    description: "AI sub-category: delivery / logistics"
+    group: subcat
+
+  - name: subcat_warranty
+    color: "#D35400"
+    description: "AI sub-category: warranty claim"
+    group: subcat
+
+  - name: subcat_pricing
+    color: "#C0392B"
+    description: "AI sub-category: pricing question"
+    group: subcat
+
+  # --- Division ---
+  - name: division_apps
+    color: "#2980B9"
+    description: "AI division: Apps (digital)"
+    group: division
+
+  - name: division_sales
+    color: "#27AE60"
+    description: "AI division: Sales"
+    group: division
+
+  - name: division_aftersales
+    color: "#8E44AD"
+    description: "AI division: Aftersales / Service"
+    group: division
+
+  - name: division_charging
+    color: "#16A085"
+    description: "AI division: Charging infrastructure"
+    group: division
+
+  # --- Department ---
+  - name: dept_cs
+    color: "#2C3E50"
+    description: "AI dept: Customer Service"
+    group: dept
+
+  - name: dept_technical
+    color: "#7F8C8D"
+    description: "AI dept: Technical Support"
+    group: dept
+
+  - name: dept_sales
+    color: "#BDC3C7"
+    description: "AI dept: Sales"
+    group: dept
+
+  - name: dept_aftersales
+    color: "#ECF0F1"
+    description: "AI dept: Aftersales / Workshop"
+    group: dept
+
+  # --- SLA markers (written by SLA engine; do not remove) ---
+  - name: sla_urgent
+    color: "#E74C3C"
+    description: "SLA: urgent priority (< 2h response target)"
+    group: sla
+
+  - name: sla_high
+    color: "#E67E22"
+    description: "SLA: high priority"
+    group: sla
+
+  - name: sla_normal
+    color: "#3498DB"
+    description: "SLA: normal priority"
+    group: sla
+
+  - name: sla_breach
+    color: "#922B21"
+    description: "SLA: breach — response time exceeded"
+    group: sla
+
+  # --- PIC markers (written by escalation engine) ---
+  - name: pic_assigned
+    color: "#117A65"
+    description: "PIC has been assigned to this conversation"
+    group: pic
+
+  - name: pic_notified
+    color: "#1A5276"
+    description: "PIC has been notified (WA/email sent)"
+    group: pic
+
+  # --- Escalation state ---
+  - name: escalate
+    color: "#922B21"
+    description: "Conversation has been escalated to Zammad ticket"
+    group: escalation
+
+  - name: escalated_l2
+    color: "#6E2F1A"
+    description: "Escalated to Level-2 responsible person"
+    group: escalation

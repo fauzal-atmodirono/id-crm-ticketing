@@ -1,0 +1,101 @@
+diff --git a/app/javascript/dashboard/i18n/locale/en/settings.json b/app/javascript/dashboard/i18n/locale/en/settings.json
+index 5e25436..8d54725 100644
+--- a/app/javascript/dashboard/i18n/locale/en/settings.json
++++ b/app/javascript/dashboard/i18n/locale/en/settings.json
+@@ -410,6 +410,12 @@
+     "CAPTAIN_AI": "Captain",
+     "CONVERSATION_WORKFLOW": "Conversation Workflow"
+   },
++  "PROTON_NAV": {
++    "REPORTS": "Reports",
++    "FAQ_ADMIN": "FAQ Admin",
++    "AGENTS": "Agents",
++    "CASES": "Cases"
++  },
+   "CAPTAIN_SETTINGS": {
+     "TITLE": "Captain Settings",
+     "DESCRIPTION": "Configure your AI models and features for Captain. Captain follows a credit based billing, you will be charged credits for every action Captain takes based on the model selected.",
+diff --git a/app/javascript/dashboard/i18n/locale/id/settings.json b/app/javascript/dashboard/i18n/locale/id/settings.json
+index 3a04f30..7e64a40 100644
+--- a/app/javascript/dashboard/i18n/locale/id/settings.json
++++ b/app/javascript/dashboard/i18n/locale/id/settings.json
+@@ -384,6 +384,12 @@
+     "CAPTAIN_AI": "Captain",
+     "CONVERSATION_WORKFLOW": "Conversation Workflow"
+   },
++  "PROTON_NAV": {
++    "REPORTS": "Laporan",
++    "FAQ_ADMIN": "Admin FAQ",
++    "AGENTS": "Agen",
++    "CASES": "Kasus"
++  },
+   "CAPTAIN_SETTINGS": {
+     "TITLE": "Captain Settings",
+     "DESCRIPTION": "Configure your AI models and features for Captain. Captain follows a credit based billing, you will be charged credits for every action Captain takes based on the model selected.",
+diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+index 87bae7d..f3a41ba 100644
+--- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+@@ -21,6 +21,12 @@ export default {
+       component: AppContainer,
+       children: [
+         ...captainRoutes,
++        {
++          path: 'proton/:appName',
++          name: 'proton-app',
++          component: () => import('../../views/ProtonAppHost.vue'),
++          meta: { requiresAuth: true },
++        },
+         ...inboxRoutes,
+         ...conversation.routes,
+         ...settings.routes,
+diff --git a/app/javascript/dashboard/views/ProtonAppHost.vue b/app/javascript/dashboard/views/ProtonAppHost.vue
+new file mode 100644
+index 0000000..5aece94
+--- /dev/null
++++ b/app/javascript/dashboard/views/ProtonAppHost.vue
+@@ -0,0 +1,44 @@
++<template>
++  <div class="proton-app-host" style="width:100%;height:100%;display:flex;flex-direction:column;">
++    <iframe
++      ref="frame"
++      :src="iframeSrc"
++      allow="same-origin"
++      style="width:100%;flex:1;border:none;"
++      @load="postAuthMessage"
++    />
++  </div>
++</template>
++
++<script setup>
++import { computed, ref } from 'vue';
++import { useRoute } from 'vue-router';
++import { useMapGetter } from 'dashboard/composables/store';
++import { useProtonConfig } from 'composables/useProtonConfig';
++
++const route = useRoute();
++const frame = ref(null);
++const { backendUrl } = useProtonConfig();
++
++const accountId = useMapGetter('getCurrentAccountId');
++const currentUser = useMapGetter('getCurrentUser');
++const authToken = computed(() => currentUser.value?.access_token ?? '');
++const locale = computed(() => currentUser.value?.locale ?? 'en');
++
++const iframeSrc = computed(() => {
++  const app = route.params.appName;
++  const params = new URLSearchParams({
++    account_id: accountId.value,
++    locale: locale.value,
++  });
++  return `${backendUrl}/apps/${app}?${params}`;
++});
++
++function postAuthMessage() {
++  if (!backendUrl) return;
++  frame.value?.contentWindow?.postMessage(
++    { type: 'PROTON_AUTH', accountId: accountId.value, token: authToken.value },
++    backendUrl,
++  );
++}
++</script>

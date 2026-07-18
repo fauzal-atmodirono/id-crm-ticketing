@@ -1,0 +1,145 @@
+diff --git a/app/javascript/dashboard/api/protonAssist.js b/app/javascript/dashboard/api/protonAssist.js
+new file mode 100644
+index 0000000..186d0b8
+--- /dev/null
++++ b/app/javascript/dashboard/api/protonAssist.js
+@@ -0,0 +1,21 @@
++import { useProtonConfig } from '../../../composables/useProtonConfig';
++
++export async function callAssist(action, payload) {
++  const { backendUrl, backendKey } = useProtonConfig();
++  if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
++
++  const response = await fetch(`${backendUrl}/assist/${action}`, {
++    method: 'POST',
++    headers: {
++      'Content-Type': 'application/json',
++      'x-api-key': backendKey,
++    },
++    body: JSON.stringify(payload),
++  });
++
++  if (!response.ok) {
++    const text = await response.text();
++    throw new Error(`assist/${action} failed: ${response.status} ${text}`);
++  }
++  return response.json();
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 15a007a..e1d8390 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -10,6 +10,7 @@ import { useSidebarKeyboardShortcuts } from './useSidebarKeyboardShortcuts';
+ import { vOnClickOutside } from '@vueuse/components';
+ import { FEATURE_FLAGS } from 'dashboard/featureFlags';
+ import { useWindowSize, useEventListener } from '@vueuse/core';
++import { useProtonConfig } from 'composables/useProtonConfig';
+ 
+ import Button from 'dashboard/components-next/button/Button.vue';
+ import SidebarGroup from './SidebarGroup.vue';
+@@ -61,6 +62,10 @@ const isFeatureEnabledonAccount = useMapGetter(
+   'accounts/isFeatureEnabledonAccount'
+ );
+ 
++const { hasFeature: protonHasFeature } = useProtonConfig();
++const protonAiAssistEnabled = computed(() => protonHasFeature('ai_assist'));
++const protonNavMenuEnabled = computed(() => protonHasFeature('nav_menu'));
++
+ const hasAdvancedAssignment = computed(() => {
+   return isFeatureEnabledonAccount.value(
+     accountId.value,
+@@ -434,7 +439,7 @@ const menuItems = computed(() => {
+         },
+       ],
+     },
+-    {
++    ...(!protonAiAssistEnabled.value ? [{
+       name: 'Captain',
+       icon: 'i-woot-captain',
+       label: t('SIDEBAR.CAPTAIN'),
+@@ -504,7 +509,7 @@ const menuItems = computed(() => {
+           }),
+         },
+       ],
+-    },
++    }] : []),
+     {
+       name: 'Contacts',
+       label: t('SIDEBAR.CONTACTS'),
+@@ -843,6 +848,32 @@ const menuItems = computed(() => {
+         },
+       ],
+     },
++    ...(protonNavMenuEnabled.value ? [
++      {
++        name: 'Proton Reports',
++        label: t('PROTON_NAV.REPORTS'),
++        icon: 'i-lucide-chart-bar',
++        to: { name: 'proton-app', params: { appName: 'reports' } },
++      },
++      {
++        name: 'Proton FAQ Admin',
++        label: t('PROTON_NAV.FAQ_ADMIN'),
++        icon: 'i-lucide-file-question',
++        to: { name: 'proton-app', params: { appName: 'faq-admin' } },
++      },
++      {
++        name: 'Proton Agents',
++        label: t('PROTON_NAV.AGENTS'),
++        icon: 'i-lucide-users',
++        to: { name: 'proton-app', params: { appName: 'agents' } },
++      },
++      {
++        name: 'Proton Cases',
++        label: t('PROTON_NAV.CASES'),
++        icon: 'i-lucide-ticket',
++        to: { name: 'proton-app', params: { appName: 'cases' } },
++      },
++    ] : []),
+   ];
+ });
+ </script>
+diff --git a/app/javascript/dashboard/composables/useCopilotReply.js b/app/javascript/dashboard/composables/useCopilotReply.js
+index 42f506b..b8f5564 100644
+--- a/app/javascript/dashboard/composables/useCopilotReply.js
++++ b/app/javascript/dashboard/composables/useCopilotReply.js
+@@ -7,6 +7,8 @@ import {
+   CAPTAIN_ERROR_TYPES,
+   CAPTAIN_GENERATION_FAILURE_REASONS,
+ } from 'dashboard/composables/captain/constants';
++import { useProtonConfig } from 'composables/useProtonConfig';
++import { callAssist } from 'dashboard/api/protonAssist';
+ 
+ // Actions that map to REWRITE events (with operation attribute)
+ const REWRITE_ACTIONS = [
+@@ -162,6 +164,30 @@ export function useCopilotReply() {
+       return;
+     }
+ 
++    // Proton AI assist intercept
++    const proton = useProtonConfig();
++    if (proton.hasFeature('ai_assist') && proton.backendUrl) {
++      reset(false);
++      isGenerating.value = true;
++      const actionMap = { reply_suggestion: 'suggest', summarize: 'summarize', ask_copilot: 'ask' };
++      const protonAction = actionMap[action];
++      if (protonAction) {
++        try {
++          const conversationIdValue = conversationId.value;
++          const payload = protonAction === 'ask'
++            ? { conversation_id: conversationIdValue, question: data }
++            : { conversation_id: conversationIdValue };
++          const result = await callAssist(protonAction, payload);
++          generatedContent.value = result.draft || result.summary || result.answer || '';
++          if (generatedContent.value) showEditor.value = true;
++        } catch (err) {
++          console.error('[proton-assist] failed', err);
++        }
++        isGenerating.value = false;
++        return;
++      }
++    }
++
+     // Reset without tracking dismiss (starting new action)
+     reset(false);
+     const requestController = new AbortController();

@@ -91,3 +91,12 @@ async def test_disabled_short_circuits() -> None:
     assert await client.get_transcript("42") == []
     assert await client.get_contact("42") == {}
     assert await client.list_contact_conversations("42") == []
+
+
+@respx.mock
+async def test_http_failure_returns_empty() -> None:
+    respx.get(f"{_base()}/conversations/42").mock(side_effect=httpx.ConnectError("boom"))
+    client = ChatwootContextClient(_settings())
+    assert await client.get_transcript("42") == []
+    assert await client.get_contact("42") == {}
+    assert await client.list_contact_conversations("42") == []

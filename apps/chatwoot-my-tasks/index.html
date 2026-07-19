@@ -217,7 +217,8 @@
         warningThresholdMinutes = data.warningThresholdMinutes || 60;
         renderTable(data.tasks || []);
         const count = (data.tasks || []).length;
-        setStatus(`${count} open task${count === 1 ? '' : 's'} · updated ${fmtTime(new Date(data.generatedAt))}`);
+        const generatedAt = data.generatedAt ? new Date(data.generatedAt) : new Date();
+        setStatus(`${count} open task${count === 1 ? '' : 's'} · updated ${fmtTime(generatedAt)}`);
         checkNotifications(data.tasks || []);
       } catch (err) {
         setStatus('Error');
@@ -288,7 +289,7 @@
             : `<span class="badge badge-ok">OK</span>`;
 
         const chatwootBase = backendBaseUrl.replace(/\/api.*/, '');
-        const convLink = `${chatwootBase}/app/conversations/${escapeAttr(t.convId)}`;
+        const convLink = `${escapeAttr(chatwootBase)}/app/conversations/${escapeAttr(t.convId)}`;
 
         return `
           <tr class="${rowClass}">
@@ -378,7 +379,7 @@
     document.getElementById('notify-btn').addEventListener('click', requestNotificationPermission);
 
     // Auto-hide the notify button if already granted
-    if (Notification && Notification.permission === 'granted') {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
       document.getElementById('notify-btn').textContent = 'Notifications on';
       document.getElementById('notify-btn').disabled = true;
     }

@@ -284,6 +284,18 @@ class Settings(BaseSettings):
     # Set e.g. ["api.acme.com", "hooks.slack.com"] to restrict outbound calls.
     custom_tool_allowed_hosts: list[str] = []
 
+    # Phase 2 — dept→PIC mapping. JSON object keyed by department slug
+    # (matches the dept_<x> label key, e.g. "apps", "sales"). Each value:
+    # {pic_name, pic_email, pic_whatsapp, zammad_group, chatwoot_team_id?}.
+    # Empty string disables PIC routing (no lookup attempted).
+    pic_map_json: str = ""
+
+    # Phase 2 — escalation notifications
+    escalation_email_enabled: bool = False
+    escalation_cc_pic: bool = True
+    escalation_level2_whatsapp: str = ""   # E.164, e.g. "+60112345678"
+    escalation_tier2_hours: float = 4.0   # hours after first breach before level-2 alert
+
     # Settings configurations
     model_config = SettingsConfigDict(
         env_file=".env",

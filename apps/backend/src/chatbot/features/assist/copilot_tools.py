@@ -12,7 +12,9 @@ error dict and never raises.
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import socket
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -42,8 +44,59 @@ _HTTP_OK_MIN = 200
 _HTTP_OK_MAX = 300
 
 
+def _is_private_address(addr: str) -> bool:
+    """Return True if *addr* is a loopback, private, link-local, or reserved IP."""
+    try:
+        ip = ipaddress.ip_address(addr)
+        return ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved
+    except ValueError:
+        return False
+
+
+# Module-level DNS resolver — patched in tests via unittest.mock.patch.
+_dns_getaddrinfo = socket.getaddrinfo
+
+
+def _ssrf_check(host: str, slug: str) -> str | None:
+    """Return an error string if *host* is a private/reserved address, else None.
+
+    Handles both IP literals and hostname resolution. Fail-closed: if DNS
+    resolution fails the host is rejected (the request would fail anyway).
+    Module-level ``_dns_getaddrinfo`` is used so tests can patch it.
+    """
+    # IP literal check — fast path; no DNS needed.
+    try:
+        ip_obj = ipaddress.ip_address(host)
+        if ip_obj.is_loopback or ip_obj.is_private or ip_obj.is_link_local or ip_obj.is_reserved:
+            _log.warning("custom_tool_private_ip_literal", slug=slug, host=host)
+            return f"host '{host}' resolves to a private/reserved address"
+        return None  # Public IP literal — ok.
+    except ValueError:
+        pass  # Not an IP literal; fall through to DNS.
+    # DNS resolution check (fail-closed on error).
+    try:
+        results = _dns_getaddrinfo(host, None)
+        for _family, _type, _proto, _canonname, sockaddr in results:
+            if _is_private_address(sockaddr[0]):
+                _log.warning(
+                    "custom_tool_resolved_private_ip", slug=slug, host=host, resolved=sockaddr[0]
+                )
+                return f"host '{host}' resolves to a private/reserved address"
+    except Exception as exc:
+        _log.warning("custom_tool_dns_resolution_failed", slug=slug, host=host, error=str(exc))
+        return f"host '{host}' could not be resolved"
+    return None
+
+
 def _check_url(url: str, allowed_hosts: list[str], slug: str) -> str | None:
-    """Return an error string if *url* fails safety checks, else None."""
+    """Return an error string if *url* fails safety checks, else None.
+
+    Checks (in order):
+    1. URL must parse and use HTTPS.
+    2. If an allowlist is configured and the host is NOT in it, reject.
+    3. If the host IS in the allowlist, skip SSRF checks (admin permitted it).
+    4. Otherwise run SSRF checks via ``_ssrf_check``.
+    """
     try:
         parsed = urlparse(url)
     except Exception:
@@ -51,10 +104,14 @@ def _check_url(url: str, allowed_hosts: list[str], slug: str) -> str | None:
     if parsed.scheme != "https":
         _log.warning("custom_tool_non_https", slug=slug, url=url)
         return "custom tool endpoint must use HTTPS"
-    if allowed_hosts and parsed.hostname not in allowed_hosts:
-        _log.warning("custom_tool_host_blocked", slug=slug, host=parsed.hostname, allowed=allowed_hosts)
-        return f"host '{parsed.hostname}' is not in the allowed hosts list"
-    return None
+    host = parsed.hostname or ""
+    if allowed_hosts:
+        if host not in allowed_hosts:
+            _log.warning("custom_tool_host_blocked", slug=slug, host=host, allowed=allowed_hosts)
+            return f"host '{host}' is not in the allowed hosts list"
+        # Admin explicitly allowlisted — skip SSRF checks.
+        return None
+    return _ssrf_check(host, slug)
 
 
 def _build_auth(auth_type: str, auth_config: dict[str, Any]) -> tuple[dict[str, str], tuple[str, str] | None]:

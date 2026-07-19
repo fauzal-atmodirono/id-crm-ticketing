@@ -8,14 +8,30 @@ diagnose.
 from __future__ import annotations
 
 import json
+import socket
 
 import httpx
+import pytest
 import respx
 
+import chatbot.features.assist.copilot_tools as _ct_module
 from chatbot.features.assist.copilot_tools import ToolExecutor
 from chatbot.features.chat.adapters.tools_store import CustomTool, InMemoryToolsStore
 from chatbot.features.chat.models import KbArticle
 from chatbot.platform.config import Settings
+
+# ---------------------------------------------------------------------------
+# DNS mock fixture: returns a public IP for any hostname so the SSRF check
+# passes in tests that use api.example.com (no real DNS available in CI).
+# ---------------------------------------------------------------------------
+
+_PUBLIC_IP_ADDRINFO = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+
+@pytest.fixture(autouse=True)
+def mock_public_dns(monkeypatch):
+    """Patch the module-level DNS resolver to return a public IP for test hostnames."""
+    monkeypatch.setattr(_ct_module, "_dns_getaddrinfo", lambda _host, _port: _PUBLIC_IP_ADDRINFO)
 
 # ---------------------------------------------------------------------------
 # Minimal stubs
@@ -315,6 +331,63 @@ async def test_no_tools_store_unknown_tool_error() -> None:
     ex = ToolExecutor(_FakeCtx(), _FakeKb(), conversation_id="42")
     result = await ex.run("custom_check_order", {})
     assert result == {"error": "unknown tool: custom_check_order"}
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: Private / link-local IP SSRF protection in _check_url
+# ---------------------------------------------------------------------------
+
+
+async def test_link_local_ip_literal_rejected() -> None:
+    """https://169.254.169.254/... must be rejected (link-local IP literal)."""
+    from chatbot.features.assist.copilot_tools import _check_url  # noqa: PLC0415
+
+    err = _check_url("https://169.254.169.254/latest/meta-data", [], slug="test")
+    assert err is not None
+    assert "private" in err.lower() or "reserved" in err.lower() or "169.254" in err
+
+
+async def test_loopback_ip_literal_rejected() -> None:
+    """https://127.0.0.1/... must be rejected (loopback IP literal)."""
+    from chatbot.features.assist.copilot_tools import _check_url  # noqa: PLC0415
+
+    err = _check_url("https://127.0.0.1/internal", [], slug="test")
+    assert err is not None
+    assert "private" in err.lower() or "loopback" in err.lower() or "127.0.0.1" in err
+
+
+async def test_public_host_allowed_with_mock_resolution() -> None:
+    """A normal public HTTPS host passes _check_url when DNS resolves to a public IP.
+
+    The autouse mock_public_dns fixture already returns a public IP, so no extra
+    patching is needed here.
+    """
+    from chatbot.features.assist.copilot_tools import _check_url  # noqa: PLC0415
+
+    # mock_public_dns fixture returns 93.184.216.34 (public) for any hostname.
+    err = _check_url("https://api.example.com/hook", [], slug="test")
+    assert err is None
+
+
+async def test_private_rfc1918_ip_literal_rejected() -> None:
+    """https://10.0.0.1/... must be rejected (private RFC 1918 address)."""
+    from chatbot.features.assist.copilot_tools import _check_url  # noqa: PLC0415
+
+    err = _check_url("https://10.0.0.1/internal", [], slug="test")
+    assert err is not None
+
+
+async def test_allowlisted_host_skips_ip_check() -> None:
+    """When a host is explicitly allowlisted, the IP safety check is bypassed."""
+    from chatbot.features.assist.copilot_tools import _check_url  # noqa: PLC0415
+
+    # Even a link-local IP literal is allowed when it's in the allowlist.
+    err = _check_url(
+        "https://169.254.169.254/meta",
+        allowed_hosts=["169.254.169.254"],
+        slug="test",
+    )
+    assert err is None
 
 
 # ---------------------------------------------------------------------------

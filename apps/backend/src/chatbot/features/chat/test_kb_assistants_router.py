@@ -13,6 +13,8 @@ from chatbot.features.assist.copilot_tools import COPILOT_TOOLS
 from chatbot.features.chat.adapters.assistants_store import (
     InMemoryAssistantsStore,
 )
+from chatbot.features.chat.adapters.inbox_assignment_store import InMemoryInboxAssignmentStore
+from chatbot.features.chat.adapters.scenarios_store import InMemoryScenariosStore, Scenario
 from chatbot.features.chat.kb_assistants_router import build_kb_assistants_router
 from chatbot.platform.config import Settings
 
@@ -278,3 +280,62 @@ def test_delete_nonexistent_returns_404() -> None:
     c, _ = _client()
     r = c.delete("/kb/assistants/asst_ghost", headers={"x-api-key": "pk"})
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: Cascade delete removes scenarios and inbox assignments
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_assistant_cascades_scenarios_and_assignments() -> None:
+    """Deleting an assistant removes its scenarios and inbox assignments."""
+    s = _settings()
+    asst_store = InMemoryAssistantsStore()
+    scen_store = InMemoryScenariosStore()
+    assign_store = InMemoryInboxAssignmentStore()
+
+    app = FastAPI()
+    app.include_router(
+        build_kb_assistants_router(
+            asst_store,
+            s,
+            scenarios_store=scen_store,
+            assignment_store=assign_store,
+        )
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+    headers = {"x-api-key": "pk"}
+
+    # Create a non-default assistant to delete.
+    r = client.post(
+        "/kb/assistants",
+        json={"name": "ToDelete", "description": "", "product_name": "X"},
+        headers=headers,
+    )
+    assert r.status_code == 200
+    aid = r.json()["id"]
+
+    # Attach a scenario to the assistant.
+    scenario = Scenario(
+        id="sc1",
+        assistant_id=aid,
+        title="S1",
+        description="desc",
+        instruction="do this",
+    )
+    await scen_store.create(scenario)
+
+    # Attach an inbox assignment.
+    await assign_store.set(77, aid, "suggest")
+
+    # Verify they exist before delete.
+    assert len(await scen_store.list_for_assistant(aid)) == 1
+    assert await assign_store.get(77) is not None
+
+    # Delete the assistant.
+    del_r = client.delete(f"/kb/assistants/{aid}", headers=headers)
+    assert del_r.status_code == 200
+
+    # Cascade: scenarios and inbox assignments should be gone.
+    assert await scen_store.list_for_assistant(aid) == []
+    assert await assign_store.get(77) is None

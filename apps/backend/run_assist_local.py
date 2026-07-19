@@ -96,14 +96,21 @@ def build() -> FastAPI:
     app.include_router(build_faq_admin_router(live_store, settings))
     app.include_router(build_kb_documents_router(settings))
     assistants_store = build_assistants_store(settings)
-    app.include_router(build_kb_assistants_router(assistants_store, settings))
     tenant_settings_store = build_tenant_settings_store(settings)
-    app.include_router(build_kb_settings_router(tenant_settings_store, settings))
     tools_store = build_tools_store(settings)
-    app.include_router(build_kb_tools_router(tools_store, settings))
     scenarios_store = build_scenarios_store(settings)
-    app.include_router(build_kb_scenarios_router(scenarios_store, tools_store, settings))
     assignment_store = build_inbox_assignment_store(settings)
+    app.include_router(
+        build_kb_assistants_router(
+            assistants_store,
+            settings,
+            scenarios_store=scenarios_store,
+            assignment_store=assignment_store,
+        )
+    )
+    app.include_router(build_kb_settings_router(tenant_settings_store, settings))
+    app.include_router(build_kb_tools_router(tools_store, settings))
+    app.include_router(build_kb_scenarios_router(scenarios_store, tools_store, settings))
     chatwoot_adapter = ChatwootAdapter(settings)
     app.include_router(
         build_kb_inboxes_router(
@@ -114,7 +121,16 @@ def build() -> FastAPI:
         build_assist_router(settings, kp, genai)
     )
     app.include_router(
-        build_copilot_router(settings, kp, genai, assistants_store, tenant_settings_store, scenarios_store=scenarios_store, assignment_store=assignment_store)
+        build_copilot_router(
+            settings,
+            kp,
+            genai,
+            assistants_store,
+            tenant_settings_store,
+            tools_store=tools_store,
+            scenarios_store=scenarios_store,
+            assignment_store=assignment_store,
+        )
     )
 
     @app.get("/healthz")

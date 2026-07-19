@@ -21,6 +21,8 @@ from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from chatbot.features.chat.adapters.assistants_store import AssistantsStorePort
+    from chatbot.features.chat.adapters.inbox_assignment_store import InboxAssignmentStorePort
+    from chatbot.features.chat.adapters.scenarios_store import ScenariosStorePort
     from chatbot.platform.config import Settings
 
 
@@ -42,11 +44,17 @@ class _UpdateRequest(BaseModel):
 def build_kb_assistants_router(
     store: AssistantsStorePort,
     settings: Settings,
+    scenarios_store: ScenariosStorePort | None = None,
+    assignment_store: InboxAssignmentStorePort | None = None,
 ) -> APIRouter:
     """Build and return the /kb/assistants APIRouter.
 
     `store` is injected (InMemory in tests, Firestore in prod) so the router
     has no knowledge of persistence details.
+
+    `scenarios_store` and `assignment_store` are optional; when provided, a
+    DELETE call cascades and removes all scenarios and inbox assignments that
+    reference the deleted assistant so no orphan data lingers.
     """
     router = APIRouter(tags=["kb"])
 
@@ -135,6 +143,11 @@ def build_kb_assistants_router(
             raise HTTPException(
                 status_code=409, detail="Cannot delete the default assistant"
             ) from exc
+        # Cascade: remove all scenarios and inbox assignments referencing this assistant.
+        if scenarios_store is not None:
+            await scenarios_store.delete_for_assistant(assistant_id)
+        if assignment_store is not None:
+            await assignment_store.delete_for_assistant(assistant_id)
         return {"id": assistant_id, "status": "ok"}
 
     return router

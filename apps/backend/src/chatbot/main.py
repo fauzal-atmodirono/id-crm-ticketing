@@ -110,20 +110,45 @@ def _wire_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings
         )
 
 
-def _wire_copilot(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings) -> None:
-    """Wire POST /assist/copilot (Ask Copilot). Shares the assist CORS origins."""
+def _wire_copilot(
+    app: FastAPI,
+    knowledge_port: KnowledgePort,
+    settings: Settings,
+    assistants_store: object,
+    tenant_settings_store: object,
+    tools_store: object,
+    scenarios_store: object,
+    assignment_store: object,
+) -> None:
+    """Wire POST /assist/copilot (Ask Copilot). Receives shared store instances."""
     genai_client = _build_genai_client(settings)
-    assistants_store = build_assistants_store(settings)
-    tenant_settings_store = build_tenant_settings_store(settings)
-    tools_store = build_tools_store(settings)
-    scenarios_store = build_scenarios_store(settings)
-    assignment_store = build_inbox_assignment_store(settings)
-    app.include_router(build_copilot_router(settings, knowledge_port, genai_client, assistants_store, tenant_settings_store, tools_store=tools_store, scenarios_store=scenarios_store, assignment_store=assignment_store))
+    app.include_router(
+        build_copilot_router(
+            settings,
+            knowledge_port,
+            genai_client,
+            assistants_store,  # type: ignore[arg-type]
+            tenant_settings_store,  # type: ignore[arg-type]
+            tools_store=tools_store,  # type: ignore[arg-type]
+            scenarios_store=scenarios_store,  # type: ignore[arg-type]
+            assignment_store=assignment_store,  # type: ignore[arg-type]
+        )
+    )
 
 
-def _wire_agent_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings) -> None:
+def _wire_agent_assist(
+    app: FastAPI,
+    knowledge_port: KnowledgePort,
+    settings: Settings,
+    assistants_store: object,
+    tenant_settings_store: object,
+    tools_store: object,
+    scenarios_store: object,
+    assignment_store: object,
+) -> None:
     """Wire the agent-assist FAQ routers: kb-suggest (Vertex Search + live FAQ
-    semantic merge), faq-feedback, and the real-time FAQ admin CRUD."""
+    semantic merge), faq-feedback, and the real-time FAQ admin CRUD.
+    Receives shared store instances so copilot and agent-assist see the same data."""
     genai_client = _build_genai_client(settings)
     live_faq_store = build_live_faq_store(settings, genai_client)  # type: ignore[arg-type]
     embedder = (
@@ -135,25 +160,27 @@ def _wire_agent_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Se
     app.include_router(build_kb_suggest_router(knowledge_port, live_faq_store, embedder))
     app.include_router(build_faq_admin_router(live_faq_store, settings))
     app.include_router(build_kb_documents_router(settings))
-    assistants_store = build_assistants_store(settings)
-    app.include_router(build_kb_assistants_router(assistants_store, settings))
-    tenant_settings_store = build_tenant_settings_store(settings)
-    app.include_router(build_kb_settings_router(tenant_settings_store, settings))
+    app.include_router(
+        build_kb_assistants_router(
+            assistants_store,  # type: ignore[arg-type]
+            settings,
+            scenarios_store=scenarios_store,  # type: ignore[arg-type]
+            assignment_store=assignment_store,  # type: ignore[arg-type]
+        )
+    )
+    app.include_router(build_kb_settings_router(tenant_settings_store, settings))  # type: ignore[arg-type]
 
-    tools_store = build_tools_store(settings)
-    app.include_router(build_kb_tools_router(tools_store, settings))
+    app.include_router(build_kb_tools_router(tools_store, settings))  # type: ignore[arg-type]
 
-    scenarios_store = build_scenarios_store(settings)
-    app.include_router(build_kb_scenarios_router(scenarios_store, tools_store, settings))
+    app.include_router(build_kb_scenarios_router(scenarios_store, tools_store, settings))  # type: ignore[arg-type]
 
     # Inbox assignment router: ChatwootAdapter for listing inboxes (best-effort).
-    assignment_store = build_inbox_assignment_store(settings)
     chatwoot_adapter_for_inboxes = ChatwootAdapter(settings)
     app.include_router(
         build_kb_inboxes_router(
-            assignment_store,
-            assistants_store,
-            tenant_settings_store,
+            assignment_store,  # type: ignore[arg-type]
+            assistants_store,  # type: ignore[arg-type]
+            tenant_settings_store,  # type: ignore[arg-type]
             chatwoot_adapter_for_inboxes,
             settings,
         )
@@ -309,8 +336,24 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         )
     )
 
+    # --- Shared stores (built once, passed to both agent-assist and copilot) ---
+    _shared_assistants_store = build_assistants_store(settings)
+    _shared_tenant_settings_store = build_tenant_settings_store(settings)
+    _shared_tools_store = build_tools_store(settings)
+    _shared_scenarios_store = build_scenarios_store(settings)
+    _shared_assignment_store = build_inbox_assignment_store(settings)
+
     # --- Agent-assist FAQ ---
-    _wire_agent_assist(app, knowledge_port, settings)
+    _wire_agent_assist(
+        app,
+        knowledge_port,
+        settings,
+        assistants_store=_shared_assistants_store,
+        tenant_settings_store=_shared_tenant_settings_store,
+        tools_store=_shared_tools_store,
+        scenarios_store=_shared_scenarios_store,
+        assignment_store=_shared_assignment_store,
+    )
 
     # Merge CRM-authored live-FAQ into the KB that /assist + Copilot ground on,
     # so an authored entry surfaces in their answers immediately.
@@ -329,7 +372,16 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     _wire_assist(app, assist_knowledge_port, settings)
 
     # --- Ask Copilot (multi-turn) ---
-    _wire_copilot(app, assist_knowledge_port, settings)
+    _wire_copilot(
+        app,
+        assist_knowledge_port,
+        settings,
+        assistants_store=_shared_assistants_store,
+        tenant_settings_store=_shared_tenant_settings_store,
+        tools_store=_shared_tools_store,
+        scenarios_store=_shared_scenarios_store,
+        assignment_store=_shared_assignment_store,
+    )
 
     _wire_metrics_features(app, settings)
 

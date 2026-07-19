@@ -5,6 +5,7 @@ Covers:
 - inbox_id with mode 'suggest' or 'auto' → normal flow.
 - inbox_id None → no gating (behaviour-preserving).
 - assignment_store=None → no gating (behaviour-preserving).
+- inbox assigned to assistant X + request with no assistant_id → copilot uses X's persona.
 """
 from __future__ import annotations
 
@@ -14,7 +15,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from chatbot.features.assist.copilot_router import build_copilot_router
-from chatbot.features.chat.adapters.assistants_store import InMemoryAssistantsStore
+from chatbot.features.chat.adapters.assistants_store import (
+    Assistant,
+    AssistantConfig,
+    InMemoryAssistantsStore,
+    _new_id,
+    _now,
+)
 from chatbot.features.chat.adapters.inbox_assignment_store import InMemoryInboxAssignmentStore
 from chatbot.features.chat.adapters.tenant_settings_store import InMemoryTenantSettingsStore
 from chatbot.platform.config import Settings
@@ -196,3 +203,68 @@ def test_inbox_not_in_store_uses_default_mode() -> None:
     assert r.status_code == 200
     assert r.json()["answer"] == "Default flow answer."
     genai.aio.models.generate_content.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: inbox-assigned assistant persona used when req.assistant_id is None
+# ---------------------------------------------------------------------------
+
+
+async def test_inbox_assigned_assistant_persona_used_when_no_req_assistant_id() -> None:
+    """When inbox is assigned to assistant X and request has no assistant_id,
+    the copilot resolves and uses X's system_instruction in the generate_content call."""
+    assistants_store = InMemoryAssistantsStore()
+    assignment_store = InMemoryInboxAssignmentStore()
+
+    # Create a custom assistant with a distinctive persona.
+    custom_instructions = "You are the SalesBot persona — only answer sales questions."
+    asst = Assistant(
+        id=_new_id(),
+        name="SalesBot",
+        description="",
+        product_name="PROTON",
+        config=AssistantConfig(instructions=custom_instructions),
+        enabled=True,
+        is_default=False,
+        created_at=_now(),
+    )
+    await assistants_store.create(asst)
+    # Assign the custom assistant to inbox 42.
+    await assignment_store.set(42, asst.id, "suggest")
+
+    genai = MagicMock()
+    genai.aio.models.generate_content = AsyncMock(return_value=_text_response("Sales answer."))
+
+    app = FastAPI()
+    app.include_router(
+        build_copilot_router(
+            settings=Settings(proton_backend_key=_KEY, chatwoot_enabled=False),
+            knowledge_port=_FakeKb(),
+            genai_client=genai,
+            assistants_store=assistants_store,
+            tenant_settings_store=InMemoryTenantSettingsStore(),
+            assignment_store=assignment_store,
+        )
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # Request has inbox_id=42 but NO assistant_id.
+    r = client.post(
+        "/assist/copilot",
+        json={
+            "conversation_id": "conv-99",
+            "thread": [{"role": "user", "content": "help me buy"}],
+            "inbox_id": 42,
+            # assistant_id intentionally absent
+        },
+        headers={"x-api-key": _KEY},
+    )
+    assert r.status_code == 200
+    # The generate_content call must carry the SalesBot persona in system_instruction.
+    genai.aio.models.generate_content.assert_called_once()
+    call_kwargs = genai.aio.models.generate_content.call_args
+    # system_instruction should contain the custom instructions.
+    sys_instr = (call_kwargs.kwargs.get("config") or {}).get("system_instruction", "")
+    assert custom_instructions in sys_instr, (
+        f"Expected SalesBot persona in system_instruction but got: {sys_instr!r}"
+    )

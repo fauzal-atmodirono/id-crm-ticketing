@@ -96,6 +96,7 @@ def build_copilot_router(  # noqa: PLR0915
         # wired, resolve the effective assignment and short-circuit when mode is
         # "off". When inbox_id is None (e.g. Playground), skip gating entirely
         # to preserve existing behaviour.
+        eff: dict | None = None
         if req.inbox_id is not None and assignment_store is not None:
             eff = await effective_assignment(
                 assignment_store,
@@ -127,7 +128,10 @@ def build_copilot_router(  # noqa: PLR0915
             tools_store=tools_store,
             settings=settings,
         )
-        assistant = await resolve_assistant(assistants_store, req.assistant_id)
+        # When no explicit assistant_id is given but the inbox has an assignment,
+        # use the inbox-assigned assistant so its persona takes effect.
+        chosen_id = req.assistant_id or (eff and eff.get("assistant_id")) or None
+        assistant = await resolve_assistant(assistants_store, chosen_id)
 
         # Pre-fetch scenarios for the resolved assistant (prompt injection).
         scenarios = None

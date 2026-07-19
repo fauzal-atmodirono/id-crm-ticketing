@@ -10,6 +10,7 @@ from typing import Any
 from chatbot.features.chat.adapters.audit_log import InMemoryAuditLog
 from chatbot.features.chat.ports import AuditEntry
 from chatbot.features.chat.sla import (
+    TIER2_ESCALATION,
     UNRESOLVED_BREACH,
     scan_conversations,
 )
@@ -112,3 +113,48 @@ async def test_level2_alert_does_not_fire_when_none() -> None:
         settings, audit, now=_NOW, fetch=lambda _s: [conv]
     )
     assert fired == []  # no new breach
+
+
+async def test_level2_alert_fires_exactly_once_across_two_scans() -> None:
+    """Two consecutive scans of the same past-tier2 breach fire level2 ONCE.
+
+    The dedup is achieved by recording a TIER2_ESCALATION audit entry on the
+    first fire; the second scan sees it in ``prior`` and skips.
+    """
+    audit = InMemoryAuditLog()
+    settings = _settings(sla_response_hours=1000, sla_resolution_hours=48,
+                         escalation_tier2_hours=4.0)
+    # Conv is 60h old; breach fired 10h ago (well past 4h tier2 window).
+    conv = _conv(304, status="pending", created_at=_epoch(60))
+    breach_at = _NOW - timedelta(hours=10)
+    await audit.append(AuditEntry(
+        ticket_id="304",
+        session_id="chatwoot-conv-304",
+        actor="sla-engine",
+        from_state="OPEN",
+        to_state=UNRESOLVED_BREACH,
+        at=breach_at.isoformat(),
+        remark="test breach",
+    ))
+
+    level2_calls: list[str] = []
+
+    def level2(ticket_id: str, _to_state: str, _remark: str) -> None:
+        level2_calls.append(ticket_id)
+
+    # First scan — must fire once and record TIER2_ESCALATION.
+    await scan_conversations(
+        settings, audit, now=_NOW, fetch=lambda _s: [conv], level2_alert=level2
+    )
+    assert len(level2_calls) == 1, "level2 should fire on the first scan"
+
+    # Verify the dedup marker was recorded.
+    entries = await audit.list_for_ticket("304")
+    tier2_states = [e.to_state for e in entries if e.to_state == TIER2_ESCALATION]
+    assert len(tier2_states) == 1, "TIER2_ESCALATION audit entry must be recorded"
+
+    # Second scan — must NOT fire again.
+    await scan_conversations(
+        settings, audit, now=_NOW, fetch=lambda _s: [conv], level2_alert=level2
+    )
+    assert len(level2_calls) == 1, "level2 must NOT fire a second time (dedup)"

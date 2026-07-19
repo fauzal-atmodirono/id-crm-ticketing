@@ -163,6 +163,60 @@ async def test_open_handoff_no_pic_falls_back_to_default_group() -> None:
     assert fake_zam.create_calls[0]["group"] is None  # no override when no PIC
 
 
+async def test_open_handoff_applies_pic_label_on_escalation() -> None:
+    """Fix 2: open_handoff must apply a ``pic_<slug>`` label when a PIC is resolved.
+
+    The label ``pic_alice_tan`` must appear in the labels POST alongside the
+    escalation labels so agents can filter/route by PIC in Chatwoot.
+    """
+    s = _settings()
+    fake_cw = _FakeCW()
+    fake_zam = _FakeZammad()
+    fake_twilio = _FakeTwilio()
+
+    registry = build_pic_registry(s)
+    notifier = EscalationNotifier(
+        settings=s,
+        pic_registry=registry,
+        email_sender=None,  # type: ignore[arg-type]  email disabled in settings
+        twilio_adapter=fake_twilio,
+        chatwoot_request=fake_cw._request,
+    )
+
+    adapter = ChatwootAdapter(
+        settings=s,
+        zammad=fake_zam,  # type: ignore[arg-type]
+        pic_registry=registry,
+        escalation_notifier=notifier,
+    )
+    adapter._request = fake_cw._request  # type: ignore[method-assign]
+
+    payload = HandoffOpenPayload(
+        session_id="sim-pic-label",
+        customer_name="Budi",
+        customer_email="",
+        ai_summary="App crashes on login",
+        transcript=(Message(role="user", text="the app crashes"),),
+        urgency="high",
+        reason="negative_sentiment",
+        department="apps",
+    )
+    await adapter.open_handoff(payload)
+
+    # Find the labels POST call and assert pic_alice_tan is present.
+    label_calls = [
+        pl["labels"]
+        for _, path, pl in fake_cw.calls
+        if "/labels" in path and pl and "labels" in pl
+    ]
+    assert label_calls, "Expected at least one labels POST"
+    all_labels = label_calls[-1]  # the final labels merge call
+    assert any(lbl.startswith("pic_") for lbl in all_labels), (
+        f"Expected a pic_* label in {all_labels}"
+    )
+    assert "pic_alice_tan" in all_labels
+
+
 async def test_zammad_assign_owner_calls_user_lookup_and_patch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

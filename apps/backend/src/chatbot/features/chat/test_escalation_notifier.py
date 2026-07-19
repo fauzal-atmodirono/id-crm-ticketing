@@ -156,3 +156,88 @@ async def test_notify_skips_wa_when_no_twilio_adapter() -> None:
     # email still sent; no WA error
     assert pic is not None
     assert len(sent_emails) == 1
+
+
+# ---------------------------------------------------------------------------
+# Fix 4 — fail-open safety contract: notify() must NEVER raise
+# ---------------------------------------------------------------------------
+
+
+async def test_notify_does_not_raise_when_email_sender_raises() -> None:
+    """If email_sender.send raises, notify() swallows it and returns normally.
+
+    The WA send and case_state write must still be attempted.
+    """
+    wa_calls: list[str] = []
+    cw_calls: list[str] = []
+
+    class _ExplodingEmailSender:
+        def send(self, **_: Any) -> None:
+            raise RuntimeError("SMTP server down")
+
+    class _FakeTwilio:
+        async def send_message(self, conversation_id: str, text: str) -> None:
+            wa_calls.append(conversation_id)  # text not inspected in this test
+
+    async def _fake_cw(_method: str, path: str, _payload: Any = None) -> dict:
+        cw_calls.append(path)
+        return {}
+
+    notifier = EscalationNotifier(
+        settings=_settings(),
+        pic_registry=_registry(),
+        email_sender=_ExplodingEmailSender(),  # type: ignore[arg-type]
+        twilio_adapter=_FakeTwilio(),  # type: ignore[arg-type]
+        chatwoot_request=_fake_cw,
+    )
+
+    # Must not raise
+    pic = await notifier.notify(
+        conv_id="99",
+        ticket_id="Z99",
+        title="Crash test",
+        body="email will explode",
+        department="apps",
+        zammad_ticket_number="99",
+    )
+
+    # PIC was resolved
+    assert pic is not None
+    # WA was still attempted
+    assert len(wa_calls) == 1
+    # case_state write was still attempted
+    assert any("/custom_attributes" in p for p in cw_calls)
+
+
+async def test_notify_does_not_raise_when_chatwoot_request_raises() -> None:
+    """If the Chatwoot case_state write raises, notify() swallows it and returns normally."""
+    sent_emails: list[str] = []
+
+    class _FakeEmailSender:
+        def send(self, to: list[str], **_: Any) -> None:
+            sent_emails.append(to[0])
+
+    async def _exploding_cw(_method: str, _path: str, _payload: Any = None) -> dict:
+        raise RuntimeError("Chatwoot unreachable")
+
+    notifier = EscalationNotifier(
+        settings=_settings(),
+        pic_registry=_registry(),
+        email_sender=_FakeEmailSender(),  # type: ignore[arg-type]
+        twilio_adapter=None,
+        chatwoot_request=_exploding_cw,
+    )
+
+    # Must not raise
+    pic = await notifier.notify(
+        conv_id="88",
+        ticket_id="Z88",
+        title="CW crash test",
+        body="chatwoot will explode",
+        department="apps",
+        zammad_ticket_number="88",
+    )
+
+    # Returns normally; PIC resolved; email attempted
+    assert pic is not None
+    assert len(sent_emails) == 1

@@ -137,6 +137,22 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 return True
         return False
 
+    def _pic_label(self, department: str | None) -> str | None:
+        """Return the ``pic_<name_slug>`` label for the resolved PIC, or None.
+
+        Satisfies spec item 12: tag the escalated conversation with the PIC's
+        identity so agents can filter/route by PIC in Chatwoot. Uses the same
+        lower-snake convention as the other dimension labels.
+        """
+        if self._pic_registry is None or not department:
+            return None
+        key = department.removeprefix("dept_")
+        pic = self._pic_registry.lookup(key)
+        if pic is None:
+            return None
+        slug = pic.pic_name.strip().lower().replace(" ", "_")
+        return f"pic_{slug}"
+
     def _complaint_labels(self, reason: str | None, urgency: str | None) -> list[str]:
         """The Zammad-ticketing `escalate` label, applied only for complaints in
         LEGACY mode. When direct Zammad ticketing is active the backend creates
@@ -444,6 +460,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         dimension_labels = self._dimension_labels(
             category, subcategory, division, department, sla_minutes
         )
+        pic_lbl = self._pic_label(department)
         await self._request(
             "POST",
             f"/conversations/{conv_id}/labels",
@@ -451,6 +468,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 "labels": list(
                     dict.fromkeys(
                         dimension_labels
+                        + ([pic_lbl] if pic_lbl else [])
                         + self._escalation_labels()
                         + self._complaint_labels(None, urgency)
                     )
@@ -660,6 +678,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             payload.department,
             payload.sla_minutes,
         )
+        pic_lbl = self._pic_label(payload.department)
         await self._request(
             "POST",
             f"/conversations/{conv_id}/labels",
@@ -667,6 +686,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 "labels": list(
                     dict.fromkeys(
                         dimension_labels
+                        + ([pic_lbl] if pic_lbl else [])
                         + self._escalation_labels()
                         + self._complaint_labels(payload.reason, payload.urgency)
                     )

@@ -62,6 +62,7 @@ _log = structlog.get_logger(__name__)
 # Breach markers double as the audit ``to_state`` AND the dedup key.
 NO_RESPONSE_BREACH = "SLA_BREACH_NO_RESPONSE"
 UNRESOLVED_BREACH = "SLA_BREACH_UNRESOLVED"
+TIER2_ESCALATION = "TIER2_ESCALATION"
 FIRST_RESPONSE_STATE = "FIRST_RESPONSE"
 
 _SECONDS_PER_HOUR = 3600
@@ -177,8 +178,15 @@ async def scan_conversations(
             fired.append(entry)
 
         # Tier-2 escalation: if an UNRESOLVED_BREACH was already fired and is
-        # older than escalation_tier2_hours, fire the level2_alert callback.
-        if level2_alert is not None and UNRESOLVED_BREACH in prior:
+        # older than escalation_tier2_hours, fire the level2_alert callback
+        # EXACTLY ONCE — gated on TIER2_ESCALATION not yet in the audit trail.
+        # After firing, we record a TIER2_ESCALATION audit entry so subsequent
+        # scans skip it (mirrors the UNRESOLVED_BREACH dedup pattern exactly).
+        if (
+            level2_alert is not None
+            and UNRESOLVED_BREACH in prior
+            and TIER2_ESCALATION not in prior
+        ):
             tier2_threshold = settings.escalation_tier2_hours * _SECONDS_PER_HOUR
             # Find the age of the UNRESOLVED_BREACH entry.
             all_entries = await audit.list_for_ticket(ticket_id)
@@ -192,16 +200,39 @@ async def scan_conversations(
                 except (ValueError, TypeError):
                     breach_age = 0.0
                 if breach_age >= tier2_threshold:
+                    remark = (
+                        f"Unresolved breach older than "
+                        f"{settings.escalation_tier2_hours}h; re-alerting level-2"
+                    )
+                    # Record the marker BEFORE calling the alert so a crash in
+                    # the alert callback does not leave the dedup entry missing.
+                    tier2_entry = AuditEntry(
+                        ticket_id=ticket_id,
+                        session_id=session_id,
+                        actor="sla-engine",
+                        from_state=UNRESOLVED_BREACH,
+                        to_state=TIER2_ESCALATION,
+                        at=clock.isoformat(),
+                        remark=remark,
+                    )
+                    await audit.append(tier2_entry)
+                    _log.info(
+                        "sla_tier2_escalation_recorded", ticket_id=ticket_id
+                    )
                     try:
                         result = level2_alert(
                             ticket_id,
-                            "TIER2_ESCALATION",
-                            f"Unresolved breach older than {settings.escalation_tier2_hours}h; re-alerting level-2",
+                            TIER2_ESCALATION,
+                            remark,
                         )
                         if asyncio.iscoroutine(result):
                             await result
                     except Exception as exc:
-                        _log.warning("level2_alert_failed", ticket_id=ticket_id, error=str(exc))
+                        _log.warning(
+                            "level2_alert_failed",
+                            ticket_id=ticket_id,
+                            error=str(exc),
+                        )
 
     if fired:
         _log.info("sla_scan_fired", count=len(fired))

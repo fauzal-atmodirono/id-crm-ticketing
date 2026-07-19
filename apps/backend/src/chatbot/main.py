@@ -62,6 +62,7 @@ from chatbot.features.routing.presence import PresenceFetcher
 from chatbot.features.routing.router import build_routing_router
 from chatbot.features.routing.service import RoutingService
 from chatbot.features.routing.store import ChannelPriorityStore
+from chatbot.features.tasks.tasks_router import build_tasks_router
 from chatbot.platform.config import Settings, get_settings
 from chatbot.platform.logger import configure_logging
 from chatbot.platform.server import create_app
@@ -456,6 +457,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         @app.on_event("shutdown")
         def _stop_sla_scheduler() -> None:
             sla_scheduler.shutdown(wait=False)
+
+    # --- Task Timers & Agent Reminders (Phase 6) ---
+    app.include_router(build_tasks_router(settings))
 
     @app.get("/")
     def health_check() -> dict[str, str]:

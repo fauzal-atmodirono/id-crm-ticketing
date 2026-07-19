@@ -32,7 +32,7 @@ BASE = "http://chatwoot-test"
 ACCOUNT_ID = 1
 TOKEN = "test-token"
 LABELS_URL = f"{BASE}/api/v1/accounts/{ACCOUNT_ID}/labels"
-FILTERS_URL = f"{BASE}/api/v1/accounts/{ACCOUNT_ID}/saved_filters"
+FILTERS_URL = f"{BASE}/api/v1/accounts/{ACCOUNT_ID}/custom_filters"
 
 
 # ---------------------------------------------------------------------------
@@ -129,16 +129,16 @@ def test_update_label_patches_by_name():
 
 
 # ---------------------------------------------------------------------------
-# ChatwootClient — list_saved_filters
+# ChatwootClient — list_custom_filters
 # ---------------------------------------------------------------------------
 
 @respx.mock
-def test_list_saved_filters_returns_list():
+def test_list_custom_filters_returns_list():
     respx.get(FILTERS_URL).mock(
         return_value=httpx.Response(200, json=[filter_response("All Complaints")])
     )
     with make_client() as c:
-        filters = c.list_saved_filters()
+        filters = c.list_custom_filters()
     assert len(filters) == 1
     assert filters[0]["name"] == "All Complaints"
 
@@ -158,7 +158,8 @@ def test_create_saved_filter_posts_correct_body():
         c.create_saved_filter("All Complaints", "account", query)
     sent = json.loads(route.calls[0].request.content)
     assert sent["name"] == "All Complaints"
-    assert sent["filter_type"] == "account"
+    # Chatwoot's custom_filters API field is "type" (not "filter_type").
+    assert sent["type"] == "account"
     assert sent["query"] == query
 
 

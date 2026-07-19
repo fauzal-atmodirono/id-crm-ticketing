@@ -18,7 +18,7 @@ Usage:
 Chatwoot Application API reference:
     Labels:       GET/POST /api/v1/accounts/{id}/labels
                   PATCH    /api/v1/accounts/{id}/labels/{name}
-    Saved views:  GET/POST /api/v1/accounts/{id}/saved_filters
+    Saved views:  GET/POST /api/v1/accounts/{id}/custom_filters
 """
 from __future__ import annotations
 
@@ -98,8 +98,8 @@ class ChatwootClient:
         self._raise_for_status(r)
         return r.json()
 
-    def list_saved_filters(self) -> list[dict[str, Any]]:
-        r = self._client.get(self._url("saved_filters"))
+    def list_custom_filters(self) -> list[dict[str, Any]]:
+        r = self._client.get(self._url("custom_filters"))
         self._raise_for_status(r)
         data = r.json()
         return data if isinstance(data, list) else data.get("payload", [])
@@ -108,8 +108,8 @@ class ChatwootClient:
         self, name: str, filter_type: str, query: dict[str, Any]
     ) -> dict[str, Any]:
         r = self._client.post(
-            self._url("saved_filters"),
-            json={"name": name, "filter_type": filter_type, "query": query},
+            self._url("custom_filters"),
+            json={"name": name, "type": filter_type, "query": query},
         )
         self._raise_for_status(r)
         return r.json()
@@ -190,7 +190,7 @@ def provision(
 
     # --- Saved filter views ---
     desired_filters: list[dict[str, Any]] = yaml.safe_load(filters_path.read_text())["filters"]
-    existing_filter_names = {f["name"] for f in client.list_saved_filters()}
+    existing_filter_names = {f["name"] for f in client.list_custom_filters()}
 
     for flt in desired_filters:
         fname = flt["name"]

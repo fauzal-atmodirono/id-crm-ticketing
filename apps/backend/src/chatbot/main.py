@@ -58,6 +58,10 @@ from chatbot.features.metrics.qa_adapter import build_qa_label_port
 from chatbot.features.metrics.qa_router import build_qa_router
 from chatbot.features.metrics.query_adapter import build_metrics_query_port
 from chatbot.features.metrics.scheduler import start_metrics_scheduler, start_report_scheduler
+from chatbot.features.routing.presence import PresenceFetcher
+from chatbot.features.routing.router import build_routing_router
+from chatbot.features.routing.service import RoutingService
+from chatbot.features.routing.store import ChannelPriorityStore
 from chatbot.platform.config import Settings, get_settings
 from chatbot.platform.logger import configure_logging
 from chatbot.platform.server import create_app
@@ -376,6 +380,17 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             audit_log=audit_log,
         )
     )
+
+    # --- Phase 5: agent routing & presence ---
+    # Mount the config router unconditionally (its GET endpoints back the
+    # routing-admin UI); only wire the RoutingService onto the live chat adapter
+    # when routing is enabled.
+    _routing_presence = PresenceFetcher(settings)
+    _routing_priority_store = ChannelPriorityStore(settings)
+    _routing_svc = RoutingService(presence=_routing_presence, store=_routing_priority_store)
+    if settings.routing_enabled and chatwoot_client is not None:
+        chatwoot_client._routing_service = _routing_svc  # type: ignore[assignment]
+    app.include_router(build_routing_router(settings, _routing_priority_store, _routing_presence))
 
     # --- Shared stores (built once, passed to both agent-assist and copilot) ---
     _shared_assistants_store = build_assistants_store(settings)

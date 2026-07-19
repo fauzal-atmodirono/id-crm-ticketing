@@ -174,7 +174,8 @@ def build_copilot_router(  # noqa: PLR0915
                 last_text = text
             calls = getattr(response, "function_calls", None) or []
             if not calls:
-                return {"answer": last_text or _FALLBACK, "tool_calls": tool_calls, "sources": sources}
+                emit_sources = sources if assistant.config.feature_citations else []
+                return {"answer": last_text or _FALLBACK, "tool_calls": tool_calls, "sources": emit_sources}
 
             # Execute each requested tool and feed the results back.
             contents.append(
@@ -203,6 +204,7 @@ def build_copilot_router(  # noqa: PLR0915
             contents.append({"role": "user", "parts": tool_parts})
 
         # Cap reached without a final text answer.
-        return {"answer": last_text or _FALLBACK, "tool_calls": tool_calls, "sources": sources}
+        emit_sources = sources if assistant.config.feature_citations else []
+        return {"answer": last_text or _FALLBACK, "tool_calls": tool_calls, "sources": emit_sources}
 
     return router

@@ -75,9 +75,9 @@ class AssistantConfig:
     handoff_message: str = ""
     resolution_message: str = ""
     feature_faq: bool = True
-    feature_memory: bool = False
+    feature_memory: bool = True
     feature_citations: bool = True
-    feature_contact_attributes: bool = False
+    feature_contact_attributes: bool = True
     enabled_builtin_tools: list[str] = field(default_factory=_default_builtin_tool_names)
     enabled_custom_tools: list[str] = field(default_factory=list)
 
@@ -109,9 +109,9 @@ class AssistantConfig:
             handoff_message=str(data.get("handoff_message", "")),
             resolution_message=str(data.get("resolution_message", "")),
             feature_faq=bool(data.get("feature_faq", True)),
-            feature_memory=bool(data.get("feature_memory", False)),
+            feature_memory=bool(data.get("feature_memory", True)),
             feature_citations=bool(data.get("feature_citations", True)),
-            feature_contact_attributes=bool(data.get("feature_contact_attributes", False)),
+            feature_contact_attributes=bool(data.get("feature_contact_attributes", True)),
             enabled_builtin_tools=[
                 str(t) for t in (data.get("enabled_builtin_tools") or _default_builtin_tool_names())
             ],

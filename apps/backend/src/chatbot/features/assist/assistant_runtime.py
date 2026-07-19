@@ -135,6 +135,12 @@ def build_tool_declarations(
     if not assistant.config.feature_faq:
         tools = [t for t in tools if t["name"] != "search_knowledge_base"]
 
+    if not assistant.config.feature_memory:
+        tools = [t for t in tools if t["name"] != "list_past_conversations"]
+
+    if not assistant.config.feature_contact_attributes:
+        tools = [t for t in tools if t["name"] != "get_contact_details"]
+
     if custom_tools is not None:
         custom_by_slug = {ct.slug: ct for ct in custom_tools}
         for slug in (assistant.config.enabled_custom_tools or []):

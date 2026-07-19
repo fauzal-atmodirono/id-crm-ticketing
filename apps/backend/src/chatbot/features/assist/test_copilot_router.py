@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -9,7 +10,11 @@ from fastapi.testclient import TestClient
 from chatbot.features.assist.assistant_runtime import DEFAULT_COPILOT_PROMPT
 from chatbot.features.assist.copilot_router import build_copilot_router
 from chatbot.features.assist.copilot_tools import COPILOT_TOOLS
-from chatbot.features.chat.adapters.assistants_store import InMemoryAssistantsStore
+from chatbot.features.chat.adapters.assistants_store import (
+    Assistant,
+    AssistantConfig,
+    InMemoryAssistantsStore,
+)
 from chatbot.features.chat.adapters.tenant_settings_store import InMemoryTenantSettingsStore
 from chatbot.features.chat.models import KbArticle
 from chatbot.platform.config import Settings
@@ -252,3 +257,137 @@ async def test_tenant_override_changes_model() -> None:
 
     call_kwargs = genai.aio.models.generate_content.call_args
     assert call_kwargs.kwargs["model"] == override_model
+
+
+# ---------------------------------------------------------------------------
+# feature_citations gate
+# ---------------------------------------------------------------------------
+
+
+def _make_assistant(feature_citations: bool) -> Assistant:
+    return Assistant(
+        id="asst_citations_test",
+        name="Citations Test",
+        description="",
+        product_name="",
+        config=AssistantConfig(feature_citations=feature_citations),
+        enabled=True,
+        is_default=True,
+        created_at=datetime.now(UTC).isoformat(),
+    )
+
+
+def _client_with_assistant(responses: list, assistant: Assistant, key: str = "k") -> TestClient:
+    """Build a TestClient with a pre-seeded assistant in the store."""
+    import asyncio  # noqa: PLC0415
+
+    genai = MagicMock()
+    genai.aio.models.generate_content = AsyncMock(side_effect=responses)
+    store = InMemoryAssistantsStore()
+
+    asyncio.run(store.create(assistant))
+
+    app = FastAPI()
+    app.include_router(
+        build_copilot_router(
+            settings=Settings(proton_backend_key=key, chatwoot_enabled=False),
+            knowledge_port=_FakeKb(),
+            genai_client=genai,
+            assistants_store=store,
+            tenant_settings_store=InMemoryTenantSettingsStore(),
+        )
+    )
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_feature_citations_false_suppresses_sources() -> None:
+    """When feature_citations=False, sources must be [] even when search_knowledge_base returned articles."""
+    assistant = _make_assistant(feature_citations=False)
+    c = _client_with_assistant(
+        [
+            _tool_call_response("search_knowledge_base", {"query": "warranty"}),
+            _text_response("12 months per KB."),
+        ],
+        assistant=assistant,
+    )
+    r = c.post(
+        "/assist/copilot",
+        json={
+            "conversation_id": "1",
+            "thread": [{"role": "user", "content": "warranty?"}],
+            "assistant_id": "asst_citations_test",
+        },
+        headers={"x-api-key": "k"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["sources"] == []
+    # tool_calls must still be present (citations gate does not affect tool_calls).
+    assert body["tool_calls"] == ["search_knowledge_base"]
+
+
+def test_feature_citations_true_keeps_sources() -> None:
+    """When feature_citations=True (default), sources are surfaced as normal."""
+    assistant = _make_assistant(feature_citations=True)
+    c = _client_with_assistant(
+        [
+            _tool_call_response("search_knowledge_base", {"query": "warranty"}),
+            _text_response("12 months per KB."),
+        ],
+        assistant=assistant,
+    )
+    r = c.post(
+        "/assist/copilot",
+        json={
+            "conversation_id": "1",
+            "thread": [{"role": "user", "content": "warranty?"}],
+            "assistant_id": "asst_citations_test",
+        },
+        headers={"x-api-key": "k"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["sources"] and body["sources"][0]["title"] == "Warranty"
+
+
+def test_feature_citations_false_at_cap_sources_empty() -> None:
+    """feature_citations=False must suppress sources even when the iteration cap is hit."""
+    assistant = _make_assistant(feature_citations=False)
+    c = _client_with_assistant(
+        [_tool_call_response("search_knowledge_base", {"query": "x"})] * 20,
+        assistant=assistant,
+    )
+    r = c.post(
+        "/assist/copilot",
+        json={
+            "conversation_id": "1",
+            "thread": [{"role": "user", "content": "hi"}],
+            "assistant_id": "asst_citations_test",
+        },
+        headers={"x-api-key": "k"},
+    )
+    assert r.status_code == 200
+    assert r.json()["sources"] == []
+
+
+# ---------------------------------------------------------------------------
+# Behaviour-preservation: default assistant → full COPILOT_TOOLS + sources present
+# ---------------------------------------------------------------------------
+
+
+def test_default_assistant_has_citations_enabled() -> None:
+    """Default assistant (feature_citations=True by default) must return sources."""
+    c = _client(
+        [
+            _tool_call_response("search_knowledge_base", {"query": "warranty"}),
+            _text_response("12 months."),
+        ]
+    )
+    r = c.post(
+        "/assist/copilot",
+        json={"conversation_id": "1", "thread": [{"role": "user", "content": "warranty?"}]},
+        headers={"x-api-key": "k"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["sources"] and body["sources"][0]["title"] == "Warranty"

@@ -286,6 +286,120 @@ def test_build_tool_declarations_feature_faq_default_keeps_search_knowledge_base
 
 
 # ---------------------------------------------------------------------------
+# build_tool_declarations — feature_memory gate
+# ---------------------------------------------------------------------------
+
+
+def _assistant_with_feature_memory(feature_memory: bool) -> Assistant:
+    return Assistant(
+        id="asst_test",
+        name="Test",
+        description="",
+        product_name="",
+        config=AssistantConfig(feature_memory=feature_memory),
+        enabled=True,
+        is_default=False,
+        created_at=datetime.now(UTC).isoformat(),
+    )
+
+
+def test_build_tool_declarations_feature_memory_false_drops_list_past_conversations() -> None:
+    """feature_memory=False must drop list_past_conversations and only that tool."""
+    assistant = _assistant_with_feature_memory(False)
+    result = build_tool_declarations(assistant)
+    names = [t["name"] for t in result]
+    assert "list_past_conversations" not in names
+    # All other built-ins must still be present.
+    assert "get_conversation_transcript" in names
+    assert "get_contact_details" in names
+    assert "search_knowledge_base" in names
+
+
+def test_build_tool_declarations_feature_memory_true_keeps_list_past_conversations() -> None:
+    """feature_memory=True must keep list_past_conversations."""
+    assistant = _assistant_with_feature_memory(True)
+    result = build_tool_declarations(assistant)
+    names = [t["name"] for t in result]
+    assert "list_past_conversations" in names
+
+
+def test_build_tool_declarations_feature_memory_default_keeps_list_past_conversations() -> None:
+    """feature_memory defaults to True — list_past_conversations must be present."""
+    assistant = _assistant_with_tools([t["name"] for t in COPILOT_TOOLS])
+    result = build_tool_declarations(assistant)
+    names = [t["name"] for t in result]
+    assert "list_past_conversations" in names
+
+
+# ---------------------------------------------------------------------------
+# build_tool_declarations — feature_contact_attributes gate
+# ---------------------------------------------------------------------------
+
+
+def _assistant_with_feature_contact_attributes(feature_contact_attributes: bool) -> Assistant:
+    return Assistant(
+        id="asst_test",
+        name="Test",
+        description="",
+        product_name="",
+        config=AssistantConfig(feature_contact_attributes=feature_contact_attributes),
+        enabled=True,
+        is_default=False,
+        created_at=datetime.now(UTC).isoformat(),
+    )
+
+
+def test_build_tool_declarations_feature_contact_attributes_false_drops_get_contact_details() -> None:
+    """feature_contact_attributes=False must drop get_contact_details and only that tool."""
+    assistant = _assistant_with_feature_contact_attributes(False)
+    result = build_tool_declarations(assistant)
+    names = [t["name"] for t in result]
+    assert "get_contact_details" not in names
+    # All other built-ins must still be present.
+    assert "get_conversation_transcript" in names
+    assert "list_past_conversations" in names
+    assert "search_knowledge_base" in names
+
+
+def test_build_tool_declarations_feature_contact_attributes_true_keeps_get_contact_details() -> None:
+    """feature_contact_attributes=True must keep get_contact_details."""
+    assistant = _assistant_with_feature_contact_attributes(True)
+    result = build_tool_declarations(assistant)
+    names = [t["name"] for t in result]
+    assert "get_contact_details" in names
+
+
+def test_build_tool_declarations_feature_contact_attributes_default_keeps_get_contact_details() -> None:
+    """feature_contact_attributes defaults to True — get_contact_details must be present."""
+    assistant = _assistant_with_tools([t["name"] for t in COPILOT_TOOLS])
+    result = build_tool_declarations(assistant)
+    names = [t["name"] for t in result]
+    assert "get_contact_details" in names
+
+
+def test_build_tool_declarations_all_features_true_returns_full_set() -> None:
+    """When all feature flags are True, the full COPILOT_TOOLS set is returned."""
+    assistant = Assistant(
+        id="asst_test",
+        name="Test",
+        description="",
+        product_name="",
+        config=AssistantConfig(
+            feature_faq=True,
+            feature_memory=True,
+            feature_contact_attributes=True,
+        ),
+        enabled=True,
+        is_default=False,
+        created_at=datetime.now(UTC).isoformat(),
+    )
+    result = build_tool_declarations(assistant)
+    names = [t["name"] for t in result]
+    for tool in COPILOT_TOOLS:
+        assert tool["name"] in names
+
+
+# ---------------------------------------------------------------------------
 # build_tool_declarations — custom webhook tools
 # ---------------------------------------------------------------------------
 

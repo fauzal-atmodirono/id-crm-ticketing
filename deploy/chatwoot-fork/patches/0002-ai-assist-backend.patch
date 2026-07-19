@@ -1,10 +1,10 @@
 diff --git a/app/javascript/dashboard/api/protonAssist.js b/app/javascript/dashboard/api/protonAssist.js
 new file mode 100644
-index 0000000..186d0b8
+index 0000000..835c428
 --- /dev/null
 +++ b/app/javascript/dashboard/api/protonAssist.js
 @@ -0,0 +1,21 @@
-+import { useProtonConfig } from '../../../composables/useProtonConfig';
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
 +
 +export async function callAssist(action, payload) {
 +  const { backendUrl, backendKey } = useProtonConfig();
@@ -26,14 +26,14 @@ index 0000000..186d0b8
 +  return response.json();
 +}
 diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
-index 15a007a..3a0f3aa 100644
+index 15a007a..d672ca4 100644
 --- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
 +++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
 @@ -10,6 +10,7 @@ import { useSidebarKeyboardShortcuts } from './useSidebarKeyboardShortcuts';
  import { vOnClickOutside } from '@vueuse/components';
  import { FEATURE_FLAGS } from 'dashboard/featureFlags';
  import { useWindowSize, useEventListener } from '@vueuse/core';
-+import { useProtonConfig } from 'composables/useProtonConfig';
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
  
  import Button from 'dashboard/components-next/button/Button.vue';
  import SidebarGroup from './SidebarGroup.vue';
@@ -66,7 +66,7 @@ index 15a007a..3a0f3aa 100644
        name: 'Contacts',
        label: t('SIDEBAR.CONTACTS'),
 diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
-index bf45cdc..0140167 100644
+index bf45cdc..0a6cec2 100644
 --- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
 +++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
 @@ -1,5 +1,5 @@
@@ -76,12 +76,13 @@ index bf45cdc..0140167 100644
  import { useKeyboardEvents } from 'dashboard/composables/useKeyboardEvents';
  import { useCaptain } from 'dashboard/composables/useCaptain';
  import { useTrack } from 'dashboard/composables';
-@@ -9,6 +9,15 @@ import { CAPTAIN_EVENTS } from 'dashboard/helper/AnalyticsHelper/events';
+@@ -9,6 +9,23 @@ import { CAPTAIN_EVENTS } from 'dashboard/helper/AnalyticsHelper/events';
  import NextButton from 'dashboard/components-next/button/Button.vue';
  import EditorModeToggle from './EditorModeToggle.vue';
  import CopilotMenuBar from './CopilotMenuBar.vue';
-+import { useProtonConfig } from 'composables/useProtonConfig';
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
 +import { callAssist } from 'dashboard/api/protonAssist';
++import { useStore } from 'dashboard/composables/store';
 +
 +// Actions intercepted by Proton backend when ai_assist feature is enabled
 +const PROTON_ACTIONS = {
@@ -89,10 +90,17 @@ index bf45cdc..0140167 100644
 +  summarize: 'summarize',
 +  ask_copilot: 'ask',
 +};
++
++// Where each action's result is inserted: the 'reply' box or a private 'note'.
++const PROTON_ACTION_MODE = {
++  reply_suggestion: 'reply',
++  summarize: 'note',
++  ask_copilot: 'reply',
++};
  
  export default {
    name: 'ReplyTopPanel',
-@@ -58,7 +67,7 @@ export default {
+@@ -58,7 +75,7 @@ export default {
        default: false,
      },
    },
@@ -101,11 +109,12 @@ index bf45cdc..0140167 100644
    setup(props, { emit }) {
      const setReplyMode = mode => {
        emit('setReplyMode', mode);
-@@ -79,17 +88,39 @@ export default {
+@@ -79,17 +96,48 @@ export default {
      };
  
      const { captainTasksEnabled } = useCaptain();
 +    const { hasFeature } = useProtonConfig();
++    const store = useStore();
 +    const protonEnabled = computed(() => hasFeature('ai_assist'));
 +    const showAiButton = computed(
 +      () => captainTasksEnabled.value || protonEnabled.value
@@ -121,12 +130,20 @@ index bf45cdc..0140167 100644
 +
 +      if (protonEnabled.value && PROTON_ACTIONS[actionKey]) {
 +        const protonAction = PROTON_ACTIONS[actionKey];
-+        const payload = { conversation_id: props.conversationId };
++        const chat = store.getters.getSelectedChat;
++        const messages = (chat?.messages || [])
++          .filter(m => m.content && [0, 1].includes(m.message_type))
++          .map(m => `${m.message_type === 0 ? 'Customer' : 'Agent'}: ${m.content}`);
++        const payload = {
++          conversation_id: String(props.conversationId),
++          messages,
++        };
 +        if (actionKey === 'ask_copilot' && data) payload.question = data;
 +        try {
 +          const result = await callAssist(protonAction, payload);
 +          const text = result.draft || result.summary || result.answer || '';
-+          if (text) emit('protonAssistResult', text);
++          const mode = PROTON_ACTION_MODE[actionKey] || 'reply';
++          if (text) emit('protonAssistResult', { text, mode });
 +        } catch (err) {
 +          // eslint-disable-next-line no-console
 +          console.error('[proton-assist]', actionKey, 'failed', err);
@@ -144,7 +161,7 @@ index bf45cdc..0140167 100644
          useTrack(CAPTAIN_EVENTS.EDITOR_AI_MENU_OPENED, {
            conversationId: props.conversationId,
            entryPoint: 'top_panel',
-@@ -120,6 +151,8 @@ export default {
+@@ -120,6 +168,8 @@ export default {
        handleNoteClick,
        REPLY_EDITOR_MODES,
        captainTasksEnabled,
@@ -153,7 +170,7 @@ index bf45cdc..0140167 100644
        handleCopilotAction,
        showCopilotMenu,
        copilotToggleRef,
-@@ -167,7 +200,7 @@ export default {
+@@ -167,7 +217,7 @@ export default {
          </span>
        </div>
      </div>
@@ -163,14 +180,39 @@ index bf45cdc..0140167 100644
          <NextButton
            ref="copilotToggleRef"
 diff --git a/app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue b/app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue
-index 6af876c..8af042b 100644
+index 6af876c..fb616d7 100644
 --- a/app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue
 +++ b/app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue
-@@ -1263,6 +1263,7 @@ export default {
+@@ -539,6 +539,24 @@ export default {
+     emitter.off(CMD_AI_ASSIST, this.executeCopilotAction);
+   },
+   methods: {
++    // Proton: route the AI-assist result into the reply box or a private
++    // note depending on the action ('note' for Summarize, 'reply' otherwise).
++    onProtonAssistResult({ text, mode }) {
++      const target =
++        mode === 'note'
++          ? REPLY_EDITOR_MODES.NOTE
++          : REPLY_EDITOR_MODES.REPLY;
++      if (this.replyType !== target) {
++        this.replyType = target;
++        // The replyType watcher reloads the draft for the new mode; set our
++        // text on the next tick so it is not overwritten.
++        this.$nextTick(() => {
++          this.message = text;
++        });
++      } else {
++        this.message = text;
++      }
++    },
+     getDraftKey(
+       conversationId = this.conversationIdByRoute,
+       replyType = this.replyType
+@@ -1263,6 +1281,7 @@ export default {
        @toggle-editor-size="toggleEditorSize"
        @toggle-copilot="copilot.toggleEditor"
        @execute-copilot-action="executeCopilotAction"
-+      @proton-assist-result="message = $event"
++      @proton-assist-result="onProtonAssistResult"
      />
      <ArticleSearchPopover
        v-if="showArticleSearchPopover && connectedPortalSlug"

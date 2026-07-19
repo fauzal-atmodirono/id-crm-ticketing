@@ -71,7 +71,7 @@ index 0000000..5aece94
 +import { computed, ref } from 'vue';
 +import { useRoute } from 'vue-router';
 +import { useMapGetter } from 'dashboard/composables/store';
-+import { useProtonConfig } from 'composables/useProtonConfig';
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
 +
 +const route = useRoute();
 +const frame = ref(null);

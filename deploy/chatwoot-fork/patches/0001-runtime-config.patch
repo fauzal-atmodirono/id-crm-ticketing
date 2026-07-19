@@ -1,8 +1,8 @@
-diff --git a/app/javascript/composables/useProtonConfig.js b/app/javascript/composables/useProtonConfig.js
+diff --git a/app/javascript/dashboard/composables/useProtonConfig.js b/app/javascript/dashboard/composables/useProtonConfig.js
 new file mode 100644
 index 0000000..d93ec0e
 --- /dev/null
-+++ b/app/javascript/composables/useProtonConfig.js
++++ b/app/javascript/dashboard/composables/useProtonConfig.js
 @@ -0,0 +1,8 @@
 +export function useProtonConfig() {
 +  const cfg = window.__PROTON_CONFIG__ || { backendUrl: '', backendKey: '', features: [] };

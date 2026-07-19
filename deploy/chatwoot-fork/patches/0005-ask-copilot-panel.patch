@@ -1,0 +1,296 @@
+diff --git a/app/javascript/dashboard/api/protonCopilot.js b/app/javascript/dashboard/api/protonCopilot.js
+new file mode 100644
+index 0000000..317d38b
+--- /dev/null
++++ b/app/javascript/dashboard/api/protonCopilot.js
+@@ -0,0 +1,26 @@
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++
++// Ask Copilot (multi-turn). thread: [{ role: 'user'|'assistant', content }].
++// Returns { answer, tool_calls } from the Proton backend's /assist/copilot.
++export async function askCopilot(conversationId, thread) {
++  const { backendUrl, backendKey } = useProtonConfig();
++  if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
++
++  const response = await fetch(`${backendUrl}/assist/copilot`, {
++    method: 'POST',
++    headers: {
++      'Content-Type': 'application/json',
++      'x-api-key': backendKey,
++    },
++    body: JSON.stringify({
++      conversation_id: String(conversationId),
++      thread,
++    }),
++  });
++
++  if (!response.ok) {
++    const text = await response.text();
++    throw new Error(`copilot failed: ${response.status} ${text}`);
++  }
++  return response.json();
++}
+diff --git a/app/javascript/dashboard/components/copilot/ProtonCopilotPanel.vue b/app/javascript/dashboard/components/copilot/ProtonCopilotPanel.vue
+new file mode 100644
+index 0000000..a29a654
+--- /dev/null
++++ b/app/javascript/dashboard/components/copilot/ProtonCopilotPanel.vue
+@@ -0,0 +1,163 @@
++<!-- ProtonCopilotPanel.vue — OUR file. A self-contained agent-facing Ask Copilot
++     chat panel backed by the Proton /assist/copilot endpoint. Deliberately does
++     NOT reuse the Captain Copilot.vue (which gates its input on Captain
++     assistants and writes Captain-specific ui settings). -->
++<script setup>
++import { ref, computed, nextTick } from 'vue';
++import { useUISettings } from 'dashboard/composables/useUISettings';
++import { emitter } from 'shared/helpers/mitt';
++import { BUS_EVENTS } from 'shared/constants/busEvents';
++import { askCopilot } from 'dashboard/api/protonCopilot';
++
++const props = defineProps({
++  conversationId: { type: [String, Number], required: true },
++});
++
++const { updateUISettings } = useUISettings();
++
++// { id, role: 'user' | 'assistant', content, tools }
++const messages = ref([]);
++const input = ref('');
++const loading = ref(false);
++const listEl = ref(null);
++let seq = 0;
++
++const canSend = computed(
++  () => input.value.trim().length > 0 && !loading.value
++);
++
++const scrollToBottom = async () => {
++  await nextTick();
++  if (listEl.value) listEl.value.scrollTop = listEl.value.scrollHeight;
++};
++
++const send = async () => {
++  const text = input.value.trim();
++  if (!text || loading.value) return;
++  input.value = '';
++  messages.value.push({ id: (seq += 1), role: 'user', content: text });
++  loading.value = true;
++  await scrollToBottom();
++  try {
++    const thread = messages.value
++      .filter(m => m.role === 'user' || m.role === 'assistant')
++      .map(m => ({ role: m.role, content: m.content }));
++    const data = await askCopilot(props.conversationId, thread);
++    messages.value.push({
++      id: (seq += 1),
++      role: 'assistant',
++      content: data.answer || '',
++      tools: Array.from(new Set(data.tool_calls || [])),
++    });
++  } catch (err) {
++    messages.value.push({
++      id: (seq += 1),
++      role: 'assistant',
++      content: `Sorry, something went wrong. ${err.message}`,
++      tools: [],
++    });
++  } finally {
++    loading.value = false;
++    await scrollToBottom();
++  }
++};
++
++const insertReply = text => {
++  emitter.emit(BUS_EVENTS.INSERT_INTO_RICH_EDITOR, text);
++};
++
++const reset = () => {
++  messages.value = [];
++};
++
++const close = () => {
++  updateUISettings({ is_proton_copilot_open: false });
++};
++
++const onKeydown = e => {
++  if (e.key === 'Enter' && !e.shiftKey) {
++    e.preventDefault();
++    send();
++  }
++};
++</script>
++
++<template>
++  <div
++    class="flex flex-col flex-shrink-0 w-80 h-full border-l border-n-weak bg-n-background"
++  >
++    <div
++      class="flex items-center justify-between flex-shrink-0 px-4 border-b h-14 border-n-weak"
++    >
++      <span class="font-medium text-n-slate-12">Copilot</span>
++      <div class="flex items-center gap-3">
++        <button
++          v-if="messages.length"
++          class="text-xs text-n-slate-11 hover:text-n-slate-12"
++          @click="reset"
++        >
++          Reset
++        </button>
++        <button
++          class="text-lg leading-none text-n-slate-11 hover:text-n-slate-12"
++          aria-label="Close"
++          @click="close"
++        >
++          &times;
++        </button>
++      </div>
++    </div>
++
++    <div ref="listEl" class="flex-1 px-4 py-4 space-y-4 overflow-y-auto">
++      <p v-if="!messages.length" class="mt-6 text-sm text-center text-n-slate-11">
++        Ask me anything about this conversation — the customer, their past
++        tickets, or your knowledge base.
++      </p>
++      <div v-for="m in messages" :key="m.id" class="flex flex-col">
++        <div
++          class="max-w-[85%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap"
++          :class="
++            m.role === 'user'
++              ? 'self-end bg-n-brand text-white'
++              : 'self-start bg-n-slate-3 text-n-slate-12'
++          "
++        >
++          {{ m.content }}
++        </div>
++        <span
++          v-if="m.role === 'assistant' && m.tools && m.tools.length"
++          class="self-start mt-1 text-[11px] text-n-slate-10"
++        >
++          Looked at: {{ m.tools.join(', ') }}
++        </span>
++        <button
++          v-if="m.role === 'assistant' && m.content"
++          class="self-start mt-1 text-xs text-n-brand hover:underline"
++          @click="insertReply(m.content)"
++        >
++          Insert into reply
++        </button>
++      </div>
++      <p v-if="loading" class="self-start text-sm text-n-slate-10">Thinking…</p>
++    </div>
++
++    <div class="flex-shrink-0 p-3 border-t border-n-weak">
++      <textarea
++        v-model="input"
++        rows="2"
++        placeholder="Ask about this conversation…"
++        class="w-full px-3 py-2 text-sm border rounded-lg resize-none border-n-weak bg-n-alpha-black1 focus:outline-none"
++        @keydown="onKeydown"
++      />
++      <div class="flex justify-end mt-2">
++        <button
++          class="px-3 py-1.5 text-sm font-medium text-white rounded-lg bg-n-brand disabled:opacity-50"
++          :disabled="!canSend"
++          @click="send"
++        >
++          Send
++        </button>
++      </div>
++    </div>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+index 0a6cec2..9547044 100644
+--- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
++++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+@@ -11,6 +11,7 @@ import EditorModeToggle from './EditorModeToggle.vue';
+ import CopilotMenuBar from './CopilotMenuBar.vue';
+ import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
+ import { callAssist } from 'dashboard/api/protonAssist';
++import { useUISettings } from 'dashboard/composables/useUISettings';
+ import { useStore } from 'dashboard/composables/store';
+ 
+ // Actions intercepted by Proton backend when ai_assist feature is enabled
+@@ -97,6 +98,7 @@ export default {
+ 
+     const { captainTasksEnabled } = useCaptain();
+     const { hasFeature } = useProtonConfig();
++    const { updateUISettings } = useUISettings();
+     const store = useStore();
+     const protonEnabled = computed(() => hasFeature('ai_assist'));
+     const showAiButton = computed(
+@@ -109,6 +111,13 @@ export default {
+     const handleCopilotAction = async (actionKey, data) => {
+       showCopilotMenu.value = false;
+ 
++      // Proton: Ask Copilot opens the multi-turn chat panel instead of
++      // the one-shot /assist/ask, when the copilot feature is enabled.
++      if (actionKey === 'ask_copilot' && hasFeature('copilot')) {
++        updateUISettings({ is_proton_copilot_open: true });
++        return;
++      }
++
+       if (protonEnabled.value && PROTON_ACTIONS[actionKey]) {
+         const protonAction = PROTON_ACTIONS[actionKey];
+         const chat = store.getters.getSelectedChat;
+diff --git a/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue b/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue
+index 31b5fa2..e8ab332 100644
+--- a/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue
++++ b/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue
+@@ -10,6 +10,8 @@ import CmdBarConversationSnooze from 'dashboard/routes/dashboard/commands/CmdBar
+ import { emitter } from 'shared/helpers/mitt';
+ import SidepanelSwitch from 'dashboard/components-next/Conversation/SidepanelSwitch.vue';
+ import ConversationSidebar from 'dashboard/components/widgets/conversation/ConversationSidebar.vue';
++import ProtonCopilotPanel from 'dashboard/components/copilot/ProtonCopilotPanel.vue';
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
+ 
+ export default {
+   components: {
+@@ -18,6 +20,7 @@ export default {
+     CmdBarConversationSnooze,
+     SidepanelSwitch,
+     ConversationSidebar,
++    ProtonCopilotPanel,
+   },
+   beforeRouteLeave(to, from, next) {
+     // Clear selected state if navigating away from a conversation to a route without a conversationId to prevent stale data issues
+@@ -56,11 +59,13 @@ export default {
+   setup() {
+     const { uiSettings, updateUISettings } = useUISettings();
+     const { accountId } = useAccount();
++    const { hasFeature: protonHasFeature } = useProtonConfig();
+ 
+     return {
+       uiSettings,
+       updateUISettings,
+       accountId,
++      protonCopilotEnabled: protonHasFeature('copilot'),
+     };
+   },
+   data() {
+@@ -98,6 +103,14 @@ export default {
+       // preference yet; an explicit open/close still persists and wins.
+       return isContactSidebarOpen === undefined ? true : isContactSidebarOpen;
+     },
++
++    showProtonCopilot() {
++      return (
++        this.protonCopilotEnabled &&
++        !!this.currentChat.id &&
++        !!this.uiSettings.is_proton_copilot_open
++      );
++    },
+   },
+   watch: {
+     conversationId() {
+@@ -216,6 +229,10 @@ export default {
+       <SidepanelSwitch v-if="currentChat.id" />
+     </ConversationBox>
+     <ConversationSidebar v-if="shouldShowSidebar" :current-chat="currentChat" />
++    <ProtonCopilotPanel
++      v-if="showProtonCopilot"
++      :conversation-id="currentChat.id"
++    />
+     <CmdBarConversationSnooze />
+   </section>
+ </template>

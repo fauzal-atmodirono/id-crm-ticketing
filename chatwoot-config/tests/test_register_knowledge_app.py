@@ -35,7 +35,7 @@ def test_creates_app_when_not_existing():
     import json
     body = json.loads(posted.content)
     assert body["title"] == "Knowledge"
-    assert body["content"][0]["type"] == "iframe"
+    assert body["content"][0]["type"] == "frame"
     url = body["content"][0]["url"]
     assert "/apps/knowledge-manager" in url
     assert "backend=" in url

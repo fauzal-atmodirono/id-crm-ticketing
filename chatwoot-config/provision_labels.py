@@ -51,7 +51,14 @@ class ChatwootClient:
         self._base = base_url.rstrip("/")
         self._account_id = account_id
         self._client = httpx.Client(
-            headers={"api_access_token": api_token, "Content-Type": "application/json"},
+            # Send the token in BOTH header forms: some reverse proxies (Caddy)
+            # strip headers whose names contain underscores, so the dash form
+            # `Api-Access-Token` is what actually reaches Rails through the proxy.
+            headers={
+                "api_access_token": api_token,
+                "Api-Access-Token": api_token,
+                "Content-Type": "application/json",
+            },
             timeout=30.0,
         )
 

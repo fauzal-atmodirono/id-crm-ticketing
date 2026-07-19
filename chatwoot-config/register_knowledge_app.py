@@ -56,7 +56,9 @@ def register_dashboard_app(
         if not dry_run:
             create_r = client._client.post(
                 client._url("dashboard_apps"),
-                json={"title": cfg.title, "content": [{"url": cfg.url, "type": "iframe"}]},
+                # Chatwoot's dashboard_app content schema requires type == "frame"
+                # (not "iframe") and only the url+type keys.
+                json={"title": cfg.title, "content": [{"url": cfg.url, "type": "frame"}]},
             )
             client._raise_for_status(create_r)
         return "created"

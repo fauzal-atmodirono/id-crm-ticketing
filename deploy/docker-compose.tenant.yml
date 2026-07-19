@@ -243,6 +243,10 @@ services:
       AUTO_RESOLVE: ${AUTO_RESOLVE}
       ZAMMAD_AI_DRAFTS: ${ZAMMAD_AI_DRAFTS}
       AGENT_DATABASE_URL: postgresql+psycopg://agent_${TENANT}:${AGENT_DB_PASSWORD}@postgres:5432/agent_${TENANT}
+    volumes:
+      # Serve the static in-Chatwoot dashboard apps (Knowledge Manager,
+      # Taxonomy Manager) via the agent at /apps/<name>/.
+      - ../apps:/srv/apps:ro
     networks:
       platform:
         aliases:

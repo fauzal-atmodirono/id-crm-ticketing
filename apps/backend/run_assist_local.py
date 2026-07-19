@@ -24,9 +24,11 @@ from chatbot.features.assist.router import build_assist_router
 from chatbot.features.chat.adapters.live_faq import InMemoryLiveFaqStore, VertexEmbedder
 from chatbot.features.chat.adapters.merged_knowledge import MergedKnowledgeAdapter
 from chatbot.features.chat.adapters.assistants_store import build_assistants_store
+from chatbot.features.chat.adapters.tenant_settings_store import build_tenant_settings_store
 from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.kb_assistants_router import build_kb_assistants_router
 from chatbot.features.chat.kb_documents_router import build_kb_documents_router
+from chatbot.features.chat.kb_settings_router import build_kb_settings_router
 from chatbot.features.chat.models import KbArticle
 from chatbot.platform.config import get_settings
 
@@ -88,6 +90,8 @@ def build() -> FastAPI:
     app.include_router(build_kb_documents_router(settings))
     assistants_store = build_assistants_store(settings)
     app.include_router(build_kb_assistants_router(assistants_store, settings))
+    tenant_settings_store = build_tenant_settings_store(settings)
+    app.include_router(build_kb_settings_router(tenant_settings_store, settings))
     app.include_router(
         build_assist_router(settings, kp, genai)
     )

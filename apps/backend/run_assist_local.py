@@ -118,7 +118,13 @@ def build() -> FastAPI:
         )
     )
     app.include_router(
-        build_assist_router(settings, kp, genai)
+        build_assist_router(
+            settings,
+            kp,
+            genai,
+            assistants_store=assistants_store,
+            tenant_settings_store=tenant_settings_store,
+        )
     )
     app.include_router(
         build_copilot_router(

@@ -78,10 +78,24 @@ def _build_genai_client(settings: Settings) -> object | None:
         return None
 
 
-def _wire_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings) -> None:
+def _wire_assist(
+    app: FastAPI,
+    knowledge_port: KnowledgePort,
+    settings: Settings,
+    assistants_store: object | None = None,
+    tenant_settings_store: object | None = None,
+) -> None:
     """Wire the three /assist/* endpoints and add Chatwoot origins to CORS."""
     genai_client = _build_genai_client(settings)
-    app.include_router(build_assist_router(settings, knowledge_port, genai_client))
+    app.include_router(
+        build_assist_router(
+            settings,
+            knowledge_port,
+            genai_client,
+            assistants_store=assistants_store,  # type: ignore[arg-type]
+            tenant_settings_store=tenant_settings_store,  # type: ignore[arg-type]
+        )
+    )
 
     # Extend the existing CORS middleware to allow Chatwoot origins to call
     # /assist/* cross-origin. The CORSMiddleware is already added with
@@ -369,7 +383,13 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     )
 
     # --- Proton AI-assist (rewired Captain AI) ---
-    _wire_assist(app, assist_knowledge_port, settings)
+    _wire_assist(
+        app,
+        assist_knowledge_port,
+        settings,
+        assistants_store=_shared_assistants_store,
+        tenant_settings_store=_shared_tenant_settings_store,
+    )
 
     # --- Ask Copilot (multi-turn) ---
     _wire_copilot(

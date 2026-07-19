@@ -1,0 +1,340 @@
+"""Tests for custom webhook tool execution in ToolExecutor.
+
+All HTTP is mocked via respx so no real network calls are made.  Each test
+verifies exactly one safety or functional property so failures are easy to
+diagnose.
+"""
+
+from __future__ import annotations
+
+import json
+
+import httpx
+import respx
+
+from chatbot.features.assist.copilot_tools import ToolExecutor
+from chatbot.features.chat.adapters.tools_store import CustomTool, InMemoryToolsStore
+from chatbot.features.chat.models import KbArticle
+from chatbot.platform.config import Settings
+
+# ---------------------------------------------------------------------------
+# Minimal stubs
+# ---------------------------------------------------------------------------
+
+
+class _FakeCtx:
+    async def get_transcript(self, conversation_id: str):
+        return []
+
+    async def get_contact(self, conversation_id: str):
+        return {}
+
+    async def list_contact_conversations(self, conversation_id: str):
+        return []
+
+
+class _FakeKb:
+    async def search_kb(self, query: str, limit: int = 3):
+        return [KbArticle(title="T", content="C", url="http://u")]
+
+
+def _settings(**kw) -> Settings:
+    return Settings(chatwoot_enabled=False, proton_backend_key="k", **kw)
+
+
+def _executor(store: InMemoryToolsStore, settings: Settings | None = None) -> ToolExecutor:
+    return ToolExecutor(
+        _FakeCtx(),
+        _FakeKb(),
+        conversation_id="42",
+        tools_store=store,
+        settings=settings or _settings(),
+    )
+
+
+def _tool(
+    slug: str = "custom_check_order",
+    endpoint_url: str = "https://api.example.com/orders",
+    http_method: str = "POST",
+    auth_type: str = "none",
+    auth_config: dict | None = None,
+    request_template: str = "",
+    response_template: str = "",
+    enabled: bool = True,
+    param_schema: dict | None = None,
+) -> CustomTool:
+    return CustomTool(
+        slug=slug,
+        title="Check Order",
+        description="Lookup an order",
+        endpoint_url=endpoint_url,
+        http_method=http_method,
+        auth_type=auth_type,
+        auth_config=auth_config or {},
+        request_template=request_template,
+        response_template=response_template,
+        param_schema=param_schema or {"type": "object", "properties": {}},
+        enabled=enabled,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Happy-path: JSON response returned as {"result": ...}
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_webhook_tool_happy_path_post() -> None:
+    """ToolExecutor issues a POST to the endpoint and returns {"result": ...}."""
+    store = InMemoryToolsStore()
+    await store.create_custom(_tool())
+
+    respx.post("https://api.example.com/orders").mock(
+        return_value=httpx.Response(200, json={"status": "shipped"})
+    )
+
+    ex = _executor(store)
+    result = await ex.run("custom_check_order", {"order_id": "123"})
+    assert result == {"result": {"status": "shipped"}}
+
+
+@respx.mock
+async def test_webhook_tool_happy_path_get() -> None:
+    """GET method is used when http_method is GET."""
+    store = InMemoryToolsStore()
+    await store.create_custom(_tool(http_method="GET"))
+
+    respx.get("https://api.example.com/orders").mock(
+        return_value=httpx.Response(200, json={"ok": True})
+    )
+
+    ex = _executor(store)
+    result = await ex.run("custom_check_order", {})
+    assert result == {"result": {"ok": True}}
+
+
+# ---------------------------------------------------------------------------
+# Auth headers
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_bearer_auth_header_sent() -> None:
+    store = InMemoryToolsStore()
+    await store.create_custom(
+        _tool(auth_type="bearer", auth_config={"token": "mysecret"})
+    )
+
+    route = respx.post("https://api.example.com/orders").mock(
+        return_value=httpx.Response(200, json={"ok": True})
+    )
+
+    ex = _executor(store)
+    await ex.run("custom_check_order", {})
+
+    request = route.calls.last.request
+    assert request.headers["authorization"] == "Bearer mysecret"
+
+
+@respx.mock
+async def test_api_key_auth_header_sent() -> None:
+    store = InMemoryToolsStore()
+    await store.create_custom(
+        _tool(auth_type="api_key", auth_config={"header": "X-Token", "value": "abc"})
+    )
+
+    route = respx.post("https://api.example.com/orders").mock(
+        return_value=httpx.Response(200, json={"ok": True})
+    )
+
+    ex = _executor(store)
+    await ex.run("custom_check_order", {})
+
+    request = route.calls.last.request
+    assert request.headers["x-token"] == "abc"
+
+
+@respx.mock
+async def test_basic_auth_credentials_sent() -> None:
+    store = InMemoryToolsStore()
+    await store.create_custom(
+        _tool(auth_type="basic", auth_config={"username": "user", "password": "pass"})
+    )
+
+    route = respx.post("https://api.example.com/orders").mock(
+        return_value=httpx.Response(200, json={"ok": True})
+    )
+
+    ex = _executor(store)
+    await ex.run("custom_check_order", {})
+
+    request = route.calls.last.request
+    # httpx encodes Basic auth in the Authorization header
+    assert "Authorization" in request.headers or "authorization" in request.headers
+
+
+# ---------------------------------------------------------------------------
+# Safety: non-HTTPS URL → error, no HTTP call
+# ---------------------------------------------------------------------------
+
+
+async def test_non_https_url_returns_error_no_call() -> None:
+    store = InMemoryToolsStore()
+    await store.create_custom(_tool(endpoint_url="http://evil.example.com/hook"))
+
+    ex = _executor(store)
+    result = await ex.run("custom_check_order", {})
+
+    assert "error" in result
+    assert "HTTPS" in result["error"] or "https" in result["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Safety: host allowlist
+# ---------------------------------------------------------------------------
+
+
+async def test_disallowed_host_returns_error() -> None:
+    store = InMemoryToolsStore()
+    await store.create_custom(_tool(endpoint_url="https://blocked.example.com/hook"))
+
+    settings = _settings(custom_tool_allowed_hosts=["allowed.example.com"])
+    ex = _executor(store, settings=settings)
+    result = await ex.run("custom_check_order", {})
+
+    assert "error" in result
+    assert "blocked.example.com" in result["error"] or "allowed" in result["error"].lower()
+
+
+@respx.mock
+async def test_allowed_host_succeeds() -> None:
+    store = InMemoryToolsStore()
+    await store.create_custom(_tool(endpoint_url="https://allowed.example.com/hook"))
+
+    respx.post("https://allowed.example.com/hook").mock(
+        return_value=httpx.Response(200, json={"ok": True})
+    )
+
+    settings = _settings(custom_tool_allowed_hosts=["allowed.example.com"])
+    ex = _executor(store, settings=settings)
+    result = await ex.run("custom_check_order", {})
+
+    assert result == {"result": {"ok": True}}
+
+
+# ---------------------------------------------------------------------------
+# Safety: timeout → error no raise
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_timeout_returns_error_no_raise() -> None:
+    store = InMemoryToolsStore()
+    await store.create_custom(_tool())
+
+    respx.post("https://api.example.com/orders").mock(
+        side_effect=httpx.TimeoutException("timed out")
+    )
+
+    ex = _executor(store)
+    result = await ex.run("custom_check_order", {})
+
+    assert "error" in result
+    assert "timed out" in result["error"] or "timeout" in result["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Safety: non-2xx → error no raise
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_non_2xx_returns_error() -> None:
+    store = InMemoryToolsStore()
+    await store.create_custom(_tool())
+
+    respx.post("https://api.example.com/orders").mock(
+        return_value=httpx.Response(500, text="Internal Server Error")
+    )
+
+    ex = _executor(store)
+    result = await ex.run("custom_check_order", {})
+
+    assert "error" in result
+    assert "500" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Safety: oversized response is capped (not errored)
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_oversized_response_is_capped() -> None:
+    """A response larger than 16 KB is truncated; executor still returns a result."""
+    store = InMemoryToolsStore()
+    # Return plain text so we can check truncation without JSON parse issues.
+    await store.create_custom(_tool(response_template=""))
+
+    big_text = "x" * (20 * 1024)  # 20 KB
+    respx.post("https://api.example.com/orders").mock(
+        return_value=httpx.Response(200, text=big_text)
+    )
+
+    ex = _executor(store)
+    result = await ex.run("custom_check_order", {})
+
+    # Should succeed (result key), and the value must not exceed the cap.
+    assert "result" in result
+    # The result is the truncated text (or JSON-parsed; either way len ≤ 16 KB).
+    raw = result["result"]
+    assert len(str(raw)) <= 16 * 1024 + 50  # small margin for JSON escaping
+
+
+# ---------------------------------------------------------------------------
+# Disabled tool → falls through to unknown-tool error
+# ---------------------------------------------------------------------------
+
+
+async def test_disabled_tool_returns_unknown_tool_error() -> None:
+    store = InMemoryToolsStore()
+    await store.create_custom(_tool(enabled=False))
+
+    ex = _executor(store)
+    result = await ex.run("custom_check_order", {})
+
+    assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# No tools_store → unknown tool falls through as before
+# ---------------------------------------------------------------------------
+
+
+async def test_no_tools_store_unknown_tool_error() -> None:
+    ex = ToolExecutor(_FakeCtx(), _FakeKb(), conversation_id="42")
+    result = await ex.run("custom_check_order", {})
+    assert result == {"error": "unknown tool: custom_check_order"}
+
+
+# ---------------------------------------------------------------------------
+# request_template rendering
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_request_template_rendered_with_args() -> None:
+    """request_template placeholders {{key}} are replaced with arg values."""
+    store = InMemoryToolsStore()
+    template = '{"id": "{{order_id}}"}'
+    await store.create_custom(_tool(request_template=template))
+
+    route = respx.post("https://api.example.com/orders").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+
+    ex = _executor(store)
+    await ex.run("custom_check_order", {"order_id": "ABC-123"})
+
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body == {"id": "ABC-123"}

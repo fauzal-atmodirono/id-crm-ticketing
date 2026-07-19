@@ -3,9 +3,10 @@
 Resolves an Assistant from the store (with default fallback), then
 builds the system prompt and tool declarations for a single Gemini call.
 
-Custom webhook tools and per-assistant persona additions (guardrails,
-scenarios) are handled by later tasks — this module covers only the
-system prompt and built-in tool subset.
+Custom webhook tools are assembled by passing a pre-fetched list of
+CustomTool objects to build_tool_declarations; this keeps the function
+sync (no store I/O) and lets the caller (copilot_router) await the store
+once, outside the tight config-build path.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from chatbot.features.chat.adapters.assistants_store import Assistant, AssistantsStorePort
+    from chatbot.features.chat.adapters.tools_store import CustomTool
 
 from chatbot.features.assist.copilot_tools import COPILOT_TOOLS
 
@@ -77,9 +79,14 @@ def build_system_prompt(assistant: Assistant) -> str:
     return "\n".join(parts)
 
 
-def build_tool_declarations(assistant: Assistant) -> list[dict[str, Any]]:
-    """Return the function-declaration dicts for the enabled built-in tools.
+def build_tool_declarations(
+    assistant: Assistant,
+    custom_tools: list[CustomTool] | None = None,
+) -> list[dict[str, Any]]:
+    """Return the function-declaration dicts for the enabled tools.
 
+    Built-in tools
+    --------------
     If *enabled_builtin_tools* is empty/falsy, ALL of COPILOT_TOOLS are
     returned (safe default — preserves existing behaviour for the seeded
     default assistant whose list is populated with all names).
@@ -89,15 +96,37 @@ def build_tool_declarations(assistant: Assistant) -> list[dict[str, Any]]:
 
     Additionally, if ``feature_faq`` is False the ``search_knowledge_base``
     tool is excluded from the result regardless of the enabled-tools list.
+
+    Custom webhook tools
+    --------------------
+    *custom_tools* is a pre-fetched list of all CustomTool objects for the
+    tenant (typically ``await tools_store.list_custom()``).  For each slug in
+    ``assistant.config.enabled_custom_tools``, if a matching CustomTool is
+    found in *custom_tools* AND it is enabled, a function declaration is
+    appended after the built-ins.  Passing None (default) → built-ins only,
+    which is fully back-compatible with callers that predate custom tools.
     """
     enabled = assistant.config.enabled_builtin_tools
     if not enabled:
-        tools = list(COPILOT_TOOLS)
+        tools: list[dict[str, Any]] = list(COPILOT_TOOLS)
     else:
         enabled_set = set(enabled)
         tools = [t for t in COPILOT_TOOLS if t["name"] in enabled_set]
 
     if not assistant.config.feature_faq:
         tools = [t for t in tools if t["name"] != "search_knowledge_base"]
+
+    if custom_tools is not None:
+        custom_by_slug = {ct.slug: ct for ct in custom_tools}
+        for slug in (assistant.config.enabled_custom_tools or []):
+            ct = custom_by_slug.get(slug)
+            if ct is not None and ct.enabled:
+                tools.append(
+                    {
+                        "name": ct.slug,
+                        "description": ct.description,
+                        "parameters": ct.param_schema,
+                    }
+                )
 
     return tools

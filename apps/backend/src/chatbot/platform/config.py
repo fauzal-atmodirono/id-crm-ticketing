@@ -279,6 +279,10 @@ class Settings(BaseSettings):
     # Hard cap on tool-call rounds per copilot turn, so a misbehaving model
     # cannot loop forever. Each round is one Gemini call.
     copilot_max_tool_iterations: int = 5
+    # Optional allowlist of hostnames that custom webhook tools may call.
+    # Empty list (default) = any HTTPS host is permitted (admin-trusted input).
+    # Set e.g. ["api.acme.com", "hooks.slack.com"] to restrict outbound calls.
+    custom_tool_allowed_hosts: list[str] = []
 
     # Settings configurations
     model_config = SettingsConfigDict(

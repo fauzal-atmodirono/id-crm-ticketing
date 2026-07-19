@@ -283,3 +283,92 @@ def test_build_tool_declarations_feature_faq_default_keeps_search_knowledge_base
     result = build_tool_declarations(assistant)
     names = [t["name"] for t in result]
     assert "search_knowledge_base" in names
+
+
+# ---------------------------------------------------------------------------
+# build_tool_declarations — custom webhook tools
+# ---------------------------------------------------------------------------
+
+from chatbot.features.chat.adapters.tools_store import CustomTool  # noqa: E402
+
+
+def _make_custom_tool(slug: str, enabled: bool = True) -> CustomTool:
+    return CustomTool(
+        slug=slug,
+        title=slug.replace("_", " ").title(),
+        description=f"Description for {slug}",
+        endpoint_url="https://example.com/hook",
+        http_method="POST",
+        auth_type="none",
+        param_schema={"type": "object", "properties": {}},
+        enabled=enabled,
+    )
+
+
+def _assistant_with_custom_tools(slugs: list[str]) -> Assistant:
+    return Assistant(
+        id="asst_test",
+        name="Test",
+        description="",
+        product_name="",
+        config=AssistantConfig(enabled_custom_tools=slugs),
+        enabled=True,
+        is_default=False,
+        created_at=datetime.now(UTC).isoformat(),
+    )
+
+
+def test_build_tool_declarations_appends_enabled_custom_tool() -> None:
+    """An enabled custom tool in enabled_custom_tools is appended after built-ins."""
+    ct = _make_custom_tool("custom_check_order")
+    assistant = _assistant_with_custom_tools(["custom_check_order"])
+    result = build_tool_declarations(assistant, custom_tools=[ct])
+    names = [t["name"] for t in result]
+    assert "custom_check_order" in names
+    # Built-ins still present (feature_faq default True).
+    assert "search_knowledge_base" in names
+
+
+def test_build_tool_declarations_excludes_disabled_custom_tool() -> None:
+    """A disabled custom tool must NOT appear in declarations even if in enabled_custom_tools."""
+    ct = _make_custom_tool("custom_check_order", enabled=False)
+    assistant = _assistant_with_custom_tools(["custom_check_order"])
+    result = build_tool_declarations(assistant, custom_tools=[ct])
+    names = [t["name"] for t in result]
+    assert "custom_check_order" not in names
+
+
+def test_build_tool_declarations_excludes_not_in_enabled_list() -> None:
+    """A custom tool not in assistant's enabled_custom_tools is excluded."""
+    ct = _make_custom_tool("custom_check_order")
+    assistant = _assistant_with_custom_tools([])  # empty → not opted in
+    result = build_tool_declarations(assistant, custom_tools=[ct])
+    names = [t["name"] for t in result]
+    assert "custom_check_order" not in names
+
+
+def test_build_tool_declarations_none_custom_tools_returns_builtins_only() -> None:
+    """Passing custom_tools=None is back-compat and returns built-ins only."""
+    assistant = _assistant_with_tools([])
+    result = build_tool_declarations(assistant, custom_tools=None)
+    assert result == COPILOT_TOOLS
+
+
+def test_build_tool_declarations_custom_tool_declaration_shape() -> None:
+    """Custom tool declaration must expose name, description, and parameters."""
+    param_schema = {"type": "object", "properties": {"order_id": {"type": "string"}}, "required": ["order_id"]}
+    ct = CustomTool(
+        slug="custom_check_order",
+        title="Check Order",
+        description="Checks an order status.",
+        endpoint_url="https://api.example.com/orders",
+        http_method="GET",
+        auth_type="none",
+        param_schema=param_schema,
+        enabled=True,
+    )
+    assistant = _assistant_with_custom_tools(["custom_check_order"])
+    result = build_tool_declarations(assistant, custom_tools=[ct])
+    custom_decl = next(t for t in result if t["name"] == "custom_check_order")
+    assert custom_decl["description"] == "Checks an order status."
+    assert custom_decl["parameters"] == param_schema

@@ -27,6 +27,7 @@ from chatbot.features.chat.settings_facade import get_effective_value
 if TYPE_CHECKING:
     from chatbot.features.chat.adapters.assistants_store import AssistantsStorePort
     from chatbot.features.chat.adapters.tenant_settings_store import TenantSettingsStorePort
+    from chatbot.features.chat.adapters.tools_store import ToolsStorePort
     from chatbot.features.chat.ports import KnowledgePort
     from chatbot.platform.config import Settings
 
@@ -56,6 +57,7 @@ def build_copilot_router(
     genai_client: Any,
     assistants_store: AssistantsStorePort,
     tenant_settings_store: TenantSettingsStorePort | None = None,
+    tools_store: ToolsStorePort | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/assist", tags=["copilot"])
 
@@ -84,8 +86,16 @@ def build_copilot_router(
         _authorize(x_api_key)
         _log.info("assist_copilot", conv_id=req.conversation_id, turns=len(req.thread))
 
+        # Pre-fetch custom tools once per request so build_tool_declarations
+        # stays sync and ToolExecutor can look them up without extra I/O.
+        custom_tools = await tools_store.list_custom() if tools_store is not None else None
+
         executor = ToolExecutor(
-            ChatwootContextClient(settings), knowledge_port, req.conversation_id
+            ChatwootContextClient(settings),
+            knowledge_port,
+            req.conversation_id,
+            tools_store=tools_store,
+            settings=settings,
         )
         assistant = await resolve_assistant(assistants_store, req.assistant_id)
         contents = _seed_contents(req.thread)
@@ -102,7 +112,7 @@ def build_copilot_router(
 
         config = {
             "system_instruction": build_system_prompt(assistant),
-            "tools": [{"function_declarations": build_tool_declarations(assistant)}],
+            "tools": [{"function_declarations": build_tool_declarations(assistant, custom_tools=custom_tools)}],
             "temperature": assistant.config.temperature,
         }
 

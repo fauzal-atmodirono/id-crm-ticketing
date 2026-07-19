@@ -111,7 +111,8 @@ def _wire_copilot(app: FastAPI, knowledge_port: KnowledgePort, settings: Setting
     genai_client = _build_genai_client(settings)
     assistants_store = build_assistants_store(settings)
     tenant_settings_store = build_tenant_settings_store(settings)
-    app.include_router(build_copilot_router(settings, knowledge_port, genai_client, assistants_store, tenant_settings_store))
+    tools_store = build_tools_store(settings)
+    app.include_router(build_copilot_router(settings, knowledge_port, genai_client, assistants_store, tenant_settings_store, tools_store=tools_store))
 
 
 def _wire_agent_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings) -> None:

@@ -6,7 +6,7 @@ from chatbot.features.chat.case_state import CaseState, record_transition
 
 def test_case_state_has_wip() -> None:
     assert CaseState.WIP == "WIP"
-    assert {s.value for s in CaseState} == {"NEW", "OPEN", "WIP", "PENDING", "SOLVED"}
+    assert {s.value for s in CaseState} == {"NEW", "OPEN", "WIP", "PENDING", "TEMP_CLOSED", "SOLVED"}
 
 
 @pytest.mark.asyncio

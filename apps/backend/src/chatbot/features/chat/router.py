@@ -28,7 +28,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
-from chatbot.features.chat.case_state import CaseState, record_transition
+from chatbot.features.chat.case_state import CHATWOOT_CASE_STATE_ATTR, CaseState, record_transition
 from chatbot.features.chat.handoff_bridge import HandoffBridge, SurveyEvent
 from chatbot.features.chat.models import AgentMessageEvent
 from chatbot.features.chat.phone.bridge import PhoneBridge
@@ -498,6 +498,19 @@ class ChatRouter:
             )
         )
         _log.info("chatwoot_status_transition_logged", conv_id=conv_id, to_state=to_state.value)
+
+        # Surface the case state in the Chatwoot right panel as a custom attribute.
+        # This is best-effort: a failure here must not break the webhook handler.
+        try:
+            ticketing = self.orchestrator._ticketing_port
+            if hasattr(ticketing, "_request"):
+                await ticketing._request(
+                    "POST",
+                    f"/conversations/{conv_id}/custom_attributes",
+                    {"custom_attributes": {CHATWOOT_CASE_STATE_ATTR: to_state.value}},
+                )
+        except Exception as exc:
+            _log.warning("case_state_attr_write_failed", conv_id=conv_id, error=str(exc))
 
     async def _record_first_response(self, conv_id: str) -> None:
         """Record a FIRST_RESPONSE audit marker on the first agent reply (deduped)."""

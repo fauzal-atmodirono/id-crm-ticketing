@@ -20,6 +20,7 @@ class CaseState(StrEnum):
     OPEN = "OPEN"
     WIP = "WIP"
     PENDING = "PENDING"
+    TEMP_CLOSED = "TEMP_CLOSED"
     SOLVED = "SOLVED"
 
 

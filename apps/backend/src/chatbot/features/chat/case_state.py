@@ -10,6 +10,10 @@ from chatbot.features.chat.ports import AuditEntry
 if TYPE_CHECKING:
     from chatbot.features.chat.ports import AuditLogPort
 
+# Chatwoot custom-attribute key used to surface the live case_state in the
+# right panel.  Written by EscalationNotifier and _log_status_transition.
+CHATWOOT_CASE_STATE_ATTR = "case_state"
+
 
 class CaseState(StrEnum):
     NEW = "NEW"

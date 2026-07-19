@@ -94,7 +94,7 @@ def _wire_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings
             _CORS,
             allow_origins=settings.assist_cors_origins,
             allow_credentials=True,
-            allow_methods=["POST", "OPTIONS"],
+            allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=["x-api-key", "content-type"],
         )
 

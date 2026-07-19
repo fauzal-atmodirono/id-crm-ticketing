@@ -1,8 +1,9 @@
 # Proton-patched Chatwoot fork pipeline
 
-Builds `proton-chatwoot:<VERSION>-custom` by applying three Git patches to the
-pinned upstream Community tag and rebuilding the frontend. **Never run the build
-on the 16 GB production VM** — use your Mac or Cloud Build.
+Builds `proton-chatwoot:<VERSION>-custom` by applying the numbered Git patches in
+`patches/` (in order: `0001-*` … `0011-*`) to the pinned upstream Community tag
+and rebuilding the frontend. **Never run the build on the 16 GB production VM** —
+use your Mac or Cloud Build.
 
 ## Pinned version
 
@@ -28,12 +29,10 @@ VERSION=$(cat deploy/chatwoot-fork/UPSTREAM_VERSION)
 git clone --depth 1 --branch "$VERSION" https://github.com/chatwoot/chatwoot.git /tmp/proton-chatwoot-dev
 cd /tmp/proton-chatwoot-dev
 
-git apply --whitespace=fix \
-  /path/to/id-crm-ticketing/deploy/chatwoot-fork/patches/0001-runtime-config.patch
-git apply --whitespace=fix \
-  /path/to/id-crm-ticketing/deploy/chatwoot-fork/patches/0002-ai-assist-backend.patch
-git apply --whitespace=fix \
-  /path/to/id-crm-ticketing/deploy/chatwoot-fork/patches/0003-proton-nav-menu.patch
+# Apply every patch, in numeric order:
+for p in /path/to/id-crm-ticketing/deploy/chatwoot-fork/patches/[0-9]*.patch; do
+  git apply --whitespace=fix "$p"
+done
 ```
 
 ### 2 — Start local infrastructure

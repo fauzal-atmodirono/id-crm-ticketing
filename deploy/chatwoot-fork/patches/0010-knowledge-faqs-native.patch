@@ -1,0 +1,448 @@
+diff --git a/app/javascript/dashboard/api/protonKnowledge.js b/app/javascript/dashboard/api/protonKnowledge.js
+new file mode 100644
+index 0000000..636fbd5
+--- /dev/null
++++ b/app/javascript/dashboard/api/protonKnowledge.js
+@@ -0,0 +1,50 @@
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++
++// Thin client for the Proton backend Knowledge endpoints (/kb/*). Auth is the
++// shared PROTON_BACKEND_KEY sent as x-api-key; the backend's CORS allows the
++// crm.* origin for /kb/* so these run straight from the dashboard. Errors carry
++// a numeric `.status` so callers can special-case 401/503.
++async function kbRequest(path, { method = 'GET', body } = {}) {
++  const { backendUrl, backendKey } = useProtonConfig();
++  if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
++
++  const response = await fetch(`${backendUrl}${path}`, {
++    method,
++    headers: {
++      'Content-Type': 'application/json',
++      ...(backendKey ? { 'x-api-key': backendKey } : {}),
++    },
++    ...(body ? { body: JSON.stringify(body) } : {}),
++  });
++
++  if (!response.ok) {
++    const text = await response.text().catch(() => response.statusText);
++    const err = new Error(`${response.status}: ${text.slice(0, 200)}`);
++    err.status = response.status;
++    throw err;
++  }
++  const text = await response.text();
++  return text ? JSON.parse(text) : {};
++}
++
++// GET /kb/faq -> [{ id, question, answer, keywords, tags, active }]
++export async function listFaqs() {
++  const data = await kbRequest('/kb/faq');
++  return Array.isArray(data.entries) ? data.entries : [];
++}
++
++// body: { question, answer, keywords: [], tags: [], active: bool }
++export function createFaq(entry) {
++  return kbRequest('/kb/faq', { method: 'POST', body: entry });
++}
++
++export function updateFaq(id, entry) {
++  return kbRequest(`/kb/faq/${encodeURIComponent(id)}`, {
++    method: 'PUT',
++    body: entry,
++  });
++}
++
++export function deleteFaq(id) {
++  return kbRequest(`/kb/faq/${encodeURIComponent(id)}`, { method: 'DELETE' });
++}
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeFaqs.vue b/app/javascript/dashboard/components/proton/KnowledgeFaqs.vue
+new file mode 100644
+index 0000000..b68000a
+--- /dev/null
++++ b/app/javascript/dashboard/components/proton/KnowledgeFaqs.vue
+@@ -0,0 +1,333 @@
++<!-- KnowledgeFaqs.vue — OUR file. Native, Chatwoot-styled replacement for the
++     old Knowledge Manager iframe. Lists / creates / edits / deletes FAQ entries
++     directly against the Proton backend's /kb/faq CRUD, using Chatwoot's design
++     tokens so it matches the settings pages. Deliberately self-contained (like
++     ProtonCopilotPanel) rather than reusing Captain components. -->
++<script setup>
++import { ref, computed, onMounted } from 'vue';
++import { useAlert } from 'dashboard/composables';
++import {
++  listFaqs,
++  createFaq,
++  updateFaq,
++  deleteFaq,
++} from 'dashboard/api/protonKnowledge';
++
++const entries = ref([]);
++const loading = ref(false);
++const errored = ref(false);
++const search = ref('');
++
++const modalOpen = ref(false);
++const saving = ref(false);
++const editingId = ref(null);
++const form = ref({ question: '', answer: '', keywords: '', tags: '', active: true });
++
++const modalTitle = computed(() =>
++  editingId.value ? 'Edit knowledge entry' : 'New knowledge entry'
++);
++
++const filtered = computed(() => {
++  const q = search.value.trim().toLowerCase();
++  if (!q) return entries.value;
++  return entries.value.filter(e => {
++    const hay = [e.question, e.answer, ...(e.keywords || []), ...(e.tags || [])]
++      .join(' ')
++      .toLowerCase();
++    return hay.includes(q);
++  });
++});
++
++const load = async () => {
++  loading.value = true;
++  errored.value = false;
++  try {
++    entries.value = await listFaqs();
++  } catch (err) {
++    errored.value = true;
++    if (err.status === 401) {
++      useAlert('Unauthorized (401) — check the backend key configuration.');
++    } else if (err.status === 503) {
++      useAlert('Knowledge store unavailable (503) on the backend.');
++    } else {
++      useAlert(`Failed to load knowledge: ${err.message}`);
++    }
++  } finally {
++    loading.value = false;
++  }
++};
++
++const parseList = value =>
++  value
++    .split(',')
++    .map(s => s.trim())
++    .filter(Boolean);
++
++const openNew = () => {
++  editingId.value = null;
++  form.value = { question: '', answer: '', keywords: '', tags: '', active: true };
++  modalOpen.value = true;
++};
++
++const openEdit = entry => {
++  editingId.value = entry.id;
++  form.value = {
++    question: entry.question || '',
++    answer: entry.answer || '',
++    keywords: (entry.keywords || []).join(', '),
++    tags: (entry.tags || []).join(', '),
++    active: entry.active !== false,
++  };
++  modalOpen.value = true;
++};
++
++const closeModal = () => {
++  modalOpen.value = false;
++};
++
++const save = async () => {
++  const question = form.value.question.trim();
++  const answer = form.value.answer.trim();
++  if (!question || !answer) {
++    useAlert('Question and answer are required.');
++    return;
++  }
++  const body = {
++    question,
++    answer,
++    keywords: parseList(form.value.keywords),
++    tags: parseList(form.value.tags),
++    active: form.value.active,
++  };
++  saving.value = true;
++  try {
++    if (editingId.value) {
++      await updateFaq(editingId.value, body);
++      useAlert('Entry updated.');
++    } else {
++      await createFaq(body);
++      useAlert('Entry created.');
++    }
++    closeModal();
++    await load();
++  } catch (err) {
++    useAlert(`Save failed: ${err.message}`);
++  } finally {
++    saving.value = false;
++  }
++};
++
++const remove = async entry => {
++  // eslint-disable-next-line no-alert
++  if (!window.confirm(`Delete this entry?\n\n${entry.question || entry.id}`)) {
++    return;
++  }
++  try {
++    await deleteFaq(entry.id);
++    useAlert('Entry deleted.');
++    await load();
++  } catch (err) {
++    useAlert(`Delete failed: ${err.message}`);
++  }
++};
++
++onMounted(load);
++</script>
++
++<template>
++  <div class="flex flex-col w-full h-full">
++    <div
++      class="flex items-center flex-shrink-0 gap-3 px-4 py-3 border-b border-n-weak"
++    >
++      <button
++        class="px-3 py-1.5 text-sm font-medium text-white rounded-lg bg-n-brand hover:brightness-95"
++        @click="openNew"
++      >
++        + New entry
++      </button>
++      <button
++        class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1"
++        :disabled="loading"
++        @click="load"
++      >
++        Refresh
++      </button>
++      <input
++        v-model="search"
++        type="text"
++        placeholder="Filter by question, keyword, tag…"
++        class="flex-1 max-w-xs px-3 py-1.5 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++      />
++      <span class="ml-auto text-xs text-n-slate-11">
++        {{ entries.length }} entr{{ entries.length === 1 ? 'y' : 'ies' }}
++      </span>
++    </div>
++
++    <div class="flex-1 p-4 overflow-auto">
++      <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
++        Loading knowledge…
++      </div>
++      <div
++        v-else-if="errored"
++        class="py-10 text-sm text-center text-n-slate-11"
++      >
++        Could not load knowledge.
++      </div>
++      <div
++        v-else-if="!filtered.length"
++        class="py-10 text-sm text-center text-n-slate-11"
++      >
++        {{
++          entries.length
++            ? 'No entries match the filter.'
++            : 'No knowledge yet. Click “New entry” to add one.'
++        }}
++      </div>
++      <div
++        v-else
++        class="overflow-hidden border rounded-lg border-n-weak bg-n-background"
++      >
++        <table class="w-full text-sm border-collapse">
++          <thead>
++            <tr class="text-left border-b border-n-weak bg-n-alpha-black1">
++              <th class="px-3 py-2 font-medium text-n-slate-11">Question</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Answer</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Keywords</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Tags</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Active</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Actions</th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="entry in filtered"
++              :key="entry.id"
++              class="border-b border-n-weak last:border-0 align-top"
++            >
++              <td class="px-3 py-2 font-medium text-n-slate-12">
++                {{ entry.question }}
++              </td>
++              <td class="px-3 py-2 text-n-slate-11 max-w-sm">
++                {{ entry.answer }}
++              </td>
++              <td class="px-3 py-2">
++                <span
++                  v-for="kw in entry.keywords || []"
++                  :key="kw"
++                  class="inline-block px-2 py-0.5 mr-1 mb-1 text-xs rounded-full bg-n-alpha-black2 text-n-slate-11"
++                >
++                  {{ kw }}
++                </span>
++                <span v-if="!(entry.keywords || []).length" class="text-n-slate-10">—</span>
++              </td>
++              <td class="px-3 py-2">
++                <span
++                  v-for="tag in entry.tags || []"
++                  :key="tag"
++                  class="inline-block px-2 py-0.5 mr-1 mb-1 text-xs rounded-full bg-n-alpha-black2 text-n-slate-11"
++                >
++                  {{ tag }}
++                </span>
++                <span v-if="!(entry.tags || []).length" class="text-n-slate-10">—</span>
++              </td>
++              <td class="px-3 py-2 text-n-slate-11">
++                {{ entry.active === false ? 'no' : 'yes' }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                <button
++                  class="mr-2 text-xs text-n-brand hover:underline"
++                  @click="openEdit(entry)"
++                >
++                  Edit
++                </button>
++                <button
++                  class="text-xs text-n-ruby-9 hover:underline"
++                  @click="remove(entry)"
++                >
++                  Delete
++                </button>
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++    </div>
++
++    <!-- Create / edit modal -->
++    <div
++      v-if="modalOpen"
++      class="fixed inset-0 z-50 flex items-start justify-center px-4 py-16 overflow-y-auto bg-n-alpha-black2"
++      @click.self="closeModal"
++    >
++      <div
++        class="w-full max-w-lg p-5 rounded-xl shadow-lg bg-n-background border border-n-weak"
++      >
++        <h3 class="mb-4 text-base font-medium text-n-slate-12">
++          {{ modalTitle }}
++        </h3>
++        <form class="space-y-3" @submit.prevent="save">
++          <div>
++            <label class="block mb-1 text-xs font-medium text-n-slate-11">Question</label>
++            <textarea
++              v-model="form.question"
++              rows="2"
++              placeholder="What customers ask, e.g. 'How long is the battery warranty?'"
++              class="w-full px-3 py-2 text-sm border rounded-lg resize-y border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++            />
++          </div>
++          <div>
++            <label class="block mb-1 text-xs font-medium text-n-slate-11">Answer</label>
++            <textarea
++              v-model="form.answer"
++              rows="3"
++              placeholder="The grounded answer agents should give."
++              class="w-full px-3 py-2 text-sm border rounded-lg resize-y border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++            />
++          </div>
++          <div>
++            <label class="block mb-1 text-xs font-medium text-n-slate-11">
++              Keywords <span class="text-n-slate-10">(comma-separated)</span>
++            </label>
++            <input
++              v-model="form.keywords"
++              type="text"
++              placeholder="battery, warranty, x50"
++              class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++            />
++          </div>
++          <div>
++            <label class="block mb-1 text-xs font-medium text-n-slate-11">
++              Tags <span class="text-n-slate-10">(comma-separated)</span>
++            </label>
++            <input
++              v-model="form.tags"
++              type="text"
++              placeholder="warranty, vehicle"
++              class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++            />
++          </div>
++          <label class="flex items-center gap-2 text-sm text-n-slate-12">
++            <input v-model="form.active" type="checkbox" />
++            Active (usable for grounding)
++          </label>
++          <div class="flex justify-end gap-2 pt-2">
++            <button
++              type="button"
++              class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1"
++              @click="closeModal"
++            >
++              Cancel
++            </button>
++            <button
++              type="submit"
++              class="px-3 py-1.5 text-sm font-medium text-white rounded-lg bg-n-brand disabled:opacity-50"
++              :disabled="saving"
++            >
++              {{ saving ? 'Saving…' : 'Save' }}
++            </button>
++          </div>
++        </form>
++      </div>
++    </div>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+index 7648c0c..44aab34 100644
+--- a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
++++ b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+@@ -1,13 +1,13 @@
+ <!-- ProtonKnowledgeHost.vue — OUR file. Left-nav "Knowledge" host: renders the
+-     live Knowledge Manager for the FAQs section (embedded from the agent host)
+-     and clean placeholders for the sections still being built. -->
++     native, Chatwoot-styled Knowledge console. FAQs is a native Vue view
++     (KnowledgeFaqs) talking to the Proton backend's /kb/faq; the remaining
++     sections are clean placeholders until each is built. -->
+ <script setup>
+ import { computed } from 'vue';
+ import { useRoute } from 'vue-router';
+-import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++import KnowledgeFaqs from 'dashboard/components/proton/KnowledgeFaqs.vue';
+ 
+ const route = useRoute();
+-const { backendUrl, backendKey } = useProtonConfig();
+ 
+ const SECTIONS = {
+   faqs: 'FAQs',
+@@ -20,16 +20,6 @@ const SECTIONS = {
+ 
+ const section = computed(() => route.params.section || 'faqs');
+ const sectionLabel = computed(() => SECTIONS[section.value] || section.value);
+-
+-// The Knowledge Manager is served by the agent host (derive crm.* -> agent.*)
+-// and reads ?backend=&key= from its own URL — same values our other UI uses.
+-const agentBase = window.location.origin.replace('://crm.', '://agent.');
+-const faqsSrc = computed(
+-  () =>
+-    `${agentBase}/apps/knowledge-manager?backend=${encodeURIComponent(
+-      backendUrl
+-    )}&key=${encodeURIComponent(backendKey)}`
+-);
+ </script>
+ 
+ <template>
+@@ -42,12 +32,7 @@ const faqsSrc = computed(
+       </span>
+     </div>
+ 
+-    <iframe
+-      v-if="section === 'faqs'"
+-      :src="faqsSrc"
+-      class="flex-1 w-full"
+-      style="border: none"
+-    />
++    <KnowledgeFaqs v-if="section === 'faqs'" />
+     <div
+       v-else
+       class="flex flex-col items-center justify-center flex-1 gap-2 text-center"

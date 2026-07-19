@@ -272,11 +272,24 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # --- Agent-assist FAQ ---
     _wire_agent_assist(app, knowledge_port, settings)
 
+    # Merge CRM-authored live-FAQ into the KB that /assist + Copilot ground on,
+    # so an authored entry surfaces in their answers immediately.
+    from chatbot.features.chat.adapters.merged_knowledge import MergedKnowledgeAdapter
+    _assist_genai = _build_genai_client(settings)
+    _assist_live_store = build_live_faq_store(settings, _assist_genai)  # type: ignore[arg-type]
+    _assist_embedder = (
+        VertexEmbedder(_assist_genai, settings.embedding_model)
+        if _assist_genai is not None else None
+    )
+    assist_knowledge_port = MergedKnowledgeAdapter(
+        knowledge_port, _assist_live_store, _assist_embedder
+    )
+
     # --- Proton AI-assist (rewired Captain AI) ---
-    _wire_assist(app, knowledge_port, settings)
+    _wire_assist(app, assist_knowledge_port, settings)
 
     # --- Ask Copilot (multi-turn) ---
-    _wire_copilot(app, knowledge_port, settings)
+    _wire_copilot(app, assist_knowledge_port, settings)
 
     _wire_metrics_features(app, settings)
 

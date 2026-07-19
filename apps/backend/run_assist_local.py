@@ -21,6 +21,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from chatbot.features.assist.copilot_router import build_copilot_router
 from chatbot.features.assist.router import build_assist_router
+from chatbot.features.chat.adapters.live_faq import InMemoryLiveFaqStore, VertexEmbedder
+from chatbot.features.chat.adapters.merged_knowledge import MergedKnowledgeAdapter
+from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.models import KbArticle
 from chatbot.platform.config import get_settings
 
@@ -73,11 +76,17 @@ def build() -> FastAPI:
         allow_headers=["x-api-key", "content-type"],
     )
 
+    genai = _build_genai_client(settings)
+    embedder = VertexEmbedder(genai, settings.embedding_model) if genai is not None else None
+    live_store = InMemoryLiveFaqStore(embedder) if embedder is not None else None
+    kp = MergedKnowledgeAdapter(_StubKnowledge(), live_store, embedder)
+
+    app.include_router(build_faq_admin_router(live_store, settings))
     app.include_router(
-        build_assist_router(settings, _StubKnowledge(), _build_genai_client(settings))
+        build_assist_router(settings, kp, genai)
     )
     app.include_router(
-        build_copilot_router(settings, _StubKnowledge(), _build_genai_client(settings))
+        build_copilot_router(settings, kp, genai)
     )
 
     @app.get("/healthz")

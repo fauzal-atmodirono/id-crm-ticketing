@@ -38,6 +38,7 @@ _SUBCAT_TAG = re.compile(r"^subcat_(.+)$")
 _DIVISION_TAG = re.compile(r"^division_(.+)$")
 _DEPT_TAG = re.compile(r"^dept_(.+)$")
 _PIC_TAG = re.compile(r"^pic_(.+)$")
+_DEALER_TAG = re.compile(r"^dealer_(.+)$")
 _SLA_TAG = re.compile(r"^sla_(\d+)$")
 
 
@@ -62,6 +63,7 @@ class ConversationRow:
     first_response_at: str | None = None
     resolved_at: str | None = None
     reopen_count: int | None = None
+    dealer: str | None = None  # Phase-3: dealer dimension (dealer_<slug> label)
 
 
 def channel_from_external_id(external_id: str | None) -> str:
@@ -267,6 +269,24 @@ def _chatwoot_sla_minutes(conv: dict[str, object], labels: list[str]) -> int | N
     return None
 
 
+def _chatwoot_reopen_count(conv: dict[str, object]) -> int | None:
+    """Read reopen_count from Chatwoot additional_attributes (written by Zammad webhook).
+
+    Returns None when the key is absent, the dict is missing, or the value is
+    not a valid integer — never raises.
+    """
+    add = conv.get("additional_attributes")
+    if not isinstance(add, dict):
+        return None
+    raw = add.get("reopen_count")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return None
+
+
 def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow | None:
     """Map one Chatwoot conversation to a conversation row, or None to skip it.
 
@@ -296,6 +316,8 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
 
     agent_id = _chatwoot_agent_id(conv)
     pic = _first_tag(labels, _PIC_TAG) or agent_id
+    dealer = _first_tag(labels, _DEALER_TAG)
+    reopen_count = _chatwoot_reopen_count(conv)
 
     # Timings we can derive from the Chatwoot conversation itself:
     #  - resolved_at  ← last_activity_at when the conversation is resolved
@@ -326,5 +348,6 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
         sla_deadline=_sla_deadline(created_iso, sla_minutes),
         first_response_at=first_response_at,
         resolved_at=resolved_at,
-        reopen_count=None,  # TODO(zammad-timing): reopen count is a Zammad metric
+        reopen_count=reopen_count,
+        dealer=dealer,
     )

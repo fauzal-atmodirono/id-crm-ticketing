@@ -335,3 +335,82 @@ def test_chatwoot_output_matches_conversation_row_type() -> None:
     row = map_chatwoot_conversation_to_row(_conv(labels=[]))
     assert isinstance(row, ConversationRow)
     assert row.reopen_count is None  # zammad-timing TODO: best-effort None
+
+
+# --- Phase-3: dealer dimension + reopen_count wiring ---
+
+def test_chatwoot_dealer_label_parsed() -> None:
+    """dealer_<slug> label maps to row.dealer."""
+    row = map_chatwoot_conversation_to_row(
+        _conv(labels=["category_aftersales", "dealer_surabaya_utara"])
+    )
+    assert row is not None
+    assert row.dealer == "surabaya_utara"
+
+
+def test_chatwoot_no_dealer_label_is_none() -> None:
+    row = map_chatwoot_conversation_to_row(_conv(labels=["category_sales"]))
+    assert row is not None
+    assert row.dealer is None
+
+
+def test_chatwoot_multiple_dealer_labels_takes_first() -> None:
+    """When two dealer_ labels are present, the first encountered wins."""
+    row = map_chatwoot_conversation_to_row(
+        _conv(labels=["dealer_abc", "dealer_xyz"])
+    )
+    assert row is not None
+    assert row.dealer == "abc"
+
+
+def test_chatwoot_reopen_count_from_additional_attributes() -> None:
+    """reopen_count is read from additional_attributes.reopen_count (Zammad write-back)."""
+    row = map_chatwoot_conversation_to_row(
+        _conv(additional_attributes={"reopen_count": 3})
+    )
+    assert row is not None
+    assert row.reopen_count == 3
+
+
+def test_chatwoot_reopen_count_zero_is_kept() -> None:
+    row = map_chatwoot_conversation_to_row(
+        _conv(additional_attributes={"reopen_count": 0})
+    )
+    assert row is not None
+    assert row.reopen_count == 0
+
+
+def test_chatwoot_reopen_count_missing_stays_none() -> None:
+    """When additional_attributes has no reopen_count key, field stays None."""
+    row = map_chatwoot_conversation_to_row(
+        _conv(additional_attributes={"some_other_key": "value"})
+    )
+    assert row is not None
+    assert row.reopen_count is None
+
+
+def test_chatwoot_reopen_count_no_additional_attributes_stays_none() -> None:
+    """When no additional_attributes at all, reopen_count stays None."""
+    conv = _conv()
+    conv.pop("additional_attributes", None)
+    row = map_chatwoot_conversation_to_row(conv)
+    assert row is not None
+    assert row.reopen_count is None
+
+
+def test_chatwoot_reopen_count_malformed_string_is_none() -> None:
+    """A non-numeric reopen_count must not raise; yields None."""
+    row = map_chatwoot_conversation_to_row(
+        _conv(additional_attributes={"reopen_count": "bad"})
+    )
+    assert row is not None
+    assert row.reopen_count is None
+
+
+def test_chatwoot_dealer_in_conversation_row_type() -> None:
+    """ConversationRow dataclass has a dealer field."""
+    row = map_chatwoot_conversation_to_row(_conv(labels=["dealer_jakarta"]))
+    assert row is not None
+    assert isinstance(row, ConversationRow)
+    assert hasattr(row, "dealer")
+    assert row.dealer == "jakarta"

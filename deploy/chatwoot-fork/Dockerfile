@@ -49,7 +49,7 @@ RUN git init -q \
  && git commit -q -m "upstream ${UPSTREAM_VERSION}"
 
 # Apply our patches in order. Each must apply cleanly; if any fails the build
-# errors here — guaranteeing the final image always has all three patches.
+# errors here — guaranteeing the final image always has every patch.
 COPY patches/ /tmp/proton-patches/
 RUN for p in /tmp/proton-patches/*.patch; do \
       echo "applying $(basename "$p")"; \
@@ -65,8 +65,9 @@ RUN pnpm exec vite build
 # ── Stage 2: runtime (reuse the same base, copy rebuilt assets) ─────
 FROM chatwoot/chatwoot:${UPSTREAM_VERSION} AS runtime
 
-# Patch 0002/0003 only change compiled frontend output, which Vite emits to
+# Most patches only change compiled frontend output, which Vite emits to
 # public/vite — replace it with the rebuilt bundle from the builder stage.
+# (Knowledge patches 0009-0011 are pure app/javascript, so they land here too.)
 COPY --from=builder /app/public/vite /app/public/vite
 
 # Patch 0001 ALSO edits a server-side Rails view to inject window.__PROTON_CONFIG__
@@ -78,4 +79,4 @@ COPY --from=builder /app/app/views/layouts/vueapp.html.erb /app/app/views/layout
 # Proton-fork label for audit trails.
 ARG UPSTREAM_VERSION
 LABEL org.proton.chatwoot.upstream="${UPSTREAM_VERSION}" \
-      org.proton.chatwoot.patch="0001,0002,0003,0004"
+      org.proton.chatwoot.patch="0001,0002,0003,0004,0005,0006,0007,0008,0009,0010,0011"

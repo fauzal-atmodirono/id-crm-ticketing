@@ -123,3 +123,73 @@ def test_generated_at_is_iso_string() -> None:
         resp = client.get("/tasks/mine")
     assert resp.status_code == 200
     assert resp.json()["generatedAt"] == _NOW.isoformat()
+
+
+def test_breach_conv_has_negative_remaining_and_breach_type() -> None:
+    """A 50h-old open conv against 48h SLA must have negative remaining + UNRESOLVED."""
+    conv = {
+        "id": 999,
+        "status": "open",
+        "created_at": _epoch(50),  # 50h > 48h
+        "meta": {"assignee": {"id": 1}, "sender": {"name": "BrokenCustomer"}},
+    }
+    settings = _settings()
+    app = FastAPI()
+    app.include_router(build_tasks_router(settings))
+    client = TestClient(app)
+    with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[conv]), \
+         patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW):
+        resp = client.get("/tasks/mine")
+    assert resp.status_code == 200
+    tasks = resp.json()["tasks"]
+    assert len(tasks) == 1
+    t = tasks[0]
+    assert t["resolutionRemainingSeconds"] < 0
+    assert t["breachType"] == "UNRESOLVED"
+
+
+def test_warning_conv_in_warning_window() -> None:
+    """A conv within the warning window has positive remaining < warning threshold."""
+    # 47h old, 48h SLA, 120 min warning → remaining ≈ 3600s which is < 7200s (120 min)
+    # Has first_reply to avoid NO_RESPONSE breach (which requires no reply after 8h)
+    conv = {
+        "id": 888,
+        "status": "open",
+        "created_at": _epoch(47),
+        "first_reply_created_at": int((_NOW - timedelta(hours=46)).timestamp()),
+        "meta": {"assignee": {"id": 2}, "sender": {"name": "WarningCustomer"}},
+    }
+    settings = _settings(tasks_reminder_warning_minutes=120)
+    app = FastAPI()
+    app.include_router(build_tasks_router(settings))
+    client = TestClient(app)
+    with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[conv]), \
+         patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW):
+        resp = client.get("/tasks/mine")
+    t = resp.json()["tasks"][0]
+    assert t["resolutionRemainingSeconds"] is not None
+    assert 0 < t["resolutionRemainingSeconds"] < 120 * 60  # within warning window
+    assert t["breachType"] is None  # not yet breached
+
+
+def test_sla_override_label_reflected_in_response() -> None:
+    """sla_480 label → 480 min resolution SLA; verify resolutionDeadlineIso is 8h after created."""
+    from datetime import timezone
+    conv = {
+        "id": 777,
+        "status": "open",
+        "created_at": _epoch(0),  # just created
+        "labels": ["sla_480"],
+        "meta": {"assignee": {"id": 3}, "sender": {"name": "SLACustomer"}},
+    }
+    settings = _settings()
+    app = FastAPI()
+    app.include_router(build_tasks_router(settings))
+    client = TestClient(app)
+    with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[conv]), \
+         patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW):
+        resp = client.get("/tasks/mine")
+    t = resp.json()["tasks"][0]
+    # 480 min = 8h; conv just created → remaining ≈ 28800s
+    assert t["resolutionRemainingSeconds"] is not None
+    assert abs(t["resolutionRemainingSeconds"] - 28800) < 10

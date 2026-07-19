@@ -21,10 +21,10 @@ class AgentRecord:
 class PresenceFetcher:
     """Reads agent availability from the Chatwoot account API.
 
-    Inherits the _request / _base pattern from ChatwootAdapter so the same
-    dual-auth-header httpx pattern is used without duplication. In production
-    a ChatwootAdapter instance is passed and its _request/_base are used
-    directly; in tests a _FakeAdapter stub is monkey-patched in.
+    Self-contained: owns its own httpx client and constructs dual-auth headers
+    (both ``api_access_token`` and ``Api-Access-Token``) from ``settings``
+    directly. It is not coupled to ChatwootAdapter; ``main.py`` constructs it
+    standalone with just the settings object.
     """
 
     def __init__(self, settings: Settings) -> None:

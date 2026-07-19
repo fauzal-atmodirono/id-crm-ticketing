@@ -121,3 +121,12 @@ def test_delete_requires_api_key() -> None:
     client, _ = _app()
     resp = client.delete("/routing/priorities/1")
     assert resp.status_code == 401
+
+
+def test_put_priority_requires_api_key() -> None:
+    client, _ = _app()
+    resp = client.put(
+        "/routing/priorities/1",
+        json={"channel_priorities": ["web"]},
+    )
+    assert resp.status_code == 401

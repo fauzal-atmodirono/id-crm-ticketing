@@ -105,6 +105,7 @@ async def scan_conversations(
     now: datetime | None = None,
     fetch: Callable[[Settings], list[dict[str, Any]]] | None = None,
     alert: Callable[[str, str, str], Any] | None = None,
+    level2_alert: Callable[[str, str, str], Any] | None = None,
 ) -> list[AuditEntry]:
     """Scan Chatwoot conversations once and fire any un-fired SLA breaches.
 
@@ -175,6 +176,33 @@ async def scan_conversations(
             )
             fired.append(entry)
 
+        # Tier-2 escalation: if an UNRESOLVED_BREACH was already fired and is
+        # older than escalation_tier2_hours, fire the level2_alert callback.
+        if level2_alert is not None and UNRESOLVED_BREACH in prior:
+            tier2_threshold = settings.escalation_tier2_hours * _SECONDS_PER_HOUR
+            # Find the age of the UNRESOLVED_BREACH entry.
+            all_entries = await audit.list_for_ticket(ticket_id)
+            breach_entry = next(
+                (e for e in all_entries if e.to_state == UNRESOLVED_BREACH), None
+            )
+            if breach_entry is not None:
+                try:
+                    breach_at = datetime.fromisoformat(breach_entry.at)
+                    breach_age = (clock - breach_at).total_seconds()
+                except (ValueError, TypeError):
+                    breach_age = 0.0
+                if breach_age >= tier2_threshold:
+                    try:
+                        result = level2_alert(
+                            ticket_id,
+                            "TIER2_ESCALATION",
+                            f"Unresolved breach older than {settings.escalation_tier2_hours}h; re-alerting level-2",
+                        )
+                        if asyncio.iscoroutine(result):
+                            await result
+                    except Exception as exc:
+                        _log.warning("level2_alert_failed", ticket_id=ticket_id, error=str(exc))
+
     if fired:
         _log.info("sla_scan_fired", count=len(fired))
     return fired
@@ -227,8 +255,11 @@ def run_sla_scan_job(
 ) -> list[AuditEntry]:
     """Synchronous entry point for the scheduler. Best-effort: never raises."""
     alert = _build_pic_alert(settings, twilio_adapter)
+    level2_alert = _build_level2_alert(settings, twilio_adapter)
     try:
-        return asyncio.run(scan_conversations(settings, audit, alert=alert))
+        return asyncio.run(
+            scan_conversations(settings, audit, alert=alert, level2_alert=level2_alert)
+        )
     except Exception as e:  # a failed scheduled scan must never crash the app
         _log.error("sla_scan_job_failed", error=str(e))
         return []
@@ -251,6 +282,28 @@ def _build_pic_alert(
         await twilio_adapter.send_message(
             conversation_id=to,
             text=f"⚠️ SLA breach ({to_state}) on case {ticket_id}. {remark}",
+        )
+
+    return _alert
+
+
+def _build_level2_alert(
+    settings: Settings, twilio_adapter: TwilioChannelAdapter | None
+) -> Callable[[str, str, str], Any] | None:
+    """Build the optional level-2 WhatsApp alert callback.
+
+    Uses ``escalation_level2_whatsapp`` for the target number. Returns None
+    when no level-2 number or Twilio adapter is configured.
+    """
+    target = settings.escalation_level2_whatsapp
+    if not target or twilio_adapter is None:
+        return None
+    to = "whatsapp:" + target.removeprefix("whatsapp:")
+
+    async def _alert(ticket_id: str, to_state: str, remark: str) -> None:  # noqa: ARG001
+        await twilio_adapter.send_message(
+            conversation_id=to,
+            text=f"⚠️ TIER-2 escalation on case {ticket_id}. {remark}",
         )
 
     return _alert

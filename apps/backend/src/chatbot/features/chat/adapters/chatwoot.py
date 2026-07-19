@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from chatbot.features.chat.adapters.zammad import ZammadClient
     from chatbot.features.chat.escalation_notifier import EscalationNotifier
     from chatbot.features.chat.pic_registry import PicRegistry
+    from chatbot.features.routing.service import RoutingService
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
@@ -86,6 +87,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         self._escalation_notifier = escalation_notifier
         self._paused_sessions: set[str] = set()
         self._conv_by_session: dict[str, str] = {}
+        self._routing_service: RoutingService | None = None
 
     def _direct_zammad_active(self) -> bool:
         """True when this adapter owns Zammad ticketing directly.
@@ -136,6 +138,34 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             if reason.strip().lower() in complaint_reasons:
                 return True
         return False
+
+    async def _assign_conversation(
+        self, conv_id: str, conv_channel: str = "web", fallback_team_id: int | None = None
+    ) -> None:
+        """Assign to an agent (routing) or a team (fallback).
+
+        When routing_enabled and a RoutingService is wired, pick an available
+        agent honoring channel priority. Otherwise assign the fallback team —
+        which the caller may set to a PIC-derived team (open_handoff) so Phase 2
+        department→PIC routing is preserved. create_ticket passes no fallback,
+        so it uses the global chatwoot_agent_team_id.
+        """
+        if self._settings.routing_enabled and self._routing_service is not None:
+            agent_id = await self._routing_service.pick_agent(conv_channel)
+            if agent_id is not None:
+                await self._request(
+                    "POST",
+                    f"/conversations/{conv_id}/assignments",
+                    {"assignee_id": agent_id},
+                )
+                return
+        team_id = fallback_team_id if fallback_team_id is not None else (self._settings.chatwoot_agent_team_id or None)
+        if team_id:
+            await self._request(
+                "POST",
+                f"/conversations/{conv_id}/assignments",
+                {"team_id": team_id},
+            )
 
     def _pic_label(self, department: str | None) -> str | None:
         """Return the ``pic_<name_slug>`` label for the resolved PIC, or None.
@@ -430,12 +460,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         await self._request(
             "POST", f"/conversations/{conv_id}/toggle_priority", {"priority": priority}
         )
-        if self._settings.chatwoot_agent_team_id:
-            await self._request(
-                "POST",
-                f"/conversations/{conv_id}/assignments",
-                {"team_id": self._settings.chatwoot_agent_team_id},
-            )
+        await self._assign_conversation(conv_id, conv_channel="web")
         await self.add_private_note(conv_id, f"[AI escalation] {title}\n\n{body}")
         # Direct Zammad ticketing: on a complaint, POST the back-office ticket
         # ourselves and drop a Chatwoot private note linking to it (instead of
@@ -653,12 +678,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 team_id_to_use = _pic.chatwoot_team_id
         if team_id_to_use is None:
             team_id_to_use = self._settings.chatwoot_agent_team_id or None
-        if team_id_to_use:
-            await self._request(
-                "POST",
-                f"/conversations/{conv_id}/assignments",
-                {"team_id": team_id_to_use},
-            )
+        await self._assign_conversation(conv_id, conv_channel="web", fallback_team_id=team_id_to_use)
         if payload.sla_minutes is not None:
             await self._request(
                 "POST",

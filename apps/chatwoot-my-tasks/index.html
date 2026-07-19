@@ -1,0 +1,402 @@
+<!-- apps/chatwoot-my-tasks/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My Tasks</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f5f5f5; color: #333; font-size: 13px;
+    }
+    .container { padding: 16px; max-width: 100%; }
+    .header {
+      margin-bottom: 14px; border-bottom: 1px solid #ddd; padding-bottom: 10px;
+      display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+    }
+    .header h2 { font-size: 15px; font-weight: 600; color: #222; }
+    .status { font-size: 11px; color: #666; }
+    .toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+    button {
+      padding: 5px 10px; border: 1px solid #ddd; border-radius: 3px; background: white;
+      cursor: pointer; font-size: 11px; font-weight: 500; transition: all 0.15s;
+    }
+    button:hover { background: #f5f5f5; border-color: #999; }
+    .btn-primary { background: #1a73e8; color: white; border-color: #1a73e8; }
+    .btn-primary:hover { background: #1557b0; border-color: #1557b0; }
+    .table-wrap {
+      background: white; border: 1px solid #e0e0e0; border-radius: 6px; overflow-x: auto;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    thead th {
+      text-align: left; padding: 9px 10px; background: #fafafa;
+      border-bottom: 1px solid #e0e0e0; font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.03em; color: #666; white-space: nowrap;
+    }
+    tbody td { padding: 9px 10px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr.status-breach { background: #fff5f5; }
+    tbody tr.status-warning { background: #fffbea; }
+    tbody tr.status-ok { background: white; }
+    .countdown {
+      font-variant-numeric: tabular-nums; font-weight: 600;
+      white-space: nowrap;
+    }
+    .countdown.breach { color: #ea4335; }
+    .countdown.warning { color: #f9ab00; }
+    .countdown.ok { color: #34a853; }
+    .badge {
+      display: inline-block; padding: 2px 7px; border-radius: 10px;
+      font-size: 10px; font-weight: 600;
+    }
+    .badge-breach { background: #fce8e6; color: #c5221f; }
+    .badge-warning { background: #fef7e0; color: #b06000; }
+    .badge-ok { background: #e6f4ea; color: #1e7e34; }
+    .conv-link { color: #1a73e8; text-decoration: none; font-weight: 500; }
+    .conv-link:hover { text-decoration: underline; }
+    .loading, .empty-state {
+      text-align: center; padding: 24px; color: #999; font-size: 13px;
+    }
+    .banner {
+      border-radius: 4px; padding: 10px 12px; margin-bottom: 12px;
+      font-size: 12px; line-height: 1.4;
+    }
+    .banner.error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+    .banner.info { background: #eef4fd; border: 1px solid #cfe0fb; color: #33507a; }
+    #toasts {
+      position: fixed; top: 14px; right: 14px; display: flex; flex-direction: column;
+      gap: 6px; z-index: 1000; max-width: 300px;
+    }
+    .toast {
+      padding: 9px 12px; border-radius: 4px; font-size: 12px; color: white;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15); animation: slidein 0.2s ease-out;
+    }
+    .toast.success { background: #34a853; }
+    .toast.error { background: #ea4335; }
+    .toast.warning { background: #f9ab00; color: #333; }
+    @keyframes slidein {
+      from { transform: translateX(18px); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div id="toasts"></div>
+  <div class="container">
+    <div class="header">
+      <h2>My Tasks</h2>
+      <div class="status" id="status">Initializing...</div>
+    </div>
+    <div id="banner"></div>
+    <div class="toolbar">
+      <button id="refresh-btn" type="button">Refresh now</button>
+      <button id="notify-btn" type="button" class="btn-primary">Enable notifications</button>
+      <span id="next-refresh" style="font-size:11px;color:#999;"></span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Conversation</th>
+            <th>Customer</th>
+            <th>Status</th>
+            <th>Response SLA</th>
+            <th>Resolution SLA</th>
+            <th>Urgency</th>
+          </tr>
+        </thead>
+        <tbody id="tasks-body">
+          <tr><td colspan="6"><div class="loading">Waiting for context...</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    // ------------------------------------------------------------------
+    // Config: backendBaseUrl + agentId from query-string or postMessage.
+    // agentId is filled by the Chatwoot appContext handshake.
+    // ------------------------------------------------------------------
+    const DEFAULT_BACKEND = 'https://proton-backend-247165654737.asia-southeast1.run.app';
+    const POLL_INTERVAL_MS = 60_000;   // 60 s refresh
+    const WARNING_SOUND_FREQ = 440;    // Hz for the beep
+
+    const params = new URLSearchParams(window.location.search);
+    const backendBaseUrl = (params.get('backendBaseUrl') || DEFAULT_BACKEND).replace(/\/+$/, '');
+
+    let agentId = params.get('agentId') || null;
+    let warningThresholdMinutes = 60;  // overwritten from API response
+    let pollTimer = null;
+    let nextRefreshCountdown = null;
+    let notifiedConvIds = new Set();   // suppress repeat desktop notifications
+
+    // ------------------------------------------------------------------
+    // Chatwoot Dashboard App postMessage handshake
+    // ------------------------------------------------------------------
+    function requestContext() {
+      try {
+        window.parent.postMessage('chatwoot-dashboard-app:fetch-info', '*');
+      } catch (_e) { /* not embedded */ }
+    }
+
+    window.addEventListener('message', (ev) => {
+      let msg = ev.data;
+      if (typeof msg === 'string') {
+        try { msg = JSON.parse(msg); } catch (_e) { return; }
+      }
+      if (!msg || msg.event !== 'appContext') return;
+      const ctx = msg.data || {};
+      const agent = ctx.currentAgent;
+      if (agent && agent.id && !agentId) {
+        agentId = String(agent.id);
+        loadTasks();
+      }
+    });
+
+    // ------------------------------------------------------------------
+    // Beep (Web Audio API — no external file needed)
+    // ------------------------------------------------------------------
+    function beep(freq, durationMs) {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = freq;
+        osc.type = 'sine';
+        gain.gain.setValueAtTime(0.3, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + durationMs / 1000);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + durationMs / 1000);
+      } catch (_e) { /* audio not available */ }
+    }
+
+    // ------------------------------------------------------------------
+    // Desktop Notification API
+    // ------------------------------------------------------------------
+    function requestNotificationPermission() {
+      if (!('Notification' in window)) {
+        toast('warning', 'This browser does not support desktop notifications.');
+        return;
+      }
+      Notification.requestPermission().then((perm) => {
+        if (perm === 'granted') {
+          toast('success', 'Desktop notifications enabled.');
+          document.getElementById('notify-btn').textContent = 'Notifications on';
+          document.getElementById('notify-btn').disabled = true;
+        } else {
+          toast('warning', 'Notification permission denied. Allow it in browser settings.');
+        }
+      });
+    }
+
+    function sendDesktopNotification(title, body) {
+      if (Notification.permission === 'granted') {
+        new Notification(title, { body, icon: '' });
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // Fetch tasks from backend
+    // ------------------------------------------------------------------
+    async function loadTasks() {
+      setStatus('Loading...');
+      clearBanner();
+      const url = agentId
+        ? `${backendBaseUrl}/tasks/mine?agent_id=${encodeURIComponent(agentId)}`
+        : `${backendBaseUrl}/tasks/mine`;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) {
+          throw new Error(`${res.status} ${res.statusText}`);
+        }
+        const data = await res.json();
+        warningThresholdMinutes = data.warningThresholdMinutes || 60;
+        renderTable(data.tasks || []);
+        const count = (data.tasks || []).length;
+        setStatus(`${count} open task${count === 1 ? '' : 's'} · updated ${fmtTime(new Date(data.generatedAt))}`);
+        checkNotifications(data.tasks || []);
+      } catch (err) {
+        setStatus('Error');
+        showBanner('error', 'Failed to load tasks: ' + escapeHtml(String(err.message)));
+        document.getElementById('tasks-body').innerHTML =
+          '<tr><td colspan="6"><div class="empty-state">Could not load tasks.</div></td></tr>';
+      }
+      scheduleNextRefresh();
+    }
+
+    // ------------------------------------------------------------------
+    // Notification logic: desktop alert + beep on first warn/breach
+    // ------------------------------------------------------------------
+    function checkNotifications(tasks) {
+      for (const t of tasks) {
+        const convId = t.convId;
+        if (notifiedConvIds.has(convId)) continue;
+        if (t.breachType === 'UNRESOLVED' || t.breachType === 'NO_RESPONSE') {
+          sendDesktopNotification(
+            `SLA Breached — Case #${convId}`,
+            `${t.subject}: resolution SLA has been exceeded. Immediate action required.`
+          );
+          beep(330, 600);
+          notifiedConvIds.add(convId);
+          toast('error', `Case #${convId} (${t.subject}) has breached its SLA!`);
+        } else if (
+          t.resolutionRemainingSeconds !== null &&
+          t.resolutionRemainingSeconds < warningThresholdMinutes * 60
+        ) {
+          sendDesktopNotification(
+            `SLA Warning — Case #${convId}`,
+            `${t.subject}: ${fmtDuration(t.resolutionRemainingSeconds)} until SLA deadline.`
+          );
+          beep(WARNING_SOUND_FREQ, 300);
+          notifiedConvIds.add(convId);
+          toast('warning', `Case #${convId} (${t.subject}) is approaching its SLA deadline.`);
+        }
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // Render countdown table
+    // ------------------------------------------------------------------
+    function renderTable(tasks) {
+      const body = document.getElementById('tasks-body');
+      if (!tasks.length) {
+        body.innerHTML = '<tr><td colspan="6"><div class="empty-state">No open tasks. Well done!</div></td></tr>';
+        return;
+      }
+      body.innerHTML = tasks.map((t) => {
+        const rowClass = t.breachType ? 'status-breach'
+          : (t.resolutionRemainingSeconds !== null && t.resolutionRemainingSeconds < warningThresholdMinutes * 60)
+            ? 'status-warning'
+            : 'status-ok';
+
+        const resSec = t.resolutionRemainingSeconds;
+        const resClass = resSec === null ? '' : resSec < 0 ? 'breach' : resSec < warningThresholdMinutes * 60 ? 'warning' : 'ok';
+        const resDisplay = resSec === null ? '—' : fmtDuration(resSec);
+
+        const respSec = t.responseRemainingSeconds;
+        const respClass = respSec === null ? '' : respSec < 0 ? 'breach' : respSec < warningThresholdMinutes * 60 ? 'warning' : 'ok';
+        const respDisplay = respSec === null ? 'Replied' : fmtDuration(respSec);
+
+        const badge = t.breachType
+          ? `<span class="badge badge-breach">${escapeHtml(t.breachType)}</span>`
+          : (resSec !== null && resSec < warningThresholdMinutes * 60)
+            ? `<span class="badge badge-warning">WARNING</span>`
+            : `<span class="badge badge-ok">OK</span>`;
+
+        const chatwootBase = backendBaseUrl.replace(/\/api.*/, '');
+        const convLink = `${chatwootBase}/app/conversations/${escapeAttr(t.convId)}`;
+
+        return `
+          <tr class="${rowClass}">
+            <td><a class="conv-link" href="${convLink}" target="_blank">#${escapeHtml(t.convId)}</a></td>
+            <td>${escapeHtml(t.subject)}</td>
+            <td>${escapeHtml(t.status)}</td>
+            <td><span class="countdown ${respClass}">${respDisplay}</span></td>
+            <td><span class="countdown ${resClass}">${resDisplay}</span></td>
+            <td>${badge}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // ------------------------------------------------------------------
+    // Refresh countdown timer in the toolbar
+    // ------------------------------------------------------------------
+    function scheduleNextRefresh() {
+      if (pollTimer) clearTimeout(pollTimer);
+      if (nextRefreshCountdown) clearInterval(nextRefreshCountdown);
+      let remaining = POLL_INTERVAL_MS / 1000;
+      updateNextRefreshLabel(remaining);
+      nextRefreshCountdown = setInterval(() => {
+        remaining -= 1;
+        updateNextRefreshLabel(remaining);
+        if (remaining <= 0) clearInterval(nextRefreshCountdown);
+      }, 1000);
+      pollTimer = setTimeout(loadTasks, POLL_INTERVAL_MS);
+    }
+
+    function updateNextRefreshLabel(sec) {
+      document.getElementById('next-refresh').textContent =
+        sec > 0 ? `Next refresh in ${sec}s` : '';
+    }
+
+    // ------------------------------------------------------------------
+    // Formatting helpers
+    // ------------------------------------------------------------------
+    function fmtDuration(seconds) {
+      const abs = Math.abs(seconds);
+      const prefix = seconds < 0 ? '-' : '';
+      const h = Math.floor(abs / 3600);
+      const m = Math.floor((abs % 3600) / 60);
+      const s = Math.floor(abs % 60);
+      if (h > 0) return `${prefix}${h}h ${m}m`;
+      if (m > 0) return `${prefix}${m}m ${s}s`;
+      return `${prefix}${s}s`;
+    }
+
+    function fmtTime(date) {
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function escapeHtml(text) {
+      const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+      return String(text).replace(/[&<>"']/g, (m) => map[m]);
+    }
+
+    function escapeAttr(text) {
+      return String(text).replace(/"/g, '&quot;');
+    }
+
+    // ------------------------------------------------------------------
+    // UI helpers
+    // ------------------------------------------------------------------
+    function setStatus(text) { document.getElementById('status').textContent = text; }
+    function showBanner(kind, msg) {
+      document.getElementById('banner').innerHTML =
+        `<div class="banner ${kind}">${msg}</div>`;
+    }
+    function clearBanner() { document.getElementById('banner').innerHTML = ''; }
+    function toast(kind, msg) {
+      const el = document.createElement('div');
+      el.className = `toast ${kind}`;
+      el.textContent = msg;
+      document.getElementById('toasts').appendChild(el);
+      setTimeout(() => el.remove(), 4000);
+    }
+
+    // ------------------------------------------------------------------
+    // Boot
+    // ------------------------------------------------------------------
+    document.getElementById('refresh-btn').addEventListener('click', () => {
+      notifiedConvIds.clear(); // allow re-notification on manual refresh
+      loadTasks();
+    });
+    document.getElementById('notify-btn').addEventListener('click', requestNotificationPermission);
+
+    // Auto-hide the notify button if already granted
+    if (Notification && Notification.permission === 'granted') {
+      document.getElementById('notify-btn').textContent = 'Notifications on';
+      document.getElementById('notify-btn').disabled = true;
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      requestContext();
+      // If agentId was supplied as a query param, load immediately without waiting
+      // for the postMessage handshake (useful for standalone / non-embedded use).
+      if (agentId) {
+        loadTasks();
+      } else {
+        setStatus('Waiting for Chatwoot context...');
+        // Fallback: load all open tasks if context never arrives (5 s timeout)
+        setTimeout(() => {
+          if (!agentId) loadTasks();
+        }, 5000);
+      }
+    });
+  </script>
+</body>
+</html>

@@ -63,3 +63,36 @@ async def test_executor_unknown_tool() -> None:
     ex = ToolExecutor(_FakeCtx(), _FakeKb(), conversation_id="42")
     out = await ex.run("nope", {})
     assert "error" in out
+
+
+async def test_executor_ignores_model_supplied_conversation_id() -> None:
+    """Lock tenant isolation: executor uses constructed conversation_id, not model args."""
+
+    class _RecordingCtx:
+        def __init__(self):
+            self.seen = None
+
+        async def get_transcript(self, conversation_id: str):
+            self.seen = conversation_id
+            return []
+
+        async def get_contact(self, conversation_id: str):
+            self.seen = conversation_id
+            return {}
+
+        async def list_contact_conversations(self, conversation_id: str):
+            self.seen = conversation_id
+            return []
+
+    ctx = _RecordingCtx()
+    ex = ToolExecutor(ctx, _FakeKb(), conversation_id="42")
+
+    # A malicious/hallucinated conversation_id arg must not redirect the lookup.
+    await ex.run("get_conversation_transcript", {"conversation_id": "999"})
+    assert ctx.seen == "42", f"Expected 42, got {ctx.seen}"
+
+    await ex.run("get_contact_details", {"conversation_id": "999"})
+    assert ctx.seen == "42", f"Expected 42, got {ctx.seen}"
+
+    await ex.run("list_past_conversations", {"conversation_id": "999"})
+    assert ctx.seen == "42", f"Expected 42, got {ctx.seen}"

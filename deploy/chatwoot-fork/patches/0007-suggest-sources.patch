@@ -1,0 +1,60 @@
+diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+index 9547044..9a327d6 100644
+--- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
++++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+@@ -133,7 +133,8 @@ export default {
+           const result = await callAssist(protonAction, payload);
+           const text = result.draft || result.summary || result.answer || '';
+           const mode = PROTON_ACTION_MODE[actionKey] || 'reply';
+-          if (text) emit('protonAssistResult', { text, mode });
++          if (text)
++            emit('protonAssistResult', { text, mode, sources: result.sources || [] });
+         } catch (err) {
+           // eslint-disable-next-line no-console
+           console.error('[proton-assist]', actionKey, 'failed', err);
+diff --git a/app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue b/app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue
+index fb616d7..657589c 100644
+--- a/app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue
++++ b/app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue
+@@ -111,6 +111,7 @@ export default {
+   data() {
+     return {
+       message: '',
++      protonSources: [],
+       inReplyTo: {},
+       isFocused: false,
+       showEmojiPicker: false,
+@@ -541,7 +542,8 @@ export default {
+   methods: {
+     // Proton: route the AI-assist result into the reply box or a private
+     // note depending on the action ('note' for Summarize, 'reply' otherwise).
+-    onProtonAssistResult({ text, mode }) {
++    onProtonAssistResult({ text, mode, sources }) {
++      this.protonSources = sources || [];
+       const target =
+         mode === 'note'
+           ? REPLY_EDITOR_MODES.NOTE
+@@ -1283,6 +1285,23 @@ export default {
+       @execute-copilot-action="executeCopilotAction"
+       @proton-assist-result="onProtonAssistResult"
+     />
++    <div
++      v-if="protonSources && protonSources.length"
++      class="px-4 pt-1 text-xs text-n-slate-11"
++    >
++      Sources:
++      <template v-for="(s, i) in protonSources" :key="i"
++        ><a
++          v-if="s.url"
++          :href="s.url"
++          target="_blank"
++          rel="noopener"
++          class="text-n-brand hover:underline"
++          >{{ s.title }}</a
++        ><span v-else>{{ s.title }}</span
++        ><span v-if="i < protonSources.length - 1">, </span></template
++      >
++    </div>
+     <ArticleSearchPopover
+       v-if="showArticleSearchPopover && connectedPortalSlug"
+       :selected-portal-slug="connectedPortalSlug"

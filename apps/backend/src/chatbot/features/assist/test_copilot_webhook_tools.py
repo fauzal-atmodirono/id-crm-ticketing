@@ -391,6 +391,86 @@ async def test_allowlisted_host_skips_ip_check() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Streaming: oversized response is truncated at the cap boundary
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_streaming_oversized_response_capped_at_16kb() -> None:
+    """A response larger than 16 KB is truncated to exactly _RESPONSE_CAP bytes."""
+    from chatbot.features.assist.copilot_tools import _RESPONSE_CAP  # noqa: PLC0415
+
+    store = InMemoryToolsStore()
+    await store.create_custom(_tool(response_template=""))
+
+    big_body = b"A" * (32 * 1024)  # 32 KB — well over the 16 KB cap
+    respx.post("https://api.example.com/orders").mock(
+        return_value=httpx.Response(200, content=big_body)
+    )
+
+    ex = _executor(store)
+    result = await ex.run("custom_check_order", {})
+
+    assert "result" in result
+    # The raw bytes fed to _parse_response were capped; since the body is not
+    # valid JSON, the fallback is the decoded text string.
+    raw_text: str = result["result"]
+    assert isinstance(raw_text, str)
+    assert len(raw_text) == _RESPONSE_CAP  # exactly 16 KB of "A"s
+    assert all(c == "A" for c in raw_text)
+
+
+@respx.mock
+async def test_streaming_small_json_response_unaffected() -> None:
+    """A small well-formed JSON response is streamed and parsed without truncation."""
+    store = InMemoryToolsStore()
+    await store.create_custom(_tool(response_template=""))
+
+    respx.post("https://api.example.com/orders").mock(
+        return_value=httpx.Response(200, json={"order_id": "42", "status": "delivered"})
+    )
+
+    ex = _executor(store)
+    result = await ex.run("custom_check_order", {})
+
+    assert result == {"result": {"order_id": "42", "status": "delivered"}}
+
+
+@respx.mock
+async def test_streaming_non_2xx_returns_error_no_raise() -> None:
+    """Non-2xx status from a streamed response still yields {"error": ...}."""
+    store = InMemoryToolsStore()
+    await store.create_custom(_tool(response_template=""))
+
+    respx.post("https://api.example.com/orders").mock(
+        return_value=httpx.Response(503, text="Service Unavailable")
+    )
+
+    ex = _executor(store)
+    result = await ex.run("custom_check_order", {})
+
+    assert "error" in result
+    assert "503" in result["error"]
+
+
+@respx.mock
+async def test_streaming_timeout_returns_error_no_raise() -> None:
+    """Timeout during streaming still returns {"error": ...} and never raises."""
+    store = InMemoryToolsStore()
+    await store.create_custom(_tool(response_template=""))
+
+    respx.post("https://api.example.com/orders").mock(
+        side_effect=httpx.TimeoutException("stream timed out")
+    )
+
+    ex = _executor(store)
+    result = await ex.run("custom_check_order", {})
+
+    assert "error" in result
+    assert "timed out" in result["error"] or "timeout" in result["error"].lower()
+
+
+# ---------------------------------------------------------------------------
 # request_template rendering
 # ---------------------------------------------------------------------------
 

@@ -264,17 +264,34 @@ class ToolExecutor:
         auth: tuple[str, str] | None,
         body_bytes: bytes,
     ) -> dict[str, Any]:
-        """Issue the HTTP request and return the parsed result dict."""
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-            if method == "GET":
-                response = await client.get(tool.endpoint_url, headers=headers, auth=auth)
-            else:
-                response = await client.request(
-                    method, tool.endpoint_url, content=body_bytes, headers=headers, auth=auth
+        """Issue the HTTP request and return the parsed result dict.
+
+        The response is streamed and reading stops as soon as _RESPONSE_CAP
+        bytes have been accumulated, so a hostile endpoint cannot force
+        unbounded memory use.
+        """
+        kwargs: dict[str, Any] = {"headers": headers, "auth": auth}
+        if method != "GET":
+            kwargs["content"] = body_bytes
+
+        buf = bytearray()
+        truncated = False
+        client = httpx.AsyncClient(timeout=10.0, follow_redirects=False)
+        async with client, client.stream(method, tool.endpoint_url, **kwargs) as response:
+            if not (_HTTP_OK_MIN <= response.status_code < _HTTP_OK_MAX):
+                _log.warning(
+                    "custom_tool_non_2xx", slug=tool.slug, status=response.status_code
                 )
-        if not (_HTTP_OK_MIN <= response.status_code < _HTTP_OK_MAX):
-            _log.warning("custom_tool_non_2xx", slug=tool.slug, status=response.status_code)
-            return {"error": f"webhook returned HTTP {response.status_code}"}
-        raw = response.content[:_RESPONSE_CAP]
+                return {"error": f"webhook returned HTTP {response.status_code}"}
+            async for chunk in response.aiter_bytes():
+                buf.extend(chunk)
+                if len(buf) >= _RESPONSE_CAP:
+                    truncated = True
+                    break
+
+        if truncated:
+            _log.info("custom_tool_response_truncated", slug=tool.slug, cap=_RESPONSE_CAP)
+
+        raw = bytes(buf[:_RESPONSE_CAP])
         text = raw.decode("utf-8", errors="replace")
         return {"result": _parse_response(text, tool.response_template)}

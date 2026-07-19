@@ -89,6 +89,8 @@ def build_copilot_router(
         }
 
         last_text = ""
+        sources: list[dict] = []
+        seen_src: set[tuple] = set()
         for _ in range(settings.copilot_max_tool_iterations):
             response = await genai_client.aio.models.generate_content(
                 model=settings.copilot_gemini_model,
@@ -101,7 +103,7 @@ def build_copilot_router(
                 last_text = text
             calls = getattr(response, "function_calls", None) or []
             if not calls:
-                return {"answer": last_text or _FALLBACK, "tool_calls": tool_calls}
+                return {"answer": last_text or _FALLBACK, "tool_calls": tool_calls, "sources": sources}
 
             # Execute each requested tool and feed the results back.
             contents.append(
@@ -117,12 +119,19 @@ def build_copilot_router(
             for c in calls:
                 tool_calls.append(c.name)
                 result = await executor.run(c.name, dict(c.args or {}))
+                if c.name == "search_knowledge_base":
+                    for a in result.get("articles", []):
+                        key = (a.get("title"), a.get("url"))
+                        if key in seen_src:
+                            continue
+                        seen_src.add(key)
+                        sources.append({"title": a.get("title"), "snippet": a.get("content", ""), "url": a.get("url")})
                 tool_parts.append(
                     {"function_response": {"name": c.name, "response": result}}
                 )
             contents.append({"role": "user", "parts": tool_parts})
 
         # Cap reached without a final text answer.
-        return {"answer": last_text or _FALLBACK, "tool_calls": tool_calls}
+        return {"answer": last_text or _FALLBACK, "tool_calls": tool_calls, "sources": sources}
 
     return router

@@ -110,3 +110,19 @@ def test_503_when_key_unconfigured() -> None:
         headers={"x-api-key": "anything"},
     )
     assert r.status_code == 503
+
+
+def test_copilot_returns_sources_from_kb_tool() -> None:
+    # First response calls the KB tool; second returns text.
+    c = _client([
+        _tool_call_response("search_knowledge_base", {"query": "warranty"}),
+        _text_response("12 months per the KB."),
+    ])
+    r = c.post(
+        "/assist/copilot",
+        json={"conversation_id": "1", "thread": [{"role": "user", "content": "warranty?"}]},
+        headers={"x-api-key": "k"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["sources"] and body["sources"][0]["title"] == "Warranty"

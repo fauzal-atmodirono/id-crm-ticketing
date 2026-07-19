@@ -28,6 +28,9 @@ export CHATWOOT_API_URL="${CHATWOOT_API_URL:-http://crm.127-0-0-1.nip.io}"
 export CHATWOOT_API_TOKEN="$TOKEN"
 export CHATWOOT_ACCOUNT_ID="${CHATWOOT_ACCOUNT_ID:-1}"
 export CHATWOOT_ENABLED=true
+# CORS origins allowed to call /assist/* and /kb/* — the Chatwoot page (Suggest/
+# Copilot) and the agent host that serves the Knowledge Manager dashboard app.
+export ASSIST_LOCAL_ORIGINS="${ASSIST_LOCAL_ORIGINS:-http://crm.127-0-0-1.nip.io,http://agent.127-0-0-1.nip.io,http://localhost:3000}"
 
 echo "Serving /assist + /assist/copilot on :8000 (grounded via ${CHATWOOT_API_URL})"
 echo "PROTON_BACKEND_KEY=${PROTON_BACKEND_KEY}  (set PROTON_BACKEND_URL/KEY in the tenant to match)"

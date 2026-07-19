@@ -27,7 +27,7 @@ index d672ca4..05c9d25 100644
        name: 'Contacts',
        label: t('SIDEBAR.CONTACTS'),
 diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
-index f3a41ba..4c1c64d 100644
+index f3a41ba..c21fac2 100644
 --- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
 +++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
 @@ -27,6 +27,12 @@ export default {
@@ -38,7 +38,7 @@ index f3a41ba..4c1c64d 100644
 +          path: 'proton/knowledge/:section',
 +          name: 'proton_knowledge',
 +          component: () => import('../../views/ProtonKnowledgeHost.vue'),
-+          meta: { requiresAuth: true },
++          meta: { permissions: ['administrator', 'agent'] },
 +        },
          ...inboxRoutes,
          ...conversation.routes,

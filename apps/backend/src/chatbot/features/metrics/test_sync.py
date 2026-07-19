@@ -1,8 +1,9 @@
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest import mock
 
 from chatbot.features.metrics.mapping import ConversationRow
-from chatbot.features.metrics.sync import fetch_conversations, run_sync
+from chatbot.features.metrics.sync import fetch_conversations, load_conversations, run_sync
 from chatbot.platform.config import Settings
 
 
@@ -94,3 +95,38 @@ def test_run_sync_maps_and_loads() -> None:
     assert len(loaded) == 1
     assert loaded[0].channel == "WhatsApp" and loaded[0].csat_score == 5
     assert loaded[0].category == "aftersales" and loaded[0].division == "Aftersales"
+
+
+def test_load_conversations_includes_dealer_field() -> None:
+    """load_conversations must pass the dealer column in every row dict."""
+    row = ConversationRow(
+        conversation_id="1",
+        channel="WhatsApp",
+        created_at=None,
+        updated_at=None,
+        status="resolved",
+        resolved_by="bot",
+        csat_score=None,
+        nps_score=None,
+        dealer="surabaya_utara",
+    )
+
+    class FakeSettings:
+        bigquery_project_id = "p"
+        bigquery_dataset = "d"
+        bigquery_conversations_table = "conversations"
+
+    with mock.patch("chatbot.features.metrics.sync.bigquery") as bq:
+        bq.Client.return_value.create_dataset.return_value = None
+        job = mock.MagicMock()
+        bq.Client.return_value.load_table_from_json.return_value = job
+        job.result.return_value = None
+        bq.LoadJobConfig.return_value = mock.MagicMock()
+        bq.SchemaField = mock.MagicMock()
+
+        load_conversations(FakeSettings(), [row])  # type: ignore[arg-type]
+        call_args = bq.Client.return_value.load_table_from_json.call_args
+        json_rows = call_args[0][0]
+
+    assert json_rows, "no rows captured"
+    assert json_rows[0]["dealer"] == "surabaya_utara"

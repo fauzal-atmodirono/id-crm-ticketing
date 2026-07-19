@@ -123,6 +123,7 @@ def load_conversations(settings: Settings, rows: list[ConversationRow]) -> None:
             "first_response_at": r.first_response_at,
             "resolved_at": r.resolved_at,
             "reopen_count": r.reopen_count,
+            "dealer": r.dealer,  # Phase-3
         }
         for r in rows
     ]

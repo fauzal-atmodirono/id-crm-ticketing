@@ -24,6 +24,7 @@ from chatbot.features.assist.router import build_assist_router
 from chatbot.features.chat.adapters.live_faq import InMemoryLiveFaqStore, VertexEmbedder
 from chatbot.features.chat.adapters.merged_knowledge import MergedKnowledgeAdapter
 from chatbot.features.chat.faq_admin_router import build_faq_admin_router
+from chatbot.features.chat.kb_documents_router import build_kb_documents_router
 from chatbot.features.chat.models import KbArticle
 from chatbot.platform.config import get_settings
 
@@ -82,6 +83,7 @@ def build() -> FastAPI:
     kp = MergedKnowledgeAdapter(_StubKnowledge(), live_store, embedder)
 
     app.include_router(build_faq_admin_router(live_store, settings))
+    app.include_router(build_kb_documents_router(settings))
     app.include_router(
         build_assist_router(settings, kp, genai)
     )

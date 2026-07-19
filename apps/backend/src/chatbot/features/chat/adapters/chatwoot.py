@@ -22,6 +22,8 @@ from chatbot.features.chat.ports import (
 
 if TYPE_CHECKING:
     from chatbot.features.chat.adapters.zammad import ZammadClient
+    from chatbot.features.chat.escalation_notifier import EscalationNotifier
+    from chatbot.features.chat.pic_registry import PicRegistry
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
@@ -71,9 +73,17 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
     configured API-channel inbox.
     """
 
-    def __init__(self, settings: Settings, zammad: ZammadClient | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        zammad: ZammadClient | None = None,
+        pic_registry: PicRegistry | None = None,  # type: ignore[type-arg]  # Any to avoid circular import
+        escalation_notifier: EscalationNotifier | None = None,  # type: ignore[type-arg]
+    ) -> None:
         self._settings = settings
         self._zammad = zammad
+        self._pic_registry = pic_registry
+        self._escalation_notifier = escalation_notifier
         self._paused_sessions: set[str] = set()
         self._conv_by_session: dict[str, str] = {}
 
@@ -148,28 +158,55 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         session_id: str,
         urgency: str | None,
         reason: str | None,
+        department: str | None = None,
     ) -> None:
-        """Create a Zammad ticket directly for a complaint and leave a Chatwoot
-        private note linking to it. No-op when direct ticketing is inactive or the
-        case is not a complaint. Errors are swallowed by ZammadClient (returns
-        None) so the turn never breaks.
+        """Create a Zammad ticket and fire escalation side-effects (PIC routing,
+        email CC, WA alert, case_state attribute). No-op when direct ticketing
+        is inactive or the case is not a complaint. Errors from side-effects
+        are swallowed so the turn never breaks.
         """
         if not self._direct_zammad_active() or self._zammad is None:
             return
         if not self._is_complaint(reason, urgency):
             return
+
+        # Resolve PIC for the department — used for Zammad group override.
+        pic = None
+        if self._pic_registry is not None and department:
+            key = department.removeprefix("dept_")
+            pic = self._pic_registry.lookup(key)
+
+        group = pic.zammad_group if pic is not None else None
+
         ticket = await self._zammad.create_ticket(
             title=title,
             body=body,
             customer_email=self._synth_customer_email(session_id),
             priority=(urgency or "medium"),
+            group=group,
         )
         if ticket is None:
             return
+
+        # Assign Zammad ticket to the PIC's email if available.
+        if pic is not None:
+            await self._zammad.assign_owner(ticket.id, pic.pic_email)
+
         zoom_url = f"{self._settings.zammad_api_url.rstrip('/')}/#ticket/zoom/{ticket.id}"
         await self.add_private_note(
             conv_id, f"Escalated to Zammad ticket #{ticket.number}: {zoom_url}"
         )
+
+        # Fire escalation side-effects (email CC, WA alert, case_state write).
+        if self._escalation_notifier is not None:
+            await self._escalation_notifier.notify(
+                conv_id=conv_id,
+                ticket_id=ticket.id,
+                title=title,
+                body=body,
+                department=department,
+                zammad_ticket_number=ticket.number,
+            )
 
     @staticmethod
     def _dimension_labels(
@@ -387,7 +424,8 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         # Direct Zammad ticketing: on a complaint, POST the back-office ticket
         # ourselves and drop a Chatwoot private note linking to it (instead of
         # relying on the `escalate` label + external agent-service sync).
-        await self._escalate_to_zammad(conv_id, title, body, session_id, urgency, None)
+        await self._escalate_to_zammad(conv_id, title, body, session_id, urgency, None,
+                                        department=department)
         # Also persist sla_minutes as a custom attribute — a plain number is
         # cleaner there than encoded in a label, and it survives even if the label
         # is later edited by an agent.
@@ -583,15 +621,25 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             payload.session_id,
             payload.urgency,
             payload.reason,
+            department=payload.department,
         )
         await self._request(
             "POST", f"/conversations/{conv_id}/toggle_priority", {"priority": payload.urgency}
         )
-        if self._settings.chatwoot_agent_team_id:
+        # Use PIC team_id if available; fall back to the global setting.
+        team_id_to_use = None
+        if self._pic_registry is not None and payload.department:
+            _key = payload.department.removeprefix("dept_")
+            _pic = self._pic_registry.lookup(_key)
+            if _pic is not None and _pic.chatwoot_team_id is not None:
+                team_id_to_use = _pic.chatwoot_team_id
+        if team_id_to_use is None:
+            team_id_to_use = self._settings.chatwoot_agent_team_id or None
+        if team_id_to_use:
             await self._request(
                 "POST",
                 f"/conversations/{conv_id}/assignments",
-                {"team_id": self._settings.chatwoot_agent_team_id},
+                {"team_id": team_id_to_use},
             )
         if payload.sla_minutes is not None:
             await self._request(

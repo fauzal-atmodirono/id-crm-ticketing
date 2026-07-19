@@ -117,3 +117,21 @@ class ZammadClient:
         }
         _log.info("adding_zammad_internal_note", ticket_id=ticket_id)
         await self._request("POST", "/api/v1/ticket_articles", payload)
+
+    async def assign_owner(self, ticket_id: str, owner_email: str) -> None:
+        """Assign a Zammad ticket to an agent by their email address.
+
+        Looks up the agent user id by email (GET /api/v1/users?query=<email>),
+        then PATCHes the ticket owner_id. Best-effort — errors are logged and
+        swallowed so the caller never breaks on a Zammad user-not-found.
+        """
+        users = await self._request("GET", f"/api/v1/users?query={owner_email}")
+        if not isinstance(users, list) or not users:
+            _log.warning("zammad_owner_lookup_empty", email=owner_email)
+            return
+        user_id = users[0].get("id")
+        if user_id is None:
+            _log.warning("zammad_owner_no_id", email=owner_email)
+            return
+        await self._request("PUT", f"/api/v1/tickets/{ticket_id}", {"owner_id": int(user_id)})
+        _log.info("zammad_ticket_owner_assigned", ticket_id=ticket_id, owner_email=owner_email)

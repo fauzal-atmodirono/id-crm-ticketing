@@ -42,7 +42,7 @@ class ChannelPriorityStore:
     and FAQ stores) so the async FastAPI event loop is not blocked.
     """
 
-    def __init__(self, settings: "Settings") -> None:
+    def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
     def _client(self) -> firestore.Client:

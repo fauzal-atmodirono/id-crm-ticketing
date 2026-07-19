@@ -18,8 +18,8 @@ def test_routing_routes_registered(monkeypatch) -> None:  # type: ignore[no-unty
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
     monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 
-    from chatbot.main import bootstrap_application
-    from chatbot.platform.config import get_settings
+    from chatbot.main import bootstrap_application  # noqa: PLC0415
+    from chatbot.platform.config import get_settings  # noqa: PLC0415
 
     get_settings.cache_clear()
     app = bootstrap_application()

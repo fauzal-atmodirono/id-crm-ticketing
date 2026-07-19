@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import structlog
 
-from chatbot.features.routing.presence import AgentRecord, PresenceFetcher
-from chatbot.features.routing.store import AgentPriority, ChannelPriorityStore
+from chatbot.features.routing.presence import PresenceFetcher
+from chatbot.features.routing.store import ChannelPriorityStore
 
 _log = structlog.get_logger(__name__)
 
 
 class RoutingService:
-    """Status-aware agent selection with two-tier routing + idle fallback.
+    """Status-aware agent selection with three-tier routing + idle fallback.
 
     Tier 1 — Priority-first match:
         Agents whose ``channel_priorities[0]`` (first preference) equals the

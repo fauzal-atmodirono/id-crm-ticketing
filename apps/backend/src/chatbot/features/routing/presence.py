@@ -27,7 +27,7 @@ class PresenceFetcher:
     directly; in tests a _FakeAdapter stub is monkey-patched in.
     """
 
-    def __init__(self, settings: "Settings") -> None:
+    def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
     def _base(self) -> str:
@@ -41,7 +41,7 @@ class PresenceFetcher:
     ) -> Any:
         # Deferred import avoids a circular dependency between the routing
         # package and the chat adapter package.
-        import httpx
+        import httpx  # noqa: PLC0415
 
         token = self._settings.chatwoot_api_token
         headers = {

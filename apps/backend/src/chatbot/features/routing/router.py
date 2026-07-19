@@ -36,7 +36,7 @@ class _PriorityOut(BaseModel):
     channel_priorities: list[str]
 
 
-def _require_api_key(settings: "Settings"):
+def _require_api_key(settings: Settings):
     """Return a FastAPI dependency that 401s when the x-api-key header is wrong."""
 
     def _check(x_api_key: str | None = Header(default=None)) -> None:
@@ -50,7 +50,7 @@ def _require_api_key(settings: "Settings"):
 
 
 def build_routing_router(
-    settings: "Settings",
+    settings: Settings,
     store: ChannelPriorityStore,
     presence: PresenceFetcher,
 ) -> APIRouter:

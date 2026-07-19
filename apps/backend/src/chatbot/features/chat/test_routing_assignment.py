@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import types
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -50,7 +49,7 @@ def _adapter(
 def _make_routing_svc(agent_id: int | None) -> RoutingService:
     svc = RoutingService.__new__(RoutingService)
 
-    async def pick(channel: str) -> int | None:
+    async def pick(_channel: str) -> int | None:
         return agent_id
 
     svc.pick_agent = pick  # type: ignore[method-assign]
@@ -110,7 +109,7 @@ async def test_routing_returns_none_falls_back_to_team() -> None:
 @pytest.mark.asyncio
 async def test_open_handoff_uses_routing_when_enabled() -> None:
     """open_handoff also routes via RoutingService when enabled."""
-    from chatbot.features.chat.models import HandoffOpenPayload
+    from chatbot.features.chat.models import HandoffOpenPayload  # noqa: PLC0415
 
     fake = _FakeClient({("POST", "/conversations"): {"id": 77}})
     svc = _make_routing_svc(agent_id=9)
@@ -147,7 +146,7 @@ async def test_open_handoff_pic_team_preserved_when_routing_disabled() -> None:
     (not the global chatwoot_agent_team_id) so department→PIC team routing is
     preserved.
     """
-    from chatbot.features.chat.models import HandoffOpenPayload
+    from chatbot.features.chat.models import HandoffOpenPayload  # noqa: PLC0415
 
     fake = _FakeClient({("POST", "/conversations"): {"id": 88}})
     adapter = _adapter(fake, routing_enabled=False, team_id=3)  # global team=3
@@ -155,7 +154,7 @@ async def test_open_handoff_pic_team_preserved_when_routing_disabled() -> None:
     # Stub pic_registry: lookup("sales") returns an object with chatwoot_team_id=99
     # pic_name is required by _pic_label which also reads the pic object.
     pic_stub = types.SimpleNamespace(chatwoot_team_id=99, pic_name="Sales PIC")
-    registry_stub = types.SimpleNamespace(lookup=lambda dept: pic_stub)
+    registry_stub = types.SimpleNamespace(lookup=lambda _dept: pic_stub)
     adapter._pic_registry = registry_stub  # type: ignore[attr-defined]
 
     await adapter.open_handoff(

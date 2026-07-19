@@ -112,3 +112,56 @@ class ProtonConfigClient:
         except Exception:
             logger.debug("proton_config: error resolving debounce_seconds", exc_info=True)
             return None
+
+    async def get_assistant_messages(self, inbox_id: int) -> dict | None:
+        """Return the assistant persona messages for *inbox_id*, or None.
+
+        Steps:
+          1. Use the cached /kb/inboxes response to find the row for inbox_id
+             and its assistant_id. If no matching row → None.
+          2. Fetch GET /kb/assistants/{assistant_id} (cached per assistant_id
+             with the same TTL) and extract the three persona message fields
+             from the nested ``config`` dict.
+
+        Returns a dict with keys ``welcome``, ``handoff``, and ``resolution``
+        (all strings, empty string when the field is absent). Returns None on
+        ANY exception, non-2xx response, or missing data — never raises.
+
+        Note: ``welcome`` is included for completeness but is not consumed by
+        any current flow (the agent-bot has no conversation-created trigger).
+        """
+        try:
+            data = await self._fetch_cached("/kb/inboxes")
+            if not isinstance(data, dict):
+                return None
+            inboxes = data.get("inboxes")
+            if not isinstance(inboxes, list):
+                return None
+            assistant_id: str | None = None
+            for row in inboxes:
+                if isinstance(row, dict) and row.get("inbox_id") == inbox_id:
+                    raw = row.get("assistant_id")
+                    assistant_id = str(raw) if raw is not None else None
+                    break
+            if assistant_id is None:
+                return None
+
+            assistant_data = await self._fetch_cached(f"/kb/assistants/{assistant_id}")
+            if not isinstance(assistant_data, dict):
+                return None
+            config = assistant_data.get("config")
+            if not isinstance(config, dict):
+                return None
+
+            return {
+                "welcome": config.get("welcome_message", "") or "",
+                "handoff": config.get("handoff_message", "") or "",
+                "resolution": config.get("resolution_message", "") or "",
+            }
+        except Exception:
+            logger.debug(
+                "proton_config: error fetching assistant messages for inbox %s",
+                inbox_id,
+                exc_info=True,
+            )
+            return None

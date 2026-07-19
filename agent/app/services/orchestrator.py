@@ -238,6 +238,22 @@ async def _process_conversation(conversation_id: int) -> None:
         )
         return
 
+    # Fetch persona messages for the inbox (fail-open: None on any error).
+    # Only the handoff_message is consumed here; welcome_message has no trigger
+    # in the agent-bot flow, and resolution_message is handled by sync.py.
+    handoff_message = ""
+    if proton is not None and inbox_id is not None:
+        try:
+            assistant_msgs = await proton.get_assistant_messages(inbox_id)
+            if assistant_msgs:
+                handoff_message = assistant_msgs.get("handoff", "") or ""
+        except Exception:
+            logger.debug(
+                "orchestrator: could not fetch assistant messages for inbox %s; "
+                "proceeding without handoff message",
+                inbox_id,
+            )
+
     try:
         context = await _build_context(conversation_id)
     except httpx.HTTPError:
@@ -253,7 +269,10 @@ async def _process_conversation(conversation_id: int) -> None:
     await _log_decision(conversation_id, decision)
 
     try:
-        await _execute_decision(conversation_id, decision, effective_mode, chatwoot)
+        await _execute_decision(
+            conversation_id, decision, effective_mode, chatwoot,
+            handoff_message=handoff_message,
+        )
     except httpx.HTTPError:
         logger.exception(
             "orchestrator: failed executing decision %r for conversation %s",
@@ -262,7 +281,9 @@ async def _process_conversation(conversation_id: int) -> None:
         )
 
 
-async def _execute_decision(conversation_id, decision, mode: str, chatwoot) -> None:
+async def _execute_decision(
+    conversation_id, decision, mode: str, chatwoot, *, handoff_message: str = ""
+) -> None:
     if decision.action == "send_reply":
         text = decision.args.get("text", "")
         if mode == "auto":
@@ -299,4 +320,10 @@ async def _execute_decision(conversation_id, decision, mode: str, chatwoot) -> N
                 decision.action,
                 conversation_id,
             )
+        # Post the persona handoff message publicly BEFORE reopening, so the
+        # customer sees it while the conversation is still in bot-handled state.
+        # Only posted when the message is non-empty (fail-open: empty string
+        # when proton is unconfigured or the assistant has no handoff text).
+        if handoff_message:
+            await chatwoot.create_message(conversation_id, handoff_message, private=False)
         await chatwoot.toggle_status(conversation_id, "open")

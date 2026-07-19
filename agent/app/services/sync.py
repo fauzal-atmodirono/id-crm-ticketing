@@ -21,7 +21,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.clients.deps import get_chatwoot_client, get_zammad_client
+from app.clients.deps import get_chatwoot_client, get_proton_config_client, get_zammad_client
 from app.config import get_settings
 from app.db.models import ContactLink, ConversationLink
 from app.db.session import async_session_maker
@@ -419,6 +419,39 @@ async def on_ticket_event(payload: dict) -> None:
     settings = get_settings()
     if state == "closed" and settings.auto_resolve:
         chatwoot = get_chatwoot_client()
+
+        # Post the persona resolution message publicly BEFORE toggling to
+        # resolved, so the customer sees it while the conversation is still
+        # open. Fail-open: any error here must never block or raise out of
+        # this background path — we just skip the message and resolve as usual.
+        try:
+            inbox_id: int | None = None
+            conv_data = await chatwoot.get_conversation(conversation_id)
+            inbox_id = conv_data.get("inbox_id")
+        except Exception:
+            logger.debug(
+                "on_ticket_event: could not fetch conversation %s to look up "
+                "inbox_id for resolution message; skipping persona message",
+                conversation_id,
+            )
+            inbox_id = None
+
+        if inbox_id is not None:
+            try:
+                proton = get_proton_config_client()
+                if proton is not None:
+                    msgs = await proton.get_assistant_messages(inbox_id)
+                    if msgs and msgs.get("resolution"):
+                        await chatwoot.create_message(
+                            conversation_id, msgs["resolution"], private=False
+                        )
+            except Exception:
+                logger.debug(
+                    "on_ticket_event: failed to post resolution message for "
+                    "conversation %s; skipping persona message",
+                    conversation_id,
+                )
+
         try:
             await chatwoot.toggle_status(conversation_id, "resolved")
         except httpx.HTTPError:

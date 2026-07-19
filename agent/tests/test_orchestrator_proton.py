@@ -47,6 +47,28 @@ INBOXES_WITH_MODE = {
     "off": {"inboxes": [{"inbox_id": 7, "name": "Inbox7", "mode": "off", "source": "manual"}]},
     "auto": {"inboxes": [{"inbox_id": 7, "name": "Inbox7", "mode": "auto", "source": "manual"}]},
     "suggest": {"inboxes": [{"inbox_id": 7, "name": "Inbox7", "mode": "suggest", "source": "manual"}]},
+    # With assistant_id for persona-message tests
+    "suggest_with_assistant": {
+        "inboxes": [{"inbox_id": 7, "name": "Inbox7", "mode": "suggest", "source": "manual", "assistant_id": "asst-test"}]
+    },
+}
+
+ASSISTANT_RESPONSE_WITH_HANDOFF = {
+    "id": "asst-test",
+    "config": {
+        "welcome_message": "Welcome!",
+        "handoff_message": "A human agent will be with you shortly.",
+        "resolution_message": "Your issue has been resolved.",
+    },
+}
+
+ASSISTANT_RESPONSE_EMPTY_HANDOFF = {
+    "id": "asst-test",
+    "config": {
+        "welcome_message": "Welcome!",
+        "handoff_message": "",
+        "resolution_message": "",
+    },
 }
 
 SETTINGS_RESPONSE = {
@@ -324,3 +346,134 @@ async def test_proton_unreachable_falls_back_to_global_mode(monkeypatch):
     assert b"Suggested reply" in body
 
     await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Handoff message: public message posted before reopen when configured
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_handoff_to_human_with_handoff_message_posts_public_message(monkeypatch):
+    """When proton is configured and returns a handoff_message, the orchestrator
+    must post it publicly to the customer BEFORE reopening the conversation."""
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42").mock(
+        return_value=httpx.Response(200, json=CONVERSATION_RESPONSE)
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    respx.get(f"{PROTON}/kb/inboxes").mock(
+        return_value=httpx.Response(200, json=INBOXES_WITH_MODE["suggest_with_assistant"])
+    )
+    respx.get(f"{PROTON}/kb/settings").mock(
+        return_value=httpx.Response(200, json=SETTINGS_RESPONSE)
+    )
+    respx.get(f"{PROTON}/kb/assistants/asst-test").mock(
+        return_value=httpx.Response(200, json=ASSISTANT_RESPONSE_WITH_HANDOFF)
+    )
+
+    monkeypatch.setattr(
+        gemini,
+        "decide",
+        _stub_decide(gemini.Decision("handoff_to_human", {"reason": "complex issue"}, None, 2)),
+    )
+
+    create_message = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages"
+    ).mock(return_value=httpx.Response(200, json={"id": 999}))
+    toggle_status = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status"
+    ).mock(return_value=httpx.Response(200, json={"success": True}))
+
+    client = _make_proton_client()
+    monkeypatch.setattr(orchestrator, "get_proton_config_client", lambda: client)
+
+    task = await orchestrator.handle_bot_event(_payload())
+    assert task is not None
+    await task
+
+    # One public message posted with the handoff text; then conversation reopened
+    assert create_message.call_count == 1
+    body = create_message.calls.last.request.content
+    assert b"A human agent will be with you shortly." in body
+    # Must be public (not private)
+    assert b'"private": false' in body or b'"private":false' in body
+    assert toggle_status.call_count == 1
+    assert b"open" in toggle_status.calls.last.request.content
+
+    await client.aclose()
+
+
+@respx.mock
+async def test_handoff_to_human_with_empty_handoff_message_no_extra_post(monkeypatch):
+    """When the assistant config has an empty handoff_message, no extra public
+    message should be posted — behavior must be identical to no proton config."""
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42").mock(
+        return_value=httpx.Response(200, json=CONVERSATION_RESPONSE)
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    respx.get(f"{PROTON}/kb/inboxes").mock(
+        return_value=httpx.Response(200, json=INBOXES_WITH_MODE["suggest_with_assistant"])
+    )
+    respx.get(f"{PROTON}/kb/settings").mock(
+        return_value=httpx.Response(200, json=SETTINGS_RESPONSE)
+    )
+    respx.get(f"{PROTON}/kb/assistants/asst-test").mock(
+        return_value=httpx.Response(200, json=ASSISTANT_RESPONSE_EMPTY_HANDOFF)
+    )
+
+    monkeypatch.setattr(
+        gemini,
+        "decide",
+        _stub_decide(gemini.Decision("handoff_to_human", {"reason": "unclear"}, None, 1)),
+    )
+
+    create_message = respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages")
+    toggle_status = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status"
+    ).mock(return_value=httpx.Response(200, json={"success": True}))
+
+    client = _make_proton_client()
+    monkeypatch.setattr(orchestrator, "get_proton_config_client", lambda: client)
+
+    task = await orchestrator.handle_bot_event(_payload())
+    assert task is not None
+    await task
+
+    # No message posted (empty handoff_message), just reopen
+    assert not create_message.called
+    assert toggle_status.call_count == 1
+
+    await client.aclose()
+
+
+@respx.mock
+async def test_handoff_to_human_proton_unconfigured_no_extra_post(monkeypatch):
+    """When proton is not configured, handoff must behave identically to today:
+    no extra public message, just reopen the conversation."""
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+
+    monkeypatch.setattr(
+        gemini,
+        "decide",
+        _stub_decide(gemini.Decision("handoff_to_human", {"reason": "unclear"}, None, 1)),
+    )
+    # Proton explicitly unconfigured
+    monkeypatch.setattr(orchestrator, "get_proton_config_client", lambda: None)
+
+    create_message = respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages")
+    toggle_status = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status"
+    ).mock(return_value=httpx.Response(200, json={"success": True}))
+
+    task = await orchestrator.handle_bot_event(_payload())
+    assert task is not None
+    await task
+
+    assert not create_message.called
+    assert toggle_status.call_count == 1

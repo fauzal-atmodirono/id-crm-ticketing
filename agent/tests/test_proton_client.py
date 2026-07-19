@@ -16,10 +16,28 @@ PROTON_BASE = "http://proton-backend:8080"
 
 INBOXES_RESPONSE = {
     "inboxes": [
-        {"inbox_id": 10, "name": "Support", "mode": "suggest", "source": "manual"},
-        {"inbox_id": 20, "name": "Sales", "mode": "auto", "source": "manual"},
+        {"inbox_id": 10, "name": "Support", "mode": "suggest", "source": "manual", "assistant_id": "asst-abc"},
+        {"inbox_id": 20, "name": "Sales", "mode": "auto", "source": "manual", "assistant_id": "asst-xyz"},
         {"inbox_id": 30, "name": "Spam", "mode": "off", "source": "manual"},
     ]
+}
+
+ASSISTANT_ABC_RESPONSE = {
+    "id": "asst-abc",
+    "config": {
+        "welcome_message": "Welcome!",
+        "handoff_message": "Connecting you to a human.",
+        "resolution_message": "Your issue is resolved.",
+    },
+}
+
+ASSISTANT_XYZ_RESPONSE = {
+    "id": "asst-xyz",
+    "config": {
+        "welcome_message": "",
+        "handoff_message": "",
+        "resolution_message": "",
+    },
 }
 
 SETTINGS_RESPONSE = {
@@ -189,4 +207,115 @@ async def test_cache_expires_after_ttl(monkeypatch):
     await client.effective_inbox_mode(10)
     # TTL=0 means both calls trigger a fetch
     assert route.call_count == 2
+    await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# get_assistant_messages
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_get_assistant_messages_returns_all_three_fields():
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        return_value=httpx.Response(200, json=INBOXES_RESPONSE)
+    )
+    respx.get(f"{PROTON_BASE}/kb/assistants/asst-abc").mock(
+        return_value=httpx.Response(200, json=ASSISTANT_ABC_RESPONSE)
+    )
+    client = _make_client()
+    result = await client.get_assistant_messages(10)
+    assert result is not None
+    assert result["welcome"] == "Welcome!"
+    assert result["handoff"] == "Connecting you to a human."
+    assert result["resolution"] == "Your issue is resolved."
+    await client.aclose()
+
+
+@respx.mock
+async def test_get_assistant_messages_returns_none_for_unknown_inbox():
+    """Inbox 999 has no row in the inboxes response; should return None."""
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        return_value=httpx.Response(200, json=INBOXES_RESPONSE)
+    )
+    client = _make_client()
+    result = await client.get_assistant_messages(999)
+    assert result is None
+    await client.aclose()
+
+
+@respx.mock
+async def test_get_assistant_messages_returns_none_for_inbox_without_assistant_id():
+    """Inbox 30 has no assistant_id in the fixture; should return None."""
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        return_value=httpx.Response(200, json=INBOXES_RESPONSE)
+    )
+    client = _make_client()
+    result = await client.get_assistant_messages(30)
+    assert result is None
+    await client.aclose()
+
+
+@respx.mock
+async def test_get_assistant_messages_returns_none_on_non_2xx_assistant_fetch():
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        return_value=httpx.Response(200, json=INBOXES_RESPONSE)
+    )
+    respx.get(f"{PROTON_BASE}/kb/assistants/asst-abc").mock(
+        return_value=httpx.Response(404, json={"error": "not found"})
+    )
+    client = _make_client()
+    result = await client.get_assistant_messages(10)
+    assert result is None
+    await client.aclose()
+
+
+@respx.mock
+async def test_get_assistant_messages_returns_none_on_connection_error():
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        side_effect=httpx.ConnectError("boom")
+    )
+    client = _make_client()
+    result = await client.get_assistant_messages(10)
+    assert result is None
+    await client.aclose()
+
+
+@respx.mock
+async def test_get_assistant_messages_caches_assistant_fetch():
+    """Two get_assistant_messages calls for the same inbox should only hit
+    /kb/assistants/{id} once (result is cached by the _fetch_cached path)."""
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        return_value=httpx.Response(200, json=INBOXES_RESPONSE)
+    )
+    assistant_route = respx.get(f"{PROTON_BASE}/kb/assistants/asst-abc").mock(
+        return_value=httpx.Response(200, json=ASSISTANT_ABC_RESPONSE)
+    )
+    client = _make_client(ttl=60.0)
+    r1 = await client.get_assistant_messages(10)
+    r2 = await client.get_assistant_messages(10)
+    assert r1 is not None
+    assert r2 is not None
+    assert r1["handoff"] == r2["handoff"]
+    # The assistant endpoint should be called exactly once (cache hit on second call)
+    assert assistant_route.call_count == 1
+    await client.aclose()
+
+
+@respx.mock
+async def test_get_assistant_messages_empty_strings_when_fields_absent():
+    """When the assistant config omits message fields, they default to empty string."""
+    empty_config = {"id": "asst-abc", "config": {}}
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        return_value=httpx.Response(200, json=INBOXES_RESPONSE)
+    )
+    respx.get(f"{PROTON_BASE}/kb/assistants/asst-abc").mock(
+        return_value=httpx.Response(200, json=empty_config)
+    )
+    client = _make_client()
+    result = await client.get_assistant_messages(10)
+    assert result is not None
+    assert result["welcome"] == ""
+    assert result["handoff"] == ""
+    assert result["resolution"] == ""
     await client.aclose()

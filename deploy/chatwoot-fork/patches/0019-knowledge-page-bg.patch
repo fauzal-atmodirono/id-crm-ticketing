@@ -1,0 +1,13 @@
+diff --git a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+index 80af101..51a7aed 100644
+--- a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
++++ b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+@@ -32,7 +32,7 @@ const sectionLabel = computed(() => SECTIONS[section.value] || section.value);
+ </script>
+ 
+ <template>
+-  <div class="flex flex-col w-full h-full bg-n-background">
++  <div class="flex flex-col w-full h-full bg-n-surface-1">
+     <div
+       class="flex items-center flex-shrink-0 h-12 px-4 border-b border-n-weak"
+     >

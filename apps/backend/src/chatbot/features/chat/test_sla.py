@@ -16,6 +16,7 @@ from chatbot.features.chat.ports import AuditEntry
 from chatbot.features.chat.sla import (
     FIRST_RESPONSE_STATE,
     NO_RESPONSE_BREACH,
+    REMINDER_WARNING_STATE,
     UNRESOLVED_BREACH,
     scan_conversations,
     start_sla_scheduler,
@@ -199,3 +200,65 @@ def test_scheduler_started_when_enabled() -> None:
     assert job["trigger"] == "interval"
     assert job["minutes"] == 15
     assert job["id"] == "chatwoot_sla_scan"
+
+
+# --- Phase 6: WA reminder tests ---
+
+
+def test_wa_reminder_fires_within_warning_window() -> None:
+    """REMINDER_WARNING_STATE fires when remaining time is strictly inside the warning window.
+
+    Setup: resolution SLA = 48h, warning = 120 min (2h), conv is 47h old → 1h (3600s)
+    remaining, which is strictly less than 7200s warning threshold. Response threshold is
+    set to 1000h so the no-response breach cannot interfere.
+    """
+    audit = InMemoryAuditLog()
+    settings = _settings(
+        sla_response_hours=1000,
+        sla_resolution_hours=48,
+        tasks_reminder_whatsapp_enabled=True,
+        tasks_reminder_warning_minutes=120,
+    )
+    # 47h old → resolution_threshold = 48*3600 = 172800s; age = 47*3600 = 169200s
+    # resolution_remaining = 3600s (1h) < warning_threshold = 7200s (2h) → FIRES
+    conv = _conv(901, status="open", created_at=_epoch(47))
+
+    sent: list[str] = []
+
+    async def fake_alert(ticket_id: str, to_state: str, remark: str) -> None:  # noqa: ARG001
+        sent.append(to_state)
+
+    asyncio.run(
+        scan_conversations(settings, audit, now=_NOW, fetch=lambda _s: [conv], alert=fake_alert)
+    )
+    assert REMINDER_WARNING_STATE in sent
+
+
+def test_wa_reminder_dedups_across_scans() -> None:
+    """REMINDER_WARNING_STATE dedup: running scan twice fires the reminder exactly once.
+
+    The second scan reads the REMINDER_WARNING_STATE entry from the audit trail via
+    ``_prior_states`` and skips re-firing (identical to the UNRESOLVED_BREACH dedup).
+    """
+    audit = InMemoryAuditLog()
+    settings = _settings(
+        sla_response_hours=1000,
+        sla_resolution_hours=48,
+        tasks_reminder_whatsapp_enabled=True,
+        tasks_reminder_warning_minutes=120,
+    )
+    conv = _conv(902, status="open", created_at=_epoch(47))
+
+    count = [0]
+
+    async def counting_alert(ticket_id: str, to_state: str, remark: str) -> None:  # noqa: ARG001
+        if to_state == REMINDER_WARNING_STATE:
+            count[0] += 1
+
+    asyncio.run(
+        scan_conversations(settings, audit, now=_NOW, fetch=lambda _s: [conv], alert=counting_alert)
+    )
+    asyncio.run(
+        scan_conversations(settings, audit, now=_NOW, fetch=lambda _s: [conv], alert=counting_alert)
+    )
+    assert count[0] == 1

@@ -64,6 +64,7 @@ NO_RESPONSE_BREACH = "SLA_BREACH_NO_RESPONSE"
 UNRESOLVED_BREACH = "SLA_BREACH_UNRESOLVED"
 TIER2_ESCALATION = "TIER2_ESCALATION"
 FIRST_RESPONSE_STATE = "FIRST_RESPONSE"
+REMINDER_WARNING_STATE = "REMINDER_WARNING"
 
 _SECONDS_PER_HOUR = 3600
 
@@ -99,7 +100,7 @@ async def _prior_states(audit: AuditLogPort, ticket_id: str) -> set[str]:
     return {e.to_state for e in entries}
 
 
-async def scan_conversations(
+async def scan_conversations(  # noqa: PLR0912, PLR0915
     settings: Settings,
     audit: AuditLogPort,
     *,
@@ -233,6 +234,31 @@ async def scan_conversations(
                             ticket_id=ticket_id,
                             error=str(exc),
                         )
+
+        # Phase 6: fire a one-time "approaching SLA" warning reminder when the
+        # conversation is inside the warning window (not yet breached). Rides the
+        # same `alert` callback as breaches (→ WhatsApp when configured). Deduped
+        # via REMINDER_WARNING_STATE in the audit trail, exactly like the breaches.
+        if settings.tasks_reminder_whatsapp_enabled and status != "resolved":
+            warning_threshold_sec = settings.tasks_reminder_warning_minutes * 60
+            resolution_remaining = resolution_threshold - age
+            if (
+                0 < resolution_remaining < warning_threshold_sec
+                and REMINDER_WARNING_STATE not in prior
+            ):
+                reminder_entry = await _fire(
+                    audit,
+                    ticket_id=ticket_id,
+                    session_id=session_id,
+                    to_state=REMINDER_WARNING_STATE,
+                    remark=(
+                        f"SLA reminder: {resolution_remaining / 60:.0f} min until resolution SLA "
+                        f"(warning threshold {settings.tasks_reminder_warning_minutes} min)"
+                    ),
+                    clock=clock,
+                    alert=alert,
+                )
+                fired.append(reminder_entry)
 
     if fired:
         _log.info("sla_scan_fired", count=len(fired))

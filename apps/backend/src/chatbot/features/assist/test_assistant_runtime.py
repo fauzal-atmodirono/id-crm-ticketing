@@ -372,3 +372,112 @@ def test_build_tool_declarations_custom_tool_declaration_shape() -> None:
     custom_decl = next(t for t in result if t["name"] == "custom_check_order")
     assert custom_decl["description"] == "Checks an order status."
     assert custom_decl["parameters"] == param_schema
+
+
+# ---------------------------------------------------------------------------
+# build_system_prompt — scenarios (Playbooks section)
+# ---------------------------------------------------------------------------
+
+from chatbot.features.chat.adapters.scenarios_store import Scenario  # noqa: E402
+
+
+def _make_scenario(
+    title: str,
+    description: str,
+    instruction: str,
+    tools: list[str] | None = None,
+    enabled: bool = True,
+) -> Scenario:
+    return Scenario(
+        id=f"scen_{title.lower().replace(' ', '_')}",
+        assistant_id="asst_test",
+        title=title,
+        description=description,
+        instruction=instruction,
+        tools=tools or [],
+        enabled=enabled,
+    )
+
+
+def test_build_system_prompt_none_scenarios_no_playbooks_section() -> None:
+    """scenarios=None must not produce a ## Playbooks section (behaviour-preserving)."""
+    assistant = _assistant_with_instructions("")
+    result = build_system_prompt(assistant, scenarios=None)
+    assert "## Playbooks" not in result
+    assert result == DEFAULT_COPILOT_PROMPT
+
+
+def test_build_system_prompt_empty_scenarios_no_playbooks_section() -> None:
+    """An empty scenarios list must not produce a ## Playbooks section."""
+    assistant = _assistant_with_instructions("")
+    result = build_system_prompt(assistant, scenarios=[])
+    assert "## Playbooks" not in result
+    assert result == DEFAULT_COPILOT_PROMPT
+
+
+def test_build_system_prompt_enabled_scenario_appears_in_playbooks() -> None:
+    """An enabled scenario must appear in the ## Playbooks section."""
+    assistant = _assistant_with_instructions("")
+    s = _make_scenario(
+        title="Warranty Claim",
+        description="Handle warranty requests",
+        instruction="Ask for proof of purchase.",
+        tools=["search_knowledge_base"],
+        enabled=True,
+    )
+    result = build_system_prompt(assistant, scenarios=[s])
+    assert "## Playbooks" in result
+    assert "### Warranty Claim — Handle warranty requests" in result
+    assert "Ask for proof of purchase." in result
+    assert "Allowed tools: search_knowledge_base" in result
+
+
+def test_build_system_prompt_disabled_scenario_excluded() -> None:
+    """A disabled scenario must NOT appear in the Playbooks section."""
+    assistant = _assistant_with_instructions("")
+    enabled_s = _make_scenario("Active", "Active desc", "Do this.", enabled=True)
+    disabled_s = _make_scenario("Inactive", "Inactive desc", "Never shown.", enabled=False)
+    result = build_system_prompt(assistant, scenarios=[enabled_s, disabled_s])
+    assert "Active" in result
+    assert "Inactive" not in result
+    assert "Never shown." not in result
+
+
+def test_build_system_prompt_all_disabled_scenarios_no_playbooks() -> None:
+    """If all scenarios are disabled, no ## Playbooks section is emitted."""
+    assistant = _assistant_with_instructions("")
+    s = _make_scenario("Disabled", "desc", "instruction", enabled=False)
+    result = build_system_prompt(assistant, scenarios=[s])
+    assert "## Playbooks" not in result
+
+
+def test_build_system_prompt_scenario_no_tools_omits_allowed_tools_line() -> None:
+    """When a scenario has no tools, the 'Allowed tools:' line must NOT appear."""
+    assistant = _assistant_with_instructions("")
+    s = _make_scenario("NoTools", "desc", "instruction", tools=[])
+    result = build_system_prompt(assistant, scenarios=[s])
+    assert "Allowed tools:" not in result
+
+
+def test_build_system_prompt_playbooks_appended_after_persona() -> None:
+    """Playbooks must appear after product/guardrails/guidelines in the prompt."""
+    assistant = _assistant_with_persona(
+        product_name="Proton Mail",
+        guardrails=["G1"],
+        response_guidelines=["R1"],
+    )
+    s = _make_scenario("Warranty", "desc", "instruction", enabled=True)
+    result = build_system_prompt(assistant, scenarios=[s])
+    guidelines_pos = result.index("## Response guidelines")
+    playbooks_pos = result.index("## Playbooks")
+    assert playbooks_pos > guidelines_pos
+
+
+def test_build_system_prompt_multiple_enabled_scenarios() -> None:
+    """All enabled scenarios appear in the Playbooks section."""
+    assistant = _assistant_with_instructions("")
+    s1 = _make_scenario("S1", "d1", "i1", enabled=True)
+    s2 = _make_scenario("S2", "d2", "i2", enabled=True)
+    result = build_system_prompt(assistant, scenarios=[s1, s2])
+    assert "### S1 — d1" in result
+    assert "### S2 — d2" in result

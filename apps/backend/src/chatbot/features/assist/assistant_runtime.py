@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from chatbot.features.chat.adapters.assistants_store import Assistant, AssistantsStorePort
+    from chatbot.features.chat.adapters.scenarios_store import Scenario
     from chatbot.features.chat.adapters.tools_store import CustomTool
 
 from chatbot.features.assist.copilot_tools import COPILOT_TOOLS
@@ -45,7 +46,10 @@ async def resolve_assistant(store: AssistantsStorePort, assistant_id: str | None
     return await store.get_default()
 
 
-def build_system_prompt(assistant: Assistant) -> str:
+def build_system_prompt(
+    assistant: Assistant,
+    scenarios: list[Scenario] | None = None,
+) -> str:
     """Return the system prompt to use for *assistant*.
 
     Non-empty instructions on the assistant take precedence; otherwise
@@ -57,6 +61,11 @@ def build_system_prompt(assistant: Assistant) -> str:
       - Product: <product_name>
       - ## Guardrails section (one bullet per guardrail)
       - ## Response guidelines section (one bullet per guideline)
+      - ## Playbooks section (one subsection per *enabled* scenario)
+
+    *scenarios* is the pre-fetched list for the resolved assistant.  None or
+    an empty list → no Playbooks section (behaviour-preserving for callers that
+    do not pass scenarios).
     """
     instructions = assistant.config.instructions
     base = instructions.strip() if (instructions and instructions.strip()) else DEFAULT_COPILOT_PROMPT
@@ -75,6 +84,16 @@ def build_system_prompt(assistant: Assistant) -> str:
     if guidelines:
         section = "## Response guidelines\n" + "\n".join(f"- {g}" for g in guidelines)
         parts.append(section)
+
+    enabled_scenarios = [s for s in (scenarios or []) if s.enabled]
+    if enabled_scenarios:
+        playbook_lines = ["## Playbooks"]
+        for s in enabled_scenarios:
+            playbook_lines.append(f"### {s.title} — {s.description}")
+            playbook_lines.append(s.instruction)
+            if s.tools:
+                playbook_lines.append(f"Allowed tools: {', '.join(s.tools)}")
+        parts.append("\n".join(playbook_lines))
 
     return "\n".join(parts)
 

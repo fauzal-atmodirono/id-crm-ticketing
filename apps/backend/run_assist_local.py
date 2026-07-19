@@ -21,16 +21,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from chatbot.features.assist.copilot_router import build_copilot_router
 from chatbot.features.assist.router import build_assist_router
+from chatbot.features.chat.adapters.assistants_store import build_assistants_store
 from chatbot.features.chat.adapters.live_faq import InMemoryLiveFaqStore, VertexEmbedder
 from chatbot.features.chat.adapters.merged_knowledge import MergedKnowledgeAdapter
-from chatbot.features.chat.adapters.assistants_store import build_assistants_store
+from chatbot.features.chat.adapters.scenarios_store import build_scenarios_store
 from chatbot.features.chat.adapters.tenant_settings_store import build_tenant_settings_store
+from chatbot.features.chat.adapters.tools_store import build_tools_store
 from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.kb_assistants_router import build_kb_assistants_router
 from chatbot.features.chat.kb_documents_router import build_kb_documents_router
+from chatbot.features.chat.kb_scenarios_router import build_kb_scenarios_router
 from chatbot.features.chat.kb_settings_router import build_kb_settings_router
 from chatbot.features.chat.kb_tools_router import build_kb_tools_router
-from chatbot.features.chat.adapters.tools_store import build_tools_store
 from chatbot.features.chat.models import KbArticle
 from chatbot.platform.config import get_settings
 
@@ -96,11 +98,13 @@ def build() -> FastAPI:
     app.include_router(build_kb_settings_router(tenant_settings_store, settings))
     tools_store = build_tools_store(settings)
     app.include_router(build_kb_tools_router(tools_store, settings))
+    scenarios_store = build_scenarios_store(settings)
+    app.include_router(build_kb_scenarios_router(scenarios_store, tools_store, settings))
     app.include_router(
         build_assist_router(settings, kp, genai)
     )
     app.include_router(
-        build_copilot_router(settings, kp, genai, assistants_store, tenant_settings_store)
+        build_copilot_router(settings, kp, genai, assistants_store, tenant_settings_store, scenarios_store=scenarios_store)
     )
 
     @app.get("/healthz")

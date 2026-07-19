@@ -5,6 +5,9 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from chatbot.features.assist.copilot_router import build_copilot_router
+from chatbot.features.assist.router import build_assist_router
+from chatbot.features.chat.adapters.assistants_store import build_assistants_store
 from chatbot.features.chat.adapters.audit_log import build_audit_log
 from chatbot.features.chat.adapters.bigquery_metrics import build_metrics_port
 from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
@@ -13,23 +16,22 @@ from chatbot.features.chat.adapters.handoff_store import build_handoff_store
 from chatbot.features.chat.adapters.live_faq import VertexEmbedder, build_live_faq_store
 from chatbot.features.chat.adapters.mock import InMemoryKnowledgeAdapter, MockVoiceAdapter
 from chatbot.features.chat.adapters.noop_conversation_log import NoOpConversationLog
+from chatbot.features.chat.adapters.scenarios_store import build_scenarios_store
 from chatbot.features.chat.adapters.sunshine_conversations import SunshineConversationsAdapter
+from chatbot.features.chat.adapters.tenant_settings_store import build_tenant_settings_store
+from chatbot.features.chat.adapters.tools_store import build_tools_store
 from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.adapters.vertex_search import VertexAISearchAdapter
 from chatbot.features.chat.adapters.zammad import ZammadClient
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
-from chatbot.features.assist.router import build_assist_router
-from chatbot.features.assist.copilot_router import build_copilot_router
 from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.handoff_bridge import HandoffBridge
-from chatbot.features.chat.adapters.assistants_store import build_assistants_store
-from chatbot.features.chat.adapters.tenant_settings_store import build_tenant_settings_store
 from chatbot.features.chat.kb_assistants_router import build_kb_assistants_router
 from chatbot.features.chat.kb_documents_router import build_kb_documents_router
+from chatbot.features.chat.kb_scenarios_router import build_kb_scenarios_router
 from chatbot.features.chat.kb_settings_router import build_kb_settings_router
 from chatbot.features.chat.kb_suggest_router import build_kb_suggest_router
 from chatbot.features.chat.kb_tools_router import build_kb_tools_router
-from chatbot.features.chat.adapters.tools_store import build_tools_store
 from chatbot.features.chat.ports import (
     ChatPort,
     ConversationLogPort,
@@ -112,7 +114,8 @@ def _wire_copilot(app: FastAPI, knowledge_port: KnowledgePort, settings: Setting
     assistants_store = build_assistants_store(settings)
     tenant_settings_store = build_tenant_settings_store(settings)
     tools_store = build_tools_store(settings)
-    app.include_router(build_copilot_router(settings, knowledge_port, genai_client, assistants_store, tenant_settings_store, tools_store=tools_store))
+    scenarios_store = build_scenarios_store(settings)
+    app.include_router(build_copilot_router(settings, knowledge_port, genai_client, assistants_store, tenant_settings_store, tools_store=tools_store, scenarios_store=scenarios_store))
 
 
 def _wire_agent_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings) -> None:
@@ -136,6 +139,9 @@ def _wire_agent_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Se
 
     tools_store = build_tools_store(settings)
     app.include_router(build_kb_tools_router(tools_store, settings))
+
+    scenarios_store = build_scenarios_store(settings)
+    app.include_router(build_kb_scenarios_router(scenarios_store, tools_store, settings))
 
     faq_port = build_faq_feedback_port(settings)
     app.include_router(build_faq_router(faq_port, settings))

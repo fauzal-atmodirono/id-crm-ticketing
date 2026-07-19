@@ -26,6 +26,7 @@ from chatbot.features.chat.settings_facade import get_effective_value
 
 if TYPE_CHECKING:
     from chatbot.features.chat.adapters.assistants_store import AssistantsStorePort
+    from chatbot.features.chat.adapters.scenarios_store import ScenariosStorePort
     from chatbot.features.chat.adapters.tenant_settings_store import TenantSettingsStorePort
     from chatbot.features.chat.adapters.tools_store import ToolsStorePort
     from chatbot.features.chat.ports import KnowledgePort
@@ -58,6 +59,7 @@ def build_copilot_router(
     assistants_store: AssistantsStorePort,
     tenant_settings_store: TenantSettingsStorePort | None = None,
     tools_store: ToolsStorePort | None = None,
+    scenarios_store: ScenariosStorePort | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/assist", tags=["copilot"])
 
@@ -98,6 +100,15 @@ def build_copilot_router(
             settings=settings,
         )
         assistant = await resolve_assistant(assistants_store, req.assistant_id)
+
+        # Pre-fetch scenarios for the resolved assistant (prompt injection).
+        scenarios = None
+        if scenarios_store is not None:
+            try:
+                scenarios = await scenarios_store.list_for_assistant(assistant.id)
+            except Exception as _e:
+                _log.warning("copilot_scenarios_fetch_failed", assistant_id=assistant.id, error=str(_e))
+
         contents = _seed_contents(req.thread)
         tool_calls: list[str] = []
 
@@ -111,7 +122,7 @@ def build_copilot_router(
             max_iters = settings.copilot_max_tool_iterations
 
         config = {
-            "system_instruction": build_system_prompt(assistant),
+            "system_instruction": build_system_prompt(assistant, scenarios=scenarios),
             "tools": [{"function_declarations": build_tool_declarations(assistant, custom_tools=custom_tools)}],
             "temperature": assistant.config.temperature,
         }

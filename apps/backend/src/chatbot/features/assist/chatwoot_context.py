@@ -42,7 +42,7 @@ class ChatwootContextClient:
                 )
                 res.raise_for_status()
                 return res.json() if res.content else None
-        except Exception as e:  # noqa: BLE001 — never raise into a tool call
+        except Exception as e:  # never raise into a tool call
             _log.error("chatwoot_context_get_failed", path=path, error=str(e))
             return None
 
@@ -50,7 +50,8 @@ class ChatwootContextClient:
         data = await self._get(f"/conversations/{conversation_id}")
         if not data:
             return None
-        return (data.get("meta") or {}).get("sender", {}).get("id")
+        sender_id = (data.get("meta") or {}).get("sender", {}).get("id")
+        return sender_id if isinstance(sender_id, int) else None
 
     async def get_transcript(self, conversation_id: str) -> list[dict[str, Any]]:
         data = await self._get(f"/conversations/{conversation_id}")

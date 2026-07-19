@@ -1,88 +1,84 @@
-# Knowledge → Tools — Design
+# Knowledge → Tools — Design (tenant registry + per-assistant enablement)
 
-**Status:** approved design (2026-07-19). One of four editable Knowledge sub-pages.
-**Ships as fork patch `0014` + a new `custom_tools` store, router, and a webhook
-tool-execution path in the copilot.** Largest of the four.
+**Status:** approved design (2026-07-19). REVISED for the Captain-parity program
+(see `…-captain-parity-program.md`). Tools are a **tenant-level registry**;
+assistants **enable** which they may call. Adopts Captain's `custom_tool` shape.
+Built after Playground. Ships as fork patch `0015`. Largest backend of the set.
 
-## Summary
-Manage the assistant's tool set: (a) toggle/edit the **built-in** tools and
-(b) define **custom webhook tools** the model can call, which the backend executes
-by POSTing to a user-supplied URL. Both persist in a store the copilot reads when
-assembling its tool list.
+## Decision (from brainstorm + program) — "Both (built-ins + webhooks)"
+- **Built-in tools:** the existing `COPILOT_TOOLS` (search_knowledge_base, chatwoot
+  context, …). Toggle/edit description at the registry level; each assistant’s
+  `config.enabled_builtin_tools` decides which it actually calls.
+- **Custom webhook tools:** tenant-level, defined once, executed by the backend.
+  Each assistant’s `config.enabled_custom_tools` (slugs) opts in.
 
-## Decision (from brainstorm) — "Both (built-ins + webhooks)"
+## Backend
 
-## Shared foundations
-- **Store pattern:** `ToolsStorePort` + `InMemoryToolsStore` + `FirestoreToolsStore`
-  (mirror `live_faq.py`), `build_tools_store(settings)`. Firestore collection
-  `custom_tools` (one doc per tool) + a small `builtin_tool_overrides` doc.
-- **Frontend:** `components/proton/KnowledgeTools.vue` + `api/protonKnowledge.js`
-  helpers + host wiring `section === 'tools'`. Patch `0014`.
-- Reuses the **effective-config facade** from the Settings spec for "enabled set".
+### Store — `tools_store.py`
+`ToolsStorePort` + `InMemory*` + `Firestore*` (mirror `live_faq.py`),
+`build_tools_store(settings)`. Firestore collection `custom_tools` (one doc per
+tool) + a small `builtin_tool_overrides` doc. Never raises on read.
 
-## Current state
-`src/chatbot/features/assist/copilot_tools.py` defines `COPILOT_TOOLS`
-(a static `list[dict]` of function declarations) and `ToolExecutor` (Python
-dispatch by tool name). `copilot_router.py` passes
-`"tools": [{"function_declarations": COPILOT_TOOLS}]` and executes calls via
-`ToolExecutor`. Both become **store-driven**.
-
-## (a) Built-in registry
-- Store holds per-built-in overrides: `{ name, enabled: bool, description?, when_to_use? }`.
-- Copilot assembles declarations from `COPILOT_TOOLS` filtered to `enabled`, with
-  description overridden where set. Execution unchanged (`ToolExecutor`).
-- Built-ins can be disabled but not deleted (they're code).
-
-## (b) Webhook tools
-Definition (stored per doc):
+### Custom tool shape (mirrors `enterprise/app/models/captain/custom_tool.rb`)
 ```json
-{ "id": "...", "name": "check_order_status", "description": "...",
-  "parameters": { "type": "object", "properties": { ... }, "required": [ ... ] },
-  "url": "https://...", "method": "POST",
-  "headers": { "X-Api-Key": "..." },   // optional; secret-bearing
-  "enabled": true }
+{ "slug": "custom_check_order", "title": "Check order status", "description": "...",
+  "endpoint_url": "https://...", "http_method": "GET|POST",
+  "auth_type": "none|bearer|basic|api_key", "auth_config": { ... },   // secret
+  "param_schema": { "type": "object", "properties": {...}, "required": [...] },
+  "request_template": "...", "response_template": "...", "enabled": true }
 ```
-- **Declaration:** `{ name, description, parameters }` appended to the model's
-  function_declarations alongside enabled built-ins.
-- **Execution:** extend `ToolExecutor` — when the model calls a tool not in the
-  built-in dispatch, look it up in the store; if it's a webhook tool, POST
-  `{ arguments }` (or method as configured) to `url` with `headers`, await, and
-  return the response body (JSON or text, truncated) to the model as the tool
-  result. On any failure return a model-visible error string (never raise).
-- **Safety (v1 defaults, approved):** HTTPS-only URL; connect+read **timeout 10s**;
-  **response size cap ~16 KB**; redirects disabled; per-turn tool-call cap already
-  bounded by `copilot_max_tool_iterations`. Optional host allowlist via env
-  (`custom_tool_allowed_hosts`); empty = any HTTPS host. Use `httpx.AsyncClient`
-  (reuse the `clients/deps` singleton pattern).
+- `slug` unique per tenant, `^[a-zA-Z_][a-zA-Z0-9_]*$`, ≤ 64 chars (Gemini function
+  name limit); auto-derived from title with a random suffix on collision.
+- **Cap: ≤ 15 custom tools** per tenant (Captain parity).
 
-## Backend — `kb_tools_router.py`
-- `GET /kb/tools` → `{ builtins: [{name, enabled, description, when_to_use}],
-  custom: [{id, name, description, parameters, url, method, headers_present, enabled}] }`
-  (never returns raw secret header values — return `headers_present`/masked).
-- `POST /kb/tools` (create webhook tool), `PUT /kb/tools/{id}`, `DELETE /kb/tools/{id}`,
-  and `PUT /kb/tools/builtins/{name}` (toggle/description). Auth `x-api-key`.
-- Validate: unique tool `name` across built-ins+custom; valid JSON-schema `parameters`;
-  HTTPS `url`; name matches `^[a-zA-Z_][a-zA-Z0-9_]*$` (Gemini function-name rules).
-- Wire into `main.py` + `run_assist_local.py`.
+### Router — `kb_tools_router.py`
+Auth `x-api-key`. Wire into `main.py` + `run_assist_local.py`. Never returns raw
+`auth_config` secrets (return `auth_type` + `has_auth`).
+- `GET /kb/tools` → `{ builtins: [{name, enabled, description}], custom: [safe…] }`
+- `POST /kb/tools` (create; validate slug/schema/HTTPS/cap), `PUT /kb/tools/{slug}`,
+  `DELETE /kb/tools/{slug}`, `PUT /kb/tools/builtins/{name}` (toggle/description).
 
-## Copilot integration
-`copilot_router.py`: replace the static `COPILOT_TOOLS` reference with a
-`build_tool_declarations(tools_store)` call (enabled built-ins + enabled custom),
-and give `ToolExecutor` a reference to the store for webhook dispatch. Keep the
-existing `sources`/`tool_calls` reporting; a webhook tool's name shows in `tool_calls`.
+### Execution — extend `ToolExecutor` (`copilot_tools.py`)
+When the model calls a tool not in the built-in dispatch, look it up in the store:
+if a custom tool, render `request_template` with the call args, issue the HTTP call
+per `http_method` + `auth_type`/`auth_config`, apply `response_template` to the
+body, and return the result to the model. On any failure return a model-visible
+error string (never raise). Reuse an `httpx.AsyncClient` (the `clients/deps`
+singleton pattern).
+
+**Safety (v1 defaults, approved):** HTTPS-only `endpoint_url`; connect+read
+**timeout 10s**; **response cap ~16 KB**; redirects disabled; optional host
+allowlist via env `custom_tool_allowed_hosts` (empty = any HTTPS host); admin-only
+(behind `x-api-key`). Document that tool URLs/creds are trusted-admin input.
+
+### Tool-set assembly (per assistant)
+`build_tool_declarations(assistant, tools_store)` = enabled built-ins
+(`config.enabled_builtin_tools` ∩ `COPILOT_TOOLS`, with registry description
+overrides) + enabled custom tools (`config.enabled_custom_tools` ∩ registry,
+`enabled=true`). Used by `copilot_router.py` (replaces the static `COPILOT_TOOLS`
+reference). Scenario `tools` (scenarios spec) must be a subset of this set.
+
+## Frontend — `KnowledgeTools.vue`
+- Two sections. **Registry** (tenant-wide): list built-ins (toggle/description) +
+  custom tools (CRUD modal: title, description, endpoint_url, http_method,
+  auth_type + fields, param_schema editor, templates, enabled). Secrets write-only.
+- **Per-assistant enablement:** header **AssistantSelector**; checkboxes for which
+  registry tools the selected assistant may call → saved to the assistant’s
+  `enabled_builtin_tools`/`enabled_custom_tools` via `updateAssistant`.
+- API helpers in `protonKnowledge.js`: `listTools`, `createTool`, `updateTool`,
+  `deleteTool`, `setBuiltinTool`. Host wiring `section === 'tools'`.
 
 ## Testing
-- `test_kb_tools_router.py`: CRUD + validation (dup name, bad schema, non-HTTPS)
-  + secret masking + auth. InMemory store.
-- `test_copilot_webhook_tools.py`: model calls a custom tool → `ToolExecutor` POSTs
-  (mock with `respx`) → response fed back; timeout/oversize/error → model-visible
-  message, no raise; disabled built-in absent from declarations.
-- Frontend: vite compile + smoke (add a webhook tool, ask a question that triggers it).
+- `test_kb_tools_router.py`: CRUD + validation (dup slug, bad schema, non-HTTPS,
+  cap>15) + secret masking + auth. InMemory store.
+- `test_copilot_webhook_tools.py`: model calls a custom tool → `ToolExecutor` HTTP
+  call (mock with `respx`) → response fed back; timeout/oversize/error →
+  model-visible message, no raise; disabled/not-enabled tool absent from
+  declarations. Tool-set assembly unit test (built-in filter + custom opt-in).
+- Frontend: vite compile + smoke (add a webhook tool, enable it for an assistant,
+  ask a question that triggers it in Playground).
 
 ## Out of scope / risks
-- **Security is the main risk:** webhook tools let an admin make the backend call
-  arbitrary HTTPS endpoints (SSRF-adjacent). v1 mitigations: HTTPS-only, timeout,
-  size cap, optional host allowlist, admin-only (behind `x-api-key`). Document that
-  tool URLs/headers are trusted-admin input. No arbitrary code execution — only HTTP.
-- No OAuth flows for tool auth (static headers only) in v1.
+- **Security:** webhook tools = admin-trusted SSRF surface. Mitigations above.
+  No arbitrary code — HTTP only. No OAuth flows (static auth only) in v1.
 - No per-tool usage metrics in v1.

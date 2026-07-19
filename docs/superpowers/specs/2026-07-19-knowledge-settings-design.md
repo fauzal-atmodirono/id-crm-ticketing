@@ -1,90 +1,90 @@
-# Knowledge → Settings — Design
+# Knowledge → Settings — Design (per-assistant persona + tenant ops)
 
-**Status:** approved design (2026-07-19). One of four editable Knowledge sub-pages.
-**Ships as fork patch `0013` + a new `assistant_settings` store & router.**
+**Status:** approved design (2026-07-19). REVISED for the Captain-parity program
+(see `…-captain-parity-program.md`). Was ops-only; now the **per-assistant persona
+editor** (Captain's assistant settings) plus a small **tenant ops** section.
+Built after Assistants. Ships as fork patch `0013`.
 
 ## Summary
-An editable assistant-config page. Today the assist/copilot behaviour is fixed by
-environment variables (pydantic `Settings`). This page adds a small **override
-store** whose values take precedence over env at runtime, so an admin can tune the
-assistant without a redeploy. Blank/unset override ⇒ fall back to the env default.
+Two panels on one page:
+- **Assistant settings (per-assistant persona)** — edits the selected assistant's
+  `config`. Mirrors Captain's `AssistantBasicSettingsForm.vue` +
+  `AssistantSystemSettingsForm.vue`.
+- **Advanced / tenant ops** — a few tenant-wide runtime knobs (model, iterations,
+  debounce, feature gates) that override env.
 
-## Decision (from brainstorm) — "Core knobs"
-Editable fields (last column = which service **consumes** the value):
-| Field | Type | Env default (`platform/config.py`) | Consumer |
-|---|---|---|---|
-| `assist_gemini_model` | str | `assist_gemini_model` | proton-conversational-ai |
-| `copilot_gemini_model` | str | `copilot_gemini_model` | proton-conversational-ai |
-| `copilot_max_tool_iterations` | int | `copilot_max_tool_iterations` | proton-conversational-ai |
-| `feature_ai_assist` | bool | from `PROTON_FEATURES` | proton-conversational-ai |
-| `feature_copilot` | bool | from `PROTON_FEATURES` | proton-conversational-ai |
-| `feature_drafts` | bool | `zammad_ai_drafts` / drafts gate | proton-conversational-ai |
-| `default_mode` | enum `suggest`\|`auto` | agent-bot `AGENT_MODE` | **`agent/` service (follow-up)** |
-| `debounce_seconds` | number | agent-bot `DEBOUNCE_SECONDS` | **`agent/` service (follow-up)** |
+## Panel 1 — Assistant persona (per-assistant)
+Edits the resolved assistant via `PUT /kb/assistants/{id}` (from the assistants
+spec — no new endpoint). Fields (map 1:1 to Captain, see `captain/assistant.rb`):
+| Field | UI | Captain source |
+|---|---|---|
+| `name`, `description`, `product_name` | text | AssistantBasicSettingsForm |
+| `config.instructions` | textarea (system prompt) | AssistantSystemSettingsForm |
+| `config.temperature` | slider 0–1 (default 1) | AssistantSystemSettingsForm |
+| `config.guardrails[]` | list editor (add/remove strings) | assistant.guardrails |
+| `config.response_guidelines[]` | list editor | assistant.response_guidelines |
+| `config.welcome_message` / `handoff_message` / `resolution_message` | text | controller params |
+| `config.feature_faq / feature_memory / feature_citations / feature_contact_attributes` | toggles | config store_accessor |
 
-### Consumption boundary (important)
-proton-conversational-ai owns the assist/copilot/KB endpoints; the **auto-reply
-agent-bot** (incoming-message → AI, with `AGENT_MODE` + `DEBOUNCE_SECONDS`) lives
-in the separate **`id-crm-ticketing agent/` service**. The end-state vision is a
-single unified backend, so this store is the right home for *all* the knobs, but
-in v1 only the proton-conversational-ai-consumed fields take effect immediately.
-`default_mode` and `debounce_seconds` are **stored and shown now** but their
-runtime effect requires the `agent/` service to read the same store — a documented
-**follow-up** (same pattern as the Inboxes spec's agent-bot note). The Settings UI
-labels these two "applies to auto-reply (wiring pending)" so the boundary is honest.
+### System-prompt assembly (backend)
+`build_system_prompt(assistant, scenarios)` (introduced in assistants spec) composes:
+```
+<config.instructions or default_prompt>
+Product: <product_name>
+## Guardrails
+- <guardrails…>
+## Response guidelines
+- <response_guidelines…>
+## Playbooks         (from scenarios spec, if any enabled)
+```
+`temperature` is passed to the Gemini call. `feature_faq=false` removes
+`search_knowledge_base` from the tool set; `feature_citations` toggles whether
+`sources` are surfaced; `feature_memory`/`feature_contact_attributes` gate the
+respective context tools. Copilot/assist routers read these from the resolved
+assistant instead of hardcoded values.
 
-## Shared foundations
-- **Store pattern:** mirror `src/chatbot/features/chat/adapters/live_faq.py`
-  (`InMemoryLiveFaqStore` / `FirestoreLiveFaqStore`) and `handoff_store.py`:
-  a `SettingsStorePort` + `InMemorySettingsStore` + `FirestoreSettingsStore`,
-  `build_settings_store(settings)` picking Firestore when `firestore_project_id`
-  is set, else in-memory. Firestore: a single doc (e.g. `assistant_config/current`)
-  in a tenant-local collection. Never raises on read (returns `{}` → all env).
-- **Frontend pattern:** `components/proton/KnowledgeSettings.vue` (n-* tokens,
-  `useAlert`), helpers in `api/protonKnowledge.js`, host wiring by
-  `section === 'settings'`. Patch `0013`.
+## Panel 2 — Tenant ops (`tenant_settings`)
+New `TenantSettingsStore` (Port + InMemory/Firestore, doc `tenant_settings/current`)
+holding overrides that take precedence over env; blank ⇒ env default. Endpoint
+`GET/PUT /kb/settings` returning `{ key: { value, source: "override"|"env" } }`.
+| Field | Env default (`platform/config.py`) | Consumer |
+|---|---|---|
+| `assist_gemini_model` | `assist_gemini_model` | proton-conversational-ai |
+| `copilot_gemini_model` | `copilot_gemini_model` | proton-conversational-ai |
+| `copilot_max_tool_iterations` | `copilot_max_tool_iterations` | proton-conversational-ai |
+| `feature_ai_assist` / `feature_copilot` / `feature_drafts` | `PROTON_FEATURES` / drafts gate | proton-conversational-ai |
+| `default_mode` (suggest/auto) | agent-bot `AGENT_MODE` | **`agent/` service (follow-up)** |
+| `debounce_seconds` | agent-bot `DEBOUNCE_SECONDS` | **`agent/` service (follow-up)** |
+
+An **effective-config facade** `get_effective(store, settings, key)` resolves
+override→env; copilot/assist routers read model/iterations through it. `default_mode`
+and `debounce_seconds` are **stored/shown now**, but their runtime effect on
+auto-reply needs the separate `agent/` service to read this store — documented
+follow-up (same boundary as the inboxes spec). UI labels them "applies to
+auto-reply (wiring pending)".
 
 ## Backend
-New `src/chatbot/features/chat/kb_settings_router.py`:
-- `GET /kb/settings` → for each field `{ key: { value, source: "override"|"env" } }`
-  by merging store overrides over the effective env defaults. Auth `x-api-key`.
-- `PUT /kb/settings` → body of partial overrides; validates types/enums; writes to
-  the store. Empty string / null on a field **clears** that override (revert to env).
-- Wire into `main.py` `_wire_agent_assist` (+ `run_assist_local.py`), like
-  `build_kb_documents_router`.
-
-**Effective-settings accessor.** Add a small helper
-`get_effective_setting(store, settings, key)` (or an `EffectiveConfig` facade) so
-the copilot/assist routers resolve `model` / `max_tool_iterations` / `mode` from
-`store-override → env`. The copilot router currently reads `settings.copilot_*`
-directly; route those reads through the facade. This facade is the seam later
-reused by Tools (enabled set) and Inboxes (default mode).
-
-## Data model (`assistant_config/current`)
-```json
-{ "default_mode": "suggest", "assist_gemini_model": "", "copilot_gemini_model": "",
-  "copilot_max_tool_iterations": null, "debounce_seconds": null,
-  "feature_ai_assist": null, "feature_copilot": null, "feature_drafts": null }
-```
-`null`/`""` ⇒ "no override, use env". Types validated on PUT.
+- `kb_settings_router.py` (`GET/PUT /kb/settings`) for panel 2; panel 1 reuses
+  `/kb/assistants/{id}`. Wire into `main.py` + `run_assist_local.py`.
 
 ## Frontend — `KnowledgeSettings.vue`
-A form (grouped: Behaviour / Models / Features). Each field shows its current
-**effective value** and a badge when it's an **override** vs **env default**; a
-"Reset to default" per field clears the override. Save → `PUT /kb/settings` →
-`useAlert('Settings saved')` → reload. Validation mirrors backend (enum, int ≥ 1).
+- Header: shared **AssistantSelector**. Panel 1 = persona form (grouped Basic /
+  System / Guardrails / Response guidelines / Features), saves to
+  `updateAssistant(id, …)`. Panel 2 = tenant ops form with override/env badges +
+  per-field "reset to default", saves to `PUT /kb/settings`.
+- API helpers: `getSettings()`, `updateSettings(body)` in `protonKnowledge.js`
+  (assistant helpers already added in the assistants spec).
 
 ## Testing
-- Backend: `test_kb_settings_router.py` — GET merges override>env with correct
-  `source`; PUT validates + persists (InMemory store); clearing reverts to env;
-  auth 401 like `test_faq_admin_auth`. Facade unit test: override wins over env.
-- Frontend: vite compile + manual smoke (change model, confirm copilot uses it).
+- `test_kb_settings_router.py`: GET merges override>env with `source`; PUT
+  validates+persists; clear reverts to env; auth. Facade unit test.
+- `test_system_prompt_persona.py`: instructions/guardrails/response_guidelines/
+  product appear in the assembled prompt; `feature_faq=false` drops
+  `search_knowledge_base`; temperature threaded to the model call.
+- Frontend: vite compile + smoke (edit persona, confirm copilot answer reflects it).
 
 ## Out of scope / risks
-- Not every env var is exposed — only the core knobs (YAGNI). Broader surface later.
-- **Live effect:** changing a model/iteration count affects subsequent calls only;
-  in-flight calls unaffected. Firestore read per call is cheap but consider a short
-  TTL cache if hot (note for later, not v1).
-- Feature toggles here affect **backend** gating; the frontend `__PROTON_CONFIG__`
-  feature flags are still injected at page load from `PROTON_FEATURES`. v1 keeps
-  those in sync manually; unifying injection with the store is a later item.
+- `default_mode`/`debounce_seconds` runtime effect = agent-bot follow-up (boundary).
+- Frontend `__PROTON_CONFIG__` feature flags still injected at page load from
+  `PROTON_FEATURES`; unifying with the store is a later item.
+- Guardrails/response-guidelines are prompt-level (not hard enforcement) in v1.

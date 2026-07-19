@@ -1,0 +1,288 @@
+diff --git a/app/javascript/dashboard/api/protonKnowledge.js b/app/javascript/dashboard/api/protonKnowledge.js
+index 395275d..122447d 100644
+--- a/app/javascript/dashboard/api/protonKnowledge.js
++++ b/app/javascript/dashboard/api/protonKnowledge.js
+@@ -89,6 +89,23 @@ export function deleteAssistant(id) {
+   });
+ }
+ 
++// ── Playground ────────────────────────────────────────────────────────────────
++
++// POST /assist/copilot  body: { conversation_id, thread, assistant_id }
++// Returns { answer, tool_calls: [string], sources: [{ title, snippet, url }] }.
++// conversationId defaults to "playground" so the backend's context tools
++// short-circuit gracefully when no real conversation is targeted.
++export function askPlayground(assistantId, thread, conversationId) {
++  return kbRequest('/assist/copilot', {
++    method: 'POST',
++    body: {
++      conversation_id: conversationId || 'playground',
++      thread,
++      assistant_id: assistantId,
++    },
++  });
++}
++
+ // ── Tenant settings ───────────────────────────────────────────────────────────
+ 
+ // GET /kb/settings -> { <key>: { value, source: "override"|"env" } }
+diff --git a/app/javascript/dashboard/components/proton/KnowledgePlayground.vue b/app/javascript/dashboard/components/proton/KnowledgePlayground.vue
+new file mode 100644
+index 0000000..85e417a
+--- /dev/null
++++ b/app/javascript/dashboard/components/proton/KnowledgePlayground.vue
+@@ -0,0 +1,234 @@
++<!-- KnowledgePlayground.vue — OUR file. A full-width sandbox to test the
++     selected Knowledge assistant outside any real conversation. Mirrors the
++     interaction model of ProtonCopilotPanel (multi-turn, "Thinking…",
++     tool_calls "Looked at: …", clickable sources) but rendered as a page, not
++     a sidepanel, and scoped to whichever assistant is selected in
++     AssistantSelector. Switching assistant resets the thread so you always
++     start fresh in the new assistant's context. An optional "Advanced" panel
++     lets you supply a synthetic conversation_id to exercise context tools
++     against a real conversation. Nothing here is persisted; it is entirely
++     stateless on the frontend. -->
++<script setup>
++import { ref, computed, nextTick, watch } from 'vue';
++import AssistantSelector from 'dashboard/components/proton/AssistantSelector.vue';
++import { useKnowledgeAssistant } from 'dashboard/composables/useKnowledgeAssistant';
++import { askPlayground } from 'dashboard/api/protonKnowledge';
++
++const { selectedId, selectedAssistant } = useKnowledgeAssistant();
++
++// ── Thread state ──────────────────────────────────────────────────────────────
++// Each message: { id, role: 'user'|'assistant', content, tools?, sources? }
++const messages = ref([]);
++const input = ref('');
++const loading = ref(false);
++const listEl = ref(null);
++let seq = 0;
++
++// ── Advanced panel ────────────────────────────────────────────────────────────
++const advancedOpen = ref(false);
++const conversationIdField = ref('playground');
++
++// ── Derived ───────────────────────────────────────────────────────────────────
++const canSend = computed(
++  () => input.value.trim().length > 0 && !loading.value && !!selectedId.value
++);
++
++// Reset thread when the selected assistant changes so you don't carry over
++// a conversation context meant for a different persona.
++watch(selectedId, () => {
++  messages.value = [];
++  input.value = '';
++  loading.value = false;
++});
++
++// ── Helpers ───────────────────────────────────────────────────────────────────
++const scrollToBottom = async () => {
++  await nextTick();
++  if (listEl.value) listEl.value.scrollTop = listEl.value.scrollHeight;
++};
++
++const reset = () => {
++  messages.value = [];
++  input.value = '';
++  loading.value = false;
++};
++
++// ── Send ──────────────────────────────────────────────────────────────────────
++const send = async () => {
++  const text = input.value.trim();
++  if (!text || loading.value || !selectedId.value) return;
++  input.value = '';
++  messages.value.push({ id: (seq += 1), role: 'user', content: text });
++  loading.value = true;
++  await scrollToBottom();
++  try {
++    // Build the thread from the full message list so far — including the user
++    // message we just pushed — so the backend sees the complete turn history.
++    const thread = messages.value
++      .filter(m => m.role === 'user' || m.role === 'assistant')
++      .map(m => ({ role: m.role, content: m.content }));
++    const convId = conversationIdField.value.trim() || 'playground';
++    const data = await askPlayground(selectedId.value, thread, convId);
++    messages.value.push({
++      id: (seq += 1),
++      role: 'assistant',
++      content: data.answer || '',
++      tools: Array.from(new Set(data.tool_calls || [])),
++      sources: data.sources || [],
++    });
++  } catch (err) {
++    // On error we push a synthetic assistant message so the UI stays coherent.
++    // We never throw out of this handler — background-style resilience.
++    messages.value.push({
++      id: (seq += 1),
++      role: 'assistant',
++      content: `Something went wrong. ${err.message}`,
++      tools: [],
++      sources: [],
++    });
++  } finally {
++    loading.value = false;
++    await scrollToBottom();
++  }
++};
++
++const onKeydown = e => {
++  if (e.key === 'Enter' && !e.shiftKey) {
++    e.preventDefault();
++    send();
++  }
++};
++</script>
++
++<template>
++  <div class="flex flex-col flex-1 h-full overflow-hidden">
++    <!-- ── Page header ──────────────────────────────────────────────────────── -->
++    <div
++      class="flex items-center justify-between flex-shrink-0 px-6 border-b h-14 border-n-weak bg-n-background"
++    >
++      <div class="flex items-center gap-4">
++        <AssistantSelector />
++        <span class="text-xs text-n-slate-10">
++          Sandbox — not tied to a conversation
++        </span>
++      </div>
++      <button
++        v-if="messages.length"
++        class="text-xs text-n-slate-11 hover:text-n-slate-12"
++        @click="reset"
++      >
++        Reset
++      </button>
++    </div>
++
++    <!-- ── Advanced panel ──────────────────────────────────────────────────── -->
++    <div class="flex-shrink-0 px-6 border-b border-n-weak bg-n-background">
++      <button
++        class="flex items-center gap-1 py-2 text-xs text-n-slate-11 hover:text-n-slate-12"
++        @click="advancedOpen = !advancedOpen"
++      >
++        <span>Advanced</span>
++        <span class="text-[10px]">{{ advancedOpen ? '▲' : '▼' }}</span>
++      </button>
++      <div v-if="advancedOpen" class="pb-3">
++        <label class="block mb-1 text-xs font-medium text-n-slate-11">
++          Simulate conversation id
++        </label>
++        <input
++          v-model="conversationIdField"
++          type="text"
++          class="w-64 px-2 py-1 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++          placeholder="playground"
++        />
++        <p class="mt-1 text-[11px] text-n-slate-10">
++          Use a real conversation id to exercise context tools (customer info,
++          past tickets). Leave as "playground" when not needed.
++        </p>
++      </div>
++    </div>
++
++    <!-- ── Chat area ───────────────────────────────────────────────────────── -->
++    <div ref="listEl" class="flex-1 px-6 py-6 space-y-4 overflow-y-auto">
++      <!-- Empty state -->
++      <p
++        v-if="!messages.length && !loading"
++        class="mt-10 text-sm text-center text-n-slate-11"
++      >
++        <template v-if="selectedAssistant">
++          Ask <strong class="text-n-slate-12">{{ selectedAssistant.name }}</strong>
++          anything — it will answer using its configured tools and knowledge base.
++        </template>
++        <template v-else>
++          Select an assistant above, then ask anything.
++        </template>
++      </p>
++
++      <!-- Message list -->
++      <div v-for="m in messages" :key="m.id" class="flex flex-col">
++        <div
++          class="max-w-[75%] rounded-lg px-4 py-2.5 text-sm whitespace-pre-wrap"
++          :class="
++            m.role === 'user'
++              ? 'self-end bg-n-brand text-white'
++              : 'self-start bg-n-slate-3 text-n-slate-12'
++          "
++        >
++          {{ m.content }}
++        </div>
++
++        <!-- Tool calls: "Looked at: …" -->
++        <span
++          v-if="m.role === 'assistant' && m.tools && m.tools.length"
++          class="self-start mt-1 text-[11px] text-n-slate-10"
++        >
++          Looked at: {{ m.tools.join(', ') }}
++        </span>
++
++        <!-- Sources: clickable links -->
++        <span
++          v-if="m.role === 'assistant' && m.sources && m.sources.length"
++          class="self-start mt-1 text-[11px] text-n-slate-10"
++        >
++          Sources:
++          <template v-for="(s, i) in m.sources" :key="i"
++            ><a
++              v-if="s.url"
++              :href="s.url"
++              target="_blank"
++              rel="noopener"
++              class="text-n-brand hover:underline"
++              >{{ s.title }}</a
++            ><span v-else>{{ s.title }}</span
++            ><span v-if="i < m.sources.length - 1">, </span></template
++          >
++        </span>
++      </div>
++
++      <!-- Thinking indicator -->
++      <p v-if="loading" class="text-sm text-n-slate-10">Thinking…</p>
++    </div>
++
++    <!-- ── Input area ──────────────────────────────────────────────────────── -->
++    <div class="flex-shrink-0 px-6 py-4 border-t border-n-weak bg-n-background">
++      <textarea
++        v-model="input"
++        rows="3"
++        placeholder="Ask the assistant something…"
++        class="w-full px-3 py-2 text-sm border rounded-lg resize-none border-n-weak bg-n-alpha-black1 focus:outline-none text-n-slate-12"
++        @keydown="onKeydown"
++      />
++      <div class="flex items-center justify-between mt-2">
++        <span class="text-[11px] text-n-slate-10">
++          Enter to send · Shift+Enter for newline
++        </span>
++        <button
++          class="px-4 py-1.5 text-sm font-medium text-white rounded-lg bg-n-brand disabled:opacity-50"
++          :disabled="!canSend"
++          @click="send"
++        >
++          Send
++        </button>
++      </div>
++    </div>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+index 95ab23b..9c66483 100644
+--- a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
++++ b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+@@ -9,6 +9,7 @@ import KnowledgeFaqs from 'dashboard/components/proton/KnowledgeFaqs.vue';
+ import KnowledgeDocuments from 'dashboard/components/proton/KnowledgeDocuments.vue';
+ import KnowledgeAssistants from 'dashboard/components/proton/KnowledgeAssistants.vue';
+ import KnowledgeSettings from 'dashboard/components/proton/KnowledgeSettings.vue';
++import KnowledgePlayground from 'dashboard/components/proton/KnowledgePlayground.vue';
+ 
+ const route = useRoute();
+ 
+@@ -40,6 +41,7 @@ const sectionLabel = computed(() => SECTIONS[section.value] || section.value);
+     <KnowledgeFaqs v-else-if="section === 'faqs'" />
+     <KnowledgeDocuments v-else-if="section === 'documents'" />
+     <KnowledgeSettings v-else-if="section === 'settings'" />
++    <KnowledgePlayground v-else-if="section === 'playground'" />
+     <div
+       v-else
+       class="flex flex-col items-center justify-center flex-1 gap-2 text-center"

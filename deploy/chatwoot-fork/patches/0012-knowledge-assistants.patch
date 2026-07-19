@@ -1,0 +1,494 @@
+diff --git a/app/javascript/dashboard/api/protonKnowledge.js b/app/javascript/dashboard/api/protonKnowledge.js
+index f28b4c5..6dbf32b 100644
+--- a/app/javascript/dashboard/api/protonKnowledge.js
++++ b/app/javascript/dashboard/api/protonKnowledge.js
+@@ -55,3 +55,36 @@ export async function listDocuments() {
+   const data = await kbRequest('/kb/documents');
+   return Array.isArray(data.documents) ? data.documents : [];
+ }
++
++// ── Assistants ────────────────────────────────────────────────────────────────
++
++// GET /kb/assistants -> [{ id, name, description, product_name, config, enabled, is_default, created_at }]
++export async function listAssistants() {
++  const data = await kbRequest('/kb/assistants');
++  return Array.isArray(data.assistants) ? data.assistants : [];
++}
++
++// body: { name, description, product_name } -> { id }
++export function createAssistant(body) {
++  return kbRequest('/kb/assistants', { method: 'POST', body });
++}
++
++// GET /kb/assistants/{id}
++export function getAssistant(id) {
++  return kbRequest(`/kb/assistants/${encodeURIComponent(id)}`);
++}
++
++// PUT /kb/assistants/{id}
++export function updateAssistant(id, body) {
++  return kbRequest(`/kb/assistants/${encodeURIComponent(id)}`, {
++    method: 'PUT',
++    body,
++  });
++}
++
++// DELETE /kb/assistants/{id} — 409 if it is the default
++export function deleteAssistant(id) {
++  return kbRequest(`/kb/assistants/${encodeURIComponent(id)}`, {
++    method: 'DELETE',
++  });
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 05c9d25..5dd2ab1 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -516,6 +516,7 @@ const menuItems = computed(() => {
+             icon: 'i-lucide-book-open',
+             label: 'Knowledge',
+             children: [
++              { name: 'Assistants', label: 'Assistants', to: accountScopedRoute('proton_knowledge', { section: 'assistants' }) },
+               { name: 'FAQs', label: 'FAQs', to: accountScopedRoute('proton_knowledge', { section: 'faqs' }) },
+               { name: 'Documents', label: 'Documents', to: accountScopedRoute('proton_knowledge', { section: 'documents' }) },
+               { name: 'Playground', label: 'Playground', to: accountScopedRoute('proton_knowledge', { section: 'playground' }) },
+diff --git a/app/javascript/dashboard/components/proton/AssistantSelector.vue b/app/javascript/dashboard/components/proton/AssistantSelector.vue
+new file mode 100644
+index 0000000..ba6f236
+--- /dev/null
++++ b/app/javascript/dashboard/components/proton/AssistantSelector.vue
+@@ -0,0 +1,44 @@
++<!-- AssistantSelector.vue — a small labeled <select> bound to the shared
++     useKnowledgeAssistant composable. Drop this into any Knowledge page header
++     that needs the user to pick an assistant. State is module-level so all
++     pages stay in sync without prop-drilling. -->
++<script setup>
++import { onMounted } from 'vue';
++import { useKnowledgeAssistant } from 'dashboard/composables/useKnowledgeAssistant';
++
++const { assistants, selectedId, refresh, select } = useKnowledgeAssistant();
++
++const onChange = event => {
++  select(event.target.value);
++};
++
++onMounted(() => {
++  if (!assistants.value.length) {
++    refresh();
++  }
++});
++</script>
++
++<template>
++  <div class="flex items-center gap-2">
++    <label class="text-xs font-medium text-n-slate-11 whitespace-nowrap">
++      Assistant
++    </label>
++    <select
++      :value="selectedId"
++      class="px-2 py-1 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++      @change="onChange"
++    >
++      <option v-if="!assistants.length" value="" disabled>
++        Loading…
++      </option>
++      <option
++        v-for="assistant in assistants"
++        :key="assistant.id"
++        :value="String(assistant.id)"
++      >
++        {{ assistant.name }}
++      </option>
++    </select>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeAssistants.vue b/app/javascript/dashboard/components/proton/KnowledgeAssistants.vue
+new file mode 100644
+index 0000000..7d46d06
+--- /dev/null
++++ b/app/javascript/dashboard/components/proton/KnowledgeAssistants.vue
+@@ -0,0 +1,295 @@
++<!-- KnowledgeAssistants.vue — OUR file. Native, Chatwoot-styled page for
++     managing multi-assistant AI configuration. Lists assistants returned by
++     the Proton backend's /kb/assistants CRUD, with create/edit modals and
++     guarded delete (409 on default). Uses the shared useKnowledgeAssistant
++     composable so any page-level selector stays in sync after mutations. -->
++<script setup>
++import { ref, onMounted } from 'vue';
++import { useAlert } from 'dashboard/composables';
++import {
++  createAssistant,
++  updateAssistant,
++  deleteAssistant,
++} from 'dashboard/api/protonKnowledge';
++import { useKnowledgeAssistant } from 'dashboard/composables/useKnowledgeAssistant';
++
++const { assistants, refresh } = useKnowledgeAssistant();
++
++const loading = ref(false);
++const errored = ref(false);
++
++const modalOpen = ref(false);
++const saving = ref(false);
++const editingId = ref(null);
++const form = ref({ name: '', description: '', product_name: '' });
++
++const modalTitle = ref('New assistant');
++
++const load = async () => {
++  loading.value = true;
++  errored.value = false;
++  try {
++    await refresh();
++  } catch (err) {
++    errored.value = true;
++    if (err && err.status === 401) {
++      useAlert('Unauthorized (401) — check the backend key configuration.');
++    } else if (err && err.status === 503) {
++      useAlert('Knowledge store unavailable (503) on the backend.');
++    } else {
++      useAlert(`Failed to load assistants: ${err ? err.message : 'Unknown error'}`);
++    }
++  } finally {
++    loading.value = false;
++  }
++};
++
++const openNew = () => {
++  editingId.value = null;
++  form.value = { name: '', description: '', product_name: '' };
++  modalTitle.value = 'New assistant';
++  modalOpen.value = true;
++};
++
++const openEdit = assistant => {
++  editingId.value = assistant.id;
++  form.value = {
++    name: assistant.name || '',
++    description: assistant.description || '',
++    product_name: assistant.product_name || '',
++  };
++  modalTitle.value = 'Edit assistant';
++  modalOpen.value = true;
++};
++
++const closeModal = () => {
++  modalOpen.value = false;
++};
++
++const save = async () => {
++  const name = form.value.name.trim();
++  if (!name) {
++    useAlert('Name is required.');
++    return;
++  }
++  const body = {
++    name,
++    description: form.value.description.trim(),
++    product_name: form.value.product_name.trim(),
++  };
++  saving.value = true;
++  try {
++    if (editingId.value) {
++      await updateAssistant(editingId.value, body);
++      useAlert('Assistant updated.');
++    } else {
++      await createAssistant(body);
++      useAlert('Assistant created.');
++    }
++    closeModal();
++    await load();
++  } catch (err) {
++    useAlert(`Save failed: ${err ? err.message : 'Unknown error'}`);
++  } finally {
++    saving.value = false;
++  }
++};
++
++const remove = async assistant => {
++  if (assistant.is_default) {
++    useAlert('The default assistant cannot be deleted.');
++    return;
++  }
++  // eslint-disable-next-line no-alert
++  if (!window.confirm(`Delete assistant "${assistant.name}"? This cannot be undone.`)) {
++    return;
++  }
++  try {
++    await deleteAssistant(assistant.id);
++    useAlert('Assistant deleted.');
++    await load();
++  } catch (err) {
++    if (err && err.status === 409) {
++      useAlert('Cannot delete: this assistant is the default (409).');
++    } else {
++      useAlert(`Delete failed: ${err ? err.message : 'Unknown error'}`);
++    }
++  }
++};
++
++onMounted(load);
++</script>
++
++<template>
++  <div class="flex flex-col w-full h-full">
++    <!-- Toolbar -->
++    <div
++      class="flex items-center flex-shrink-0 gap-3 px-4 py-3 border-b border-n-weak"
++    >
++      <button
++        class="px-3 py-1.5 text-sm font-medium text-white rounded-lg bg-n-brand hover:brightness-95"
++        @click="openNew"
++      >
++        + New assistant
++      </button>
++      <button
++        class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1"
++        :disabled="loading"
++        @click="load"
++      >
++        Refresh
++      </button>
++      <span class="ml-auto text-xs text-n-slate-11">
++        {{ assistants.length }} assistant{{ assistants.length === 1 ? '' : 's' }}
++      </span>
++    </div>
++
++    <!-- Content area -->
++    <div class="flex-1 p-4 overflow-auto">
++      <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
++        Loading assistants…
++      </div>
++      <div
++        v-else-if="errored"
++        class="py-10 text-sm text-center text-n-slate-11"
++      >
++        Could not load assistants.
++      </div>
++      <div
++        v-else-if="!assistants.length"
++        class="py-10 text-sm text-center text-n-slate-11"
++      >
++        No assistants yet. Click "New assistant" to add one.
++      </div>
++      <div
++        v-else
++        class="overflow-hidden border rounded-lg border-n-weak bg-n-background"
++      >
++        <table class="w-full text-sm border-collapse">
++          <thead>
++            <tr class="text-left border-b border-n-weak bg-n-alpha-black1">
++              <th class="px-3 py-2 font-medium text-n-slate-11">Name</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Description</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Product</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Enabled</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Actions</th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="assistant in assistants"
++              :key="assistant.id"
++              class="border-b border-n-weak last:border-0 align-top"
++            >
++              <td class="px-3 py-2 font-medium text-n-slate-12">
++                {{ assistant.name }}
++                <span
++                  v-if="assistant.is_default"
++                  class="ml-1.5 inline-block px-1.5 py-0.5 text-xs font-medium rounded-full bg-n-brand/10 text-n-brand"
++                >
++                  default
++                </span>
++              </td>
++              <td class="px-3 py-2 text-n-slate-11 max-w-sm">
++                {{ assistant.description || '—' }}
++              </td>
++              <td class="px-3 py-2 text-n-slate-11">
++                {{ assistant.product_name || '—' }}
++              </td>
++              <td class="px-3 py-2 text-n-slate-11">
++                {{ assistant.enabled === false ? 'no' : 'yes' }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                <button
++                  class="mr-2 text-xs text-n-brand hover:underline"
++                  @click="openEdit(assistant)"
++                >
++                  Edit
++                </button>
++                <button
++                  class="text-xs hover:underline"
++                  :class="
++                    assistant.is_default
++                      ? 'text-n-slate-10 cursor-not-allowed'
++                      : 'text-n-ruby-9'
++                  "
++                  :disabled="assistant.is_default"
++                  :title="assistant.is_default ? 'Cannot delete the default assistant' : 'Delete'"
++                  @click="remove(assistant)"
++                >
++                  Delete
++                </button>
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++    </div>
++
++    <!-- Create / edit modal -->
++    <div
++      v-if="modalOpen"
++      class="fixed inset-0 z-50 flex items-start justify-center px-4 py-16 overflow-y-auto bg-n-alpha-black2"
++      @click.self="closeModal"
++    >
++      <div
++        class="w-full max-w-lg p-5 rounded-xl shadow-lg bg-n-background border border-n-weak"
++      >
++        <h3 class="mb-4 text-base font-medium text-n-slate-12">
++          {{ modalTitle }}
++        </h3>
++        <form class="space-y-3" @submit.prevent="save">
++          <div>
++            <label class="block mb-1 text-xs font-medium text-n-slate-11">
++              Name <span class="text-n-ruby-9">*</span>
++            </label>
++            <input
++              v-model="form.name"
++              type="text"
++              placeholder="e.g. Proton Support Assistant"
++              class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++            />
++          </div>
++          <div>
++            <label class="block mb-1 text-xs font-medium text-n-slate-11">
++              Description
++            </label>
++            <textarea
++              v-model="form.description"
++              rows="2"
++              placeholder="What this assistant does or covers."
++              class="w-full px-3 py-2 text-sm border rounded-lg resize-y border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++            />
++          </div>
++          <div>
++            <label class="block mb-1 text-xs font-medium text-n-slate-11">
++              Product name
++            </label>
++            <input
++              v-model="form.product_name"
++              type="text"
++              placeholder="e.g. Proton Drive"
++              class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++            />
++          </div>
++          <div class="flex justify-end gap-2 pt-2">
++            <button
++              type="button"
++              class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1"
++              @click="closeModal"
++            >
++              Cancel
++            </button>
++            <button
++              type="submit"
++              class="px-3 py-1.5 text-sm font-medium text-white rounded-lg bg-n-brand disabled:opacity-50"
++              :disabled="saving"
++            >
++              {{ saving ? 'Saving…' : 'Save' }}
++            </button>
++          </div>
++        </form>
++      </div>
++    </div>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/composables/useKnowledgeAssistant.js b/app/javascript/dashboard/composables/useKnowledgeAssistant.js
+new file mode 100644
+index 0000000..d874414
+--- /dev/null
++++ b/app/javascript/dashboard/composables/useKnowledgeAssistant.js
+@@ -0,0 +1,57 @@
++// useKnowledgeAssistant.js — module-level reactive state so every page that
++// calls useKnowledgeAssistant() shares the same selection without Vuex/Pinia.
++// The selected assistant id is persisted to localStorage so it survives
++// navigation; on refresh() we re-validate it against the live list and fall
++// back to the is_default assistant (then the first) if the stored id is gone.
++import { ref, computed } from 'vue';
++import { listAssistants } from 'dashboard/api/protonKnowledge';
++
++const LS_KEY = 'proton_knowledge_assistant';
++
++// Module-level reactive state — one instance for the whole app session.
++const assistants = ref([]);
++const selectedId = ref(localStorage.getItem(LS_KEY) || null);
++
++const selectedAssistant = computed(
++  () => assistants.value.find(a => String(a.id) === String(selectedId.value)) || null
++);
++
++async function refresh() {
++  try {
++    const list = await listAssistants();
++    assistants.value = list;
++
++    // Keep the persisted id if it still exists in the list.
++    const stored = localStorage.getItem(LS_KEY);
++    const stillValid = stored && list.some(a => String(a.id) === String(stored));
++    if (stillValid) {
++      selectedId.value = stored;
++      return;
++    }
++
++    // Fall back: is_default → first.
++    const defaultOne = list.find(a => a.is_default);
++    const fallback = defaultOne || list[0] || null;
++    if (fallback) {
++      select(String(fallback.id));
++    } else {
++      selectedId.value = null;
++    }
++  } catch (_err) {
++    // Callers surface their own error UI; the composable stays silent here
++    // so a failed load doesn't crash the host page.
++  }
++}
++
++function select(id) {
++  selectedId.value = id;
++  if (id) {
++    localStorage.setItem(LS_KEY, id);
++  } else {
++    localStorage.removeItem(LS_KEY);
++  }
++}
++
++export function useKnowledgeAssistant() {
++  return { assistants, selectedId, selectedAssistant, refresh, select };
++}
+diff --git a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+index 6e3e0d5..7740459 100644
+--- a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
++++ b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+@@ -7,10 +7,12 @@ import { computed } from 'vue';
+ import { useRoute } from 'vue-router';
+ import KnowledgeFaqs from 'dashboard/components/proton/KnowledgeFaqs.vue';
+ import KnowledgeDocuments from 'dashboard/components/proton/KnowledgeDocuments.vue';
++import KnowledgeAssistants from 'dashboard/components/proton/KnowledgeAssistants.vue';
+ 
+ const route = useRoute();
+ 
+ const SECTIONS = {
++  assistants: 'Assistants',
+   faqs: 'FAQs',
+   documents: 'Documents',
+   playground: 'Playground',
+@@ -33,7 +35,8 @@ const sectionLabel = computed(() => SECTIONS[section.value] || section.value);
+       </span>
+     </div>
+ 
+-    <KnowledgeFaqs v-if="section === 'faqs'" />
++    <KnowledgeAssistants v-if="section === 'assistants'" />
++    <KnowledgeFaqs v-else-if="section === 'faqs'" />
+     <KnowledgeDocuments v-else-if="section === 'documents'" />
+     <div
+       v-else

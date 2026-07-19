@@ -1,0 +1,249 @@
+diff --git a/app/javascript/dashboard/api/protonKnowledge.js b/app/javascript/dashboard/api/protonKnowledge.js
+index 0a32ce9..436a37a 100644
+--- a/app/javascript/dashboard/api/protonKnowledge.js
++++ b/app/javascript/dashboard/api/protonKnowledge.js
+@@ -180,6 +180,23 @@ export function deleteScenario(id) {
+   });
+ }
+ 
++// ── Inboxes ───────────────────────────────────────────────────────────────────
++
++// GET /kb/inboxes -> [{ inbox_id, name, channel_type, assistant_id,
++//   assistant_name, mode, source }] — may arrive as bare array or { inboxes: [] }
++export async function listInboxes() {
++  const data = await kbRequest('/kb/inboxes');
++  return Array.isArray(data.inboxes) ? data.inboxes : Array.isArray(data) ? data : [];
++}
++
++// PUT /kb/inboxes/{inbox_id}  body: { assistant_id, mode }
++export function setInbox(inboxId, body) {
++  return kbRequest(`/kb/inboxes/${encodeURIComponent(inboxId)}`, {
++    method: 'PUT',
++    body,
++  });
++}
++
+ // ── Tenant settings ───────────────────────────────────────────────────────────
+ 
+ // GET /kb/settings -> { <key>: { value, source: "override"|"env" } }
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeInboxes.vue b/app/javascript/dashboard/components/proton/KnowledgeInboxes.vue
+new file mode 100644
+index 0000000..8ac86fb
+--- /dev/null
++++ b/app/javascript/dashboard/components/proton/KnowledgeInboxes.vue
+@@ -0,0 +1,195 @@
++<!-- KnowledgeInboxes.vue — OUR file. Native, Chatwoot-styled page for assigning
++     each Chatwoot inbox to an assistant + a mode. Reads from the Proton backend's
++     /kb/inboxes (joined with Chatwoot inbox list + stored assignments) and writes
++     via PUT /kb/inboxes/{inbox_id}. Source badge shows whether each inbox has an
++     explicit override or is inheriting the tenant default. -->
++<script setup>
++import { ref, onMounted } from 'vue';
++import { useAlert } from 'dashboard/composables';
++import { listInboxes, setInbox } from 'dashboard/api/protonKnowledge';
++import { listAssistants } from 'dashboard/api/protonKnowledge';
++
++const inboxes = ref([]);
++const assistants = ref([]);
++const loading = ref(false);
++const errored = ref(false);
++
++// Track which rows are currently saving to disable their selects mid-flight.
++const savingRows = ref(new Set());
++
++const load = async () => {
++  loading.value = true;
++  errored.value = false;
++  try {
++    const [inboxData, assistantData] = await Promise.all([
++      listInboxes(),
++      listAssistants(),
++    ]);
++    // Deep-clone so local edits don't mutate the API response directly.
++    inboxes.value = inboxData.map(r => ({ ...r }));
++    assistants.value = assistantData;
++  } catch (err) {
++    errored.value = true;
++    if (err.status === 401) {
++      useAlert('Unauthorized (401) — check the backend key configuration.');
++    } else if (err.status === 503) {
++      useAlert('Knowledge store unavailable (503) on the backend.');
++    } else {
++      useAlert(`Failed to load inboxes: ${err.message}`);
++    }
++  } finally {
++    loading.value = false;
++  }
++};
++
++const save = async inbox => {
++  const key = inbox.inbox_id;
++  savingRows.value = new Set([...savingRows.value, key]);
++  try {
++    await setInbox(inbox.inbox_id, {
++      assistant_id: inbox.assistant_id,
++      mode: inbox.mode,
++    });
++    inbox.source = 'override';
++    useAlert(`Inbox "${inbox.name}" updated.`);
++  } catch (err) {
++    useAlert(`Failed to update inbox "${inbox.name}": ${err.message}`);
++  } finally {
++    const next = new Set(savingRows.value);
++    next.delete(key);
++    savingRows.value = next;
++  }
++};
++
++const channelLabel = channelType => {
++  if (!channelType) return '—';
++  // e.g. "Channel::WebWidget" -> "WebWidget"
++  const parts = channelType.split('::');
++  return parts[parts.length - 1] || channelType;
++};
++
++onMounted(load);
++</script>
++
++<template>
++  <div class="flex flex-col w-full h-full">
++    <!-- Toolbar -->
++    <div
++      class="flex items-center flex-shrink-0 gap-3 px-4 py-3 border-b border-n-weak"
++    >
++      <button
++        class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1"
++        :disabled="loading"
++        @click="load"
++      >
++        Refresh
++      </button>
++      <span class="ml-auto text-xs text-n-slate-11">
++        {{ inboxes.length }} inbox{{ inboxes.length === 1 ? '' : 'es' }}
++      </span>
++    </div>
++
++    <!-- Header note -->
++    <div class="px-4 py-2 text-xs border-b text-n-slate-11 border-n-weak bg-n-alpha-black1">
++      Unset inboxes inherit the default assistant and default mode — configure
++      those under Settings / Assistants.
++    </div>
++
++    <!-- Body -->
++    <div class="flex-1 p-4 overflow-auto">
++      <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
++        Loading inboxes…
++      </div>
++      <div
++        v-else-if="errored"
++        class="py-10 text-sm text-center text-n-slate-11"
++      >
++        Could not load inboxes.
++      </div>
++      <div
++        v-else-if="!inboxes.length"
++        class="py-10 text-sm text-center text-n-slate-11"
++      >
++        No inboxes found.
++      </div>
++      <div
++        v-else
++        class="overflow-hidden border rounded-lg border-n-weak bg-n-background"
++      >
++        <table class="w-full text-sm border-collapse">
++          <thead>
++            <tr class="text-left border-b border-n-weak bg-n-alpha-black1">
++              <th class="px-3 py-2 font-medium text-n-slate-11">Inbox</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Channel</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Assistant</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Mode</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Source</th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="inbox in inboxes"
++              :key="inbox.inbox_id"
++              class="border-b border-n-weak last:border-0 align-middle"
++            >
++              <!-- Inbox name -->
++              <td class="px-3 py-2 font-medium text-n-slate-12">
++                {{ inbox.name || inbox.inbox_id }}
++              </td>
++              <!-- Channel type -->
++              <td class="px-3 py-2 text-n-slate-11">
++                {{ channelLabel(inbox.channel_type) }}
++              </td>
++              <!-- Assistant dropdown -->
++              <td class="px-3 py-2">
++                <select
++                  v-model="inbox.assistant_id"
++                  class="w-full max-w-[200px] px-2 py-1 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none disabled:opacity-50"
++                  :disabled="savingRows.has(inbox.inbox_id)"
++                  @change="save(inbox)"
++                >
++                  <option value="">— default —</option>
++                  <option
++                    v-for="a in assistants"
++                    :key="a.id"
++                    :value="a.id"
++                  >
++                    {{ a.name }}
++                  </option>
++                </select>
++              </td>
++              <!-- Mode dropdown -->
++              <td class="px-3 py-2">
++                <select
++                  v-model="inbox.mode"
++                  class="px-2 py-1 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none disabled:opacity-50"
++                  :disabled="savingRows.has(inbox.inbox_id)"
++                  @change="save(inbox)"
++                >
++                  <option value="off">Off</option>
++                  <option value="suggest">Suggest</option>
++                  <option value="auto">Auto</option>
++                </select>
++              </td>
++              <!-- Source badge -->
++              <td class="px-3 py-2">
++                <span
++                  v-if="inbox.source === 'override'"
++                  class="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-n-amber-3 text-n-amber-11"
++                >
++                  override
++                </span>
++                <span
++                  v-else
++                  class="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-n-alpha-black2 text-n-slate-10"
++                >
++                  default
++                </span>
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++    </div>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+index d692be3..80af101 100644
+--- a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
++++ b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+@@ -12,6 +12,7 @@ import KnowledgeSettings from 'dashboard/components/proton/KnowledgeSettings.vue
+ import KnowledgePlayground from 'dashboard/components/proton/KnowledgePlayground.vue';
+ import KnowledgeTools from 'dashboard/components/proton/KnowledgeTools.vue';
+ import KnowledgeScenarios from 'dashboard/components/proton/KnowledgeScenarios.vue';
++import KnowledgeInboxes from 'dashboard/components/proton/KnowledgeInboxes.vue';
+ 
+ const route = useRoute();
+ 
+@@ -47,6 +48,7 @@ const sectionLabel = computed(() => SECTIONS[section.value] || section.value);
+     <KnowledgePlayground v-else-if="section === 'playground'" />
+     <KnowledgeScenarios v-else-if="section === 'scenarios'" />
+     <KnowledgeTools v-else-if="section === 'tools'" />
++    <KnowledgeInboxes v-else-if="section === 'inboxes'" />
+     <div
+       v-else
+       class="flex flex-col items-center justify-center flex-1 gap-2 text-center"

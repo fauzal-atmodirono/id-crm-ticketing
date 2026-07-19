@@ -1,0 +1,784 @@
+diff --git a/app/javascript/dashboard/api/protonKnowledge.js b/app/javascript/dashboard/api/protonKnowledge.js
+index 6dbf32b..395275d 100644
+--- a/app/javascript/dashboard/api/protonKnowledge.js
++++ b/app/javascript/dashboard/api/protonKnowledge.js
+@@ -88,3 +88,18 @@ export function deleteAssistant(id) {
+     method: 'DELETE',
+   });
+ }
++
++// ── Tenant settings ───────────────────────────────────────────────────────────
++
++// GET /kb/settings -> { <key>: { value, source: "override"|"env" } }
++export async function getSettings() {
++  const data = await kbRequest('/kb/settings');
++  return data.settings || {};
++}
++
++// PUT /kb/settings  body: partial { key: value } (null or "" clears override)
++// Returns updated settings map { <key>: { value, source } }
++export async function updateSettings(body) {
++  const data = await kbRequest('/kb/settings', { method: 'PUT', body });
++  return data.settings || {};
++}
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeSettings.vue b/app/javascript/dashboard/components/proton/KnowledgeSettings.vue
+new file mode 100644
+index 0000000..1829375
+--- /dev/null
++++ b/app/javascript/dashboard/components/proton/KnowledgeSettings.vue
+@@ -0,0 +1,735 @@
++<!-- KnowledgeSettings.vue — Two-panel Knowledge Settings page.
++     Panel 1: per-assistant persona editor (name, description, product_name,
++     instructions, temperature, guardrails, response guidelines, messages,
++     feature toggles). Panel 2: tenant-wide ops knobs (models, iterations,
++     debounce, feature gates, mode) with override/env badges and per-field
++     reset. Both panels share the AssistantSelector in the header so the
++     assistant context is always visible. Self-contained, n-* tokens, useAlert.
++     No woot-* imports, no new deps, script setup. -->
++<script setup>
++import { ref, watch, onMounted } from 'vue';
++import { useAlert } from 'dashboard/composables';
++import { useKnowledgeAssistant } from 'dashboard/composables/useKnowledgeAssistant';
++import AssistantSelector from 'dashboard/components/proton/AssistantSelector.vue';
++import {
++  getAssistant,
++  updateAssistant,
++  getSettings,
++  updateSettings,
++} from 'dashboard/api/protonKnowledge';
++
++// ── Shared assistant state ────────────────────────────────────────────────────
++const { selectedId, refresh: refreshList } = useKnowledgeAssistant();
++
++// ── Panel 1 — Assistant persona ───────────────────────────────────────────────
++const assistantLoading = ref(false);
++const assistantErrored = ref(false);
++const assistantSaving = ref(false);
++
++// Flat editable form — we reconstruct nested config on save.
++const aForm = ref({
++  name: '',
++  description: '',
++  product_name: '',
++  instructions: '',
++  temperature: 1,
++  guardrails: [],
++  response_guidelines: [],
++  welcome_message: '',
++  handoff_message: '',
++  resolution_message: '',
++  feature_faq: true,
++  feature_memory: false,
++  feature_citations: false,
++  feature_contact_attributes: false,
++});
++
++// Scratch inputs for the list editors.
++const guardrailInput = ref('');
++const guidelineInput = ref('');
++
++const loadAssistant = async id => {
++  if (!id) return;
++  assistantLoading.value = true;
++  assistantErrored.value = false;
++  try {
++    const data = await getAssistant(id);
++    const a = data.assistant || data; // backend may wrap or return flat
++    const cfg = a.config || {};
++    aForm.value = {
++      name: a.name || '',
++      description: a.description || '',
++      product_name: a.product_name || '',
++      instructions: cfg.instructions || '',
++      temperature: cfg.temperature !== undefined ? cfg.temperature : 1,
++      guardrails: Array.isArray(cfg.guardrails) ? [...cfg.guardrails] : [],
++      response_guidelines: Array.isArray(cfg.response_guidelines)
++        ? [...cfg.response_guidelines]
++        : [],
++      welcome_message: cfg.welcome_message || '',
++      handoff_message: cfg.handoff_message || '',
++      resolution_message: cfg.resolution_message || '',
++      feature_faq: cfg.feature_faq !== false,
++      feature_memory: cfg.feature_memory === true,
++      feature_citations: cfg.feature_citations === true,
++      feature_contact_attributes: cfg.feature_contact_attributes === true,
++    };
++  } catch (err) {
++    assistantErrored.value = true;
++    if (err.status === 401) {
++      useAlert('Unauthorized (401) — check the backend key configuration.');
++    } else {
++      useAlert(`Failed to load assistant: ${err.message}`);
++    }
++  } finally {
++    assistantLoading.value = false;
++  }
++};
++
++// List editor helpers — guardrails
++const addGuardrail = () => {
++  const val = guardrailInput.value.trim();
++  if (val && !aForm.value.guardrails.includes(val)) {
++    aForm.value.guardrails = [...aForm.value.guardrails, val];
++  }
++  guardrailInput.value = '';
++};
++const removeGuardrail = idx => {
++  aForm.value.guardrails = aForm.value.guardrails.filter((_, i) => i !== idx);
++};
++
++// List editor helpers — response guidelines
++const addGuideline = () => {
++  const val = guidelineInput.value.trim();
++  if (val && !aForm.value.response_guidelines.includes(val)) {
++    aForm.value.response_guidelines = [...aForm.value.response_guidelines, val];
++  }
++  guidelineInput.value = '';
++};
++const removeGuideline = idx => {
++  aForm.value.response_guidelines = aForm.value.response_guidelines.filter(
++    (_, i) => i !== idx
++  );
++};
++
++const saveAssistant = async () => {
++  if (!selectedId.value) return;
++  const f = aForm.value;
++  if (!f.name.trim()) {
++    useAlert('Name is required.');
++    return;
++  }
++  assistantSaving.value = true;
++  try {
++    await updateAssistant(selectedId.value, {
++      name: f.name.trim(),
++      description: f.description.trim(),
++      product_name: f.product_name.trim(),
++      config: {
++        instructions: f.instructions,
++        temperature: f.temperature,
++        guardrails: f.guardrails,
++        response_guidelines: f.response_guidelines,
++        welcome_message: f.welcome_message,
++        handoff_message: f.handoff_message,
++        resolution_message: f.resolution_message,
++        feature_faq: f.feature_faq,
++        feature_memory: f.feature_memory,
++        feature_citations: f.feature_citations,
++        feature_contact_attributes: f.feature_contact_attributes,
++      },
++    });
++    useAlert('Assistant saved.');
++    await refreshList();
++    await loadAssistant(selectedId.value);
++  } catch (err) {
++    useAlert(`Save failed: ${err.message}`);
++  } finally {
++    assistantSaving.value = false;
++  }
++};
++
++// Reload when the selected assistant changes.
++watch(selectedId, id => {
++  if (id) loadAssistant(id);
++});
++
++// ── Panel 2 — Tenant settings ─────────────────────────────────────────────────
++const settingsLoading = ref(false);
++const settingsErrored = ref(false);
++const settingsSaving = ref(false);
++
++// Live settings map: { key: { value, source } }
++const settingsMap = ref({});
++
++// Editable draft values (strings for inputs; converted on save).
++const sDraft = ref({
++  assist_gemini_model: '',
++  copilot_gemini_model: '',
++  copilot_max_tool_iterations: '',
++  feature_ai_assist: false,
++  feature_copilot: false,
++  feature_drafts: false,
++  default_mode: 'suggest',
++  debounce_seconds: '',
++});
++
++const SETTINGS_KEYS = [
++  'assist_gemini_model',
++  'copilot_gemini_model',
++  'copilot_max_tool_iterations',
++  'feature_ai_assist',
++  'feature_copilot',
++  'feature_drafts',
++  'default_mode',
++  'debounce_seconds',
++];
++
++// Keys treated as booleans.
++const BOOL_KEYS = new Set(['feature_ai_assist', 'feature_copilot', 'feature_drafts']);
++// Keys that are numeric.
++const NUM_KEYS = new Set(['copilot_max_tool_iterations', 'debounce_seconds']);
++
++const applySettings = map => {
++  settingsMap.value = map;
++  SETTINGS_KEYS.forEach(key => {
++    const entry = map[key];
++    const raw = entry ? entry.value : undefined;
++    if (BOOL_KEYS.has(key)) {
++      sDraft.value[key] = raw === true || raw === 'true' || raw === 1;
++    } else if (NUM_KEYS.has(key)) {
++      sDraft.value[key] = raw !== undefined && raw !== null ? String(raw) : '';
++    } else {
++      sDraft.value[key] = raw !== undefined && raw !== null ? String(raw) : '';
++    }
++  });
++};
++
++const loadSettings = async () => {
++  settingsLoading.value = true;
++  settingsErrored.value = false;
++  try {
++    const map = await getSettings();
++    applySettings(map);
++  } catch (err) {
++    settingsErrored.value = true;
++    if (err.status === 401) {
++      useAlert('Unauthorized (401) — check the backend key configuration.');
++    } else {
++      useAlert(`Failed to load settings: ${err.message}`);
++    }
++  } finally {
++    settingsLoading.value = false;
++  }
++};
++
++const resetField = async key => {
++  try {
++    const updated = await updateSettings({ [key]: null });
++    applySettings(updated);
++    useAlert(`"${key}" reset to env default.`);
++  } catch (err) {
++    useAlert(`Reset failed: ${err.message}`);
++  }
++};
++
++const saveSettings = async () => {
++  settingsSaving.value = true;
++  try {
++    // Build a partial of only changed/override values — we send all editable
++    // fields; backend ignores unchanged ones vs env (it always stores a delta).
++    const body = {};
++    SETTINGS_KEYS.forEach(key => {
++      const draft = sDraft.value[key];
++      if (BOOL_KEYS.has(key)) {
++        body[key] = draft === true || draft === 'true';
++      } else if (NUM_KEYS.has(key)) {
++        const num = draft === '' || draft === null ? null : Number(draft);
++        body[key] = Number.isNaN(num) ? null : num;
++      } else {
++        body[key] = draft === '' ? null : draft;
++      }
++    });
++    const updated = await updateSettings(body);
++    applySettings(updated);
++    useAlert('Settings saved.');
++  } catch (err) {
++    useAlert(`Save failed: ${err.message}`);
++  } finally {
++    settingsSaving.value = false;
++  }
++};
++
++const sourceLabel = key => {
++  const entry = settingsMap.value[key];
++  return entry ? entry.source : null;
++};
++
++// ── Lifecycle ─────────────────────────────────────────────────────────────────
++onMounted(() => {
++  if (selectedId.value) loadAssistant(selectedId.value);
++  loadSettings();
++});
++</script>
++
++<template>
++  <div class="flex flex-col w-full h-full overflow-auto">
++    <!-- Page header with assistant selector -->
++    <div
++      class="flex items-center flex-shrink-0 gap-3 px-4 py-3 border-b border-n-weak"
++    >
++      <AssistantSelector />
++    </div>
++
++    <div class="flex-1 p-6 space-y-8 max-w-2xl">
++
++      <!-- ── Panel 1: Assistant persona ─────────────────────────────────── -->
++      <section>
++        <h2 class="mb-4 text-sm font-semibold text-n-slate-12 uppercase tracking-wide">
++          Assistant persona
++        </h2>
++
++        <div v-if="assistantLoading" class="py-6 text-sm text-n-slate-11">
++          Loading assistant…
++        </div>
++
++        <div v-else-if="assistantErrored" class="py-6 text-sm text-n-slate-11">
++          Could not load assistant settings.
++        </div>
++
++        <div v-else-if="!selectedId" class="py-6 text-sm text-n-slate-11">
++          Select an assistant above to edit its persona.
++        </div>
++
++        <form v-else class="space-y-6" @submit.prevent="saveAssistant">
++
++          <!-- Basic -->
++          <fieldset class="space-y-3">
++            <legend class="mb-2 text-xs font-medium text-n-slate-11 uppercase tracking-wide">
++              Basic
++            </legend>
++            <div>
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                Name <span class="text-n-ruby-9">*</span>
++              </label>
++              <input
++                v-model="aForm.name"
++                type="text"
++                placeholder="e.g. Proton Assistant"
++                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              />
++            </div>
++            <div>
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                Description
++              </label>
++              <input
++                v-model="aForm.description"
++                type="text"
++                placeholder="Short description of this assistant's role"
++                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              />
++            </div>
++            <div>
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                Product name
++              </label>
++              <input
++                v-model="aForm.product_name"
++                type="text"
++                placeholder="e.g. Proton X50"
++                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              />
++            </div>
++          </fieldset>
++
++          <!-- System -->
++          <fieldset class="space-y-3">
++            <legend class="mb-2 text-xs font-medium text-n-slate-11 uppercase tracking-wide">
++              System
++            </legend>
++            <div>
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                System instructions
++              </label>
++              <textarea
++                v-model="aForm.instructions"
++                rows="5"
++                placeholder="You are a helpful assistant for…"
++                class="w-full px-3 py-2 text-sm border rounded-lg resize-y border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              />
++            </div>
++            <div>
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                Temperature
++                <span class="ml-1 font-mono text-n-brand">
++                  {{ Number(aForm.temperature).toFixed(2) }}
++                </span>
++              </label>
++              <input
++                v-model.number="aForm.temperature"
++                type="range"
++                min="0"
++                max="1"
++                step="0.01"
++                class="w-full accent-n-brand"
++              />
++              <div class="flex justify-between mt-0.5 text-xs text-n-slate-10">
++                <span>0 — precise</span>
++                <span>1 — creative</span>
++              </div>
++            </div>
++          </fieldset>
++
++          <!-- Guardrails -->
++          <fieldset class="space-y-2">
++            <legend class="mb-2 text-xs font-medium text-n-slate-11 uppercase tracking-wide">
++              Guardrails
++            </legend>
++            <p class="text-xs text-n-slate-10">
++              Rules the assistant must not violate. Injected into the system prompt.
++            </p>
++            <ul class="space-y-1">
++              <li
++                v-for="(item, idx) in aForm.guardrails"
++                :key="idx"
++                class="flex items-start gap-2 px-3 py-1.5 rounded-lg border border-n-weak bg-n-alpha-black1"
++              >
++                <span class="flex-1 text-sm text-n-slate-12">{{ item }}</span>
++                <button
++                  type="button"
++                  class="text-xs text-n-ruby-9 hover:underline flex-shrink-0"
++                  @click="removeGuardrail(idx)"
++                >
++                  Remove
++                </button>
++              </li>
++            </ul>
++            <div class="flex gap-2">
++              <input
++                v-model="guardrailInput"
++                type="text"
++                placeholder="Add a guardrail rule…"
++                class="flex-1 px-3 py-1.5 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++                @keydown.enter.prevent="addGuardrail"
++              />
++              <button
++                type="button"
++                class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1"
++                @click="addGuardrail"
++              >
++                Add
++              </button>
++            </div>
++          </fieldset>
++
++          <!-- Response guidelines -->
++          <fieldset class="space-y-2">
++            <legend class="mb-2 text-xs font-medium text-n-slate-11 uppercase tracking-wide">
++              Response guidelines
++            </legend>
++            <p class="text-xs text-n-slate-10">
++              Style, tone, and formatting preferences. Injected into the system prompt.
++            </p>
++            <ul class="space-y-1">
++              <li
++                v-for="(item, idx) in aForm.response_guidelines"
++                :key="idx"
++                class="flex items-start gap-2 px-3 py-1.5 rounded-lg border border-n-weak bg-n-alpha-black1"
++              >
++                <span class="flex-1 text-sm text-n-slate-12">{{ item }}</span>
++                <button
++                  type="button"
++                  class="text-xs text-n-ruby-9 hover:underline flex-shrink-0"
++                  @click="removeGuideline(idx)"
++                >
++                  Remove
++                </button>
++              </li>
++            </ul>
++            <div class="flex gap-2">
++              <input
++                v-model="guidelineInput"
++                type="text"
++                placeholder="Add a guideline…"
++                class="flex-1 px-3 py-1.5 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++                @keydown.enter.prevent="addGuideline"
++              />
++              <button
++                type="button"
++                class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1"
++                @click="addGuideline"
++              >
++                Add
++              </button>
++            </div>
++          </fieldset>
++
++          <!-- Messages -->
++          <fieldset class="space-y-3">
++            <legend class="mb-2 text-xs font-medium text-n-slate-11 uppercase tracking-wide">
++              Messages
++            </legend>
++            <div>
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                Welcome message
++              </label>
++              <input
++                v-model="aForm.welcome_message"
++                type="text"
++                placeholder="Sent when a conversation starts"
++                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              />
++            </div>
++            <div>
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                Handoff message
++              </label>
++              <input
++                v-model="aForm.handoff_message"
++                type="text"
++                placeholder="Sent when handing off to a human agent"
++                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              />
++            </div>
++            <div>
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                Resolution message
++              </label>
++              <input
++                v-model="aForm.resolution_message"
++                type="text"
++                placeholder="Sent when the conversation is resolved"
++                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              />
++            </div>
++          </fieldset>
++
++          <!-- Features -->
++          <fieldset class="space-y-2">
++            <legend class="mb-2 text-xs font-medium text-n-slate-11 uppercase tracking-wide">
++              Features
++            </legend>
++            <label class="flex items-center gap-2 text-sm text-n-slate-12">
++              <input v-model="aForm.feature_faq" type="checkbox" />
++              Knowledge base / FAQ grounding
++            </label>
++            <label class="flex items-center gap-2 text-sm text-n-slate-12">
++              <input v-model="aForm.feature_memory" type="checkbox" />
++              Conversation memory context
++            </label>
++            <label class="flex items-center gap-2 text-sm text-n-slate-12">
++              <input v-model="aForm.feature_citations" type="checkbox" />
++              Source citations in responses
++            </label>
++            <label class="flex items-center gap-2 text-sm text-n-slate-12">
++              <input v-model="aForm.feature_contact_attributes" type="checkbox" />
++              Contact attributes context
++            </label>
++          </fieldset>
++
++          <div class="flex justify-end">
++            <button
++              type="submit"
++              class="px-4 py-1.5 text-sm font-medium text-white rounded-lg bg-n-brand disabled:opacity-50 hover:brightness-95"
++              :disabled="assistantSaving"
++            >
++              {{ assistantSaving ? 'Saving…' : 'Save assistant' }}
++            </button>
++          </div>
++        </form>
++      </section>
++
++      <hr class="border-n-weak" />
++
++      <!-- ── Panel 2: Tenant settings ─────────────────────────────────────── -->
++      <section>
++        <h2 class="mb-4 text-sm font-semibold text-n-slate-12 uppercase tracking-wide">
++          Tenant settings
++        </h2>
++
++        <div v-if="settingsLoading" class="py-6 text-sm text-n-slate-11">
++          Loading settings…
++        </div>
++
++        <div v-else-if="settingsErrored" class="py-6 text-sm text-n-slate-11">
++          Could not load tenant settings.
++        </div>
++
++        <form v-else class="space-y-4" @submit.prevent="saveSettings">
++
++          <!-- Model fields -->
++          <div
++            v-for="key in ['assist_gemini_model', 'copilot_gemini_model']"
++            :key="key"
++            class="flex items-start gap-3"
++          >
++            <div class="flex-1">
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                {{ key === 'assist_gemini_model' ? 'Assist Gemini model' : 'Copilot Gemini model' }}
++              </label>
++              <input
++                v-model="sDraft[key]"
++                type="text"
++                :placeholder="'env default'"
++                class="w-full px-3 py-1.5 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              />
++            </div>
++            <div class="flex flex-col items-end gap-1 pt-5">
++              <span
++                class="px-1.5 py-0.5 text-xs rounded font-mono"
++                :class="sourceLabel(key) === 'override' ? 'bg-n-amber-3 text-n-amber-11' : 'bg-n-alpha-black2 text-n-slate-10'"
++              >
++                {{ sourceLabel(key) || '—' }}
++              </span>
++              <button
++                type="button"
++                class="text-xs text-n-brand hover:underline"
++                @click="resetField(key)"
++              >
++                Reset
++              </button>
++            </div>
++          </div>
++
++          <!-- Numeric: max_tool_iterations -->
++          <div class="flex items-start gap-3">
++            <div class="flex-1">
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                Copilot max tool iterations
++              </label>
++              <input
++                v-model="sDraft.copilot_max_tool_iterations"
++                type="number"
++                min="1"
++                max="30"
++                placeholder="env default"
++                class="w-full px-3 py-1.5 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              />
++            </div>
++            <div class="flex flex-col items-end gap-1 pt-5">
++              <span
++                class="px-1.5 py-0.5 text-xs rounded font-mono"
++                :class="sourceLabel('copilot_max_tool_iterations') === 'override' ? 'bg-n-amber-3 text-n-amber-11' : 'bg-n-alpha-black2 text-n-slate-10'"
++              >
++                {{ sourceLabel('copilot_max_tool_iterations') || '—' }}
++              </span>
++              <button
++                type="button"
++                class="text-xs text-n-brand hover:underline"
++                @click="resetField('copilot_max_tool_iterations')"
++              >
++                Reset
++              </button>
++            </div>
++          </div>
++
++          <!-- Feature booleans -->
++          <div
++            v-for="key in ['feature_ai_assist', 'feature_copilot', 'feature_drafts']"
++            :key="key"
++            class="flex items-center gap-3"
++          >
++            <label class="flex flex-1 items-center gap-2 text-sm text-n-slate-12">
++              <input v-model="sDraft[key]" type="checkbox" />
++              {{
++                key === 'feature_ai_assist' ? 'AI assist enabled'
++                : key === 'feature_copilot'   ? 'Copilot enabled'
++                :                               'AI drafts enabled'
++              }}
++            </label>
++            <span
++              class="px-1.5 py-0.5 text-xs rounded font-mono"
++              :class="sourceLabel(key) === 'override' ? 'bg-n-amber-3 text-n-amber-11' : 'bg-n-alpha-black2 text-n-slate-10'"
++            >
++              {{ sourceLabel(key) || '—' }}
++            </span>
++            <button
++              type="button"
++              class="text-xs text-n-brand hover:underline"
++              @click="resetField(key)"
++            >
++              Reset
++            </button>
++          </div>
++
++          <!-- default_mode -->
++          <div class="flex items-start gap-3">
++            <div class="flex-1">
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                Default mode
++                <span class="ml-1 text-n-slate-10 font-normal">(applies to auto-reply — wiring pending)</span>
++              </label>
++              <select
++                v-model="sDraft.default_mode"
++                class="w-full px-3 py-1.5 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              >
++                <option value="suggest">suggest</option>
++                <option value="auto">auto</option>
++              </select>
++            </div>
++            <div class="flex flex-col items-end gap-1 pt-5">
++              <span
++                class="px-1.5 py-0.5 text-xs rounded font-mono"
++                :class="sourceLabel('default_mode') === 'override' ? 'bg-n-amber-3 text-n-amber-11' : 'bg-n-alpha-black2 text-n-slate-10'"
++              >
++                {{ sourceLabel('default_mode') || '—' }}
++              </span>
++              <button
++                type="button"
++                class="text-xs text-n-brand hover:underline"
++                @click="resetField('default_mode')"
++              >
++                Reset
++              </button>
++            </div>
++          </div>
++
++          <!-- debounce_seconds -->
++          <div class="flex items-start gap-3">
++            <div class="flex-1">
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                Debounce seconds
++                <span class="ml-1 text-n-slate-10 font-normal">(applies to auto-reply — wiring pending)</span>
++              </label>
++              <input
++                v-model="sDraft.debounce_seconds"
++                type="number"
++                min="0"
++                step="1"
++                placeholder="env default"
++                class="w-full px-3 py-1.5 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              />
++            </div>
++            <div class="flex flex-col items-end gap-1 pt-5">
++              <span
++                class="px-1.5 py-0.5 text-xs rounded font-mono"
++                :class="sourceLabel('debounce_seconds') === 'override' ? 'bg-n-amber-3 text-n-amber-11' : 'bg-n-alpha-black2 text-n-slate-10'"
++              >
++                {{ sourceLabel('debounce_seconds') || '—' }}
++              </span>
++              <button
++                type="button"
++                class="text-xs text-n-brand hover:underline"
++                @click="resetField('debounce_seconds')"
++              >
++                Reset
++              </button>
++            </div>
++          </div>
++
++          <div class="flex justify-end pt-2">
++            <button
++              type="submit"
++              class="px-4 py-1.5 text-sm font-medium text-white rounded-lg bg-n-brand disabled:opacity-50 hover:brightness-95"
++              :disabled="settingsSaving"
++            >
++              {{ settingsSaving ? 'Saving…' : 'Save settings' }}
++            </button>
++          </div>
++        </form>
++      </section>
++
++    </div>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+index 7740459..95ab23b 100644
+--- a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
++++ b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+@@ -8,6 +8,7 @@ import { useRoute } from 'vue-router';
+ import KnowledgeFaqs from 'dashboard/components/proton/KnowledgeFaqs.vue';
+ import KnowledgeDocuments from 'dashboard/components/proton/KnowledgeDocuments.vue';
+ import KnowledgeAssistants from 'dashboard/components/proton/KnowledgeAssistants.vue';
++import KnowledgeSettings from 'dashboard/components/proton/KnowledgeSettings.vue';
+ 
+ const route = useRoute();
+ 
+@@ -38,6 +39,7 @@ const sectionLabel = computed(() => SECTIONS[section.value] || section.value);
+     <KnowledgeAssistants v-if="section === 'assistants'" />
+     <KnowledgeFaqs v-else-if="section === 'faqs'" />
+     <KnowledgeDocuments v-else-if="section === 'documents'" />
++    <KnowledgeSettings v-else-if="section === 'settings'" />
+     <div
+       v-else
+       class="flex flex-col items-center justify-center flex-1 gap-2 text-center"

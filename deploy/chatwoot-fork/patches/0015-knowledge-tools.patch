@@ -1,0 +1,890 @@
+diff --git a/app/javascript/dashboard/api/protonKnowledge.js b/app/javascript/dashboard/api/protonKnowledge.js
+index 122447d..f0b92af 100644
+--- a/app/javascript/dashboard/api/protonKnowledge.js
++++ b/app/javascript/dashboard/api/protonKnowledge.js
+@@ -106,6 +106,48 @@ export function askPlayground(assistantId, thread, conversationId) {
+   });
+ }
+ 
++// ── Tools ─────────────────────────────────────────────────────────────────────
++
++// GET /kb/tools -> { builtins: [{name, enabled, description}], custom: [{slug, title, ...}] }
++// Secrets / auth_config are never returned; has_auth is a bool.
++export async function listTools() {
++  const data = await kbRequest('/kb/tools');
++  return {
++    builtins: Array.isArray(data.builtins) ? data.builtins : [],
++    custom: Array.isArray(data.custom) ? data.custom : [],
++  };
++}
++
++// POST /kb/tools  body: { title, description, endpoint_url, http_method, auth_type,
++//   auth_config, param_schema, request_template, response_template, enabled }
++// -> { slug }
++export function createTool(body) {
++  return kbRequest('/kb/tools', { method: 'POST', body });
++}
++
++// PUT /kb/tools/{slug}  partial update
++export function updateTool(slug, body) {
++  return kbRequest(`/kb/tools/${encodeURIComponent(slug)}`, {
++    method: 'PUT',
++    body,
++  });
++}
++
++// DELETE /kb/tools/{slug}
++export function deleteTool(slug) {
++  return kbRequest(`/kb/tools/${encodeURIComponent(slug)}`, {
++    method: 'DELETE',
++  });
++}
++
++// PUT /kb/tools/builtins/{name}  body: { enabled?, description? }
++export function setBuiltinTool(name, body) {
++  return kbRequest(`/kb/tools/builtins/${encodeURIComponent(name)}`, {
++    method: 'PUT',
++    body,
++  });
++}
++
+ // ── Tenant settings ───────────────────────────────────────────────────────────
+ 
+ // GET /kb/settings -> { <key>: { value, source: "override"|"env" } }
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeTools.vue b/app/javascript/dashboard/components/proton/KnowledgeTools.vue
+new file mode 100644
+index 0000000..067ec1c
+--- /dev/null
++++ b/app/javascript/dashboard/components/proton/KnowledgeTools.vue
+@@ -0,0 +1,811 @@
++<!-- KnowledgeTools.vue — OUR file. Native Knowledge console "Tools" section.
++     Three areas:
++       1. Built-in tool registry — toggle enabled / edit description per tool.
++       2. Custom webhook tool registry — full CRUD via a modal.
++       3. Per-assistant enablement — AssistantSelector header; checkboxes for
++          which registry tools each assistant may call; saved to
++          assistant.config.enabled_builtin_tools / enabled_custom_tools.
++
++     Self-contained, n-* design tokens, no woot-* imports.  Follows the same
++     load/loading/errored pattern as KnowledgeFaqs.vue. -->
++<script setup>
++import { ref, computed, watch, onMounted } from 'vue';
++import { useAlert } from 'dashboard/composables';
++import {
++  listTools,
++  createTool,
++  updateTool,
++  deleteTool,
++  setBuiltinTool,
++  getAssistant,
++  updateAssistant,
++} from 'dashboard/api/protonKnowledge';
++import { useKnowledgeAssistant } from 'dashboard/composables/useKnowledgeAssistant';
++import AssistantSelector from 'dashboard/components/proton/AssistantSelector.vue';
++
++// ── Registry state ─────────────────────────────────────────────────────────────
++const loading = ref(false);
++const errored = ref(false);
++const builtins = ref([]);
++const custom = ref([]);
++
++// Per-row saving state for built-ins (keyed by name).
++const builtinSaving = ref({});
++
++const load = async () => {
++  loading.value = true;
++  errored.value = false;
++  try {
++    const data = await listTools();
++    builtins.value = data.builtins;
++    custom.value = data.custom;
++  } catch (err) {
++    errored.value = true;
++    if (err.status === 401) {
++      useAlert('Unauthorized (401) — check the backend key configuration.');
++    } else {
++      useAlert(`Failed to load tools: ${err.message}`);
++    }
++  } finally {
++    loading.value = false;
++  }
++};
++
++// ── Built-in tool handlers ─────────────────────────────────────────────────────
++const saveBuiltin = async tool => {
++  builtinSaving.value = { ...builtinSaving.value, [tool.name]: true };
++  try {
++    await setBuiltinTool(tool.name, {
++      enabled: tool.enabled,
++      description: tool.description,
++    });
++    useAlert(`"${tool.name}" updated.`);
++  } catch (err) {
++    useAlert(`Failed to update built-in tool: ${err.message}`);
++  } finally {
++    builtinSaving.value = { ...builtinSaving.value, [tool.name]: false };
++  }
++};
++
++// ── Custom tool modal ──────────────────────────────────────────────────────────
++const modalOpen = ref(false);
++const saving = ref(false);
++const editingSlug = ref(null);
++
++const EMPTY_FORM = () => ({
++  title: '',
++  description: '',
++  endpoint_url: '',
++  http_method: 'GET',
++  auth_type: 'none',
++  // auth_config fields — write-only, never prefilled on edit
++  bearer_token: '',
++  basic_username: '',
++  basic_password: '',
++  apikey_header: '',
++  apikey_value: '',
++  param_schema: '',
++  request_template: '',
++  response_template: '',
++  enabled: true,
++});
++
++const form = ref(EMPTY_FORM());
++const paramSchemaError = ref('');
++
++const modalTitle = computed(() =>
++  editingSlug.value ? 'Edit custom tool' : 'New custom tool'
++);
++
++const openNew = () => {
++  editingSlug.value = null;
++  form.value = EMPTY_FORM();
++  paramSchemaError.value = '';
++  modalOpen.value = true;
++};
++
++const openEdit = tool => {
++  editingSlug.value = tool.slug;
++  form.value = {
++    ...EMPTY_FORM(),
++    title: tool.title || '',
++    description: tool.description || '',
++    endpoint_url: tool.endpoint_url || '',
++    http_method: tool.http_method || 'GET',
++    auth_type: tool.auth_type || 'none',
++    param_schema:
++      tool.param_schema ? JSON.stringify(tool.param_schema, null, 2) : '',
++    request_template: tool.request_template || '',
++    response_template: tool.response_template || '',
++    enabled: tool.enabled !== false,
++    // auth secret fields intentionally left blank (write-only)
++  };
++  paramSchemaError.value = '';
++  modalOpen.value = true;
++};
++
++const closeModal = () => {
++  modalOpen.value = false;
++};
++
++const buildAuthConfig = () => {
++  const t = form.value.auth_type;
++  if (t === 'bearer') {
++    return form.value.bearer_token
++      ? { token: form.value.bearer_token }
++      : undefined;
++  }
++  if (t === 'basic') {
++    if (form.value.basic_username || form.value.basic_password) {
++      return {
++        username: form.value.basic_username,
++        password: form.value.basic_password,
++      };
++    }
++    return undefined;
++  }
++  if (t === 'api_key') {
++    if (form.value.apikey_header || form.value.apikey_value) {
++      return {
++        header_name: form.value.apikey_header,
++        value: form.value.apikey_value,
++      };
++    }
++    return undefined;
++  }
++  return undefined;
++};
++
++const validateParamSchema = raw => {
++  if (!raw.trim()) return null; // empty is allowed (no schema constraints)
++  try {
++    const parsed = JSON.parse(raw);
++    if (typeof parsed !== 'object' || Array.isArray(parsed) || !parsed.type) {
++      return 'param_schema must be a JSON object with a "type" field.';
++    }
++    return null;
++  } catch (_e) {
++    return 'param_schema is not valid JSON.';
++  }
++};
++
++const save = async () => {
++  const title = form.value.title.trim();
++  if (!title) {
++    useAlert('Title is required.');
++    return;
++  }
++  const url = form.value.endpoint_url.trim();
++  if (!url.startsWith('https://')) {
++    useAlert('Endpoint URL must start with https://');
++    return;
++  }
++
++  const schemaRaw = form.value.param_schema.trim();
++  const schemaErr = validateParamSchema(schemaRaw);
++  if (schemaErr) {
++    paramSchemaError.value = schemaErr;
++    return;
++  }
++  paramSchemaError.value = '';
++
++  const body = {
++    title,
++    description: form.value.description.trim(),
++    endpoint_url: url,
++    http_method: form.value.http_method,
++    auth_type: form.value.auth_type,
++    param_schema: schemaRaw ? JSON.parse(schemaRaw) : undefined,
++    request_template: form.value.request_template.trim() || undefined,
++    response_template: form.value.response_template.trim() || undefined,
++    enabled: form.value.enabled,
++  };
++
++  const authConfig = buildAuthConfig();
++  if (authConfig) body.auth_config = authConfig;
++
++  saving.value = true;
++  try {
++    if (editingSlug.value) {
++      await updateTool(editingSlug.value, body);
++      useAlert('Tool updated.');
++    } else {
++      await createTool(body);
++      useAlert('Tool created.');
++    }
++    closeModal();
++    await load();
++    // Re-sync enablement panel to reflect any new slugs
++    if (selectedId.value) {
++      await loadEnablement(selectedId.value);
++    }
++  } catch (err) {
++    // Surface 409 (dup slug / cap) and 422 (validation) with the server message.
++    useAlert(`Save failed: ${err.message}`);
++  } finally {
++    saving.value = false;
++  }
++};
++
++const remove = async tool => {
++  // eslint-disable-next-line no-alert
++  if (!window.confirm(`Delete the tool "${tool.title}"? This cannot be undone.`)) {
++    return;
++  }
++  try {
++    await deleteTool(tool.slug);
++    useAlert('Tool deleted.');
++    await load();
++    if (selectedId.value) {
++      await loadEnablement(selectedId.value);
++    }
++  } catch (err) {
++    useAlert(`Delete failed: ${err.message}`);
++  }
++};
++
++// ── Per-assistant enablement ───────────────────────────────────────────────────
++const { selectedId, assistants, refresh: refreshAssistants } = useKnowledgeAssistant();
++
++const enablementLoading = ref(false);
++const enablementSaving = ref(false);
++const enabledBuiltins = ref([]); // names
++const enabledCustom = ref([]);   // slugs
++
++const loadEnablement = async id => {
++  if (!id) return;
++  enablementLoading.value = true;
++  try {
++    const assistant = await getAssistant(id);
++    const cfg = assistant.config || {};
++    enabledBuiltins.value = Array.isArray(cfg.enabled_builtin_tools)
++      ? cfg.enabled_builtin_tools
++      : [];
++    enabledCustom.value = Array.isArray(cfg.enabled_custom_tools)
++      ? cfg.enabled_custom_tools
++      : [];
++  } catch (err) {
++    useAlert(`Failed to load assistant: ${err.message}`);
++  } finally {
++    enablementLoading.value = false;
++  }
++};
++
++const toggleBuiltinEnabled = name => {
++  if (enabledBuiltins.value.includes(name)) {
++    enabledBuiltins.value = enabledBuiltins.value.filter(n => n !== name);
++  } else {
++    enabledBuiltins.value = [...enabledBuiltins.value, name];
++  }
++};
++
++const toggleCustomEnabled = slug => {
++  if (enabledCustom.value.includes(slug)) {
++    enabledCustom.value = enabledCustom.value.filter(s => s !== slug);
++  } else {
++    enabledCustom.value = [...enabledCustom.value, slug];
++  }
++};
++
++const saveEnablement = async () => {
++  if (!selectedId.value) {
++    useAlert('Select an assistant first.');
++    return;
++  }
++  enablementSaving.value = true;
++  try {
++    await updateAssistant(selectedId.value, {
++      config: {
++        enabled_builtin_tools: enabledBuiltins.value,
++        enabled_custom_tools: enabledCustom.value,
++      },
++    });
++    useAlert('Enablement saved.');
++  } catch (err) {
++    useAlert(`Failed to save enablement: ${err.message}`);
++  } finally {
++    enablementSaving.value = false;
++  }
++};
++
++watch(selectedId, id => {
++  if (id) loadEnablement(id);
++});
++
++onMounted(async () => {
++  await load();
++  if (!assistants.value.length) {
++    await refreshAssistants();
++  }
++  if (selectedId.value) {
++    await loadEnablement(selectedId.value);
++  }
++});
++</script>
++
++<template>
++  <div class="flex flex-col w-full h-full overflow-auto">
++    <!-- ── Loading / error states ───────────────────────────────────────────── -->
++    <div v-if="loading" class="py-16 text-sm text-center text-n-slate-11">
++      Loading tools…
++    </div>
++    <div v-else-if="errored" class="py-16 text-sm text-center text-n-slate-11">
++      Could not load tools. Check backend connectivity.
++    </div>
++
++    <template v-else>
++      <!-- ── Section 1: Built-in tools ────────────────────────────────────── -->
++      <section class="px-4 py-5 border-b border-n-weak">
++        <h2 class="mb-3 text-sm font-semibold text-n-slate-12">
++          Built-in tools
++        </h2>
++        <div v-if="!builtins.length" class="text-sm text-n-slate-11">
++          No built-in tools returned by the backend.
++        </div>
++        <div
++          v-else
++          class="overflow-hidden border rounded-lg border-n-weak bg-n-background"
++        >
++          <table class="w-full text-sm border-collapse">
++            <thead>
++              <tr class="text-left border-b border-n-weak bg-n-alpha-black1">
++                <th class="px-3 py-2 font-medium text-n-slate-11">Name</th>
++                <th class="px-3 py-2 font-medium text-n-slate-11">Description</th>
++                <th class="px-3 py-2 font-medium text-n-slate-11 whitespace-nowrap">Enabled</th>
++                <th class="px-3 py-2 font-medium text-n-slate-11">Actions</th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr
++                v-for="tool in builtins"
++                :key="tool.name"
++                class="border-b border-n-weak last:border-0 align-top"
++              >
++                <td class="px-3 py-2 font-medium text-n-slate-12 whitespace-nowrap">
++                  {{ tool.name }}
++                </td>
++                <td class="px-3 py-2">
++                  <input
++                    v-model="tool.description"
++                    type="text"
++                    class="w-full px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++                    placeholder="Description override (blank = use default)"
++                  />
++                </td>
++                <td class="px-3 py-2">
++                  <input
++                    v-model="tool.enabled"
++                    type="checkbox"
++                    class="w-4 h-4 cursor-pointer accent-n-brand"
++                  />
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  <button
++                    class="text-xs text-n-brand hover:underline disabled:opacity-50"
++                    :disabled="builtinSaving[tool.name]"
++                    @click="saveBuiltin(tool)"
++                  >
++                    {{ builtinSaving[tool.name] ? 'Saving…' : 'Save' }}
++                  </button>
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </div>
++      </section>
++
++      <!-- ── Section 2: Custom tools ───────────────────────────────────────── -->
++      <section class="px-4 py-5 border-b border-n-weak">
++        <div class="flex items-center gap-3 mb-3">
++          <h2 class="text-sm font-semibold text-n-slate-12">Custom tools</h2>
++          <button
++            class="px-3 py-1.5 text-sm font-medium text-white rounded-lg bg-n-brand hover:brightness-95"
++            @click="openNew"
++          >
++            + New custom tool
++          </button>
++          <span class="ml-auto text-xs text-n-slate-11">
++            {{ custom.length }}/15
++          </span>
++        </div>
++        <div v-if="!custom.length" class="text-sm text-n-slate-11">
++          No custom tools yet. Click "+ New custom tool" to add one.
++        </div>
++        <div
++          v-else
++          class="overflow-hidden border rounded-lg border-n-weak bg-n-background"
++        >
++          <table class="w-full text-sm border-collapse">
++            <thead>
++              <tr class="text-left border-b border-n-weak bg-n-alpha-black1">
++                <th class="px-3 py-2 font-medium text-n-slate-11">Title</th>
++                <th class="px-3 py-2 font-medium text-n-slate-11">Slug</th>
++                <th class="px-3 py-2 font-medium text-n-slate-11">Method</th>
++                <th class="px-3 py-2 font-medium text-n-slate-11">Endpoint</th>
++                <th class="px-3 py-2 font-medium text-n-slate-11">Auth</th>
++                <th class="px-3 py-2 font-medium text-n-slate-11">Enabled</th>
++                <th class="px-3 py-2 font-medium text-n-slate-11">Actions</th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr
++                v-for="tool in custom"
++                :key="tool.slug"
++                class="border-b border-n-weak last:border-0 align-top"
++              >
++                <td class="px-3 py-2 font-medium text-n-slate-12">
++                  {{ tool.title }}
++                </td>
++                <td class="px-3 py-2 font-mono text-xs text-n-slate-11">
++                  {{ tool.slug }}
++                </td>
++                <td class="px-3 py-2 text-n-slate-11 whitespace-nowrap">
++                  {{ tool.http_method }}
++                </td>
++                <td class="px-3 py-2 text-n-slate-11 max-w-xs truncate">
++                  {{ tool.endpoint_url }}
++                </td>
++                <td class="px-3 py-2 text-n-slate-11">
++                  {{ tool.auth_type }}
++                  <span
++                    v-if="tool.has_auth"
++                    class="inline-block px-1.5 py-0.5 ml-1 text-xs rounded-full bg-n-alpha-black2 text-n-slate-11"
++                  >
++                    secret set
++                  </span>
++                </td>
++                <td class="px-3 py-2 text-n-slate-11">
++                  {{ tool.enabled ? 'yes' : 'no' }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  <button
++                    class="mr-2 text-xs text-n-brand hover:underline"
++                    @click="openEdit(tool)"
++                  >
++                    Edit
++                  </button>
++                  <button
++                    class="text-xs text-n-ruby-9 hover:underline"
++                    @click="remove(tool)"
++                  >
++                    Delete
++                  </button>
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </div>
++      </section>
++
++      <!-- ── Section 3: Per-assistant enablement ───────────────────────────── -->
++      <section class="px-4 py-5">
++        <div class="flex flex-wrap items-center gap-3 mb-4">
++          <h2 class="text-sm font-semibold text-n-slate-12">
++            Per-assistant enablement
++          </h2>
++          <AssistantSelector />
++        </div>
++
++        <div v-if="enablementLoading" class="text-sm text-n-slate-11">
++          Loading assistant…
++        </div>
++        <div v-else-if="!selectedId" class="text-sm text-n-slate-11">
++          Select an assistant above to configure which tools it may call.
++        </div>
++        <div v-else class="space-y-4">
++          <!-- Built-in enablement -->
++          <div v-if="builtins.length">
++            <p class="mb-2 text-xs font-medium text-n-slate-11">Built-in tools</p>
++            <div class="space-y-1.5">
++              <label
++                v-for="tool in builtins"
++                :key="tool.name"
++                class="flex items-center gap-2 text-sm cursor-pointer text-n-slate-12"
++              >
++                <input
++                  type="checkbox"
++                  class="w-4 h-4 cursor-pointer accent-n-brand"
++                  :checked="enabledBuiltins.includes(tool.name)"
++                  @change="toggleBuiltinEnabled(tool.name)"
++                />
++                <span class="font-medium">{{ tool.name }}</span>
++                <span
++                  v-if="tool.description"
++                  class="text-xs text-n-slate-11"
++                >
++                  — {{ tool.description }}
++                </span>
++              </label>
++            </div>
++          </div>
++
++          <!-- Custom tool enablement -->
++          <div v-if="custom.length">
++            <p class="mb-2 text-xs font-medium text-n-slate-11">Custom tools</p>
++            <div class="space-y-1.5">
++              <label
++                v-for="tool in custom"
++                :key="tool.slug"
++                class="flex items-center gap-2 text-sm cursor-pointer text-n-slate-12"
++              >
++                <input
++                  type="checkbox"
++                  class="w-4 h-4 cursor-pointer accent-n-brand"
++                  :checked="enabledCustom.includes(tool.slug)"
++                  @change="toggleCustomEnabled(tool.slug)"
++                />
++                <span class="font-medium">{{ tool.title }}</span>
++                <span class="font-mono text-xs text-n-slate-11">
++                  ({{ tool.slug }})
++                </span>
++                <span
++                  v-if="!tool.enabled"
++                  class="text-xs text-n-ruby-9"
++                >
++                  — disabled in registry
++                </span>
++              </label>
++            </div>
++          </div>
++
++          <div
++            v-if="!builtins.length && !custom.length"
++            class="text-sm text-n-slate-11"
++          >
++            No tools in the registry yet.
++          </div>
++
++          <div class="pt-2">
++            <button
++              class="px-3 py-1.5 text-sm font-medium text-white rounded-lg bg-n-brand disabled:opacity-50 hover:brightness-95"
++              :disabled="enablementSaving"
++              @click="saveEnablement"
++            >
++              {{ enablementSaving ? 'Saving…' : 'Save enablement' }}
++            </button>
++          </div>
++        </div>
++      </section>
++    </template>
++
++    <!-- ── Custom tool create / edit modal ─────────────────────────────────── -->
++    <div
++      v-if="modalOpen"
++      class="fixed inset-0 z-50 flex items-start justify-center px-4 py-12 overflow-y-auto bg-n-alpha-black2"
++      @click.self="closeModal"
++    >
++      <div
++        class="w-full max-w-lg p-5 rounded-xl shadow-lg bg-n-background border border-n-weak"
++      >
++        <h3 class="mb-4 text-base font-medium text-n-slate-12">
++          {{ modalTitle }}
++        </h3>
++        <form class="space-y-3" @submit.prevent="save">
++          <!-- Title -->
++          <div>
++            <label class="block mb-1 text-xs font-medium text-n-slate-11">
++              Title <span class="text-n-ruby-9">*</span>
++            </label>
++            <input
++              v-model="form.title"
++              type="text"
++              placeholder="Check order status"
++              class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++            />
++          </div>
++
++          <!-- Description -->
++          <div>
++            <label class="block mb-1 text-xs font-medium text-n-slate-11">
++              Description
++            </label>
++            <textarea
++              v-model="form.description"
++              rows="2"
++              placeholder="What this tool does; shown to the model."
++              class="w-full px-3 py-2 text-sm border rounded-lg resize-y border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++            />
++          </div>
++
++          <!-- Endpoint URL -->
++          <div>
++            <label class="block mb-1 text-xs font-medium text-n-slate-11">
++              Endpoint URL <span class="text-n-ruby-9">*</span>
++              <span class="text-n-slate-10 font-normal">(must be https://)</span>
++            </label>
++            <input
++              v-model="form.endpoint_url"
++              type="url"
++              placeholder="https://api.example.com/orders"
++              class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++            />
++          </div>
++
++          <!-- HTTP method + Auth type (side by side) -->
++          <div class="grid grid-cols-2 gap-3">
++            <div>
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                HTTP method
++              </label>
++              <select
++                v-model="form.http_method"
++                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              >
++                <option value="GET">GET</option>
++                <option value="POST">POST</option>
++              </select>
++            </div>
++            <div>
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                Auth type
++              </label>
++              <select
++                v-model="form.auth_type"
++                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              >
++                <option value="none">none</option>
++                <option value="bearer">bearer</option>
++                <option value="basic">basic</option>
++                <option value="api_key">api_key</option>
++              </select>
++            </div>
++          </div>
++
++          <!-- Conditional auth secret fields — write-only -->
++          <template v-if="form.auth_type === 'bearer'">
++            <div>
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                Bearer token
++                <span v-if="editingSlug" class="text-n-slate-10 font-normal">
++                  (leave blank to keep existing)
++                </span>
++              </label>
++              <input
++                v-model="form.bearer_token"
++                type="password"
++                autocomplete="new-password"
++                placeholder="••••••••"
++                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              />
++            </div>
++          </template>
++
++          <template v-if="form.auth_type === 'basic'">
++            <div class="grid grid-cols-2 gap-3">
++              <div>
++                <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                  Username
++                  <span v-if="editingSlug" class="text-n-slate-10 font-normal">
++                    (leave blank to keep)
++                  </span>
++                </label>
++                <input
++                  v-model="form.basic_username"
++                  type="text"
++                  autocomplete="new-password"
++                  placeholder="admin"
++                  class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++                />
++              </div>
++              <div>
++                <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                  Password
++                </label>
++                <input
++                  v-model="form.basic_password"
++                  type="password"
++                  autocomplete="new-password"
++                  placeholder="••••••••"
++                  class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++                />
++              </div>
++            </div>
++          </template>
++
++          <template v-if="form.auth_type === 'api_key'">
++            <div class="grid grid-cols-2 gap-3">
++              <div>
++                <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                  Header name
++                  <span v-if="editingSlug" class="text-n-slate-10 font-normal">
++                    (leave blank to keep)
++                  </span>
++                </label>
++                <input
++                  v-model="form.apikey_header"
++                  type="text"
++                  placeholder="X-Api-Key"
++                  class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++                />
++              </div>
++              <div>
++                <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                  Header value
++                </label>
++                <input
++                  v-model="form.apikey_value"
++                  type="password"
++                  autocomplete="new-password"
++                  placeholder="••••••••"
++                  class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++                />
++              </div>
++            </div>
++          </template>
++
++          <!-- param_schema -->
++          <div>
++            <label class="block mb-1 text-xs font-medium text-n-slate-11">
++              param_schema
++              <span class="text-n-slate-10 font-normal">
++                (JSON object with "type"; leave blank for no schema)
++              </span>
++            </label>
++            <textarea
++              v-model="form.param_schema"
++              rows="4"
++              placeholder='{"type":"object","properties":{"order_id":{"type":"string"}},"required":["order_id"]}'
++              class="w-full px-3 py-2 text-sm border rounded-lg resize-y border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none font-mono"
++              :class="{ 'border-n-ruby-9': paramSchemaError }"
++              @input="paramSchemaError = ''"
++            />
++            <p v-if="paramSchemaError" class="mt-1 text-xs text-n-ruby-9">
++              {{ paramSchemaError }}
++            </p>
++          </div>
++
++          <!-- request_template -->
++          <div>
++            <label class="block mb-1 text-xs font-medium text-n-slate-11">
++              Request template
++              <span class="text-n-slate-10 font-normal">(optional)</span>
++            </label>
++            <textarea
++              v-model="form.request_template"
++              rows="3"
++              placeholder="Jinja2 template for the request body (POST tools)."
++              class="w-full px-3 py-2 text-sm border rounded-lg resize-y border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none font-mono"
++            />
++          </div>
++
++          <!-- response_template -->
++          <div>
++            <label class="block mb-1 text-xs font-medium text-n-slate-11">
++              Response template
++              <span class="text-n-slate-10 font-normal">(optional)</span>
++            </label>
++            <textarea
++              v-model="form.response_template"
++              rows="3"
++              placeholder="Jinja2 template to transform the raw JSON response."
++              class="w-full px-3 py-2 text-sm border rounded-lg resize-y border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none font-mono"
++            />
++          </div>
++
++          <!-- Enabled -->
++          <label class="flex items-center gap-2 text-sm text-n-slate-12">
++            <input v-model="form.enabled" type="checkbox" class="w-4 h-4 accent-n-brand" />
++            Enabled (available for assistants to call)
++          </label>
++
++          <div class="flex justify-end gap-2 pt-2">
++            <button
++              type="button"
++              class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1"
++              @click="closeModal"
++            >
++              Cancel
++            </button>
++            <button
++              type="submit"
++              class="px-3 py-1.5 text-sm font-medium text-white rounded-lg bg-n-brand disabled:opacity-50 hover:brightness-95"
++              :disabled="saving"
++            >
++              {{ saving ? 'Saving…' : 'Save' }}
++            </button>
++          </div>
++        </form>
++      </div>
++    </div>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+index 9c66483..3aeb1a8 100644
+--- a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
++++ b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+@@ -10,6 +10,7 @@ import KnowledgeDocuments from 'dashboard/components/proton/KnowledgeDocuments.v
+ import KnowledgeAssistants from 'dashboard/components/proton/KnowledgeAssistants.vue';
+ import KnowledgeSettings from 'dashboard/components/proton/KnowledgeSettings.vue';
+ import KnowledgePlayground from 'dashboard/components/proton/KnowledgePlayground.vue';
++import KnowledgeTools from 'dashboard/components/proton/KnowledgeTools.vue';
+ 
+ const route = useRoute();
+ 
+@@ -42,6 +43,7 @@ const sectionLabel = computed(() => SECTIONS[section.value] || section.value);
+     <KnowledgeDocuments v-else-if="section === 'documents'" />
+     <KnowledgeSettings v-else-if="section === 'settings'" />
+     <KnowledgePlayground v-else-if="section === 'playground'" />
++    <KnowledgeTools v-else-if="section === 'tools'" />
+     <div
+       v-else
+       class="flex flex-col items-center justify-center flex-1 gap-2 text-center"

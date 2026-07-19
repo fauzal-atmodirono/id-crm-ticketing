@@ -38,6 +38,13 @@ class ChatwootClient:
             return None
         return {"api_access_token": token_override}
 
+    async def get_conversation(self, conversation_id: int) -> Any:
+        response = await self._client.get(
+            f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}"
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def get_messages(self, conversation_id: int) -> Any:
         response = await self._client.get(
             f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}/messages"

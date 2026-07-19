@@ -6,11 +6,16 @@ clients themselves, so there's exactly one long-lived `httpx.AsyncClient`
 process. `app.main`'s lifespan owns closing them at shutdown via
 `aclose_clients`, addressing the Task 3 handoff note that client lifecycle
 was previously unowned.
+
+`get_proton_config_client` follows the same pattern but returns None when the
+proton backend is not configured (proton_backend_url / proton_backend_key
+absent from Settings), so callers can fail-open without branching on env vars.
 """
 
 from functools import lru_cache
 
 from app.clients.chatwoot import ChatwootClient
+from app.clients.proton import ProtonConfigClient
 from app.clients.zammad import ZammadClient
 from app.config import get_settings
 
@@ -34,6 +39,23 @@ def get_zammad_client() -> ZammadClient:
     )
 
 
+@lru_cache
+def get_proton_config_client() -> ProtonConfigClient | None:
+    """Return the ProtonConfigClient singleton, or None when unconfigured.
+
+    Returns None if either proton_backend_url or proton_backend_key is falsy,
+    so callers can simply do `if (proton := get_proton_config_client()):` and
+    the entire feature is a no-op when the env vars are absent.
+    """
+    settings = get_settings()
+    if not settings.proton_backend_url or not settings.proton_backend_key:
+        return None
+    return ProtonConfigClient(
+        base_url=settings.proton_backend_url,
+        api_key=settings.proton_backend_key,
+    )
+
+
 async def aclose_clients() -> None:
     """Close whichever clients were actually constructed. Safe to call even
     if a given client was never instantiated (e.g. in tests that don't
@@ -42,3 +64,7 @@ async def aclose_clients() -> None:
         await get_chatwoot_client().aclose()
     if get_zammad_client.cache_info().currsize:
         await get_zammad_client().aclose()
+    if get_proton_config_client.cache_info().currsize:
+        proton = get_proton_config_client()
+        if proton is not None:
+            await proton.aclose()

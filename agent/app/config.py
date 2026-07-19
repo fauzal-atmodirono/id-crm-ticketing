@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # Agent service's own database
     agent_database_url: str
 
+    # Proton conversational-AI backend (optional; feature disabled when blank)
+    proton_backend_url: str | None = None
+    proton_backend_key: str | None = None
+
     @property
     def chatwoot_display_url(self) -> str:
         """Chatwoot base URL for human-facing links: public if configured,

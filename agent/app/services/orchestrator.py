@@ -25,7 +25,7 @@ import httpx
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.ai import gemini
-from app.clients.deps import get_chatwoot_client
+from app.clients.deps import get_chatwoot_client, get_proton_config_client
 from app.config import get_settings
 from app.db.models import AiAction
 from app.db.session import async_session_maker
@@ -116,8 +116,18 @@ async def handle_bot_event(payload: dict) -> asyncio.Task | None:
 
 
 async def _debounced_process(conversation_id: int, state: _DebounceState) -> None:
+    # Resolve debounce duration: prefer the tenant-level setting from the
+    # proton backend (if configured and reachable), fall back to the module
+    # constant (also what tests monkeypatch to 0 to stay fast).
+    proton = get_proton_config_client()
+    if proton is not None:
+        tenant_debounce = await proton.effective_debounce_seconds()
+    else:
+        tenant_debounce = None
+    debounce = tenant_debounce if tenant_debounce is not None else DEBOUNCE_SECONDS
+
     try:
-        await asyncio.sleep(DEBOUNCE_SECONDS)
+        await asyncio.sleep(debounce)
     except asyncio.CancelledError:
         # Superseded by a newer event for the same conversation; the newer
         # task is the one that'll actually process it.
@@ -195,6 +205,39 @@ async def _process_conversation(conversation_id: int) -> None:
     settings = get_settings()
     chatwoot = get_chatwoot_client()
 
+    # Resolve inbox_id for per-inbox mode lookup. We try a dedicated API call
+    # rather than relying on the event payload (which isn't passed this deep)
+    # so the decision is always based on fresh state.
+    proton = get_proton_config_client()
+    inbox_id: int | None = None
+    if proton is not None:
+        try:
+            conversation_data = await chatwoot.get_conversation(conversation_id)
+            inbox_id = conversation_data.get("inbox_id")
+        except Exception:
+            logger.debug(
+                "orchestrator: could not fetch conversation %s for inbox_id lookup; "
+                "will use global agent_mode",
+                conversation_id,
+            )
+
+    # Resolve effective mode: per-inbox override from proton backend, or the
+    # global setting. On any failure effective_inbox_mode returns None and we
+    # fall back transparently (fail-open).
+    if proton is not None and inbox_id is not None:
+        per_inbox_mode = await proton.effective_inbox_mode(inbox_id)
+    else:
+        per_inbox_mode = None
+    effective_mode = per_inbox_mode or settings.agent_mode
+
+    if effective_mode == "off":
+        logger.info(
+            "orchestrator: inbox mode is 'off' for conversation %s (inbox %s); skipping",
+            conversation_id,
+            inbox_id,
+        )
+        return
+
     try:
         context = await _build_context(conversation_id)
     except httpx.HTTPError:
@@ -210,7 +253,7 @@ async def _process_conversation(conversation_id: int) -> None:
     await _log_decision(conversation_id, decision)
 
     try:
-        await _execute_decision(conversation_id, decision, settings, chatwoot)
+        await _execute_decision(conversation_id, decision, effective_mode, chatwoot)
     except httpx.HTTPError:
         logger.exception(
             "orchestrator: failed executing decision %r for conversation %s",
@@ -219,10 +262,11 @@ async def _process_conversation(conversation_id: int) -> None:
         )
 
 
-async def _execute_decision(conversation_id, decision, settings, chatwoot) -> None:
+async def _execute_decision(conversation_id, decision, mode: str, chatwoot) -> None:
     if decision.action == "send_reply":
         text = decision.args.get("text", "")
-        if settings.agent_mode == "auto":
+        if mode == "auto":
+            settings = get_settings()
             await chatwoot.create_message(
                 conversation_id,
                 text,

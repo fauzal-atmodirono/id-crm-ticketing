@@ -27,6 +27,7 @@ CONVERSATIONS_SCHEMA: list[bigquery.SchemaField] = [
     bigquery.SchemaField("first_response_at", "TIMESTAMP"),
     bigquery.SchemaField("resolved_at", "TIMESTAMP"),
     bigquery.SchemaField("reopen_count", "INT64"),
+    bigquery.SchemaField("dealer", "STRING"),  # Phase-3: dealer dimension for CRR grouping
 ]
 
 
@@ -96,11 +97,12 @@ def view_ddls(project: str, dataset: str, table: str = "conversations") -> dict[
         ),
         "v_reopen_rate": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_reopen_rate` AS "
-            f"SELECT COALESCE(department, 'Unknown') AS department, "
+            f"SELECT COALESCE(dealer, 'Unknown') AS dealer, "
+            f"COALESCE(department, 'Unknown') AS department, "
             f"COALESCE(pic, 'Unassigned') AS pic, COUNT(*) AS cases, "
             f"COUNTIF(reopen_count > 0) AS reopened, "
             f"SAFE_DIVIDE(COUNTIF(reopen_count > 0), COUNT(*)) AS reopen_rate "
-            f"FROM {fq} GROUP BY department, pic"
+            f"FROM {fq} GROUP BY dealer, department, pic"
         ),
         "v_resolution_time": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_resolution_time` AS "
@@ -141,5 +143,67 @@ def view_ddls(project: str, dataset: str, table: str = "conversations") -> dict[
             f"SELECT b.channel, COALESCE(c.current_volume, 0) AS current_volume, "
             f"b.baseline_mean, b.baseline_stddev "
             f"FROM base b LEFT JOIN cur c USING (channel)"
+        ),
+        # Phase-3 additions
+        "v_peak_hours": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_peak_hours` AS "
+            f"SELECT EXTRACT(DAYOFWEEK FROM created_at) AS day_of_week, "
+            f"EXTRACT(HOUR FROM created_at) AS hour_of_day, "
+            f"channel, COUNT(*) AS volume "
+            f"FROM {fq} WHERE created_at IS NOT NULL "
+            f"GROUP BY day_of_week, hour_of_day, channel "
+            f"ORDER BY day_of_week, hour_of_day"
+        ),
+        "v_complaint_type_ranking": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_complaint_type_ranking` AS "
+            f"SELECT COALESCE(category, 'Unknown') AS category, "
+            f"COALESCE(subcategory, 'Unknown') AS subcategory, "
+            f"COALESCE(division, 'Unknown') AS division, "
+            f"COUNT(*) AS cases, "
+            f"SAFE_DIVIDE(COUNT(*), SUM(COUNT(*)) OVER ()) AS share_pct "
+            f"FROM {fq} "
+            f"GROUP BY category, subcategory, division "
+            f"ORDER BY cases DESC"
+        ),
+        "v_tasks_per_agent": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_tasks_per_agent` AS "
+            f"SELECT COALESCE(agent_id, 'Unassigned') AS agent_id, "
+            f"COALESCE(pic, 'Unassigned') AS pic, "
+            f"COUNT(*) AS cases, "
+            f"AVG(TIMESTAMP_DIFF(first_response_at, created_at, MINUTE)) AS avg_first_response_min, "
+            f"AVG(TIMESTAMP_DIFF(resolved_at, created_at, MINUTE)) AS avg_resolution_min, "
+            f"COUNTIF(status = 'resolved') AS resolved_cases "
+            f"FROM {fq} GROUP BY agent_id, pic ORDER BY cases DESC"
+        ),
+        "v_first_response_by_channel": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_first_response_by_channel` AS "
+            f"SELECT channel, "
+            f"AVG(TIMESTAMP_DIFF(first_response_at, created_at, MINUTE)) AS avg_first_response_min, "
+            f"APPROX_QUANTILES(TIMESTAMP_DIFF(first_response_at, created_at, MINUTE), 100)[OFFSET(50)] AS p50_first_response_min, "
+            f"APPROX_QUANTILES(TIMESTAMP_DIFF(first_response_at, created_at, MINUTE), 100)[OFFSET(90)] AS p90_first_response_min, "
+            f"COUNT(*) AS with_first_response "
+            f"FROM {fq} WHERE first_response_at IS NOT NULL GROUP BY channel"
+        ),
+        "v_case_lifecycle": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_case_lifecycle` AS "
+            f"SELECT conversation_id, channel, "
+            f"COALESCE(division, 'Unknown') AS division, "
+            f"COALESCE(department, 'Unknown') AS department, "
+            f"COALESCE(dealer, 'Unknown') AS dealer, "
+            f"status, created_at, first_response_at, resolved_at, "
+            f"TIMESTAMP_DIFF(first_response_at, created_at, MINUTE) AS first_response_minutes, "
+            f"TIMESTAMP_DIFF(resolved_at, created_at, MINUTE) AS resolution_minutes, "
+            f"reopen_count "
+            f"FROM {fq} WHERE created_at IS NOT NULL"
+        ),
+        "v_state_trend": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_state_trend` AS "
+            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, "
+            f"status, "
+            f"COALESCE(division, 'Unknown') AS division, "
+            f"COUNT(*) AS cases "
+            f"FROM {fq} WHERE created_at IS NOT NULL "
+            f"GROUP BY month, status, division "
+            f"ORDER BY month, status"
         ),
     }

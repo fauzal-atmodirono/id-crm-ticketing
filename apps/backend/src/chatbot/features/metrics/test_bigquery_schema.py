@@ -24,6 +24,7 @@ def test_schema_has_expected_fields() -> None:
         "first_response_at",
         "resolved_at",
         "reopen_count",
+        "dealer",  # new Phase-3 field
     }
 
 
@@ -43,6 +44,13 @@ def test_view_ddls_keys_and_targets() -> None:
         "v_volume_daily",
         "v_volume_weekly",
         "v_channel_anomaly",
+        # Phase-3 additions
+        "v_peak_hours",
+        "v_complaint_type_ranking",
+        "v_tasks_per_agent",
+        "v_first_response_by_channel",
+        "v_case_lifecycle",
+        "v_state_trend",
     }
     assert "`proj.ds.v_volume_by_month_channel`" in ddls["v_volume_by_month_channel"]
     assert "`proj.ds.conversations`" in ddls["v_volume_by_month_channel"]
@@ -118,3 +126,72 @@ def test_view_ddls_include_report_views() -> None:
         assert name in ddls[name]  # DDL creates the view of that name
     assert "division" in ddls["v_volume_by_division"]
     assert "reopen_count" in ddls["v_reopen_rate"]
+
+
+def test_v_peak_hours_ddl() -> None:
+    ddls = view_ddls("proj", "ds", "conversations")
+    sql = ddls["v_peak_hours"]
+    assert "`proj.ds.v_peak_hours`" in sql
+    assert "`proj.ds.conversations`" in sql
+    assert "EXTRACT(HOUR" in sql
+    assert "EXTRACT(DAYOFWEEK" in sql
+    assert "volume" in sql
+
+
+def test_v_complaint_type_ranking_ddl() -> None:
+    ddls = view_ddls("proj", "ds", "conversations")
+    sql = ddls["v_complaint_type_ranking"]
+    assert "`proj.ds.v_complaint_type_ranking`" in sql
+    assert "category" in sql and "subcategory" in sql
+    assert "COUNT(*)" in sql
+    assert "ORDER BY" in sql
+
+
+def test_v_tasks_per_agent_ddl() -> None:
+    ddls = view_ddls("proj", "ds", "conversations")
+    sql = ddls["v_tasks_per_agent"]
+    assert "`proj.ds.v_tasks_per_agent`" in sql
+    assert "agent_id" in sql
+    assert "COUNT(*) AS cases" in sql
+    assert "avg_first_response_min" in sql
+
+
+def test_v_first_response_by_channel_ddl() -> None:
+    ddls = view_ddls("proj", "ds", "conversations")
+    sql = ddls["v_first_response_by_channel"]
+    assert "`proj.ds.v_first_response_by_channel`" in sql
+    assert "channel" in sql
+    assert "avg_first_response_min" in sql
+    assert "first_response_at" in sql
+
+
+def test_v_case_lifecycle_ddl() -> None:
+    ddls = view_ddls("proj", "ds", "conversations")
+    sql = ddls["v_case_lifecycle"]
+    assert "`proj.ds.v_case_lifecycle`" in sql
+    assert "created_at" in sql
+    assert "resolved_at" in sql
+    assert "resolution_minutes" in sql
+
+
+def test_v_state_trend_ddl() -> None:
+    ddls = view_ddls("proj", "ds", "conversations")
+    sql = ddls["v_state_trend"]
+    assert "`proj.ds.v_state_trend`" in sql
+    assert "status" in sql
+    assert "FORMAT_DATE" in sql
+    assert "COUNT(*)" in sql
+
+
+def test_v_reopen_rate_includes_dealer() -> None:
+    ddls = view_ddls("proj", "ds", "conversations")
+    sql = ddls["v_reopen_rate"]
+    # existing view must now also group by dealer
+    assert "dealer" in sql
+
+
+def test_schema_dealer_field_is_nullable_string() -> None:
+    by_name = {f.name: f for f in CONVERSATIONS_SCHEMA}
+    assert "dealer" in by_name
+    assert by_name["dealer"].field_type == "STRING"
+    assert by_name["dealer"].mode in ("NULLABLE", "")

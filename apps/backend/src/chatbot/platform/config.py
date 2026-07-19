@@ -273,6 +273,13 @@ class Settings(BaseSettings):
     # Chatwoot URL (e.g. http://crm.<IP>.nip.io and proton.crm.<IP>.nip.io).
     assist_cors_origins: list[str] = []
 
+    # --- Ask Copilot (multi-turn agent) ------------------------------------
+    # Model for the copilot tool-calling loop; defaults to the assist model.
+    copilot_gemini_model: str = "gemini-2.5-flash"
+    # Hard cap on tool-call rounds per copilot turn, so a misbehaving model
+    # cannot loop forever. Each round is one Gemini call.
+    copilot_max_tool_iterations: int = 5
+
     # Settings configurations
     model_config = SettingsConfigDict(
         env_file=".env",

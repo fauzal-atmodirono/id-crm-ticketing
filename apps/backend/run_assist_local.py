@@ -19,6 +19,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from chatbot.features.assist.copilot_router import build_copilot_router
 from chatbot.features.assist.router import build_assist_router
 from chatbot.features.chat.models import KbArticle
 from chatbot.platform.config import get_settings
@@ -74,6 +75,9 @@ def build() -> FastAPI:
 
     app.include_router(
         build_assist_router(settings, _StubKnowledge(), _build_genai_client(settings))
+    )
+    app.include_router(
+        build_copilot_router(settings, _StubKnowledge(), _build_genai_client(settings))
     )
 
     @app.get("/healthz")

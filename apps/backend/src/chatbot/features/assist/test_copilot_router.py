@@ -6,8 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from chatbot.features.assist.assistant_runtime import DEFAULT_COPILOT_PROMPT
 from chatbot.features.assist.copilot_router import build_copilot_router
+from chatbot.features.assist.copilot_tools import COPILOT_TOOLS
 from chatbot.features.chat.adapters.assistants_store import InMemoryAssistantsStore
+from chatbot.features.chat.adapters.tenant_settings_store import InMemoryTenantSettingsStore
 from chatbot.features.chat.models import KbArticle
 from chatbot.platform.config import Settings
 
@@ -41,9 +44,27 @@ def _client(responses: list, key: str = "k") -> TestClient:
             knowledge_port=_FakeKb(),
             genai_client=genai,
             assistants_store=InMemoryAssistantsStore(),
+            tenant_settings_store=InMemoryTenantSettingsStore(),
         )
     )
     return TestClient(app, raise_server_exceptions=False)
+
+
+def _client_with_genai(responses: list, key: str = "k") -> tuple[TestClient, MagicMock]:
+    """Like _client but also returns the genai mock for call-args inspection."""
+    genai = MagicMock()
+    genai.aio.models.generate_content = AsyncMock(side_effect=responses)
+    app = FastAPI()
+    app.include_router(
+        build_copilot_router(
+            settings=Settings(proton_backend_key=key, chatwoot_enabled=False),
+            knowledge_port=_FakeKb(),
+            genai_client=genai,
+            assistants_store=InMemoryAssistantsStore(),
+            tenant_settings_store=InMemoryTenantSettingsStore(),
+        )
+    )
+    return TestClient(app, raise_server_exceptions=False), genai
 
 
 def test_requires_api_key() -> None:
@@ -150,3 +171,84 @@ def test_copilot_cap_fallback_includes_sources() -> None:
     assert body["sources"] == [
         {"title": "Warranty", "snippet": "12 months", "url": "http://faq/1"}
     ]
+
+
+# ---------------------------------------------------------------------------
+# Behaviour-preservation: default assistant + no overrides → exact old contract
+# ---------------------------------------------------------------------------
+
+
+async def test_default_assistant_no_overrides_behaviour_preserving() -> None:
+    """Default assistant + empty tenant store must produce exactly the same
+    generate_content call as the old hardcoded path — model from settings,
+    system_instruction == DEFAULT_COPILOT_PROMPT, temperature == 1.0, full COPILOT_TOOLS.
+    """
+    settings = Settings(proton_backend_key="k", chatwoot_enabled=False)
+    genai = MagicMock()
+    genai.aio.models.generate_content = AsyncMock(return_value=_text_response("ok"))
+
+    app = FastAPI()
+    app.include_router(
+        build_copilot_router(
+            settings=settings,
+            knowledge_port=_FakeKb(),
+            genai_client=genai,
+            assistants_store=InMemoryAssistantsStore(),
+            tenant_settings_store=InMemoryTenantSettingsStore(),
+        )
+    )
+
+    from fastapi.testclient import TestClient  # noqa: PLC0415
+
+    with TestClient(app, raise_server_exceptions=True) as c:
+        r = c.post(
+            "/assist/copilot",
+            json={"conversation_id": "1", "thread": [{"role": "user", "content": "hi"}]},
+            headers={"x-api-key": "k"},
+        )
+    assert r.status_code == 200
+
+    call_kwargs = genai.aio.models.generate_content.call_args
+    assert call_kwargs.kwargs["model"] == settings.copilot_gemini_model
+    called_config = call_kwargs.kwargs["config"]
+    assert called_config["system_instruction"] == DEFAULT_COPILOT_PROMPT
+    assert called_config["temperature"] == 1.0
+    called_tools = called_config["tools"][0]["function_declarations"]
+    assert called_tools == list(COPILOT_TOOLS)
+
+
+async def test_tenant_override_changes_model() -> None:
+    """A tenant-level override for copilot_gemini_model must be forwarded to
+    generate_content instead of the env default.
+    """
+    settings = Settings(proton_backend_key="k", chatwoot_enabled=False)
+    override_model = "gemini-2.0-pro"
+    store = InMemoryTenantSettingsStore()
+    await store.set_overrides({"copilot_gemini_model": override_model})
+
+    genai = MagicMock()
+    genai.aio.models.generate_content = AsyncMock(return_value=_text_response("ok"))
+
+    app = FastAPI()
+    app.include_router(
+        build_copilot_router(
+            settings=settings,
+            knowledge_port=_FakeKb(),
+            genai_client=genai,
+            assistants_store=InMemoryAssistantsStore(),
+            tenant_settings_store=store,
+        )
+    )
+
+    from fastapi.testclient import TestClient  # noqa: PLC0415
+
+    with TestClient(app, raise_server_exceptions=True) as c:
+        r = c.post(
+            "/assist/copilot",
+            json={"conversation_id": "1", "thread": [{"role": "user", "content": "hi"}]},
+            headers={"x-api-key": "k"},
+        )
+    assert r.status_code == 200
+
+    call_kwargs = genai.aio.models.generate_content.call_args
+    assert call_kwargs.kwargs["model"] == override_model

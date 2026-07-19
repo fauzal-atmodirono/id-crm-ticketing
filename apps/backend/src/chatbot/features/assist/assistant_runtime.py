@@ -49,11 +49,32 @@ def build_system_prompt(assistant: Assistant) -> str:
     Non-empty instructions on the assistant take precedence; otherwise
     the canonical DEFAULT_COPILOT_PROMPT is used so the no-assistant_id
     path reproduces existing behaviour exactly.
+
+    After the base prompt, persona additions are appended in this order
+    (only when non-empty):
+      - Product: <product_name>
+      - ## Guardrails section (one bullet per guardrail)
+      - ## Response guidelines section (one bullet per guideline)
     """
     instructions = assistant.config.instructions
-    if instructions and instructions.strip():
-        return instructions.strip()
-    return DEFAULT_COPILOT_PROMPT
+    base = instructions.strip() if (instructions and instructions.strip()) else DEFAULT_COPILOT_PROMPT
+
+    parts: list[str] = [base]
+
+    if assistant.product_name:
+        parts.append(f"Product: {assistant.product_name}")
+
+    guardrails = assistant.config.guardrails
+    if guardrails:
+        section = "## Guardrails\n" + "\n".join(f"- {g}" for g in guardrails)
+        parts.append(section)
+
+    guidelines = assistant.config.response_guidelines
+    if guidelines:
+        section = "## Response guidelines\n" + "\n".join(f"- {g}" for g in guidelines)
+        parts.append(section)
+
+    return "\n".join(parts)
 
 
 def build_tool_declarations(assistant: Assistant) -> list[dict[str, Any]]:
@@ -65,9 +86,18 @@ def build_tool_declarations(assistant: Assistant) -> list[dict[str, Any]]:
 
     Original COPILOT_TOOLS order is preserved; only the subset whose name
     appears in *enabled_builtin_tools* is included when the list is non-empty.
+
+    Additionally, if ``feature_faq`` is False the ``search_knowledge_base``
+    tool is excluded from the result regardless of the enabled-tools list.
     """
     enabled = assistant.config.enabled_builtin_tools
     if not enabled:
-        return list(COPILOT_TOOLS)
-    enabled_set = set(enabled)
-    return [t for t in COPILOT_TOOLS if t["name"] in enabled_set]
+        tools = list(COPILOT_TOOLS)
+    else:
+        enabled_set = set(enabled)
+        tools = [t for t in COPILOT_TOOLS if t["name"] in enabled_set]
+
+    if not assistant.config.feature_faq:
+        tools = [t for t in tools if t["name"] != "search_knowledge_base"]
+
+    return tools

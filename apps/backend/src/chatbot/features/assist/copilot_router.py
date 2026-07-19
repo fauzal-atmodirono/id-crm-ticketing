@@ -22,9 +22,11 @@ from chatbot.features.assist.assistant_runtime import (
 )
 from chatbot.features.assist.chatwoot_context import ChatwootContextClient
 from chatbot.features.assist.copilot_tools import ToolExecutor
+from chatbot.features.chat.settings_facade import get_effective_value
 
 if TYPE_CHECKING:
     from chatbot.features.chat.adapters.assistants_store import AssistantsStorePort
+    from chatbot.features.chat.adapters.tenant_settings_store import TenantSettingsStorePort
     from chatbot.features.chat.ports import KnowledgePort
     from chatbot.platform.config import Settings
 
@@ -53,6 +55,7 @@ def build_copilot_router(
     knowledge_port: KnowledgePort,
     genai_client: Any,
     assistants_store: AssistantsStorePort,
+    tenant_settings_store: TenantSettingsStorePort | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/assist", tags=["copilot"])
 
@@ -87,17 +90,28 @@ def build_copilot_router(
         assistant = await resolve_assistant(assistants_store, req.assistant_id)
         contents = _seed_contents(req.thread)
         tool_calls: list[str] = []
+
+        # Resolve model and max_iters through the tenant-settings facade so
+        # operator overrides take effect without an app restart.
+        if tenant_settings_store is not None:
+            model = str(await get_effective_value(tenant_settings_store, settings, "copilot_gemini_model"))
+            max_iters = int(await get_effective_value(tenant_settings_store, settings, "copilot_max_tool_iterations"))
+        else:
+            model = settings.copilot_gemini_model
+            max_iters = settings.copilot_max_tool_iterations
+
         config = {
             "system_instruction": build_system_prompt(assistant),
             "tools": [{"function_declarations": build_tool_declarations(assistant)}],
+            "temperature": assistant.config.temperature,
         }
 
         last_text = ""
         sources: list[dict] = []
         seen_src: set[tuple] = set()
-        for _ in range(settings.copilot_max_tool_iterations):
+        for _ in range(max_iters):
             response = await genai_client.aio.models.generate_content(
-                model=settings.copilot_gemini_model,
+                model=model,
                 contents=contents,
                 config=config,
             )

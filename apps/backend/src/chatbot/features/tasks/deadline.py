@@ -90,7 +90,7 @@ def _subject_from(conv: dict[str, Any]) -> str:
 
 def compute_deadlines(
     conv: dict[str, Any],
-    settings: "Settings",
+    settings: Settings,
     now: datetime,
 ) -> TaskItem:
     """Compute SLA deadlines and remaining time for one Chatwoot conversation."""

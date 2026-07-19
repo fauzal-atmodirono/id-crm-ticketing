@@ -69,7 +69,7 @@ def _task_item_to_dict(item: TaskItem) -> dict[str, Any]:
     }
 
 
-def build_tasks_router(settings: "Settings") -> APIRouter:
+def build_tasks_router(settings: Settings) -> APIRouter:
     router = APIRouter()
 
     @router.get("/tasks/mine")

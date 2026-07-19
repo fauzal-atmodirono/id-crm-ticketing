@@ -3,11 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import pytest
-
 from chatbot.features.tasks.deadline import TaskItem, compute_deadlines
 from chatbot.platform.config import Settings
-
 
 _NOW = datetime(2026, 7, 18, 10, 0, 0, tzinfo=UTC)
 

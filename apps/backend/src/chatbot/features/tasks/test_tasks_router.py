@@ -4,13 +4,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import patch
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from chatbot.features.tasks.tasks_router import build_tasks_router
 from chatbot.platform.config import Settings
-
 
 _NOW = datetime(2026, 7, 18, 10, 0, 0, tzinfo=UTC)
 
@@ -174,7 +172,6 @@ def test_warning_conv_in_warning_window() -> None:
 
 def test_sla_override_label_reflected_in_response() -> None:
     """sla_480 label → 480 min resolution SLA; verify resolutionDeadlineIso is 8h after created."""
-    from datetime import timezone
     conv = {
         "id": 777,
         "status": "open",

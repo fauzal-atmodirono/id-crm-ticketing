@@ -126,3 +126,25 @@ def test_copilot_returns_sources_from_kb_tool() -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["sources"] and body["sources"][0]["title"] == "Warranty"
+    # Full field-mapping contract: content -> snippet, url passthrough.
+    assert body["sources"][0] == {
+        "title": "Warranty",
+        "snippet": "12 months",
+        "url": "http://faq/1",
+    }
+
+
+def test_copilot_cap_fallback_includes_sources() -> None:
+    # Always returns a KB tool call; loop hits the cap. sources must still be present.
+    c = _client([_tool_call_response("search_knowledge_base", {"query": "x"})] * 20)
+    r = c.post(
+        "/assist/copilot",
+        json={"conversation_id": "1", "thread": [{"role": "user", "content": "hi"}]},
+        headers={"x-api-key": "k"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    # Deduped to a single source despite the tool running on every iteration.
+    assert body["sources"] == [
+        {"title": "Warranty", "snippet": "12 months", "url": "http://faq/1"}
+    ]

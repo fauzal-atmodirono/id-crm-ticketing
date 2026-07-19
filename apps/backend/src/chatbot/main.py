@@ -13,6 +13,7 @@ from chatbot.features.chat.adapters.bigquery_metrics import build_metrics_port
 from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
 from chatbot.features.chat.adapters.gcp_voice import GeminiTextToSpeechAdapter
 from chatbot.features.chat.adapters.handoff_store import build_handoff_store
+from chatbot.features.chat.adapters.inbox_assignment_store import build_inbox_assignment_store
 from chatbot.features.chat.adapters.live_faq import VertexEmbedder, build_live_faq_store
 from chatbot.features.chat.adapters.mock import InMemoryKnowledgeAdapter, MockVoiceAdapter
 from chatbot.features.chat.adapters.noop_conversation_log import NoOpConversationLog
@@ -28,6 +29,7 @@ from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.kb_assistants_router import build_kb_assistants_router
 from chatbot.features.chat.kb_documents_router import build_kb_documents_router
+from chatbot.features.chat.kb_inboxes_router import build_kb_inboxes_router
 from chatbot.features.chat.kb_scenarios_router import build_kb_scenarios_router
 from chatbot.features.chat.kb_settings_router import build_kb_settings_router
 from chatbot.features.chat.kb_suggest_router import build_kb_suggest_router
@@ -115,7 +117,8 @@ def _wire_copilot(app: FastAPI, knowledge_port: KnowledgePort, settings: Setting
     tenant_settings_store = build_tenant_settings_store(settings)
     tools_store = build_tools_store(settings)
     scenarios_store = build_scenarios_store(settings)
-    app.include_router(build_copilot_router(settings, knowledge_port, genai_client, assistants_store, tenant_settings_store, tools_store=tools_store, scenarios_store=scenarios_store))
+    assignment_store = build_inbox_assignment_store(settings)
+    app.include_router(build_copilot_router(settings, knowledge_port, genai_client, assistants_store, tenant_settings_store, tools_store=tools_store, scenarios_store=scenarios_store, assignment_store=assignment_store))
 
 
 def _wire_agent_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings) -> None:
@@ -142,6 +145,19 @@ def _wire_agent_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Se
 
     scenarios_store = build_scenarios_store(settings)
     app.include_router(build_kb_scenarios_router(scenarios_store, tools_store, settings))
+
+    # Inbox assignment router: ChatwootAdapter for listing inboxes (best-effort).
+    assignment_store = build_inbox_assignment_store(settings)
+    chatwoot_adapter_for_inboxes = ChatwootAdapter(settings)
+    app.include_router(
+        build_kb_inboxes_router(
+            assignment_store,
+            assistants_store,
+            tenant_settings_store,
+            chatwoot_adapter_for_inboxes,
+            settings,
+        )
+    )
 
     faq_port = build_faq_feedback_port(settings)
     app.include_router(build_faq_router(faq_port, settings))

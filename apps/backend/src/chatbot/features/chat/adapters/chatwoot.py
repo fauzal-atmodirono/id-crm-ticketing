@@ -639,6 +639,36 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             {"content": text, "message_type": "incoming"},
         )
 
+    async def list_inboxes(self) -> list[dict[str, Any]]:
+        """Return all inboxes for the configured Chatwoot account.
+
+        Calls ``GET /api/v1/accounts/{id}/inboxes`` and returns a list of dicts
+        each carrying ``{id, name, channel_type}``. On any failure (Chatwoot
+        unreachable, not enabled, bad auth) returns ``[]`` so callers can degrade
+        cleanly without raising.
+        """
+        res = await self._request("GET", "/inboxes")
+        if not isinstance(res, dict):
+            return []
+        payload = res.get("payload")
+        if not isinstance(payload, list):
+            return []
+        inboxes: list[dict[str, Any]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            inbox_id = item.get("id")
+            if inbox_id is None:
+                continue
+            inboxes.append(
+                {
+                    "id": int(inbox_id),
+                    "name": str(item.get("name", "")),
+                    "channel_type": str(item.get("channel_type") or item.get("channel", "") or ""),
+                }
+            )
+        return inboxes
+
     def verify_webhook_signature(self, body: bytes, signature: str | None) -> bool:  # noqa: ARG002
         expected = self._settings.chatwoot_webhook_secret
         if not expected:

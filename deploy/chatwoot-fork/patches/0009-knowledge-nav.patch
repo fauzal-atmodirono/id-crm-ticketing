@@ -1,0 +1,112 @@
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index d672ca4..05c9d25 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -509,6 +509,23 @@ const menuItems = computed(() => {
+         },
+       ],
+     }] : []),
++    ...(protonHasFeature('knowledge')
++      ? [
++          {
++            name: 'Knowledge',
++            icon: 'i-lucide-book-open',
++            label: 'Knowledge',
++            children: [
++              { name: 'FAQs', label: 'FAQs', to: accountScopedRoute('proton_knowledge', { section: 'faqs' }) },
++              { name: 'Documents', label: 'Documents', to: accountScopedRoute('proton_knowledge', { section: 'documents' }) },
++              { name: 'Playground', label: 'Playground', to: accountScopedRoute('proton_knowledge', { section: 'playground' }) },
++              { name: 'Inboxes', label: 'Inboxes', to: accountScopedRoute('proton_knowledge', { section: 'inboxes' }) },
++              { name: 'Tools', label: 'Tools', to: accountScopedRoute('proton_knowledge', { section: 'tools' }) },
++              { name: 'Settings', label: 'Settings', to: accountScopedRoute('proton_knowledge', { section: 'settings' }) },
++            ],
++          },
++        ]
++      : []),
+     {
+       name: 'Contacts',
+       label: t('SIDEBAR.CONTACTS'),
+diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+index f3a41ba..4c1c64d 100644
+--- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+@@ -27,6 +27,12 @@ export default {
+           component: () => import('../../views/ProtonAppHost.vue'),
+           meta: { requiresAuth: true },
+         },
++        {
++          path: 'proton/knowledge/:section',
++          name: 'proton_knowledge',
++          component: () => import('../../views/ProtonKnowledgeHost.vue'),
++          meta: { requiresAuth: true },
++        },
+         ...inboxRoutes,
+         ...conversation.routes,
+         ...settings.routes,
+diff --git a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+new file mode 100644
+index 0000000..7648c0c
+--- /dev/null
++++ b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+@@ -0,0 +1,61 @@
++<!-- ProtonKnowledgeHost.vue — OUR file. Left-nav "Knowledge" host: renders the
++     live Knowledge Manager for the FAQs section (embedded from the agent host)
++     and clean placeholders for the sections still being built. -->
++<script setup>
++import { computed } from 'vue';
++import { useRoute } from 'vue-router';
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++
++const route = useRoute();
++const { backendUrl, backendKey } = useProtonConfig();
++
++const SECTIONS = {
++  faqs: 'FAQs',
++  documents: 'Documents',
++  playground: 'Playground',
++  inboxes: 'Inboxes',
++  tools: 'Tools',
++  settings: 'Settings',
++};
++
++const section = computed(() => route.params.section || 'faqs');
++const sectionLabel = computed(() => SECTIONS[section.value] || section.value);
++
++// The Knowledge Manager is served by the agent host (derive crm.* -> agent.*)
++// and reads ?backend=&key= from its own URL — same values our other UI uses.
++const agentBase = window.location.origin.replace('://crm.', '://agent.');
++const faqsSrc = computed(
++  () =>
++    `${agentBase}/apps/knowledge-manager?backend=${encodeURIComponent(
++      backendUrl
++    )}&key=${encodeURIComponent(backendKey)}`
++);
++</script>
++
++<template>
++  <div class="flex flex-col w-full h-full bg-n-background">
++    <div
++      class="flex items-center flex-shrink-0 h-12 px-4 border-b border-n-weak"
++    >
++      <span class="text-sm font-medium text-n-slate-12">
++        Knowledge / {{ sectionLabel }}
++      </span>
++    </div>
++
++    <iframe
++      v-if="section === 'faqs'"
++      :src="faqsSrc"
++      class="flex-1 w-full"
++      style="border: none"
++    />
++    <div
++      v-else
++      class="flex flex-col items-center justify-center flex-1 gap-2 text-center"
++    >
++      <span class="text-base font-medium text-n-slate-12">{{ sectionLabel }}</span>
++      <span class="max-w-sm text-sm text-n-slate-11">
++        Coming soon — this section of our Knowledge console is being built.
++      </span>
++    </div>
++  </div>
++</template>

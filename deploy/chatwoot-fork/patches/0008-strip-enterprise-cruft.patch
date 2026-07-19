@@ -1,0 +1,23 @@
+diff --git a/app/javascript/dashboard/store/modules/accounts.js b/app/javascript/dashboard/store/modules/accounts.js
+index 68fd370..eab2c33 100644
+--- a/app/javascript/dashboard/store/modules/accounts.js
++++ b/app/javascript/dashboard/store/modules/accounts.js
+@@ -153,15 +153,9 @@ export const actions = {
+   },
+ 
+   limits: async ({ commit }) => {
+-    commit(types.default.SET_ACCOUNT_UI_FLAG, { isFetchingLimits: true });
+-    try {
+-      const response = await EnterpriseAccountAPI.getLimits();
+-      commit(types.default.SET_ACCOUNT_LIMITS, response.data);
+-    } catch (error) {
+-      // silent error
+-    } finally {
+-      commit(types.default.SET_ACCOUNT_UI_FLAG, { isFetchingLimits: false });
+-    }
++    // Proton: self-hosted Community has no /enterprise limits endpoint; skip
++    // the call so it never 404s. Limits stay at their empty default.
++    commit(types.default.SET_ACCOUNT_UI_FLAG, { isFetchingLimits: false });
+   },
+ 
+   getCacheKeys: async () => {

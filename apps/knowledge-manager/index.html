@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Proton Knowledge Manager</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f5f5f5;
+      color: #333;
+      font-size: 13px;
+    }
+    .container { padding: 16px; max-width: 1000px; margin: 0 auto; }
+    .header {
+      margin-bottom: 16px;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 12px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .header h2 { font-size: 16px; font-weight: 600; color: #222; }
+    .status { font-size: 12px; color: #666; }
+    .toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+    button {
+      padding: 6px 12px;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      background: white;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      transition: all 0.15s;
+    }
+    button:hover { background: #f5f5f5; border-color: #999; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: #1a73e8; color: white; border-color: #1a73e8; }
+    .btn-primary:hover { background: #1557b0; border-color: #1557b0; }
+    .btn-danger { color: #ea4335; border-color: #f2c4c0; }
+    .btn-danger:hover { background: #faf5f4; border-color: #ea4335; }
+    .banner { border-radius: 4px; padding: 12px; margin-bottom: 12px; font-size: 12px; line-height: 1.4; }
+    .banner.error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+    .banner.info { background: #eef4fd; border: 1px solid #cfe0fb; color: #33507a; }
+    .search { flex: 1; min-width: 160px; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 12px; }
+    .table-wrap {
+      background: white;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    thead th {
+      text-align: left;
+      padding: 10px 12px;
+      background: #fafafa;
+      border-bottom: 1px solid #e0e0e0;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: #666;
+      white-space: nowrap;
+    }
+    tbody td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
+    tbody tr:last-child td { border-bottom: none; }
+    .q-text { font-weight: 600; color: #222; }
+    .a-text { color: #555; max-width: 380px; }
+    .chip {
+      display: inline-block; background: #eef1f5; color: #445;
+      border-radius: 10px; padding: 1px 8px; margin: 1px 2px; font-size: 11px;
+    }
+    .muted { color: #aaa; }
+    .cell-actions { white-space: nowrap; }
+    .cell-actions button { padding: 4px 8px; margin-right: 4px; font-size: 11px; }
+    .loading, .empty-state { text-align: center; padding: 28px; color: #999; font-size: 13px; }
+    #toasts {
+      position: fixed; top: 16px; right: 16px;
+      display: flex; flex-direction: column; gap: 8px; z-index: 1000; max-width: 320px;
+    }
+    .toast {
+      padding: 10px 14px; border-radius: 4px; font-size: 12px; color: white;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15); animation: slidein 0.2s ease-out;
+    }
+    .toast.success { background: #34a853; }
+    .toast.error { background: #ea4335; }
+    @keyframes slidein {
+      from { transform: translateX(20px); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+      display: flex; align-items: flex-start; justify-content: center;
+      padding: 40px 16px; z-index: 900; overflow-y: auto;
+    }
+    .modal-backdrop[hidden] { display: none; }
+    .modal { background: white; border-radius: 8px; padding: 20px; width: 100%; max-width: 520px; }
+    .modal h3 { margin-bottom: 14px; font-size: 14px; font-weight: 600; }
+    .field { margin-bottom: 10px; }
+    .field label {
+      display: block; font-size: 11px; font-weight: 600; color: #555;
+      margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.03em;
+    }
+    .field input[type="text"], .field textarea {
+      width: 100%; padding: 8px 10px; border: 1px solid #ccc;
+      border-radius: 4px; font-size: 13px; font-family: inherit; color: #333;
+    }
+    .field textarea { resize: vertical; min-height: 60px; }
+    .field .hint { font-weight: 400; text-transform: none; letter-spacing: 0; color: #999; }
+    .field.inline { display: flex; align-items: center; gap: 8px; }
+    .field.inline label { margin: 0; text-transform: none; letter-spacing: 0; }
+    .field input:focus, .field textarea:focus { outline: none; border-color: #1a73e8; box-shadow: 0 0 0 2px rgba(26,115,232,0.15); }
+    .form-actions { display: flex; gap: 8px; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <div id="toasts"></div>
+
+  <div class="container">
+    <div class="header">
+      <h2>Proton Knowledge Manager</h2>
+      <div class="status" id="status">Initializing...</div>
+    </div>
+
+    <div id="banner"></div>
+
+    <div class="toolbar">
+      <button class="btn-primary" id="new-btn" type="button">+ New entry</button>
+      <button id="refresh-btn" type="button">Refresh</button>
+      <input class="search" id="search" type="text" placeholder="Filter by question, keyword, tag…">
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Question</th>
+            <th>Answer</th>
+            <th>Keywords</th>
+            <th>Tags</th>
+            <th>Active</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="kb-body">
+          <tr><td colspan="6"><div class="loading">Loading knowledge…</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Create / Edit modal -->
+  <div class="modal-backdrop" id="edit-modal" hidden>
+    <div class="modal">
+      <h3 id="modal-title">New knowledge entry</h3>
+      <form id="edit-form">
+        <input type="hidden" id="edit-id">
+        <div class="field">
+          <label for="edit-question">Question</label>
+          <textarea id="edit-question" placeholder="What customers ask, e.g. 'How long is the battery warranty?'"></textarea>
+        </div>
+        <div class="field">
+          <label for="edit-answer">Answer</label>
+          <textarea id="edit-answer" placeholder="The grounded answer agents should give."></textarea>
+        </div>
+        <div class="field">
+          <label for="edit-keywords">Keywords <span class="hint">(comma-separated)</span></label>
+          <input type="text" id="edit-keywords" placeholder="battery, warranty, x50">
+        </div>
+        <div class="field">
+          <label for="edit-tags">Tags <span class="hint">(comma-separated)</span></label>
+          <input type="text" id="edit-tags" placeholder="warranty, vehicle">
+        </div>
+        <div class="field inline">
+          <input type="checkbox" id="edit-active" checked>
+          <label for="edit-active">Active (usable for grounding)</label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn-primary" id="edit-submit">Save</button>
+          <button type="button" id="edit-cancel">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    // ------------------------------------------------------------------
+    // Config from URL params (baked in at dashboard-app registration):
+    //   ?backend=https://<proton-backend>&key=<PROTON_BACKEND_KEY>
+    // ------------------------------------------------------------------
+    const params = new URLSearchParams(window.location.search);
+    const backend = (params.get('backend') || '').replace(/\/+$/, '');
+    const apiKey = params.get('key') || '';
+
+    // Chatwoot Dashboard App postMessage handshake (harmless if not embedded).
+    function requestContext() {
+      try { window.parent.postMessage('chatwoot-dashboard-app:fetch-info', '*'); } catch (e) {}
+    }
+    window.addEventListener('message', () => { /* context not needed for knowledge admin */ });
+
+    function kbHeaders() {
+      return {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { 'x-api-key': apiKey } : {})
+      };
+    }
+
+    async function kbFetch(path, options) {
+      const res = await fetch(`${backend}${path}`, { ...options, headers: kbHeaders() });
+      if (!res.ok) {
+        if (res.status === 401) {
+          showBanner('error', 'Unauthorized (401). Check <code>?key=</code> in the app URL.');
+          throw new Error('unauthorized');
+        }
+        if (res.status === 503) {
+          showBanner('error', 'Knowledge store unavailable (503) on the backend.');
+          throw new Error('unavailable');
+        }
+        const text = await res.text().catch(() => res.statusText);
+        throw new Error(`${res.status}: ${text.slice(0, 200)}`);
+      }
+      const text = await res.text();
+      return text ? JSON.parse(text) : {};
+    }
+
+    // ------------------------------------------------------------------
+    // Load + render entries
+    // ------------------------------------------------------------------
+    let allEntries = [];
+
+    async function loadEntries() {
+      setStatus('Loading…');
+      clearBanner();
+      const tbody = document.getElementById('kb-body');
+      tbody.innerHTML = '<tr><td colspan="6"><div class="loading">Loading knowledge…</div></td></tr>';
+      try {
+        const data = await kbFetch('/kb/faq', { method: 'GET' });
+        allEntries = Array.isArray(data.entries) ? data.entries : [];
+        renderEntries();
+        setStatus(`${allEntries.length} entr${allEntries.length !== 1 ? 'ies' : 'y'}`);
+      } catch (err) {
+        setStatus('Error');
+        if (err.message !== 'unauthorized' && err.message !== 'unavailable') {
+          showBanner('error', 'Failed to load: ' + escapeHtml(err.message));
+        }
+        tbody.innerHTML = '<tr><td colspan="6"><div class="empty-state">Could not load knowledge.</div></td></tr>';
+      }
+    }
+
+    function currentFilter() {
+      return (document.getElementById('search').value || '').trim().toLowerCase();
+    }
+
+    function renderEntries() {
+      const tbody = document.getElementById('kb-body');
+      const f = currentFilter();
+      const rows = allEntries.filter(e => {
+        if (!f) return true;
+        const hay = [e.question, e.answer, ...(e.keywords || []), ...(e.tags || [])].join(' ').toLowerCase();
+        return hay.includes(f);
+      });
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state">${allEntries.length ? 'No entries match the filter.' : 'No knowledge yet. Click “New entry” to add one.'}</div></td></tr>`;
+        return;
+      }
+      tbody.innerHTML = rows.map(e => `
+        <tr data-id="${escapeAttr(e.id)}">
+          <td class="q-text">${escapeHtml(e.question || '')}</td>
+          <td class="a-text">${escapeHtml(truncate(e.answer || '', 160))}</td>
+          <td>${chips(e.keywords)}</td>
+          <td>${chips(e.tags)}</td>
+          <td>${e.active === false ? '<span class="muted">no</span>' : 'yes'}</td>
+          <td class="cell-actions">
+            <button data-action="edit">Edit</button>
+            <button data-action="delete" class="btn-danger">Delete</button>
+          </td>
+        </tr>
+      `).join('');
+      attachRowHandlers();
+    }
+
+    function chips(arr) {
+      if (!arr || !arr.length) return '<span class="muted">—</span>';
+      return arr.map(x => `<span class="chip">${escapeHtml(x)}</span>`).join('');
+    }
+
+    function attachRowHandlers() {
+      document.querySelectorAll('#kb-body tr[data-id]').forEach(row => {
+        const id = row.dataset.id;
+        row.querySelector('button[data-action="edit"]').addEventListener('click', () => openEdit(id));
+        row.querySelector('button[data-action="delete"]').addEventListener('click', () => removeEntry(id));
+      });
+    }
+
+    // ------------------------------------------------------------------
+    // Create / Edit modal
+    // ------------------------------------------------------------------
+    function openNew() {
+      document.getElementById('modal-title').textContent = 'New knowledge entry';
+      document.getElementById('edit-id').value = '';
+      document.getElementById('edit-question').value = '';
+      document.getElementById('edit-answer').value = '';
+      document.getElementById('edit-keywords').value = '';
+      document.getElementById('edit-tags').value = '';
+      document.getElementById('edit-active').checked = true;
+      document.getElementById('edit-modal').hidden = false;
+    }
+
+    function openEdit(id) {
+      const e = allEntries.find(x => String(x.id) === String(id));
+      if (!e) return;
+      document.getElementById('modal-title').textContent = 'Edit knowledge entry';
+      document.getElementById('edit-id').value = e.id;
+      document.getElementById('edit-question').value = e.question || '';
+      document.getElementById('edit-answer').value = e.answer || '';
+      document.getElementById('edit-keywords').value = (e.keywords || []).join(', ');
+      document.getElementById('edit-tags').value = (e.tags || []).join(', ');
+      document.getElementById('edit-active').checked = e.active !== false;
+      document.getElementById('edit-modal').hidden = false;
+    }
+
+    function closeEdit() { document.getElementById('edit-modal').hidden = true; }
+
+    function parseList(value) {
+      return value.split(',').map(s => s.trim()).filter(Boolean);
+    }
+
+    document.getElementById('edit-cancel').addEventListener('click', closeEdit);
+    document.getElementById('edit-modal').addEventListener('click', (ev) => {
+      if (ev.target.id === 'edit-modal') closeEdit();
+    });
+
+    document.getElementById('edit-form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const submit = document.getElementById('edit-submit');
+      const id = document.getElementById('edit-id').value;
+      const question = document.getElementById('edit-question').value.trim();
+      const answer = document.getElementById('edit-answer').value.trim();
+      if (!question || !answer) { toast('error', 'Question and answer are required.'); return; }
+      const body = {
+        question,
+        answer,
+        keywords: parseList(document.getElementById('edit-keywords').value),
+        tags: parseList(document.getElementById('edit-tags').value),
+        active: document.getElementById('edit-active').checked,
+      };
+      submit.disabled = true;
+      try {
+        if (id) {
+          await kbFetch(`/kb/faq/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) });
+          toast('success', 'Entry updated.');
+        } else {
+          await kbFetch('/kb/faq', { method: 'POST', body: JSON.stringify(body) });
+          toast('success', 'Entry created.');
+        }
+        closeEdit();
+        await loadEntries();
+      } catch (err) {
+        if (err.message !== 'unauthorized' && err.message !== 'unavailable') toast('error', 'Save failed: ' + err.message);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+
+    async function removeEntry(id) {
+      const e = allEntries.find(x => String(x.id) === String(id));
+      if (!confirm(`Delete this entry?\n\n${e ? e.question : id}`)) return;
+      try {
+        await kbFetch(`/kb/faq/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        toast('success', 'Entry deleted.');
+        await loadEntries();
+      } catch (err) {
+        if (err.message !== 'unauthorized' && err.message !== 'unavailable') toast('error', 'Delete failed: ' + err.message);
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // UI helpers
+    // ------------------------------------------------------------------
+    function setStatus(text) { document.getElementById('status').textContent = text; }
+    function showBanner(kind, htmlMsg) {
+      document.getElementById('banner').innerHTML = `<div class="banner ${kind}">${htmlMsg}</div>`;
+    }
+    function clearBanner() { document.getElementById('banner').innerHTML = ''; }
+    function toast(kind, msg) {
+      const el = document.createElement('div');
+      el.className = `toast ${kind}`;
+      el.textContent = msg;
+      document.getElementById('toasts').appendChild(el);
+      setTimeout(() => el.remove(), 3500);
+    }
+    function truncate(text, n) { return text.length > n ? text.slice(0, n) + '…' : text; }
+    function escapeHtml(text) {
+      const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+      return String(text).replace(/[&<>"']/g, m => map[m]);
+    }
+    function escapeAttr(text) { return String(text).replace(/"/g, '&quot;'); }
+
+    // ------------------------------------------------------------------
+    // Boot
+    // ------------------------------------------------------------------
+    document.getElementById('new-btn').addEventListener('click', openNew);
+    document.getElementById('refresh-btn').addEventListener('click', loadEntries);
+    document.getElementById('search').addEventListener('input', renderEntries);
+    document.addEventListener('DOMContentLoaded', () => {
+      requestContext();
+      if (!backend || !apiKey) {
+        showBanner('info',
+          'Missing config. Load this app with: ' +
+          '<code>?backend=https://your-backend&amp;key=PROTON_BACKEND_KEY</code>');
+      }
+      if (backend && apiKey) loadEntries();
+    });
+  </script>
+</body>
+</html>

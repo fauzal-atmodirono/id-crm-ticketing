@@ -19,6 +19,7 @@ from chatbot.features.chat.adapters.vertex_search import VertexAISearchAdapter
 from chatbot.features.chat.adapters.zammad import ZammadClient
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
 from chatbot.features.assist.router import build_assist_router
+from chatbot.features.assist.copilot_router import build_copilot_router
 from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.kb_suggest_router import build_kb_suggest_router
@@ -96,6 +97,12 @@ def _wire_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings
             allow_methods=["POST", "OPTIONS"],
             allow_headers=["x-api-key", "content-type"],
         )
+
+
+def _wire_copilot(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings) -> None:
+    """Wire POST /assist/copilot (Ask Copilot). Shares the assist CORS origins."""
+    genai_client = _build_genai_client(settings)
+    app.include_router(build_copilot_router(settings, knowledge_port, genai_client))
 
 
 def _wire_agent_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings) -> None:
@@ -267,6 +274,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
 
     # --- Proton AI-assist (rewired Captain AI) ---
     _wire_assist(app, knowledge_port, settings)
+
+    # --- Ask Copilot (multi-turn) ---
+    _wire_copilot(app, knowledge_port, settings)
 
     _wire_metrics_features(app, settings)
 

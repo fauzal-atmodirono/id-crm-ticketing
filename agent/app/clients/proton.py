@@ -23,6 +23,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+MAX_DEBOUNCE_SECONDS = 300.0
+
 
 class ProtonConfigClient:
     """Thin cached client for the proton-conversational-ai config API."""
@@ -81,7 +83,7 @@ class ProtonConfigClient:
             for row in inboxes:
                 if isinstance(row, dict) and row.get("inbox_id") == inbox_id:
                     mode = row.get("mode")
-                    return str(mode) if mode is not None else None
+                    return str(mode).strip().lower() if mode is not None else None
             return None
         except Exception:
             logger.debug(
@@ -108,7 +110,10 @@ class ProtonConfigClient:
             value = debounce.get("value")
             if value is None:
                 return None
-            return float(value)
+            parsed = float(value)
+            if not (0 <= parsed <= MAX_DEBOUNCE_SECONDS):
+                return None
+            return parsed
         except Exception:
             logger.debug("proton_config: error resolving debounce_seconds", exc_info=True)
             return None

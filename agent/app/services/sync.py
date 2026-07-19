@@ -422,24 +422,18 @@ async def on_ticket_event(payload: dict) -> None:
 
         # Post the persona resolution message publicly BEFORE toggling to
         # resolved, so the customer sees it while the conversation is still
-        # open. Fail-open: any error here must never block or raise out of
-        # this background path — we just skip the message and resolve as usual.
-        try:
-            inbox_id: int | None = None
-            conv_data = await chatwoot.get_conversation(conversation_id)
-            inbox_id = conv_data.get("inbox_id")
-        except Exception:
-            logger.debug(
-                "on_ticket_event: could not fetch conversation %s to look up "
-                "inbox_id for resolution message; skipping persona message",
-                conversation_id,
-            )
-            inbox_id = None
-
-        if inbox_id is not None:
+        # open. Only do the inbox fetch + persona lookup when proton is
+        # configured — tenants without proton must never incur an extra
+        # Chatwoot call or log error on every auto-resolve.
+        # Fail-open: any error here must never block or raise out of this
+        # background path — we just skip the message and resolve as usual.
+        proton = get_proton_config_client()
+        if proton is not None:
             try:
-                proton = get_proton_config_client()
-                if proton is not None:
+                inbox_id: int | None = None
+                conv_data = await chatwoot.get_conversation(conversation_id)
+                inbox_id = conv_data.get("inbox_id")
+                if inbox_id is not None:
                     msgs = await proton.get_assistant_messages(inbox_id)
                     if msgs and msgs.get("resolution"):
                         await chatwoot.create_message(

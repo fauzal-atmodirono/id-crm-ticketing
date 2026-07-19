@@ -319,3 +319,106 @@ async def test_get_assistant_messages_empty_strings_when_fields_absent():
     assert result["handoff"] == ""
     assert result["resolution"] == ""
     await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# effective_debounce_seconds — bounds clamping
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_effective_debounce_seconds_returns_none_for_negative_value():
+    """A negative debounce value would make asyncio.sleep return immediately,
+    breaking coalescing — must return None so the caller uses the fallback."""
+    respx.get(f"{PROTON_BASE}/kb/settings").mock(
+        return_value=httpx.Response(
+            200,
+            json={"settings": {"debounce_seconds": {"value": -1.0, "source": "manual"}}},
+        )
+    )
+    client = _make_client()
+    result = await client.effective_debounce_seconds()
+    assert result is None
+    await client.aclose()
+
+
+@respx.mock
+async def test_effective_debounce_seconds_returns_none_for_value_exceeding_max():
+    """A huge debounce value would stall the bot — must return None."""
+    respx.get(f"{PROTON_BASE}/kb/settings").mock(
+        return_value=httpx.Response(
+            200,
+            json={"settings": {"debounce_seconds": {"value": 9999.0, "source": "manual"}}},
+        )
+    )
+    client = _make_client()
+    result = await client.effective_debounce_seconds()
+    assert result is None
+    await client.aclose()
+
+
+@respx.mock
+async def test_effective_debounce_seconds_returns_zero_for_zero():
+    """0.0 is a valid debounce value (disable coalescing) — must be returned, not treated as falsy."""
+    respx.get(f"{PROTON_BASE}/kb/settings").mock(
+        return_value=httpx.Response(
+            200,
+            json={"settings": {"debounce_seconds": {"value": 0.0, "source": "manual"}}},
+        )
+    )
+    client = _make_client()
+    result = await client.effective_debounce_seconds()
+    assert result == 0.0
+    await client.aclose()
+
+
+@respx.mock
+async def test_effective_debounce_seconds_returns_max_boundary():
+    """300.0 is the maximum valid value — must be returned."""
+    from app.clients.proton import MAX_DEBOUNCE_SECONDS
+
+    respx.get(f"{PROTON_BASE}/kb/settings").mock(
+        return_value=httpx.Response(
+            200,
+            json={"settings": {"debounce_seconds": {"value": MAX_DEBOUNCE_SECONDS, "source": "manual"}}},
+        )
+    )
+    client = _make_client()
+    result = await client.effective_debounce_seconds()
+    assert result == MAX_DEBOUNCE_SECONDS
+    await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# effective_inbox_mode — normalization of loose backend values
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_effective_inbox_mode_normalizes_uppercase():
+    """Backend returns 'Auto' — must be normalized to 'auto'."""
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        return_value=httpx.Response(
+            200,
+            json={"inboxes": [{"inbox_id": 10, "name": "Support", "mode": "Auto", "source": "manual"}]},
+        )
+    )
+    client = _make_client()
+    result = await client.effective_inbox_mode(10)
+    assert result == "auto"
+    await client.aclose()
+
+
+@respx.mock
+async def test_effective_inbox_mode_normalizes_whitespace():
+    """Backend returns ' auto ' (with spaces) — must be stripped and lowercased."""
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        return_value=httpx.Response(
+            200,
+            json={"inboxes": [{"inbox_id": 10, "name": "Support", "mode": " auto ", "source": "manual"}]},
+        )
+    )
+    client = _make_client()
+    result = await client.effective_inbox_mode(10)
+    assert result == "auto"
+    await client.aclose()

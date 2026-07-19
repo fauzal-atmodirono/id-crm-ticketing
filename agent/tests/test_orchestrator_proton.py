@@ -477,3 +477,67 @@ async def test_handoff_to_human_proton_unconfigured_no_extra_post(monkeypatch):
 
     assert not create_message.called
     assert toggle_status.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Garbage/unknown inbox mode — must degrade to SUGGEST (customer-safe default)
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_unknown_inbox_mode_degrades_to_suggest(monkeypatch):
+    """When proton returns an unknown/garbage mode string (e.g. "banana"),
+    the orchestrator must fall back to the safe default (suggest): post a
+    private note + reopen. It must NEVER auto-send a public reply.
+
+    This locks in the customer-facing safety guarantee: any unrecognized mode
+    from the backend is treated the same as "suggest", never as "auto".
+    """
+    # Return an inbox with an unrecognized mode
+    inboxes_garbage_mode = {
+        "inboxes": [{"inbox_id": 7, "name": "Inbox7", "mode": "banana", "source": "manual"}]
+    }
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42").mock(
+        return_value=httpx.Response(200, json=CONVERSATION_RESPONSE)
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    respx.get(f"{PROTON}/kb/inboxes").mock(
+        return_value=httpx.Response(200, json=inboxes_garbage_mode)
+    )
+    respx.get(f"{PROTON}/kb/settings").mock(
+        return_value=httpx.Response(200, json=SETTINGS_RESPONSE)
+    )
+
+    monkeypatch.setattr(
+        gemini,
+        "decide",
+        _stub_decide(gemini.Decision("send_reply", {"text": "Some reply."}, None, 1)),
+    )
+
+    create_message = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages"
+    ).mock(return_value=httpx.Response(200, json={"id": 999}))
+    toggle_status = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status"
+    ).mock(return_value=httpx.Response(200, json={"success": True}))
+
+    client = _make_proton_client()
+    monkeypatch.setattr(orchestrator, "get_proton_config_client", lambda: client)
+
+    task = await orchestrator.handle_bot_event(_payload())
+    assert task is not None
+    await task
+
+    # Must post a private note (suggest branch), NOT a public reply (auto branch)
+    assert create_message.call_count == 1
+    body = create_message.calls.last.request.content
+    assert b'"private": true' in body or b'"private":true' in body, (
+        "Garbage mode must degrade to suggest (private note), not auto-send"
+    )
+    # Must reopen (suggest branch reopens for a human)
+    assert toggle_status.call_count == 1
+    assert b"open" in toggle_status.calls.last.request.content
+
+    await client.aclose()

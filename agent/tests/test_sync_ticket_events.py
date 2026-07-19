@@ -308,8 +308,14 @@ async def test_auto_resolve_empty_resolution_message_just_resolves(monkeypatch):
 
 @respx.mock
 async def test_auto_resolve_proton_unconfigured_just_resolves(monkeypatch):
-    """When proton is not configured, auto-resolve must behave identically to
-    today: no extra message posted, just toggle to resolved."""
+    """When proton is not configured, auto-resolve must skip the conversation GET
+    entirely and go straight to toggle_status — no extra message, no inbox fetch.
+
+    Lock-in: register `conversations/44` GET so respx tracks it; assert call_count
+    == 0. If the code wrongly calls get_conversation, respx returns a 200 (not a
+    network error), meaning the try/except cannot hide the violation — the
+    call_count assertion below will catch it.
+    """
     settings = get_settings()
     monkeypatch.setattr(settings, "auto_resolve", True)
 
@@ -318,7 +324,10 @@ async def test_auto_resolve_proton_unconfigured_just_resolves(monkeypatch):
     respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/44/messages").mock(
         return_value=httpx.Response(200, json={"id": 1})
     )
-    # Note: no conversation GET or proton routes registered — they must NOT be called
+    # Register (but do not expect) the conversation GET — call_count must stay 0.
+    get_conversation_route = respx.get(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/44"
+    ).mock(return_value=httpx.Response(200, json=CONVERSATION_RESPONSE))
     toggle_route = respx.post(
         f"{CHATWOOT}/api/v1/accounts/1/conversations/44/toggle_status"
     ).mock(return_value=httpx.Response(200, json={"success": True}))
@@ -328,6 +337,11 @@ async def test_auto_resolve_proton_unconfigured_just_resolves(monkeypatch):
 
     payload = {"ticket": {"id": 792, "number": "10792", "state": "closed"}}
     await sync.on_ticket_event(payload)
+
+    # get_conversation must NOT have been called when proton is unconfigured
+    assert get_conversation_route.call_count == 0, (
+        "get_conversation was called even though proton is unconfigured"
+    )
 
     # Just the toggle — no proton calls, no resolution message
     assert toggle_route.call_count == 1

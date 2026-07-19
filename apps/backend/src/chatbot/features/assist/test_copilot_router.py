@@ -89,6 +89,17 @@ def test_iteration_cap_returns_fallback() -> None:
     )
     assert r.status_code == 200
     assert isinstance(r.json()["answer"], str) and r.json()["answer"]
+    assert r.json()["tool_calls"] == ["search_knowledge_base"] * 5
+
+
+def test_wrong_key_rejected() -> None:
+    c = _client([_text_response("hi")])
+    r = c.post(
+        "/assist/copilot",
+        json={"conversation_id": "1", "thread": [{"role": "user", "content": "hi"}]},
+        headers={"x-api-key": "wrong"},
+    )
+    assert r.status_code == 401
 
 
 def test_503_when_key_unconfigured() -> None:

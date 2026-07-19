@@ -95,9 +95,12 @@ def build_copilot_router(
                 contents=contents,
                 config=config,
             )
+            # Capture text first — SDK can return text alongside function calls.
+            text = (getattr(response, "text", None) or "").strip()
+            if text:
+                last_text = text
             calls = getattr(response, "function_calls", None) or []
             if not calls:
-                last_text = (getattr(response, "text", None) or "").strip()
                 return {"answer": last_text or _FALLBACK, "tool_calls": tool_calls}
 
             # Execute each requested tool and feed the results back.

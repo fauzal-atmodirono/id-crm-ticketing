@@ -18,6 +18,7 @@ def _settings(**overrides: Any) -> Settings:
         "sla_response_hours": 8,
         "sla_resolution_hours": 48,
         "tasks_reminder_warning_minutes": 60,
+        "tasks_api_key": "test-key",
         "chatwoot_inbox_id": 1,
     }
     base.update(overrides)
@@ -53,7 +54,7 @@ def test_returns_tasks_for_agent() -> None:
         "chatbot.features.tasks.tasks_router._utcnow",
         return_value=_NOW,
     ):
-        resp = client.get("/tasks/mine?agent_id=7")
+        resp = client.get("/tasks/mine?agent_id=7", headers={"x-api-key": "test-key"})
     assert resp.status_code == 200
     body = resp.json()
     assert "tasks" in body
@@ -87,7 +88,7 @@ def test_filters_other_agents_conversations() -> None:
     client = TestClient(app)
     with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=convs), \
          patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW):
-        resp = client.get("/tasks/mine?agent_id=7")
+        resp = client.get("/tasks/mine?agent_id=7", headers={"x-api-key": "test-key"})
     assert resp.status_code == 200
     assert len(resp.json()["tasks"]) == 1
     assert resp.json()["tasks"][0]["convId"] == "200"
@@ -104,7 +105,7 @@ def test_no_agent_id_returns_all_open() -> None:
     client = TestClient(app)
     with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=convs), \
          patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW):
-        resp = client.get("/tasks/mine")
+        resp = client.get("/tasks/mine", headers={"x-api-key": "test-key"})
     assert resp.status_code == 200
     # Only open conversations
     assert len(resp.json()["tasks"]) == 1
@@ -118,7 +119,7 @@ def test_generated_at_is_iso_string() -> None:
     client = TestClient(app)
     with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[]), \
          patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW):
-        resp = client.get("/tasks/mine")
+        resp = client.get("/tasks/mine", headers={"x-api-key": "test-key"})
     assert resp.status_code == 200
     assert resp.json()["generatedAt"] == _NOW.isoformat()
 
@@ -137,7 +138,7 @@ def test_breach_conv_has_negative_remaining_and_breach_type() -> None:
     client = TestClient(app)
     with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[conv]), \
          patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW):
-        resp = client.get("/tasks/mine")
+        resp = client.get("/tasks/mine", headers={"x-api-key": "test-key"})
     assert resp.status_code == 200
     tasks = resp.json()["tasks"]
     assert len(tasks) == 1
@@ -163,7 +164,7 @@ def test_warning_conv_in_warning_window() -> None:
     client = TestClient(app)
     with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[conv]), \
          patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW):
-        resp = client.get("/tasks/mine")
+        resp = client.get("/tasks/mine", headers={"x-api-key": "test-key"})
     t = resp.json()["tasks"][0]
     assert t["resolutionRemainingSeconds"] is not None
     assert 0 < t["resolutionRemainingSeconds"] < 120 * 60  # within warning window
@@ -185,8 +186,30 @@ def test_sla_override_label_reflected_in_response() -> None:
     client = TestClient(app)
     with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[conv]), \
          patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW):
-        resp = client.get("/tasks/mine")
+        resp = client.get("/tasks/mine", headers={"x-api-key": "test-key"})
     t = resp.json()["tasks"][0]
     # 480 min = 8h; conv just created → remaining ≈ 28800s
     assert t["resolutionRemainingSeconds"] is not None
     assert abs(t["resolutionRemainingSeconds"] - 28800) < 10
+
+
+def test_get_my_tasks_no_key_returns_401() -> None:
+    """GET /tasks/mine without x-api-key header must return 401."""
+    settings = _settings()
+    app = FastAPI()
+    app.include_router(build_tasks_router(settings))
+    client = TestClient(app)
+    with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[]):
+        resp = client.get("/tasks/mine")
+    assert resp.status_code == 401
+
+
+def test_get_my_tasks_wrong_key_returns_401() -> None:
+    """GET /tasks/mine with a wrong x-api-key must return 401."""
+    settings = _settings()
+    app = FastAPI()
+    app.include_router(build_tasks_router(settings))
+    client = TestClient(app)
+    with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[]):
+        resp = client.get("/tasks/mine", headers={"x-api-key": "wrong-key"})
+    assert resp.status_code == 401

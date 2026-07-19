@@ -125,6 +125,7 @@
 
     const params = new URLSearchParams(window.location.search);
     const backendBaseUrl = (params.get('backendBaseUrl') || DEFAULT_BACKEND).replace(/\/+$/, '');
+    const apiKey = params.get('apiKey') || '';
 
     let agentId = params.get('agentId') || null;
     let warningThresholdMinutes = 60;  // overwritten from API response
@@ -209,7 +210,9 @@
         ? `${backendBaseUrl}/tasks/mine?agent_id=${encodeURIComponent(agentId)}`
         : `${backendBaseUrl}/tasks/mine`;
       try {
-        const res = await fetch(url);
+        const fetchOptions = {};
+        if (apiKey) fetchOptions.headers = { 'x-api-key': apiKey };
+        const res = await fetch(url, fetchOptions);
         if (!res.ok) {
           throw new Error(`${res.status} ${res.statusText}`);
         }

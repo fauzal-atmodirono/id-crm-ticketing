@@ -293,7 +293,8 @@ async def _fire(
         remark=remark,
     )
     await audit.append(entry)
-    _log.info("sla_breach_recorded", ticket_id=ticket_id, breach=to_state)
+    event = "sla_reminder_recorded" if to_state == REMINDER_WARNING_STATE else "sla_breach_recorded"
+    _log.info(event, ticket_id=ticket_id, breach=to_state)
     if alert is not None:
         try:
             result = alert(ticket_id, to_state, remark)

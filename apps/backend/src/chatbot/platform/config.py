@@ -82,11 +82,13 @@ class Settings(BaseSettings):
     # How many minutes before SLA breach the My-Tasks app shows a warning colour
     # and triggers a desktop notification.
     tasks_reminder_warning_minutes: int = 60
-    # When True, the SLA scan job also sends a per-agent WhatsApp message via
-    # TwilioChannelAdapter when a conversation is within tasks_reminder_warning_minutes
-    # of breach. Requires sla_pic_whatsapp set to the agent's WA number (or the PIC
-    # fallback). Default False keeps the existing behaviour.
+    # When True, the SLA scan job sends a reminder to the global PIC WhatsApp
+    # (`sla_pic_whatsapp`) when a conversation is within tasks_reminder_warning_minutes
+    # of breach; per-agent routing is deferred. Default False keeps the existing behaviour.
     tasks_reminder_whatsapp_enabled: bool = False
+    # API key that gates GET /tasks/mine (which returns customer PII — task subjects
+    # are customer names). An empty value 401s every request.
+    tasks_api_key: str = ""
 
     # Email channel — when True, AI replies become private draft notes instead of
     # public replies (draft-assist mode). Default False = auto-reply (public).

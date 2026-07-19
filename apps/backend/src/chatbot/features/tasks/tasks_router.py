@@ -31,11 +31,12 @@ Response (200):
 
 from __future__ import annotations
 
+import hmac
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from chatbot.features.metrics.sync import fetch_conversations
@@ -75,7 +76,15 @@ def build_tasks_router(settings: Settings) -> APIRouter:
     @router.get("/tasks/mine")
     async def get_my_tasks(
         agent_id: str | None = Query(default=None, description="Chatwoot agent id to filter"),
+        x_api_key: str | None = Header(default=None),
     ) -> JSONResponse:
+        key = settings.tasks_api_key
+        if (
+            not key
+            or x_api_key is None
+            or not hmac.compare_digest(x_api_key.encode("utf-8"), key.encode("utf-8"))
+        ):
+            raise HTTPException(status_code=401, detail="Unauthorized")
         now = _utcnow()
         try:
             conversations = fetch_conversations(settings)

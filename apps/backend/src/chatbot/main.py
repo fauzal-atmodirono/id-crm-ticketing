@@ -25,6 +25,7 @@ from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.adapters.vertex_search import VertexAISearchAdapter
 from chatbot.features.chat.adapters.zammad import ZammadClient
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
+from chatbot.features.chat.escalation_notifier import EscalationNotifier
 from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.kb_assistants_router import build_kb_assistants_router
@@ -34,6 +35,7 @@ from chatbot.features.chat.kb_scenarios_router import build_kb_scenarios_router
 from chatbot.features.chat.kb_settings_router import build_kb_settings_router
 from chatbot.features.chat.kb_suggest_router import build_kb_suggest_router
 from chatbot.features.chat.kb_tools_router import build_kb_tools_router
+from chatbot.features.chat.pic_registry import build_pic_registry
 from chatbot.features.chat.ports import (
     ChatPort,
     ConversationLogPort,
@@ -48,6 +50,7 @@ from chatbot.features.chat.sla import start_sla_scheduler
 from chatbot.features.metrics.anomaly_router import build_metrics_anomaly_router
 from chatbot.features.metrics.dashboard_router import build_metrics_query_router
 from chatbot.features.metrics.email_port import build_email_report_port
+from chatbot.features.metrics.email_sender import SmtpEmailSender
 from chatbot.features.metrics.export_router import build_metrics_export_router
 from chatbot.features.metrics.faq_feedback_adapter import build_faq_feedback_port
 from chatbot.features.metrics.faq_router import build_faq_router
@@ -274,6 +277,10 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     human_agent_bridge: HumanAgentBridgePort | None = None
     handoff_bridge: HandoffBridge | None = None
 
+    # --- Phase-2: PIC registry + email sender (constructed once; used by all paths) ---
+    pic_registry = build_pic_registry(settings)
+    email_sender = SmtpEmailSender(settings)
+
     if settings.crm_provider == "zendesk":
         zendesk_client = ZendeskAdapter(settings)
         chat_port = zendesk_client
@@ -286,7 +293,14 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         # POSTs the back-office ticket ourselves instead of relying on the
         # `escalate` label + external agent-service sync.
         zammad_client = ZammadClient(settings) if settings.zammad_enabled else None
-        chatwoot_client = ChatwootAdapter(settings, zammad=zammad_client)
+        # Construct without escalation_notifier first so we can pass _request into it.
+        chatwoot_client = ChatwootAdapter(
+            settings, zammad=zammad_client, pic_registry=pic_registry
+        )
+        # twilio_adapter is constructed later; we defer EscalationNotifier wiring to
+        # after the Twilio block below.  A post-construction assignment is safe here
+        # because escalation only fires inside async request handling, which occurs
+        # after bootstrap_application() returns.
         chat_port = chatwoot_client
         ticketing_port = chatwoot_client
         if settings.chatwoot_enabled:
@@ -321,6 +335,19 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     twilio_adapter: TwilioChannelAdapter | None = None
     if settings.twilio_account_sid and settings.twilio_auth_token:
         twilio_adapter = TwilioChannelAdapter(settings)
+
+    # --- Phase-2: wire EscalationNotifier into ChatwootAdapter now that twilio is ready ---
+    # Post-construction injection is safe: escalation only fires inside async request
+    # handlers, which run after bootstrap_application() returns.
+    if chatwoot_client is not None:
+        escalation_notifier = EscalationNotifier(
+            settings=settings,
+            pic_registry=pic_registry,
+            email_sender=email_sender,
+            twilio_adapter=twilio_adapter,
+            chatwoot_request=chatwoot_client._request,  # type: ignore[arg-type]
+        )
+        chatwoot_client._escalation_notifier = escalation_notifier  # type: ignore[assignment]
 
     # --- Metrics port (per-turn BigQuery streaming) ---
     metrics_port = build_metrics_port(settings)

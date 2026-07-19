@@ -88,6 +88,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         self._paused_sessions: set[str] = set()
         self._conv_by_session: dict[str, str] = {}
         self._routing_service: RoutingService | None = None
+        self._channel_cache: str | None = None
 
     def _direct_zammad_active(self) -> bool:
         """True when this adapter owns Zammad ticketing directly.
@@ -139,19 +140,44 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 return True
         return False
 
+    async def _resolve_conv_channel(self) -> str:
+        """Resolve the routing channel for AI-escalated conversations.
+
+        All such conversations are created in the configured
+        ``chatwoot_inbox_id`` inbox, so the channel is that inbox's label.
+        Cached for the process lifetime (inbox config is static). Falls back
+        to ``"web"`` when the inbox can't be resolved (Chatwoot unreachable,
+        not found) — and does NOT cache that fallback, so a transient failure
+        retries on the next escalation.
+        """
+        if self._channel_cache is not None:
+            return self._channel_cache
+        inbox_id = self._settings.chatwoot_inbox_id
+        for inbox in await self.list_inboxes():
+            if inbox.get("id") == inbox_id:
+                channel = str(inbox.get("name") or inbox.get("channel_type") or "").strip()
+                if channel:
+                    self._channel_cache = channel
+                    return channel
+                break
+        return "web"
+
     async def _assign_conversation(
-        self, conv_id: str, conv_channel: str = "web", fallback_team_id: int | None = None
+        self, conv_id: str, fallback_team_id: int | None = None
     ) -> None:
         """Assign to an agent (routing) or a team (fallback).
 
-        When routing_enabled and a RoutingService is wired, pick an available
-        agent honoring channel priority. Otherwise assign the fallback team —
-        which the caller may set to a PIC-derived team (open_handoff) so Phase 2
+        When routing_enabled and a RoutingService is wired, resolve the real
+        inbox channel (cached) and pick an available agent honoring channel
+        priority. The channel resolution only runs inside this branch — no extra
+        GET when routing is off. Otherwise assign the fallback team — which the
+        caller may set to a PIC-derived team (open_handoff) so Phase 2
         department→PIC routing is preserved. create_ticket passes no fallback,
         so it uses the global chatwoot_agent_team_id.
         """
         if self._settings.routing_enabled and self._routing_service is not None:
-            agent_id = await self._routing_service.pick_agent(conv_channel)
+            channel = await self._resolve_conv_channel()
+            agent_id = await self._routing_service.pick_agent(channel)
             if agent_id is not None:
                 await self._request(
                     "POST",
@@ -460,7 +486,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         await self._request(
             "POST", f"/conversations/{conv_id}/toggle_priority", {"priority": priority}
         )
-        await self._assign_conversation(conv_id, conv_channel="web")
+        await self._assign_conversation(conv_id)
         await self.add_private_note(conv_id, f"[AI escalation] {title}\n\n{body}")
         # Direct Zammad ticketing: on a complaint, POST the back-office ticket
         # ourselves and drop a Chatwoot private note linking to it (instead of
@@ -678,7 +704,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 team_id_to_use = _pic.chatwoot_team_id
         if team_id_to_use is None:
             team_id_to_use = self._settings.chatwoot_agent_team_id or None
-        await self._assign_conversation(conv_id, conv_channel="web", fallback_team_id=team_id_to_use)
+        await self._assign_conversation(conv_id, fallback_team_id=team_id_to_use)
         if payload.sla_minutes is not None:
             await self._request(
                 "POST",

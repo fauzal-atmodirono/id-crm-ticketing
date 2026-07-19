@@ -56,6 +56,39 @@ def _make_routing_svc(agent_id: int | None) -> RoutingService:
     return svc
 
 
+def _make_recording_routing_svc(agent_id: int | None) -> tuple[RoutingService, list[str]]:
+    """Return a RoutingService whose pick_agent records the channel argument."""
+    svc = RoutingService.__new__(RoutingService)
+    recorded: list[str] = []
+
+    async def pick(channel: str) -> int | None:
+        recorded.append(channel)
+        return agent_id
+
+    svc.pick_agent = pick  # type: ignore[method-assign]
+    return svc, recorded
+
+
+@pytest.mark.asyncio
+async def test_routing_resolves_inbox_channel() -> None:
+    """Routing receives the real inbox label, not the hardcoded 'web' fallback.
+
+    chatwoot_inbox_id=7; GET /inboxes returns inbox 7 with name 'WhatsApp'.
+    pick_agent must be called with 'WhatsApp'.
+    """
+    inbox_response = {"payload": [{"id": 7, "name": "WhatsApp", "channel_type": "Channel::Whatsapp"}]}
+    fake = _FakeClient({
+        ("POST", "/conversations"): {"id": 99},
+        ("GET", "/inboxes"): inbox_response,
+    })
+    svc, recorded = _make_recording_routing_svc(agent_id=42)
+    adapter = _adapter(fake, routing_enabled=True, routing_svc=svc, team_id=5)
+    await adapter.create_ticket(
+        session_id="s_inbox", title="T", body="B", urgency="medium"
+    )
+    assert recorded == ["WhatsApp"], f"expected ['WhatsApp'], got {recorded!r}"
+
+
 @pytest.mark.asyncio
 async def test_routing_disabled_uses_team_assignment() -> None:
     """When routing_enabled=False, the existing team assignment is used."""

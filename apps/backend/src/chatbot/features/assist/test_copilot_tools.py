@@ -16,7 +16,11 @@ class _FakeCtx:
 
 
 class _FakeKb:
+    def __init__(self) -> None:
+        self.last_limit: int | None = None
+
     async def search_kb(self, query: str, limit: int = 3):
+        self.last_limit = limit
         return [KbArticle(title="Warranty", content="12 months", url="http://faq/1")]
 
 
@@ -42,6 +46,17 @@ async def test_executor_dispatches_kb_search() -> None:
     ex = ToolExecutor(_FakeCtx(), _FakeKb(), conversation_id="42")
     out = await ex.run("search_knowledge_base", {"query": "warranty"})
     assert out["articles"][0]["title"] == "Warranty"
+
+
+async def test_executor_clamps_kb_limit() -> None:
+    kb = _FakeKb()
+    ex = ToolExecutor(_FakeCtx(), kb, conversation_id="42")
+
+    await ex.run("search_knowledge_base", {"query": "warranty", "limit": 50})
+    assert kb.last_limit == 10
+
+    await ex.run("search_knowledge_base", {"query": "warranty", "limit": 0})
+    assert kb.last_limit == 1
 
 
 async def test_executor_unknown_tool() -> None:

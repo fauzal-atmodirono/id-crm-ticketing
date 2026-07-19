@@ -56,13 +56,14 @@ def build_faq_admin_router(store: LiveFaqPort | None, settings: Settings) -> API
     router = APIRouter(tags=["kb"])
 
     def _authorize(x_api_key: str | None) -> None:
-        key = settings.faq_admin_api_key
-        if (
-            not key
-            or x_api_key is None
-            or not hmac.compare_digest(x_api_key.encode("utf-8"), key.encode("utf-8"))
-        ):
+        if x_api_key is None:
             raise HTTPException(status_code=401, detail="Unauthorized")
+        candidates = [settings.faq_admin_api_key, settings.proton_backend_key]
+        supplied = x_api_key.encode("utf-8")
+        for key in candidates:
+            if key and hmac.compare_digest(supplied, key.encode("utf-8")):
+                return
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
     def _require_store() -> LiveFaqPort:
         if store is None:

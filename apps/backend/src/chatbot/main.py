@@ -28,6 +28,8 @@ from chatbot.features.chat.kb_assistants_router import build_kb_assistants_route
 from chatbot.features.chat.kb_documents_router import build_kb_documents_router
 from chatbot.features.chat.kb_settings_router import build_kb_settings_router
 from chatbot.features.chat.kb_suggest_router import build_kb_suggest_router
+from chatbot.features.chat.kb_tools_router import build_kb_tools_router
+from chatbot.features.chat.adapters.tools_store import build_tools_store
 from chatbot.features.chat.ports import (
     ChatPort,
     ConversationLogPort,
@@ -130,6 +132,9 @@ def _wire_agent_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Se
     app.include_router(build_kb_assistants_router(assistants_store, settings))
     tenant_settings_store = build_tenant_settings_store(settings)
     app.include_router(build_kb_settings_router(tenant_settings_store, settings))
+
+    tools_store = build_tools_store(settings)
+    app.include_router(build_kb_tools_router(tools_store, settings))
 
     faq_port = build_faq_feedback_port(settings)
     app.include_router(build_faq_router(faq_port, settings))

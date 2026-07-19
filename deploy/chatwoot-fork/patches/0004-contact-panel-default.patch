@@ -1,0 +1,15 @@
+diff --git a/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue b/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue
+index a1534a7..31b5fa2 100644
+--- a/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue
++++ b/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue
+@@ -94,7 +94,9 @@ export default {
+       }
+ 
+       const { is_contact_sidebar_open: isContactSidebarOpen } = this.uiSettings;
+-      return isContactSidebarOpen;
++      // Proton: default the contact panel to OPEN when the user has no saved
++      // preference yet; an explicit open/close still persists and wins.
++      return isContactSidebarOpen === undefined ? true : isContactSidebarOpen;
+     },
+   },
+   watch: {

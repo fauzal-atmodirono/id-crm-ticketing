@@ -88,7 +88,8 @@ Reuse `faq_admin_router` CRUD. Two small changes:
 
 ### C2 — Knowledge Manager nav-app (frontend, first-party)
 
-A static in-Chatwoot app on the Phase-0 nav-host route (same shape as Taxonomy Manager):
+A static in-Chatwoot app on the Phase-0 nav-host route (same shape as Taxonomy Manager),
+available to **both admins and agents** (gated by the `knowledge` feature flag, not by role):
 - Lists entries (`GET /kb/faq`), with search/filter by keyword/tag.
 - Create/edit form (`question`, `answer`, `keywords`, `tags`, optional `source_url`) →
   `POST/PUT /kb/faq`; delete → `DELETE /kb/faq/{id}`.
@@ -138,11 +139,13 @@ Additive: the nav-app ships in the shared custom image behind the `knowledge` fl
 enables it via `PROTON_FEATURES` and its own backend. No schema migration (live-FAQ is
 Firestore/in-memory). Rollback = drop the flag.
 
-## Open decisions (for the review)
+## Resolved decisions
 
-- **D1 — Who authors:** admins/ops only (v1, recommended) vs. also agents. Affects the nav-app's
-  visibility gating.
-- **D2 — Auth key:** set `faq_admin_api_key = proton_backend_key` (simplest) vs. add
-  `proton_backend_key` as an accepted key on `/kb/faq` vs. a separate knowledge key.
-- **D3 — Citations link target:** live-FAQ entries have no public URL by default — cite by
-  **title only** (v1) vs. require/author a `source_url`. Vertex Search hits do have URLs.
+- **D1 — Who authors:** **admins AND agents.** The Knowledge nav-app is visible to both roles,
+  gated by the `knowledge` feature flag (not by role).
+- **D2 — Auth key:** the `/kb/faq` routes accept **`proton_backend_key`** — the key the frontend
+  already carries — so no new secret. Implement by having the faq-admin auth accept
+  `proton_backend_key` (in addition to `faq_admin_api_key` for backward compatibility).
+- **D3 — Citations:** cite by **title** in v1. A live-FAQ entry may carry an optional
+  `source_url`; when present the cited title links to it. Vertex Search hits already have URLs
+  and link out.

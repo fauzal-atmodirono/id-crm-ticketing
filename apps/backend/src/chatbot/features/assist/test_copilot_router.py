@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from chatbot.features.assist.copilot_router import build_copilot_router
+from chatbot.features.chat.adapters.assistants_store import InMemoryAssistantsStore
 from chatbot.features.chat.models import KbArticle
 from chatbot.platform.config import Settings
 
@@ -39,6 +40,7 @@ def _client(responses: list, key: str = "k") -> TestClient:
             settings=Settings(proton_backend_key=key, chatwoot_enabled=False),
             knowledge_port=_FakeKb(),
             genai_client=genai,
+            assistants_store=InMemoryAssistantsStore(),
         )
     )
     return TestClient(app, raise_server_exceptions=False)

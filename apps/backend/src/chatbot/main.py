@@ -105,7 +105,8 @@ def _wire_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings
 def _wire_copilot(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings) -> None:
     """Wire POST /assist/copilot (Ask Copilot). Shares the assist CORS origins."""
     genai_client = _build_genai_client(settings)
-    app.include_router(build_copilot_router(settings, knowledge_port, genai_client))
+    assistants_store = build_assistants_store(settings)
+    app.include_router(build_copilot_router(settings, knowledge_port, genai_client, assistants_store))
 
 
 def _wire_agent_assist(app: FastAPI, knowledge_port: KnowledgePort, settings: Settings) -> None:

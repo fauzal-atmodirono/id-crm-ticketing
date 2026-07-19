@@ -92,7 +92,7 @@ def build() -> FastAPI:
         build_assist_router(settings, kp, genai)
     )
     app.include_router(
-        build_copilot_router(settings, kp, genai)
+        build_copilot_router(settings, kp, genai, assistants_store)
     )
 
     @app.get("/healthz")

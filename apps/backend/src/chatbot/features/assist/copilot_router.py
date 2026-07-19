@@ -14,24 +14,25 @@ import structlog
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from chatbot.features.assist.assistant_runtime import (
+    DEFAULT_COPILOT_PROMPT,
+    build_system_prompt,
+    build_tool_declarations,
+    resolve_assistant,
+)
 from chatbot.features.assist.chatwoot_context import ChatwootContextClient
-from chatbot.features.assist.copilot_tools import COPILOT_TOOLS, ToolExecutor
+from chatbot.features.assist.copilot_tools import ToolExecutor
 
 if TYPE_CHECKING:
+    from chatbot.features.chat.adapters.assistants_store import AssistantsStorePort
     from chatbot.features.chat.ports import KnowledgePort
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
 
-_SYSTEM = (
-    "You are Copilot, an assistant for a Proton Holdings SUPPORT AGENT (not the "
-    "customer). Help the agent by answering their questions about the current "
-    "conversation and customer. Use the provided tools to read the transcript "
-    "(including private notes), the contact's details and custom attributes, the "
-    "customer's past conversations, and the knowledge base before answering. "
-    "Be concise and factual; if the tools don't contain the answer, say so. "
-    "Reply in the language the agent used."
-)
+# Back-compat alias — nothing outside this module should reference _SYSTEM,
+# but keep it to avoid surprising any dynamic introspection.
+_SYSTEM = DEFAULT_COPILOT_PROMPT
 
 _FALLBACK = "I couldn't complete that — try rephrasing your question."
 
@@ -44,12 +45,14 @@ class ThreadMessage(BaseModel):
 class CopilotRequest(BaseModel):
     conversation_id: str = Field(min_length=1)
     thread: list[ThreadMessage] = Field(min_length=1)
+    assistant_id: str | None = Field(default=None)
 
 
 def build_copilot_router(
     settings: Settings,
     knowledge_port: KnowledgePort,
     genai_client: Any,
+    assistants_store: AssistantsStorePort,
 ) -> APIRouter:
     router = APIRouter(prefix="/assist", tags=["copilot"])
 
@@ -81,11 +84,12 @@ def build_copilot_router(
         executor = ToolExecutor(
             ChatwootContextClient(settings), knowledge_port, req.conversation_id
         )
+        assistant = await resolve_assistant(assistants_store, req.assistant_id)
         contents = _seed_contents(req.thread)
         tool_calls: list[str] = []
         config = {
-            "system_instruction": _SYSTEM,
-            "tools": [{"function_declarations": COPILOT_TOOLS}],
+            "system_instruction": build_system_prompt(assistant),
+            "tools": [{"function_declarations": build_tool_declarations(assistant)}],
         }
 
         last_text = ""

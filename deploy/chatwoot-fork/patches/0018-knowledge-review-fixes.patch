@@ -1,0 +1,241 @@
+diff --git a/app/javascript/dashboard/components/proton/AssistantSelector.vue b/app/javascript/dashboard/components/proton/AssistantSelector.vue
+index ba6f236..f960820 100644
+--- a/app/javascript/dashboard/components/proton/AssistantSelector.vue
++++ b/app/javascript/dashboard/components/proton/AssistantSelector.vue
+@@ -3,19 +3,23 @@
+      that needs the user to pick an assistant. State is module-level so all
+      pages stay in sync without prop-drilling. -->
+ <script setup>
+-import { onMounted } from 'vue';
++import { ref, onMounted } from 'vue';
+ import { useKnowledgeAssistant } from 'dashboard/composables/useKnowledgeAssistant';
+ 
+ const { assistants, selectedId, refresh, select } = useKnowledgeAssistant();
+ 
++// True once the first refresh attempt has resolved (success or failure).
++const loaded = ref(false);
++
+ const onChange = event => {
+   select(event.target.value);
+ };
+ 
+-onMounted(() => {
++onMounted(async () => {
+   if (!assistants.value.length) {
+-    refresh();
++    await refresh();
+   }
++  loaded.value = true;
+ });
+ </script>
+ 
+@@ -29,9 +33,12 @@ onMounted(() => {
+       class="px-2 py-1 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
+       @change="onChange"
+     >
+-      <option v-if="!assistants.length" value="" disabled>
++      <option v-if="!loaded" value="" disabled>
+         Loading…
+       </option>
++      <option v-else-if="loaded && !assistants.length" value="" disabled>
++        No assistants configured
++      </option>
+       <option
+         v-for="assistant in assistants"
+         :key="assistant.id"
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeAssistants.vue b/app/javascript/dashboard/components/proton/KnowledgeAssistants.vue
+index 7d46d06..184d685 100644
+--- a/app/javascript/dashboard/components/proton/KnowledgeAssistants.vue
++++ b/app/javascript/dashboard/components/proton/KnowledgeAssistants.vue
+@@ -7,6 +7,7 @@
+ import { ref, onMounted } from 'vue';
+ import { useAlert } from 'dashboard/composables';
+ import {
++  listAssistants,
+   createAssistant,
+   updateAssistant,
+   deleteAssistant,
+@@ -29,7 +30,11 @@ const load = async () => {
+   loading.value = true;
+   errored.value = false;
+   try {
+-    await refresh();
++    // Fetch directly so failures surface here for our own error/errored state.
++    const list = await listAssistants();
++    assistants.value = list;
++    // Also keep the shared composable selector in sync (it's silent on failure).
++    refresh();
+   } catch (err) {
+     errored.value = true;
+     if (err && err.status === 401) {
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeInboxes.vue b/app/javascript/dashboard/components/proton/KnowledgeInboxes.vue
+index 8ac86fb..c04ca88 100644
+--- a/app/javascript/dashboard/components/proton/KnowledgeInboxes.vue
++++ b/app/javascript/dashboard/components/proton/KnowledgeInboxes.vue
+@@ -46,11 +46,12 @@ const save = async inbox => {
+   const key = inbox.inbox_id;
+   savingRows.value = new Set([...savingRows.value, key]);
+   try {
+-    await setInbox(inbox.inbox_id, {
+-      assistant_id: inbox.assistant_id,
++    const assistantId = inbox.assistant_id || null;
++    const result = await setInbox(inbox.inbox_id, {
++      assistant_id: assistantId,
+       mode: inbox.mode,
+     });
+-    inbox.source = 'override';
++    inbox.source = result && result.cleared ? 'default' : 'override';
+     useAlert(`Inbox "${inbox.name}" updated.`);
+   } catch (err) {
+     useAlert(`Failed to update inbox "${inbox.name}": ${err.message}`);
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeScenarios.vue b/app/javascript/dashboard/components/proton/KnowledgeScenarios.vue
+index 683d275..7751c2f 100644
+--- a/app/javascript/dashboard/components/proton/KnowledgeScenarios.vue
++++ b/app/javascript/dashboard/components/proton/KnowledgeScenarios.vue
+@@ -13,8 +13,8 @@ import {
+   createScenario,
+   updateScenario,
+   deleteScenario,
++  listTools,
+ } from 'dashboard/api/protonKnowledge';
+-import { listTools } from 'dashboard/api/protonKnowledge';
+ 
+ const { selectedId } = useKnowledgeAssistant();
+ 
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeSettings.vue b/app/javascript/dashboard/components/proton/KnowledgeSettings.vue
+index 1829375..87400e6 100644
+--- a/app/javascript/dashboard/components/proton/KnowledgeSettings.vue
++++ b/app/javascript/dashboard/components/proton/KnowledgeSettings.vue
+@@ -149,10 +149,10 @@ const saveAssistant = async () => {
+   }
+ };
+ 
+-// Reload when the selected assistant changes.
++// Reload when the selected assistant changes (immediate so first mount also fires).
+ watch(selectedId, id => {
+   if (id) loadAssistant(id);
+-});
++}, { immediate: true });
+ 
+ // ── Panel 2 — Tenant settings ─────────────────────────────────────────────────
+ const settingsLoading = ref(false);
+@@ -267,7 +267,7 @@ const sourceLabel = key => {
+ 
+ // ── Lifecycle ─────────────────────────────────────────────────────────────────
+ onMounted(() => {
+-  if (selectedId.value) loadAssistant(selectedId.value);
++  // loadAssistant is handled by the immediate watch above.
+   loadSettings();
+ });
+ </script>
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeTools.vue b/app/javascript/dashboard/components/proton/KnowledgeTools.vue
+index 067ec1c..ef1ef90 100644
+--- a/app/javascript/dashboard/components/proton/KnowledgeTools.vue
++++ b/app/javascript/dashboard/components/proton/KnowledgeTools.vue
+@@ -26,7 +26,10 @@ import AssistantSelector from 'dashboard/components/proton/AssistantSelector.vue
+ // ── Registry state ─────────────────────────────────────────────────────────────
+ const loading = ref(false);
+ const errored = ref(false);
++// Canonical list from the server — read by the enablement section (section 3).
+ const builtins = ref([]);
++// Editable drafts for the registry table (section 1) — cloned from builtins on load.
++const builtinDrafts = ref([]);
+ const custom = ref([]);
+ 
+ // Per-row saving state for built-ins (keyed by name).
+@@ -38,6 +41,8 @@ const load = async () => {
+   try {
+     const data = await listTools();
+     builtins.value = data.builtins;
++    // Clone each entry so the editable table doesn't mutate the canonical list.
++    builtinDrafts.value = data.builtins.map(b => ({ ...b }));
+     custom.value = data.custom;
+   } catch (err) {
+     errored.value = true;
+@@ -52,18 +57,26 @@ const load = async () => {
+ };
+ 
+ // ── Built-in tool handlers ─────────────────────────────────────────────────────
+-const saveBuiltin = async tool => {
+-  builtinSaving.value = { ...builtinSaving.value, [tool.name]: true };
++const saveBuiltin = async draft => {
++  builtinSaving.value = { ...builtinSaving.value, [draft.name]: true };
+   try {
+-    await setBuiltinTool(tool.name, {
+-      enabled: tool.enabled,
+-      description: tool.description,
++    await setBuiltinTool(draft.name, {
++      enabled: draft.enabled,
++      description: draft.description,
+     });
+-    useAlert(`"${tool.name}" updated.`);
++    // On success, update the canonical entry so the enablement section reflects the change.
++    const idx = builtins.value.findIndex(b => b.name === draft.name);
++    if (idx !== -1) {
++      builtins.value = builtins.value.map((b, i) =>
++        i === idx ? { ...b, enabled: draft.enabled, description: draft.description } : b
++      );
++    }
++    useAlert(`"${draft.name}" updated.`);
+   } catch (err) {
++    // Leave draft unchanged so the user can retry; canonical is untouched.
+     useAlert(`Failed to update built-in tool: ${err.message}`);
+   } finally {
+-    builtinSaving.value = { ...builtinSaving.value, [tool.name]: false };
++    builtinSaving.value = { ...builtinSaving.value, [draft.name]: false };
+   }
+ };
+ 
+@@ -339,7 +352,7 @@ onMounted(async () => {
+         <h2 class="mb-3 text-sm font-semibold text-n-slate-12">
+           Built-in tools
+         </h2>
+-        <div v-if="!builtins.length" class="text-sm text-n-slate-11">
++        <div v-if="!builtinDrafts.length" class="text-sm text-n-slate-11">
+           No built-in tools returned by the backend.
+         </div>
+         <div
+@@ -357,16 +370,16 @@ onMounted(async () => {
+             </thead>
+             <tbody>
+               <tr
+-                v-for="tool in builtins"
+-                :key="tool.name"
++                v-for="draft in builtinDrafts"
++                :key="draft.name"
+                 class="border-b border-n-weak last:border-0 align-top"
+               >
+                 <td class="px-3 py-2 font-medium text-n-slate-12 whitespace-nowrap">
+-                  {{ tool.name }}
++                  {{ draft.name }}
+                 </td>
+                 <td class="px-3 py-2">
+                   <input
+-                    v-model="tool.description"
++                    v-model="draft.description"
+                     type="text"
+                     class="w-full px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
+                     placeholder="Description override (blank = use default)"
+@@ -374,7 +387,7 @@ onMounted(async () => {
+                 </td>
+                 <td class="px-3 py-2">
+                   <input
+-                    v-model="tool.enabled"
++                    v-model="draft.enabled"
+                     type="checkbox"
+                     class="w-4 h-4 cursor-pointer accent-n-brand"
+                   />
+@@ -382,10 +395,10 @@ onMounted(async () => {
+                 <td class="px-3 py-2 whitespace-nowrap">
+                   <button
+                     class="text-xs text-n-brand hover:underline disabled:opacity-50"
+-                    :disabled="builtinSaving[tool.name]"
+-                    @click="saveBuiltin(tool)"
++                    :disabled="builtinSaving[draft.name]"
++                    @click="saveBuiltin(draft)"
+                   >
+-                    {{ builtinSaving[tool.name] ? 'Saving…' : 'Save' }}
++                    {{ builtinSaving[draft.name] ? 'Saving…' : 'Save' }}
+                   </button>
+                 </td>
+               </tr>

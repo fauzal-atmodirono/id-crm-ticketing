@@ -1,0 +1,36 @@
+diff --git a/app/javascript/dashboard/components/copilot/ProtonCopilotPanel.vue b/app/javascript/dashboard/components/copilot/ProtonCopilotPanel.vue
+index a29a654..c9ac9fc 100644
+--- a/app/javascript/dashboard/components/copilot/ProtonCopilotPanel.vue
++++ b/app/javascript/dashboard/components/copilot/ProtonCopilotPanel.vue
+@@ -48,6 +48,7 @@ const send = async () => {
+       role: 'assistant',
+       content: data.answer || '',
+       tools: Array.from(new Set(data.tool_calls || [])),
++      sources: data.sources || [],
+     });
+   } catch (err) {
+     messages.value.push({
+@@ -130,6 +131,23 @@ const onKeydown = e => {
+         >
+           Looked at: {{ m.tools.join(', ') }}
+         </span>
++        <span
++          v-if="m.role === 'assistant' && m.sources && m.sources.length"
++          class="self-start mt-1 text-[11px] text-n-slate-10"
++        >
++          Sources:
++          <template v-for="(s, i) in m.sources" :key="i"
++            ><a
++              v-if="s.url"
++              :href="s.url"
++              target="_blank"
++              rel="noopener"
++              class="text-n-brand hover:underline"
++              >{{ s.title }}</a
++            ><span v-else>{{ s.title }}</span
++            ><span v-if="i < m.sources.length - 1">, </span></template
++          >
++        </span>
+         <button
+           v-if="m.role === 'assistant' && m.content"
+           class="self-start mt-1 text-xs text-n-brand hover:underline"

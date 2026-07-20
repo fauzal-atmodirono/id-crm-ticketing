@@ -1,0 +1,20 @@
+Vendor,Service,Used in POC,Phase,Billing Unit,Rate USD,Notes
+Twilio,WhatsApp Business API,Yes,A,per message (send or receive),0.005,Twilio platform fee only; Meta charge is separate
+Twilio,Phone number rental (MY local),Yes,A & C,per number per month,4,Shared WhatsApp + voice number (assumed)
+Twilio,Phone number rental (MY toll-free),Optional,A & C,per number per month,25,Alternative to local number
+Twilio,Programmable Voice - inbound,Yes,C,per minute,0.0085,Caller audio into Twilio
+Twilio,Programmable Voice - outbound,No,-,per minute,0.014,Only if callbacks are added
+Twilio,ConversationRelay,Yes,C,per minute,0.07,Chosen for phone; Twilio-managed STT+TTS; on top of voice minutes
+Twilio,Voice Media Streams,Deferred,C,per minute,bundled,No separate line on rate page; cheaper-per-min alternative to ConversationRelay
+Twilio,SMS,No,-,per message,0.0083,Not used (WhatsApp is the text channel)
+Twilio,Conversations API,No,-,per active user per month,0.05,Not used (we orchestrate ourselves)
+Twilio,Verify,No,-,per verification,0.05,Not used
+Meta,WhatsApp Service message,Yes,A,per message,0,FREE - AI replies fall here (within 24h service window)
+Meta,WhatsApp Utility template,No,-,per message,0.014,Only if business-initiated (out of scope)
+Meta,WhatsApp Authentication template,No,-,per message,0.014,Not used
+Meta,WhatsApp Authentication-International,No,-,per message,0.0418,MY special rate; not used
+Meta,WhatsApp Marketing template,No,-,per message,0.086,Not used (no outbound marketing)
+Google Cloud,Speech-to-Text (streaming),Conditional,C,per minute,0.016-0.024,Indicative; only on Media Streams path (NOT ConversationRelay)
+Google Cloud,Text-to-Speech,Conditional,C,per 1M characters,4-16,Indicative; standard $4 / neural $16; only on Media Streams path
+Google Cloud,Gemini inference,Yes,All,per token,varies,Small per turn; applies to every channel
+Zendesk,Email channel,Yes,B,per conversation,0,Zendesk-native; no extra channel fee

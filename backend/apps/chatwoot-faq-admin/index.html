@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Proton FAQ Admin</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f5f5f5;
+      color: #333;
+      font-size: 13px;
+    }
+
+    .container {
+      padding: 16px;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .header {
+      margin-bottom: 16px;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 12px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .header h2 {
+      font-size: 16px;
+      font-weight: 600;
+      color: #222;
+    }
+
+    .status {
+      font-size: 12px;
+      color: #666;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      padding: 6px 12px;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      background: white;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      transition: all 0.15s;
+    }
+
+    button:hover {
+      background: #f5f5f5;
+      border-color: #999;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background: #1a73e8;
+      color: white;
+      border-color: #1a73e8;
+    }
+
+    .btn-primary:hover {
+      background: #1557b0;
+      border-color: #1557b0;
+    }
+
+    .btn-danger {
+      color: #ea4335;
+      border-color: #f2c4c0;
+    }
+
+    .btn-danger:hover {
+      background: #faf5f4;
+      border-color: #ea4335;
+    }
+
+    /* ---- Add / Edit form ---- */
+    .card {
+      background: white;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .card h3 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: #222;
+    }
+
+    .field {
+      margin-bottom: 10px;
+    }
+
+    .field label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: #555;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .field input[type="text"],
+    .field textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: inherit;
+      color: #333;
+    }
+
+    .field input[type="text"]:focus,
+    .field textarea:focus {
+      outline: none;
+      border-color: #1a73e8;
+      box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.15);
+    }
+
+    .field textarea {
+      min-height: 70px;
+      resize: vertical;
+    }
+
+    .field .hint {
+      font-size: 10px;
+      color: #999;
+      margin-top: 3px;
+    }
+
+    .form-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    /* ---- Table ---- */
+    .table-wrap {
+      background: white;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    thead th {
+      text-align: left;
+      padding: 10px 12px;
+      background: #fafafa;
+      border-bottom: 1px solid #e0e0e0;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: #666;
+      white-space: nowrap;
+    }
+
+    tbody td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #f0f0f0;
+      vertical-align: top;
+    }
+
+    tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    tbody tr.inactive {
+      opacity: 0.6;
+    }
+
+    .cell-question {
+      font-weight: 600;
+      color: #222;
+      min-width: 160px;
+      max-width: 260px;
+    }
+
+    .cell-answer {
+      color: #555;
+      max-width: 320px;
+      line-height: 1.4;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .chip {
+      background: #eef4fd;
+      color: #33507a;
+      border-radius: 10px;
+      padding: 2px 8px;
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
+    .chip.tag {
+      background: #f3eefd;
+      color: #5a3a86;
+    }
+
+    /* ---- Active toggle ---- */
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .toggle input {
+      display: none;
+    }
+
+    .toggle .track {
+      width: 34px;
+      height: 18px;
+      background: #ccc;
+      border-radius: 9px;
+      position: relative;
+      transition: background 0.15s;
+    }
+
+    .toggle .track::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      background: white;
+      border-radius: 50%;
+      transition: transform 0.15s;
+    }
+
+    .toggle input:checked + .track {
+      background: #34a853;
+    }
+
+    .toggle input:checked + .track::after {
+      transform: translateX(16px);
+    }
+
+    .cell-actions {
+      white-space: nowrap;
+    }
+
+    .cell-actions button {
+      padding: 4px 8px;
+      margin-right: 4px;
+      font-size: 11px;
+    }
+
+    .updated {
+      font-size: 10px;
+      color: #aaa;
+      white-space: nowrap;
+    }
+
+    .loading, .empty-state {
+      text-align: center;
+      padding: 28px;
+      color: #999;
+      font-size: 13px;
+    }
+
+    .banner {
+      border-radius: 4px;
+      padding: 12px;
+      margin-bottom: 12px;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .banner.error {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      color: #991b1b;
+    }
+
+    .banner.info {
+      background: #eef4fd;
+      border: 1px solid #cfe0fb;
+      color: #33507a;
+    }
+
+    /* ---- Toasts ---- */
+    #toasts {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 1000;
+      max-width: 320px;
+    }
+
+    .toast {
+      padding: 10px 14px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: white;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+      animation: slidein 0.2s ease-out;
+    }
+
+    .toast.success { background: #34a853; }
+    .toast.error { background: #ea4335; }
+
+    @keyframes slidein {
+      from { transform: translateX(20px); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+
+    /* ---- Modal (edit) ---- */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.4);
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 40px 16px;
+      z-index: 900;
+      overflow-y: auto;
+    }
+
+    .modal-backdrop[hidden] {
+      display: none;
+    }
+
+    .modal {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      width: 100%;
+      max-width: 560px;
+    }
+
+    .modal h3 {
+      margin-bottom: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div id="toasts"></div>
+
+  <div class="container">
+    <div class="header">
+      <h2>Proton FAQ Admin</h2>
+      <div class="status" id="status">Initializing...</div>
+    </div>
+
+    <div id="banner"></div>
+
+    <!-- Add FAQ form -->
+    <div class="card">
+      <h3>Add FAQ</h3>
+      <form id="add-form">
+        <div class="field">
+          <label for="add-question">Question</label>
+          <input type="text" id="add-question" required placeholder="e.g. How do I reset my password?">
+        </div>
+        <div class="field">
+          <label for="add-answer">Answer</label>
+          <textarea id="add-answer" required placeholder="The answer agents / the bot should give."></textarea>
+        </div>
+        <div class="field">
+          <label for="add-keywords">Keywords</label>
+          <input type="text" id="add-keywords" placeholder="password, reset, login">
+          <div class="hint">Comma-separated. Optional.</div>
+        </div>
+        <div class="field">
+          <label for="add-tags">Tags</label>
+          <input type="text" id="add-tags" placeholder="account, security">
+          <div class="hint">Comma-separated. Optional.</div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn-primary" id="add-submit">Add FAQ</button>
+          <button type="reset">Clear</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="toolbar">
+      <button id="refresh-btn" type="button">Refresh list</button>
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Question</th>
+            <th>Answer</th>
+            <th>Keywords</th>
+            <th>Tags</th>
+            <th>Active</th>
+            <th>Updated</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="faq-body">
+          <tr><td colspan="7"><div class="loading">Loading FAQ entries...</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Edit modal -->
+  <div class="modal-backdrop" id="edit-modal" hidden>
+    <div class="modal">
+      <h3>Edit FAQ</h3>
+      <form id="edit-form">
+        <input type="hidden" id="edit-id">
+        <div class="field">
+          <label for="edit-question">Question</label>
+          <input type="text" id="edit-question" required>
+        </div>
+        <div class="field">
+          <label for="edit-answer">Answer</label>
+          <textarea id="edit-answer" required></textarea>
+        </div>
+        <div class="field">
+          <label for="edit-keywords">Keywords</label>
+          <input type="text" id="edit-keywords">
+          <div class="hint">Comma-separated.</div>
+        </div>
+        <div class="field">
+          <label for="edit-tags">Tags</label>
+          <input type="text" id="edit-tags">
+          <div class="hint">Comma-separated.</div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn-primary" id="edit-submit">Save changes</button>
+          <button type="button" id="edit-cancel">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    // ------------------------------------------------------------------
+    // Config: backend base URL + admin API key come from the iframe query
+    // string (?apiKey=...&backendBaseUrl=...). backendBaseUrl defaults to
+    // the Cloud Run deployment. The API key is kept ONLY in memory / URL —
+    // it is never written to localStorage.
+    // ------------------------------------------------------------------
+    const DEFAULT_BACKEND = 'https://proton-backend-247165654737.asia-southeast1.run.app';
+
+    const params = new URLSearchParams(window.location.search);
+    const backendBaseUrl = (params.get('backendBaseUrl') || DEFAULT_BACKEND).replace(/\/+$/, '');
+    const apiKey = params.get('apiKey') || '';
+
+    // In-memory cache of the last-loaded entries, keyed by id, so Edit can
+    // prefill the form without a second round-trip.
+    const entriesById = new Map();
+
+    // ------------------------------------------------------------------
+    // Optional Chatwoot Dashboard App handshake. This is a GLOBAL admin, so
+    // it does not depend on per-conversation context — but if Chatwoot loads
+    // it as a dashboard-app iframe we answer the handshake harmlessly so the
+    // parent does not wait. We ignore the returned appContext.
+    // ------------------------------------------------------------------
+    function requestContext() {
+      try {
+        window.parent.postMessage('chatwoot-dashboard-app:fetch-info', '*');
+      } catch (e) {
+        // Not embedded / cross-origin restriction — safe to ignore.
+      }
+    }
+    window.addEventListener('message', () => { /* appContext ignored for a global admin */ });
+
+    // ------------------------------------------------------------------
+    // HTTP helpers
+    // ------------------------------------------------------------------
+    function headers() {
+      return {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { 'x-api-key': apiKey } : {})
+      };
+    }
+
+    function handleAuthError(status) {
+      if (status === 401) {
+        showBanner('error',
+          'Unauthorized (401). The admin API key is missing or incorrect. ' +
+          'Reload this app with a valid ?apiKey=&lt;FAQ_ADMIN_API_KEY&gt; in the iframe URL.');
+        return true;
+      }
+      return false;
+    }
+
+    async function apiFetch(path, options) {
+      const res = await fetch(`${backendBaseUrl}${path}`, {
+        ...options,
+        headers: headers()
+      });
+      if (!res.ok) {
+        if (handleAuthError(res.status)) {
+          throw new Error('unauthorized');
+        }
+        let detail = res.statusText;
+        try {
+          const body = await res.json();
+          if (body && body.detail) detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
+        } catch (e) { /* non-JSON body */ }
+        throw new Error(`${res.status}: ${detail}`);
+      }
+      // DELETE / some endpoints may return empty bodies.
+      const text = await res.text();
+      return text ? JSON.parse(text) : {};
+    }
+
+    // ------------------------------------------------------------------
+    // Load + render the entry table
+    // ------------------------------------------------------------------
+    async function loadEntries() {
+      const body = document.getElementById('faq-body');
+      setStatus('Loading...');
+      clearBanner();
+      body.innerHTML = '<tr><td colspan="7"><div class="loading">Loading FAQ entries...</div></td></tr>';
+      try {
+        const data = await apiFetch('/kb/faq', { method: 'GET' });
+        // The admin router returns { entries: [...] }; be tolerant of a bare list too.
+        const entries = Array.isArray(data) ? data : (data.entries || []);
+        entriesById.clear();
+        entries.forEach(e => entriesById.set(e.id, e));
+        renderTable(entries);
+        setStatus(`${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}`);
+      } catch (err) {
+        setStatus('Error');
+        if (err.message !== 'unauthorized') {
+          showBanner('error', 'Failed to load FAQ entries: ' + escapeHtml(err.message));
+        }
+        body.innerHTML = '<tr><td colspan="7"><div class="empty-state">Could not load entries.</div></td></tr>';
+      }
+    }
+
+    function renderTable(entries) {
+      const body = document.getElementById('faq-body');
+      if (!entries.length) {
+        body.innerHTML = '<tr><td colspan="7"><div class="empty-state">No FAQ entries yet. Add one above.</div></td></tr>';
+        return;
+      }
+      body.innerHTML = entries.map(e => {
+        const kws = (e.keywords || []).map(k => `<span class="chip">${escapeHtml(k)}</span>`).join('');
+        const tags = (e.tags || []).map(t => `<span class="chip tag">${escapeHtml(t)}</span>`).join('');
+        const active = !!e.active;
+        return `
+          <tr class="${active ? '' : 'inactive'}" data-id="${escapeAttr(e.id)}">
+            <td class="cell-question">${escapeHtml(e.question || '')}</td>
+            <td class="cell-answer">${escapeHtml(preview(e.answer || '', 160))}</td>
+            <td><div class="chips">${kws || '<span class="updated">—</span>'}</div></td>
+            <td><div class="chips">${tags || '<span class="updated">—</span>'}</div></td>
+            <td>
+              <label class="toggle" title="Toggle active">
+                <input type="checkbox" data-action="toggle" ${active ? 'checked' : ''}>
+                <span class="track"></span>
+              </label>
+            </td>
+            <td><span class="updated">${escapeHtml(e.updated_at || '—')}</span></td>
+            <td class="cell-actions">
+              <button data-action="edit">Edit</button>
+              <button data-action="delete" class="btn-danger">Delete</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+      attachRowHandlers();
+    }
+
+    function attachRowHandlers() {
+      document.querySelectorAll('#faq-body tr[data-id]').forEach(row => {
+        const id = row.dataset.id;
+        const editBtn = row.querySelector('button[data-action="edit"]');
+        const delBtn = row.querySelector('button[data-action="delete"]');
+        const toggle = row.querySelector('input[data-action="toggle"]');
+        if (editBtn) editBtn.addEventListener('click', () => openEdit(id));
+        if (delBtn) delBtn.addEventListener('click', () => deleteEntry(id));
+        if (toggle) toggle.addEventListener('change', () => toggleActive(id, toggle));
+      });
+    }
+
+    // ------------------------------------------------------------------
+    // Create
+    // ------------------------------------------------------------------
+    document.getElementById('add-form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const submit = document.getElementById('add-submit');
+      const payload = {
+        question: document.getElementById('add-question').value.trim(),
+        answer: document.getElementById('add-answer').value.trim(),
+        keywords: splitCsv(document.getElementById('add-keywords').value),
+        tags: splitCsv(document.getElementById('add-tags').value)
+      };
+      if (!payload.question || !payload.answer) {
+        toast('error', 'Question and answer are required.');
+        return;
+      }
+      submit.disabled = true;
+      try {
+        await apiFetch('/kb/faq', { method: 'POST', body: JSON.stringify(payload) });
+        toast('success', 'FAQ created.');
+        document.getElementById('add-form').reset();
+        await loadEntries();
+      } catch (err) {
+        if (err.message !== 'unauthorized') toast('error', 'Create failed: ' + err.message);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+
+    // ------------------------------------------------------------------
+    // Edit (modal → PUT changed fields)
+    // ------------------------------------------------------------------
+    function openEdit(id) {
+      const e = entriesById.get(id);
+      if (!e) return;
+      document.getElementById('edit-id').value = id;
+      document.getElementById('edit-question').value = e.question || '';
+      document.getElementById('edit-answer').value = e.answer || '';
+      document.getElementById('edit-keywords').value = (e.keywords || []).join(', ');
+      document.getElementById('edit-tags').value = (e.tags || []).join(', ');
+      document.getElementById('edit-modal').hidden = false;
+    }
+
+    function closeEdit() {
+      document.getElementById('edit-modal').hidden = true;
+    }
+
+    document.getElementById('edit-cancel').addEventListener('click', closeEdit);
+    document.getElementById('edit-modal').addEventListener('click', (ev) => {
+      if (ev.target.id === 'edit-modal') closeEdit();
+    });
+
+    document.getElementById('edit-form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const submit = document.getElementById('edit-submit');
+      const id = document.getElementById('edit-id').value;
+      const original = entriesById.get(id) || {};
+
+      // Only send fields that actually changed.
+      const question = document.getElementById('edit-question').value.trim();
+      const answer = document.getElementById('edit-answer').value.trim();
+      const keywords = splitCsv(document.getElementById('edit-keywords').value);
+      const tags = splitCsv(document.getElementById('edit-tags').value);
+
+      if (!question || !answer) {
+        toast('error', 'Question and answer are required.');
+        return;
+      }
+
+      const fields = {};
+      if (question !== (original.question || '')) fields.question = question;
+      if (answer !== (original.answer || '')) fields.answer = answer;
+      if (!arraysEqual(keywords, original.keywords || [])) fields.keywords = keywords;
+      if (!arraysEqual(tags, original.tags || [])) fields.tags = tags;
+
+      if (Object.keys(fields).length === 0) {
+        toast('success', 'No changes to save.');
+        closeEdit();
+        return;
+      }
+
+      submit.disabled = true;
+      try {
+        await apiFetch(`/kb/faq/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(fields) });
+        toast('success', 'FAQ updated.');
+        closeEdit();
+        await loadEntries();
+      } catch (err) {
+        if (err.message !== 'unauthorized') toast('error', 'Update failed: ' + err.message);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+
+    // ------------------------------------------------------------------
+    // Active toggle → PUT { active }
+    // ------------------------------------------------------------------
+    async function toggleActive(id, checkbox) {
+      const desired = checkbox.checked;
+      try {
+        await apiFetch(`/kb/faq/${encodeURIComponent(id)}`, {
+          method: 'PUT',
+          body: JSON.stringify({ active: desired })
+        });
+        const e = entriesById.get(id);
+        if (e) e.active = desired;
+        const row = checkbox.closest('tr');
+        if (row) row.classList.toggle('inactive', !desired);
+        toast('success', desired ? 'FAQ activated.' : 'FAQ deactivated.');
+      } catch (err) {
+        checkbox.checked = !desired; // revert on failure
+        if (err.message !== 'unauthorized') toast('error', 'Toggle failed: ' + err.message);
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // Delete → DELETE (with confirm)
+    // ------------------------------------------------------------------
+    async function deleteEntry(id) {
+      const e = entriesById.get(id);
+      const label = e && e.question ? `"${e.question}"` : 'this FAQ';
+      if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return;
+      try {
+        await apiFetch(`/kb/faq/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        toast('success', 'FAQ deleted.');
+        await loadEntries();
+      } catch (err) {
+        if (err.message !== 'unauthorized') toast('error', 'Delete failed: ' + err.message);
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // UI helpers
+    // ------------------------------------------------------------------
+    function setStatus(text) {
+      document.getElementById('status').textContent = text;
+    }
+
+    function showBanner(kind, htmlMsg) {
+      document.getElementById('banner').innerHTML =
+        `<div class="banner ${kind}">${htmlMsg}</div>`;
+    }
+
+    function clearBanner() {
+      document.getElementById('banner').innerHTML = '';
+    }
+
+    function toast(kind, msg) {
+      const el = document.createElement('div');
+      el.className = `toast ${kind}`;
+      el.textContent = msg;
+      document.getElementById('toasts').appendChild(el);
+      setTimeout(() => el.remove(), 3500);
+    }
+
+    function splitCsv(value) {
+      return String(value || '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+    }
+
+    function arraysEqual(a, b) {
+      if (a.length !== b.length) return false;
+      return a.every((v, i) => v === b[i]);
+    }
+
+    function preview(text, max) {
+      const t = String(text);
+      return t.length > max ? t.slice(0, max).trimEnd() + '…' : t;
+    }
+
+    function escapeHtml(text) {
+      const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+      return String(text).replace(/[&<>"']/g, m => map[m]);
+    }
+
+    function escapeAttr(text) {
+      return String(text).replace(/"/g, '&quot;');
+    }
+
+    // ------------------------------------------------------------------
+    // Boot
+    // ------------------------------------------------------------------
+    document.getElementById('refresh-btn').addEventListener('click', loadEntries);
+
+    document.addEventListener('DOMContentLoaded', () => {
+      requestContext(); // harmless handshake if embedded in Chatwoot
+      if (!apiKey) {
+        showBanner('info',
+          'No API key provided. Add <code>?apiKey=&lt;FAQ_ADMIN_API_KEY&gt;</code> to the iframe URL. ' +
+          'Requests will 401 without it.');
+      }
+      loadEntries();
+    });
+  </script>
+</body>
+</html>

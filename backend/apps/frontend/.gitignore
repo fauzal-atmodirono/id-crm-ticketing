@@ -1,0 +1,29 @@
+node_modules
+dist
+dist-ssr
+*.local
+.vite
+.turbo
+
+# vue-tsc / TS composite project-reference artifacts
+vite.config.js
+vite.config.d.ts
+*.tsbuildinfo
+
+# Editor
+.vscode/!extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

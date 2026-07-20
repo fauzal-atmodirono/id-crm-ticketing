@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Proton Routing Admin</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f5f5f5; color: #333; font-size: 13px;
+    }
+    .container { padding: 16px; max-width: 1000px; margin: 0 auto; }
+    .header {
+      margin-bottom: 16px; border-bottom: 1px solid #ddd; padding-bottom: 12px;
+      display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    }
+    .header h2 { font-size: 16px; font-weight: 600; color: #222; }
+    .status { font-size: 12px; color: #666; }
+    button {
+      padding: 6px 12px; border: 1px solid #ddd; border-radius: 3px; background: white;
+      cursor: pointer; font-size: 12px; font-weight: 500; transition: all 0.15s;
+    }
+    button:hover { background: #f5f5f5; border-color: #999; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: #1a73e8; color: white; border-color: #1a73e8; }
+    .btn-primary:hover { background: #1557b0; border-color: #1557b0; }
+    .btn-danger { color: #ea4335; border-color: #f2c4c0; }
+    .btn-danger:hover { background: #faf5f4; border-color: #ea4335; }
+    .card {
+      background: white; border: 1px solid #e0e0e0; border-radius: 6px;
+      padding: 16px; margin-bottom: 16px;
+    }
+    .card h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: #222; }
+    .field { margin-bottom: 10px; }
+    .field label {
+      display: block; font-size: 11px; font-weight: 600; color: #555;
+      margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.03em;
+    }
+    .field select, .field input[type="text"] {
+      width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px;
+      font-size: 13px; font-family: inherit; color: #333;
+    }
+    .field select:focus, .field input:focus {
+      outline: none; border-color: #1a73e8; box-shadow: 0 0 0 2px rgba(26,115,232,0.15);
+    }
+    .field .hint { font-size: 10px; color: #999; margin-top: 3px; }
+    .form-actions { display: flex; gap: 8px; margin-top: 4px; }
+    .toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+    .table-wrap {
+      background: white; border: 1px solid #e0e0e0; border-radius: 6px; overflow-x: auto;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    thead th {
+      text-align: left; padding: 10px 12px; background: #fafafa;
+      border-bottom: 1px solid #e0e0e0; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.03em; color: #666; white-space: nowrap;
+    }
+    tbody td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
+    tbody tr:last-child td { border-bottom: none; }
+    .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+    .chip {
+      background: #eef4fd; color: #33507a; border-radius: 10px;
+      padding: 2px 8px; font-size: 10px; white-space: nowrap;
+    }
+    .status-online { color: #34a853; font-weight: 600; }
+    .status-busy { color: #fbbc04; font-weight: 600; }
+    .status-offline { color: #aaa; }
+    .cell-actions { white-space: nowrap; }
+    .cell-actions button { padding: 4px 8px; margin-right: 4px; font-size: 11px; }
+    .loading, .empty-state { text-align: center; padding: 28px; color: #999; font-size: 13px; }
+    .banner { border-radius: 4px; padding: 12px; margin-bottom: 12px; font-size: 12px; line-height: 1.4; }
+    .banner.error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+    .banner.info { background: #eef4fd; border: 1px solid #cfe0fb; color: #33507a; }
+    #toasts {
+      position: fixed; top: 16px; right: 16px; display: flex; flex-direction: column;
+      gap: 8px; z-index: 1000; max-width: 320px;
+    }
+    .toast {
+      padding: 10px 14px; border-radius: 4px; font-size: 12px; color: white;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15); animation: slidein 0.2s ease-out;
+    }
+    .toast.success { background: #34a853; }
+    .toast.error { background: #ea4335; }
+    @keyframes slidein { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+      display: flex; align-items: flex-start; justify-content: center;
+      padding: 40px 16px; z-index: 900; overflow-y: auto;
+    }
+    .modal-backdrop[hidden] { display: none; }
+    .modal { background: white; border-radius: 8px; padding: 20px; width: 100%; max-width: 480px; }
+    .modal h3 { margin-bottom: 14px; }
+  </style>
+</head>
+<body>
+  <div id="toasts"></div>
+  <div class="container">
+    <div class="header">
+      <h2>Proton Routing Admin</h2>
+      <div class="status" id="status">Initializing...</div>
+    </div>
+    <div id="banner"></div>
+
+    <div class="card">
+      <h3>Assign Channel Priorities to Agent</h3>
+      <form id="add-form">
+        <div class="field">
+          <label for="add-agent">Agent</label>
+          <select id="add-agent" required>
+            <option value="">Loading agents…</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="add-channels">Channel priorities (comma-separated, first = highest priority)</label>
+          <input type="text" id="add-channels" required placeholder="WhatsApp, email, web">
+          <div class="hint">Example: WhatsApp, email — agent will be picked first for WhatsApp.</div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn-primary" id="add-submit">Save priority</button>
+          <button type="reset">Clear</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="toolbar">
+      <button id="refresh-btn" type="button">Refresh</button>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th>Current Status</th>
+            <th>Channel Priorities</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="table-body">
+          <tr><td colspan="4"><div class="loading">Loading…</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="edit-modal" hidden>
+    <div class="modal">
+      <h3>Edit Channel Priorities</h3>
+      <form id="edit-form">
+        <input type="hidden" id="edit-agent-id">
+        <div class="field">
+          <label>Agent</label>
+          <div id="edit-agent-name" style="padding:8px 0;font-weight:600;"></div>
+        </div>
+        <div class="field">
+          <label for="edit-channels">Channel priorities (comma-separated)</label>
+          <input type="text" id="edit-channels" required>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn-primary" id="edit-submit">Save</button>
+          <button type="button" id="edit-cancel">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const DEFAULT_BACKEND = 'https://proton-backend-247165654737.asia-southeast1.run.app';
+    const params = new URLSearchParams(window.location.search);
+    const backendBaseUrl = (params.get('backendBaseUrl') || DEFAULT_BACKEND).replace(/\/+$/, '');
+    const apiKey = params.get('apiKey') || '';
+
+    let agentsById = {};
+    let prioritiesByAgentId = {};
+
+    function requestContext() {
+      try { window.parent.postMessage('chatwoot-dashboard-app:fetch-info', '*'); } catch(e) {}
+    }
+    window.addEventListener('message', () => {});
+
+    function headers(write) {
+      const h = { 'Content-Type': 'application/json' };
+      if (write && apiKey) h['x-api-key'] = apiKey;
+      return h;
+    }
+
+    async function apiFetch(path, options, write) {
+      const res = await fetch(`${backendBaseUrl}${path}`, { ...options, headers: headers(write) });
+      if (!res.ok) {
+        if (res.status === 401) {
+          showBanner('error', 'Unauthorized. Add <code>?apiKey=&lt;ROUTING_ADMIN_API_KEY&gt;</code> to the URL.');
+          throw new Error('unauthorized');
+        }
+        let detail = res.statusText;
+        try { const b = await res.json(); if (b && b.detail) detail = JSON.stringify(b.detail); } catch(e) {}
+        throw new Error(`${res.status}: ${detail}`);
+      }
+      const text = await res.text();
+      return text ? JSON.parse(text) : {};
+    }
+
+    async function loadAll() {
+      setStatus('Loading…');
+      clearBanner();
+      document.getElementById('table-body').innerHTML =
+        '<tr><td colspan="4"><div class="loading">Loading…</div></td></tr>';
+      try {
+        const [agentsList, prioritiesList] = await Promise.all([
+          apiFetch('/routing/agents', { method: 'GET' }, false),
+          apiFetch('/routing/priorities', { method: 'GET' }, false),
+        ]);
+        agentsById = {};
+        (Array.isArray(agentsList) ? agentsList : []).forEach(a => { agentsById[a.id] = a; });
+        prioritiesByAgentId = {};
+        (Array.isArray(prioritiesList) ? prioritiesList : []).forEach(p => {
+          prioritiesByAgentId[p.agent_id] = p;
+        });
+        populateAgentSelect();
+        renderTable();
+        setStatus(`${Object.keys(agentsById).length} agents`);
+      } catch(err) {
+        setStatus('Error');
+        if (err.message !== 'unauthorized') showBanner('error', 'Failed to load: ' + escapeHtml(err.message));
+        document.getElementById('table-body').innerHTML =
+          '<tr><td colspan="4"><div class="empty-state">Could not load data.</div></td></tr>';
+      }
+    }
+
+    function populateAgentSelect() {
+      const sel = document.getElementById('add-agent');
+      sel.innerHTML = '<option value="">Select agent…</option>';
+      Object.values(agentsById).forEach(a => {
+        const opt = document.createElement('option');
+        opt.value = a.id;
+        opt.textContent = `${a.name} (${a.availability_status})`;
+        sel.appendChild(opt);
+      });
+    }
+
+    function statusClass(s) {
+      if (s === 'online') return 'status-online';
+      if (s === 'busy') return 'status-busy';
+      return 'status-offline';
+    }
+
+    function renderTable() {
+      const body = document.getElementById('table-body');
+      const rows = Object.values(agentsById);
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="4"><div class="empty-state">No agents found.</div></td></tr>';
+        return;
+      }
+      body.innerHTML = rows.map(a => {
+        const p = prioritiesByAgentId[a.id];
+        const chips = p
+          ? p.channel_priorities.map((c, i) =>
+              `<span class="chip">${i === 0 ? '★ ' : ''}${escapeHtml(c)}</span>`).join('')
+          : '<span style="color:#aaa;font-size:11px;">no priority set</span>';
+        return `
+          <tr data-id="${a.id}">
+            <td><strong>${escapeHtml(a.name)}</strong><br><span style="color:#888;font-size:10px;">id: ${a.id}</span></td>
+            <td><span class="${statusClass(a.availability_status)}">${escapeHtml(a.availability_status)}</span></td>
+            <td><div class="chips">${chips}</div></td>
+            <td class="cell-actions">
+              <button data-action="edit">Edit</button>
+              ${p ? `<button data-action="delete" class="btn-danger">Remove</button>` : ''}
+            </td>
+          </tr>`;
+      }).join('');
+      attachRowHandlers();
+    }
+
+    function attachRowHandlers() {
+      document.querySelectorAll('#table-body tr[data-id]').forEach(row => {
+        const id = parseInt(row.dataset.id, 10);
+        const editBtn = row.querySelector('button[data-action="edit"]');
+        const delBtn = row.querySelector('button[data-action="delete"]');
+        if (editBtn) editBtn.addEventListener('click', () => openEdit(id));
+        if (delBtn) delBtn.addEventListener('click', () => deletePriority(id));
+      });
+    }
+
+    document.getElementById('add-form').addEventListener('submit', async ev => {
+      ev.preventDefault();
+      const submit = document.getElementById('add-submit');
+      const agentId = parseInt(document.getElementById('add-agent').value, 10);
+      const channels = splitCsv(document.getElementById('add-channels').value);
+      if (!agentId || !channels.length) { toast('error', 'Agent and at least one channel are required.'); return; }
+      submit.disabled = true;
+      const existing = prioritiesByAgentId[agentId];
+      try {
+        if (existing) {
+          await apiFetch(`/routing/priorities/${agentId}`, {
+            method: 'PUT', body: JSON.stringify({ channel_priorities: channels })
+          }, true);
+        } else {
+          await apiFetch('/routing/priorities', {
+            method: 'POST', body: JSON.stringify({ agent_id: agentId, channel_priorities: channels })
+          }, true);
+        }
+        toast('success', 'Priority saved.');
+        document.getElementById('add-form').reset();
+        await loadAll();
+      } catch(err) {
+        if (err.message !== 'unauthorized') toast('error', 'Save failed: ' + err.message);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+
+    function openEdit(agentId) {
+      const p = prioritiesByAgentId[agentId];
+      const a = agentsById[agentId];
+      document.getElementById('edit-agent-id').value = agentId;
+      document.getElementById('edit-agent-name').textContent = a ? a.name : String(agentId);
+      document.getElementById('edit-channels').value = p ? p.channel_priorities.join(', ') : '';
+      document.getElementById('edit-modal').hidden = false;
+    }
+
+    document.getElementById('edit-cancel').addEventListener('click', () => {
+      document.getElementById('edit-modal').hidden = true;
+    });
+    document.getElementById('edit-modal').addEventListener('click', ev => {
+      if (ev.target.id === 'edit-modal') document.getElementById('edit-modal').hidden = true;
+    });
+
+    document.getElementById('edit-form').addEventListener('submit', async ev => {
+      ev.preventDefault();
+      const submit = document.getElementById('edit-submit');
+      const agentId = parseInt(document.getElementById('edit-agent-id').value, 10);
+      const channels = splitCsv(document.getElementById('edit-channels').value);
+      if (!channels.length) { toast('error', 'At least one channel is required.'); return; }
+      submit.disabled = true;
+      try {
+        await apiFetch(`/routing/priorities/${agentId}`, {
+          method: 'PUT', body: JSON.stringify({ channel_priorities: channels })
+        }, true);
+        toast('success', 'Priority updated.');
+        document.getElementById('edit-modal').hidden = true;
+        await loadAll();
+      } catch(err) {
+        if (err.message !== 'unauthorized') toast('error', 'Update failed: ' + err.message);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+
+    async function deletePriority(agentId) {
+      const a = agentsById[agentId];
+      const label = a ? a.name : String(agentId);
+      if (!window.confirm(`Remove priority config for ${label}?`)) return;
+      try {
+        await apiFetch(`/routing/priorities/${agentId}`, { method: 'DELETE' }, true);
+        toast('success', 'Priority removed.');
+        await loadAll();
+      } catch(err) {
+        if (err.message !== 'unauthorized') toast('error', 'Delete failed: ' + err.message);
+      }
+    }
+
+    function setStatus(text) { document.getElementById('status').textContent = text; }
+    function showBanner(kind, html) {
+      document.getElementById('banner').innerHTML = `<div class="banner ${kind}">${html}</div>`;
+    }
+    function clearBanner() { document.getElementById('banner').innerHTML = ''; }
+    function toast(kind, msg) {
+      const el = document.createElement('div');
+      el.className = `toast ${kind}`;
+      el.textContent = msg;
+      document.getElementById('toasts').appendChild(el);
+      setTimeout(() => el.remove(), 3500);
+    }
+    function splitCsv(v) {
+      return String(v || '').split(',').map(s => s.trim()).filter(Boolean);
+    }
+    function escapeHtml(t) {
+      const m = { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;' };
+      return String(t).replace(/[&<>"']/g, c => m[c]);
+    }
+
+    document.getElementById('refresh-btn').addEventListener('click', loadAll);
+    document.addEventListener('DOMContentLoaded', () => {
+      requestContext();
+      if (!apiKey) showBanner('info',
+        'No API key provided. Add <code>?apiKey=&lt;ROUTING_ADMIN_API_KEY&gt;</code> to the URL.');
+      loadAll();
+    });
+  </script>
+</body>
+</html>

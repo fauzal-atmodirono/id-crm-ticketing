@@ -273,6 +273,16 @@ services:
       HOST: 0.0.0.0
       CHATWOOT_API_URL: http://${TENANT}-chatwoot-rails:3000
       ZAMMAD_API_URL: http://${TENANT}-zammad-nginx:8080
+      # GCP auth via Application Default Credentials (ADC) — the same mechanism
+      # the proton backend uses. Set GCP_ADC_PATH in the tenant env to the host
+      # path of application_default_credentials.json to enable Vertex/Firestore;
+      # when unset, GOOGLE_APPLICATION_CREDENTIALS is empty and ADC is off (the
+      # backend stays on mock/off providers — behavior-preserving).
+      GOOGLE_APPLICATION_CREDENTIALS: ${GCP_ADC_PATH:+/gcp/adc.json}
+    volumes:
+      # Mounts the host ADC file read-only when GCP_ADC_PATH is set; otherwise
+      # mounts /dev/null (harmless, and GOOGLE_APPLICATION_CREDENTIALS stays empty).
+      - ${GCP_ADC_PATH:-/dev/null}:/gcp/adc.json:ro
     networks:
       platform:
         aliases:

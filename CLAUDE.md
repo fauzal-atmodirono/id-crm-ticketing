@@ -9,10 +9,16 @@ A unified CRM + ticketing platform: **Chatwoot** (CRM/live chat) and **Zammad**
 **FastAPI `agent` service** that keeps them in sync and layers Gemini AI on top
 (auto-drafted replies, auto-escalation). It is multi-tenant: each customer gets its own isolated Chatwoot + Zammad + agent stack, with a shared Caddy/Postgres/Mailpit, all as Docker Compose on a single GCE VM. See `README.md` for the full deploy/wiring runbook.
 
-The **only** first-party code you edit lives in `agent/`. `deploy/` is runtime
-config/ops scripts. Chatwoot and Zammad are upstream apps pulled as Docker
-images by `deploy/docker-compose.infra.yml` / `deploy/docker-compose.tenant.yml` — there is no `crm/` or `ticketing/`
-source in this checkout to modify.
+First-party code you edit lives in two services: **`agent/`** (sync and Gemini AI
+orchestration) and **`backend/`** (the vendored AI-assist conversational backend
+from `proton-conversational-ai`). These communicate over HTTP via
+`PROTON_BACKEND_URL` (deliberately fail-open, no shared process or DB). To run
+the backend locally: `cd backend/apps/backend && uv run uvicorn chatbot.main:app --port 8080`.
+
+`deploy/` is runtime config/ops scripts. Chatwoot and Zammad are upstream apps
+pulled as Docker images by `deploy/docker-compose.infra.yml` /
+`deploy/docker-compose.tenant.yml` — there is no `crm/` or `ticketing/` source
+in this checkout to modify.
 
 ## Commands
 

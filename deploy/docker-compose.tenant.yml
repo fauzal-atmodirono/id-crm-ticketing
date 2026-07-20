@@ -29,7 +29,7 @@ x-chatwoot-env: &chatwoot-env
   ENABLE_ACCOUNT_SIGNUP: "false"
   WEB_CONCURRENCY: 1
   RAILS_MAX_THREADS: 5
-  PROTON_BACKEND_URL: ${PROTON_BACKEND_URL:-}
+  PROTON_BACKEND_URL: ${PROTON_BACKEND_URL:-http://${TENANT}-backend:8080}
   PROTON_BACKEND_KEY: ${PROTON_BACKEND_KEY:-}
   PROTON_FEATURES: ${PROTON_FEATURES:-}
 
@@ -243,6 +243,8 @@ services:
       AUTO_RESOLVE: ${AUTO_RESOLVE}
       ZAMMAD_AI_DRAFTS: ${ZAMMAD_AI_DRAFTS}
       AGENT_DATABASE_URL: postgresql+psycopg://agent_${TENANT}:${AGENT_DB_PASSWORD}@postgres:5432/agent_${TENANT}
+      PROTON_BACKEND_URL: ${PROTON_BACKEND_URL:-http://${TENANT}-backend:8080}
+      PROTON_BACKEND_KEY: ${PROTON_BACKEND_KEY:-}
     volumes:
       # Serve the static in-Chatwoot dashboard apps (Knowledge Manager,
       # Taxonomy Manager) via the agent at /apps/<name>/.
@@ -257,3 +259,27 @@ services:
       timeout: 10s
       retries: 5
       start_period: 20s
+
+  backend:
+    build: ../backend/apps/backend
+    image: platform-backend:latest
+    container_name: ${TENANT}-backend
+    restart: unless-stopped
+    mem_limit: 768m
+    env_file:
+      - tenants/${TENANT}.env
+    environment:
+      PORT: "8080"
+      HOST: 0.0.0.0
+      CHATWOOT_API_URL: http://${TENANT}-chatwoot-rails:3000
+      ZAMMAD_API_URL: http://${TENANT}-zammad-nginx:8080
+    networks:
+      platform:
+        aliases:
+          - ${TENANT}-backend
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s

@@ -8,7 +8,12 @@ from chatbot.features.metrics.query_adapter import (
     BigQueryMetricsQuery,
     build_metrics_query_port,
 )
-from chatbot.features.metrics.query_port import MockMetricsQuery
+from chatbot.features.metrics.query_port import (
+    CallCentreMetrics,
+    DepartmentsMetrics,
+    LifecycleMetrics,
+    MockMetricsQuery,
+)
 from chatbot.platform.config import Settings
 
 
@@ -149,3 +154,162 @@ async def test_drifted_view_degrades_to_empty_block_without_raising() -> None:
     assert metrics.csat[0].avg_score == 4.5
     # All 8 queries still issued
     assert len(client.queries) == 8
+
+
+@pytest.mark.asyncio
+async def test_departments_reads_expected_views() -> None:
+    client = _FakeClient(
+        {
+            "v_dept_pic_performance": [
+                {
+                    "department": "Aftersales",
+                    "pic": "Ali",
+                    "cases": 40,
+                    "avg_first_response_min": 12.0,
+                    "avg_resolution_min": 240.0,
+                    "resolution_rate": 0.9,
+                }
+            ],
+            "v_reopen_rate": [
+                {
+                    "dealer": "Dealer KL",
+                    "department": "Aftersales",
+                    "pic": "Ali",
+                    "cases": 40,
+                    "reopened": 4,
+                    "reopen_rate": 0.1,
+                }
+            ],
+        }
+    )
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    q = BigQueryMetricsQuery(settings, client=client)
+    result = await q.fetch_departments()
+    assert any("v_dept_pic_performance" in sql for sql in client.queries)
+    assert any("v_reopen_rate" in sql for sql in client.queries)
+    assert isinstance(result, DepartmentsMetrics)
+    assert len(result.dept_pic) == 1
+    assert len(result.reopen) == 1
+
+
+@pytest.mark.asyncio
+async def test_callcenter_reads_expected_views() -> None:
+    client = _FakeClient(
+        {
+            "v_sla_achievement": [
+                {
+                    "channel": "Phone",
+                    "division": "Sales",
+                    "with_sla": 100,
+                    "met": 95,
+                    "sla_achievement_rate": 0.95,
+                }
+            ],
+            "v_tasks_per_agent": [
+                {
+                    "agent_id": "ALI001",
+                    "pic": "Ali",
+                    "cases": 50,
+                    "avg_first_response_min": 8.5,
+                    "avg_resolution_min": 180.0,
+                    "resolved_cases": 48,
+                }
+            ],
+            "v_first_response_by_channel": [
+                {
+                    "channel": "Phone",
+                    "avg_first_response_min": 8.5,
+                    "p50_first_response_min": 5,
+                    "p90_first_response_min": 20,
+                    "with_first_response": 95,
+                }
+            ],
+            "v_resolution_time": [
+                {
+                    "channel": "Phone",
+                    "division": "Sales",
+                    "avg_min": 180.0,
+                    "p50_min": 150,
+                    "p90_min": 300,
+                }
+            ],
+            "v_complaint_type_ranking": [
+                {
+                    "category": "Billing",
+                    "subcategory": "Late Invoice",
+                    "division": "Finance",
+                    "cases": 25,
+                    "share_pct": 0.45,
+                }
+            ],
+            "v_peak_hours": [
+                {
+                    "day_of_week": 2,
+                    "hour_of_day": 14,
+                    "channel": "whatsapp",
+                    "volume": 55,
+                }
+            ],
+            "v_nps_by_agent": [
+                {
+                    "agent_id": "ALI001",
+                    "channel": "Phone",
+                    "respondents": 30,
+                    "nps": 45.0,
+                }
+            ],
+        }
+    )
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    q = BigQueryMetricsQuery(settings, client=client)
+    result = await q.fetch_callcenter()
+    assert any("v_sla_achievement" in sql for sql in client.queries)
+    assert any("v_tasks_per_agent" in sql for sql in client.queries)
+    assert any("v_first_response_by_channel" in sql for sql in client.queries)
+    assert any("v_resolution_time" in sql for sql in client.queries)
+    assert any("v_complaint_type_ranking" in sql for sql in client.queries)
+    assert any("v_peak_hours" in sql for sql in client.queries)
+    assert any("v_nps_by_agent" in sql for sql in client.queries)
+    assert isinstance(result, CallCentreMetrics)
+    assert len(result.sla) == 1
+    assert len(result.nps_by_agent) == 1
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_reads_expected_views() -> None:
+    client = _FakeClient(
+        {
+            "v_case_lifecycle": [
+                {
+                    "conversation_id": "CONV001",
+                    "channel": "whatsapp",
+                    "division": "Sales",
+                    "department": "Aftersales",
+                    "dealer": "Dealer KL",
+                    "status": "resolved",
+                    "created_at": None,
+                    "first_response_at": None,
+                    "resolved_at": None,
+                    "first_response_minutes": 15,
+                    "resolution_minutes": 240,
+                    "reopen_count": 0,
+                }
+            ],
+            "v_state_trend": [
+                {
+                    "month": "2026-06",
+                    "status": "resolved",
+                    "division": "Sales",
+                    "cases": 45,
+                }
+            ],
+        }
+    )
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    q = BigQueryMetricsQuery(settings, client=client)
+    result = await q.fetch_lifecycle()
+    assert any("v_case_lifecycle" in sql for sql in client.queries)
+    assert any("v_state_trend" in sql for sql in client.queries)
+    assert isinstance(result, LifecycleMetrics)
+    assert len(result.cases) == 1
+    assert len(result.state_trend) == 1

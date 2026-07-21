@@ -12,14 +12,28 @@ from google.cloud import bigquery
 from chatbot.features.metrics.query_port import (
     AnomalyRow,
     BounceRow,
+    CallCentreMetrics,
+    CaseLifecycleRow,
+    ComplaintTypeRow,
     CsatRow,
     DashboardMetrics,
+    DepartmentsMetrics,
+    DeptPicRow,
     FallbackRow,
+    FirstResponseRow,
+    LifecycleMetrics,
     MockMetricsQuery,
+    NpsByAgentRow,
     NpsRow,
+    PeakHourRow,
     QualityRow,
+    ReopenRow,
     ResolutionRow,
+    ResolutionTimeRow,
+    SlaAchievementRow,
     SpeedRow,
+    StateTrendRow,
+    TasksPerAgentRow,
     VolumeRow,
 )
 
@@ -71,6 +85,38 @@ class BigQueryMetricsQuery:
 
     async def fetch_anomalies(self) -> list[AnomalyRow]:
         return await asyncio.to_thread(self._fetch_anomalies_sync)
+
+    def _fetch_departments_sync(self) -> DepartmentsMetrics:
+        return DepartmentsMetrics(
+            dept_pic=self._block("v_dept_pic_performance", DeptPicRow),
+            reopen=self._block("v_reopen_rate", ReopenRow),
+        )
+
+    async def fetch_departments(self) -> DepartmentsMetrics:
+        return await asyncio.to_thread(self._fetch_departments_sync)
+
+    def _fetch_callcenter_sync(self) -> CallCentreMetrics:
+        return CallCentreMetrics(
+            sla=self._block("v_sla_achievement", SlaAchievementRow),
+            tasks_per_agent=self._block("v_tasks_per_agent", TasksPerAgentRow),
+            first_response=self._block("v_first_response_by_channel", FirstResponseRow),
+            resolution_time=self._block("v_resolution_time", ResolutionTimeRow),
+            complaint_types=self._block("v_complaint_type_ranking", ComplaintTypeRow),
+            peak_hours=self._block("v_peak_hours", PeakHourRow),
+            nps_by_agent=self._block("v_nps_by_agent", NpsByAgentRow),
+        )
+
+    async def fetch_callcenter(self) -> CallCentreMetrics:
+        return await asyncio.to_thread(self._fetch_callcenter_sync)
+
+    def _fetch_lifecycle_sync(self) -> LifecycleMetrics:
+        return LifecycleMetrics(
+            cases=self._block("v_case_lifecycle", CaseLifecycleRow),
+            state_trend=self._block("v_state_trend", StateTrendRow),
+        )
+
+    async def fetch_lifecycle(self) -> LifecycleMetrics:
+        return await asyncio.to_thread(self._fetch_lifecycle_sync)
 
 
 def build_metrics_query_port(settings: Settings) -> MetricsQueryPort:

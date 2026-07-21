@@ -7,6 +7,7 @@ denominator is zero or no rows match."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 
@@ -196,11 +197,42 @@ class CallCentreMetrics:
     nps_by_agent: list[NpsByAgentRow]
 
 
+@dataclass(frozen=True)
+class CaseLifecycleRow:
+    conversation_id: str
+    channel: str
+    division: str
+    department: str
+    dealer: str
+    status: str
+    created_at: datetime | None
+    first_response_at: datetime | None
+    resolved_at: datetime | None
+    first_response_minutes: int | None
+    resolution_minutes: int | None
+    reopen_count: int | None
+
+
+@dataclass(frozen=True)
+class StateTrendRow:
+    month: str
+    status: str
+    division: str
+    cases: int
+
+
+@dataclass(frozen=True)
+class LifecycleMetrics:
+    cases: list[CaseLifecycleRow]
+    state_trend: list[StateTrendRow]
+
+
 class MetricsQueryPort(Protocol):
     async def fetch_dashboard(self) -> DashboardMetrics: ...
     async def fetch_anomalies(self) -> list[AnomalyRow]: ...
     async def fetch_departments(self) -> DepartmentsMetrics: ...
     async def fetch_callcenter(self) -> CallCentreMetrics: ...
+    async def fetch_lifecycle(self) -> LifecycleMetrics: ...
 
 
 class MockMetricsQuery:
@@ -266,5 +298,33 @@ class MockMetricsQuery:
             quality=[
                 QualityRow("web", 20, 88.5, 91.0),
                 QualityRow("whatsapp", 15, 84.0, 87.5),
+            ],
+        )
+
+    async def fetch_lifecycle(self) -> LifecycleMetrics:
+        return LifecycleMetrics(
+            cases=[
+                CaseLifecycleRow(
+                    conversation_id="CONV001",
+                    channel="whatsapp",
+                    division="Sales",
+                    department="Aftersales",
+                    dealer="Dealer KL",
+                    status="resolved",
+                    created_at=None,
+                    first_response_at=None,
+                    resolved_at=None,
+                    first_response_minutes=15,
+                    resolution_minutes=240,
+                    reopen_count=0,
+                )
+            ],
+            state_trend=[
+                StateTrendRow(
+                    month="2026-06",
+                    status="resolved",
+                    division="Sales",
+                    cases=45,
+                )
             ],
         )

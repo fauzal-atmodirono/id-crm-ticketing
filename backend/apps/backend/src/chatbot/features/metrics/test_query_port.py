@@ -8,6 +8,7 @@ from chatbot.features.metrics.query_port import (
     CallCentreMetrics,
     DashboardMetrics,
     DepartmentsMetrics,
+    LifecycleMetrics,
     MockMetricsQuery,
 )
 
@@ -39,3 +40,10 @@ def test_mock_callcenter_shape():
     assert isinstance(m, CallCentreMetrics)
     assert m.nps_by_agent and m.nps_by_agent[0].channel in ("Phone", "WhatsApp")
     assert m.peak_hours and 1 <= m.peak_hours[0].day_of_week <= 7
+
+
+def test_mock_lifecycle_shape():
+    m = asyncio.run(MockMetricsQuery().fetch_lifecycle())
+    assert isinstance(m, LifecycleMetrics)
+    assert m.cases and m.cases[0].conversation_id
+    assert m.state_trend and m.state_trend[0].status

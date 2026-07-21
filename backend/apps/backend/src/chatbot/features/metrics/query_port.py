@@ -97,9 +97,36 @@ class DashboardMetrics:
     quality: list[QualityRow]
 
 
+@dataclass(frozen=True)
+class DeptPicRow:
+    department: str
+    pic: str
+    cases: int
+    avg_first_response_min: float | None
+    avg_resolution_min: float | None
+    resolution_rate: float | None
+
+
+@dataclass(frozen=True)
+class ReopenRow:
+    dealer: str
+    department: str
+    pic: str
+    cases: int
+    reopened: int
+    reopen_rate: float | None
+
+
+@dataclass(frozen=True)
+class DepartmentsMetrics:
+    dept_pic: list[DeptPicRow]
+    reopen: list[ReopenRow]
+
+
 class MetricsQueryPort(Protocol):
     async def fetch_dashboard(self) -> DashboardMetrics: ...
     async def fetch_anomalies(self) -> list[AnomalyRow]: ...
+    async def fetch_departments(self) -> DepartmentsMetrics: ...
 
 
 class MockMetricsQuery:
@@ -110,6 +137,12 @@ class MockMetricsQuery:
             AnomalyRow("web", current_volume=130, baseline_mean=125.0, baseline_stddev=10.0),
             AnomalyRow("whatsapp", current_volume=260, baseline_mean=90.0, baseline_stddev=15.0),
         ]
+
+    async def fetch_departments(self) -> DepartmentsMetrics:
+        return DepartmentsMetrics(
+            dept_pic=[DeptPicRow("Aftersales", "Ali", 40, 12.0, 240.0, 0.9)],
+            reopen=[ReopenRow("Dealer KL", "Aftersales", "Ali", 40, 4, 0.1)],
+        )
 
     async def fetch_dashboard(self) -> DashboardMetrics:
         return DashboardMetrics(

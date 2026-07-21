@@ -1,0 +1,1238 @@
+diff --git a/app/javascript/dashboard/api/protonMetrics.js b/app/javascript/dashboard/api/protonMetrics.js
+index b539073..ee5702f 100644
+--- a/app/javascript/dashboard/api/protonMetrics.js
++++ b/app/javascript/dashboard/api/protonMetrics.js
+@@ -36,19 +36,19 @@ export function getAnomalies() {
+   return metricsRequest('/metrics/anomalies');
+ }
+ 
+-// GET /metrics/departments -> { dept_pic_performance: [], reopen_rate: [] }
++// GET /metrics/departments -> { dept_pic: [], reopen: [] }
+ export function getDepartments() {
+   return metricsRequest('/metrics/departments');
+ }
+ 
+-// GET /metrics/callcenter -> { sla_achievement: [], tasks_per_agent: [],
+-//   first_response_by_channel: [], resolution_time: [], complaint_type_ranking: [],
++// GET /metrics/callcenter -> { sla: [], tasks_per_agent: [],
++//   first_response: [], resolution_time: [], complaint_types: [],
+ //   peak_hours: [], nps_by_agent: [] }
+ export function getCallCentre() {
+   return metricsRequest('/metrics/callcenter');
+ }
+ 
+-// GET /metrics/lifecycle -> { case_lifecycle: [], state_trend: [] }
++// GET /metrics/lifecycle -> { cases: [], state_trend: [] }
+ export function getLifecycle() {
+   return metricsRequest('/metrics/lifecycle');
+ }
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index b9c7f44..a64992a 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -703,6 +703,21 @@ const menuItems = computed(() => {
+           label: 'Anomaly',
+           to: accountScopedRoute('proton_anomaly_reports'),
+         },
++        {
++          name: 'Reports Departments',
++          label: 'Departments & PIC',
++          to: accountScopedRoute('proton_departments_reports'),
++        },
++        {
++          name: 'Reports CallCentre',
++          label: 'Call-Centre KPI',
++          to: accountScopedRoute('proton_callcentre_reports'),
++        },
++        {
++          name: 'Reports CaseLifecycle',
++          label: 'Case Lifecycle',
++          to: accountScopedRoute('proton_case_lifecycle_reports'),
++        },
+       ],
+     },
+     {
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonCallCentre.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonCallCentre.vue
+new file mode 100644
+index 0000000..995e5f6
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonCallCentre.vue
+@@ -0,0 +1,541 @@
++<script setup>
++import { ref, computed, onMounted } from 'vue';
++import BarChart from 'shared/components/charts/BarChart.vue';
++import ReportMetricCard from './components/ReportMetricCard.vue';
++import { getCallCentre } from 'dashboard/api/protonMetrics';
++
++// ── Data ──────────────────────────────────────────────────────────────────────
++
++const sla = ref([]);
++const tasksPerAgent = ref([]);
++const firstResponse = ref([]);
++const resolutionTime = ref([]);
++const complaintTypes = ref([]);
++const peakHours = ref([]);
++const npsByAgent = ref([]);
++const error = ref(null);
++const loading = ref(true);
++
++onMounted(async () => {
++  try {
++    const result = await getCallCentre();
++    sla.value = result.sla ?? [];
++    tasksPerAgent.value = result.tasks_per_agent ?? [];
++    firstResponse.value = result.first_response ?? [];
++    resolutionTime.value = result.resolution_time ?? [];
++    complaintTypes.value = result.complaint_types ?? [];
++    peakHours.value = result.peak_hours ?? [];
++    npsByAgent.value = result.nps_by_agent ?? [];
++  } catch (e) {
++    error.value = e.message || 'Failed to load call-centre data';
++  } finally {
++    loading.value = false;
++  }
++});
++
++// ── Helpers ───────────────────────────────────────────────────────────────────
++
++const fmtNum = (n, decimals = 1) => {
++  if (n == null || Number.isNaN(Number(n))) return '—';
++  return Number(n).toLocaleString(undefined, {
++    minimumFractionDigits: decimals,
++    maximumFractionDigits: decimals,
++  });
++};
++
++const fmtPct = n => {
++  if (n == null || Number.isNaN(Number(n))) return '—';
++  return `${(Number(n) * 100).toFixed(1)}%`;
++};
++
++const barChartOptions = {
++  plugins: { legend: { display: false } },
++  scales: { y: { beginAtZero: true } },
++};
++
++const barChartOptionsDual = {
++  plugins: { legend: { display: true } },
++  scales: { y: { beginAtZero: true } },
++};
++
++// ── Section 1: SLA Achievement ────────────────────────────────────────────────
++
++const overallSlaAchievement = computed(() => {
++  const totalMet = sla.value.reduce((s, r) => s + (r.met ?? 0), 0);
++  const totalWith = sla.value.reduce((s, r) => s + (r.with_sla ?? 0), 0);
++  if (!totalWith) return '—';
++  return `${((totalMet / totalWith) * 100).toFixed(1)}%`;
++});
++
++const slaChartCollection = computed(() => {
++  if (!sla.value.length) return null;
++  return {
++    labels: sla.value.map(r => r.channel ?? '—'),
++    datasets: [
++      {
++        label: 'SLA Achievement %',
++        backgroundColor: '#6366f1',
++        data: sla.value.map(r =>
++          r.sla_achievement_rate != null
++            ? Number((r.sla_achievement_rate * 100).toFixed(1))
++            : 0
++        ),
++      },
++    ],
++  };
++});
++
++// ── Section 2: Tasks per Agent — sorted by cases desc ────────────────────────
++
++const sortedTasksPerAgent = computed(() =>
++  [...tasksPerAgent.value].sort((a, b) => (b.cases ?? 0) - (a.cases ?? 0))
++);
++
++// ── Section 3: First Response by Channel ─────────────────────────────────────
++
++const firstResponseCollection = computed(() => {
++  if (!firstResponse.value.length) return null;
++  return {
++    labels: firstResponse.value.map(r => r.channel ?? '—'),
++    datasets: [
++      {
++        label: 'Avg First Response (min)',
++        backgroundColor: '#6366f1',
++        data: firstResponse.value.map(r =>
++          r.avg_first_response_min != null
++            ? Number(Number(r.avg_first_response_min).toFixed(1))
++            : 0
++        ),
++      },
++      {
++        label: 'P90 First Response (min)',
++        backgroundColor: '#f59e0b',
++        data: firstResponse.value.map(r =>
++          r.p90_first_response_min != null
++            ? Number(Number(r.p90_first_response_min).toFixed(1))
++            : 0
++        ),
++      },
++    ],
++  };
++});
++
++// ── Section 4: Resolution Time by Channel ────────────────────────────────────
++
++const resolutionTimeCollection = computed(() => {
++  if (!resolutionTime.value.length) return null;
++  return {
++    labels: resolutionTime.value.map(r => r.channel ?? '—'),
++    datasets: [
++      {
++        label: 'Avg Resolution (min)',
++        backgroundColor: '#6366f1',
++        data: resolutionTime.value.map(r =>
++          r.avg_min != null ? Number(Number(r.avg_min).toFixed(1)) : 0
++        ),
++      },
++      {
++        label: 'P90 Resolution (min)',
++        backgroundColor: '#f59e0b',
++        data: resolutionTime.value.map(r =>
++          r.p90_min != null ? Number(Number(r.p90_min).toFixed(1)) : 0
++        ),
++      },
++    ],
++  };
++});
++
++// ── Section 5: Complaint-type ranking — top 15, sorted by cases desc ─────────
++
++const sortedComplaintTypes = computed(() =>
++  [...complaintTypes.value]
++    .sort((a, b) => (b.cases ?? 0) - (a.cases ?? 0))
++    .slice(0, 15)
++);
++
++// ── Section 6: Peak Hours — aggregate by hour_of_day ─────────────────────────
++
++const peakHoursCollection = computed(() => {
++  if (!peakHours.value.length) return null;
++
++  const hourMap = {};
++  for (let h = 0; h < 24; h += 1) hourMap[h] = 0;
++  peakHours.value.forEach(r => {
++    const h = r.hour_of_day;
++    if (h != null) hourMap[h] = (hourMap[h] ?? 0) + (r.volume ?? 0);
++  });
++
++  const labels = Array.from({ length: 24 }, (_, i) =>
++    String(i).padStart(2, '0')
++  );
++  return {
++    labels,
++    datasets: [
++      {
++        label: 'Volume',
++        backgroundColor: '#6366f1',
++        data: labels.map((_, h) => hourMap[h] ?? 0),
++      },
++    ],
++  };
++});
++
++// ── Section 7: NPS by Agent ───────────────────────────────────────────────────
++
++// Blended agent NPS = respondent-weighted average
++const blendedNps = computed(() => {
++  const totalRespondents = npsByAgent.value.reduce(
++    (s, r) => s + (r.respondents ?? 0),
++    0
++  );
++  if (!totalRespondents) return '—';
++  const weighted = npsByAgent.value.reduce(
++    (s, r) => s + (r.nps ?? 0) * (r.respondents ?? 0),
++    0
++  );
++  return `${(weighted / totalRespondents).toFixed(1)}`;
++});
++
++// Group nps_by_agent by agent_id, show one bar per agent (avg nps across channels)
++const npsChartCollection = computed(() => {
++  if (!npsByAgent.value.length) return null;
++
++  // Aggregate by agent: respondent-weighted NPS per agent
++  const agentMap = {};
++  npsByAgent.value.forEach(r => {
++    const id = r.agent_id ?? 'Unknown';
++    if (!agentMap[id]) agentMap[id] = { weighted: 0, respondents: 0 };
++    agentMap[id].weighted += (r.nps ?? 0) * (r.respondents ?? 0);
++    agentMap[id].respondents += r.respondents ?? 0;
++  });
++
++  const agents = Object.keys(agentMap);
++  return {
++    labels: agents,
++    datasets: [
++      {
++        label: 'Agent NPS',
++        backgroundColor: '#6366f1',
++        data: agents.map(id => {
++          const { weighted, respondents } = agentMap[id];
++          return respondents ? Number((weighted / respondents).toFixed(1)) : 0;
++        }),
++      },
++    ],
++  };
++});
++</script>
++
++<template>
++  <div class="flex flex-col gap-6 px-6 py-5">
++    <!-- Loading state -->
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading call-centre data…"
++    />
++
++    <!-- Error state -->
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      {{ error }}
++    </div>
++
++    <template v-else>
++      <!-- Section 1: SLA Achievement -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          SLA Achievement
++        </h3>
++
++        <div
++          v-if="!sla.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No SLA data available
++        </div>
++
++        <template v-else>
++          <!-- KPI card for overall SLA -->
++          <div class="flex flex-wrap gap-4 mb-6">
++            <ReportMetricCard
++              label="Overall SLA Achievement"
++              info-text="Total met SLA tickets divided by total tickets with SLA across all channels"
++              :value="overallSlaAchievement"
++              class="flex-1"
++            />
++          </div>
++
++          <!-- Bar chart by channel -->
++          <div class="h-64">
++            <BarChart
++              :collection="slaChartCollection"
++              :chart-options="barChartOptions"
++            />
++          </div>
++        </template>
++      </div>
++
++      <!-- Section 2: Tasks per Agent -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Tasks per Agent
++        </h3>
++
++        <div
++          v-if="!sortedTasksPerAgent.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No agent task data available
++        </div>
++
++        <div v-else class="overflow-x-auto">
++          <table class="w-full text-sm">
++            <thead>
++              <tr class="border-b border-n-container">
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Agent ID
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  PIC
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Cases
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Avg First Response (min)
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Avg Resolution (min)
++                </th>
++                <th
++                  class="text-right py-2 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Resolved Cases
++                </th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr
++                v-for="(row, idx) in sortedTasksPerAgent"
++                :key="`${row.agent_id}-${idx}`"
++                class="border-b border-n-container last:border-0"
++              >
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.agent_id ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.pic ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-12">
++                  {{ fmtNum(row.cases, 0) }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-11">
++                  {{ fmtNum(row.avg_first_response_min) }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-11">
++                  {{ fmtNum(row.avg_resolution_min) }}
++                </td>
++                <td class="py-3 text-right text-n-slate-11">
++                  {{ fmtNum(row.resolved_cases, 0) }}
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </div>
++      </div>
++
++      <!-- Section 3: First Response by Channel -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          First Response by Channel
++        </h3>
++
++        <div
++          v-if="!firstResponse.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No first-response data available
++        </div>
++
++        <div v-else class="h-64">
++          <BarChart
++            :collection="firstResponseCollection"
++            :chart-options="barChartOptionsDual"
++          />
++        </div>
++      </div>
++
++      <!-- Section 4: Resolution Time by Channel -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Resolution Time by Channel
++        </h3>
++
++        <div
++          v-if="!resolutionTime.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No resolution time data available
++        </div>
++
++        <div v-else class="h-64">
++          <BarChart
++            :collection="resolutionTimeCollection"
++            :chart-options="barChartOptionsDual"
++          />
++        </div>
++      </div>
++
++      <!-- Section 5: Complaint-type ranking -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Complaint-type Ranking (Top 15)
++        </h3>
++
++        <div
++          v-if="!sortedComplaintTypes.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No complaint type data available
++        </div>
++
++        <div v-else class="overflow-x-auto">
++          <table class="w-full text-sm">
++            <thead>
++              <tr class="border-b border-n-container">
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Category
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Subcategory
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Division
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Cases
++                </th>
++                <th
++                  class="text-right py-2 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Share %
++                </th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr
++                v-for="(row, idx) in sortedComplaintTypes"
++                :key="`${row.category}-${row.subcategory}-${idx}`"
++                class="border-b border-n-container last:border-0"
++              >
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.category ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.subcategory ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.division ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-12">
++                  {{ fmtNum(row.cases, 0) }}
++                </td>
++                <td class="py-3 text-right text-n-slate-11">
++                  {{ fmtPct(row.share_pct) }}
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </div>
++      </div>
++
++      <!-- Section 6: Peak Hours -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Peak Hours (Volume by Hour of Day)
++        </h3>
++
++        <div
++          v-if="!peakHours.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No peak hours data available
++        </div>
++
++        <div v-else class="h-64">
++          <BarChart
++            :collection="peakHoursCollection"
++            :chart-options="barChartOptions"
++          />
++        </div>
++      </div>
++
++      <!-- Section 7: NPS for Agent -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">NPS by Agent</h3>
++
++        <div
++          v-if="!npsByAgent.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No NPS data available
++        </div>
++
++        <template v-else>
++          <!-- KPI card for blended NPS -->
++          <div class="flex flex-wrap gap-4 mb-6">
++            <ReportMetricCard
++              label="Blended Agent NPS"
++              info-text="Respondent-weighted average NPS across all agents and channels (scale 0–100)"
++              :value="blendedNps"
++              class="flex-1"
++            />
++          </div>
++
++          <!-- Bar chart by agent -->
++          <div class="h-64">
++            <BarChart
++              :collection="npsChartCollection"
++              :chart-options="barChartOptions"
++            />
++          </div>
++        </template>
++      </div>
++    </template>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonCaseLifecycle.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonCaseLifecycle.vue
+new file mode 100644
+index 0000000..c0ceaea
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonCaseLifecycle.vue
+@@ -0,0 +1,294 @@
++<script setup>
++import { ref, computed, onMounted } from 'vue';
++import BarChart from 'shared/components/charts/BarChart.vue';
++import LineChart from 'shared/components/charts/LineChart.vue';
++import { getLifecycle } from 'dashboard/api/protonMetrics';
++
++// ── Data ──────────────────────────────────────────────────────────────────────
++
++const cases = ref([]);
++const stateTrend = ref([]);
++const error = ref(null);
++const loading = ref(true);
++
++onMounted(async () => {
++  try {
++    const result = await getLifecycle();
++    cases.value = result.cases ?? [];
++    stateTrend.value = result.state_trend ?? [];
++  } catch (e) {
++    error.value = e.message || 'Failed to load lifecycle data';
++  } finally {
++    loading.value = false;
++  }
++});
++
++// ── Helpers ───────────────────────────────────────────────────────────────────
++
++const fmtMin = n => {
++  if (n == null || Number.isNaN(Number(n))) return '—';
++  return Number(n).toLocaleString(undefined, {
++    minimumFractionDigits: 0,
++    maximumFractionDigits: 0,
++  });
++};
++
++// ── Section 1: Resolution-time distribution histogram ─────────────────────────
++
++const BUCKET_LABELS = [
++  '0–30m',
++  '30–60m',
++  '1–2h',
++  '2–4h',
++  '4–8h',
++  '8–24h',
++  '>24h',
++];
++
++// Returns bucket index (0–6) given resolution_minutes value
++function bucketIndex(minutes) {
++  const m = Number(minutes);
++  if (m < 30) return 0;
++  if (m < 60) return 1;
++  if (m < 120) return 2;
++  if (m < 240) return 3;
++  if (m < 480) return 4;
++  if (m < 1440) return 5;
++  return 6;
++}
++
++const resolutionHistogramCollection = computed(() => {
++  const valid = cases.value.filter(
++    c =>
++      c.resolution_minutes != null &&
++      !Number.isNaN(Number(c.resolution_minutes))
++  );
++  if (!valid.length) return null;
++
++  const counts = new Array(7).fill(0);
++  valid.forEach(c => {
++    counts[bucketIndex(c.resolution_minutes)] += 1;
++  });
++
++  return {
++    labels: BUCKET_LABELS,
++    datasets: [
++      {
++        label: 'Cases',
++        backgroundColor: '#6366f1',
++        data: counts,
++      },
++    ],
++  };
++});
++
++const barChartOptions = {
++  plugins: { legend: { display: false } },
++  scales: { y: { beginAtZero: true } },
++};
++
++// ── Section 2: State trend LineChart ──────────────────────────────────────────
++
++// Palette for trend lines — cycles if more statuses than colours
++const LINE_COLORS = [
++  '#6366f1',
++  '#22c55e',
++  '#f59e0b',
++  '#ef4444',
++  '#3b82f6',
++  '#a855f7',
++];
++
++const stateTrendCollection = computed(() => {
++  if (!stateTrend.value.length) return null;
++
++  // Sorted unique months (ISO strings sort lexicographically which is correct)
++  const months = [...new Set(stateTrend.value.map(r => r.month))].sort();
++
++  // Distinct statuses
++  const statuses = [...new Set(stateTrend.value.map(r => r.status))];
++
++  // Build a lookup: month+status -> cases COUNT
++  const lookup = {};
++  stateTrend.value.forEach(r => {
++    lookup[`${r.month}__${r.status}`] = r.cases ?? 0;
++  });
++
++  const datasets = statuses.map((status, i) => ({
++    label: status,
++    borderColor: LINE_COLORS[i % LINE_COLORS.length],
++    backgroundColor: LINE_COLORS[i % LINE_COLORS.length],
++    fill: false,
++    tension: 0.3,
++    data: months.map(m => lookup[`${m}__${status}`] ?? 0),
++  }));
++
++  return { labels: months, datasets };
++});
++
++const lineChartOptions = {
++  plugins: { legend: { display: true, position: 'bottom' } },
++  scales: { y: { beginAtZero: true } },
++};
++
++// ── Section 3: Recent cases table (up to 50, most-recent first) ───────────────
++
++const recentCases = computed(() => {
++  return [...cases.value]
++    .sort((a, b) => {
++      // Sort descending by created_at (ISO strings compare correctly)
++      const ta = a.created_at ?? '';
++      const tb = b.created_at ?? '';
++      if (tb > ta) return 1;
++      if (tb < ta) return -1;
++      return 0;
++    })
++    .slice(0, 50);
++});
++</script>
++
++<template>
++  <div class="flex flex-col gap-6 px-6 py-5">
++    <!-- Loading state -->
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading case lifecycle data…"
++    />
++
++    <!-- Error state -->
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      {{ error }}
++    </div>
++
++    <template v-else>
++      <!-- Section 1: Resolution-time distribution -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Resolution-Time Distribution
++        </h3>
++
++        <div
++          v-if="!resolutionHistogramCollection"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No resolution data available
++        </div>
++
++        <div v-else class="h-64">
++          <BarChart
++            :collection="resolutionHistogramCollection"
++            :chart-options="barChartOptions"
++          />
++        </div>
++      </div>
++
++      <!-- Section 2: State trend -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Case State Trend
++        </h3>
++
++        <div
++          v-if="!stateTrendCollection"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No trend data available
++        </div>
++
++        <div v-else class="h-64">
++          <LineChart
++            :collection="stateTrendCollection"
++            :chart-options="lineChartOptions"
++          />
++        </div>
++      </div>
++
++      <!-- Section 3: Recent cases table -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">Recent Cases</h3>
++
++        <div
++          v-if="!recentCases.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No case data available
++        </div>
++
++        <div v-else class="overflow-x-auto">
++          <table class="w-full text-sm">
++            <thead>
++              <tr class="border-b border-n-container">
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Conversation ID
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Channel
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Department
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Dealer
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Status
++                </th>
++                <th
++                  class="text-right py-2 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Resolution (min)
++                </th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr
++                v-for="(row, idx) in recentCases"
++                :key="`${row.conversation_id}-${idx}`"
++                class="border-b border-n-container last:border-0"
++              >
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.conversation_id ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-11">
++                  {{ row.channel ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-11">
++                  {{ row.department ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-11">
++                  {{ row.dealer ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-11">
++                  {{ row.status ?? '—' }}
++                </td>
++                <td class="py-3 text-right text-n-slate-11">
++                  {{ fmtMin(row.resolution_minutes) }}
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </div>
++      </div>
++    </template>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonDepartments.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonDepartments.vue
+new file mode 100644
+index 0000000..2d6b902
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonDepartments.vue
+@@ -0,0 +1,292 @@
++<script setup>
++import { ref, computed, onMounted } from 'vue';
++import BarChart from 'shared/components/charts/BarChart.vue';
++import { getDepartments } from 'dashboard/api/protonMetrics';
++
++// ── Data ──────────────────────────────────────────────────────────────────────
++
++const deptPic = ref([]);
++const reopen = ref([]);
++const error = ref(null);
++const loading = ref(true);
++
++onMounted(async () => {
++  try {
++    const result = await getDepartments();
++    deptPic.value = result.dept_pic ?? [];
++    reopen.value = result.reopen ?? [];
++  } catch (e) {
++    error.value = e.message || 'Failed to load department data';
++  } finally {
++    loading.value = false;
++  }
++});
++
++// ── Helpers ───────────────────────────────────────────────────────────────────
++
++const fmtNum = (n, decimals = 1) => {
++  if (n == null || Number.isNaN(Number(n))) return '—';
++  return Number(n).toLocaleString(undefined, {
++    minimumFractionDigits: decimals,
++    maximumFractionDigits: decimals,
++  });
++};
++
++const fmtPct = n => {
++  if (n == null || Number.isNaN(Number(n))) return '—';
++  return `${(Number(n) * 100).toFixed(1)}%`;
++};
++
++// ── Dept/PIC table — sorted by cases desc ────────────────────────────────────
++
++const sortedDeptPic = computed(() =>
++  [...deptPic.value].sort((a, b) => (b.cases ?? 0) - (a.cases ?? 0))
++);
++
++// ── Top-N depts by total cases (aggregate across PICs) ───────────────────────
++
++const TOP_N = 10;
++
++const deptCasesCollection = computed(() => {
++  if (!deptPic.value.length) return null;
++
++  // Aggregate by department
++  const agg = {};
++  deptPic.value.forEach(row => {
++    const dept = row.department ?? 'Unknown';
++    agg[dept] = (agg[dept] ?? 0) + (row.cases ?? 0);
++  });
++
++  // Sort and take top N
++  const sorted = Object.entries(agg)
++    .sort(([, a], [, b]) => b - a)
++    .slice(0, TOP_N);
++
++  return {
++    labels: sorted.map(([dept]) => dept),
++    datasets: [
++      {
++        label: 'Cases',
++        backgroundColor: '#6366f1',
++        data: sorted.map(([, count]) => count),
++      },
++    ],
++  };
++});
++
++const barChartOptions = {
++  plugins: { legend: { display: false } },
++  scales: { y: { beginAtZero: true } },
++};
++</script>
++
++<template>
++  <div class="flex flex-col gap-6 px-6 py-5">
++    <!-- Loading state -->
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading department data…"
++    />
++
++    <!-- Error state -->
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      {{ error }}
++    </div>
++
++    <template v-else>
++      <!-- Dept/PIC performance table -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Department / PIC Performance
++        </h3>
++
++        <!-- Empty state -->
++        <div
++          v-if="!sortedDeptPic.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No department data available
++        </div>
++
++        <!-- Table -->
++        <div v-else class="overflow-x-auto">
++          <table class="w-full text-sm">
++            <thead>
++              <tr class="border-b border-n-container">
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Department
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  PIC
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Cases
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Avg First Response (min)
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Avg Resolution (min)
++                </th>
++                <th
++                  class="text-right py-2 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Resolution Rate
++                </th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr
++                v-for="(row, idx) in sortedDeptPic"
++                :key="`${row.department}-${row.pic}-${idx}`"
++                class="border-b border-n-container last:border-0"
++              >
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.department ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.pic ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-12">
++                  {{ fmtNum(row.cases, 0) }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-11">
++                  {{ fmtNum(row.avg_first_response_min) }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-11">
++                  {{ fmtNum(row.avg_resolution_min) }}
++                </td>
++                <td class="py-3 text-right text-n-slate-11">
++                  {{ fmtPct(row.resolution_rate) }}
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </div>
++      </div>
++
++      <!-- Top departments bar chart -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Top Departments by Cases
++        </h3>
++
++        <!-- Empty state -->
++        <div
++          v-if="!deptCasesCollection"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No department data available
++        </div>
++
++        <div v-else class="h-64">
++          <BarChart
++            :collection="deptCasesCollection"
++            :chart-options="barChartOptions"
++          />
++        </div>
++      </div>
++
++      <!-- Reopen / CRR table -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Reopen / Case Reopen Rate (CRR)
++        </h3>
++
++        <!-- Empty state -->
++        <div
++          v-if="!reopen.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No reopen data available
++        </div>
++
++        <!-- Table -->
++        <div v-else class="overflow-x-auto">
++          <table class="w-full text-sm">
++            <thead>
++              <tr class="border-b border-n-container">
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Dealer
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Department
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  PIC
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Cases
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Reopened
++                </th>
++                <th
++                  class="text-right py-2 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Reopen Rate
++                </th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr
++                v-for="(row, idx) in reopen"
++                :key="`${row.dealer}-${row.department}-${row.pic}-${idx}`"
++                class="border-b border-n-container last:border-0"
++              >
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.dealer ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.department ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.pic ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-12">
++                  {{ fmtNum(row.cases, 0) }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-11">
++                  {{ fmtNum(row.reopened, 0) }}
++                </td>
++                <td class="py-3 text-right text-n-slate-11">
++                  {{ fmtPct(row.reopen_rate) }}
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </div>
++      </div>
++    </template>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js b/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js
+index 4d89fe6..babb877 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js
+@@ -25,6 +25,9 @@ import LiveReports from './LiveReports.vue';
+ import SLAReports from './SLAReports.vue';
+ import ProtonAnalytics from './ProtonAnalytics.vue';
+ import ProtonAnomaly from './ProtonAnomaly.vue';
++import ProtonDepartments from './ProtonDepartments.vue';
++import ProtonCallCentre from './ProtonCallCentre.vue';
++import ProtonCaseLifecycle from './ProtonCaseLifecycle.vue';
+ 
+ const meta = {
+   featureFlag: FEATURE_FLAGS.REPORTS,
+@@ -182,6 +185,24 @@ export default {
+           meta: { permissions: ['administrator', 'report_manage'] },
+           component: ProtonAnomaly,
+         },
++        {
++          path: 'proton_departments',
++          name: 'proton_departments_reports',
++          meta: { permissions: ['administrator', 'report_manage'] },
++          component: ProtonDepartments,
++        },
++        {
++          path: 'proton_callcentre',
++          name: 'proton_callcentre_reports',
++          meta: { permissions: ['administrator', 'report_manage'] },
++          component: ProtonCallCentre,
++        },
++        {
++          path: 'proton_case_lifecycle',
++          name: 'proton_case_lifecycle_reports',
++          meta: { permissions: ['administrator', 'report_manage'] },
++          component: ProtonCaseLifecycle,
++        },
+       ],
+     },
+   ],

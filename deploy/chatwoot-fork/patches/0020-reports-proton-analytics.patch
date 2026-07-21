@@ -1,0 +1,1115 @@
+diff --git a/app/javascript/dashboard/api/protonMetrics.js b/app/javascript/dashboard/api/protonMetrics.js
+new file mode 100644
+index 0000000..b539073
+--- /dev/null
++++ b/app/javascript/dashboard/api/protonMetrics.js
+@@ -0,0 +1,61 @@
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++
++// Thin client for the Proton backend Metrics endpoints (/metrics/*). Auth is
++// the shared PROTON_BACKEND_KEY sent as x-api-key; required for gated
++// endpoints (departments, callcenter, lifecycle) and harmless for the open
++// ones (dashboard, anomalies). Errors carry a numeric `.status` so callers
++// can special-case 401/503.
++async function metricsRequest(path) {
++  const { backendUrl, backendKey } = useProtonConfig();
++  if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
++
++  const response = await fetch(`${backendUrl}${path}`, {
++    headers: {
++      'Content-Type': 'application/json',
++      ...(backendKey ? { 'x-api-key': backendKey } : {}),
++    },
++  });
++
++  if (!response.ok) {
++    const text = await response.text().catch(() => response.statusText);
++    const err = new Error(`${response.status}: ${text.slice(0, 200)}`);
++    err.status = response.status;
++    throw err;
++  }
++  const text = await response.text();
++  return text ? JSON.parse(text) : {};
++}
++
++// GET /metrics/dashboard -> summary metrics for the overview panel
++export function getDashboard() {
++  return metricsRequest('/metrics/dashboard');
++}
++
++// GET /metrics/anomalies -> detected anomaly list
++export function getAnomalies() {
++  return metricsRequest('/metrics/anomalies');
++}
++
++// GET /metrics/departments -> { dept_pic_performance: [], reopen_rate: [] }
++export function getDepartments() {
++  return metricsRequest('/metrics/departments');
++}
++
++// GET /metrics/callcenter -> { sla_achievement: [], tasks_per_agent: [],
++//   first_response_by_channel: [], resolution_time: [], complaint_type_ranking: [],
++//   peak_hours: [], nps_by_agent: [] }
++export function getCallCentre() {
++  return metricsRequest('/metrics/callcenter');
++}
++
++// GET /metrics/lifecycle -> { case_lifecycle: [], state_trend: [] }
++export function getLifecycle() {
++  return metricsRequest('/metrics/lifecycle');
++}
++
++// Returns a URL string for opening /metrics/export in a new tab.
++// format: 'csv' | 'xlsx'
++export function exportUrl(format) {
++  const { backendUrl } = useProtonConfig();
++  return `${backendUrl}/metrics/export?format=${format}`;
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 1b7900c..b9c7f44 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -438,77 +438,81 @@ const menuItems = computed(() => {
+         },
+       ],
+     },
+-    ...(!protonAiAssistEnabled.value ? [{
+-      name: 'Captain',
+-      icon: 'i-woot-captain',
+-      label: t('SIDEBAR.CAPTAIN'),
+-      activeOn: ['captain_assistants_create_index'],
+-      children: [
+-        {
+-          name: 'FAQs',
+-          label: t('SIDEBAR.CAPTAIN_RESPONSES'),
+-          activeOn: [
+-            'captain_assistants_responses_index',
+-            'captain_assistants_responses_pending',
+-          ],
+-          to: accountScopedRoute('captain_assistants_index', {
+-            navigationPath: 'captain_assistants_responses_index',
+-          }),
+-        },
+-        {
+-          name: 'Documents',
+-          label: t('SIDEBAR.CAPTAIN_DOCUMENTS'),
+-          activeOn: ['captain_assistants_documents_index'],
+-          to: accountScopedRoute('captain_assistants_index', {
+-            navigationPath: 'captain_assistants_documents_index',
+-          }),
+-        },
+-        {
+-          name: 'Scenarios',
+-          label: t('SIDEBAR.CAPTAIN_SCENARIOS'),
+-          activeOn: ['captain_assistants_scenarios_index'],
+-          to: accountScopedRoute('captain_assistants_index', {
+-            navigationPath: 'captain_assistants_scenarios_index',
+-          }),
+-        },
+-        {
+-          name: 'Playground',
+-          label: t('SIDEBAR.CAPTAIN_PLAYGROUND'),
+-          activeOn: ['captain_assistants_playground_index'],
+-          to: accountScopedRoute('captain_assistants_index', {
+-            navigationPath: 'captain_assistants_playground_index',
+-          }),
+-        },
+-        {
+-          name: 'Inboxes',
+-          label: t('SIDEBAR.CAPTAIN_INBOXES'),
+-          activeOn: ['captain_assistants_inboxes_index'],
+-          to: accountScopedRoute('captain_assistants_index', {
+-            navigationPath: 'captain_assistants_inboxes_index',
+-          }),
+-        },
+-        {
+-          name: 'Tools',
+-          label: t('SIDEBAR.CAPTAIN_TOOLS'),
+-          activeOn: ['captain_tools_index'],
+-          to: accountScopedRoute('captain_assistants_index', {
+-            navigationPath: 'captain_tools_index',
+-          }),
+-        },
+-        {
+-          name: 'Settings',
+-          label: t('SIDEBAR.CAPTAIN_SETTINGS'),
+-          activeOn: [
+-            'captain_assistants_settings_index',
+-            'captain_assistants_guidelines_index',
+-            'captain_assistants_guardrails_index',
+-          ],
+-          to: accountScopedRoute('captain_assistants_index', {
+-            navigationPath: 'captain_assistants_settings_index',
+-          }),
+-        },
+-      ],
+-    }] : []),
++    ...(!protonAiAssistEnabled.value
++      ? [
++          {
++            name: 'Captain',
++            icon: 'i-woot-captain',
++            label: t('SIDEBAR.CAPTAIN'),
++            activeOn: ['captain_assistants_create_index'],
++            children: [
++              {
++                name: 'FAQs',
++                label: t('SIDEBAR.CAPTAIN_RESPONSES'),
++                activeOn: [
++                  'captain_assistants_responses_index',
++                  'captain_assistants_responses_pending',
++                ],
++                to: accountScopedRoute('captain_assistants_index', {
++                  navigationPath: 'captain_assistants_responses_index',
++                }),
++              },
++              {
++                name: 'Documents',
++                label: t('SIDEBAR.CAPTAIN_DOCUMENTS'),
++                activeOn: ['captain_assistants_documents_index'],
++                to: accountScopedRoute('captain_assistants_index', {
++                  navigationPath: 'captain_assistants_documents_index',
++                }),
++              },
++              {
++                name: 'Scenarios',
++                label: t('SIDEBAR.CAPTAIN_SCENARIOS'),
++                activeOn: ['captain_assistants_scenarios_index'],
++                to: accountScopedRoute('captain_assistants_index', {
++                  navigationPath: 'captain_assistants_scenarios_index',
++                }),
++              },
++              {
++                name: 'Playground',
++                label: t('SIDEBAR.CAPTAIN_PLAYGROUND'),
++                activeOn: ['captain_assistants_playground_index'],
++                to: accountScopedRoute('captain_assistants_index', {
++                  navigationPath: 'captain_assistants_playground_index',
++                }),
++              },
++              {
++                name: 'Inboxes',
++                label: t('SIDEBAR.CAPTAIN_INBOXES'),
++                activeOn: ['captain_assistants_inboxes_index'],
++                to: accountScopedRoute('captain_assistants_index', {
++                  navigationPath: 'captain_assistants_inboxes_index',
++                }),
++              },
++              {
++                name: 'Tools',
++                label: t('SIDEBAR.CAPTAIN_TOOLS'),
++                activeOn: ['captain_tools_index'],
++                to: accountScopedRoute('captain_assistants_index', {
++                  navigationPath: 'captain_tools_index',
++                }),
++              },
++              {
++                name: 'Settings',
++                label: t('SIDEBAR.CAPTAIN_SETTINGS'),
++                activeOn: [
++                  'captain_assistants_settings_index',
++                  'captain_assistants_guidelines_index',
++                  'captain_assistants_guardrails_index',
++                ],
++                to: accountScopedRoute('captain_assistants_index', {
++                  navigationPath: 'captain_assistants_settings_index',
++                }),
++              },
++            ],
++          },
++        ]
++      : []),
+     ...(protonHasFeature('knowledge')
+       ? [
+           {
+@@ -516,14 +520,60 @@ const menuItems = computed(() => {
+             icon: 'i-lucide-book-open',
+             label: 'Knowledge',
+             children: [
+-              { name: 'Assistants', label: 'Assistants', to: accountScopedRoute('proton_knowledge', { section: 'assistants' }) },
+-              { name: 'FAQs', label: 'FAQs', to: accountScopedRoute('proton_knowledge', { section: 'faqs' }) },
+-              { name: 'Documents', label: 'Documents', to: accountScopedRoute('proton_knowledge', { section: 'documents' }) },
+-              { name: 'Playground', label: 'Playground', to: accountScopedRoute('proton_knowledge', { section: 'playground' }) },
+-              { name: 'Scenarios', label: 'Scenarios', to: accountScopedRoute('proton_knowledge', { section: 'scenarios' }) },
+-              { name: 'Inboxes', label: 'Inboxes', to: accountScopedRoute('proton_knowledge', { section: 'inboxes' }) },
+-              { name: 'Tools', label: 'Tools', to: accountScopedRoute('proton_knowledge', { section: 'tools' }) },
+-              { name: 'Settings', label: 'Settings', to: accountScopedRoute('proton_knowledge', { section: 'settings' }) },
++              {
++                name: 'Assistants',
++                label: 'Assistants',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'assistants',
++                }),
++              },
++              {
++                name: 'FAQs',
++                label: 'FAQs',
++                to: accountScopedRoute('proton_knowledge', { section: 'faqs' }),
++              },
++              {
++                name: 'Documents',
++                label: 'Documents',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'documents',
++                }),
++              },
++              {
++                name: 'Playground',
++                label: 'Playground',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'playground',
++                }),
++              },
++              {
++                name: 'Scenarios',
++                label: 'Scenarios',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'scenarios',
++                }),
++              },
++              {
++                name: 'Inboxes',
++                label: 'Inboxes',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'inboxes',
++                }),
++              },
++              {
++                name: 'Tools',
++                label: 'Tools',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'tools',
++                }),
++              },
++              {
++                name: 'Settings',
++                label: 'Settings',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'settings',
++                }),
++              },
+             ],
+           },
+         ]
+@@ -643,6 +693,16 @@ const menuItems = computed(() => {
+           label: t('SIDEBAR.REPORTS_BOT'),
+           to: accountScopedRoute('bot_reports'),
+         },
++        {
++          name: 'Reports Analytics',
++          label: 'Analytics',
++          to: accountScopedRoute('proton_analytics_reports'),
++        },
++        {
++          name: 'Reports Anomaly',
++          label: 'Anomaly',
++          to: accountScopedRoute('proton_anomaly_reports'),
++        },
+       ],
+     },
+     {
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonAnalytics.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonAnalytics.vue
+new file mode 100644
+index 0000000..2e2735a
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonAnalytics.vue
+@@ -0,0 +1,490 @@
++<script setup>
++import { ref, computed, onMounted } from 'vue';
++import ReportMetricCard from './components/ReportMetricCard.vue';
++import BarChart from 'shared/components/charts/BarChart.vue';
++import DoughnutChart from 'shared/components/charts/DoughnutChart.vue';
++import { getDashboard, exportUrl } from 'dashboard/api/protonMetrics';
++
++// ── Data ──────────────────────────────────────────────────────────────────────
++
++const data = ref(null);
++const error = ref(null);
++const loading = ref(true);
++
++onMounted(async () => {
++  try {
++    data.value = await getDashboard();
++  } catch (e) {
++    error.value = e.message || 'Failed to load analytics';
++  } finally {
++    loading.value = false;
++  }
++});
++
++// ── KPI helpers ───────────────────────────────────────────────────────────────
++
++const fmt = (n, decimals = 0) => {
++  if (n == null || Number.isNaN(Number(n))) return '--';
++  return Number(n).toLocaleString(undefined, {
++    minimumFractionDigits: decimals,
++    maximumFractionDigits: decimals,
++  });
++};
++
++const fmtPct = (n, decimals = 1) => {
++  if (n == null || Number.isNaN(Number(n))) return '--';
++  return `${Number(n).toFixed(decimals)}%`;
++};
++
++// Total conversations – sum of volume[].volume
++const kpiTotalConversations = computed(() => {
++  const rows = data.value?.volume ?? [];
++  if (!rows.length) return '--';
++  const total = rows.reduce((acc, r) => acc + (r.volume ?? 0), 0);
++  return fmt(total);
++});
++
++// Bot-resolved % – sum(closed_by_bot) / sum(total) * 100
++const kpiBotResolved = computed(() => {
++  const rows = data.value?.resolution ?? [];
++  if (!rows.length) return '--';
++  const totalBot = rows.reduce((acc, r) => acc + (r.closed_by_bot ?? 0), 0);
++  const totalAll = rows.reduce((acc, r) => acc + (r.total ?? 0), 0);
++  if (!totalAll) return '--';
++  return fmtPct((totalBot / totalAll) * 100);
++});
++
++// CSAT – respondent-weighted avg of avg_score
++const kpiCsat = computed(() => {
++  const rows = data.value?.csat ?? [];
++  if (!rows.length) return '--';
++  const totalRespondents = rows.reduce(
++    (acc, r) => acc + (r.respondents ?? 0),
++    0
++  );
++  if (!totalRespondents) return '--';
++  const weighted = rows.reduce(
++    (acc, r) => acc + (r.avg_score ?? 0) * (r.respondents ?? 0),
++    0
++  );
++  return fmt(weighted / totalRespondents, 2);
++});
++
++// NPS – respondent-weighted avg of nps
++const kpiNps = computed(() => {
++  const rows = data.value?.nps ?? [];
++  if (!rows.length) return '--';
++  const totalRespondents = rows.reduce(
++    (acc, r) => acc + (r.respondents ?? 0),
++    0
++  );
++  if (!totalRespondents) {
++    // fallback: simple avg
++    const sum = rows.reduce((acc, r) => acc + (r.nps ?? 0), 0);
++    return fmt(sum / rows.length, 1);
++  }
++  const weighted = rows.reduce(
++    (acc, r) => acc + (r.nps ?? 0) * (r.respondents ?? 0),
++    0
++  );
++  return fmt(weighted / totalRespondents, 1);
++});
++
++// ── Chart palettes ────────────────────────────────────────────────────────────
++
++const CHANNEL_COLORS = [
++  '#6366f1',
++  '#22d3ee',
++  '#f59e0b',
++  '#10b981',
++  '#f43f5e',
++  '#8b5cf6',
++  '#ec4899',
++  '#14b8a6',
++  '#f97316',
++  '#3b82f6',
++];
++
++const getColor = i => CHANNEL_COLORS[i % CHANNEL_COLORS.length];
++
++// ── Volume by channel (BarChart, x=month, datasets=channels) ─────────────────
++
++const volumeCollection = computed(() => {
++  const rows = data.value?.volume ?? [];
++  if (!rows.length) return null;
++
++  const months = [...new Set(rows.map(r => r.month))].sort();
++  const channels = [...new Set(rows.map(r => r.channel))];
++
++  // index: [month][channel] = volume
++  const idx = {};
++  rows.forEach(r => {
++    if (!idx[r.month]) idx[r.month] = {};
++    idx[r.month][r.channel] = r.volume ?? 0;
++  });
++
++  return {
++    labels: months,
++    datasets: channels.map((ch, i) => ({
++      label: ch,
++      backgroundColor: getColor(i),
++      data: months.map(m => idx[m]?.[ch] ?? 0),
++    })),
++  };
++});
++
++const stackedBarOptions = {
++  scales: {
++    x: { stacked: true },
++    y: { stacked: true, beginAtZero: true },
++  },
++  plugins: { legend: { display: true } },
++};
++
++// ── Resolution split (DoughnutChart) ─────────────────────────────────────────
++
++const resolutionCollection = computed(() => {
++  const rows = data.value?.resolution ?? [];
++  if (!rows.length) return null;
++  const bot = rows.reduce((acc, r) => acc + (r.closed_by_bot ?? 0), 0);
++  const agent = rows.reduce((acc, r) => acc + (r.transfer_to_agent ?? 0), 0);
++  return {
++    labels: ['Bot Resolved', 'Transferred to Agent'],
++    datasets: [
++      {
++        data: [bot, agent],
++        backgroundColor: ['#6366f1', '#22d3ee'],
++      },
++    ],
++  };
++});
++
++// ── NPS split (DoughnutChart) ─────────────────────────────────────────────────
++
++const npsCollection = computed(() => {
++  const rows = data.value?.nps ?? [];
++  if (!rows.length) return null;
++  const promoters = rows.reduce((acc, r) => acc + (r.promoters ?? 0), 0);
++  const passives = rows.reduce((acc, r) => acc + (r.passives ?? 0), 0);
++  const detractors = rows.reduce((acc, r) => acc + (r.detractors ?? 0), 0);
++  return {
++    labels: ['Promoters', 'Passives', 'Detractors'],
++    datasets: [
++      {
++        data: [promoters, passives, detractors],
++        backgroundColor: ['#10b981', '#f59e0b', '#f43f5e'],
++      },
++    ],
++  };
++});
++
++// ── Speed p99 by channel (BarChart, grouped by is_first_turn) ────────────────
++
++const speedCollection = computed(() => {
++  const rows = data.value?.speed ?? [];
++  if (!rows.length) return null;
++  const channels = [...new Set(rows.map(r => r.channel))];
++  const turns = [...new Set(rows.map(r => r.is_first_turn))];
++
++  return {
++    labels: channels,
++    datasets: turns.map((turn, i) => ({
++      label: turn ? 'First Turn' : 'Subsequent Turn',
++      backgroundColor: getColor(i),
++      data: channels.map(ch => {
++        const row = rows.find(
++          r => r.channel === ch && r.is_first_turn === turn
++        );
++        return row?.p99_latency_ms ?? 0;
++      }),
++    })),
++  };
++});
++
++const groupedBarOptions = {
++  plugins: { legend: { display: true } },
++  scales: { y: { beginAtZero: true } },
++};
++
++// ── Fallback & bounce (BarChart, by channel) ──────────────────────────────────
++
++const fallbackCollection = computed(() => {
++  const rows = data.value?.fallback ?? [];
++  if (!rows.length) return null;
++  const channels = rows.map(r => r.channel);
++  return {
++    labels: channels,
++    datasets: [
++      {
++        label: 'Fallback Rate',
++        backgroundColor: '#f59e0b',
++        data: rows.map(r => (r.fallback_rate ?? 0) * 100),
++      },
++    ],
++  };
++});
++
++const bounceCollection = computed(() => {
++  const rows = data.value?.bounce ?? [];
++  if (!rows.length) return null;
++  const channels = rows.map(r => r.channel);
++  return {
++    labels: channels,
++    datasets: [
++      {
++        label: 'Bounce Rate',
++        backgroundColor: '#f43f5e',
++        data: rows.map(r => (r.bounce_rate ?? 0) * 100),
++      },
++    ],
++  };
++});
++
++// ── Quality (BarChart, avg_accuracy + avg_quality by channel) ─────────────────
++
++const qualityCollection = computed(() => {
++  const rows = data.value?.quality ?? [];
++  if (!rows.length) return null;
++  const channels = rows.map(r => r.channel);
++  return {
++    labels: channels,
++    datasets: [
++      {
++        label: 'Avg Accuracy',
++        backgroundColor: '#6366f1',
++        data: rows.map(r => r.avg_accuracy ?? 0),
++      },
++      {
++        label: 'Avg Quality',
++        backgroundColor: '#10b981',
++        data: rows.map(r => r.avg_quality ?? 0),
++      },
++    ],
++  };
++});
++
++const pctBarOptions = {
++  plugins: { legend: { display: true } },
++  scales: { y: { beginAtZero: true, max: 100 } },
++};
++
++// ── Export helpers ────────────────────────────────────────────────────────────
++
++const openExport = format => {
++  window.open(exportUrl(format), '_blank');
++};
++</script>
++
++<template>
++  <div class="flex flex-col gap-6 px-6 py-5">
++    <!-- Header row: title + export buttons -->
++    <div class="flex items-center justify-between">
++      <h2 class="text-base font-semibold text-n-slate-12">Analytics</h2>
++      <div class="flex gap-2">
++        <button
++          class="inline-flex items-center gap-1 rounded-lg border border-n-weak bg-n-solid-2 px-3 py-1.5 text-xs font-medium text-n-slate-12 hover:bg-n-solid-3 transition-colors"
++          @click="openExport('xlsx')"
++        >
++          Download Excel
++        </button>
++        <button
++          class="inline-flex items-center gap-1 rounded-lg border border-n-weak bg-n-solid-2 px-3 py-1.5 text-xs font-medium text-n-slate-12 hover:bg-n-solid-3 transition-colors"
++          @click="openExport('pdf')"
++        >
++          Download PDF
++        </button>
++      </div>
++    </div>
++
++    <!-- Loading / error state -->
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading analytics…"
++    />
++
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      {{ error }}
++    </div>
++
++    <template v-else>
++      <!-- KPI Cards -->
++      <div
++        class="flex flex-wrap mx-0 shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5 gap-4"
++      >
++        <ReportMetricCard
++          label="Total Conversations"
++          info-text="Sum of all conversations across channels"
++          :value="kpiTotalConversations"
++          class="flex-1"
++        />
++        <ReportMetricCard
++          label="Bot Resolved %"
++          info-text="Percentage of conversations closed by the bot"
++          :value="kpiBotResolved"
++          class="flex-1"
++        />
++        <ReportMetricCard
++          label="CSAT Score"
++          info-text="Respondent-weighted average CSAT score"
++          :value="kpiCsat"
++          class="flex-1"
++        />
++        <ReportMetricCard
++          label="NPS"
++          info-text="Net Promoter Score (respondent-weighted average)"
++          :value="kpiNps"
++          class="flex-1"
++        />
++      </div>
++
++      <!-- Volume by Channel -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Volume by Channel
++        </h3>
++        <div v-if="volumeCollection" class="h-72">
++          <BarChart
++            :collection="volumeCollection"
++            :chart-options="stackedBarOptions"
++          />
++        </div>
++        <div
++          v-else
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No volume data available
++        </div>
++      </div>
++
++      <!-- Resolution Split + NPS Split -->
++      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
++        <!-- Resolution Split -->
++        <div
++          class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++        >
++          <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++            Resolution Split
++          </h3>
++          <div v-if="resolutionCollection" class="h-64">
++            <DoughnutChart :collection="resolutionCollection" />
++          </div>
++          <div
++            v-else
++            class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++          >
++            No resolution data available
++          </div>
++        </div>
++
++        <!-- NPS Split -->
++        <div
++          class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++        >
++          <h3 class="text-sm font-semibold text-n-slate-12 mb-4">NPS Split</h3>
++          <div v-if="npsCollection" class="h-64">
++            <DoughnutChart :collection="npsCollection" />
++          </div>
++          <div
++            v-else
++            class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++          >
++            No NPS data available
++          </div>
++        </div>
++      </div>
++
++      <!-- Speed p99 by Channel -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Response Speed p99 by Channel (ms)
++        </h3>
++        <div v-if="speedCollection" class="h-72">
++          <BarChart
++            :collection="speedCollection"
++            :chart-options="groupedBarOptions"
++          />
++        </div>
++        <div
++          v-else
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No speed data available
++        </div>
++      </div>
++
++      <!-- Fallback & Bounce Rates -->
++      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
++        <!-- Fallback Rate -->
++        <div
++          class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++        >
++          <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++            Fallback Rate by Channel
++          </h3>
++          <div v-if="fallbackCollection" class="h-64">
++            <BarChart
++              :collection="fallbackCollection"
++              :chart-options="pctBarOptions"
++            />
++          </div>
++          <div
++            v-else
++            class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++          >
++            No fallback data available
++          </div>
++        </div>
++
++        <!-- Bounce Rate -->
++        <div
++          class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++        >
++          <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++            Bounce Rate by Channel
++          </h3>
++          <div v-if="bounceCollection" class="h-64">
++            <BarChart
++              :collection="bounceCollection"
++              :chart-options="pctBarOptions"
++            />
++          </div>
++          <div
++            v-else
++            class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++          >
++            No bounce data available
++          </div>
++        </div>
++      </div>
++
++      <!-- Quality by Channel -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Quality by Channel
++        </h3>
++        <div v-if="qualityCollection" class="h-72">
++          <BarChart
++            :collection="qualityCollection"
++            :chart-options="pctBarOptions"
++          />
++        </div>
++        <div
++          v-else
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No quality data available
++        </div>
++      </div>
++    </template>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonAnomaly.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonAnomaly.vue
+new file mode 100644
+index 0000000..e2fc391
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonAnomaly.vue
+@@ -0,0 +1,180 @@
++<script setup>
++import { ref, onMounted } from 'vue';
++import ReportMetricCard from './components/ReportMetricCard.vue';
++import { getAnomalies } from 'dashboard/api/protonMetrics';
++
++// ── Data ──────────────────────────────────────────────────────────────────────
++
++const anomalies = ref([]);
++const error = ref(null);
++const loading = ref(true);
++
++onMounted(async () => {
++  try {
++    const result = await getAnomalies();
++    anomalies.value = result.anomalies ?? [];
++  } catch (e) {
++    error.value = e.message || 'Failed to load anomaly data';
++  } finally {
++    loading.value = false;
++  }
++});
++
++// ── Helpers ───────────────────────────────────────────────────────────────────
++
++const fmt = (n, decimals = 1) => {
++  if (n == null || Number.isNaN(Number(n))) return '—';
++  return Number(n).toLocaleString(undefined, {
++    minimumFractionDigits: decimals,
++    maximumFractionDigits: decimals,
++  });
++};
++
++const computeDeviation = row => {
++  const { current_volume, baseline_mean, baseline_stddev } = row;
++  if (
++    !baseline_stddev ||
++    baseline_stddev === 0 ||
++    baseline_mean == null ||
++    current_volume == null
++  ) {
++    return null;
++  }
++  return (current_volume - baseline_mean) / baseline_stddev;
++};
++
++const BADGE_NEUTRAL =
++  'inline-flex items-center justify-center px-2 py-0.5 rounded text-xs font-medium bg-n-alpha-2 text-n-slate-11';
++const BADGE_WARN =
++  'inline-flex items-center justify-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400';
++const BADGE_DANGER =
++  'inline-flex items-center justify-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400';
++
++const deviationBadgeClass = deviation => {
++  if (deviation == null) return BADGE_NEUTRAL;
++  const abs = Math.abs(deviation);
++  if (abs >= 3) return BADGE_DANGER;
++  if (abs >= 2) return BADGE_WARN;
++  return BADGE_NEUTRAL;
++};
++</script>
++
++<template>
++  <div class="flex flex-col gap-6 px-6 py-5">
++    <!-- Loading state -->
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading anomaly data…"
++    />
++
++    <!-- Error state -->
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      {{ error }}
++    </div>
++
++    <template v-else>
++      <!-- KPI card: flagged channel count -->
++      <div
++        class="flex flex-wrap mx-0 shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5 gap-4"
++      >
++        <ReportMetricCard
++          label="Flagged Channels"
++          info-text="Number of channels with anomalous volume detected"
++          :value="String(anomalies.length)"
++          class="flex-1"
++        />
++      </div>
++
++      <!-- Anomaly table -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Flagged Channels
++        </h3>
++
++        <!-- Empty state -->
++        <div
++          v-if="!anomalies.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No anomalies detected
++        </div>
++
++        <!-- Table -->
++        <div v-else class="overflow-x-auto">
++          <table class="w-full text-sm">
++            <thead>
++              <tr class="border-b border-n-container">
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Channel
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Current Volume
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Baseline Mean
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Baseline Std Dev
++                </th>
++                <th
++                  class="text-right py-2 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Deviation
++                </th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr
++                v-for="row in anomalies"
++                :key="row.channel"
++                class="border-b border-n-container last:border-0"
++              >
++                <td class="py-3 pr-4 text-n-slate-12 capitalize">
++                  {{ row.channel }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-12">
++                  {{ fmt(row.current_volume, 0) }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-11">
++                  {{
++                    row.baseline_mean != null ? fmt(row.baseline_mean, 1) : '—'
++                  }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-11">
++                  {{
++                    row.baseline_stddev != null
++                      ? fmt(row.baseline_stddev, 1)
++                      : '—'
++                  }}
++                </td>
++                <td class="py-3 text-right">
++                  <span :class="deviationBadgeClass(computeDeviation(row))">
++                    {{
++                      computeDeviation(row) != null
++                        ? fmt(computeDeviation(row), 2)
++                        : '—'
++                    }}
++                  </span>
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </div>
++      </div>
++    </template>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js b/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js
+index af01f6d..4d89fe6 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js
+@@ -23,6 +23,8 @@ import CsatResponses from './CsatResponses.vue';
+ import BotReports from './BotReports.vue';
+ import LiveReports from './LiveReports.vue';
+ import SLAReports from './SLAReports.vue';
++import ProtonAnalytics from './ProtonAnalytics.vue';
++import ProtonAnomaly from './ProtonAnomaly.vue';
+ 
+ const meta = {
+   featureFlag: FEATURE_FLAGS.REPORTS,
+@@ -168,6 +170,18 @@ export default {
+           meta,
+           component: BotReports,
+         },
++        {
++          path: 'proton_analytics',
++          name: 'proton_analytics_reports',
++          meta: { permissions: ['administrator', 'report_manage'] },
++          component: ProtonAnalytics,
++        },
++        {
++          path: 'proton_anomaly',
++          name: 'proton_anomaly_reports',
++          meta: { permissions: ['administrator', 'report_manage'] },
++          component: ProtonAnomaly,
++        },
+       ],
+     },
+   ],
+diff --git a/app/javascript/shared/components/charts/DoughnutChart.vue b/app/javascript/shared/components/charts/DoughnutChart.vue
+new file mode 100644
+index 0000000..fa72d3d
+--- /dev/null
++++ b/app/javascript/shared/components/charts/DoughnutChart.vue
+@@ -0,0 +1,31 @@
++<script setup>
++import { computed } from 'vue';
++import { Doughnut } from 'vue-chartjs';
++import { Chart as ChartJS, Title, Tooltip, Legend, ArcElement } from 'chart.js';
++
++const props = defineProps({
++  collection: {
++    type: Object,
++    default: () => ({}),
++  },
++  chartOptions: {
++    type: Object,
++    default: () => ({}),
++  },
++});
++
++ChartJS.register(Title, Tooltip, Legend, ArcElement);
++
++const defaultChartOptions = {
++  responsive: true,
++  maintainAspectRatio: false,
++};
++
++const options = computed(() => {
++  return { ...defaultChartOptions, ...props.chartOptions };
++});
++</script>
++
++<template>
++  <Doughnut :data="collection" :options="options" />
++</template>
+diff --git a/app/javascript/shared/components/charts/LineChart.vue b/app/javascript/shared/components/charts/LineChart.vue
+new file mode 100644
+index 0000000..9ba7679
+--- /dev/null
++++ b/app/javascript/shared/components/charts/LineChart.vue
+@@ -0,0 +1,48 @@
++<script setup>
++import { computed } from 'vue';
++import { Line } from 'vue-chartjs';
++import {
++  Chart as ChartJS,
++  Title,
++  Tooltip,
++  Legend,
++  LineElement,
++  PointElement,
++  CategoryScale,
++  LinearScale,
++} from 'chart.js';
++
++const props = defineProps({
++  collection: {
++    type: Object,
++    default: () => ({}),
++  },
++  chartOptions: {
++    type: Object,
++    default: () => ({}),
++  },
++});
++
++ChartJS.register(
++  Title,
++  Tooltip,
++  Legend,
++  LineElement,
++  PointElement,
++  CategoryScale,
++  LinearScale
++);
++
++const defaultChartOptions = {
++  responsive: true,
++  maintainAspectRatio: false,
++};
++
++const options = computed(() => {
++  return { ...defaultChartOptions, ...props.chartOptions };
++});
++</script>
++
++<template>
++  <Line :data="collection" :options="options" />
++</template>

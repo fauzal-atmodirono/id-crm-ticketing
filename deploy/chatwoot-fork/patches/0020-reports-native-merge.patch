@@ -1,0 +1,2521 @@
+diff --git a/app/javascript/dashboard/api/protonMetrics.js b/app/javascript/dashboard/api/protonMetrics.js
+new file mode 100644
+index 0000000..ee5702f
+--- /dev/null
++++ b/app/javascript/dashboard/api/protonMetrics.js
+@@ -0,0 +1,61 @@
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++
++// Thin client for the Proton backend Metrics endpoints (/metrics/*). Auth is
++// the shared PROTON_BACKEND_KEY sent as x-api-key; required for gated
++// endpoints (departments, callcenter, lifecycle) and harmless for the open
++// ones (dashboard, anomalies). Errors carry a numeric `.status` so callers
++// can special-case 401/503.
++async function metricsRequest(path) {
++  const { backendUrl, backendKey } = useProtonConfig();
++  if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
++
++  const response = await fetch(`${backendUrl}${path}`, {
++    headers: {
++      'Content-Type': 'application/json',
++      ...(backendKey ? { 'x-api-key': backendKey } : {}),
++    },
++  });
++
++  if (!response.ok) {
++    const text = await response.text().catch(() => response.statusText);
++    const err = new Error(`${response.status}: ${text.slice(0, 200)}`);
++    err.status = response.status;
++    throw err;
++  }
++  const text = await response.text();
++  return text ? JSON.parse(text) : {};
++}
++
++// GET /metrics/dashboard -> summary metrics for the overview panel
++export function getDashboard() {
++  return metricsRequest('/metrics/dashboard');
++}
++
++// GET /metrics/anomalies -> detected anomaly list
++export function getAnomalies() {
++  return metricsRequest('/metrics/anomalies');
++}
++
++// GET /metrics/departments -> { dept_pic: [], reopen: [] }
++export function getDepartments() {
++  return metricsRequest('/metrics/departments');
++}
++
++// GET /metrics/callcenter -> { sla: [], tasks_per_agent: [],
++//   first_response: [], resolution_time: [], complaint_types: [],
++//   peak_hours: [], nps_by_agent: [] }
++export function getCallCentre() {
++  return metricsRequest('/metrics/callcenter');
++}
++
++// GET /metrics/lifecycle -> { cases: [], state_trend: [] }
++export function getLifecycle() {
++  return metricsRequest('/metrics/lifecycle');
++}
++
++// Returns a URL string for opening /metrics/export in a new tab.
++// format: 'csv' | 'xlsx'
++export function exportUrl(format) {
++  const { backendUrl } = useProtonConfig();
++  return `${backendUrl}/metrics/export?format=${format}`;
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 1b7900c..a296deb 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -438,77 +438,81 @@ const menuItems = computed(() => {
+         },
+       ],
+     },
+-    ...(!protonAiAssistEnabled.value ? [{
+-      name: 'Captain',
+-      icon: 'i-woot-captain',
+-      label: t('SIDEBAR.CAPTAIN'),
+-      activeOn: ['captain_assistants_create_index'],
+-      children: [
+-        {
+-          name: 'FAQs',
+-          label: t('SIDEBAR.CAPTAIN_RESPONSES'),
+-          activeOn: [
+-            'captain_assistants_responses_index',
+-            'captain_assistants_responses_pending',
+-          ],
+-          to: accountScopedRoute('captain_assistants_index', {
+-            navigationPath: 'captain_assistants_responses_index',
+-          }),
+-        },
+-        {
+-          name: 'Documents',
+-          label: t('SIDEBAR.CAPTAIN_DOCUMENTS'),
+-          activeOn: ['captain_assistants_documents_index'],
+-          to: accountScopedRoute('captain_assistants_index', {
+-            navigationPath: 'captain_assistants_documents_index',
+-          }),
+-        },
+-        {
+-          name: 'Scenarios',
+-          label: t('SIDEBAR.CAPTAIN_SCENARIOS'),
+-          activeOn: ['captain_assistants_scenarios_index'],
+-          to: accountScopedRoute('captain_assistants_index', {
+-            navigationPath: 'captain_assistants_scenarios_index',
+-          }),
+-        },
+-        {
+-          name: 'Playground',
+-          label: t('SIDEBAR.CAPTAIN_PLAYGROUND'),
+-          activeOn: ['captain_assistants_playground_index'],
+-          to: accountScopedRoute('captain_assistants_index', {
+-            navigationPath: 'captain_assistants_playground_index',
+-          }),
+-        },
+-        {
+-          name: 'Inboxes',
+-          label: t('SIDEBAR.CAPTAIN_INBOXES'),
+-          activeOn: ['captain_assistants_inboxes_index'],
+-          to: accountScopedRoute('captain_assistants_index', {
+-            navigationPath: 'captain_assistants_inboxes_index',
+-          }),
+-        },
+-        {
+-          name: 'Tools',
+-          label: t('SIDEBAR.CAPTAIN_TOOLS'),
+-          activeOn: ['captain_tools_index'],
+-          to: accountScopedRoute('captain_assistants_index', {
+-            navigationPath: 'captain_tools_index',
+-          }),
+-        },
+-        {
+-          name: 'Settings',
+-          label: t('SIDEBAR.CAPTAIN_SETTINGS'),
+-          activeOn: [
+-            'captain_assistants_settings_index',
+-            'captain_assistants_guidelines_index',
+-            'captain_assistants_guardrails_index',
+-          ],
+-          to: accountScopedRoute('captain_assistants_index', {
+-            navigationPath: 'captain_assistants_settings_index',
+-          }),
+-        },
+-      ],
+-    }] : []),
++    ...(!protonAiAssistEnabled.value
++      ? [
++          {
++            name: 'Captain',
++            icon: 'i-woot-captain',
++            label: t('SIDEBAR.CAPTAIN'),
++            activeOn: ['captain_assistants_create_index'],
++            children: [
++              {
++                name: 'FAQs',
++                label: t('SIDEBAR.CAPTAIN_RESPONSES'),
++                activeOn: [
++                  'captain_assistants_responses_index',
++                  'captain_assistants_responses_pending',
++                ],
++                to: accountScopedRoute('captain_assistants_index', {
++                  navigationPath: 'captain_assistants_responses_index',
++                }),
++              },
++              {
++                name: 'Documents',
++                label: t('SIDEBAR.CAPTAIN_DOCUMENTS'),
++                activeOn: ['captain_assistants_documents_index'],
++                to: accountScopedRoute('captain_assistants_index', {
++                  navigationPath: 'captain_assistants_documents_index',
++                }),
++              },
++              {
++                name: 'Scenarios',
++                label: t('SIDEBAR.CAPTAIN_SCENARIOS'),
++                activeOn: ['captain_assistants_scenarios_index'],
++                to: accountScopedRoute('captain_assistants_index', {
++                  navigationPath: 'captain_assistants_scenarios_index',
++                }),
++              },
++              {
++                name: 'Playground',
++                label: t('SIDEBAR.CAPTAIN_PLAYGROUND'),
++                activeOn: ['captain_assistants_playground_index'],
++                to: accountScopedRoute('captain_assistants_index', {
++                  navigationPath: 'captain_assistants_playground_index',
++                }),
++              },
++              {
++                name: 'Inboxes',
++                label: t('SIDEBAR.CAPTAIN_INBOXES'),
++                activeOn: ['captain_assistants_inboxes_index'],
++                to: accountScopedRoute('captain_assistants_index', {
++                  navigationPath: 'captain_assistants_inboxes_index',
++                }),
++              },
++              {
++                name: 'Tools',
++                label: t('SIDEBAR.CAPTAIN_TOOLS'),
++                activeOn: ['captain_tools_index'],
++                to: accountScopedRoute('captain_assistants_index', {
++                  navigationPath: 'captain_tools_index',
++                }),
++              },
++              {
++                name: 'Settings',
++                label: t('SIDEBAR.CAPTAIN_SETTINGS'),
++                activeOn: [
++                  'captain_assistants_settings_index',
++                  'captain_assistants_guidelines_index',
++                  'captain_assistants_guardrails_index',
++                ],
++                to: accountScopedRoute('captain_assistants_index', {
++                  navigationPath: 'captain_assistants_settings_index',
++                }),
++              },
++            ],
++          },
++        ]
++      : []),
+     ...(protonHasFeature('knowledge')
+       ? [
+           {
+@@ -516,14 +520,60 @@ const menuItems = computed(() => {
+             icon: 'i-lucide-book-open',
+             label: 'Knowledge',
+             children: [
+-              { name: 'Assistants', label: 'Assistants', to: accountScopedRoute('proton_knowledge', { section: 'assistants' }) },
+-              { name: 'FAQs', label: 'FAQs', to: accountScopedRoute('proton_knowledge', { section: 'faqs' }) },
+-              { name: 'Documents', label: 'Documents', to: accountScopedRoute('proton_knowledge', { section: 'documents' }) },
+-              { name: 'Playground', label: 'Playground', to: accountScopedRoute('proton_knowledge', { section: 'playground' }) },
+-              { name: 'Scenarios', label: 'Scenarios', to: accountScopedRoute('proton_knowledge', { section: 'scenarios' }) },
+-              { name: 'Inboxes', label: 'Inboxes', to: accountScopedRoute('proton_knowledge', { section: 'inboxes' }) },
+-              { name: 'Tools', label: 'Tools', to: accountScopedRoute('proton_knowledge', { section: 'tools' }) },
+-              { name: 'Settings', label: 'Settings', to: accountScopedRoute('proton_knowledge', { section: 'settings' }) },
++              {
++                name: 'Assistants',
++                label: 'Assistants',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'assistants',
++                }),
++              },
++              {
++                name: 'FAQs',
++                label: 'FAQs',
++                to: accountScopedRoute('proton_knowledge', { section: 'faqs' }),
++              },
++              {
++                name: 'Documents',
++                label: 'Documents',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'documents',
++                }),
++              },
++              {
++                name: 'Playground',
++                label: 'Playground',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'playground',
++                }),
++              },
++              {
++                name: 'Scenarios',
++                label: 'Scenarios',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'scenarios',
++                }),
++              },
++              {
++                name: 'Inboxes',
++                label: 'Inboxes',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'inboxes',
++                }),
++              },
++              {
++                name: 'Tools',
++                label: 'Tools',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'tools',
++                }),
++              },
++              {
++                name: 'Settings',
++                label: 'Settings',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'settings',
++                }),
++              },
+             ],
+           },
+         ]
+@@ -643,6 +693,21 @@ const menuItems = computed(() => {
+           label: t('SIDEBAR.REPORTS_BOT'),
+           to: accountScopedRoute('bot_reports'),
+         },
++        {
++          name: 'Reports Anomaly',
++          label: 'Anomaly',
++          to: accountScopedRoute('proton_anomaly_reports'),
++        },
++        {
++          name: 'Reports Departments',
++          label: 'Departments & PIC',
++          to: accountScopedRoute('proton_departments_reports'),
++        },
++        {
++          name: 'Reports CaseLifecycle',
++          label: 'Case Lifecycle',
++          to: accountScopedRoute('proton_case_lifecycle_reports'),
++        },
+       ],
+     },
+     {
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/AgentReportsIndex.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/AgentReportsIndex.vue
+index b0993e9..8a857a9 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/AgentReportsIndex.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/AgentReportsIndex.vue
+@@ -3,6 +3,7 @@ import { ref } from 'vue';
+ import ReportHeader from './components/ReportHeader.vue';
+ import SummaryReports from './components/SummaryReports.vue';
+ import V4Button from 'dashboard/components-next/button/Button.vue';
++import ProtonAgentsSection from './components/proton/ProtonAgentsSection.vue';
+ 
+ const summarReportsRef = ref(null);
+ 
+@@ -32,4 +33,6 @@ const onDownloadClick = () => {
+     summary-key="summaryReports/getAgentSummaryReports"
+     type="agent"
+   />
++
++  <ProtonAgentsSection />
+ </template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue
+index 03b7290..c816d09 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue
+@@ -6,6 +6,7 @@ import { GROUP_BY_FILTER } from './constants';
+ import ReportContainer from './ReportContainer.vue';
+ import { REPORTS_EVENTS } from '../../../../helper/AnalyticsHelper/events';
+ import ReportHeader from './components/ReportHeader.vue';
++import ProtonBotSection from './components/proton/ProtonBotSection.vue';
+ 
+ export default {
+   name: 'BotReports',
+@@ -14,6 +15,7 @@ export default {
+     ReportHeader,
+     ReportFilters,
+     ReportContainer,
++    ProtonBotSection,
+   },
+   data() {
+     return {
+@@ -102,5 +104,7 @@ export default {
+       :group-by="groupBy"
+       :report-keys="reportKeys"
+     />
++
++    <ProtonBotSection />
+   </div>
+ </template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/CsatResponses.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/CsatResponses.vue
+index 61c15b0..d9892d3 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/CsatResponses.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/CsatResponses.vue
+@@ -9,6 +9,7 @@ import { REPORTS_EVENTS } from '../../../../helper/AnalyticsHelper/events';
+ import { FEATURE_FLAGS } from '../../../../featureFlags';
+ import V4Button from 'dashboard/components-next/button/Button.vue';
+ import ReportHeader from './components/ReportHeader.vue';
++import ProtonCsatSection from './components/proton/ProtonCsatSection.vue';
+ 
+ export default {
+   name: 'CsatResponses',
+@@ -18,6 +19,7 @@ export default {
+     CsatFilters,
+     ReportHeader,
+     V4Button,
++    ProtonCsatSection,
+   },
+   data() {
+     return {
+@@ -131,5 +133,6 @@ export default {
+     />
+     <CsatMetrics :filters="requestPayload" />
+     <CsatTable :page-index="pageIndex" @page-change="onPageNumberChange" />
++    <ProtonCsatSection />
+   </div>
+ </template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonAnomaly.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonAnomaly.vue
+new file mode 100644
+index 0000000..e2fc391
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonAnomaly.vue
+@@ -0,0 +1,180 @@
++<script setup>
++import { ref, onMounted } from 'vue';
++import ReportMetricCard from './components/ReportMetricCard.vue';
++import { getAnomalies } from 'dashboard/api/protonMetrics';
++
++// ── Data ──────────────────────────────────────────────────────────────────────
++
++const anomalies = ref([]);
++const error = ref(null);
++const loading = ref(true);
++
++onMounted(async () => {
++  try {
++    const result = await getAnomalies();
++    anomalies.value = result.anomalies ?? [];
++  } catch (e) {
++    error.value = e.message || 'Failed to load anomaly data';
++  } finally {
++    loading.value = false;
++  }
++});
++
++// ── Helpers ───────────────────────────────────────────────────────────────────
++
++const fmt = (n, decimals = 1) => {
++  if (n == null || Number.isNaN(Number(n))) return '—';
++  return Number(n).toLocaleString(undefined, {
++    minimumFractionDigits: decimals,
++    maximumFractionDigits: decimals,
++  });
++};
++
++const computeDeviation = row => {
++  const { current_volume, baseline_mean, baseline_stddev } = row;
++  if (
++    !baseline_stddev ||
++    baseline_stddev === 0 ||
++    baseline_mean == null ||
++    current_volume == null
++  ) {
++    return null;
++  }
++  return (current_volume - baseline_mean) / baseline_stddev;
++};
++
++const BADGE_NEUTRAL =
++  'inline-flex items-center justify-center px-2 py-0.5 rounded text-xs font-medium bg-n-alpha-2 text-n-slate-11';
++const BADGE_WARN =
++  'inline-flex items-center justify-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400';
++const BADGE_DANGER =
++  'inline-flex items-center justify-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400';
++
++const deviationBadgeClass = deviation => {
++  if (deviation == null) return BADGE_NEUTRAL;
++  const abs = Math.abs(deviation);
++  if (abs >= 3) return BADGE_DANGER;
++  if (abs >= 2) return BADGE_WARN;
++  return BADGE_NEUTRAL;
++};
++</script>
++
++<template>
++  <div class="flex flex-col gap-6 px-6 py-5">
++    <!-- Loading state -->
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading anomaly data…"
++    />
++
++    <!-- Error state -->
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      {{ error }}
++    </div>
++
++    <template v-else>
++      <!-- KPI card: flagged channel count -->
++      <div
++        class="flex flex-wrap mx-0 shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5 gap-4"
++      >
++        <ReportMetricCard
++          label="Flagged Channels"
++          info-text="Number of channels with anomalous volume detected"
++          :value="String(anomalies.length)"
++          class="flex-1"
++        />
++      </div>
++
++      <!-- Anomaly table -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Flagged Channels
++        </h3>
++
++        <!-- Empty state -->
++        <div
++          v-if="!anomalies.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No anomalies detected
++        </div>
++
++        <!-- Table -->
++        <div v-else class="overflow-x-auto">
++          <table class="w-full text-sm">
++            <thead>
++              <tr class="border-b border-n-container">
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Channel
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Current Volume
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Baseline Mean
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Baseline Std Dev
++                </th>
++                <th
++                  class="text-right py-2 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Deviation
++                </th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr
++                v-for="row in anomalies"
++                :key="row.channel"
++                class="border-b border-n-container last:border-0"
++              >
++                <td class="py-3 pr-4 text-n-slate-12 capitalize">
++                  {{ row.channel }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-12">
++                  {{ fmt(row.current_volume, 0) }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-11">
++                  {{
++                    row.baseline_mean != null ? fmt(row.baseline_mean, 1) : '—'
++                  }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-11">
++                  {{
++                    row.baseline_stddev != null
++                      ? fmt(row.baseline_stddev, 1)
++                      : '—'
++                  }}
++                </td>
++                <td class="py-3 text-right">
++                  <span :class="deviationBadgeClass(computeDeviation(row))">
++                    {{
++                      computeDeviation(row) != null
++                        ? fmt(computeDeviation(row), 2)
++                        : '—'
++                    }}
++                  </span>
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </div>
++      </div>
++    </template>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonCaseLifecycle.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonCaseLifecycle.vue
+new file mode 100644
+index 0000000..c0ceaea
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonCaseLifecycle.vue
+@@ -0,0 +1,294 @@
++<script setup>
++import { ref, computed, onMounted } from 'vue';
++import BarChart from 'shared/components/charts/BarChart.vue';
++import LineChart from 'shared/components/charts/LineChart.vue';
++import { getLifecycle } from 'dashboard/api/protonMetrics';
++
++// ── Data ──────────────────────────────────────────────────────────────────────
++
++const cases = ref([]);
++const stateTrend = ref([]);
++const error = ref(null);
++const loading = ref(true);
++
++onMounted(async () => {
++  try {
++    const result = await getLifecycle();
++    cases.value = result.cases ?? [];
++    stateTrend.value = result.state_trend ?? [];
++  } catch (e) {
++    error.value = e.message || 'Failed to load lifecycle data';
++  } finally {
++    loading.value = false;
++  }
++});
++
++// ── Helpers ───────────────────────────────────────────────────────────────────
++
++const fmtMin = n => {
++  if (n == null || Number.isNaN(Number(n))) return '—';
++  return Number(n).toLocaleString(undefined, {
++    minimumFractionDigits: 0,
++    maximumFractionDigits: 0,
++  });
++};
++
++// ── Section 1: Resolution-time distribution histogram ─────────────────────────
++
++const BUCKET_LABELS = [
++  '0–30m',
++  '30–60m',
++  '1–2h',
++  '2–4h',
++  '4–8h',
++  '8–24h',
++  '>24h',
++];
++
++// Returns bucket index (0–6) given resolution_minutes value
++function bucketIndex(minutes) {
++  const m = Number(minutes);
++  if (m < 30) return 0;
++  if (m < 60) return 1;
++  if (m < 120) return 2;
++  if (m < 240) return 3;
++  if (m < 480) return 4;
++  if (m < 1440) return 5;
++  return 6;
++}
++
++const resolutionHistogramCollection = computed(() => {
++  const valid = cases.value.filter(
++    c =>
++      c.resolution_minutes != null &&
++      !Number.isNaN(Number(c.resolution_minutes))
++  );
++  if (!valid.length) return null;
++
++  const counts = new Array(7).fill(0);
++  valid.forEach(c => {
++    counts[bucketIndex(c.resolution_minutes)] += 1;
++  });
++
++  return {
++    labels: BUCKET_LABELS,
++    datasets: [
++      {
++        label: 'Cases',
++        backgroundColor: '#6366f1',
++        data: counts,
++      },
++    ],
++  };
++});
++
++const barChartOptions = {
++  plugins: { legend: { display: false } },
++  scales: { y: { beginAtZero: true } },
++};
++
++// ── Section 2: State trend LineChart ──────────────────────────────────────────
++
++// Palette for trend lines — cycles if more statuses than colours
++const LINE_COLORS = [
++  '#6366f1',
++  '#22c55e',
++  '#f59e0b',
++  '#ef4444',
++  '#3b82f6',
++  '#a855f7',
++];
++
++const stateTrendCollection = computed(() => {
++  if (!stateTrend.value.length) return null;
++
++  // Sorted unique months (ISO strings sort lexicographically which is correct)
++  const months = [...new Set(stateTrend.value.map(r => r.month))].sort();
++
++  // Distinct statuses
++  const statuses = [...new Set(stateTrend.value.map(r => r.status))];
++
++  // Build a lookup: month+status -> cases COUNT
++  const lookup = {};
++  stateTrend.value.forEach(r => {
++    lookup[`${r.month}__${r.status}`] = r.cases ?? 0;
++  });
++
++  const datasets = statuses.map((status, i) => ({
++    label: status,
++    borderColor: LINE_COLORS[i % LINE_COLORS.length],
++    backgroundColor: LINE_COLORS[i % LINE_COLORS.length],
++    fill: false,
++    tension: 0.3,
++    data: months.map(m => lookup[`${m}__${status}`] ?? 0),
++  }));
++
++  return { labels: months, datasets };
++});
++
++const lineChartOptions = {
++  plugins: { legend: { display: true, position: 'bottom' } },
++  scales: { y: { beginAtZero: true } },
++};
++
++// ── Section 3: Recent cases table (up to 50, most-recent first) ───────────────
++
++const recentCases = computed(() => {
++  return [...cases.value]
++    .sort((a, b) => {
++      // Sort descending by created_at (ISO strings compare correctly)
++      const ta = a.created_at ?? '';
++      const tb = b.created_at ?? '';
++      if (tb > ta) return 1;
++      if (tb < ta) return -1;
++      return 0;
++    })
++    .slice(0, 50);
++});
++</script>
++
++<template>
++  <div class="flex flex-col gap-6 px-6 py-5">
++    <!-- Loading state -->
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading case lifecycle data…"
++    />
++
++    <!-- Error state -->
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      {{ error }}
++    </div>
++
++    <template v-else>
++      <!-- Section 1: Resolution-time distribution -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Resolution-Time Distribution
++        </h3>
++
++        <div
++          v-if="!resolutionHistogramCollection"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No resolution data available
++        </div>
++
++        <div v-else class="h-64">
++          <BarChart
++            :collection="resolutionHistogramCollection"
++            :chart-options="barChartOptions"
++          />
++        </div>
++      </div>
++
++      <!-- Section 2: State trend -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Case State Trend
++        </h3>
++
++        <div
++          v-if="!stateTrendCollection"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No trend data available
++        </div>
++
++        <div v-else class="h-64">
++          <LineChart
++            :collection="stateTrendCollection"
++            :chart-options="lineChartOptions"
++          />
++        </div>
++      </div>
++
++      <!-- Section 3: Recent cases table -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">Recent Cases</h3>
++
++        <div
++          v-if="!recentCases.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No case data available
++        </div>
++
++        <div v-else class="overflow-x-auto">
++          <table class="w-full text-sm">
++            <thead>
++              <tr class="border-b border-n-container">
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Conversation ID
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Channel
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Department
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Dealer
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Status
++                </th>
++                <th
++                  class="text-right py-2 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Resolution (min)
++                </th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr
++                v-for="(row, idx) in recentCases"
++                :key="`${row.conversation_id}-${idx}`"
++                class="border-b border-n-container last:border-0"
++              >
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.conversation_id ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-11">
++                  {{ row.channel ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-11">
++                  {{ row.department ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-11">
++                  {{ row.dealer ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-11">
++                  {{ row.status ?? '—' }}
++                </td>
++                <td class="py-3 text-right text-n-slate-11">
++                  {{ fmtMin(row.resolution_minutes) }}
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </div>
++      </div>
++    </template>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonDepartments.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonDepartments.vue
+new file mode 100644
+index 0000000..d028db6
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonDepartments.vue
+@@ -0,0 +1,382 @@
++<script setup>
++import { ref, computed, onMounted } from 'vue';
++import BarChart from 'shared/components/charts/BarChart.vue';
++import { getDepartments, getCallCentre } from 'dashboard/api/protonMetrics';
++
++// ── Data ──────────────────────────────────────────────────────────────────────
++
++const deptPic = ref([]);
++const reopen = ref([]);
++const complaintTypes = ref([]);
++const error = ref(null);
++const loading = ref(true);
++
++onMounted(async () => {
++  try {
++    const [deptResult, callCentreResult] = await Promise.all([
++      getDepartments(),
++      getCallCentre().catch(() => ({})),
++    ]);
++    deptPic.value = deptResult.dept_pic ?? [];
++    reopen.value = deptResult.reopen ?? [];
++    complaintTypes.value = callCentreResult.complaint_types ?? [];
++  } catch (e) {
++    error.value = e.message || 'Failed to load department data';
++  } finally {
++    loading.value = false;
++  }
++});
++
++// ── Helpers ───────────────────────────────────────────────────────────────────
++
++const fmtNum = (n, decimals = 1) => {
++  if (n == null || Number.isNaN(Number(n))) return '—';
++  return Number(n).toLocaleString(undefined, {
++    minimumFractionDigits: decimals,
++    maximumFractionDigits: decimals,
++  });
++};
++
++const fmtPct = n => {
++  if (n == null || Number.isNaN(Number(n))) return '—';
++  return `${(Number(n) * 100).toFixed(1)}%`;
++};
++
++// ── Dept/PIC table — sorted by cases desc ────────────────────────────────────
++
++const sortedDeptPic = computed(() =>
++  [...deptPic.value].sort((a, b) => (b.cases ?? 0) - (a.cases ?? 0))
++);
++
++// ── Top-N depts by total cases (aggregate across PICs) ───────────────────────
++
++const TOP_N = 10;
++
++const deptCasesCollection = computed(() => {
++  if (!deptPic.value.length) return null;
++
++  // Aggregate by department
++  const agg = {};
++  deptPic.value.forEach(row => {
++    const dept = row.department ?? 'Unknown';
++    agg[dept] = (agg[dept] ?? 0) + (row.cases ?? 0);
++  });
++
++  // Sort and take top N
++  const sorted = Object.entries(agg)
++    .sort(([, a], [, b]) => b - a)
++    .slice(0, TOP_N);
++
++  return {
++    labels: sorted.map(([dept]) => dept),
++    datasets: [
++      {
++        label: 'Cases',
++        backgroundColor: '#6366f1',
++        data: sorted.map(([, count]) => count),
++      },
++    ],
++  };
++});
++
++const barChartOptions = {
++  plugins: { legend: { display: false } },
++  scales: { y: { beginAtZero: true } },
++};
++
++// ── Complaint-type ranking — sorted by cases desc, top 15 ────────────────────
++
++const COMPLAINT_TOP_N = 15;
++
++const sortedComplaintTypes = computed(() =>
++  [...complaintTypes.value]
++    .sort((a, b) => (b.cases ?? 0) - (a.cases ?? 0))
++    .slice(0, COMPLAINT_TOP_N)
++);
++</script>
++
++<template>
++  <div class="flex flex-col gap-6 px-6 py-5">
++    <!-- Loading state -->
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading department data…"
++    />
++
++    <!-- Error state -->
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      {{ error }}
++    </div>
++
++    <template v-else>
++      <!-- Dept/PIC performance table -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Department / PIC Performance
++        </h3>
++
++        <!-- Empty state -->
++        <div
++          v-if="!sortedDeptPic.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No department data available
++        </div>
++
++        <!-- Table -->
++        <div v-else class="overflow-x-auto">
++          <table class="w-full text-sm">
++            <thead>
++              <tr class="border-b border-n-container">
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Department
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  PIC
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Cases
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Avg First Response (min)
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Avg Resolution (min)
++                </th>
++                <th
++                  class="text-right py-2 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Resolution Rate
++                </th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr
++                v-for="(row, idx) in sortedDeptPic"
++                :key="`${row.department}-${row.pic}-${idx}`"
++                class="border-b border-n-container last:border-0"
++              >
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.department ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.pic ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-12">
++                  {{ fmtNum(row.cases, 0) }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-11">
++                  {{ fmtNum(row.avg_first_response_min) }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-11">
++                  {{ fmtNum(row.avg_resolution_min) }}
++                </td>
++                <td class="py-3 text-right text-n-slate-11">
++                  {{ fmtPct(row.resolution_rate) }}
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </div>
++      </div>
++
++      <!-- Top departments bar chart -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Top Departments by Cases
++        </h3>
++
++        <!-- Empty state -->
++        <div
++          v-if="!deptCasesCollection"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No department data available
++        </div>
++
++        <div v-else class="h-64">
++          <BarChart
++            :collection="deptCasesCollection"
++            :chart-options="barChartOptions"
++          />
++        </div>
++      </div>
++
++      <!-- Reopen / CRR table -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Reopen / Case Reopen Rate (CRR)
++        </h3>
++
++        <!-- Empty state -->
++        <div
++          v-if="!reopen.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No reopen data available
++        </div>
++
++        <!-- Table -->
++        <div v-else class="overflow-x-auto">
++          <table class="w-full text-sm">
++            <thead>
++              <tr class="border-b border-n-container">
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Dealer
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Department
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  PIC
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Cases
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Reopened
++                </th>
++                <th
++                  class="text-right py-2 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Reopen Rate
++                </th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr
++                v-for="(row, idx) in reopen"
++                :key="`${row.dealer}-${row.department}-${row.pic}-${idx}`"
++                class="border-b border-n-container last:border-0"
++              >
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.dealer ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.department ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.pic ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-12">
++                  {{ fmtNum(row.cases, 0) }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-11">
++                  {{ fmtNum(row.reopened, 0) }}
++                </td>
++                <td class="py-3 text-right text-n-slate-11">
++                  {{ fmtPct(row.reopen_rate) }}
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </div>
++      </div>
++
++      <!-- Complaint-Type Ranking -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Complaint-Type Ranking
++        </h3>
++
++        <!-- Empty state -->
++        <div
++          v-if="!sortedComplaintTypes.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No complaint-type data available
++        </div>
++
++        <!-- Table -->
++        <div v-else class="overflow-x-auto">
++          <table class="w-full text-sm">
++            <thead>
++              <tr class="border-b border-n-container">
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Category
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Subcategory
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Division
++                </th>
++                <th
++                  class="text-right py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Cases
++                </th>
++                <th
++                  class="text-right py-2 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Share (%)
++                </th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr
++                v-for="(row, idx) in sortedComplaintTypes"
++                :key="`${row.category}-${row.subcategory}-${row.division}-${idx}`"
++                class="border-b border-n-container last:border-0"
++              >
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.category ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.subcategory ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.division ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-right text-n-slate-12">
++                  {{ fmtNum(row.cases, 0) }}
++                </td>
++                <td class="py-3 text-right text-n-slate-11">
++                  {{ fmtPct(row.share_pct) }}
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </div>
++      </div>
++    </template>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/SLAReports.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/SLAReports.vue
+index 826b12f..1ff64c9 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/SLAReports.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/SLAReports.vue
+@@ -7,6 +7,7 @@ import SLATable from './components/SLA/SLATable.vue';
+ import SLAReportFilters from './components/SLA/SLAReportFilters.vue';
+ import { generateFileName } from 'dashboard/helper/downloadHelper';
+ import ReportHeader from './components/ReportHeader.vue';
++import ProtonSlaSection from './components/proton/ProtonSlaSection.vue';
+ export default {
+   name: 'SLAReports',
+   components: {
+@@ -15,6 +16,7 @@ export default {
+     SLAMetrics,
+     SLATable,
+     SLAReportFilters,
++    ProtonSlaSection,
+   },
+   data() {
+     return {
+@@ -104,5 +106,6 @@ export default {
+       :total-count="Number(slaMeta.count)"
+       @page-change="onPageChange"
+     />
++    <ProtonSlaSection />
+   </div>
+ </template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonAgentsSection.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonAgentsSection.vue
+new file mode 100644
+index 0000000..d749ba5
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonAgentsSection.vue
+@@ -0,0 +1,131 @@
++<script setup>
++import { ref, computed, onMounted } from 'vue';
++import { getCallCentre } from 'dashboard/api/protonMetrics';
++
++// ── State ──────────────────────────────────────────────────────────────────────
++
++const agents = ref([]);
++const error = ref(null);
++const loading = ref(true);
++
++onMounted(async () => {
++  try {
++    const result = await getCallCentre();
++    agents.value = result.tasks_per_agent ?? [];
++  } catch (e) {
++    error.value = e.message || 'Failed to load agent task data';
++  } finally {
++    loading.value = false;
++  }
++});
++
++// ── Computed ───────────────────────────────────────────────────────────────────
++
++const sortedAgents = computed(() =>
++  [...agents.value].sort((a, b) => (b.cases ?? 0) - (a.cases ?? 0))
++);
++
++function fmtMin(val) {
++  if (val == null || Number.isNaN(Number(val))) return '—';
++  return Number(Number(val).toFixed(1));
++}
++</script>
++
++<template>
++  <div
++    class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++  >
++    <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++      Tasks per Agent (Proton)
++    </h3>
++
++    <!-- Loading state -->
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading agent task data…"
++    />
++
++    <!-- Error state -->
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      {{ error }}
++    </div>
++
++    <!-- Empty state -->
++    <div
++      v-else-if="!agents.length"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      No agent task data available
++    </div>
++
++    <!-- Table -->
++    <div v-else class="overflow-x-auto">
++      <table class="w-full text-sm text-left">
++        <thead>
++          <tr class="border-b border-n-container">
++            <th
++              class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap"
++            >
++              Agent
++            </th>
++            <th
++              class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap"
++            >
++              PIC
++            </th>
++            <th
++              class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap text-right"
++            >
++              Cases
++            </th>
++            <th
++              class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap text-right"
++            >
++              Avg First Response (min)
++            </th>
++            <th
++              class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap text-right"
++            >
++              Avg Resolution (min)
++            </th>
++            <th
++              class="pb-2 text-xs font-medium text-n-slate-11 whitespace-nowrap text-right"
++            >
++              Resolved
++            </th>
++          </tr>
++        </thead>
++        <tbody>
++          <tr
++            v-for="row in sortedAgents"
++            :key="row.agent_id"
++            class="border-b border-n-container last:border-0"
++          >
++            <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++              {{ row.agent_id ?? '—' }}
++            </td>
++            <td class="py-2 pr-4 text-n-slate-11 whitespace-nowrap">
++              {{ row.pic ?? '—' }}
++            </td>
++            <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++              {{ row.cases ?? 0 }}
++            </td>
++            <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++              {{ fmtMin(row.avg_first_response_min) }}
++            </td>
++            <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++              {{ fmtMin(row.avg_resolution_min) }}
++            </td>
++            <td class="py-2 text-n-slate-12 text-right tabular-nums">
++              {{ row.resolved_cases ?? 0 }}
++            </td>
++          </tr>
++        </tbody>
++      </table>
++    </div>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonBotSection.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonBotSection.vue
+new file mode 100644
+index 0000000..2bf0d28
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonBotSection.vue
+@@ -0,0 +1,591 @@
++<script setup>
++import { ref, computed, onMounted } from 'vue';
++import BarChart from 'shared/components/charts/BarChart.vue';
++import DoughnutChart from 'shared/components/charts/DoughnutChart.vue';
++import ReportMetricCard from '../ReportMetricCard.vue';
++import { getDashboard, getCallCentre } from 'dashboard/api/protonMetrics';
++
++// ── State ──────────────────────────────────────────────────────────────────────
++
++const volume = ref([]);
++const resolution = ref([]);
++const speed = ref([]);
++const fallback = ref([]);
++const bounce = ref([]);
++const quality = ref([]);
++const firstResponse = ref([]);
++const resolutionTime = ref([]);
++const peakHours = ref([]);
++const error = ref(null);
++const loading = ref(true);
++
++onMounted(async () => {
++  try {
++    const [dashboard, callCentre] = await Promise.all([
++      getDashboard(),
++      getCallCentre(),
++    ]);
++    volume.value = dashboard.volume ?? [];
++    resolution.value = dashboard.resolution ?? [];
++    speed.value = dashboard.speed ?? [];
++    fallback.value = dashboard.fallback ?? [];
++    bounce.value = dashboard.bounce ?? [];
++    quality.value = dashboard.quality ?? [];
++    firstResponse.value = callCentre.first_response ?? [];
++    resolutionTime.value = callCentre.resolution_time ?? [];
++    peakHours.value = callCentre.peak_hours ?? [];
++  } catch (e) {
++    error.value = e.message || 'Failed to load AI & channel analytics';
++  } finally {
++    loading.value = false;
++  }
++});
++
++// ── Chart palettes ─────────────────────────────────────────────────────────────
++
++const CHANNEL_COLORS = [
++  '#6366f1',
++  '#22d3ee',
++  '#f59e0b',
++  '#10b981',
++  '#f43f5e',
++  '#8b5cf6',
++  '#ec4899',
++  '#14b8a6',
++  '#f97316',
++  '#3b82f6',
++];
++
++const getColor = i => CHANNEL_COLORS[i % CHANNEL_COLORS.length];
++
++// ── Chart options ──────────────────────────────────────────────────────────────
++
++const stackedBarOptions = {
++  scales: {
++    x: { stacked: true },
++    y: { stacked: true, beginAtZero: true },
++  },
++  plugins: { legend: { display: true } },
++};
++
++const groupedBarOptions = {
++  plugins: { legend: { display: true } },
++  scales: { y: { beginAtZero: true } },
++};
++
++const pctBarOptions = {
++  plugins: { legend: { display: true } },
++  scales: { y: { beginAtZero: true, max: 100 } },
++};
++
++const barChartOptionsDual = {
++  plugins: { legend: { display: true } },
++  scales: { y: { beginAtZero: true } },
++};
++
++const barChartOptions = {
++  plugins: { legend: { display: false } },
++  scales: { y: { beginAtZero: true } },
++};
++
++// ── KPI: Bot resolved % ────────────────────────────────────────────────────────
++
++const botResolvedPct = computed(() => {
++  if (!resolution.value.length) return '—';
++  const totalBot = resolution.value.reduce(
++    (s, r) => s + (r.closed_by_bot ?? 0),
++    0
++  );
++  const totalAll = resolution.value.reduce((s, r) => s + (r.total ?? 0), 0);
++  if (!totalAll) return '—';
++  const pct = (totalBot / totalAll) * 100;
++  if (Number.isNaN(Number(pct))) return '—';
++  return `${Number(pct).toFixed(1)}%`;
++});
++
++// ── Volume by channel (stacked BarChart, x=month, datasets=channels) ──────────
++
++const volumeCollection = computed(() => {
++  if (!volume.value.length) return null;
++
++  const months = [...new Set(volume.value.map(r => r.month))].sort();
++  const channels = [...new Set(volume.value.map(r => r.channel))];
++
++  const idx = {};
++  volume.value.forEach(r => {
++    if (!idx[r.month]) idx[r.month] = {};
++    idx[r.month][r.channel] = r.volume ?? 0;
++  });
++
++  return {
++    labels: months,
++    datasets: channels.map((ch, i) => ({
++      label: ch,
++      backgroundColor: getColor(i),
++      data: months.map(m => idx[m]?.[ch] ?? 0),
++    })),
++  };
++});
++
++// ── Resolution split (DoughnutChart) ──────────────────────────────────────────
++
++const resolutionCollection = computed(() => {
++  if (!resolution.value.length) return null;
++  const bot = resolution.value.reduce((s, r) => s + (r.closed_by_bot ?? 0), 0);
++  const agent = resolution.value.reduce(
++    (s, r) => s + (r.transfer_to_agent ?? 0),
++    0
++  );
++  if (!bot && !agent) return null;
++  return {
++    labels: ['Bot Resolved', 'Transferred to Agent'],
++    datasets: [
++      {
++        data: [bot, agent],
++        backgroundColor: ['#6366f1', '#22d3ee'],
++      },
++    ],
++  };
++});
++
++// ── Speed p99 by channel grouped by is_first_turn (BarChart) ─────────────────
++
++const speedCollection = computed(() => {
++  if (!speed.value.length) return null;
++  const channels = [...new Set(speed.value.map(r => r.channel))];
++  const turns = [...new Set(speed.value.map(r => r.is_first_turn))];
++
++  return {
++    labels: channels,
++    datasets: turns.map((turn, i) => ({
++      label: turn ? 'First Turn' : 'Subsequent Turn',
++      backgroundColor: getColor(i),
++      data: channels.map(ch => {
++        const row = speed.value.find(
++          r => r.channel === ch && r.is_first_turn === turn
++        );
++        const v = row?.p99_latency_ms;
++        return v != null && !Number.isNaN(Number(v)) ? Number(v) : 0;
++      }),
++    })),
++  };
++});
++
++// ── Fallback rate by channel (BarChart, fraction*100) ─────────────────────────
++
++const fallbackCollection = computed(() => {
++  if (!fallback.value.length) return null;
++  return {
++    labels: fallback.value.map(r => r.channel ?? '—'),
++    datasets: [
++      {
++        label: 'Fallback Rate %',
++        backgroundColor: '#f59e0b',
++        data: fallback.value.map(r => {
++          const v = r.fallback_rate;
++          if (v == null || Number.isNaN(Number(v))) return 0;
++          return Number((Number(v) * 100).toFixed(1));
++        }),
++      },
++    ],
++  };
++});
++
++// ── Bounce rate by channel (BarChart, fraction*100) ───────────────────────────
++
++const bounceCollection = computed(() => {
++  if (!bounce.value.length) return null;
++  return {
++    labels: bounce.value.map(r => r.channel ?? '—'),
++    datasets: [
++      {
++        label: 'Bounce Rate %',
++        backgroundColor: '#f43f5e',
++        data: bounce.value.map(r => {
++          const v = r.bounce_rate;
++          if (v == null || Number.isNaN(Number(v))) return 0;
++          return Number((Number(v) * 100).toFixed(1));
++        }),
++      },
++    ],
++  };
++});
++
++// ── Quality by channel (BarChart, already 0..100) ────────────────────────────
++
++const qualityCollection = computed(() => {
++  if (!quality.value.length) return null;
++  return {
++    labels: quality.value.map(r => r.channel ?? '—'),
++    datasets: [
++      {
++        label: 'Avg Accuracy',
++        backgroundColor: '#6366f1',
++        data: quality.value.map(r => {
++          const v = r.avg_accuracy;
++          return v != null && !Number.isNaN(Number(v)) ? Number(v) : 0;
++        }),
++      },
++      {
++        label: 'Avg Quality',
++        backgroundColor: '#10b981',
++        data: quality.value.map(r => {
++          const v = r.avg_quality;
++          return v != null && !Number.isNaN(Number(v)) ? Number(v) : 0;
++        }),
++      },
++    ],
++  };
++});
++
++// ── First response by channel (BarChart, avg + p90 minutes) ──────────────────
++
++const firstResponseCollection = computed(() => {
++  if (!firstResponse.value.length) return null;
++  return {
++    labels: firstResponse.value.map(r => r.channel ?? '—'),
++    datasets: [
++      {
++        label: 'Avg First Response (min)',
++        backgroundColor: '#6366f1',
++        data: firstResponse.value.map(r => {
++          const v = r.avg_first_response_min;
++          return v != null && !Number.isNaN(Number(v))
++            ? Number(Number(v).toFixed(1))
++            : 0;
++        }),
++      },
++      {
++        label: 'P90 First Response (min)',
++        backgroundColor: '#f59e0b',
++        data: firstResponse.value.map(r => {
++          const v = r.p90_first_response_min;
++          return v != null && !Number.isNaN(Number(v))
++            ? Number(Number(v).toFixed(1))
++            : 0;
++        }),
++      },
++    ],
++  };
++});
++
++// ── Resolution time by channel (BarChart, avg + p90 minutes) ─────────────────
++
++const resolutionTimeCollection = computed(() => {
++  if (!resolutionTime.value.length) return null;
++  return {
++    labels: resolutionTime.value.map(r => r.channel ?? '—'),
++    datasets: [
++      {
++        label: 'Avg Resolution (min)',
++        backgroundColor: '#6366f1',
++        data: resolutionTime.value.map(r => {
++          const v = r.avg_min;
++          return v != null && !Number.isNaN(Number(v))
++            ? Number(Number(v).toFixed(1))
++            : 0;
++        }),
++      },
++      {
++        label: 'P90 Resolution (min)',
++        backgroundColor: '#f59e0b',
++        data: resolutionTime.value.map(r => {
++          const v = r.p90_min;
++          return v != null && !Number.isNaN(Number(v))
++            ? Number(Number(v).toFixed(1))
++            : 0;
++        }),
++      },
++    ],
++  };
++});
++
++// ── Peak hours by hour_of_day (BarChart, aggregate across days/channels) ──────
++
++const peakHoursCollection = computed(() => {
++  if (!peakHours.value.length) return null;
++
++  const hourMap = {};
++  for (let h = 0; h < 24; h += 1) hourMap[h] = 0;
++  peakHours.value.forEach(r => {
++    const h = r.hour_of_day;
++    if (h != null && !Number.isNaN(Number(h))) {
++      hourMap[Number(h)] = (hourMap[Number(h)] ?? 0) + (r.volume ?? 0);
++    }
++  });
++
++  const labels = Array.from({ length: 24 }, (_, i) =>
++    String(i).padStart(2, '0')
++  );
++  return {
++    labels,
++    datasets: [
++      {
++        label: 'Volume',
++        backgroundColor: '#6366f1',
++        data: labels.map((_, h) => hourMap[h] ?? 0),
++      },
++    ],
++  };
++});
++
++// ── Overall empty guard ────────────────────────────────────────────────────────
++
++const hasAnyData = computed(
++  () =>
++    volume.value.length > 0 ||
++    resolution.value.length > 0 ||
++    speed.value.length > 0 ||
++    fallback.value.length > 0 ||
++    bounce.value.length > 0 ||
++    quality.value.length > 0 ||
++    firstResponse.value.length > 0 ||
++    resolutionTime.value.length > 0 ||
++    peakHours.value.length > 0
++);
++</script>
++
++<template>
++  <div class="flex flex-col gap-6">
++    <!-- Section heading -->
++    <div
++      class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++    >
++      <h2 class="text-base font-semibold text-n-slate-12">
++        Proton AI & Channel Analytics
++      </h2>
++      <p class="text-xs text-n-slate-10 mt-1">
++        Cross-channel AI bot performance and response time metrics
++      </p>
++    </div>
++
++    <!-- Loading state -->
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading AI & channel analytics…"
++    />
++
++    <!-- Error state -->
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10 shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++    >
++      {{ error }}
++    </div>
++
++    <!-- Empty state -->
++    <div
++      v-else-if="!hasAnyData"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10 shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++    >
++      No AI & channel analytics data available
++    </div>
++
++    <!-- Content -->
++    <template v-else>
++      <!-- KPI Card: Bot Resolved % -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <div class="flex flex-wrap gap-4">
++          <ReportMetricCard
++            label="Bot Resolved %"
++            info-text="Percentage of conversations closed by the bot across all channels"
++            :value="botResolvedPct"
++            class="flex-1"
++          />
++        </div>
++      </div>
++
++      <!-- Volume by Channel (stacked bar, x=month) -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Volume by Channel
++        </h3>
++        <div v-if="volumeCollection" class="h-72">
++          <BarChart
++            :collection="volumeCollection"
++            :chart-options="stackedBarOptions"
++          />
++        </div>
++        <div
++          v-else
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No volume data available
++        </div>
++      </div>
++
++      <!-- Resolution Split (doughnut) -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Bot vs Agent Resolution Split
++        </h3>
++        <div v-if="resolutionCollection" class="h-64">
++          <DoughnutChart :collection="resolutionCollection" />
++        </div>
++        <div
++          v-else
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No resolution data available
++        </div>
++      </div>
++
++      <!-- Speed p99 by Channel -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Response Speed P99 by Channel (ms)
++        </h3>
++        <div v-if="speedCollection" class="h-64">
++          <BarChart
++            :collection="speedCollection"
++            :chart-options="groupedBarOptions"
++          />
++        </div>
++        <div
++          v-else
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No speed data available
++        </div>
++      </div>
++
++      <!-- Fallback & Bounce Rates -->
++      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
++        <!-- Fallback Rate -->
++        <div
++          class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++        >
++          <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++            Fallback Rate by Channel
++          </h3>
++          <div v-if="fallbackCollection" class="h-64">
++            <BarChart
++              :collection="fallbackCollection"
++              :chart-options="pctBarOptions"
++            />
++          </div>
++          <div
++            v-else
++            class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++          >
++            No fallback data available
++          </div>
++        </div>
++
++        <!-- Bounce Rate -->
++        <div
++          class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++        >
++          <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++            Bounce Rate by Channel
++          </h3>
++          <div v-if="bounceCollection" class="h-64">
++            <BarChart
++              :collection="bounceCollection"
++              :chart-options="pctBarOptions"
++            />
++          </div>
++          <div
++            v-else
++            class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++          >
++            No bounce data available
++          </div>
++        </div>
++      </div>
++
++      <!-- Quality by Channel -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Quality by Channel
++        </h3>
++        <div v-if="qualityCollection" class="h-64">
++          <BarChart
++            :collection="qualityCollection"
++            :chart-options="pctBarOptions"
++          />
++        </div>
++        <div
++          v-else
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No quality data available
++        </div>
++      </div>
++
++      <!-- First Response by Channel -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          First Response Time by Channel (minutes)
++        </h3>
++        <div v-if="firstResponseCollection" class="h-64">
++          <BarChart
++            :collection="firstResponseCollection"
++            :chart-options="barChartOptionsDual"
++          />
++        </div>
++        <div
++          v-else
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No first response data available
++        </div>
++      </div>
++
++      <!-- Resolution Time by Channel -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Resolution Time by Channel (minutes)
++        </h3>
++        <div v-if="resolutionTimeCollection" class="h-64">
++          <BarChart
++            :collection="resolutionTimeCollection"
++            :chart-options="barChartOptionsDual"
++          />
++        </div>
++        <div
++          v-else
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No resolution time data available
++        </div>
++      </div>
++
++      <!-- Peak Hours -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Peak Hours (Volume by Hour of Day)
++        </h3>
++        <div v-if="peakHoursCollection" class="h-64">
++          <BarChart
++            :collection="peakHoursCollection"
++            :chart-options="barChartOptions"
++          />
++        </div>
++        <div
++          v-else
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No peak hours data available
++        </div>
++      </div>
++    </template>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonCsatSection.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonCsatSection.vue
+new file mode 100644
+index 0000000..579c6c3
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonCsatSection.vue
+@@ -0,0 +1,247 @@
++<script setup>
++import { ref, computed, onMounted } from 'vue';
++import BarChart from 'shared/components/charts/BarChart.vue';
++import DoughnutChart from 'shared/components/charts/DoughnutChart.vue';
++import ReportMetricCard from '../ReportMetricCard.vue';
++import { getDashboard, getCallCentre } from 'dashboard/api/protonMetrics';
++
++// ── State ──────────────────────────────────────────────────────────────────────
++
++const csat = ref([]);
++const nps = ref([]);
++const npsByAgent = ref([]);
++const error = ref(null);
++const loading = ref(true);
++
++onMounted(async () => {
++  try {
++    const [dashboard, callCentre] = await Promise.all([
++      getDashboard(),
++      getCallCentre(),
++    ]);
++    csat.value = dashboard.csat ?? [];
++    nps.value = dashboard.nps ?? [];
++    npsByAgent.value = callCentre.nps_by_agent ?? [];
++  } catch (e) {
++    error.value = e.message || 'Failed to load CSAT & NPS data';
++  } finally {
++    loading.value = false;
++  }
++});
++
++// ── KPI: Blended CSAT (respondent-weighted avg of avg_score) ──────────────────
++
++const blendedCsat = computed(() => {
++  if (!csat.value.length) return '—';
++  const totalRespondents = csat.value.reduce(
++    (s, r) => s + (r.respondents ?? 0),
++    0
++  );
++  if (!totalRespondents) return '—';
++  const weighted = csat.value.reduce(
++    (s, r) => s + (r.avg_score ?? 0) * (r.respondents ?? 0),
++    0
++  );
++  const result = weighted / totalRespondents;
++  if (Number.isNaN(Number(result))) return '—';
++  return `${Number(result).toFixed(1)}/5`;
++});
++
++// ── KPI: Blended NPS (respondent-weighted avg of nps) ────────────────────────
++
++const blendedNps = computed(() => {
++  if (!nps.value.length) return '—';
++  const totalRespondents = nps.value.reduce(
++    (s, r) => s + (r.respondents ?? 0),
++    0
++  );
++  if (!totalRespondents) return '—';
++  const weighted = nps.value.reduce(
++    (s, r) => s + (r.nps ?? 0) * (r.respondents ?? 0),
++    0
++  );
++  const result = weighted / totalRespondents;
++  if (Number.isNaN(Number(result))) return '—';
++  return Number(result).toFixed(1);
++});
++
++// ── Chart options ─────────────────────────────────────────────────────────────
++
++const barChartOptions = {
++  plugins: { legend: { display: false } },
++  scales: { y: { beginAtZero: true } },
++};
++
++// ── CSAT by channel (BarChart) ────────────────────────────────────────────────
++
++const csatChartCollection = computed(() => {
++  if (!csat.value.length) return null;
++  return {
++    labels: csat.value.map(r => r.channel ?? '—'),
++    datasets: [
++      {
++        label: 'Avg CSAT Score',
++        backgroundColor: '#6366f1',
++        data: csat.value.map(r => {
++          const v = r.avg_score;
++          if (v == null || Number.isNaN(Number(v))) return 0;
++          return Number(Number(v).toFixed(2));
++        }),
++      },
++    ],
++  };
++});
++
++// ── NPS split doughnut (promoters / passives / detractors) ───────────────────
++
++const npsDoughnutCollection = computed(() => {
++  if (!nps.value.length) return null;
++  const promoters = nps.value.reduce((s, r) => s + (r.promoters ?? 0), 0);
++  const passives = nps.value.reduce((s, r) => s + (r.passives ?? 0), 0);
++  const detractors = nps.value.reduce((s, r) => s + (r.detractors ?? 0), 0);
++  if (!promoters && !passives && !detractors) return null;
++  return {
++    labels: ['Promoters', 'Passives', 'Detractors'],
++    datasets: [
++      {
++        data: [promoters, passives, detractors],
++        backgroundColor: ['#10b981', '#f59e0b', '#f43f5e'],
++      },
++    ],
++  };
++});
++
++// ── NPS by agent (BarChart) — respondent-weighted per agent ──────────────────
++
++const npsAgentChartCollection = computed(() => {
++  if (!npsByAgent.value.length) return null;
++
++  // Aggregate by agent_id: respondent-weighted NPS across channels
++  const agentMap = {};
++  npsByAgent.value.forEach(r => {
++    const id = r.agent_id ?? 'Unknown';
++    if (!agentMap[id]) agentMap[id] = { weighted: 0, respondents: 0 };
++    agentMap[id].weighted += (r.nps ?? 0) * (r.respondents ?? 0);
++    agentMap[id].respondents += r.respondents ?? 0;
++  });
++
++  const agents = Object.keys(agentMap);
++  return {
++    labels: agents,
++    datasets: [
++      {
++        label: 'Agent NPS',
++        backgroundColor: '#6366f1',
++        data: agents.map(id => {
++          const { weighted, respondents } = agentMap[id];
++          return respondents ? Number((weighted / respondents).toFixed(1)) : 0;
++        }),
++      },
++    ],
++  };
++});
++</script>
++
++<template>
++  <div
++    class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++  >
++    <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++      Cross-Channel CSAT & NPS
++    </h3>
++
++    <!-- Loading state -->
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading CSAT & NPS data…"
++    />
++
++    <!-- Error state -->
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      {{ error }}
++    </div>
++
++    <!-- Empty state -->
++    <div
++      v-else-if="!csat.length && !nps.length && !npsByAgent.length"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      No CSAT or NPS data available
++    </div>
++
++    <!-- Content -->
++    <template v-else>
++      <!-- KPI Cards -->
++      <div class="flex flex-wrap gap-4 mb-6">
++        <ReportMetricCard
++          label="Blended CSAT"
++          info-text="Respondent-weighted average CSAT score across all channels (0–5 scale)"
++          :value="blendedCsat"
++          class="flex-1"
++        />
++        <ReportMetricCard
++          label="Blended NPS"
++          info-text="Respondent-weighted average Net Promoter Score across all channels (-100 to 100)"
++          :value="blendedNps"
++          class="flex-1"
++        />
++      </div>
++
++      <!-- CSAT by Channel -->
++      <div class="mb-6">
++        <h4 class="text-xs font-medium text-n-slate-11 mb-3">
++          CSAT Score by Channel
++        </h4>
++        <div v-if="csatChartCollection" class="h-64">
++          <BarChart
++            :collection="csatChartCollection"
++            :chart-options="barChartOptions"
++          />
++        </div>
++        <div
++          v-else
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No CSAT data available
++        </div>
++      </div>
++
++      <!-- NPS Split Doughnut -->
++      <div class="mb-6">
++        <h4 class="text-xs font-medium text-n-slate-11 mb-3">
++          NPS Respondent Split
++        </h4>
++        <div v-if="npsDoughnutCollection" class="h-64">
++          <DoughnutChart :collection="npsDoughnutCollection" />
++        </div>
++        <div
++          v-else
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No NPS split data available
++        </div>
++      </div>
++
++      <!-- NPS by Agent -->
++      <div>
++        <h4 class="text-xs font-medium text-n-slate-11 mb-3">NPS by Agent</h4>
++        <div v-if="npsAgentChartCollection" class="h-64">
++          <BarChart
++            :collection="npsAgentChartCollection"
++            :chart-options="barChartOptions"
++          />
++        </div>
++        <div
++          v-else
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No agent NPS data available
++        </div>
++      </div>
++    </template>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonSlaSection.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonSlaSection.vue
+new file mode 100644
+index 0000000..b369c53
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonSlaSection.vue
+@@ -0,0 +1,108 @@
++<script setup>
++import { ref, computed, onMounted } from 'vue';
++import BarChart from 'shared/components/charts/BarChart.vue';
++import ReportMetricCard from '../ReportMetricCard.vue';
++import { getCallCentre } from 'dashboard/api/protonMetrics';
++
++// ── State ──────────────────────────────────────────────────────────────────────
++
++const sla = ref([]);
++const error = ref(null);
++const loading = ref(true);
++
++onMounted(async () => {
++  try {
++    const result = await getCallCentre();
++    sla.value = result.sla ?? [];
++  } catch (e) {
++    error.value = e.message || 'Failed to load SLA data';
++  } finally {
++    loading.value = false;
++  }
++});
++
++// ── Computed ───────────────────────────────────────────────────────────────────
++
++const overallSlaAchievement = computed(() => {
++  const totalMet = sla.value.reduce((s, r) => s + (r.met ?? 0), 0);
++  const totalWith = sla.value.reduce((s, r) => s + (r.with_sla ?? 0), 0);
++  if (!totalWith) return '—';
++  return `${((totalMet / totalWith) * 100).toFixed(1)}%`;
++});
++
++const slaChartCollection = computed(() => {
++  if (!sla.value.length) return null;
++  return {
++    labels: sla.value.map(r => r.channel ?? '—'),
++    datasets: [
++      {
++        label: 'SLA Achievement %',
++        backgroundColor: '#6366f1',
++        data: sla.value.map(r =>
++          r.sla_achievement_rate != null &&
++          !Number.isNaN(Number(r.sla_achievement_rate))
++            ? Number((r.sla_achievement_rate * 100).toFixed(1))
++            : 0
++        ),
++      },
++    ],
++  };
++});
++
++const barChartOptions = {
++  plugins: { legend: { display: false } },
++  scales: { y: { beginAtZero: true } },
++};
++</script>
++
++<template>
++  <div
++    class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++  >
++    <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++      Cross-Channel SLA Achievement
++    </h3>
++
++    <!-- Loading state -->
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading SLA data…"
++    />
++
++    <!-- Error state -->
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      {{ error }}
++    </div>
++
++    <!-- Empty state -->
++    <div
++      v-else-if="!sla.length"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      No SLA data available
++    </div>
++
++    <!-- Content -->
++    <template v-else>
++      <div class="flex flex-wrap gap-4 mb-6">
++        <ReportMetricCard
++          label="Overall SLA Achievement"
++          info-text="Total met SLA tickets divided by total tickets with SLA across all channels"
++          :value="overallSlaAchievement"
++          class="flex-1"
++        />
++      </div>
++
++      <div class="h-64">
++        <BarChart
++          :collection="slaChartCollection"
++          :chart-options="barChartOptions"
++        />
++      </div>
++    </template>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js b/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js
+index af01f6d..f2d52f4 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js
+@@ -23,6 +23,9 @@ import CsatResponses from './CsatResponses.vue';
+ import BotReports from './BotReports.vue';
+ import LiveReports from './LiveReports.vue';
+ import SLAReports from './SLAReports.vue';
++import ProtonAnomaly from './ProtonAnomaly.vue';
++import ProtonDepartments from './ProtonDepartments.vue';
++import ProtonCaseLifecycle from './ProtonCaseLifecycle.vue';
+ 
+ const meta = {
+   featureFlag: FEATURE_FLAGS.REPORTS,
+@@ -168,6 +171,24 @@ export default {
+           meta,
+           component: BotReports,
+         },
++        {
++          path: 'proton_anomaly',
++          name: 'proton_anomaly_reports',
++          meta: { permissions: ['administrator', 'report_manage'] },
++          component: ProtonAnomaly,
++        },
++        {
++          path: 'proton_departments',
++          name: 'proton_departments_reports',
++          meta: { permissions: ['administrator', 'report_manage'] },
++          component: ProtonDepartments,
++        },
++        {
++          path: 'proton_case_lifecycle',
++          name: 'proton_case_lifecycle_reports',
++          meta: { permissions: ['administrator', 'report_manage'] },
++          component: ProtonCaseLifecycle,
++        },
+       ],
+     },
+   ],
+diff --git a/app/javascript/shared/components/charts/DoughnutChart.vue b/app/javascript/shared/components/charts/DoughnutChart.vue
+new file mode 100644
+index 0000000..fa72d3d
+--- /dev/null
++++ b/app/javascript/shared/components/charts/DoughnutChart.vue
+@@ -0,0 +1,31 @@
++<script setup>
++import { computed } from 'vue';
++import { Doughnut } from 'vue-chartjs';
++import { Chart as ChartJS, Title, Tooltip, Legend, ArcElement } from 'chart.js';
++
++const props = defineProps({
++  collection: {
++    type: Object,
++    default: () => ({}),
++  },
++  chartOptions: {
++    type: Object,
++    default: () => ({}),
++  },
++});
++
++ChartJS.register(Title, Tooltip, Legend, ArcElement);
++
++const defaultChartOptions = {
++  responsive: true,
++  maintainAspectRatio: false,
++};
++
++const options = computed(() => {
++  return { ...defaultChartOptions, ...props.chartOptions };
++});
++</script>
++
++<template>
++  <Doughnut :data="collection" :options="options" />
++</template>
+diff --git a/app/javascript/shared/components/charts/LineChart.vue b/app/javascript/shared/components/charts/LineChart.vue
+new file mode 100644
+index 0000000..9ba7679
+--- /dev/null
++++ b/app/javascript/shared/components/charts/LineChart.vue
+@@ -0,0 +1,48 @@
++<script setup>
++import { computed } from 'vue';
++import { Line } from 'vue-chartjs';
++import {
++  Chart as ChartJS,
++  Title,
++  Tooltip,
++  Legend,
++  LineElement,
++  PointElement,
++  CategoryScale,
++  LinearScale,
++} from 'chart.js';
++
++const props = defineProps({
++  collection: {
++    type: Object,
++    default: () => ({}),
++  },
++  chartOptions: {
++    type: Object,
++    default: () => ({}),
++  },
++});
++
++ChartJS.register(
++  Title,
++  Tooltip,
++  Legend,
++  LineElement,
++  PointElement,
++  CategoryScale,
++  LinearScale
++);
++
++const defaultChartOptions = {
++  responsive: true,
++  maintainAspectRatio: false,
++};
++
++const options = computed(() => {
++  return { ...defaultChartOptions, ...props.chartOptions };
++});
++</script>
++
++<template>
++  <Line :data="collection" :options="options" />
++</template>

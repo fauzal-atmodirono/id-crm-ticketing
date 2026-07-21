@@ -54,6 +54,7 @@ from chatbot.features.metrics.email_sender import SmtpEmailSender
 from chatbot.features.metrics.export_router import build_metrics_export_router
 from chatbot.features.metrics.faq_feedback_adapter import build_faq_feedback_port
 from chatbot.features.metrics.faq_router import build_faq_router
+from chatbot.features.metrics.insights_router import build_metrics_insights_router
 from chatbot.features.metrics.qa_adapter import build_qa_label_port
 from chatbot.features.metrics.qa_router import build_qa_router
 from chatbot.features.metrics.query_adapter import build_metrics_query_port
@@ -221,6 +222,7 @@ def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
     app.include_router(build_metrics_query_router(query_port))
     app.include_router(build_metrics_export_router(query_port))
     app.include_router(build_metrics_anomaly_router(query_port, settings))
+    app.include_router(build_metrics_insights_router(query_port, settings))
 
     report_scheduler = start_report_scheduler(
         settings, query_port, build_email_report_port(settings)

@@ -1,0 +1,32 @@
+http://crm.127-0-0-1.nip.io {
+	reverse_proxy default-chatwoot-rails:3000
+}
+
+http://tickets.127-0-0-1.nip.io {
+	reverse_proxy default-zammad-nginx:8080
+}
+
+http://agent.127-0-0-1.nip.io {
+	reverse_proxy default-agent:8000
+}
+
+http://mail.127-0-0-1.nip.io {
+	basic_auth {
+		admin $2a$14$4EHCNl0/LdrsBczd/veTM.BR5JkOO7vJN.hlLbt9w7ijG7JIZpOni
+	}
+	reverse_proxy mailpit:8025
+}
+
+# --- *.localhost aliases (Chrome treats these as loopback; avoids Private
+# Network Access blocking that hits the public-looking *.nip.io names) ---
+http://crm.localhost {
+	reverse_proxy default-chatwoot-rails:3000
+}
+
+http://agent.localhost {
+	reverse_proxy default-agent:8000
+}
+
+http://tickets.localhost {
+	reverse_proxy default-zammad-nginx:8080
+}

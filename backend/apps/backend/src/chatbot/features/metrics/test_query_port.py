@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from chatbot.features.metrics.query_port import (
+    CallCentreMetrics,
     DashboardMetrics,
     DepartmentsMetrics,
     MockMetricsQuery,
@@ -31,3 +32,10 @@ def test_mock_departments_shape():
     assert isinstance(m, DepartmentsMetrics)
     assert m.dept_pic and m.dept_pic[0].department
     assert m.reopen and 0.0 <= (m.reopen[0].reopen_rate or 0) <= 1.0
+
+
+def test_mock_callcenter_shape():
+    m = asyncio.run(MockMetricsQuery().fetch_callcenter())
+    assert isinstance(m, CallCentreMetrics)
+    assert m.nps_by_agent and m.nps_by_agent[0].channel in ("Phone", "WhatsApp")
+    assert m.peak_hours and 1 <= m.peak_hours[0].day_of_week <= 7

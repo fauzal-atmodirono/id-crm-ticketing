@@ -123,10 +123,84 @@ class DepartmentsMetrics:
     reopen: list[ReopenRow]
 
 
+@dataclass(frozen=True)
+class SlaAchievementRow:
+    channel: str
+    division: str
+    with_sla: int
+    met: int
+    sla_achievement_rate: float | None
+
+
+@dataclass(frozen=True)
+class TasksPerAgentRow:
+    agent_id: str
+    pic: str
+    cases: int
+    avg_first_response_min: float | None
+    avg_resolution_min: float | None
+    resolved_cases: int
+
+
+@dataclass(frozen=True)
+class FirstResponseRow:
+    channel: str
+    avg_first_response_min: float | None
+    p50_first_response_min: int | None
+    p90_first_response_min: int | None
+    with_first_response: int
+
+
+@dataclass(frozen=True)
+class ResolutionTimeRow:
+    channel: str
+    division: str
+    avg_min: float | None
+    p50_min: int | None
+    p90_min: int | None
+
+
+@dataclass(frozen=True)
+class ComplaintTypeRow:
+    category: str
+    subcategory: str
+    division: str
+    cases: int
+    share_pct: float | None
+
+
+@dataclass(frozen=True)
+class PeakHourRow:
+    day_of_week: int
+    hour_of_day: int
+    channel: str
+    volume: int
+
+
+@dataclass(frozen=True)
+class NpsByAgentRow:
+    agent_id: str
+    channel: str
+    respondents: int
+    nps: float | None
+
+
+@dataclass(frozen=True)
+class CallCentreMetrics:
+    sla: list[SlaAchievementRow]
+    tasks_per_agent: list[TasksPerAgentRow]
+    first_response: list[FirstResponseRow]
+    resolution_time: list[ResolutionTimeRow]
+    complaint_types: list[ComplaintTypeRow]
+    peak_hours: list[PeakHourRow]
+    nps_by_agent: list[NpsByAgentRow]
+
+
 class MetricsQueryPort(Protocol):
     async def fetch_dashboard(self) -> DashboardMetrics: ...
     async def fetch_anomalies(self) -> list[AnomalyRow]: ...
     async def fetch_departments(self) -> DepartmentsMetrics: ...
+    async def fetch_callcenter(self) -> CallCentreMetrics: ...
 
 
 class MockMetricsQuery:
@@ -142,6 +216,17 @@ class MockMetricsQuery:
         return DepartmentsMetrics(
             dept_pic=[DeptPicRow("Aftersales", "Ali", 40, 12.0, 240.0, 0.9)],
             reopen=[ReopenRow("Dealer KL", "Aftersales", "Ali", 40, 4, 0.1)],
+        )
+
+    async def fetch_callcenter(self) -> CallCentreMetrics:
+        return CallCentreMetrics(
+            sla=[SlaAchievementRow("Phone", "Sales", 100, 95, 0.95)],
+            tasks_per_agent=[TasksPerAgentRow("ALI001", "Ali", 50, 8.5, 180.0, 48)],
+            first_response=[FirstResponseRow("Phone", 8.5, 5, 20, 95)],
+            resolution_time=[ResolutionTimeRow("Phone", "Sales", 180.0, 150, 300)],
+            complaint_types=[ComplaintTypeRow("Billing", "Late Invoice", "Finance", 25, 0.45)],
+            peak_hours=[PeakHourRow(2, 14, "whatsapp", 55)],
+            nps_by_agent=[NpsByAgentRow("ALI001", "Phone", 30, 45.0)],
         )
 
     async def fetch_dashboard(self) -> DashboardMetrics:

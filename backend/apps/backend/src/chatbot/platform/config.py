@@ -140,6 +140,10 @@ class Settings(BaseSettings):
     bigquery_qa_labels_table: str = "qa_labels"
     qa_api_key: str = ""
 
+    # Metrics read endpoints (departments / call-centre / lifecycle) — agent/PIC-level
+    # aggregates, so gated unlike the channel-only /metrics/dashboard.
+    metrics_api_key: str = ""
+
     # Bot-metrics Phase 5 (FAQ feedback recording)
     bigquery_faq_feedback_table: str = "faq_feedback"
 

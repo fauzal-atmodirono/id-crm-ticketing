@@ -116,6 +116,10 @@ docker compose -p "${INFRA_PROJECT}" -f "${INFRA_FILE}" exec -T postgres \
 # --- 3. Render + install the Caddy route, then reload -----------------------
 cat > "caddy/tenants/${TENANT}.caddy" <<CADDY
 http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io {
+	# Proton AI backend paths proxied same-origin so the Chatwoot SPA reaches the
+	# backend without CORS or a browser-unreachable internal host.
+	@proton_backend path /metrics/* /kb/* /assist/*
+	reverse_proxy @proton_backend ${TENANT}-backend:8080
 	reverse_proxy ${TENANT}-chatwoot-rails:3000
 }
 

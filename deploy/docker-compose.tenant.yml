@@ -29,7 +29,12 @@ x-chatwoot-env: &chatwoot-env
   ENABLE_ACCOUNT_SIGNUP: "false"
   WEB_CONCURRENCY: 1
   RAILS_MAX_THREADS: 5
-  PROTON_BACKEND_URL: ${PROTON_BACKEND_URL:-http://${TENANT}-backend:8080}
+  # Browser-facing backend URL injected into the SPA (window.__PROTON_CONFIG__).
+  # Must be an origin the BROWSER can reach — NOT the internal ${TENANT}-backend
+  # host (that only resolves inside the Docker network, used by the agent service).
+  # Caddy proxies /metrics,/kb,/assist on this origin to the backend, so keeping it
+  # equal to the SPA origin means same-origin calls with no CORS.
+  PROTON_BACKEND_URL: ${PROTON_BACKEND_PUBLIC_URL:-http://crm.localhost}
   PROTON_BACKEND_KEY: ${PROTON_BACKEND_KEY:-}
   PROTON_FEATURES: ${PROTON_FEATURES:-}
 

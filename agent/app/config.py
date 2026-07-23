@@ -46,6 +46,20 @@ class Settings(BaseSettings):
     agent_mode: str = "suggest"
     auto_resolve: bool = False
 
+    # Conversation lifecycle & auto-close (feature is a no-op when disabled).
+    # Drives the Proton process-flow SOP: idle warn/close, resolution
+    # confirmation, rating surveys, AI disclaimer. See
+    # docs/superpowers/specs/2026-07-23-conversation-lifecycle-autoclose-design.md
+    lifecycle_enabled: bool = False
+    lifecycle_scan_interval_seconds: int = 60
+    lifecycle_idle_warn_minutes: int = 10
+    lifecycle_idle_close_grace_minutes: int = 5
+    lifecycle_idle_close_out_of_hours_grace_minutes: int = 0
+    lifecycle_confirm_grace_minutes: int = 10
+    lifecycle_survey_enabled: bool = True
+    lifecycle_disclaimer_enabled: bool = True
+    lifecycle_auto_categorize: bool = False
+
     # Agent service's own database
     agent_database_url: str
 

@@ -14,10 +14,15 @@ assistant persona messages where those exist.
 
 from __future__ import annotations
 
+import json
 import logging
+
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.clients.deps import get_chatwoot_client, get_proton_config_client
 from app.config import get_settings
+from app.db.models import AiAction
+from app.db.session import async_session_maker
 from app.services import lifecycle_store
 
 logger = logging.getLogger(__name__)
@@ -113,3 +118,140 @@ async def on_conversation_created(payload: dict) -> None:
             "lifecycle: failed to post disclaimer for conversation %s",
             conversation_id,
         )
+
+
+_YES_TOKENS = {"yes", "y", "ya", "yeah", "yep", "resolved", "ok", "okay", "sudah", "ya."}
+_NO_TOKENS = {"no", "n", "nope", "not", "unresolved", "belum", "tidak"}
+
+
+def parse_yes_no(text: str) -> bool | None:
+    tokens = {t.strip(".,!?") for t in (text or "").lower().split()}
+    if tokens & _YES_TOKENS:
+        return True
+    if tokens & _NO_TOKENS:
+        return False
+    return None
+
+
+def parse_rating(text: str) -> int | None:
+    for token in (text or "").replace("/", " ").split():
+        cleaned = token.strip(".,!?")
+        if cleaned.isdigit():
+            value = int(cleaned)
+            if 1 <= value <= 5:
+                return value
+    return None
+
+
+async def _record_survey(
+    conversation_id: int, variant: str, score: int | None, raw: str
+) -> None:
+    """Log the survey result to ai_actions (reuses the existing audit table).
+    Fail-open: a DB blip must not break the flow."""
+    output = str(score) if score is not None else json.dumps({"unparsed": raw})
+    try:
+        async with async_session_maker() as session:
+            session.add(
+                AiAction(
+                    conversation_ref=f"chatwoot:{conversation_id}",
+                    decision=f"survey_{variant}",
+                    model="lifecycle",
+                    output=output,
+                )
+            )
+            await session.commit()
+    except SQLAlchemyError:
+        logger.exception(
+            "lifecycle: failed to record survey for conversation %s", conversation_id
+        )
+
+
+async def _post(conversation_id: int, text: str) -> None:
+    """Post a public message, swallowing transient errors."""
+    try:
+        chatwoot = get_chatwoot_client()
+        await chatwoot.create_message(conversation_id, text, private=False)
+    except Exception:
+        logger.exception("lifecycle: failed to post message to %s", conversation_id)
+
+
+async def _resolve(conversation_id: int) -> None:
+    try:
+        chatwoot = get_chatwoot_client()
+        await chatwoot.toggle_status(conversation_id, "resolved")
+    except Exception:
+        logger.exception("lifecycle: failed to resolve conversation %s", conversation_id)
+
+
+async def handle_lifecycle_reply(conversation_id: int, text: str, state: str) -> None:
+    """Route a customer reply for a conversation mid-lifecycle. Called from the
+    orchestrator's pre-check (before its pending-only filter) so it fires even
+    on open/resolved conversations."""
+    settings = get_settings()
+
+    if state == AWAITING_RESOLUTION:
+        answer = parse_yes_no(text)
+        if answer is False or answer is None:
+            # Not resolved (or unclear → err toward a human): reopen for an agent.
+            await _post(
+                conversation_id,
+                "Thank you. We will assign an agent to assist you further.",
+            )
+            try:
+                await get_chatwoot_client().toggle_status(conversation_id, "open")
+            except Exception:
+                logger.exception(
+                    "lifecycle: failed to reopen conversation %s", conversation_id
+                )
+            await lifecycle_store.transition(conversation_id, CLOSED)
+            await _mirror_state(conversation_id, CLOSED)
+            return
+        # answer is True → resolved by the bot.
+        if settings.lifecycle_survey_enabled:
+            await _post(conversation_id, SURVEY_AI_DEFAULT)
+            await lifecycle_store.transition(
+                conversation_id, AWAITING_SURVEY, survey_variant="ai"
+            )
+            await _mirror_state(conversation_id, AWAITING_SURVEY)
+        else:
+            await lifecycle_store.transition(conversation_id, CLOSED)
+            await _mirror_state(conversation_id, CLOSED)
+            await _resolve(conversation_id)
+        return
+
+    if state == AWAITING_SURVEY:
+        row = await lifecycle_store.get_row(conversation_id)
+        variant = row.survey_variant if row is not None else "ai"
+        score = parse_rating(text)
+        await _record_survey(conversation_id, variant or "ai", score, text)
+        await _post(conversation_id, THANKS_DEFAULT)
+        # CLOSED is set BEFORE resolving so the resulting status webhook sees a
+        # terminal lifecycle and on_human_resolved skips (no double survey).
+        await lifecycle_store.transition(conversation_id, CLOSED)
+        await _mirror_state(conversation_id, CLOSED)
+        await _resolve(conversation_id)
+        return
+
+
+async def on_human_resolved(payload: dict) -> None:
+    """When a human resolves a conversation, post the agent-performance survey.
+
+    Skipped when the lifecycle already ended (CLOSED) or is mid-survey — this is
+    what prevents the bot's own survey-complete resolve from re-triggering a
+    survey. Fail-open."""
+    settings = get_settings()
+    if not settings.lifecycle_survey_enabled:
+        return
+    conversation_id = payload.get("id")
+    if conversation_id is None or payload.get("status") != "resolved":
+        return
+
+    state = await lifecycle_store.get_state(conversation_id)
+    if state in (CLOSED, AWAITING_SURVEY, AWAITING_RESOLUTION):
+        return  # lifecycle already owns the ending
+
+    await _post(conversation_id, SURVEY_AGENT_DEFAULT)
+    await lifecycle_store.transition(
+        conversation_id, AWAITING_SURVEY, survey_variant="agent"
+    )
+    await _mirror_state(conversation_id, AWAITING_SURVEY)

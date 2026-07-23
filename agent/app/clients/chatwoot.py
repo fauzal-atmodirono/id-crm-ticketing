@@ -106,6 +106,44 @@ class ChatwootClient:
         response.raise_for_status()
         return response.json() if response.content else None
 
+    async def list_conversations(
+        self, status: str | None = None, assignee_type: str | None = None
+    ) -> Any:
+        """List account conversations. `status` is one of
+        open/pending/resolved/snoozed; `assignee_type` one of me/unassigned/all.
+        Returns the raw JSON — the payload list is at `data.payload`."""
+        params: dict[str, str] = {}
+        if status is not None:
+            params["status"] = status
+        if assignee_type is not None:
+            params["assignee_type"] = assignee_type
+        response = await self._client.get(
+            f"/api/v1/accounts/{self.account_id}/conversations", params=params
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def get_inbox(self, inbox_id: int) -> Any:
+        """Fetch one inbox, including native `working_hours`, `timezone`,
+        `working_hours_enabled`, and `channel_type`."""
+        response = await self._client.get(
+            f"/api/v1/accounts/{self.account_id}/inboxes/{inbox_id}"
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def set_custom_attributes(
+        self, conversation_id: int, attributes: dict
+    ) -> Any:
+        """Merge-set conversation custom attributes (used to mirror
+        lifecycle_state into the Chatwoot right-panel for agent visibility)."""
+        response = await self._client.post(
+            f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}/custom_attributes",
+            json={"custom_attributes": attributes},
+        )
+        response.raise_for_status()
+        return response.json() if response.content else None
+
 
 class ChatwootPlatformClient:
     def __init__(

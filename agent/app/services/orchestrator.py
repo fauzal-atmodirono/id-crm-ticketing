@@ -29,7 +29,7 @@ from app.clients.deps import get_chatwoot_client, get_proton_config_client
 from app.config import get_settings
 from app.db.models import AiAction
 from app.db.session import async_session_maker
-from app.services import sync
+from app.services import lifecycle, lifecycle_store, sync
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,8 @@ SYSTEM_PROMPT = (
     "alone, or handoff_to_human for anything else you're unsure about. Keep "
     "replies short, friendly, and strictly grounded in what the conversation "
     "actually says — never invent facts, prices, policies, or commitments "
-    "you can't verify from it."
+    "you can't verify from it. Always reply in the same language the customer "
+    "is using."
 )
 
 
@@ -88,10 +89,65 @@ def _is_eligible(payload: dict) -> bool:
     return conversation.get("id") is not None
 
 
+def _incoming_customer_message(payload: dict) -> int | None:
+    """Return the conversation id for an incoming, non-bot customer message,
+    regardless of conversation status (the lifecycle pre-check needs to see
+    open/resolved conversations, not just pending ones)."""
+    if payload.get("event") != "message_created":
+        return None
+    if payload.get("message_type") != "incoming":
+        return None
+    if _sender_type(payload) == "agent_bot":
+        return None
+    conversation = payload.get("conversation") or {}
+    return conversation.get("id")
+
+
+_LIFECYCLE_CONSUMED: str = "_lifecycle_consumed"
+
+
+def _lifecycle_consumed(payload: dict) -> bool:
+    return bool(payload.get(_LIFECYCLE_CONSUMED))
+
+
+async def _maybe_handle_lifecycle_reply(payload: dict) -> None:
+    """When the feature is on, route survey/confirmation replies to the
+    lifecycle parser (instead of Gemini) and reset the idle clock on a normal
+    reply. Marks the payload consumed so `handle_bot_event` returns early.
+    Fail-open: any error just falls through to the normal bot path."""
+    settings = get_settings()
+    if not settings.lifecycle_enabled:
+        return
+    conversation_id = _incoming_customer_message(payload)
+    if conversation_id is None:
+        return
+    try:
+        state = await lifecycle_store.get_state(conversation_id)
+    except Exception:
+        logger.debug(
+            "orchestrator: lifecycle state lookup failed for %s", conversation_id,
+            exc_info=True,
+        )
+        return
+
+    if state in (lifecycle.AWAITING_RESOLUTION, lifecycle.AWAITING_SURVEY):
+        text = payload.get("content") or ""
+        await lifecycle.handle_lifecycle_reply(conversation_id, text, state)
+        payload[_LIFECYCLE_CONSUMED] = True
+        return
+    if state == lifecycle.IDLE_WARNED:
+        # Customer came back → reset the idle clock so the scanner won't close.
+        await lifecycle_store.transition(conversation_id, lifecycle.ACTIVE)
+
+
 async def handle_bot_event(payload: dict) -> asyncio.Task | None:
     """Filter the event, then (re)schedule the debounced processing task for
     its conversation. Returns the scheduled task (mainly so tests can await
     it deterministically) or None if the event wasn't actionable."""
+    await _maybe_handle_lifecycle_reply(payload)
+    if _lifecycle_consumed(payload):
+        return None
+
     if not _is_eligible(payload):
         return None
 

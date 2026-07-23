@@ -132,12 +132,25 @@ async def _maybe_handle_lifecycle_reply(payload: dict) -> None:
 
     if state in (lifecycle.AWAITING_RESOLUTION, lifecycle.AWAITING_SURVEY):
         text = payload.get("content") or ""
-        await lifecycle.handle_lifecycle_reply(conversation_id, text, state)
+        try:
+            await lifecycle.handle_lifecycle_reply(conversation_id, text, state)
+        except Exception:
+            logger.debug(
+                "orchestrator: lifecycle reply handling failed for %s", conversation_id,
+                exc_info=True,
+            )
+            return
         payload[_LIFECYCLE_CONSUMED] = True
         return
     if state == lifecycle.IDLE_WARNED:
         # Customer came back → reset the idle clock so the scanner won't close.
-        await lifecycle_store.transition(conversation_id, lifecycle.ACTIVE)
+        try:
+            await lifecycle_store.transition(conversation_id, lifecycle.ACTIVE)
+        except Exception:
+            logger.debug(
+                "orchestrator: lifecycle idle-warn reset failed for %s", conversation_id,
+                exc_info=True,
+            )
 
 
 async def handle_bot_event(payload: dict) -> asyncio.Task | None:

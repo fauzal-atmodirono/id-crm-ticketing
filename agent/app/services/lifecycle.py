@@ -249,12 +249,26 @@ async def on_human_resolved(payload: dict) -> None:
     if conversation_id is None or payload.get("status") != "resolved":
         return
 
-    state = await lifecycle_store.get_state(conversation_id)
+    try:
+        state = await lifecycle_store.get_state(conversation_id)
+    except Exception:
+        logger.exception(
+            "lifecycle: failed to read state for conversation %s in on_human_resolved",
+            conversation_id,
+        )
+        return
     if state in (CLOSED, AWAITING_SURVEY, AWAITING_RESOLUTION):
         return  # lifecycle already owns the ending
 
     await _post(conversation_id, SURVEY_AGENT_DEFAULT)
-    await lifecycle_store.transition(
-        conversation_id, AWAITING_SURVEY, survey_variant="agent"
-    )
+    try:
+        await lifecycle_store.transition(
+            conversation_id, AWAITING_SURVEY, survey_variant="agent"
+        )
+    except Exception:
+        logger.exception(
+            "lifecycle: failed to transition conversation %s to AWAITING_SURVEY",
+            conversation_id,
+        )
+        return
     await _mirror_state(conversation_id, AWAITING_SURVEY)

@@ -44,6 +44,9 @@ def decide_idle_action(
         return "close"
     if state in (lifecycle.AWAITING_RESOLUTION, lifecycle.AWAITING_SURVEY):
         if state_age_minutes >= confirm_after:
+            # Both states time out to a silent close. For AWAITING_SURVEY this
+            # means the customer didn't rate in time → close without recording
+            # a survey score, by design (no rating is better than a stale one).
             return "resolve_timeout"
     return None
 

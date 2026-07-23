@@ -88,7 +88,14 @@ async def on_conversation_created(payload: dict) -> None:
     channel = payload.get("channel")
     inbox_id = payload.get("inbox_id")
 
-    await lifecycle_store.seed_active(conversation_id, channel=channel)
+    try:
+        await lifecycle_store.seed_active(conversation_id, channel=channel)
+    except Exception:
+        logger.exception(
+            "lifecycle: failed to seed active row for conversation %s",
+            conversation_id,
+        )
+        return
     await _mirror_state(conversation_id, ACTIVE)
 
     settings = get_settings()

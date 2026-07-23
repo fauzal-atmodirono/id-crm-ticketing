@@ -13,7 +13,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from app.config import get_settings
 from app.security import verify_chatwoot_signature
-from app.services import orchestrator, sync
+from app.services import lifecycle, orchestrator, sync
 from app.services.dedupe import claim_delivery
 
 logger = logging.getLogger(__name__)
@@ -48,13 +48,19 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks):
         logger.warning("chatwoot_webhook: could not parse JSON body, skipping")
         return {"ok": True}
 
+    settings_flags = get_settings()
     event = payload.get("event")
     if event in _CONTACT_EVENTS:
         background_tasks.add_task(sync.upsert_contact, payload)
     elif event == "conversation_updated":
         background_tasks.add_task(sync.maybe_escalate, payload)
+    elif event == "conversation_created":
+        if settings_flags.lifecycle_enabled:
+            background_tasks.add_task(lifecycle.on_conversation_created, payload)
     elif event in _STATUS_ONLY_EVENTS:
         background_tasks.add_task(sync.record_conversation_status, payload)
+        if settings_flags.lifecycle_enabled and payload.get("status") == "resolved":
+            background_tasks.add_task(lifecycle.on_human_resolved, payload)
     else:
         logger.info("chatwoot_webhook: unhandled event %r, ignoring", event)
 

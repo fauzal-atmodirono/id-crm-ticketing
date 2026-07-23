@@ -90,3 +90,29 @@ class AiAction(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class ConversationLifecycle(Base):
+    """Per-conversation lifecycle state for the auto-close / survey flow.
+
+    Layered on top of Chatwoot's own pending/open/resolved status. The unique
+    `conversation_id` primary key is the concurrency guard: the scanner and the
+    orchestrator both drive transitions, and a row can only be in one state, so
+    a duplicate scan tick can't double-fire a transition. `state_changed_at`
+    dates the current state (used for the confirmation/survey timeout);
+    `warned_at` dates when the idle warning was posted.
+    """
+
+    __tablename__ = "conversation_lifecycle"
+
+    conversation_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    channel: Mapped[str | None] = mapped_column(Text)
+    survey_variant: Mapped[str | None] = mapped_column(Text)
+    warned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    state_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

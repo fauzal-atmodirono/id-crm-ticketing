@@ -120,7 +120,7 @@ async def on_conversation_created(payload: dict) -> None:
         )
 
 
-_YES_TOKENS = {"yes", "y", "ya", "yeah", "yep", "resolved", "ok", "okay", "sudah", "ya."}
+_YES_TOKENS = {"yes", "y", "ya", "yeah", "yep", "resolved", "ok", "okay", "sudah"}
 _NO_TOKENS = {"no", "n", "nope", "not", "unresolved", "belum", "tidak"}
 
 
@@ -183,6 +183,14 @@ async def _resolve(conversation_id: int) -> None:
         logger.exception("lifecycle: failed to resolve conversation %s", conversation_id)
 
 
+async def _reopen(conversation_id: int) -> None:
+    try:
+        chatwoot = get_chatwoot_client()
+        await chatwoot.toggle_status(conversation_id, "open")
+    except Exception:
+        logger.exception("lifecycle: failed to reopen conversation %s", conversation_id)
+
+
 async def handle_lifecycle_reply(conversation_id: int, text: str, state: str) -> None:
     """Route a customer reply for a conversation mid-lifecycle. Called from the
     orchestrator's pre-check (before its pending-only filter) so it fires even
@@ -197,12 +205,7 @@ async def handle_lifecycle_reply(conversation_id: int, text: str, state: str) ->
                 conversation_id,
                 "Thank you. We will assign an agent to assist you further.",
             )
-            try:
-                await get_chatwoot_client().toggle_status(conversation_id, "open")
-            except Exception:
-                logger.exception(
-                    "lifecycle: failed to reopen conversation %s", conversation_id
-                )
+            await _reopen(conversation_id)
             await lifecycle_store.transition(conversation_id, CLOSED)
             await _mirror_state(conversation_id, CLOSED)
             return

@@ -1,5 +1,8 @@
 """Application factory for the agent service."""
 
+import asyncio
+import contextlib
+import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -13,16 +16,27 @@ from app.db.session import init_db
 from app.routers import chatwoot as chatwoot_webhooks
 from app.routers import health
 from app.routers import zammad as zammad_webhooks
+from app.services import lifecycle_scanner
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_db()
-    yield
-    # Task 4 handoff: httpx clients are lazily-constructed singletons
-    # (app.clients.deps) so their lifecycle is owned end-to-end here rather
-    # than left dangling for the process/GC to clean up.
-    await aclose_clients()
+    scanner_task: asyncio.Task | None = None
+    if get_settings().lifecycle_enabled:
+        scanner_task = asyncio.create_task(lifecycle_scanner.run_scanner())
+    try:
+        yield
+    finally:
+        if scanner_task is not None:
+            scanner_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await scanner_task
+        # httpx clients are lazily-constructed singletons (app.clients.deps) so
+        # their lifecycle is owned end-to-end here.
+        await aclose_clients()
 
 
 def create_app() -> FastAPI:

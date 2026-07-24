@@ -60,6 +60,26 @@ class Settings(BaseSettings):
     lifecycle_disclaimer_enabled: bool = True
     lifecycle_auto_categorize: bool = False
 
+    # SOP completion (B: categorization taxonomy; C1: email auto-ack).
+    # Comma-separated category slugs the bot may assign on resolution (must
+    # match the tenant's deployed taxonomy). Empty → auto-categorize no-ops.
+    lifecycle_category_labels: str = ""
+    # C1: email once-per-thread auto-acknowledgement.
+    email_autoack_enabled: bool = False
+    email_autoack_template: str = (
+        "Dear Customer,\n"
+        "Thank you for your email. This message serves to acknowledge receipt "
+        "of your enquiry.\n"
+        "We will respond within one (1) business day during our operating hours.\n"
+        "For urgent matters, please contact our Call Centre at 1300 888 877.\n"
+        "Operating Hours:\n"
+        "Monday–Friday: 8:30 AM – 5:30 PM\n"
+        "Saturday, Sunday & Public Holidays: 9:00 AM – 5:00 PM\n"
+        "Thank you for your patience and understanding.\n\n"
+        "Warm regards,\n"
+        "Proton e.MAS Centre"
+    )
+
     # Agent service's own database
     agent_database_url: str
 

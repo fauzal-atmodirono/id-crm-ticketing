@@ -42,6 +42,15 @@ class Decision(NamedTuple):
 
 def _client() -> genai.Client:
     settings = get_settings()
+    # Prefer Vertex AI via Application Default Credentials (the mounted service
+    # account); fall back to the AI-Studio API-key path only when explicitly
+    # disabled. Mirrors the backend's genai client construction.
+    if settings.google_genai_use_vertexai:
+        return genai.Client(
+            vertexai=True,
+            project=settings.vertex_project_id or None,
+            location=settings.vertex_location,
+        )
     return genai.Client(api_key=settings.gemini_api_key)
 
 

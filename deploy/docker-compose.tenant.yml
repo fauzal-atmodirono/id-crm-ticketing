@@ -254,10 +254,16 @@ services:
       AGENT_DATABASE_URL: postgresql+psycopg://agent_${TENANT}:${AGENT_DB_PASSWORD}@postgres:5432/agent_${TENANT}
       PROTON_BACKEND_URL: ${PROTON_BACKEND_URL:-http://${TENANT}-backend:8080}
       PROTON_BACKEND_KEY: ${PROTON_BACKEND_KEY:-}
+      # Gemini auth via Vertex AI + Application Default Credentials (same SA key
+      # as the backend). When GCP_ADC_PATH is unset, GOOGLE_APPLICATION_
+      # CREDENTIALS is empty and ADC falls back to the metadata server / off.
+      GOOGLE_APPLICATION_CREDENTIALS: ${GCP_ADC_PATH:+/gcp/adc.json}
     volumes:
       # Serve the static in-Chatwoot dashboard apps (Knowledge Manager,
       # Taxonomy Manager) via the agent at /apps/<name>/.
       - ../apps:/srv/apps:ro
+      # Mount the host ADC file read-only when GCP_ADC_PATH is set (else /dev/null).
+      - ${GCP_ADC_PATH:-/dev/null}:/gcp/adc.json:ro
     networks:
       platform:
         aliases:

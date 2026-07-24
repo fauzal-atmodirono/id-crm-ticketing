@@ -40,8 +40,15 @@ class Settings(BaseSettings):
     # Feature flag for the Zammad -> Gemini draft-reply flow (services.responder)
     zammad_ai_drafts: bool = True
 
-    # Gemini / AI behavior
-    gemini_api_key: str
+    # Gemini / AI behavior.
+    # Auth is via Application Default Credentials (Vertex AI) by default —
+    # google_genai_use_vertexai=True uses the mounted ADC (GOOGLE_APPLICATION_
+    # CREDENTIALS) with vertex_project_id/location; no API key needed. Set
+    # google_genai_use_vertexai=False + gemini_api_key to use the AI-Studio path.
+    gemini_api_key: str = ""
+    google_genai_use_vertexai: bool = True
+    vertex_project_id: str = ""
+    vertex_location: str = "us-central1"
     gemini_model: str = "gemini-2.5-flash"
     agent_mode: str = "suggest"
     auto_resolve: bool = False

@@ -144,6 +144,31 @@ class ChatwootClient:
         response.raise_for_status()
         return response.json() if response.content else None
 
+    async def add_labels(self, conversation_id: int, labels: list[str]) -> Any:
+        """Add labels without clobbering existing ones. Chatwoot's labels
+        endpoint REPLACES the whole set, so we GET the current labels and POST
+        the union. If the GET fails we fall back to posting just `labels`
+        (adding at least the new ones rather than nothing)."""
+        current: list[str] = []
+        try:
+            resp = await self._client.get(
+                f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}/labels"
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            payload = data.get("payload") if isinstance(data, dict) else None
+            if isinstance(payload, list):
+                current = [str(x) for x in payload]
+        except Exception:
+            current = []
+        union = list(dict.fromkeys([*current, *labels]))  # preserve order, dedup
+        response = await self._client.post(
+            f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}/labels",
+            json={"labels": union},
+        )
+        response.raise_for_status()
+        return response.json() if response.content else None
+
 
 class ChatwootPlatformClient:
     def __init__(

@@ -33,6 +33,19 @@ async def test_on_conversation_created_seeds_and_posts_disclaimer(chatwoot):
     assert kwargs.get("private") is False
 
 
+async def test_disclaimer_text_carries_sop_prefix(chatwoot):
+    # The CRM Process Flow SOP prints the disclaimer with a leading
+    # "DISCLAIMER:" label; the default text must reproduce it verbatim.
+    chatwoot.get_inbox.return_value = {"channel_type": "Channel::Whatsapp"}
+    await lifecycle.on_conversation_created(
+        {"id": 57, "inbox_id": 3, "channel": "Channel::Whatsapp"}
+    )
+
+    chatwoot.create_message.assert_awaited_once()
+    args, _ = chatwoot.create_message.await_args
+    assert args[1].startswith("DISCLAIMER: ")
+
+
 async def test_on_conversation_created_missing_id_is_noop(chatwoot):
     await lifecycle.on_conversation_created({"inbox_id": 3})
     chatwoot.create_message.assert_not_awaited()

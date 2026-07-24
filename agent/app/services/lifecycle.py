@@ -36,6 +36,7 @@ CLOSED = "closed"
 
 # SOP verbatim message defaults (overridable via proton persona messages).
 DISCLAIMER_DEFAULT = (
+    "DISCLAIMER: "
     "Our customer support chatbot uses artificial intelligence (AI) to assist "
     "you. Responses are generated automatically based on your input. We do not "
     "guarantee the accuracy, completeness or timeliness of the information "

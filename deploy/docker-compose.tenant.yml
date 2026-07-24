@@ -21,11 +21,16 @@ x-chatwoot-env: &chatwoot-env
   REDIS_URL: redis://:${REDIS_PASSWORD}@${TENANT}-redis:6379
   REDIS_PASSWORD: ${REDIS_PASSWORD}
   ACTIVE_STORAGE_SERVICE: local
-  SMTP_ADDRESS: mailpit
-  SMTP_PORT: 1025
-  SMTP_AUTHENTICATION: ""
-  SMTP_ENABLE_STARTTLS_AUTO: "false"
-  MAILER_SENDER_EMAIL: "Chatwoot <noreply@localhost>"
+  # Outbound SMTP: defaults to the shared Mailpit catcher; override per tenant in
+  # tenants/<tenant>.env (e.g. Gmail SMTP) to deliver real mail.
+  SMTP_ADDRESS: ${SMTP_ADDRESS:-mailpit}
+  SMTP_PORT: ${SMTP_PORT:-1025}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_AUTHENTICATION: ${SMTP_AUTHENTICATION:-}
+  SMTP_DOMAIN: ${SMTP_DOMAIN:-}
+  SMTP_ENABLE_STARTTLS_AUTO: ${SMTP_ENABLE_STARTTLS_AUTO:-false}
+  MAILER_SENDER_EMAIL: ${MAILER_SENDER_EMAIL:-Chatwoot <noreply@localhost>}
   ENABLE_ACCOUNT_SIGNUP: "false"
   WEB_CONCURRENCY: 1
   RAILS_MAX_THREADS: 5

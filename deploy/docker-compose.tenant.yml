@@ -227,6 +227,10 @@ services:
     container_name: ${TENANT}-agent
     restart: unless-stopped
     mem_limit: 384m
+    # Tenant env is the source of truth (LIFECYCLE_*, EMAIL_AUTOACK_*, etc.);
+    # the explicit `environment:` below overrides internal URLs/wiring.
+    env_file:
+      - tenants/${TENANT}.env
     environment:
       CHATWOOT_URL: http://${TENANT}-chatwoot-rails:3000
       ZAMMAD_URL: http://${TENANT}-zammad-nginx:8080

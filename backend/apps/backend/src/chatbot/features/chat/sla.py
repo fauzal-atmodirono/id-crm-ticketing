@@ -42,6 +42,7 @@ Dedup
 from __future__ import annotations
 
 import asyncio
+import json as _json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -67,6 +68,57 @@ FIRST_RESPONSE_STATE = "FIRST_RESPONSE"
 REMINDER_WARNING_STATE = "REMINDER_WARNING"
 
 _SECONDS_PER_HOUR = 3600
+
+# Maps the Chatwoot channel_type string to a short key used in the
+# sla_ack_minutes_by_channel_json config map.  Unknown channel_types
+# fall through to ``_conversation_channel`` returning None, which
+# causes the global sla_response_hours to be used (fail-open).
+_CHANNEL_MAP = {
+    "Channel::Whatsapp": "whatsapp",
+    "Channel::TwilioSms": "whatsapp",
+    "Channel::Voice": "call",
+    "Channel::Api": "call",  # voice/IVR bridged via the API channel; adjust per deployment
+    "Channel::FacebookPage": "facebook",
+    "Channel::Instagram": "instagram",
+    "Channel::Email": "email",
+}
+
+
+def _parse_ack_minutes(raw: str) -> dict[str, float]:
+    """Parse a JSON string mapping channel keys to per-channel ack minutes.
+
+    Returns an empty dict for any invalid / empty input (fail-open: the caller
+    then falls back to the global sla_response_hours for every conversation).
+    """
+    if not raw:
+        return {}
+    try:
+        data = _json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, float] = {}
+    for key, value in data.items():
+        try:
+            out[str(key)] = float(value)
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+def _conversation_channel(conv: dict[str, Any]) -> str | None:
+    """Resolve a Chatwoot conversation dict to a short channel key.
+
+    Looks at ``conv["meta"]["channel"]`` (the field Chatwoot returns in the
+    conversations list API) and normalises it via ``_CHANNEL_MAP``.  Returns
+    None for unknown channel types so the caller uses the global default.
+    """
+    meta = conv.get("meta") if isinstance(conv.get("meta"), dict) else {}
+    raw = meta.get("channel") or conv.get("channel")  # type: ignore[union-attr]
+    if not raw:
+        return None
+    return _CHANNEL_MAP.get(str(raw))
 
 
 def _conversation_age_seconds(conv: dict[str, Any], now: datetime) -> float | None:
@@ -121,6 +173,10 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
     response_threshold = settings.sla_response_hours * _SECONDS_PER_HOUR
     resolution_threshold_default = settings.sla_resolution_hours * _SECONDS_PER_HOUR
 
+    # Parse the per-channel ack override map once per scan.  Empty / bad JSON
+    # returns {} so every conversation falls back to response_threshold (global).
+    ack_minutes_by_channel = _parse_ack_minutes(settings.sla_ack_minutes_by_channel_json)
+
     fired: list[AuditEntry] = []
     for conv in conversations:
         conv_id = conv.get("id")
@@ -141,11 +197,21 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
             sla_minutes * 60 if sla_minutes is not None else resolution_threshold_default
         )
 
-        # 8h no first agent response: conversation still open, no agent reply yet.
+        # Per-channel ack threshold: use the channel override (minutes→seconds)
+        # when present, else fall back to the global response_threshold.
+        # Unknown channel_type or empty map → global default (fail-open).
+        channel = _conversation_channel(conv)
+        ack_override = ack_minutes_by_channel.get(channel) if channel else None
+        conv_response_threshold = (
+            ack_override * 60 if ack_override is not None else response_threshold
+        )
+
+        # NO first agent response: conversation still open, no agent reply yet,
+        # older than the effective per-channel (or global) ack threshold.
         if (
             status == "open"
             and not _has_first_agent_response(conv, prior)
-            and age > response_threshold
+            and age > conv_response_threshold
             and NO_RESPONSE_BREACH not in prior
         ):
             entry = await _fire(
@@ -155,7 +221,7 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
                 to_state=NO_RESPONSE_BREACH,
                 remark=(
                     f"No first agent response after "
-                    f"{settings.sla_response_hours}h (age {age / _SECONDS_PER_HOUR:.1f}h)"
+                    f"{conv_response_threshold / 60:.1f}m (age {age / 60:.1f}m)"
                 ),
                 clock=clock,
                 alert=alert,

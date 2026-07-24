@@ -37,11 +37,13 @@ async def test_chat_inbox_still_posts_disclaimer(chatwoot, email_on):
     assert "artificial intelligence" in args[1].lower()  # AI disclaimer
 
 
-async def test_email_autoack_disabled_falls_back_to_disclaimer(chatwoot, monkeypatch):
+async def test_email_autoack_disabled_posts_nothing(chatwoot, monkeypatch):
     s = lifecycle.get_settings()
     monkeypatch.setattr(s, "email_autoack_enabled", False, raising=False)
     monkeypatch.setattr(s, "lifecycle_disclaimer_enabled", True, raising=False)
     chatwoot.get_inbox.return_value = {"channel_type": "Channel::Email"}
     await lifecycle.on_conversation_created({"id": 42, "inbox_id": 2, "channel": "Channel::Email"})
-    args, kwargs = chatwoot.create_message.await_args
-    assert "artificial intelligence" in args[1].lower()
+    # Email inbox with auto-ack disabled must post nothing — not even the AI
+    # disclaimer (which is wrong for an email thread). lifecycle_disclaimer_enabled
+    # is True here to prove the email branch returns before the disclaimer path.
+    chatwoot.create_message.assert_not_awaited()

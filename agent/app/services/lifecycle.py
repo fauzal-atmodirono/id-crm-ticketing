@@ -122,8 +122,11 @@ async def on_conversation_created(payload: dict) -> None:
     # the AI disclaimer. Dedup is structural — conversation_created fires once
     # per conversation and seed_active only acts on a new row, so thread replies
     # and agent replies never re-trigger.
-    # When email_autoack is disabled, fall through to the standard disclaimer path.
-    if channel_type == "Channel::Email" and settings.email_autoack_enabled:
+    # When email_autoack is disabled, post nothing and return — the AI disclaimer
+    # text is wrong for an email thread, so we never fall through to it here.
+    if channel_type == "Channel::Email":
+        if not settings.email_autoack_enabled:
+            return
         text = settings.email_autoack_template
     else:
         if not settings.lifecycle_disclaimer_enabled:

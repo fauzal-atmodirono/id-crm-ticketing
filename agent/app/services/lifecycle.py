@@ -23,7 +23,7 @@ from app.clients.deps import get_chatwoot_client, get_proton_config_client
 from app.config import get_settings
 from app.db.models import AiAction
 from app.db.session import async_session_maker
-from app.services import lifecycle_store
+from app.services import categorize, lifecycle_store
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +219,7 @@ async def handle_lifecycle_reply(conversation_id: int, text: str, state: str) ->
         else:
             await lifecycle_store.transition(conversation_id, CLOSED)
             await _mirror_state(conversation_id, CLOSED)
+            await categorize.maybe_categorize(conversation_id)
             await _resolve(conversation_id)
         return
 
@@ -232,6 +233,7 @@ async def handle_lifecycle_reply(conversation_id: int, text: str, state: str) ->
         # terminal lifecycle and on_human_resolved skips (no double survey).
         await lifecycle_store.transition(conversation_id, CLOSED)
         await _mirror_state(conversation_id, CLOSED)
+        await categorize.maybe_categorize(conversation_id)
         await _resolve(conversation_id)
         return
 

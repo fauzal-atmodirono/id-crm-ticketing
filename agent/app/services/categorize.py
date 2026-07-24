@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 
 from app.ai import gemini
+from app.clients.deps import get_chatwoot_client
 from app.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
@@ -44,3 +45,41 @@ async def classify_category(transcript: str, candidates: list[str]) -> str | Non
         return None
     slug = (answer or "").strip()
     return slug if slug in candidates else None
+
+
+def _transcript_from_messages(raw: object) -> str:
+    if isinstance(raw, dict):
+        messages = raw.get("payload") or []
+    else:
+        messages = raw or []
+    lines: list[str] = []
+    for message in messages[-20:]:
+        if message.get("private"):
+            continue
+        sender = (message.get("sender") or {}).get("name", "Unknown")
+        lines.append(f"{sender}: {message.get('content') or ''}")
+    return "\n".join(lines)
+
+
+async def maybe_categorize(conversation_id: int) -> None:
+    """Classify + label a just-resolved conversation, gated + fail-open. Applies
+    a single ``category_<slug>`` label. Any error is logged and swallowed — this
+    never blocks the resolution it rides on."""
+    settings = get_settings()
+    if not settings.lifecycle_auto_categorize:
+        return
+    candidates = _candidate_slugs(settings)
+    if not candidates:
+        return
+    try:
+        chatwoot = get_chatwoot_client()
+        raw = await chatwoot.get_messages(conversation_id)
+        transcript = _transcript_from_messages(raw)
+        slug = await classify_category(transcript, candidates)
+        if slug is None:
+            return
+        await chatwoot.add_labels(conversation_id, [f"category_{slug}"])
+    except Exception:
+        logger.exception(
+            "categorize: maybe_categorize failed for conversation %s", conversation_id
+        )

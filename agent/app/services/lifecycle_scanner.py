@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 from app.clients.deps import get_chatwoot_client
 from app.config import get_settings
-from app.services import business_hours, lifecycle, lifecycle_store
+from app.services import business_hours, categorize, lifecycle, lifecycle_store
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +164,7 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
     elif action == "resolve_timeout":
         await lifecycle_store.transition(conversation_id, lifecycle.CLOSED)
         await lifecycle._mirror_state(conversation_id, lifecycle.CLOSED)
+        await categorize.maybe_categorize(conversation_id)
         await lifecycle._resolve(conversation_id)
 
 

@@ -36,7 +36,7 @@ x-chatwoot-env: &chatwoot-env
   # equal to the SPA origin means same-origin calls with no CORS.
   PROTON_BACKEND_URL: ${PROTON_BACKEND_PUBLIC_URL:-http://crm.localhost}
   PROTON_BACKEND_KEY: ${PROTON_BACKEND_KEY:-}
-  PROTON_FEATURES: ${PROTON_FEATURES:-}
+  PROTON_FEATURES: ${PROTON_FEATURES:-ai_assist,nav_menu,copilot,knowledge}
 
 x-zammad-env: &zammad-env
   POSTGRESQL_DB_CREATE: "false"

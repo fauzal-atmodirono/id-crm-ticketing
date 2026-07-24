@@ -79,6 +79,18 @@ async def _welcome_text(inbox_id: int | None) -> str:
     return DISCLAIMER_DEFAULT
 
 
+async def _inbox_channel(inbox_id: int | None) -> str | None:
+    """Resolve the inbox channel_type (e.g. 'Channel::Email'), fail-open None."""
+    if inbox_id is None:
+        return None
+    try:
+        inbox = await get_chatwoot_client().get_inbox(inbox_id)
+        return inbox.get("channel_type")
+    except Exception:
+        logger.debug("lifecycle: could not resolve channel for inbox %s", inbox_id, exc_info=True)
+        return None
+
+
 async def on_conversation_created(payload: dict) -> None:
     """Seed the lifecycle row ACTIVE and post the AI disclaimer/welcome once.
 
@@ -104,18 +116,27 @@ async def on_conversation_created(payload: dict) -> None:
     await _mirror_state(conversation_id, ACTIVE)
 
     settings = get_settings()
-    if not settings.lifecycle_disclaimer_enabled:
-        return
+    channel_type = await _inbox_channel(inbox_id)
 
-    text = await _welcome_text(inbox_id)
+    # Email inbox: post the SOP once-per-thread auto-acknowledgement instead of
+    # the AI disclaimer. Dedup is structural — conversation_created fires once
+    # per conversation and seed_active only acts on a new row, so thread replies
+    # and agent replies never re-trigger.
+    # When email_autoack is disabled, fall through to the standard disclaimer path.
+    if channel_type == "Channel::Email" and settings.email_autoack_enabled:
+        text = settings.email_autoack_template
+    else:
+        if not settings.lifecycle_disclaimer_enabled:
+            return
+        text = await _welcome_text(inbox_id)
+
     if not text:
         return
     try:
-        chatwoot = get_chatwoot_client()
-        await chatwoot.create_message(conversation_id, text, private=False)
+        await get_chatwoot_client().create_message(conversation_id, text, private=False)
     except Exception:
         logger.exception(
-            "lifecycle: failed to post disclaimer for conversation %s",
+            "lifecycle: failed to post disclaimer/auto-ack for conversation %s",
             conversation_id,
         )
 

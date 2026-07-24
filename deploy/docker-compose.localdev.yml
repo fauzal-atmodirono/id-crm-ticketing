@@ -1,0 +1,28 @@
+# Local-dev override: publish the backend on the host so a locally-served
+# Proton FE (opened in the browser at http://localhost) can call /chat/turn and
+# the /chat/stream SSE endpoint DIRECTLY — no Cloudflare tunnel in the browser
+# path (Cloudflare quick tunnels buffer text/event-stream and break SSE).
+#
+# Usage (from deploy/):
+#   docker compose -p default \
+#     -f docker-compose.tenant.yml -f docker-compose.localdev.yml \
+#     --env-file tenants/default.env up -d backend
+#
+# The inbound Chatwoot webhook (agent reply -> backend) still needs a PUBLIC URL
+# because Chatwoot's SSRF guard rejects private IPs; that leg keeps using the
+# cloudflared BE tunnel (a normal POST, which Cloudflare delivers fine).
+services:
+  backend:
+    ports:
+      - "127.0.0.1:8081:8080"
+
+  # Let Chatwoot deliver webhooks to private/internal hosts (its SsrfFilter
+  # otherwise rejects non-public IPs, e.g. `default-backend`). This lets the
+  # agent-reply webhook reach the backend IN-NETWORK with no tunnel at all.
+  # Webhook delivery runs in sidekiq, so BOTH rails and sidekiq need the flag.
+  chatwoot-rails:
+    environment:
+      SAFE_FETCH_ALLOW_PRIVATE_NETWORK: "true"
+  chatwoot-sidekiq:
+    environment:
+      SAFE_FETCH_ALLOW_PRIVATE_NETWORK: "true"

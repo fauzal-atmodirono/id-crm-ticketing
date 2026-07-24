@@ -25,6 +25,7 @@ async def test_email_inbox_posts_autoack(chatwoot, email_on):
     await lifecycle.on_conversation_created({"id": 40, "inbox_id": 2, "channel": "Channel::Email"})
     assert await lifecycle_store.get_state(40) == "active"
     # posted the email auto-ack (not the AI disclaimer)
+    chatwoot.create_message.assert_awaited_once()
     args, kwargs = chatwoot.create_message.await_args
     assert args[0] == 40
     assert "acknowledge receipt of your enquiry" in args[1]
@@ -33,6 +34,7 @@ async def test_email_inbox_posts_autoack(chatwoot, email_on):
 async def test_chat_inbox_still_posts_disclaimer(chatwoot, email_on):
     chatwoot.get_inbox.return_value = {"channel_type": "Channel::Whatsapp"}
     await lifecycle.on_conversation_created({"id": 41, "inbox_id": 3, "channel": "Channel::Whatsapp"})
+    chatwoot.create_message.assert_awaited_once()
     args, kwargs = chatwoot.create_message.await_args
     assert "artificial intelligence" in args[1].lower()  # AI disclaimer
 

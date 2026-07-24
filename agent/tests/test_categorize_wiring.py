@@ -32,6 +32,7 @@ async def test_maybe_categorize_noop_when_disabled(chatwoot, monkeypatch):
     s = categorize.get_settings()
     monkeypatch.setattr(s, "lifecycle_auto_categorize", False, raising=False)
     await categorize.maybe_categorize(77)
+    chatwoot.get_messages.assert_not_awaited()
     chatwoot.add_labels.assert_not_awaited()
 
 

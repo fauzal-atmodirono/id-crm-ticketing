@@ -114,8 +114,9 @@ def _conversation_channel(conv: dict[str, Any]) -> str | None:
     conversations list API) and normalises it via ``_CHANNEL_MAP``.  Returns
     None for unknown channel types so the caller uses the global default.
     """
-    meta = conv.get("meta") if isinstance(conv.get("meta"), dict) else {}
-    raw = meta.get("channel") or conv.get("channel")  # type: ignore[union-attr]
+    _meta = conv.get("meta")
+    meta: dict[str, Any] = _meta if isinstance(_meta, dict) else {}
+    raw = meta.get("channel") or conv.get("channel")
     if not raw:
         return None
     return _CHANNEL_MAP.get(str(raw))

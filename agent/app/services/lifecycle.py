@@ -87,7 +87,11 @@ async def _inbox_channel(inbox_id: int | None) -> str | None:
         inbox = await get_chatwoot_client().get_inbox(inbox_id)
         return inbox.get("channel_type")
     except Exception:
-        logger.debug("lifecycle: could not resolve channel for inbox %s", inbox_id, exc_info=True)
+        logger.warning(
+            "lifecycle: could not resolve channel for inbox %s; defaulting to chat/disclaimer path",
+            inbox_id,
+            exc_info=True,
+        )
         return None
 
 
@@ -128,6 +132,11 @@ async def on_conversation_created(payload: dict) -> None:
         if not settings.email_autoack_enabled:
             return
         text = settings.email_autoack_template
+        if not text:
+            logger.warning(
+                "lifecycle: email_autoack_enabled but template is empty for conversation %s; nothing posted",
+                conversation_id,
+            )
     else:
         if not settings.lifecycle_disclaimer_enabled:
             return

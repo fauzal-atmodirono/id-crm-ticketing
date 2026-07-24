@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     # Optional PIC WhatsApp number (E.164, e.g. "+60123456789") alerted via Twilio
     # on each breach. Empty (default) records the audit transition only, no alert.
     sla_pic_whatsapp: str = ""
+    # Per-channel first-response (ack) SLA overrides, in MINUTES, as a JSON
+    # object keyed by short channel name, e.g.
+    # {"whatsapp": 2, "call": 0.333, "facebook": 120, "instagram": 120, "email": 240}.
+    # Empty → the global sla_response_hours applies to every channel.
+    sla_ack_minutes_by_channel_json: str = ""
 
     # --- Task Timers & Agent Reminders (Phase 6) ---
     # How many minutes before SLA breach the My-Tasks app shows a warning colour

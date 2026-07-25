@@ -362,6 +362,23 @@ async def _process_conversation(conversation_id: int) -> None:
     decision = await gemini.decide(SYSTEM_PROMPT, context)
     await _log_decision(conversation_id, decision)
 
+    # KB-grounded reply: for a plain answer, source the text from the backend
+    # copilot (same KB + assistant as the website) instead of the local draft.
+    # Router (send_reply vs escalate/handoff) is unchanged; fail-open to draft.
+    if (
+        settings.kb_grounded_replies
+        and decision.action == "send_reply"
+        and proton is not None
+        and inbox_id is not None
+    ):
+        thread = _build_thread(message_list)
+        if thread:
+            answer = await proton.copilot_answer(
+                f"chatwoot-conv-{conversation_id}", thread, inbox_id
+            )
+            if answer:
+                decision.args["text"] = answer
+
     try:
         await _execute_decision(
             conversation_id, decision, effective_mode, chatwoot,

@@ -170,3 +170,32 @@ class ProtonConfigClient:
                 exc_info=True,
             )
             return None
+
+    async def copilot_answer(
+        self, conversation_id: str, thread: list[dict], inbox_id: int | None
+    ) -> str | None:
+        """KB-grounded answer from the backend copilot (POST /assist/copilot).
+
+        Not cached (per-turn). Fail-open: returns None on any error, non-2xx,
+        or empty answer, so the caller can fall back to the local draft."""
+        try:
+            response = await self._client.post(
+                "/assist/copilot",
+                json={
+                    "conversation_id": conversation_id,
+                    "thread": thread,
+                    "inbox_id": inbox_id,
+                    "assistant_id": None,
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception:
+            logger.debug("proton_config: copilot_answer failed", exc_info=True)
+            return None
+        if not isinstance(data, dict):
+            return None
+        answer = data.get("answer")
+        if isinstance(answer, str) and answer.strip():
+            return answer
+        return None

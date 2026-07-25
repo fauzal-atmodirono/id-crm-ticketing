@@ -422,3 +422,43 @@ async def test_effective_inbox_mode_normalizes_whitespace():
     result = await client.effective_inbox_mode(10)
     assert result == "auto"
     await client.aclose()
+
+
+@respx.mock
+async def test_copilot_answer_returns_answer_string():
+    route = respx.post(f"{PROTON_BASE}/assist/copilot").mock(
+        return_value=httpx.Response(200, json={"answer": "The Proton X50 is an SUV.", "sources": []})
+    )
+    inner = httpx.AsyncClient(base_url=PROTON_BASE, headers={"x-api-key": "testkey"})
+    client = ProtonConfigClient(base_url=PROTON_BASE, api_key="testkey", client=inner, ttl=0.0)
+    thread = [{"role": "user", "content": "tanya pasal proton x50"}]
+    answer = await client.copilot_answer("chatwoot-conv-42", thread, 7)
+    assert answer == "The Proton X50 is an SUV."
+    assert route.called
+    sent = route.calls.last.request
+    import json as _json
+    body = _json.loads(sent.content)
+    assert body == {"conversation_id": "chatwoot-conv-42", "thread": thread, "inbox_id": 7, "assistant_id": None}
+    await client.aclose()
+
+
+@respx.mock
+async def test_copilot_answer_empty_answer_returns_none():
+    respx.post(f"{PROTON_BASE}/assist/copilot").mock(
+        return_value=httpx.Response(200, json={"answer": "   ", "sources": []})
+    )
+    inner = httpx.AsyncClient(base_url=PROTON_BASE, headers={"x-api-key": "testkey"})
+    client = ProtonConfigClient(base_url=PROTON_BASE, api_key="testkey", client=inner, ttl=0.0)
+    answer = await client.copilot_answer("chatwoot-conv-42", [{"role": "user", "content": "hi"}], 7)
+    assert answer is None
+    await client.aclose()
+
+
+@respx.mock
+async def test_copilot_answer_error_returns_none():
+    respx.post(f"{PROTON_BASE}/assist/copilot").mock(return_value=httpx.Response(500))
+    inner = httpx.AsyncClient(base_url=PROTON_BASE, headers={"x-api-key": "testkey"})
+    client = ProtonConfigClient(base_url=PROTON_BASE, api_key="testkey", client=inner, ttl=0.0)
+    answer = await client.copilot_answer("chatwoot-conv-42", [{"role": "user", "content": "hi"}], 7)
+    assert answer is None
+    await client.aclose()

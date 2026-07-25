@@ -356,3 +356,25 @@ async def test_create_message_failure_in_suggest_mode_is_logged_not_raised(monke
     rows = await _ai_action_rows("chatwoot:42")
     assert len(rows) == 1
     assert rows[0].decision == "send_reply"
+
+
+def test_build_thread_maps_roles_and_drops_noise():
+    from app.services.orchestrator import _build_thread
+    messages = [
+        {"message_type": 0, "content": "hello", "private": False},
+        {"message_type": 1, "content": "Hi! How can I help?", "private": False},
+        {"message_type": 1, "content": "internal note", "private": True},   # dropped: private
+        {"message_type": 2, "content": "Assigned to X", "private": False},  # dropped: activity
+        {"message_type": 0, "content": "  ", "private": False},              # dropped: empty
+        {"message_type": 0, "content": "tanya pasal proton x50", "private": False},
+    ]
+    assert _build_thread(messages) == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "Hi! How can I help?"},
+        {"role": "user", "content": "tanya pasal proton x50"},
+    ]
+
+
+def test_build_thread_empty_when_nothing_qualifies():
+    from app.services.orchestrator import _build_thread
+    assert _build_thread([{"message_type": 2, "content": "act", "private": False}]) == []

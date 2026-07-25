@@ -214,16 +214,18 @@ async def _debounced_process(conversation_id: int, state: _DebounceState) -> Non
             _pending_tasks.pop(conversation_id, None)
 
 
-async def _build_context(conversation_id: int) -> str:
-    """Last 20 non-private messages plus the contact's name/email, fetched
-    fresh (not from whatever payload originally triggered the debounce)."""
+async def _fetch_messages(conversation_id: int) -> list[dict]:
+    """Fetch the conversation's messages once (fresh, not from the trigger
+    payload). Shared by _build_context and _build_thread."""
     chatwoot = get_chatwoot_client()
     raw_messages = await chatwoot.get_messages(conversation_id)
     if isinstance(raw_messages, dict):
-        message_list = raw_messages.get("payload") or []
-    else:
-        message_list = raw_messages or []
+        return raw_messages.get("payload") or []
+    return raw_messages or []
 
+
+def _build_context(message_list: list[dict]) -> str:
+    """Last 20 non-private messages plus the contact's name/email."""
     lines: list[str] = []
     contact_name: str | None = None
     contact_email: str | None = None
@@ -242,6 +244,28 @@ async def _build_context(conversation_id: int) -> str:
     header = f"Customer: {contact_name or 'unknown'} <{contact_email or 'unknown'}>"
     transcript = "\n".join(lines) or "(no messages)"
     return f"{header}\n\n{transcript}"
+
+
+def _build_thread(message_list: list[dict]) -> list[dict]:
+    """Map the last 20 non-private Chatwoot messages to copilot thread items:
+    incoming (type 0) → user, outgoing (type 1) → assistant. Drops private,
+    activity/template, and empty-content messages. Order preserved."""
+    thread: list[dict] = []
+    for message in message_list[-20:]:
+        if message.get("private"):
+            continue
+        mtype = message.get("message_type")
+        if mtype == 0:
+            role = "user"
+        elif mtype == 1:
+            role = "assistant"
+        else:
+            continue
+        content = (message.get("content") or "").strip()
+        if not content:
+            continue
+        thread.append({"role": role, "content": content})
+    return thread
 
 
 async def _log_decision(conversation_id: int, decision: gemini.Decision) -> None:
@@ -324,7 +348,7 @@ async def _process_conversation(conversation_id: int) -> None:
             )
 
     try:
-        context = await _build_context(conversation_id)
+        message_list = await _fetch_messages(conversation_id)
     except httpx.HTTPError:
         # Runs as (part of) a background task -- a transient Chatwoot failure
         # must be logged, not die as "Task exception was never retrieved".
@@ -333,6 +357,7 @@ async def _process_conversation(conversation_id: int) -> None:
             conversation_id,
         )
         return
+    context = _build_context(message_list)
 
     decision = await gemini.decide(SYSTEM_PROMPT, context)
     await _log_decision(conversation_id, decision)

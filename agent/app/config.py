@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     vertex_location: str = "us-central1"
     gemini_model: str = "gemini-2.5-flash"
     agent_mode: str = "suggest"
+    kb_grounded_replies: bool = False
     auto_resolve: bool = False
 
     # Conversation lifecycle & auto-close (feature is a no-op when disabled).

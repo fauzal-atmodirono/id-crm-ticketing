@@ -19,10 +19,20 @@ _log = structlog.get_logger(__name__)
 
 
 class MergedKnowledgeAdapter:
-    def __init__(self, base, live_faq_store, embedder) -> None:
+    def __init__(self, base, live_faq_store, embedder, pg_port=None) -> None:
         self._base = base
         self._live = live_faq_store
         self._embedder = embedder
+        self._pg = pg_port
+
+    async def _pg_articles(self, query: str, limit: int) -> list[KbArticle]:
+        if self._pg is None:
+            return []
+        try:
+            return await self._pg.search_kb(query, limit)
+        except Exception as e:  # never raise into grounding
+            _log.error("merged_pgvector_search_failed", error=str(e))
+            return []
 
     async def _live_articles(self, query: str, limit: int) -> list[KbArticle]:
         if self._live is None or self._embedder is None:
@@ -41,11 +51,12 @@ class MergedKnowledgeAdapter:
         ]
 
     async def search_kb(self, query: str, limit: int = 2) -> list[KbArticle]:
+        pg = await self._pg_articles(query, limit)
         live = await self._live_articles(query, limit)
         base = await self._base.search_kb(query, limit)
         merged: list[KbArticle] = []
         seen: set[str] = set()
-        for a in [*live, *base]:
+        for a in [*pg, *live, *base]:
             key = (a.title or "").strip().lower()
             if key and key in seen:
                 continue

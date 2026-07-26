@@ -427,6 +427,45 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         knowledge_port, _assist_live_store, _assist_embedder
     )
 
+    # --- pgvector knowledge base (subsystems A+B; default-off) ---
+    kb_pg_adapter = None
+    if settings.knowledge_pg_enabled and settings.knowledge_database_url:
+        from chatbot.features.chat.adapters.pgvector_knowledge import PgVectorKnowledgeAdapter
+        from chatbot.features.chat.kb_db import build_engine, build_session_maker, init_kb_db
+        from chatbot.features.chat.kb_knowledge_router import build_kb_knowledge_router
+        from chatbot.features.chat.kb_repository import PgKbRepository
+
+        kb_engine = build_engine(settings.knowledge_database_url)
+        kb_session_maker = build_session_maker(kb_engine)
+        kb_repo = PgKbRepository(kb_session_maker)
+        kb_embedder = (
+            VertexEmbedder(_assist_genai, settings.embedding_model)
+            if _assist_genai is not None else None
+        )
+        if kb_embedder is not None:
+            kb_pg_adapter = PgVectorKnowledgeAdapter(kb_repo, kb_embedder, settings.kb_score_floor)
+            app.include_router(build_kb_knowledge_router(kb_repo, kb_embedder, settings))
+            app.state.kb_engine = kb_engine  # for init in lifespan startup
+        else:
+            # Enabled but embeddings unavailable → skip mounting so uploads 404
+            # rather than every doc silently failing to embed. Log for visibility.
+            import structlog as _sl
+            _sl.get_logger(__name__).warning(
+                "knowledge_pg_enabled but no embedder (genai unavailable); /kb/knowledge not mounted"
+            )
+
+    if kb_pg_adapter is not None:
+        assist_knowledge_port = MergedKnowledgeAdapter(
+            knowledge_port, _assist_live_store, _assist_embedder, pg_port=kb_pg_adapter
+        )
+
+    @app.on_event("startup")
+    async def _init_kb_db() -> None:
+        engine = getattr(app.state, "kb_engine", None)
+        if engine is not None:
+            from chatbot.features.chat.kb_db import init_kb_db
+            await init_kb_db(engine)
+
     # --- Proton AI-assist (rewired Captain AI) ---
     _wire_assist(
         app,

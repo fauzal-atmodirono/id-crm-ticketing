@@ -14,6 +14,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Protocol
 
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
+from chatbot.features.chat.kb_db import KbChunk, KbDocument
+
 
 @dataclass(frozen=True)
 class ChunkHit:
@@ -115,3 +120,98 @@ class InMemoryKbRepository:
                 hits.append(ChunkHit(doc.row.title, content, _cosine(embedding, emb)))
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:limit]
+
+
+class PgKbRepository:
+    """pgvector-backed KbRepository. Opens a short-lived session per call."""
+
+    def __init__(self, session_maker: async_sessionmaker) -> None:
+        self._sm = session_maker
+
+    async def create_document(
+        self, *, title, source_type, original_filename, mime_type, char_count,
+    ) -> str:
+        doc_id = uuid.uuid4().hex
+        async with self._sm() as s:
+            s.add(KbDocument(
+                id=doc_id, title=title, source_type=source_type,
+                original_filename=original_filename, mime_type=mime_type,
+                char_count=char_count, status="pending",
+            ))
+            await s.commit()
+        return doc_id
+
+    async def add_chunks(self, document_id, chunks) -> None:
+        async with self._sm() as s:
+            for idx, content, emb, cc in chunks:
+                s.add(KbChunk(
+                    document_id=document_id, chunk_index=idx,
+                    content=content, embedding=emb, char_count=cc,
+                ))
+            await s.commit()
+
+    async def set_status(self, document_id, status, error=None) -> None:
+        async with self._sm() as s:
+            doc = await s.get(KbDocument, document_id)
+            if doc is not None:
+                doc.status = status
+                doc.error = error
+                await s.commit()
+
+    async def list_documents(self) -> list[DocumentRow]:
+        async with self._sm() as s:
+            counts = (
+                select(KbChunk.document_id, func.count().label("n"))
+                .group_by(KbChunk.document_id)
+                .subquery()
+            )
+            rows = (
+                await s.execute(
+                    select(KbDocument, func.coalesce(counts.c.n, 0))
+                    .outerjoin(counts, counts.c.document_id == KbDocument.id)
+                    .order_by(KbDocument.created_at.desc())
+                )
+            ).all()
+        return [_row(d, int(n)) for d, n in rows]
+
+    async def get_document(self, document_id) -> DocumentRow | None:
+        async with self._sm() as s:
+            doc = await s.get(KbDocument, document_id)
+            if doc is None:
+                return None
+            n = (await s.execute(
+                select(func.count()).select_from(KbChunk)
+                .where(KbChunk.document_id == document_id)
+            )).scalar_one()
+        return _row(doc, int(n))
+
+    async def delete_document(self, document_id) -> bool:
+        async with self._sm() as s:
+            doc = await s.get(KbDocument, document_id)
+            if doc is None:
+                return False
+            await s.delete(doc)  # ORM cascade removes chunks
+            await s.commit()
+        return True
+
+    async def search_chunks(self, embedding, limit) -> list[ChunkHit]:
+        async with self._sm() as s:
+            dist = KbChunk.embedding.cosine_distance(embedding).label("dist")
+            rows = (
+                await s.execute(
+                    select(KbDocument.title, KbChunk.content, dist)
+                    .join(KbDocument, KbChunk.document_id == KbDocument.id)
+                    .where(KbDocument.status == "indexed")
+                    .order_by(dist)
+                    .limit(limit)
+                )
+            ).all()
+        return [ChunkHit(title, content, 1.0 - float(d)) for title, content, d in rows]
+
+
+def _row(doc: "KbDocument", chunk_count: int) -> DocumentRow:
+    return DocumentRow(
+        id=doc.id, title=doc.title, source_type=doc.source_type, status=doc.status,
+        error=doc.error, char_count=doc.char_count, chunk_count=chunk_count,
+        created_at=doc.created_at,
+    )

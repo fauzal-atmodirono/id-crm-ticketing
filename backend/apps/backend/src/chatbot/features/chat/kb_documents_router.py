@@ -1,117 +1,110 @@
-"""Read-only listing of the tenant's Vertex AI Search data store documents.
+"""HTTP surface for operator-authored knowledge documents.
 
-`GET /kb/documents` returns the documents indexed in the Discovery Engine data
-store (the bulk KB that grounds Suggest/Copilot), so agents and admins can see
-the grounding corpus from inside the CRM. Guarded by the same `x-api-key` the
-FAQ admin router uses (constant-time against `faq_admin_api_key` /
-`proton_backend_key`). It never raises for the "can't reach Vertex" case —
-it returns an empty list, mirroring the read-only search adapter — so a mis-set
-or unreachable data store degrades to an empty page instead of a 500.
+Mirrors the FAQ-admin auth (x-api-key vs faq_admin_api_key / proton_backend_key).
+Create endpoints return immediately with a ``pending`` id and dispatch the
+extract→chunk→embed pipeline to a background task, matching the platform's
+"return 200 fast, work in the background" webhook pattern.
 """
 
 from __future__ import annotations
 
-import asyncio
 import hmac
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-import structlog
-from fastapi import APIRouter, Header, HTTPException
-from google.cloud import discoveryengine_v1beta as discoveryengine
+from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, UploadFile
+from pydantic import BaseModel
 
-if TYPE_CHECKING:
-    from chatbot.platform.config import Settings
+from chatbot.features.chat.kb_ingest import ingest_file_document, ingest_text_document
 
-_log = structlog.get_logger(__name__)
-
-# Cap the listing so a large data store can't produce an unbounded response.
-_MAX_DOCUMENTS = 200
+_CHARS_PER_TOKEN = 4  # coarse token→char factor for the chunker
 
 
-def _document_dict(doc: Any) -> dict[str, str]:
-    """Map a Discovery Engine Document to ``{id, title, uri, snippet}``.
-
-    Field placement varies by how the store was ingested: our JSONL import puts
-    the real title/link in ``struct_data``, while a website crawl leaves them in
-    ``derived_struct_data``. We check both, with the same precedence the search
-    adapter (``vertex_search.py``) uses.
-    """
-    struct_data = dict(doc.struct_data) if getattr(doc, "struct_data", None) else {}
-    derived_data = (
-        dict(doc.derived_struct_data) if getattr(doc, "derived_struct_data", None) else {}
-    )
-
-    title = (
-        struct_data.get("title")
-        or derived_data.get("title")
-        or getattr(doc, "id", "")
-        or "Document"
-    )
-    uri = struct_data.get("link") or derived_data.get("link") or ""
-
-    snippet = ""
-    excerpt = struct_data.get("body_excerpt")
-    if isinstance(excerpt, str):
-        snippet = excerpt
-    if not snippet:
-        snippets = derived_data.get("snippets", [])
-        if isinstance(snippets, list) and snippets and isinstance(snippets[0], dict):
-            snippet = snippets[0].get("snippet", "") or ""
-    if not snippet:
-        snippet = derived_data.get("snippet", "") or ""
-
-    return {
-        "id": str(getattr(doc, "id", "") or ""),
-        "title": str(title),
-        "uri": str(uri),
-        "snippet": str(snippet),
-    }
+class _TextDocRequest(BaseModel):
+    title: str
+    body: str
 
 
-def build_kb_documents_router(settings: Settings) -> APIRouter:
-    router = APIRouter(tags=["kb"])
+def build_kb_documents_router(repo, embedder, settings) -> APIRouter:
+    router = APIRouter()
+    max_chars = settings.kb_chunk_size_tokens * _CHARS_PER_TOKEN
+    overlap_chars = settings.kb_chunk_overlap_tokens * _CHARS_PER_TOKEN
 
     def _authorize(x_api_key: str | None) -> None:
         if x_api_key is None:
             raise HTTPException(status_code=401, detail="Unauthorized")
-        candidates = [settings.faq_admin_api_key, settings.proton_backend_key]
         supplied = x_api_key.encode("utf-8")
-        for key in candidates:
+        for key in (settings.faq_admin_api_key, settings.proton_backend_key):
             if key and hmac.compare_digest(supplied, key.encode("utf-8")):
                 return
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    def _list_documents() -> list[dict[str, str]]:
-        # Unconfigured data store → nothing to list (don't hit Vertex/ADC).
-        if not settings.vertex_search_project_id:
-            return []
-        client = discoveryengine.DocumentServiceClient()
-        parent = client.branch_path(
-            settings.vertex_search_project_id,
-            settings.vertex_search_location,
-            settings.vertex_search_data_store_id,
-            "default_branch",
+    def _doc_dict(row) -> dict[str, Any]:
+        return {
+            "id": row.id, "title": row.title, "source_type": row.source_type,
+            "status": row.status, "error": row.error, "char_count": row.char_count,
+            "chunk_count": row.chunk_count, "created_at": row.created_at.isoformat(),
+        }
+
+    @router.post("/kb/documents/text")
+    async def create_text(
+        payload: _TextDocRequest, background: BackgroundTasks,
+        x_api_key: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        _authorize(x_api_key)
+        doc_id = await repo.create_document(
+            title=payload.title, source_type="text",
+            original_filename=None, mime_type=None, char_count=len(payload.body),
         )
-        request = discoveryengine.ListDocumentsRequest(parent=parent, page_size=100)
-        documents: list[dict[str, str]] = []
-        # The pager transparently walks pages; cap the total we materialize.
-        for doc in client.list_documents(request=request):
-            documents.append(_document_dict(doc))
-            if len(documents) >= _MAX_DOCUMENTS:
-                break
-        return documents
+        background.add_task(
+            ingest_text_document, repo, embedder, doc_id, payload.body,
+            max_chars=max_chars, overlap_chars=overlap_chars,
+        )
+        return {"id": doc_id, "status": "pending"}
+
+    @router.post("/kb/documents/file")
+    async def create_file(
+        background: BackgroundTasks,
+        file: UploadFile = File(...),
+        title: str | None = Form(default=None),
+        x_api_key: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        _authorize(x_api_key)
+        data = await file.read()
+        doc_id = await repo.create_document(
+            title=title or file.filename or "Untitled", source_type="file",
+            original_filename=file.filename, mime_type=file.content_type,
+            char_count=len(data),
+        )
+        background.add_task(
+            ingest_file_document, repo, embedder, doc_id,
+            file.filename, file.content_type, data,
+            max_chars=max_chars, overlap_chars=overlap_chars,
+        )
+        return {"id": doc_id, "status": "pending"}
 
     @router.get("/kb/documents")
-    async def list_documents(
-        x_api_key: str | None = Header(default=None),
+    async def list_documents(x_api_key: str | None = Header(default=None)) -> dict[str, Any]:
+        _authorize(x_api_key)
+        rows = await repo.list_documents()
+        return {"documents": [_doc_dict(r) for r in rows]}
+
+    @router.get("/kb/documents/{document_id}")
+    async def get_document(
+        document_id: str, x_api_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _authorize(x_api_key)
-        try:
-            # Discovery Engine's client is sync; keep it off the event loop.
-            documents = await asyncio.to_thread(_list_documents)
-        except Exception as exc:
-            _log.error("kb_documents_list_failed", error=str(exc))
-            documents = []
-        return {"documents": documents}
+        row = await repo.get_document(document_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Not found")
+        return _doc_dict(row)
+
+    @router.delete("/kb/documents/{document_id}")
+    async def delete_document(
+        document_id: str, x_api_key: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        _authorize(x_api_key)
+        if not await repo.delete_document(document_id):
+            raise HTTPException(status_code=404, detail="Not found")
+        return {"id": document_id, "status": "deleted"}
 
     return router

@@ -50,6 +50,31 @@ RESOLUTION_PROMPT_DEFAULT = "Is your case resolved? Please reply YES or NO."
 SURVEY_AI_DEFAULT = "Thank you. Please rate our AI assistant from 1 to 5."
 SURVEY_AGENT_DEFAULT = "Thank you. Please rate our support agent from 1 to 5."
 THANKS_DEFAULT = "Thank you for your feedback!"
+ASSIGN_AGENT_DEFAULT = "Thank you. We will assign an agent to assist you further."
+
+
+def _resolve_message(messages: dict | None, key: str, default: str) -> str:
+    """Operator override if present and non-empty, else the hard-coded default."""
+    if messages:
+        val = messages.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return default
+
+
+async def _fetch_assistant_messages(inbox_id: int | None) -> dict | None:
+    """Fetch operator-configured assistant messages for inbox_id, fail-open to None."""
+    proton = get_proton_config_client()
+    if proton is None or inbox_id is None:
+        return None
+    try:
+        return await proton.get_assistant_messages(inbox_id)
+    except Exception:
+        logger.debug(
+            "lifecycle: could not fetch assistant messages for inbox %s", inbox_id,
+            exc_info=True,
+        )
+        return None
 
 
 async def _mirror_state(conversation_id: int, state: str) -> None:
@@ -225,11 +250,17 @@ async def _reopen(conversation_id: int) -> None:
         logger.exception("lifecycle: failed to reopen conversation %s", conversation_id)
 
 
-async def handle_lifecycle_reply(conversation_id: int, text: str, state: str) -> None:
+async def handle_lifecycle_reply(
+    conversation_id: int,
+    text: str,
+    state: str,
+    inbox_id: int | None = None,
+) -> None:
     """Route a customer reply for a conversation mid-lifecycle. Called from the
     orchestrator's pre-check (before its pending-only filter) so it fires even
     on open/resolved conversations."""
     settings = get_settings()
+    msgs = await _fetch_assistant_messages(inbox_id)
 
     if state == AWAITING_RESOLUTION:
         answer = parse_yes_no(text)
@@ -237,7 +268,7 @@ async def handle_lifecycle_reply(conversation_id: int, text: str, state: str) ->
             # Not resolved (or unclear → err toward a human): reopen for an agent.
             await _post(
                 conversation_id,
-                "Thank you. We will assign an agent to assist you further.",
+                _resolve_message(msgs, "assign_agent", ASSIGN_AGENT_DEFAULT),
             )
             await _reopen(conversation_id)
             await lifecycle_store.transition(conversation_id, CLOSED)
@@ -245,7 +276,10 @@ async def handle_lifecycle_reply(conversation_id: int, text: str, state: str) ->
             return
         # answer is True → resolved by the bot.
         if settings.lifecycle_survey_enabled:
-            await _post(conversation_id, SURVEY_AI_DEFAULT)
+            await _post(
+                conversation_id,
+                _resolve_message(msgs, "survey_ai", SURVEY_AI_DEFAULT),
+            )
             await lifecycle_store.transition(
                 conversation_id, AWAITING_SURVEY, survey_variant="ai"
             )
@@ -262,7 +296,10 @@ async def handle_lifecycle_reply(conversation_id: int, text: str, state: str) ->
         variant = row.survey_variant if row is not None else "ai"
         score = parse_rating(text)
         await _record_survey(conversation_id, variant or "ai", score, text)
-        await _post(conversation_id, THANKS_DEFAULT)
+        await _post(
+            conversation_id,
+            _resolve_message(msgs, "thanks", THANKS_DEFAULT),
+        )
         # CLOSED is set BEFORE resolving so the resulting status webhook sees a
         # terminal lifecycle and on_human_resolved skips (no double survey).
         await lifecycle_store.transition(conversation_id, CLOSED)
@@ -296,7 +333,12 @@ async def on_human_resolved(payload: dict) -> None:
     if state in (CLOSED, AWAITING_SURVEY, AWAITING_RESOLUTION):
         return  # lifecycle already owns the ending
 
-    await _post(conversation_id, SURVEY_AGENT_DEFAULT)
+    inbox_id: int | None = payload.get("inbox_id")
+    msgs = await _fetch_assistant_messages(inbox_id)
+    await _post(
+        conversation_id,
+        _resolve_message(msgs, "survey_agent", SURVEY_AGENT_DEFAULT),
+    )
     try:
         await lifecycle_store.transition(
             conversation_id, AWAITING_SURVEY, survey_variant="agent"

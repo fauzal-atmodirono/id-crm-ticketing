@@ -10,7 +10,10 @@ from __future__ import annotations
 import io
 
 import docx
+import structlog
 from pypdf import PdfReader
+
+_log = structlog.get_logger(__name__)
 
 
 def chunk_text(text: str, max_chars: int, overlap_chars: int) -> list[str]:
@@ -71,3 +74,42 @@ def extract_text(filename: str | None, mime_type: str | None, data: bytes) -> st
     if name.endswith((".md", ".markdown", ".txt")) or mime.startswith("text/"):
         return data.decode("utf-8", errors="replace")
     raise UnsupportedFileType(f"Unsupported file type: {filename or mime_type}")
+
+
+async def _embed_and_store(repo, embedder, document_id, text, max_chars, overlap_chars) -> None:
+    chunks = chunk_text(text, max_chars, overlap_chars)
+    if not chunks:
+        await repo.set_status(document_id, "failed", "No extractable text")
+        return
+    rows: list[tuple[int, str, list[float], int]] = []
+    for i, chunk in enumerate(chunks):
+        emb = await embedder.embed(chunk)
+        if not emb:
+            await repo.set_status(document_id, "failed", "Embedding failed")
+            return
+        rows.append((i, chunk, emb, len(chunk)))
+    await repo.add_chunks(document_id, rows)
+    await repo.set_status(document_id, "indexed")
+
+
+async def ingest_text_document(
+    repo, embedder, document_id, text, *, max_chars, overlap_chars,
+) -> None:
+    try:
+        await _embed_and_store(repo, embedder, document_id, text, max_chars, overlap_chars)
+    except Exception as e:  # background task must not raise
+        _log.error("kb_ingest_text_failed", document_id=document_id, error=str(e))
+        await repo.set_status(document_id, "failed", str(e))
+
+
+async def ingest_file_document(
+    repo, embedder, document_id, filename, mime_type, data, *, max_chars, overlap_chars,
+) -> None:
+    try:
+        text = extract_text(filename, mime_type, data)
+        await _embed_and_store(repo, embedder, document_id, text, max_chars, overlap_chars)
+    except UnsupportedFileType as e:
+        await repo.set_status(document_id, "failed", str(e))
+    except Exception as e:  # background task must not raise
+        _log.error("kb_ingest_file_failed", document_id=document_id, error=str(e))
+        await repo.set_status(document_id, "failed", str(e))

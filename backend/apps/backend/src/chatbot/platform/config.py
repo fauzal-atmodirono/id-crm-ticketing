@@ -117,6 +117,13 @@ class Settings(BaseSettings):
     # Writes to the admin endpoints require `x-api-key == faq_admin_api_key`
     # (constant-time compared); an empty key 401s every write.
     faq_admin_api_key: str = ""
+
+    # --- pgvector knowledge base (subsystems A+B; default-off) ---
+    knowledge_pg_enabled: bool = False
+    knowledge_database_url: str = ""
+    kb_chunk_size_tokens: int = 800
+    kb_chunk_overlap_tokens: int = 100
+    kb_score_floor: float = 0.55
     # --- Phase 5: Agent routing & presence ---
     # Master switch: when False (default) the routing service is bypassed and
     # the static chatwoot_agent_team_id team assignment remains active.

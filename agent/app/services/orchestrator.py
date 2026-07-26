@@ -72,6 +72,28 @@ SYSTEM_PROMPT = (
 )
 
 
+def _build_system_prompt(persona: dict | None) -> str:
+    """Compose the agent-bot decision prompt from an assistant persona.
+
+    None or all-empty persona -> the module SYSTEM_PROMPT verbatim (byte-identical
+    default). Otherwise: base = instructions if set else SYSTEM_PROMPT; then append
+    a Guardrails section and an explicit language line when present.
+    """
+    if not persona:
+        return SYSTEM_PROMPT
+    instructions = (persona.get("instructions") or "").strip()
+    guardrails = [g for g in (persona.get("guardrails") or []) if str(g).strip()]
+    language = (persona.get("language") or "").strip()
+    if not instructions and not guardrails and not language:
+        return SYSTEM_PROMPT
+    parts = [instructions or SYSTEM_PROMPT]
+    if guardrails:
+        parts.append("## Guardrails\n" + "\n".join(f"- {g}" for g in guardrails))
+    if language:
+        parts.append(f"Always reply in {language}.")
+    return "\n\n".join(parts)
+
+
 def _sender_type(payload: dict) -> str | None:
     return (payload.get("sender") or {}).get("type")
 
@@ -331,6 +353,21 @@ async def _process_conversation(conversation_id: int) -> None:
         )
         return
 
+    # Fetch assistant persona for the inbox (fail-open: None on any error).
+    # Shapes the Gemini decision prompt — custom instructions, guardrails, and
+    # language override. No-op when proton is unset or persona is empty.
+    persona: dict | None = None
+    if proton is not None and inbox_id is not None:
+        try:
+            persona = await proton.get_assistant_persona(inbox_id)
+        except Exception:
+            logger.debug(
+                "orchestrator: could not fetch assistant persona for inbox %s; "
+                "proceeding with default system prompt",
+                inbox_id,
+            )
+    system_prompt = _build_system_prompt(persona)
+
     # Fetch persona messages for the inbox (fail-open: None on any error).
     # Only the handoff_message is consumed here; welcome_message has no trigger
     # in the agent-bot flow, and resolution_message is handled by sync.py.
@@ -359,7 +396,7 @@ async def _process_conversation(conversation_id: int) -> None:
         return
     context = _build_context(message_list)
 
-    decision = await gemini.decide(SYSTEM_PROMPT, context)
+    decision = await gemini.decide(system_prompt, context)
     await _log_decision(conversation_id, decision)
 
     # KB-grounded reply: for a plain answer, source the text from the backend
@@ -392,6 +429,29 @@ async def _process_conversation(conversation_id: int) -> None:
         )
 
 
+async def _handoff_to_human_via_chatwoot(
+    conversation_id, chatwoot, handoff_message: str
+) -> None:
+    """Acknowledge the customer (best-effort) then reopen the conversation for
+    a human. Used for `handoff_to_human` and, on Chatwoot-only tenants, for
+    `escalate_to_ticket` too. The acknowledgment post is wrapped so a failed
+    post never prevents the reopen: a handoff must ALWAYS leave the
+    conversation visible to a human, never silently stuck in bot-pending. The
+    text is the assistant's persona `handoff_message`, falling back to the
+    tenant `handoff_default_message` (empty → nothing posted, reopen only)."""
+    text = handoff_message or get_settings().handoff_default_message
+    if text:
+        try:
+            await chatwoot.create_message(conversation_id, text, private=False)
+        except httpx.HTTPError:
+            logger.exception(
+                "orchestrator: failed to post handoff acknowledgment for "
+                "conversation %s; reopening for a human anyway",
+                conversation_id,
+            )
+    await chatwoot.toggle_status(conversation_id, "open")
+
+
 async def _execute_decision(
     conversation_id, decision, mode: str, chatwoot, *, handoff_message: str = ""
 ) -> None:
@@ -414,13 +474,22 @@ async def _execute_decision(
             )
             await chatwoot.toggle_status(conversation_id, "open")
     elif decision.action == "escalate_to_ticket":
-        await sync.escalate_conversation(
-            conversation_id,
-            reason=decision.args.get("reason"),
-            priority=decision.args.get("priority"),
-            summary=decision.args.get("summary"),
-        )
-        await chatwoot.toggle_status(conversation_id, "open")
+        if get_settings().zammad_ticketing_enabled:
+            await sync.escalate_conversation(
+                conversation_id,
+                reason=decision.args.get("reason"),
+                priority=decision.args.get("priority"),
+                summary=decision.args.get("summary"),
+            )
+            await chatwoot.toggle_status(conversation_id, "open")
+        else:
+            # Chatwoot-only tenant (no Zammad): there is no ticketing backend
+            # to escalate into, so a Zammad call would only 403/error and leave
+            # the customer in silence. Hand off inside Chatwoot instead —
+            # acknowledge the customer and reopen for a human agent.
+            await _handoff_to_human_via_chatwoot(
+                conversation_id, chatwoot, handoff_message
+            )
     else:
         # handoff_to_human, or any unrecognized action -- always hand off
         # rather than doing nothing.
@@ -431,10 +500,4 @@ async def _execute_decision(
                 decision.action,
                 conversation_id,
             )
-        # Post the persona handoff message publicly BEFORE reopening, so the
-        # customer sees it while the conversation is still in bot-handled state.
-        # Only posted when the message is non-empty (fail-open: empty string
-        # when proton is unconfigured or the assistant has no handoff text).
-        if handoff_message:
-            await chatwoot.create_message(conversation_id, handoff_message, private=False)
-        await chatwoot.toggle_status(conversation_id, "open")
+        await _handoff_to_human_via_chatwoot(conversation_id, chatwoot, handoff_message)

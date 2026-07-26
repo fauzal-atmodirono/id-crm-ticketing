@@ -32,6 +32,7 @@ def build_kb_knowledge_router(repo, embedder, settings) -> APIRouter:
     router = APIRouter()
     max_chars = settings.kb_chunk_size_tokens * _CHARS_PER_TOKEN
     overlap_chars = settings.kb_chunk_overlap_tokens * _CHARS_PER_TOKEN
+    max_upload = settings.kb_max_upload_bytes
 
     def _authorize(x_api_key: str | None) -> None:
         if x_api_key is None:
@@ -73,7 +74,12 @@ def build_kb_knowledge_router(repo, embedder, settings) -> APIRouter:
         x_api_key: str | None = Header(default=None),
     ) -> dict[str, str]:
         _authorize(x_api_key)
-        data = await file.read()
+        buf = bytearray()
+        while chunk := await file.read(65536):
+            buf.extend(chunk)
+            if len(buf) > max_upload:
+                raise HTTPException(status_code=413, detail="File too large")
+        data = bytes(buf)
         doc_id = await repo.create_document(
             title=title or file.filename or "Untitled", source_type="file",
             original_filename=file.filename, mime_type=file.content_type,

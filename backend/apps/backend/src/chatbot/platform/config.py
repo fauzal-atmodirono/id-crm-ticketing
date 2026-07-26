@@ -124,6 +124,7 @@ class Settings(BaseSettings):
     kb_chunk_size_tokens: int = 800
     kb_chunk_overlap_tokens: int = 100
     kb_score_floor: float = 0.55
+    kb_max_upload_bytes: int = 10_485_760  # 10 MiB cap on /kb/knowledge/file uploads
     # --- Phase 5: Agent routing & presence ---
     # Master switch: when False (default) the routing service is bypassed and
     # the static chatwoot_agent_team_id team assignment remains active.

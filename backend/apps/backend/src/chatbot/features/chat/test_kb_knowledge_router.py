@@ -47,3 +47,14 @@ def test_upload_file_and_delete() -> None:
     doc_id = r.json()["id"]
     assert c.delete(f"/kb/knowledge/{doc_id}", headers={"x-api-key": "fk"}).status_code == 200
     assert c.get("/kb/knowledge", headers={"x-api-key": "fk"}).json()["documents"] == []
+
+
+def test_upload_over_cap_rejected() -> None:
+    s = Settings(faq_admin_api_key="fk", kb_max_upload_bytes=10)
+    app = FastAPI()
+    app.include_router(build_kb_knowledge_router(InMemoryKbRepository(), _Embedder(), s))
+    c = TestClient(app, raise_server_exceptions=False)
+    r = c.post("/kb/knowledge/file",
+               files={"file": ("big.txt", b"this is definitely more than ten bytes", "text/plain")},
+               headers={"x-api-key": "fk"})
+    assert r.status_code == 413

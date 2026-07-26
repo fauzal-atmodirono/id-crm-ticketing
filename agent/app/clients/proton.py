@@ -118,22 +118,13 @@ class ProtonConfigClient:
             logger.debug("proton_config: error resolving debounce_seconds", exc_info=True)
             return None
 
-    async def get_assistant_messages(self, inbox_id: int) -> dict | None:
-        """Return the assistant persona messages for *inbox_id*, or None.
+    async def _resolve_assistant(self, inbox_id: int | None) -> dict | None:
+        """Resolve inbox_id → assistant dict (cached), or None on any failure.
 
-        Steps:
-          1. Use the cached /kb/inboxes response to find the row for inbox_id
-             and its assistant_id. If no matching row → None.
-          2. Fetch GET /kb/assistants/{assistant_id} (cached per assistant_id
-             with the same TTL) and extract the three persona message fields
-             from the nested ``config`` dict.
-
-        Returns a dict with keys ``welcome``, ``handoff``, and ``resolution``
-        (all strings, empty string when the field is absent). Returns None on
-        ANY exception, non-2xx response, or missing data — never raises.
-
-        Note: ``welcome`` is included for completeness but is not consumed by
-        any current flow (the agent-bot has no conversation-created trigger).
+        Fetches /kb/inboxes (cached), finds the row for inbox_id, then fetches
+        /kb/assistants/{assistant_id} (cached). Returns the full assistant dict
+        or None — never raises.  Both callers (get_assistant_messages and
+        get_assistant_persona) share this so the HTTP fetch is cached once.
         """
         try:
             data = await self._fetch_cached("/kb/inboxes")
@@ -154,7 +145,39 @@ class ProtonConfigClient:
             assistant_data = await self._fetch_cached(f"/kb/assistants/{assistant_id}")
             if not isinstance(assistant_data, dict):
                 return None
-            config = assistant_data.get("config")
+            return assistant_data
+        except Exception:
+            logger.debug(
+                "proton_config: error resolving assistant for inbox %s",
+                inbox_id,
+                exc_info=True,
+            )
+            return None
+
+    async def get_assistant_messages(self, inbox_id: int) -> dict | None:
+        """Return the assistant persona messages for *inbox_id*, or None.
+
+        Steps:
+          1. Use the cached /kb/inboxes response to find the row for inbox_id
+             and its assistant_id. If no matching row → None.
+          2. Fetch GET /kb/assistants/{assistant_id} (cached per assistant_id
+             with the same TTL) and extract persona message fields from the
+             nested ``config`` dict.
+
+        Returns a dict with keys ``welcome``, ``handoff``, ``resolution``,
+        ``idle_warning``, ``idle_close``, ``resolution_prompt``, ``survey_ai``,
+        ``survey_agent``, ``thanks``, and ``assign_agent`` (all strings, empty
+        string when the field is absent). Returns None on ANY exception,
+        non-2xx response, or missing data — never raises.
+
+        Note: ``welcome`` is included for completeness but is not consumed by
+        any current flow (the agent-bot has no conversation-created trigger).
+        """
+        try:
+            assistant = await self._resolve_assistant(inbox_id)
+            if assistant is None:
+                return None
+            config = assistant.get("config")
             if not isinstance(config, dict):
                 return None
 
@@ -162,10 +185,45 @@ class ProtonConfigClient:
                 "welcome": config.get("welcome_message", "") or "",
                 "handoff": config.get("handoff_message", "") or "",
                 "resolution": config.get("resolution_message", "") or "",
+                "idle_warning": config.get("idle_warning_message", "") or "",
+                "idle_close": config.get("idle_close_message", "") or "",
+                "resolution_prompt": config.get("resolution_prompt_message", "") or "",
+                "survey_ai": config.get("survey_ai_message", "") or "",
+                "survey_agent": config.get("survey_agent_message", "") or "",
+                "thanks": config.get("thanks_message", "") or "",
+                "assign_agent": config.get("assign_agent_message", "") or "",
             }
         except Exception:
             logger.debug(
                 "proton_config: error fetching assistant messages for inbox %s",
+                inbox_id,
+                exc_info=True,
+            )
+            return None
+
+    async def get_assistant_persona(self, inbox_id: int | None) -> dict | None:
+        """Persona fields for shaping the agent-bot decision prompt. Fail-open None.
+
+        Returns a dict with keys ``instructions`` (str), ``guardrails``
+        (list[str]), and ``language`` (str) from the resolved assistant config.
+        Returns None on ANY exception, non-2xx response, or missing data —
+        never raises.  Shares the same cached assistant fetch as
+        get_assistant_messages so the two calls together produce only one HTTP
+        round-trip per TTL window.
+        """
+        try:
+            assistant = await self._resolve_assistant(inbox_id)
+            if assistant is None:
+                return None
+            config = assistant.get("config", {}) or {}
+            return {
+                "instructions": config.get("instructions", "") or "",
+                "guardrails": list(config.get("guardrails", []) or []),
+                "language": config.get("language", "") or "",
+            }
+        except Exception:
+            logger.debug(
+                "proton_config: error fetching assistant persona for inbox %s",
                 inbox_id,
                 exc_info=True,
             )

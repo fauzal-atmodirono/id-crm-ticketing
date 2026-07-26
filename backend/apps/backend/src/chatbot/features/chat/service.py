@@ -17,6 +17,8 @@ from chatbot.features.chat.adapters.bigquery_metrics import NoOpMetrics
 from chatbot.features.chat.adapters.firestore_session_service import FirestoreSessionService
 from chatbot.features.chat.adapters.noop_conversation_log import NoOpConversationLog
 from chatbot.features.chat.agents import build_ai_agent, build_summarizer_agent
+from chatbot.features.chat.chat_persona import compose_chat_agent_instruction
+from chatbot.features.chat.inbox_resolver import effective_assignment
 from chatbot.features.chat.prompts import AGENT_INSTRUCTION
 from chatbot.features.chat.csat import record_csat_on_ticket
 from chatbot.features.chat.detection import should_open_ticket
@@ -114,6 +116,9 @@ class OrchestratorService:
         conversation_log_port: ConversationLogPort | None = None,
         runner_factory: Callable[[Any], Any] | None = None,
         metrics_port: MetricsPort | None = None,
+        assignment_store: Any | None = None,
+        assistants_store: Any | None = None,
+        tenant_settings_store: Any | None = None,
     ) -> None:
         self._settings = settings
         self._chat_port = chat_port
@@ -126,6 +131,9 @@ class OrchestratorService:
             conversation_log_port or NoOpConversationLog()
         )
         self._metrics: MetricsPort = metrics_port or NoOpMetrics()
+        self._assignment_store = assignment_store
+        self._assistants_store = assistants_store
+        self._tenant_settings_store = tenant_settings_store
 
         # Per-session override map: session_id -> instruction string.
         # Empty by default → every session gets AGENT_INSTRUCTION (no behaviour
@@ -188,6 +196,48 @@ class OrchestratorService:
         except Exception:
             return AGENT_INSTRUCTION
         return self._instruction_by_session.get(session_id, AGENT_INSTRUCTION)
+
+    async def _resolve_chat_assistant(self, inbox_id: int | None) -> Any:
+        """Resolve the assistant for a given inbox_id.
+
+        Fail-open: inbox_id is None, no assistants_store, unresolvable, or any
+        exception → None. Reuses effective_assignment exactly as the copilot does.
+        """
+        if inbox_id is None or self._assistants_store is None:
+            return None
+        try:
+            eff = await effective_assignment(
+                self._assignment_store,
+                self._assistants_store,
+                self._tenant_settings_store,
+                self._settings,
+                inbox_id,
+            )
+            assistant_id = eff.get("assistant_id") if eff else None
+            if assistant_id:
+                return await self._assistants_store.get(assistant_id)
+            return await self._assistants_store.get_default()
+        except Exception:
+            return None
+
+    async def _register_chat_persona(self, session_id: str, inbox_id: int | None) -> None:
+        """Resolve + register the operator persona for this session.
+
+        Composes AGENT_INSTRUCTION with the assistant persona. If the result
+        differs from the base (i.e. there is a real persona), stores it in
+        _instruction_by_session so _chat_instruction_provider picks it up.
+        Pops the key (restores default) if the persona is empty or any error
+        occurs. Fail-open: never raises.
+        """
+        try:
+            assistant = await self._resolve_chat_assistant(inbox_id)
+            composed = compose_chat_agent_instruction(AGENT_INSTRUCTION, assistant)
+            if composed != AGENT_INSTRUCTION:
+                self._instruction_by_session[session_id] = composed
+            else:
+                self._instruction_by_session.pop(session_id, None)
+        except Exception:
+            self._instruction_by_session.pop(session_id, None)
 
     def _sync_history_from_state(self, session_id: str, session: Session) -> list[dict[str, Any]]:
         state_history = session.state.setdefault("chat_history", [])
@@ -411,6 +461,10 @@ class OrchestratorService:
             role="user",
             parts=[types.Part.from_text(text=text)],
         )
+
+        # Register the operator persona for this session (fail-open: no-op when
+        # inbox_id is None or stores are not wired).
+        await self._register_chat_persona(session_id, inbox_id)
 
         # 5. Run the ADK Agent
         reply_text: str | None = ""

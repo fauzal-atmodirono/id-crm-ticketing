@@ -362,6 +362,13 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # --- Audit log (case state transition trail) ---
     audit_log = build_audit_log(settings)
 
+    # --- Shared stores (built once, passed to orchestrator, agent-assist and copilot) ---
+    _shared_assistants_store = build_assistants_store(settings)
+    _shared_tenant_settings_store = build_tenant_settings_store(settings)
+    _shared_tools_store = build_tools_store(settings)
+    _shared_scenarios_store = build_scenarios_store(settings)
+    _shared_assignment_store = build_inbox_assignment_store(settings)
+
     orchestrator = OrchestratorService(
         settings=settings,
         chat_port=chat_port,
@@ -372,6 +379,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         handoff_bridge=handoff_bridge,
         conversation_log_port=conversation_log_port,
         metrics_port=metrics_port,
+        assignment_store=_shared_assignment_store,
+        assistants_store=_shared_assistants_store,
+        tenant_settings_store=_shared_tenant_settings_store,
     )
 
     app.include_router(
@@ -394,13 +404,6 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     if settings.routing_enabled and chatwoot_client is not None:
         chatwoot_client._routing_service = _routing_svc  # type: ignore[assignment]
     app.include_router(build_routing_router(settings, _routing_priority_store, _routing_presence))
-
-    # --- Shared stores (built once, passed to both agent-assist and copilot) ---
-    _shared_assistants_store = build_assistants_store(settings)
-    _shared_tenant_settings_store = build_tenant_settings_store(settings)
-    _shared_tools_store = build_tools_store(settings)
-    _shared_scenarios_store = build_scenarios_store(settings)
-    _shared_assignment_store = build_inbox_assignment_store(settings)
 
     # --- Agent-assist FAQ ---
     _wire_agent_assist(

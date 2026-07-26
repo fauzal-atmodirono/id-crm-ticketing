@@ -68,6 +68,55 @@ def _mock_escalation_routes():
 
 
 @respx.mock
+async def test_maybe_escalate_skips_when_zammad_disabled(monkeypatch):
+    """Chatwoot-only tenant: the human-applied `escalate` label must NOT create
+    a Zammad ticket — `maybe_escalate` skips the escalation entirely (the label
+    is just a tag; the agent handles it natively in Chatwoot)."""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "zammad_ticketing_enabled", False)
+    called = {"n": 0}
+
+    async def _fake_escalate(*args, **kwargs):
+        called["n"] += 1
+
+    monkeypatch.setattr(sync, "escalate_conversation", _fake_escalate)
+
+    payload = {
+        "event": "conversation_updated",
+        "id": 42,
+        "labels": ["escalate", "billing"],
+        "messages": [],
+    }
+    await sync.maybe_escalate(payload)
+
+    assert called["n"] == 0
+
+
+@respx.mock
+async def test_escalate_conversation_is_noop_when_zammad_disabled(monkeypatch):
+    """Chokepoint guard: even called directly, `escalate_conversation` must do
+    nothing when Zammad is disabled — no Chatwoot fetch, no Zammad call, no
+    link — so no code path can 403 against an abandoned Zammad."""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "zammad_ticketing_enabled", False)
+    # Any Chatwoot/Zammad call would hit an unmocked route and raise.
+    get_msgs = respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages")
+
+    await sync.escalate_conversation(42)  # must not raise, must not touch anything
+
+    assert not get_msgs.called
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(ConversationLink).where(
+                ConversationLink.chatwoot_conversation_id == 42
+            )
+        )
+        assert result.scalar_one_or_none() is None
+
+
+@respx.mock
 async def test_maybe_escalate_creates_ticket_link_and_private_note():
     create_user, create_ticket, create_message = _mock_escalation_routes()
 

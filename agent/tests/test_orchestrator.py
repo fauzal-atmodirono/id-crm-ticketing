@@ -232,6 +232,125 @@ async def test_suggest_mode_handoff_to_human_reopens_without_sending_reply(monke
 
 
 @respx.mock
+async def test_auto_escalate_chatwoot_only_acks_customer_and_reopens_without_zammad(monkeypatch):
+    """Chatwoot-only tenant (`zammad_ticketing_enabled=False`, no Zammad):
+    escalate_to_ticket must NOT call the Zammad escalation path. Instead it
+    acknowledges the customer publicly and reopens for a human, so a
+    missing/unauthorized Zammad backend can never leave the customer in
+    silence. Regression for the prod bug where a 403 from Zammad's /users/search
+    crashed the escalate path before the reopen → the WhatsApp customer got
+    nothing at all."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "agent_mode", "auto")
+    monkeypatch.setattr(settings, "zammad_ticketing_enabled", False)
+    monkeypatch.setattr(
+        settings,
+        "handoff_default_message",
+        "Let me connect you with our team — someone will be right with you.",
+    )
+
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    create_message = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages"
+    ).mock(return_value=httpx.Response(200, json={"id": 999}))
+    toggle_status = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status"
+    ).mock(return_value=httpx.Response(200, json={"success": True}))
+
+    async def _boom_escalate(*args, **kwargs):
+        raise AssertionError("Zammad escalation must not run on a Chatwoot-only tenant")
+
+    monkeypatch.setattr(sync, "escalate_conversation", _boom_escalate)
+    monkeypatch.setattr(
+        gemini,
+        "decide",
+        _stub_decide(
+            gemini.Decision("escalate_to_ticket", {"summary": "wants to buy S70"}, None, 7)
+        ),
+    )
+
+    task = await orchestrator.handle_bot_event(_payload())
+    await task  # must not raise
+
+    assert create_message.call_count == 1
+    body = create_message.calls.last.request.content
+    assert b"connect you with our team" in body
+    assert b'"private": false' in body or b'"private":false' in body
+    assert toggle_status.call_count == 1
+    assert b"open" in toggle_status.calls.last.request.content
+
+    rows = await _ai_action_rows("chatwoot:42")
+    assert rows[0].decision == "escalate_to_ticket"
+
+
+@respx.mock
+async def test_chatwoot_only_handoff_reopens_even_if_ack_post_fails(monkeypatch):
+    """Fail-open: if posting the customer acknowledgment 500s, the conversation
+    must STILL be reopened for a human — the reopen is what pulls a human in,
+    and a failed ack post must never abort it (nor escape the background task)."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "handoff_default_message", "One moment please.")
+
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    create_message = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages"
+    ).mock(return_value=httpx.Response(500, json={"error": "boom"}))
+    toggle_status = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status"
+    ).mock(return_value=httpx.Response(200, json={"success": True}))
+
+    monkeypatch.setattr(
+        gemini,
+        "decide",
+        _stub_decide(gemini.Decision("handoff_to_human", {"reason": "unclear ask"}, None, 3)),
+    )
+
+    task = await orchestrator.handle_bot_event(_payload())
+    await task  # must not raise
+
+    assert create_message.call_count == 1  # ack was attempted
+    assert toggle_status.call_count == 1  # ...and the reopen still happened
+
+
+@respx.mock
+async def test_handoff_posts_default_message_when_no_persona_configured(monkeypatch):
+    """With no assistant persona handoff_message (proton has none), the tenant
+    `handoff_default_message` fallback is posted publicly so the customer is
+    always acknowledged before the conversation is reopened for a human."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "handoff_default_message", "Connecting you to a human agent.")
+
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    create_message = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages"
+    ).mock(return_value=httpx.Response(200, json={"id": 999}))
+    toggle_status = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status"
+    ).mock(return_value=httpx.Response(200, json={"success": True}))
+
+    monkeypatch.setattr(
+        gemini,
+        "decide",
+        _stub_decide(gemini.Decision("handoff_to_human", {"reason": "n/a"}, None, 3)),
+    )
+
+    task = await orchestrator.handle_bot_event(_payload())
+    await task
+
+    assert create_message.call_count == 1
+    body = create_message.calls.last.request.content
+    assert b"Connecting you to a human agent." in body
+    assert b'"private": false' in body or b'"private":false' in body
+    assert toggle_status.call_count == 1
+
+
+@respx.mock
 async def test_second_event_during_processing_does_not_cancel_in_flight_work(monkeypatch):
     """Debounce cancellation must only apply while a task is still in its
     sleep phase. Once processing has started (past the sleep, mid-Gemini or

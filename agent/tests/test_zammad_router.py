@@ -69,6 +69,33 @@ async def test_valid_signature_is_accepted_and_dispatches(client, monkeypatch):
     assert received["payload"]["ticket"]["id"] == 1
 
 
+async def test_zammad_webhook_ignored_when_zammad_disabled(client, monkeypatch):
+    """Chatwoot-only tenant: inbound Zammad webhooks are ignored (200, no
+    dispatch to on_ticket_event) so an abandoned Zammad can't mirror anything
+    back into Chatwoot."""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "zammad_ticketing_enabled", False)
+    called = {"n": 0}
+
+    async def fake_on_ticket_event(payload):
+        called["n"] += 1
+
+    monkeypatch.setattr(sync, "on_ticket_event", fake_on_ticket_event)
+
+    body = json.dumps({"ticket": {"id": 9, "number": "1009", "state": "open"}}).encode()
+    headers = {
+        "X-Hub-Signature": _sign(body),
+        "Content-Type": "application/json",
+        "X-Zammad-Delivery": "zdisabled-1",
+    }
+
+    response = await client.post("/webhooks/zammad", content=body, headers=headers)
+
+    assert response.status_code == 200
+    assert called["n"] == 0
+
+
 async def test_duplicate_delivery_id_is_a_noop_second_time(client, monkeypatch):
     call_count = {"n": 0}
 

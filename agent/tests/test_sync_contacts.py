@@ -48,6 +48,33 @@ async def test_upsert_contact_creates_when_absent():
 
 
 @respx.mock
+async def test_upsert_contact_skips_zammad_when_disabled(monkeypatch):
+    """Chatwoot-only tenant (`zammad_ticketing_enabled=False`): a contact event
+    must NOT sync to Zammad — no /users/search, no create, no contact_links row
+    — so a missing/unauthorized Zammad can't spew 403s on every contact."""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "zammad_ticketing_enabled", False)
+    search = respx.get(f"{ZAMMAD}/api/v1/users/search").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    create = respx.post(f"{ZAMMAD}/api/v1/users")
+
+    payload = {
+        "event": "contact_created",
+        "id": 2001,
+        "name": "No Zammad",
+        "email": "nz@example.com",
+        "additional_attributes": {},
+    }
+    await sync.upsert_contact(payload)
+
+    assert not search.called
+    assert not create.called
+    assert await _link_for(2001) is None
+
+
+@respx.mock
 async def test_upsert_contact_updates_when_found():
     respx.get(f"{ZAMMAD}/api/v1/users/search").mock(
         return_value=httpx.Response(

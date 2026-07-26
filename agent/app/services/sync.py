@@ -170,6 +170,14 @@ async def upsert_contact(payload: dict) -> None:
         )
         return
 
+    if not get_settings().zammad_ticketing_enabled:
+        # Chatwoot-only tenant: no Zammad to mirror the contact into.
+        logger.debug(
+            "upsert_contact: zammad integration disabled, skipping contact %s",
+            contact_id,
+        )
+        return
+
     await _ensure_zammad_customer(contact_id, email, name, company)
 
 
@@ -206,6 +214,15 @@ async def maybe_escalate(payload: dict) -> None:
     conversation_id = payload.get("id")
     labels = payload.get("labels") or []
     if conversation_id is None or "escalate" not in labels:
+        return
+
+    if not get_settings().zammad_ticketing_enabled:
+        # Chatwoot-only tenant: the `escalate` label no longer creates a Zammad
+        # ticket; it's just a tag the agent handles natively in Chatwoot.
+        logger.debug(
+            "maybe_escalate: zammad integration disabled, skipping conversation %s",
+            conversation_id,
+        )
         return
 
     existing = await _conversation_link_by_chatwoot_id(conversation_id)
@@ -247,7 +264,20 @@ async def escalate_conversation(
     accepted for forward compatibility with the Task 5 AI layer but isn't
     surfaced on the ticket itself -- `summary` (used as the title) already
     captures the human-relevant context.
+
+    Chokepoint guard: on a Chatwoot-only tenant (`zammad_ticketing_enabled`
+    False) this is a no-op, so no caller can reach a Zammad call. The agent-bot
+    escalate path routes to a Chatwoot handoff *before* calling this; this guard
+    is defense-in-depth for any other caller.
     """
+    if not get_settings().zammad_ticketing_enabled:
+        logger.debug(
+            "escalate_conversation: zammad integration disabled, skipping "
+            "conversation %s",
+            conversation_id,
+        )
+        return
+
     if await _conversation_link_by_chatwoot_id(conversation_id) is not None:
         logger.info(
             "escalate_conversation: conversation %s already escalated",

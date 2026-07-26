@@ -25,6 +25,14 @@ router = APIRouter()
 @router.post("/webhooks/zammad")
 async def zammad_webhook(request: Request, background_tasks: BackgroundTasks):
     settings = get_settings()
+
+    if not settings.zammad_ticketing_enabled:
+        # Chatwoot-only tenant: the Zammad integration is off, so ignore any
+        # inbound ticket webhook (an abandoned Zammad must not mirror state
+        # back into Chatwoot). 200 so Zammad doesn't retry.
+        logger.info("zammad_webhook: zammad integration disabled, ignoring delivery")
+        return {"ok": True}
+
     body = await request.body()
 
     signature = request.headers.get("X-Hub-Signature")

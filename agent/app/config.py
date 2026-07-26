@@ -39,6 +39,22 @@ class Settings(BaseSettings):
     zammad_integration_login: str = "integration@local"
     # Feature flag for the Zammad -> Gemini draft-reply flow (services.responder)
     zammad_ai_drafts: bool = True
+    # Master switch for the Zammad integration. Default True preserves all
+    # Chatwoot⇄Zammad flows. Set False for Chatwoot-only tenants (no Zammad):
+    # EVERY outbound Zammad call is then skipped and handoffs stay in Chatwoot —
+    #   * agent-bot `escalate_to_ticket` → Chatwoot handoff (ack + reopen);
+    #   * contact sync (`upsert_contact`) → skipped (no Zammad user mirror);
+    #   * the `escalate` label (`maybe_escalate`) → skipped;
+    #   * `escalate_conversation` → no-op at the top (chokepoint);
+    #   * inbound Zammad webhooks (`/webhooks/zammad`) → ignored.
+    # So an unauthorized/unreachable/abandoned Zammad can never 403 a flow or
+    # leave a customer in silence.
+    zammad_ticketing_enabled: bool = True
+    # Customer-facing acknowledgment posted (publicly) before reopening on a
+    # handoff/escalation when the assistant has no persona handoff_message.
+    # Empty by default (behaviour-preserving); set per tenant so a handoff
+    # always acknowledges the customer instead of going silent.
+    handoff_default_message: str = ""
 
     # Gemini / AI behavior.
     # Auth is via Application Default Credentials (Vertex AI) by default —

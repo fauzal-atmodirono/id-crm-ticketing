@@ -53,6 +53,19 @@ THANKS_DEFAULT = "Thank you for your feedback!"
 ASSIGN_AGENT_DEFAULT = "Thank you. We will assign an agent to assist you further."
 
 
+def _created_by_ai_handoff(payload: dict) -> bool:
+    """True when the backend stamped this conversation as an AI escalation/handoff.
+
+    The backend ChatwootAdapter sets ``additional_attributes.ai_handoff`` when it
+    creates a Chatwoot conversation to hand a chat to a human. Such a conversation
+    is not a fresh customer contact — the customer already saw the AI disclaimer on
+    the bot's first reply — so re-posting the disclaimer here would surface as the
+    human agent's opening message on the customer's screen.
+    """
+    attrs = payload.get("additional_attributes")
+    return bool(isinstance(attrs, dict) and attrs.get("ai_handoff"))
+
+
 def _resolve_message(messages: dict | None, key: str, default: str) -> str:
     """Operator override if present and non-empty, else the hard-coded default."""
     if messages:
@@ -144,6 +157,17 @@ async def on_conversation_created(payload: dict) -> None:
         )
         return
     await _mirror_state(conversation_id, ACTIVE)
+
+    # AI escalation/handoff conversations are created by the backend when a chat is
+    # handed to a human. The disclaimer belongs on the bot's first reply (shown in
+    # the customer UI), not here — posting it would arrive as the human agent's
+    # opening message. Seed/track the conversation, but post no greeting.
+    if _created_by_ai_handoff(payload):
+        logger.info(
+            "lifecycle: conversation %s created by AI handoff; skipping greeting",
+            conversation_id,
+        )
+        return
 
     settings = get_settings()
     channel_type = await _inbox_channel(inbox_id)

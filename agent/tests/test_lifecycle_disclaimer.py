@@ -49,3 +49,21 @@ async def test_disclaimer_text_carries_sop_prefix(chatwoot):
 async def test_on_conversation_created_missing_id_is_noop(chatwoot):
     await lifecycle.on_conversation_created({"inbox_id": 3})
     chatwoot.create_message.assert_not_awaited()
+
+
+async def test_ai_handoff_conversation_skips_disclaimer(chatwoot):
+    # A conversation the backend created for a human handoff carries the
+    # ``ai_handoff`` marker (set by the backend ChatwootAdapter). The disclaimer
+    # belongs on the bot's first reply, not here — re-posting it would surface as
+    # the human agent's opening message on the customer's screen. The lifecycle
+    # row is still seeded so the conversation is tracked.
+    payload = {
+        "id": 88,
+        "inbox_id": 3,
+        "channel": "Channel::Whatsapp",
+        "additional_attributes": {"ai_handoff": True},
+    }
+    await lifecycle.on_conversation_created(payload)
+
+    assert await lifecycle_store.get_state(88) == "active"
+    chatwoot.create_message.assert_not_awaited()

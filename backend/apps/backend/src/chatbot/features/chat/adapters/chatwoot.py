@@ -31,6 +31,13 @@ _log = structlog.get_logger(__name__)
 
 _PRIORITY_MAP = {"low": "low", "medium": "medium", "high": "high", "urgent": "urgent"}
 
+# additional_attributes marker stamped on conversations created by an AI
+# escalation/handoff (not a fresh customer chat). The agent sync service reads
+# this off the conversation_created webhook to skip its AI-disclaimer greeting —
+# that greeting belongs on the bot's first reply, not on the human-handoff
+# conversation (where it would surface as the agent's opening message).
+_AI_HANDOFF_ATTRS = {"ai_handoff": True}
+
 # Conversation statuses that still count as "live" — an existing one is reused so
 # a returning customer stays in the same thread. A resolved conversation is a
 # closed ticket, so the next contact opens a fresh one instead.
@@ -415,6 +422,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         customer_phone: str | None = None,
         *,
         search_existing: bool = True,
+        additional_attributes: dict[str, Any] | None = None,
     ) -> str:
         """Return the conversation id for a session, creating it in the API-channel
         inbox if it does not exist yet.
@@ -424,7 +432,9 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         to the session id, so the mapping stays deterministic. On a cache miss we
         first reuse an existing active conversation (``search_existing``) so a
         restart does not create a duplicate; ``rotate_conversation_ticket`` sets it
-        False to force a brand-new conversation.
+        False to force a brand-new conversation. ``additional_attributes`` is merged
+        into the create body (only applied when a NEW conversation is created — a
+        reused one keeps its original attributes).
         """
         if session_id in self._conv_by_session:
             return self._conv_by_session[session_id]
@@ -440,6 +450,8 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         }
         if contact_id is not None:
             payload["contact_id"] = contact_id
+        if additional_attributes:
+            payload["additional_attributes"] = additional_attributes
         res = await self._request("POST", "/conversations", payload)
         if res and "id" in res:
             conv_id = str(res["id"])
@@ -477,7 +489,9 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         department: str | None = None,
         sla_minutes: int | None = None,
     ) -> str:
-        conv_id = await self._find_or_create_conversation(session_id, customer_name, customer_phone)
+        conv_id = await self._find_or_create_conversation(
+            session_id, customer_name, customer_phone, additional_attributes=_AI_HANDOFF_ATTRS
+        )
         # Post the customer's issue as an INCOMING message (before labelling, which
         # is what fires the webhook) so a downstream sync can identify the customer
         # from an incoming message and title the ticket.
@@ -660,7 +674,10 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
     # --- HumanAgentBridgePort ---
     async def open_handoff(self, payload: HandoffOpenPayload) -> str:
         conv_id = await self._find_or_create_conversation(
-            payload.session_id, payload.customer_name, payload.customer_phone
+            payload.session_id,
+            payload.customer_name,
+            payload.customer_phone,
+            additional_attributes=_AI_HANDOFF_ATTRS,
         )
         # Post the customer's latest message as an INCOMING message (before
         # labelling, which fires the webhook) so a downstream sync can identify the

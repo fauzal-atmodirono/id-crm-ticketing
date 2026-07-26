@@ -113,6 +113,32 @@ async def test_open_handoff_posts_incoming_customer_message_before_labels() -> N
 
 
 @pytest.mark.asyncio
+async def test_open_handoff_marks_conversation_as_ai_handoff() -> None:
+    # The handoff-created conversation must carry the ``ai_handoff`` marker in its
+    # additional_attributes so the agent sync service (which sees the
+    # conversation_created webhook) skips its AI-disclaimer greeting — otherwise
+    # that greeting surfaces as the human agent's opening message to the customer.
+    adapter = ChatwootAdapter(
+        Settings(chatwoot_account_id=1, chatwoot_inbox_id=7, chatwoot_agent_team_id=3)
+    )
+    fake = _FakeClient({("POST", "/conversations"): {"id": 99}})
+    adapter._request = fake._request  # type: ignore[method-assign]
+    payload = HandoffOpenPayload(
+        session_id="sim-1",
+        customer_name="Aina",
+        customer_email="",
+        ai_summary="Customer wants a human.",
+        transcript=(Message(role="user", text="connect me to a human"),),
+    )
+    await adapter.open_handoff(payload)
+    create = next(
+        pl for m, p, pl in fake.calls if m == "POST" and p.endswith("/conversations")
+    )
+    assert create is not None
+    assert create.get("additional_attributes") == {"ai_handoff": True}
+
+
+@pytest.mark.asyncio
 async def test_open_handoff_writes_dimension_labels_in_single_final_call() -> None:
     # The bridge path (Chatwoot escalation) must persist the AI classification as
     # labels the metrics sync can read back, in the ONE final labels call — a

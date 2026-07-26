@@ -1,0 +1,151 @@
+.../components/proton/KnowledgeSettings.vue        | 112 +++++++++++++++++++++
+ 1 file changed, 112 insertions(+)
+
+--- Changes ---
+
+app/javascript/dashboard/components/proton/KnowledgeSettings.vue
+  @@ -31,6 +31,7 @@ const aForm = ref({
+  +  language: '',
+     instructions: '',
+     temperature: 1,
+     guardrails: [],
+  @@ -38,6 +39,13 @@ const aForm = ref({
+  +  idle_warning_message: '',
+  +  idle_close_message: '',
+  +  resolution_prompt_message: '',
+  +  survey_ai_message: '',
+  +  survey_agent_message: '',
+  +  thanks_message: '',
+  +  assign_agent_message: '',
+     feature_faq: true,
+     feature_memory: false,
+     feature_citations: false,
+  @@ -60,6 +68,7 @@ const loadAssistant = async id => {
+  +      language: cfg.language || '',
+         instructions: cfg.instructions || '',
+         temperature: cfg.temperature !== undefined ? cfg.temperature : 1,
+         guardrails: Array.isArray(cfg.guardrails) ? [...cfg.guardrails] : [],
+  @@ -69,6 +78,13 @@ const loadAssistant = async id => {
+  +      idle_warning_message: cfg.idle_warning_message || '',
+  +      idle_close_message: cfg.idle_close_message || '',
+  +      resolution_prompt_message: cfg.resolution_prompt_message || '',
+  +      survey_ai_message: cfg.survey_ai_message || '',
+  +      survey_agent_message: cfg.survey_agent_message || '',
+  +      thanks_message: cfg.thanks_message || '',
+  +      assign_agent_message: cfg.assign_agent_message || '',
+         feature_faq: cfg.feature_faq !== false,
+         feature_memory: cfg.feature_memory === true,
+         feature_citations: cfg.feature_citations === true,
+  @@ -126,6 +142,7 @@ const saveAssistant = async () => {
+  +        language: f.language,
+           instructions: f.instructions,
+           temperature: f.temperature,
+           guardrails: f.guardrails,
+  @@ -133,6 +150,13 @@ const saveAssistant = async () => {
+  +        idle_warning_message: f.idle_warning_message,
+  +        idle_close_message: f.idle_close_message,
+  +        resolution_prompt_message: f.resolution_prompt_message,
+  +        survey_ai_message: f.survey_ai_message,
+  +        survey_agent_message: f.survey_agent_message,
+  +        thanks_message: f.thanks_message,
+  +        assign_agent_message: f.assign_agent_message,
+           feature_faq: f.feature_faq,
+           feature_memory: f.feature_memory,
+           feature_citations: f.feature_citations,
+  @@ -341,6 +365,17 @@ onMounted(() => {
+  +            <div>
+  +              <label class="block mb-1 text-xs font-medium text-n-slate-11">
+  +                Language
+  +              </label>
+  +              <input
+  +                v-model="aForm.language"
+  +                type="text"
+  +                placeholder="Leave empty to reply in the customer's language (e.g. Bahasa Melayu)"
+  +                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
+  +              />
+  +            </div>
+             </fieldset>
+   
+             <!-- System -->
+  @@ -503,6 +538,83 @@ onMounted(() => {
+  +            <div>
+  +              <label class="block mb-1 text-xs font-medium text-n-slate-11">
+  +                Idle warning message
+  +              </label>
+  +              <input
+  +                v-model="aForm.idle_warning_message"
+  +                type="text"
+  +                placeholder="Sent after inactivity to warn before closing (e.g. Are you still there?)"
+  +                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
+  +              />
+  +            </div>
+  +            <div>
+  +              <label class="block mb-1 text-xs font-medium text-n-slate-11">
+  +                Idle close message
+  +              </label>
+  +              <input
+  +                v-model="aForm.idle_close_message"
+  +                type="text"
+  +                placeholder="Sent when closing due to inactivity (e.g. Closing this chat as there has been no response.)"
+  +                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
+  +              />
+  +            </div>
+  +            <div>
+  +              <label class="block mb-1 text-xs font-medium text-n-slate-11">
+  +                Resolution prompt message
+  +              </label>
+  +              <input
+  +                v-model="aForm.resolution_prompt_message"
+  +                type="text"
+  +                placeholder="Asks customer if their issue is resolved (e.g. Has your issue been resolved?)"
+  +                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
+  +              />
+  +            </div>
+  +            <div>
+  +              <label class="block mb-1 text-xs font-medium text-n-slate-11">
+  +                Survey AI message
+  +              </label>
+  +              <input
+  +                v-model="aForm.survey_ai_message"
+  +                type="text"
+  +                placeholder="CSAT survey prompt for AI-handled conversations (e.g. How would you rate this chat?)"
+  +                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
+  +              />
+  +            </div>
+  +            <div>
+  +              <label class="block mb-1 text-xs font-medium text-n-slate-11">
+  +                Survey agent message
+  +              </label>
+  +              <input
+  +                v-model="aForm.survey_agent_message"
+  +                type="text"
+  +                placeholder="CSAT survey prompt for agent-handled conversations (e.g. How would you rate your agent?)"
+  +                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
+  +              />
+  +            </div>
+  +            <div>
+  +              <label class="block mb-1 text-xs font-medium text-n-slate-11">
+  +                Thanks message
+  +              </label>
+  +              <input
+  +                v-model="aForm.thanks_message"
+  +                type="text"
+  +                placeholder="Sent after the customer rates the chat (e.g. Thank you for your feedback!)"
+  +                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
+  +              />
+  +            </div>
+  +            <div>
+  +              <label class="block mb-1 text-xs font-medium text-n-slate-11">
+  +                Assign agent message
+  +              </label>
+  +              <input
+  +                v-model="aForm.assign_agent_message"
+  +                type="text"
+  +                placeholder="Sent when a human agent is assigned (e.g. You are now connected with an agent.)"
+  +                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
+  +              />
+  +            </div>
+             </fieldset>
+   
+             <!-- Features -->
+  +112 -0

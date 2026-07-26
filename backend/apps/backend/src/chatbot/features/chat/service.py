@@ -332,7 +332,7 @@ class OrchestratorService:
         except Exception as e:  # instrumentation must never break the turn
             _log.error("emit_turn_metrics_failed", session_id=session_id, error=str(e))
 
-    async def handle_turn(self, session_id: str, text: str) -> TurnResult:
+    async def handle_turn(self, session_id: str, text: str, inbox_id: int | None = None) -> TurnResult:
         """Process a single text-based chatbot turn."""
         _log.info("processing_chatbot_turn", session_id=session_id, text_length=len(text))
         t0 = perf_counter()

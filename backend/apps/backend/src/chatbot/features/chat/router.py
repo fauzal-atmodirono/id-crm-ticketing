@@ -57,6 +57,7 @@ _log = structlog.get_logger(__name__)
 class ChatTurnRequest(BaseModel):
     session_id: str
     text: str
+    inbox_id: int | None = None
 
 
 class CsatRequest(BaseModel):
@@ -1063,7 +1064,7 @@ class ChatRouter:
     async def chat_turn(self, req: ChatTurnRequest) -> ChatTurnResponse:
         """Run a single text chat turn and return the assistant's reply."""
         _log.info("chat_turn_received", session_id=req.session_id, text_length=len(req.text))
-        result = await self.orchestrator.handle_turn(session_id=req.session_id, text=req.text)
+        result = await self.orchestrator.handle_turn(session_id=req.session_id, text=req.text, inbox_id=req.inbox_id)
         return ChatTurnResponse(
             reply=result.reply,
             language=result.language,

@@ -18,7 +18,14 @@ the backend locally: `cd backend/apps/backend && uv run uvicorn chatbot.main:app
 `deploy/` is runtime config/ops scripts. Chatwoot and Zammad are upstream apps
 pulled as Docker images by `deploy/docker-compose.infra.yml` /
 `deploy/docker-compose.tenant.yml` — there is no `crm/` or `ticketing/` source
-in this checkout to modify.
+in this checkout to modify. (The Chatwoot **SPA is forked**: patches in
+`deploy/chatwoot-fork/patches/NNNN-*.patch` are `git apply`-ed onto upstream at
+image-build time — that's where the CRM's custom "Knowledge" UI lives.)
+
+**Direction (2026-07): migrating to Chatwoot-only — Zammad is being retired.**
+`agent/` gates every Zammad path behind `ZAMMAD_TICKETING_ENABLED` (default
+`true`; set `false` → escalations/handoffs stay in Chatwoot via a human handoff).
+Prefer Chatwoot capabilities for new work; don't build on Zammad.
 
 ## Commands
 
@@ -103,6 +110,28 @@ tables + their unique constraints (with a pre-check as belt-and-suspenders):
   sync, so both entry points run it via `asyncio.to_thread` to avoid blocking
   the event loop.
 
+### Operator-configurable persona & knowledge (backend)
+
+The `backend/` **assistant config** (`features/chat/adapters/assistants_store.py`
+`AssistantConfig`: `instructions`/`temperature`/`guardrails`/`response_guidelines`/
+`language` + welcome/handoff/resolution + 7 lifecycle messages) is edited
+per-inbox in the CRM (fork `KnowledgeSettings.vue`, patch `0013`+`0022`) and
+reaches the customer-facing bot **three ways**, all fail-open + default-preserving
+(empty persona → today's behavior, byte-identical):
+1. the `agent/` agent-bot decision prompt (`orchestrator._build_system_prompt`,
+   fetched via `ProtonConfigClient.get_assistant_persona`);
+2. lifecycle customer messages (`app/services/lifecycle.py`, via
+   `ProtonConfigClient.get_assistant_messages`);
+3. the backend **WhatsApp `/chat/turn`** agent (used when `CHAT_AGENT_ENABLED`):
+   persona **augments** (never replaces) the static `AGENT_INSTRUCTION` via a
+   google-adk `InstructionProvider` reading a per-session composed instruction
+   (`features/chat/{service.py,agents.py,chat_persona.py}`).
+
+Persona resolution reuses `inbox_resolver.effective_assignment` (same path the
+copilot uses). Separately, `backend/` has a **pgvector operator-authored KB** at
+`/kb/knowledge` (default-off `KNOWLEDGE_PG_ENABLED`, its own per-tenant Postgres),
+distinct from the read-only Vertex corpus listing at `/kb/documents`.
+
 ### Clients, config, DB
 
 - `app/clients/deps.py` — `get_chatwoot_client` / `get_zammad_client` are
@@ -130,3 +159,19 @@ tables + their unique constraints (with a pre-check as belt-and-suspenders):
 - Env vars are the single source of config truth; anything new must be added to
   both `app/config.py` and `deploy/tenants/example.env` (and `tests/conftest.py`
   if required at import time).
+
+## Deploy notes
+
+- **`agent`/`backend` images** are light and built on the VM: sync source to
+  `/opt/platform` (not a git repo — it's synced source), then
+  `docker compose -p <tenant> -f docker-compose.tenant.yml --env-file
+  tenants/<tenant>.env up -d --build backend agent`.
+- **Chatwoot custom image (`proton-chatwoot:<ver>-custom`)** — the Dockerfile
+  globs `patches/*.patch`, so a new fork patch is auto-included. **Build off-VM
+  and for `amd64`**: use Cloud Build —
+  `gcloud builds submit deploy/chatwoot-fork/ --config
+  deploy/chatwoot-fork/cloudbuild.yaml --substitutions _REGISTRY=<AR repo>` —
+  which pushes to Artifact Registry; the VM then `docker compose ... pull` +
+  `up -d --force-recreate chatwoot-rails chatwoot-sidekiq`. **A local Mac
+  (`arm64`) `docker build`+`push` will fail the VM's `amd64` pull** ("no matching
+  manifest"). Never build this heavy vite image on the 16 GB prod VM.

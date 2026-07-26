@@ -1,0 +1,446 @@
+diff --git a/app/javascript/dashboard/api/protonKnowledge.js b/app/javascript/dashboard/api/protonKnowledge.js
+index 436a37a..2d559c6 100644
+--- a/app/javascript/dashboard/api/protonKnowledge.js
++++ b/app/javascript/dashboard/api/protonKnowledge.js
+@@ -56,6 +56,46 @@ export async function listDocuments() {
+   return Array.isArray(data.documents) ? data.documents : [];
+ }
+ 
++// ── pgvector uploads ──────────────────────────────────────────────────────────
++
++// GET /kb/knowledge -> [{id,title,source_type,status,error,char_count,chunk_count,created_at}]
++export async function listKnowledge() {
++  const data = await kbRequest('/kb/knowledge');
++  return Array.isArray(data.documents) ? data.documents : [];
++}
++
++// POST /kb/knowledge/text  (paste text)
++export function createKnowledgeText(body) {
++  return kbRequest('/kb/knowledge/text', { method: 'POST', body });
++}
++
++// DELETE /kb/knowledge/:id
++export function deleteKnowledge(id) {
++  return kbRequest(`/kb/knowledge/${encodeURIComponent(id)}`, { method: 'DELETE' });
++}
++
++// POST /kb/knowledge/file  (multipart — cannot use kbRequest which forces JSON)
++export async function uploadKnowledgeFile(file, title) {
++  const { backendUrl, backendKey } = useProtonConfig();
++  if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
++  const form = new FormData();
++  form.append('file', file);
++  if (title) form.append('title', title);
++  const response = await fetch(`${backendUrl}/kb/knowledge/file`, {
++    method: 'POST',
++    headers: { ...(backendKey ? { 'x-api-key': backendKey } : {}) }, // NO Content-Type — browser sets multipart boundary
++    body: form,
++  });
++  if (!response.ok) {
++    const text = await response.text().catch(() => response.statusText);
++    const err = new Error(`${response.status}: ${text.slice(0, 200)}`);
++    err.status = response.status;
++    throw err;
++  }
++  const text = await response.text();
++  return text ? JSON.parse(text) : {};
++}
++
+ // ── Assistants ────────────────────────────────────────────────────────────────
+ 
+ // GET /kb/assistants -> [{ id, name, description, product_name, config, enabled, is_default, created_at }]
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index a296deb..8afc556 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -539,6 +539,13 @@ const menuItems = computed(() => {
+                   section: 'documents',
+                 }),
+               },
++              {
++                name: 'Uploads',
++                label: 'Uploads',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'uploads',
++                }),
++              },
+               {
+                 name: 'Playground',
+                 label: 'Playground',
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeUploads.vue b/app/javascript/dashboard/components/proton/KnowledgeUploads.vue
+new file mode 100644
+index 0000000..03241e2
+--- /dev/null
++++ b/app/javascript/dashboard/components/proton/KnowledgeUploads.vue
+@@ -0,0 +1,343 @@
++<!-- KnowledgeUploads.vue — OUR file. Native Chatwoot-styled view for managing
++     operator-authored documents in the pgvector knowledge base. Supports pasting
++     text and uploading files (.pdf/.docx/.md/.txt/.markdown), with async ingestion
++     polling (status: pending → indexed|failed). Deliberately self-contained like
++     KnowledgeFaqs.vue, no i18n — bare English strings throughout. -->
++<script setup>
++import { ref, onMounted, onBeforeUnmount } from 'vue';
++import { useAlert } from 'dashboard/composables';
++import {
++  listKnowledge,
++  createKnowledgeText,
++  deleteKnowledge,
++  uploadKnowledgeFile,
++} from 'dashboard/api/protonKnowledge';
++
++const entries = ref([]);
++const loading = ref(false);
++const errored = ref(false);
++
++// Text modal state
++const textModalOpen = ref(false);
++const saving = ref(false);
++const textForm = ref({ title: '', body: '' });
++
++// File input ref
++const fileInputRef = ref(null);
++const uploading = ref(false);
++
++// Polling for pending docs
++let pollInterval = null;
++
++const startPolling = () => {
++  if (pollInterval) return; // already polling
++  pollInterval = setInterval(async () => {
++    const hasPending = entries.value.some(e => e.status === 'pending');
++    if (!hasPending) {
++      clearInterval(pollInterval);
++      pollInterval = null;
++      return;
++    }
++    try {
++      entries.value = await listKnowledge();
++    } catch {
++      // silent — polling failure is non-fatal
++    }
++  }, 3000);
++};
++
++const load = async () => {
++  loading.value = true;
++  errored.value = false;
++  try {
++    entries.value = await listKnowledge();
++    if (entries.value.some(e => e.status === 'pending')) {
++      startPolling();
++    }
++  } catch (err) {
++    errored.value = true;
++    if (err.status === 401) {
++      useAlert('Unauthorized (401) — check the backend key configuration.');
++    } else if (err.status === 503) {
++      useAlert('Knowledge store unavailable (503) on the backend.');
++    } else {
++      useAlert(`Failed to load uploads: ${err.message}`);
++    }
++  } finally {
++    loading.value = false;
++  }
++};
++
++const openTextModal = () => {
++  textForm.value = { title: '', body: '' };
++  textModalOpen.value = true;
++};
++
++const closeTextModal = () => {
++  textModalOpen.value = false;
++};
++
++const saveText = async () => {
++  const title = textForm.value.title.trim();
++  const body = textForm.value.body.trim();
++  if (!title || !body) {
++    useAlert('Title and body are required.');
++    return;
++  }
++  saving.value = true;
++  try {
++    await createKnowledgeText({ title, body });
++    useAlert('Document submitted for ingestion.');
++    closeTextModal();
++    await load();
++    startPolling();
++  } catch (err) {
++    if (err.status === 401) {
++      useAlert('Unauthorized (401) — check the backend key configuration.');
++    } else if (err.status === 503) {
++      useAlert('Knowledge store unavailable (503).');
++    } else {
++      useAlert(`Save failed: ${err.message}`);
++    }
++  } finally {
++    saving.value = false;
++  }
++};
++
++const triggerFileInput = () => {
++  if (fileInputRef.value) fileInputRef.value.click();
++};
++
++const onFileChange = async event => {
++  const file = event.target.files && event.target.files[0];
++  if (!file) return;
++  // Reset so the same file can be re-uploaded after deletion
++  event.target.value = '';
++  uploading.value = true;
++  try {
++    await uploadKnowledgeFile(file, file.name);
++    useAlert('File submitted for ingestion.');
++    await load();
++    startPolling();
++  } catch (err) {
++    if (err.status === 401) {
++      useAlert('Unauthorized (401) — check the backend key configuration.');
++    } else if (err.status === 503) {
++      useAlert('Knowledge store unavailable (503).');
++    } else {
++      useAlert(`Upload failed: ${err.message}`);
++    }
++  } finally {
++    uploading.value = false;
++  }
++};
++
++const remove = async entry => {
++  // eslint-disable-next-line no-alert
++  if (!window.confirm(`Delete this document?\n\n${entry.title || entry.id}`)) {
++    return;
++  }
++  try {
++    await deleteKnowledge(entry.id);
++    useAlert('Document deleted.');
++    await load();
++  } catch (err) {
++    if (err.status === 401) {
++      useAlert('Unauthorized (401) — check the backend key configuration.');
++    } else if (err.status === 503) {
++      useAlert('Knowledge store unavailable (503).');
++    } else {
++      useAlert(`Delete failed: ${err.message}`);
++    }
++  }
++};
++
++const formatDate = iso => {
++  if (!iso) return '—';
++  return new Date(iso).toLocaleString();
++};
++
++onMounted(load);
++
++onBeforeUnmount(() => {
++  if (pollInterval) {
++    clearInterval(pollInterval);
++    pollInterval = null;
++  }
++});
++</script>
++
++<template>
++  <div class="flex flex-col w-full h-full">
++    <div
++      class="flex items-center flex-shrink-0 gap-3 px-4 py-3 border-b border-n-weak"
++    >
++      <button
++        class="px-3 py-1.5 text-sm font-medium text-white rounded-lg bg-n-brand hover:brightness-95"
++        @click="openTextModal"
++      >
++        + Add text
++      </button>
++      <button
++        class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1 disabled:opacity-50"
++        :disabled="uploading"
++        @click="triggerFileInput"
++      >
++        {{ uploading ? 'Uploading…' : 'Upload file' }}
++      </button>
++      <input
++        ref="fileInputRef"
++        type="file"
++        accept=".pdf,.docx,.md,.txt,.markdown"
++        class="hidden"
++        @change="onFileChange"
++      />
++      <button
++        class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1"
++        :disabled="loading"
++        @click="load"
++      >
++        Refresh
++      </button>
++      <span class="ml-auto text-xs text-n-slate-11">
++        {{ entries.length }} document{{ entries.length === 1 ? '' : 's' }}
++      </span>
++    </div>
++
++    <div class="flex-1 p-4 overflow-auto">
++      <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
++        Loading uploads…
++      </div>
++      <div
++        v-else-if="errored"
++        class="py-10 text-sm text-center text-n-slate-11"
++      >
++        Could not load uploads.
++      </div>
++      <div
++        v-else-if="!entries.length"
++        class="py-10 text-sm text-center text-n-slate-11"
++      >
++        No documents yet. Click "Add text" or "Upload file" to get started.
++      </div>
++      <div
++        v-else
++        class="overflow-hidden border rounded-lg border-n-weak bg-n-background"
++      >
++        <table class="w-full text-sm border-collapse">
++          <thead>
++            <tr class="text-left border-b border-n-weak bg-n-alpha-black1">
++              <th class="px-3 py-2 font-medium text-n-slate-11">Title</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Type</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Status</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Chunks</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Created</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Actions</th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="entry in entries"
++              :key="entry.id"
++              class="border-b border-n-weak last:border-0 align-top"
++            >
++              <td class="px-3 py-2 font-medium text-n-slate-12">
++                {{ entry.title || '—' }}
++              </td>
++              <td class="px-3 py-2 text-n-slate-11">
++                {{ entry.source_type || '—' }}
++              </td>
++              <td class="px-3 py-2">
++                <span
++                  v-if="entry.status === 'indexed'"
++                  class="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-n-teal-1 text-n-teal-11"
++                >
++                  indexed
++                </span>
++                <span
++                  v-else-if="entry.status === 'pending'"
++                  class="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-n-yellow-1 text-n-yellow-11"
++                >
++                  pending
++                </span>
++                <span
++                  v-else-if="entry.status === 'failed'"
++                  class="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-n-ruby-1 text-n-ruby-11 cursor-help"
++                  :title="entry.error || 'Ingestion failed'"
++                >
++                  failed
++                </span>
++                <span v-else class="text-n-slate-10">{{ entry.status || '—' }}</span>
++              </td>
++              <td class="px-3 py-2 text-n-slate-11">
++                {{ entry.chunk_count != null ? entry.chunk_count : '—' }}
++              </td>
++              <td class="px-3 py-2 text-n-slate-11 whitespace-nowrap">
++                {{ formatDate(entry.created_at) }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                <button
++                  class="text-xs text-n-ruby-9 hover:underline"
++                  @click="remove(entry)"
++                >
++                  Delete
++                </button>
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++    </div>
++
++    <!-- Add text modal -->
++    <div
++      v-if="textModalOpen"
++      class="fixed inset-0 z-50 flex items-start justify-center px-4 py-16 overflow-y-auto bg-n-alpha-black2"
++      @click.self="closeTextModal"
++    >
++      <div
++        class="w-full max-w-lg p-5 rounded-xl shadow-lg bg-n-background border border-n-weak"
++      >
++        <h3 class="mb-4 text-base font-medium text-n-slate-12">
++          Add text document
++        </h3>
++        <form class="space-y-3" @submit.prevent="saveText">
++          <div>
++            <label class="block mb-1 text-xs font-medium text-n-slate-11">Title</label>
++            <input
++              v-model="textForm.title"
++              type="text"
++              placeholder="e.g. Product warranty policy"
++              class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++            />
++          </div>
++          <div>
++            <label class="block mb-1 text-xs font-medium text-n-slate-11">Body</label>
++            <textarea
++              v-model="textForm.body"
++              rows="8"
++              placeholder="Paste the document content here…"
++              class="w-full px-3 py-2 text-sm border rounded-lg resize-y border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++            />
++          </div>
++          <div class="flex justify-end gap-2 pt-2">
++            <button
++              type="button"
++              class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1"
++              @click="closeTextModal"
++            >
++              Cancel
++            </button>
++            <button
++              type="submit"
++              class="px-3 py-1.5 text-sm font-medium text-white rounded-lg bg-n-brand disabled:opacity-50"
++              :disabled="saving"
++            >
++              {{ saving ? 'Submitting…' : 'Submit' }}
++            </button>
++          </div>
++        </form>
++      </div>
++    </div>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+index 51a7aed..75b0f9a 100644
+--- a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
++++ b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+@@ -7,6 +7,7 @@ import { computed } from 'vue';
+ import { useRoute } from 'vue-router';
+ import KnowledgeFaqs from 'dashboard/components/proton/KnowledgeFaqs.vue';
+ import KnowledgeDocuments from 'dashboard/components/proton/KnowledgeDocuments.vue';
++import KnowledgeUploads from 'dashboard/components/proton/KnowledgeUploads.vue';
+ import KnowledgeAssistants from 'dashboard/components/proton/KnowledgeAssistants.vue';
+ import KnowledgeSettings from 'dashboard/components/proton/KnowledgeSettings.vue';
+ import KnowledgePlayground from 'dashboard/components/proton/KnowledgePlayground.vue';
+@@ -20,6 +21,7 @@ const SECTIONS = {
+   assistants: 'Assistants',
+   faqs: 'FAQs',
+   documents: 'Documents',
++  uploads: 'Uploads',
+   playground: 'Playground',
+   scenarios: 'Scenarios',
+   inboxes: 'Inboxes',
+@@ -44,6 +46,7 @@ const sectionLabel = computed(() => SECTIONS[section.value] || section.value);
+     <KnowledgeAssistants v-if="section === 'assistants'" />
+     <KnowledgeFaqs v-else-if="section === 'faqs'" />
+     <KnowledgeDocuments v-else-if="section === 'documents'" />
++    <KnowledgeUploads v-else-if="section === 'uploads'" />
+     <KnowledgeSettings v-else-if="section === 'settings'" />
+     <KnowledgePlayground v-else-if="section === 'playground'" />
+     <KnowledgeScenarios v-else-if="section === 'scenarios'" />

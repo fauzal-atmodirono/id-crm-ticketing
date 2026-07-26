@@ -74,6 +74,15 @@ class AssistantConfig:
     welcome_message: str = ""
     handoff_message: str = ""
     resolution_message: str = ""
+    # Persona / lifecycle-message fields (Task 1 — operator-configurable strings)
+    language: str = ""
+    idle_warning_message: str = ""
+    idle_close_message: str = ""
+    resolution_prompt_message: str = ""
+    survey_ai_message: str = ""
+    survey_agent_message: str = ""
+    thanks_message: str = ""
+    assign_agent_message: str = ""
     feature_faq: bool = True
     feature_memory: bool = True
     feature_citations: bool = True
@@ -90,6 +99,14 @@ class AssistantConfig:
             "welcome_message": self.welcome_message,
             "handoff_message": self.handoff_message,
             "resolution_message": self.resolution_message,
+            "language": self.language,
+            "idle_warning_message": self.idle_warning_message,
+            "idle_close_message": self.idle_close_message,
+            "resolution_prompt_message": self.resolution_prompt_message,
+            "survey_ai_message": self.survey_ai_message,
+            "survey_agent_message": self.survey_agent_message,
+            "thanks_message": self.thanks_message,
+            "assign_agent_message": self.assign_agent_message,
             "feature_faq": self.feature_faq,
             "feature_memory": self.feature_memory,
             "feature_citations": self.feature_citations,
@@ -108,6 +125,16 @@ class AssistantConfig:
             welcome_message=str(data.get("welcome_message", "")),
             handoff_message=str(data.get("handoff_message", "")),
             resolution_message=str(data.get("resolution_message", "")),
+            # Persona / lifecycle-message fields — old stored docs won't have these;
+            # missing keys fall back to "" via data.get(k, "").
+            language=str(data.get("language", "")),
+            idle_warning_message=str(data.get("idle_warning_message", "")),
+            idle_close_message=str(data.get("idle_close_message", "")),
+            resolution_prompt_message=str(data.get("resolution_prompt_message", "")),
+            survey_ai_message=str(data.get("survey_ai_message", "")),
+            survey_agent_message=str(data.get("survey_agent_message", "")),
+            thanks_message=str(data.get("thanks_message", "")),
+            assign_agent_message=str(data.get("assign_agent_message", "")),
             feature_faq=bool(data.get("feature_faq", True)),
             feature_memory=bool(data.get("feature_memory", True)),
             feature_citations=bool(data.get("feature_citations", True)),

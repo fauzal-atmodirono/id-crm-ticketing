@@ -7,6 +7,11 @@ background-task invariant.
 
 from __future__ import annotations
 
+import io
+
+import docx
+from pypdf import PdfReader
+
 
 def chunk_text(text: str, max_chars: int, overlap_chars: int) -> list[str]:
     """Split ``text`` into word-boundary chunks of at most ``max_chars``,
@@ -37,3 +42,32 @@ def chunk_text(text: str, max_chars: int, overlap_chars: int) -> list[str]:
     if current:
         chunks.append(" ".join(current))
     return chunks
+
+
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+class UnsupportedFileType(Exception):
+    """Raised when an uploaded file's type cannot be extracted."""
+
+
+def _extract_pdf(data: bytes) -> str:
+    reader = PdfReader(io.BytesIO(data))
+    return "\n".join((page.extract_text() or "") for page in reader.pages)
+
+
+def _extract_docx(data: bytes) -> str:
+    document = docx.Document(io.BytesIO(data))
+    return "\n".join(p.text for p in document.paragraphs)
+
+
+def extract_text(filename: str | None, mime_type: str | None, data: bytes) -> str:
+    name = (filename or "").lower()
+    mime = mime_type or ""
+    if name.endswith(".pdf") or mime == "application/pdf":
+        return _extract_pdf(data)
+    if name.endswith(".docx") or mime == _DOCX_MIME:
+        return _extract_docx(data)
+    if name.endswith((".md", ".markdown", ".txt")) or mime.startswith("text/"):
+        return data.decode("utf-8", errors="replace")
+    raise UnsupportedFileType(f"Unsupported file type: {filename or mime_type}")

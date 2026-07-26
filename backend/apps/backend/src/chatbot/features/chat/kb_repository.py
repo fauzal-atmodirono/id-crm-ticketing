@@ -190,7 +190,7 @@ class PgKbRepository:
             doc = await s.get(KbDocument, document_id)
             if doc is None:
                 return False
-            await s.delete(doc)  # ORM cascade removes chunks
+            await s.delete(doc)  # ORM relationship cascade (all, delete-orphan) removes chunks; DB-level ON DELETE CASCADE is the safety net (passive_deletes=True)
             await s.commit()
         return True
 

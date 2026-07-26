@@ -1,0 +1,882 @@
+{
+  "description": "Proton e.MAS IVR (1300-888-877) — office-hours gate, EN/BM language menu, RSA/Non-RSA routing, after-hours voicemail. Generated from docs/CRM Process Flow (1).xlsx (IVR Call sheet).",
+  "states": [
+    {
+      "name": "Trigger",
+      "type": "trigger",
+      "transitions": [
+        {
+          "event": "incomingMessage"
+        },
+        {
+          "event": "incomingCall",
+          "next": "split_holiday"
+        },
+        {
+          "event": "incomingConversationMessage"
+        },
+        {
+          "event": "incomingRequest"
+        },
+        {
+          "event": "incomingParent"
+        }
+      ],
+      "properties": {
+        "offset": {
+          "x": 0,
+          "y": 0
+        }
+      }
+    },
+    {
+      "name": "split_holiday",
+      "type": "split-based-on",
+      "transitions": [
+        {
+          "event": "noMatch",
+          "next": "split_dow"
+        },
+        {
+          "event": "match",
+          "next": "hours_weekend_open",
+          "conditions": [
+            {
+              "friendly_name": "public holiday",
+              "arguments": [
+                "{{ 'now' | date: '%s' | plus: 28800 | date: '%Y-%m-%d' }}"
+              ],
+              "type": "matches_any_of",
+              "value": "2026-01-01,2026-02-17,2026-02-18,2026-03-21,2026-03-22,2026-05-01,2026-05-27,2026-05-31,2026-06-01,2026-06-17,2026-08-25,2026-08-31,2026-09-16,2026-11-08,2026-12-25"
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "input": "{{ 'now' | date: '%s' | plus: 28800 | date: '%Y-%m-%d' }}",
+        "offset": {
+          "x": 0,
+          "y": 200
+        }
+      }
+    },
+    {
+      "name": "split_dow",
+      "type": "split-based-on",
+      "transitions": [
+        {
+          "event": "noMatch",
+          "next": "hours_weekday_open"
+        },
+        {
+          "event": "match",
+          "next": "hours_weekend_open",
+          "conditions": [
+            {
+              "friendly_name": "Sat or Sun",
+              "arguments": [
+                "{{ 'now' | date: '%s' | plus: 28800 | divided_by: 86400 | plus: 4 | modulo: 7 }}"
+              ],
+              "type": "matches_any_of",
+              "value": "0,6"
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "input": "{{ 'now' | date: '%s' | plus: 28800 | divided_by: 86400 | plus: 4 | modulo: 7 }}",
+        "offset": {
+          "x": 0,
+          "y": 420
+        }
+      }
+    },
+    {
+      "name": "hours_weekday_open",
+      "type": "split-based-on",
+      "transitions": [
+        {
+          "event": "noMatch",
+          "next": "after_hours_en"
+        },
+        {
+          "event": "match",
+          "next": "hours_weekday_close",
+          "conditions": [
+            {
+              "friendly_name": "after 08:30",
+              "arguments": [
+                "{{ 'now' | date: '%s' | plus: 28800 | modulo: 86400 | divided_by: 60 }}"
+              ],
+              "type": "greater_than",
+              "value": "509"
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "input": "{{ 'now' | date: '%s' | plus: 28800 | modulo: 86400 | divided_by: 60 }}",
+        "offset": {
+          "x": -260,
+          "y": 640
+        }
+      }
+    },
+    {
+      "name": "hours_weekday_close",
+      "type": "split-based-on",
+      "transitions": [
+        {
+          "event": "noMatch",
+          "next": "after_hours_en"
+        },
+        {
+          "event": "match",
+          "next": "language_gather",
+          "conditions": [
+            {
+              "friendly_name": "before 17:30",
+              "arguments": [
+                "{{ 'now' | date: '%s' | plus: 28800 | modulo: 86400 | divided_by: 60 }}"
+              ],
+              "type": "less_than",
+              "value": "1050"
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "input": "{{ 'now' | date: '%s' | plus: 28800 | modulo: 86400 | divided_by: 60 }}",
+        "offset": {
+          "x": -260,
+          "y": 860
+        }
+      }
+    },
+    {
+      "name": "hours_weekend_open",
+      "type": "split-based-on",
+      "transitions": [
+        {
+          "event": "noMatch",
+          "next": "after_hours_en"
+        },
+        {
+          "event": "match",
+          "next": "hours_weekend_close",
+          "conditions": [
+            {
+              "friendly_name": "after 09:00",
+              "arguments": [
+                "{{ 'now' | date: '%s' | plus: 28800 | modulo: 86400 | divided_by: 60 }}"
+              ],
+              "type": "greater_than",
+              "value": "539"
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "input": "{{ 'now' | date: '%s' | plus: 28800 | modulo: 86400 | divided_by: 60 }}",
+        "offset": {
+          "x": 260,
+          "y": 640
+        }
+      }
+    },
+    {
+      "name": "hours_weekend_close",
+      "type": "split-based-on",
+      "transitions": [
+        {
+          "event": "noMatch",
+          "next": "after_hours_en"
+        },
+        {
+          "event": "match",
+          "next": "language_gather",
+          "conditions": [
+            {
+              "friendly_name": "before 17:00",
+              "arguments": [
+                "{{ 'now' | date: '%s' | plus: 28800 | modulo: 86400 | divided_by: 60 }}"
+              ],
+              "type": "less_than",
+              "value": "1020"
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "input": "{{ 'now' | date: '%s' | plus: 28800 | modulo: 86400 | divided_by: 60 }}",
+        "offset": {
+          "x": 260,
+          "y": 860
+        }
+      }
+    },
+    {
+      "name": "after_hours_en",
+      "type": "say-play",
+      "transitions": [
+        {
+          "event": "audioComplete",
+          "next": "after_hours_ms"
+        }
+      ],
+      "properties": {
+        "voice": "Google.en-US-Standard-C",
+        "language": "en-US",
+        "loop": 1,
+        "say": "Thank you for calling Proton e.MAS. Our operating hours are Monday to Friday, 8:30 AM to 5:30 PM, and Saturday, Sunday and Public Holidays, 9:00 AM to 5:00 PM. Please leave your message and contact details. Our customer support team will reach out on the next business day.",
+        "offset": {
+          "x": -360,
+          "y": 660
+        }
+      }
+    },
+    {
+      "name": "after_hours_ms",
+      "type": "say-play",
+      "transitions": [
+        {
+          "event": "audioComplete",
+          "next": "vm_prompt"
+        }
+      ],
+      "properties": {
+        "voice": "Google.ms-MY-Standard-A",
+        "language": "ms-MY",
+        "loop": 1,
+        "say": "Terima kasih kerana menghubungi Proton e.MAS. Waktu operasi kami adalah Isnin hingga Jumaat, 8.30 pagi hingga 5.30 petang, dan Sabtu, Ahad dan Cuti Umum, 9.00 pagi hingga 5.00 petang. Sila tinggalkan mesej dan maklumat perhubungan anda. Pasukan khidmat pelanggan kami akan menghubungi anda pada hari bekerja berikutnya.",
+        "offset": {
+          "x": -360,
+          "y": 890
+        }
+      }
+    },
+    {
+      "name": "vm_prompt",
+      "type": "say-play",
+      "transitions": [
+        {
+          "event": "audioComplete",
+          "next": "voicemail"
+        }
+      ],
+      "properties": {
+        "voice": "Google.en-US-Standard-C",
+        "language": "en-US",
+        "loop": 1,
+        "say": "Please leave your message and contact details after the tone. Sila tinggalkan mesej dan maklumat perhubungan anda selepas nada.",
+        "offset": {
+          "x": -360,
+          "y": 1120
+        }
+      }
+    },
+    {
+      "name": "voicemail",
+      "type": "record-voicemail",
+      "transitions": [
+        {
+          "event": "recordingComplete",
+          "next": "goodbye"
+        },
+        {
+          "event": "hangup"
+        }
+      ],
+      "properties": {
+        "transcribe": true,
+        "trim": "do-not-trim",
+        "play_beep": "true",
+        "transcription_callback_url": "",
+        "recording_status_callback_url": "",
+        "timeout": 5,
+        "max_length": 120,
+        "finish_on_key": "#",
+        "offset": {
+          "x": -360,
+          "y": 1240
+        }
+      }
+    },
+    {
+      "name": "goodbye",
+      "type": "say-play",
+      "transitions": [
+        {
+          "event": "audioComplete"
+        }
+      ],
+      "properties": {
+        "voice": "Google.en-US-Standard-C",
+        "language": "en-US",
+        "loop": 1,
+        "say": "Thank you for calling Proton e.MAS. Goodbye. Terima kasih kerana menghubungi Proton e.MAS.",
+        "offset": {
+          "x": -360,
+          "y": 1350
+        }
+      }
+    },
+    {
+      "name": "language_gather",
+      "type": "gather-input-on-call",
+      "transitions": [
+        {
+          "event": "keypress",
+          "next": "split_language"
+        },
+        {
+          "event": "speech",
+          "next": "split_language"
+        },
+        {
+          "event": "timeout",
+          "next": "language_gather"
+        }
+      ],
+      "properties": {
+        "voice": "Google.en-US-Standard-C",
+        "language": "en-US",
+        "speech_timeout": "auto",
+        "loop": 1,
+        "finish_on_key": "#",
+        "gather_language": "en-US",
+        "profanity_filter": "true",
+        "timeout": 5,
+        "number_of_digits": 1,
+        "say": "Welcome to Proton e.MAS service centre. Selamat datang ke Pusat Perkhidmatan Proton e.MAS. For English, press 1. Untuk Bahasa Melayu, tekan 2.",
+        "offset": {
+          "x": 300,
+          "y": 660
+        }
+      }
+    },
+    {
+      "name": "split_language",
+      "type": "split-based-on",
+      "transitions": [
+        {
+          "event": "noMatch",
+          "next": "language_gather"
+        },
+        {
+          "event": "match",
+          "next": "main_menu_en",
+          "conditions": [
+            {
+              "friendly_name": "English",
+              "arguments": [
+                "{{widgets.language_gather.Digits}}"
+              ],
+              "type": "equal_to",
+              "value": "1"
+            }
+          ]
+        },
+        {
+          "event": "match",
+          "next": "main_menu_ms",
+          "conditions": [
+            {
+              "friendly_name": "Bahasa Melayu",
+              "arguments": [
+                "{{widgets.language_gather.Digits}}"
+              ],
+              "type": "equal_to",
+              "value": "2"
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "input": "{{widgets.language_gather.Digits}}",
+        "offset": {
+          "x": 300,
+          "y": 890
+        }
+      }
+    },
+    {
+      "name": "main_menu_en",
+      "type": "gather-input-on-call",
+      "transitions": [
+        {
+          "event": "keypress",
+          "next": "split_menu_en"
+        },
+        {
+          "event": "speech",
+          "next": "split_menu_en"
+        },
+        {
+          "event": "timeout",
+          "next": "main_menu_en"
+        }
+      ],
+      "properties": {
+        "voice": "Google.en-US-Standard-C",
+        "language": "en-US",
+        "speech_timeout": "auto",
+        "loop": 1,
+        "finish_on_key": "#",
+        "gather_language": "en-US",
+        "profanity_filter": "true",
+        "timeout": 5,
+        "number_of_digits": 1,
+        "say": "For Roadside Assistance, press 1. For Inquiry, press 2. For Complaint, press 3. To repeat, please press zero.",
+        "offset": {
+          "x": 60,
+          "y": 1120
+        }
+      }
+    },
+    {
+      "name": "split_menu_en",
+      "type": "split-based-on",
+      "transitions": [
+        {
+          "event": "noMatch",
+          "next": "main_menu_en"
+        },
+        {
+          "event": "match",
+          "next": "dial_rsa_en",
+          "conditions": [
+            {
+              "friendly_name": "Roadside Assistance",
+              "arguments": [
+                "{{widgets.main_menu_en.Digits}}"
+              ],
+              "type": "equal_to",
+              "value": "1"
+            }
+          ]
+        },
+        {
+          "event": "match",
+          "next": "dial_nonrsa_en",
+          "conditions": [
+            {
+              "friendly_name": "Inquiry",
+              "arguments": [
+                "{{widgets.main_menu_en.Digits}}"
+              ],
+              "type": "equal_to",
+              "value": "2"
+            }
+          ]
+        },
+        {
+          "event": "match",
+          "next": "dial_nonrsa_en",
+          "conditions": [
+            {
+              "friendly_name": "Complaint",
+              "arguments": [
+                "{{widgets.main_menu_en.Digits}}"
+              ],
+              "type": "equal_to",
+              "value": "3"
+            }
+          ]
+        },
+        {
+          "event": "match",
+          "next": "main_menu_en",
+          "conditions": [
+            {
+              "friendly_name": "Repeat",
+              "arguments": [
+                "{{widgets.main_menu_en.Digits}}"
+              ],
+              "type": "equal_to",
+              "value": "0"
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "input": "{{widgets.main_menu_en.Digits}}",
+        "offset": {
+          "x": 60,
+          "y": 1350
+        }
+      }
+    },
+    {
+      "name": "main_menu_ms",
+      "type": "gather-input-on-call",
+      "transitions": [
+        {
+          "event": "keypress",
+          "next": "split_menu_ms"
+        },
+        {
+          "event": "speech",
+          "next": "split_menu_ms"
+        },
+        {
+          "event": "timeout",
+          "next": "main_menu_ms"
+        }
+      ],
+      "properties": {
+        "voice": "Google.ms-MY-Standard-A",
+        "language": "ms-MY",
+        "speech_timeout": "auto",
+        "loop": 1,
+        "finish_on_key": "#",
+        "gather_language": "en-US",
+        "profanity_filter": "true",
+        "timeout": 5,
+        "number_of_digits": 1,
+        "say": "Untuk Bantuan Kerosakan, tekan 1. Untuk Pertanyaan, tekan 2. Untuk Aduan, tekan 3. Untuk Ulangan, sila tekan sifar.",
+        "offset": {
+          "x": 560,
+          "y": 1120
+        }
+      }
+    },
+    {
+      "name": "split_menu_ms",
+      "type": "split-based-on",
+      "transitions": [
+        {
+          "event": "noMatch",
+          "next": "main_menu_ms"
+        },
+        {
+          "event": "match",
+          "next": "dial_rsa_ms",
+          "conditions": [
+            {
+              "friendly_name": "Bantuan Kerosakan",
+              "arguments": [
+                "{{widgets.main_menu_ms.Digits}}"
+              ],
+              "type": "equal_to",
+              "value": "1"
+            }
+          ]
+        },
+        {
+          "event": "match",
+          "next": "dial_nonrsa_ms",
+          "conditions": [
+            {
+              "friendly_name": "Pertanyaan",
+              "arguments": [
+                "{{widgets.main_menu_ms.Digits}}"
+              ],
+              "type": "equal_to",
+              "value": "2"
+            }
+          ]
+        },
+        {
+          "event": "match",
+          "next": "dial_nonrsa_ms",
+          "conditions": [
+            {
+              "friendly_name": "Aduan",
+              "arguments": [
+                "{{widgets.main_menu_ms.Digits}}"
+              ],
+              "type": "equal_to",
+              "value": "3"
+            }
+          ]
+        },
+        {
+          "event": "match",
+          "next": "main_menu_ms",
+          "conditions": [
+            {
+              "friendly_name": "Ulangan",
+              "arguments": [
+                "{{widgets.main_menu_ms.Digits}}"
+              ],
+              "type": "equal_to",
+              "value": "0"
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "input": "{{widgets.main_menu_ms.Digits}}",
+        "offset": {
+          "x": 560,
+          "y": 1350
+        }
+      }
+    },
+    {
+      "name": "dial_rsa_en",
+      "type": "connect-call-to",
+      "transitions": [
+        {
+          "event": "callCompleted",
+          "next": "split_rsa_en"
+        },
+        {
+          "event": "hangup"
+        }
+      ],
+      "properties": {
+        "caller_id": "{{trigger.call.To}}",
+        "noun": "number",
+        "to": "+60300000001",
+        "timeout": 20,
+        "record": false,
+        "offset": {
+          "x": -420,
+          "y": 1580
+        }
+      }
+    },
+    {
+      "name": "split_rsa_en",
+      "type": "split-based-on",
+      "transitions": [
+        {
+          "event": "noMatch",
+          "next": "busy_en"
+        },
+        {
+          "event": "match",
+          "next": "goodbye",
+          "conditions": [
+            {
+              "friendly_name": "answered",
+              "arguments": [
+                "{{widgets.dial_rsa_en.DialCallStatus}}"
+              ],
+              "type": "equal_to",
+              "value": "completed"
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "input": "{{widgets.dial_rsa_en.DialCallStatus}}",
+        "offset": {
+          "x": -420,
+          "y": 1810
+        }
+      }
+    },
+    {
+      "name": "dial_nonrsa_en",
+      "type": "connect-call-to",
+      "transitions": [
+        {
+          "event": "callCompleted",
+          "next": "split_nonrsa_en"
+        },
+        {
+          "event": "hangup"
+        }
+      ],
+      "properties": {
+        "caller_id": "{{trigger.call.To}}",
+        "noun": "number",
+        "to": "+60300000002",
+        "timeout": 20,
+        "record": false,
+        "offset": {
+          "x": -160,
+          "y": 1580
+        }
+      }
+    },
+    {
+      "name": "split_nonrsa_en",
+      "type": "split-based-on",
+      "transitions": [
+        {
+          "event": "noMatch",
+          "next": "busy_en"
+        },
+        {
+          "event": "match",
+          "next": "goodbye",
+          "conditions": [
+            {
+              "friendly_name": "answered",
+              "arguments": [
+                "{{widgets.dial_nonrsa_en.DialCallStatus}}"
+              ],
+              "type": "equal_to",
+              "value": "completed"
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "input": "{{widgets.dial_nonrsa_en.DialCallStatus}}",
+        "offset": {
+          "x": -160,
+          "y": 1810
+        }
+      }
+    },
+    {
+      "name": "busy_en",
+      "type": "say-play",
+      "transitions": [
+        {
+          "event": "audioComplete",
+          "next": "vm_prompt"
+        }
+      ],
+      "properties": {
+        "voice": "Google.en-US-Standard-C",
+        "language": "en-US",
+        "loop": 1,
+        "say": "All our agents are currently assisting other customers. Please stay on the line, or alternatively contact us through the Proton e.MAS app. Thank you for your patience.",
+        "offset": {
+          "x": -290,
+          "y": 2040
+        }
+      }
+    },
+    {
+      "name": "dial_rsa_ms",
+      "type": "connect-call-to",
+      "transitions": [
+        {
+          "event": "callCompleted",
+          "next": "split_rsa_ms"
+        },
+        {
+          "event": "hangup"
+        }
+      ],
+      "properties": {
+        "caller_id": "{{trigger.call.To}}",
+        "noun": "number",
+        "to": "+60300000001",
+        "timeout": 20,
+        "record": false,
+        "offset": {
+          "x": 300,
+          "y": 1580
+        }
+      }
+    },
+    {
+      "name": "split_rsa_ms",
+      "type": "split-based-on",
+      "transitions": [
+        {
+          "event": "noMatch",
+          "next": "busy_ms"
+        },
+        {
+          "event": "match",
+          "next": "goodbye",
+          "conditions": [
+            {
+              "friendly_name": "answered",
+              "arguments": [
+                "{{widgets.dial_rsa_ms.DialCallStatus}}"
+              ],
+              "type": "equal_to",
+              "value": "completed"
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "input": "{{widgets.dial_rsa_ms.DialCallStatus}}",
+        "offset": {
+          "x": 300,
+          "y": 1810
+        }
+      }
+    },
+    {
+      "name": "dial_nonrsa_ms",
+      "type": "connect-call-to",
+      "transitions": [
+        {
+          "event": "callCompleted",
+          "next": "split_nonrsa_ms"
+        },
+        {
+          "event": "hangup"
+        }
+      ],
+      "properties": {
+        "caller_id": "{{trigger.call.To}}",
+        "noun": "number",
+        "to": "+60300000002",
+        "timeout": 20,
+        "record": false,
+        "offset": {
+          "x": 560,
+          "y": 1580
+        }
+      }
+    },
+    {
+      "name": "split_nonrsa_ms",
+      "type": "split-based-on",
+      "transitions": [
+        {
+          "event": "noMatch",
+          "next": "busy_ms"
+        },
+        {
+          "event": "match",
+          "next": "goodbye",
+          "conditions": [
+            {
+              "friendly_name": "answered",
+              "arguments": [
+                "{{widgets.dial_nonrsa_ms.DialCallStatus}}"
+              ],
+              "type": "equal_to",
+              "value": "completed"
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "input": "{{widgets.dial_nonrsa_ms.DialCallStatus}}",
+        "offset": {
+          "x": 560,
+          "y": 1810
+        }
+      }
+    },
+    {
+      "name": "busy_ms",
+      "type": "say-play",
+      "transitions": [
+        {
+          "event": "audioComplete",
+          "next": "vm_prompt"
+        }
+      ],
+      "properties": {
+        "voice": "Google.ms-MY-Standard-A",
+        "language": "ms-MY",
+        "loop": 1,
+        "say": "Semua ejen kami sedang melayani pelanggan. Ejen kami akan membantu anda dalam masa terdekat. Sila terus berada di talian dan kami akan melayan panggilan anda secepat mungkin. Sebagai alternatif, anda boleh menghubungi kami melalui aplikasi Proton e.MAS.",
+        "offset": {
+          "x": 430,
+          "y": 2040
+        }
+      }
+    }
+  ],
+  "initial_state": "Trigger",
+  "flags": {
+    "allow_concurrent_calls": true
+  }
+}

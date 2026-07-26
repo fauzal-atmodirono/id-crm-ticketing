@@ -429,6 +429,29 @@ async def _process_conversation(conversation_id: int) -> None:
         )
 
 
+async def _handoff_to_human_via_chatwoot(
+    conversation_id, chatwoot, handoff_message: str
+) -> None:
+    """Acknowledge the customer (best-effort) then reopen the conversation for
+    a human. Used for `handoff_to_human` and, on Chatwoot-only tenants, for
+    `escalate_to_ticket` too. The acknowledgment post is wrapped so a failed
+    post never prevents the reopen: a handoff must ALWAYS leave the
+    conversation visible to a human, never silently stuck in bot-pending. The
+    text is the assistant's persona `handoff_message`, falling back to the
+    tenant `handoff_default_message` (empty → nothing posted, reopen only)."""
+    text = handoff_message or get_settings().handoff_default_message
+    if text:
+        try:
+            await chatwoot.create_message(conversation_id, text, private=False)
+        except httpx.HTTPError:
+            logger.exception(
+                "orchestrator: failed to post handoff acknowledgment for "
+                "conversation %s; reopening for a human anyway",
+                conversation_id,
+            )
+    await chatwoot.toggle_status(conversation_id, "open")
+
+
 async def _execute_decision(
     conversation_id, decision, mode: str, chatwoot, *, handoff_message: str = ""
 ) -> None:
@@ -451,13 +474,22 @@ async def _execute_decision(
             )
             await chatwoot.toggle_status(conversation_id, "open")
     elif decision.action == "escalate_to_ticket":
-        await sync.escalate_conversation(
-            conversation_id,
-            reason=decision.args.get("reason"),
-            priority=decision.args.get("priority"),
-            summary=decision.args.get("summary"),
-        )
-        await chatwoot.toggle_status(conversation_id, "open")
+        if get_settings().zammad_ticketing_enabled:
+            await sync.escalate_conversation(
+                conversation_id,
+                reason=decision.args.get("reason"),
+                priority=decision.args.get("priority"),
+                summary=decision.args.get("summary"),
+            )
+            await chatwoot.toggle_status(conversation_id, "open")
+        else:
+            # Chatwoot-only tenant (no Zammad): there is no ticketing backend
+            # to escalate into, so a Zammad call would only 403/error and leave
+            # the customer in silence. Hand off inside Chatwoot instead —
+            # acknowledge the customer and reopen for a human agent.
+            await _handoff_to_human_via_chatwoot(
+                conversation_id, chatwoot, handoff_message
+            )
     else:
         # handoff_to_human, or any unrecognized action -- always hand off
         # rather than doing nothing.
@@ -468,10 +500,4 @@ async def _execute_decision(
                 decision.action,
                 conversation_id,
             )
-        # Post the persona handoff message publicly BEFORE reopening, so the
-        # customer sees it while the conversation is still in bot-handled state.
-        # Only posted when the message is non-empty (fail-open: empty string
-        # when proton is unconfigured or the assistant has no handoff text).
-        if handoff_message:
-            await chatwoot.create_message(conversation_id, handoff_message, private=False)
-        await chatwoot.toggle_status(conversation_id, "open")
+        await _handoff_to_human_via_chatwoot(conversation_id, chatwoot, handoff_message)

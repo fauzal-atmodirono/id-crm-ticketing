@@ -73,12 +73,16 @@ def _setup(monkeypatch):
     orchestrator._pending_tasks.clear()
 
 
-def _mock_common_routes(mode_key: str = "auto"):
+def _mock_common_routes(mode_key: str = "auto", channel: str = "Channel::TwilioSms"):
     respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42").mock(
         return_value=httpx.Response(200, json=CONVERSATION_RESPONSE)
     )
     respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
         return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    # Channel resolution for outbound formatting (WhatsApp vs raw).
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/inboxes/7").mock(
+        return_value=httpx.Response(200, json={"id": 7, "channel_type": channel})
     )
     respx.get(f"{PROTON}/kb/inboxes").mock(
         return_value=httpx.Response(200, json=INBOXES[mode_key])
@@ -129,23 +133,6 @@ async def test_chat_agent_auto_posts_kb_reply_and_stays_pending(monkeypatch):
     assert not toggle_status.called  # auto stays pending, no human handoff
 
 
-def test_split_message_short_is_single_chunk():
-    assert orchestrator._split_message("hello") == ["hello"]
-    assert orchestrator._split_message("") == []
-
-
-def test_split_message_long_splits_into_bounded_chunks():
-    limit = orchestrator.WHATSAPP_MAX_CHARS
-    para = ("word " * 400).strip()  # ~2000 chars
-    text = para + "\n\n" + para
-    chunks = orchestrator._split_message(text)
-    assert len(chunks) >= 2
-    assert all(len(c) <= limit for c in chunks)
-    # No non-whitespace character is lost across the split seams.
-    norm = lambda s: "".join(s.split())
-    assert norm("".join(chunks)) == norm(text)
-
-
 @respx.mock
 async def test_chat_agent_auto_splits_long_reply_for_whatsapp(monkeypatch):
     # A reply longer than the Twilio WhatsApp limit must be split into multiple
@@ -153,7 +140,9 @@ async def test_chat_agent_auto_splits_long_reply_for_whatsapp(monkeypatch):
     # customer gets nothing.
     import json
 
-    _mock_common_routes("auto")
+    from app.services import whatsapp_format
+
+    _mock_common_routes("auto", channel="Channel::TwilioSms")
     long_reply = ("Spesifikasi Proton S70 sangat lengkap. " * 80).strip()  # ~3100 chars
     respx.post(f"{PROTON}/chat/turn").mock(
         return_value=httpx.Response(
@@ -175,7 +164,61 @@ async def test_chat_agent_auto_splits_long_reply_for_whatsapp(monkeypatch):
     assert create_message.call_count >= 2
     for call in create_message.calls:
         body = json.loads(call.request.content)
-        assert len(body["content"]) <= orchestrator.WHATSAPP_MAX_CHARS
+        assert len(body["content"]) <= whatsapp_format.WHATSAPP_BODY_LIMIT
+
+
+@respx.mock
+async def test_chat_agent_whatsapp_converts_markdown(monkeypatch):
+    # On a WhatsApp inbox the Markdown reply is converted to WhatsApp-native
+    # formatting so the customer doesn't see literal ** and - .
+    import json
+
+    _mock_common_routes("auto", channel="Channel::TwilioSms")
+    respx.post(f"{PROTON}/chat/turn").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "reply": "**Proton S70**\n- Cepat\n- Cekap",
+                "handoff": None,
+                "products": [],
+                "forwarded_to_agent": False,
+            },
+        )
+    )
+    create_message = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages"
+    ).mock(return_value=httpx.Response(200, json={"id": 999}))
+
+    await _run(monkeypatch)
+
+    content = json.loads(create_message.calls.last.request.content)["content"]
+    assert "*Proton S70*" in content and "**" not in content
+    assert "• Cepat" in content
+
+
+@respx.mock
+async def test_chat_agent_non_whatsapp_keeps_raw_markdown(monkeypatch):
+    # A non-WhatsApp channel (web widget) keeps the raw Markdown reply intact —
+    # the frontend renders it; no WhatsApp conversion/splitting.
+    _mock_common_routes("auto", channel="Channel::WebWidget")
+    respx.post(f"{PROTON}/chat/turn").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "reply": "**Proton S70**",
+                "handoff": None,
+                "products": [],
+                "forwarded_to_agent": False,
+            },
+        )
+    )
+    create_message = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages"
+    ).mock(return_value=httpx.Response(200, json={"id": 999}))
+
+    await _run(monkeypatch)
+
+    assert b"**Proton S70**" in create_message.calls.last.request.content
 
 
 @respx.mock

@@ -29,7 +29,7 @@ from app.clients.deps import get_chatwoot_client, get_proton_config_client
 from app.config import get_settings
 from app.db.models import AiAction
 from app.db.session import async_session_maker
-from app.services import lifecycle, lifecycle_store, sync
+from app.services import lifecycle, lifecycle_store, sync, whatsapp_format
 
 logger = logging.getLogger(__name__)
 
@@ -483,39 +483,33 @@ async def _log_chat_action(conversation_id: int, decision: str, output: str) -> 
         )
 
 
-# Twilio caps a WhatsApp message body at 1600 chars and rejects the whole
-# message (status=failed, no SID) when exceeded — the customer then gets nothing.
-# Split auto-sent replies below that with a safety margin so long KB answers
-# (e.g. full vehicle specs) still arrive, as a few sequential bubbles.
-WHATSAPP_MAX_CHARS = 1500
+# Chatwoot channel types that deliver over WhatsApp (Twilio-WhatsApp is modelled
+# as Channel::TwilioSms with medium=whatsapp; some tenants use Channel::Whatsapp).
+_WHATSAPP_CHANNELS = {"Channel::TwilioSms", "Channel::Whatsapp"}
 
 
-def _split_message(text: str, limit: int = WHATSAPP_MAX_CHARS) -> list[str]:
-    """Split ``text`` into chunks each <= ``limit`` chars, breaking on paragraph,
-    line, then word boundaries so a long reply survives channels that reject
-    over-length messages. Only splits mid-token if a single token exceeds the
-    limit. Empty string → no chunks."""
-    text = text or ""
-    if not text:
-        return []
-    if len(text) <= limit:
-        return [text]
-    chunks: list[str] = []
-    remaining = text
-    while len(remaining) > limit:
-        window = remaining[:limit]
-        cut = window.rfind("\n\n")
-        if cut < limit // 2:
-            cut = window.rfind("\n")
-        if cut < limit // 2:
-            cut = window.rfind(" ")
-        if cut <= 0:
-            cut = limit  # single over-long token: hard cut
-        chunks.append(remaining[:cut].rstrip())
-        remaining = remaining[cut:].lstrip()
-    if remaining:
-        chunks.append(remaining)
-    return chunks
+async def _format_reply_for_channel(
+    reply: str, chatwoot, inbox_id: int | None
+) -> list[str]:
+    """Channel-aware outbound formatting (mirrors the standalone WhatsApp send
+    path). WhatsApp can't render Markdown and Twilio rejects a body over 1600
+    chars outright, so for a WhatsApp/Twilio inbox convert Markdown -> WhatsApp
+    formatting and split into in-limit chunks. Every other channel (web widget,
+    email) keeps the raw reply as a single message. Fail-open: if the channel
+    can't be resolved, send the reply as-is."""
+    channel = None
+    if inbox_id is not None:
+        try:
+            inbox = await chatwoot.get_inbox(inbox_id)
+            channel = (inbox or {}).get("channel_type")
+        except Exception:
+            logger.debug(
+                "orchestrator: could not resolve channel for inbox %s; sending raw",
+                inbox_id,
+            )
+    if channel in _WHATSAPP_CHANNELS:
+        return whatsapp_format.chunk_whatsapp(whatsapp_format.md_to_whatsapp(reply))
+    return [reply]
 
 
 async def _process_via_chat_agent(
@@ -569,9 +563,10 @@ async def _process_via_chat_agent(
     await _log_chat_action(conversation_id, "chat_turn:reply", reply)
     if effective_mode == "auto":
         settings = get_settings()
-        # Split over-length replies so a channel like Twilio WhatsApp (1600-char
-        # cap) doesn't reject the whole message and leave the customer silent.
-        for chunk in _split_message(reply):
+        # Format + split per channel: WhatsApp gets Markdown->WhatsApp conversion
+        # and 1600-char chunking (else Twilio rejects the whole message); web/
+        # email keep the raw reply.
+        for chunk in await _format_reply_for_channel(reply, chatwoot, inbox_id):
             await chatwoot.create_message(
                 conversation_id,
                 chunk,

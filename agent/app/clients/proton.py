@@ -269,8 +269,15 @@ class ProtonConfigClient:
         the caller can degrade to a Chatwoot handoff). The endpoint is
         unauthenticated; the client's x-api-key header is harmless."""
         try:
+            # /chat/turn runs the full ADK agent (KB + Gemini + tools) and
+            # routinely takes 10-15s — far longer than the client's default 10s
+            # (sized for the fast /kb config endpoints). Override per-request so
+            # a normal slow turn isn't mistaken for a failure and fail-opened to
+            # a handoff.
             response = await self._client.post(
-                "/chat/turn", json={"session_id": session_id, "text": text}
+                "/chat/turn",
+                json={"session_id": session_id, "text": text},
+                timeout=60.0,
             )
             response.raise_for_status()
             data = response.json()

@@ -1043,24 +1043,32 @@ git commit -m "feat(backend): fail-open KB ingestion pipeline (text + file)"
 
 ---
 
-## Task 8: Documents router (HTTP surface)
+## Task 8: Knowledge router (HTTP surface)
+
+> **REVISED (2026-07-26):** The route is `/kb/knowledge` and the file is
+> `kb_knowledge_router.py` — NOT `/kb/documents`. There is a PRE-EXISTING
+> `kb_documents_router.py` serving read-only `GET /kb/documents` (the Vertex
+> corpus listing, consumed by the SPA's `KnowledgeDocuments.vue` from patch
+> 0011). **Do NOT create, modify, touch, or import that file.** This task adds
+> a NEW, separate router for operator-authored pgvector documents.
 
 **Files:**
-- Create: `backend/apps/backend/src/chatbot/features/chat/kb_documents_router.py`
-- Test: `backend/apps/backend/src/chatbot/features/chat/test_kb_documents_router.py`
+- Create: `backend/apps/backend/src/chatbot/features/chat/kb_knowledge_router.py`
+- Test: `backend/apps/backend/src/chatbot/features/chat/test_kb_knowledge_router.py`
+- Do NOT touch: `backend/apps/backend/src/chatbot/features/chat/kb_documents_router.py` (existing Vertex listing).
 
 **Interfaces:**
 - Consumes: `KbRepository`, `Embedder`, `Settings`, ingestion functions.
-- Produces: `build_kb_documents_router(repo, embedder, settings) -> APIRouter` with `POST /kb/documents/text`, `POST /kb/documents/file`, `GET /kb/documents`, `GET /kb/documents/{id}`, `DELETE /kb/documents/{id}`. All guarded by `x-api-key`.
+- Produces: `build_kb_knowledge_router(repo, embedder, settings) -> APIRouter` with `POST /kb/knowledge/text`, `POST /kb/knowledge/file`, `GET /kb/knowledge`, `GET /kb/knowledge/{id}`, `DELETE /kb/knowledge/{id}`. All guarded by `x-api-key`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# test_kb_documents_router.py
+# test_kb_knowledge_router.py
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from chatbot.features.chat.kb_documents_router import build_kb_documents_router
+from chatbot.features.chat.kb_knowledge_router import build_kb_knowledge_router
 from chatbot.features.chat.kb_repository import InMemoryKbRepository
 from chatbot.platform.config import Settings
 
@@ -1072,25 +1080,25 @@ class _Embedder:
 def _client(repo):
     s = Settings(faq_admin_api_key="fk", kb_chunk_size_tokens=200, kb_chunk_overlap_tokens=20)
     app = FastAPI()
-    app.include_router(build_kb_documents_router(repo, _Embedder(), s))
+    app.include_router(build_kb_knowledge_router(repo, _Embedder(), s))
     return TestClient(app, raise_server_exceptions=False)
 
 
 def test_requires_api_key() -> None:
     c = _client(InMemoryKbRepository())
-    assert c.get("/kb/documents").status_code == 401
+    assert c.get("/kb/knowledge").status_code == 401
 
 
 def test_create_text_then_list_indexed() -> None:
     repo = InMemoryKbRepository()
     c = _client(repo)
-    r = c.post("/kb/documents/text",
+    r = c.post("/kb/knowledge/text",
                json={"title": "Warranty", "body": "the warranty is five years"},
                headers={"x-api-key": "fk"})
     assert r.status_code == 200
     doc_id = r.json()["id"]
 
-    listing = c.get("/kb/documents", headers={"x-api-key": "fk"}).json()
+    listing = c.get("/kb/knowledge", headers={"x-api-key": "fk"}).json()
     assert listing["documents"][0]["id"] == doc_id
     # TestClient runs the BackgroundTask before returning, so it is already indexed
     assert listing["documents"][0]["status"] == "indexed"
@@ -1099,23 +1107,27 @@ def test_create_text_then_list_indexed() -> None:
 def test_upload_file_and_delete() -> None:
     repo = InMemoryKbRepository()
     c = _client(repo)
-    r = c.post("/kb/documents/file",
+    r = c.post("/kb/knowledge/file",
                files={"file": ("notes.txt", b"hello knowledge base", "text/plain")},
                headers={"x-api-key": "fk"})
     doc_id = r.json()["id"]
-    assert c.delete(f"/kb/documents/{doc_id}", headers={"x-api-key": "fk"}).status_code == 200
-    assert c.get("/kb/documents", headers={"x-api-key": "fk"}).json()["documents"] == []
+    assert c.delete(f"/kb/knowledge/{doc_id}", headers={"x-api-key": "fk"}).status_code == 200
+    assert c.get("/kb/knowledge", headers={"x-api-key": "fk"}).json()["documents"] == []
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd backend/apps/backend && uv run pytest src/chatbot/features/chat/test_kb_documents_router.py -v`
+Run: `cd backend/apps/backend && uv run pytest src/chatbot/features/chat/test_kb_knowledge_router.py -v`
 Expected: FAIL — module not found.
 
 - [ ] **Step 3: Implement the router**
 
 ```python
-"""HTTP surface for operator-authored knowledge documents.
+"""HTTP surface for operator-authored knowledge documents (pgvector store).
+
+Separate from ``kb_documents_router.py`` (the read-only Vertex corpus listing at
+``GET /kb/documents``). This router serves the ``/kb/knowledge`` CRUD for
+operator-authored documents that are chunked+embedded into pgvector.
 
 Mirrors the FAQ-admin auth (x-api-key vs faq_admin_api_key / proton_backend_key).
 Create endpoints return immediately with a ``pending`` id and dispatch the
@@ -1141,7 +1153,7 @@ class _TextDocRequest(BaseModel):
     body: str
 
 
-def build_kb_documents_router(repo, embedder, settings) -> APIRouter:
+def build_kb_knowledge_router(repo, embedder, settings) -> APIRouter:
     router = APIRouter()
     max_chars = settings.kb_chunk_size_tokens * _CHARS_PER_TOKEN
     overlap_chars = settings.kb_chunk_overlap_tokens * _CHARS_PER_TOKEN
@@ -1162,7 +1174,7 @@ def build_kb_documents_router(repo, embedder, settings) -> APIRouter:
             "chunk_count": row.chunk_count, "created_at": row.created_at.isoformat(),
         }
 
-    @router.post("/kb/documents/text")
+    @router.post("/kb/knowledge/text")
     async def create_text(
         payload: _TextDocRequest, background: BackgroundTasks,
         x_api_key: str | None = Header(default=None),
@@ -1178,7 +1190,7 @@ def build_kb_documents_router(repo, embedder, settings) -> APIRouter:
         )
         return {"id": doc_id, "status": "pending"}
 
-    @router.post("/kb/documents/file")
+    @router.post("/kb/knowledge/file")
     async def create_file(
         background: BackgroundTasks,
         file: UploadFile = File(...),
@@ -1199,13 +1211,13 @@ def build_kb_documents_router(repo, embedder, settings) -> APIRouter:
         )
         return {"id": doc_id, "status": "pending"}
 
-    @router.get("/kb/documents")
+    @router.get("/kb/knowledge")
     async def list_documents(x_api_key: str | None = Header(default=None)) -> dict[str, Any]:
         _authorize(x_api_key)
         rows = await repo.list_documents()
         return {"documents": [_doc_dict(r) for r in rows]}
 
-    @router.get("/kb/documents/{document_id}")
+    @router.get("/kb/knowledge/{document_id}")
     async def get_document(
         document_id: str, x_api_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
@@ -1215,7 +1227,7 @@ def build_kb_documents_router(repo, embedder, settings) -> APIRouter:
             raise HTTPException(status_code=404, detail="Not found")
         return _doc_dict(row)
 
-    @router.delete("/kb/documents/{document_id}")
+    @router.delete("/kb/knowledge/{document_id}")
     async def delete_document(
         document_id: str, x_api_key: str | None = Header(default=None),
     ) -> dict[str, str]:
@@ -1229,14 +1241,14 @@ def build_kb_documents_router(repo, embedder, settings) -> APIRouter:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd backend/apps/backend && uv run pytest src/chatbot/features/chat/test_kb_documents_router.py -v`
+Run: `cd backend/apps/backend && uv run pytest src/chatbot/features/chat/test_kb_knowledge_router.py -v`
 Expected: PASS (3 passed).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add backend/apps/backend/src/chatbot/features/chat/kb_documents_router.py backend/apps/backend/src/chatbot/features/chat/test_kb_documents_router.py
-git commit -m "feat(backend): /kb/documents CRUD router with background ingestion"
+git add backend/apps/backend/src/chatbot/features/chat/kb_knowledge_router.py backend/apps/backend/src/chatbot/features/chat/test_kb_knowledge_router.py
+git commit -m "feat(backend): /kb/knowledge CRUD router (operator-authored pgvector docs)"
 ```
 
 ---
@@ -1250,7 +1262,12 @@ git commit -m "feat(backend): /kb/documents CRUD router with background ingestio
 
 **Interfaces:**
 - Consumes: existing `MergedKnowledgeAdapter(base, live_faq_store, embedder)`; `PgVectorKnowledgeAdapter` (Task 6).
-- Produces: `MergedKnowledgeAdapter(base, live_faq_store, embedder, pg_port=None)` — includes pgvector results (first, then live, then base; deduped by title). `main.py` builds the engine/repo/adapter/router when `knowledge_pg_enabled`.
+- Produces: `MergedKnowledgeAdapter(base, live_faq_store, embedder, pg_port=None)` — includes pgvector results (first, then live, then base; deduped by title). `main.py` builds the engine/repo/adapter and registers the NEW `build_kb_knowledge_router` (`/kb/knowledge`) when `knowledge_pg_enabled`.
+
+> **REVISED (2026-07-26):** This wiring is ADDITIVE. Do NOT remove or alter the
+> existing `build_kb_documents_router(settings)` registration in `main.py` (the
+> Vertex `/kb/documents` listing) — it stays. You are adding a second router
+> (`build_kb_knowledge_router`) alongside it.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1344,7 +1361,7 @@ In the app factory, after `assist_knowledge_port = MergedKnowledgeAdapter(...)` 
     if settings.knowledge_pg_enabled and settings.knowledge_database_url:
         from chatbot.features.chat.adapters.pgvector_knowledge import PgVectorKnowledgeAdapter
         from chatbot.features.chat.kb_db import build_engine, build_session_maker, init_kb_db
-        from chatbot.features.chat.kb_documents_router import build_kb_documents_router
+        from chatbot.features.chat.kb_knowledge_router import build_kb_knowledge_router
         from chatbot.features.chat.kb_repository import PgKbRepository
 
         kb_engine = build_engine(settings.knowledge_database_url)
@@ -1356,8 +1373,12 @@ In the app factory, after `assist_knowledge_port = MergedKnowledgeAdapter(...)` 
         )
         if kb_embedder is not None:
             kb_pg_adapter = PgVectorKnowledgeAdapter(kb_repo, kb_embedder, settings.kb_score_floor)
-            app.include_router(build_kb_documents_router(kb_repo, kb_embedder, settings))
+            app.include_router(build_kb_knowledge_router(kb_repo, kb_embedder, settings))
             app.state.kb_engine = kb_engine  # for init in lifespan startup
+        else:
+            # Enabled but embeddings unavailable → skip mounting so uploads 404
+            # rather than every doc silently failing to embed. Log for visibility.
+            _log.warning("knowledge_pg_enabled but no embedder (genai unavailable); /kb/knowledge not mounted")
 
     if kb_pg_adapter is not None:
         assist_knowledge_port = MergedKnowledgeAdapter(
@@ -1461,14 +1482,47 @@ git commit -m "test(backend): pgvector integration test for PgKbRepository"
 
 ---
 
-## Task 11: Chatwoot "Knowledge" dashboard app
+## Task 11: Native "Knowledge" upload view (Chatwoot SPA fork)
+
+> **REVISED (2026-07-26):** Delivered as a **native SPA view + patch** in the
+> Chatwoot fork (matching the existing `KnowledgeFaqs.vue` CRUD pattern in the
+> already-present native Knowledge section), NOT a standalone dashboard app.
+> It consumes the NEW `/kb/knowledge` endpoints (Task 8), NOT `/kb/documents`
+> (which stays the read-only Vertex listing / `KnowledgeDocuments.vue`).
+>
+> **This task requires a separate investigation of the fork repo before a
+> detailed brief can be written** — the controller must first scan the fork's
+> existing Knowledge views to capture: the `kbRequest` helper + auth, the
+> Knowledge section's routing/nav registration, the eslint/husky `--no-verify`
+> + `git apply` delivery convention, the next free patch number, and the vite
+> build-verify gate. See the ledger's earlier "FRONTEND CONVENTION" notes.
+
+**Approach (fill in once the fork is scanned):**
+- Add a `KnowledgeUploads.vue` (or similarly named) view under the fork's
+  Knowledge section, modeled on `KnowledgeFaqs.vue`: an "Add text" form
+  (title + body → `POST /kb/knowledge/text`), a file upload (accept
+  `.pdf,.docx,.md,.txt` → `POST /kb/knowledge/file`, multipart), and a
+  documents table (`GET /kb/knowledge`) with a status badge
+  (`pending`/`indexed`/`failed`+error), chunk count, and delete
+  (`DELETE /kb/knowledge/{id}`). Poll while any row is `pending`.
+- Register it in the Knowledge nav/routes alongside FAQs and Documents.
+- Deliver via the fork's patch workflow (author in the fork clone, vite build
+  verify, export the patch, commit the patch into `deploy/chatwoot-fork/patches/`).
+
+**The dashboard-app steps below are SUPERSEDED** — kept only as reference for the
+API shapes and the client-side upload/poll logic (which port directly into the
+Vue view). Do not build a `backend/apps/chatwoot-knowledge/` app.
+
+---
+
+### (Superseded reference) Chatwoot "Knowledge" dashboard app
 
 **Files:**
 - Create: `backend/apps/chatwoot-knowledge/index.html`
 - Create: `backend/apps/chatwoot-knowledge/README.md`
 
 **Interfaces:**
-- Consumes: `GET/POST/DELETE /kb/documents*` (Task 8). Reads `apiKey` + `backendBaseUrl` from URL query params; sends `x-api-key`; answers the Chatwoot postMessage handshake harmlessly (global admin, ignores context) — exactly like `chatwoot-faq-admin`.
+- Consumes: `GET/POST/DELETE /kb/knowledge*` (Task 8). Reads `apiKey` + `backendBaseUrl` from URL query params; sends `x-api-key`; answers the Chatwoot postMessage handshake harmlessly (global admin, ignores context) — exactly like `chatwoot-faq-admin`.
 
 This is a static app with no automated test; verification is manual (Step 3).
 

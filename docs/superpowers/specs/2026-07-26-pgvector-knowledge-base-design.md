@@ -5,6 +5,23 @@
 **Scope:** Subsystems "A + B" of the no-code configuration effort
 (see `2026-07-26-no-code-config-roadmap.md` for the full backlog).
 
+> **REVISION (2026-07-26, discovered mid-implementation):** The product ALREADY
+> has (a) a backend `GET /kb/documents` serving the read-only Vertex corpus
+> listing, and (b) a native Knowledge section in the Chatwoot SPA fork
+> (`KnowledgeDocuments.vue` read-only listing + `KnowledgeFaqs.vue` CRUD +
+> Assistants, patches 0011/0012). The new pgvector store must COEXIST with these,
+> not replace them. Two decisions updated accordingly:
+> - **Route/file:** the new operator-authored documents use `/kb/knowledge`
+>   (`kb_knowledge_router.py`), leaving the Vertex `/kb/documents` listing
+>   untouched. The merged knowledge layer still merges pgvector + Live FAQ +
+>   Vertex at query time.
+> - **UI:** delivered as a NEW native SPA view in the existing Knowledge section
+>   (matching `KnowledgeFaqs.vue`, via the fork patch workflow), NOT a standalone
+>   Chatwoot dashboard app.
+> Everything else in this design (store, embedder, ingestion, data model,
+> retrieval, rollout) is unchanged. Sections below that say `/kb/documents` or
+> "dashboard app" are superseded by this banner.
+
 ## Problem
 
 The end users of this platform are non-technical business operators. Today,

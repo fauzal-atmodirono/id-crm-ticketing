@@ -15,9 +15,19 @@ if TYPE_CHECKING:
 
 
 def build_ai_agent(
-    settings: Settings, _ticketing_port: TicketingPort, knowledge_port: KnowledgePort
+    settings: Settings,
+    _ticketing_port: TicketingPort,
+    knowledge_port: KnowledgePort,
+    instruction_provider=None,
 ) -> Agent:
-    """Builds the main conversational Support Agent with registered tools."""
+    """Builds the main conversational Support Agent with registered tools.
+
+    instruction_provider: optional ADK InstructionProvider callable
+    ``(ReadonlyContext) -> str``.  When supplied it governs the per-invocation
+    instruction (e.g. a per-session persona string); when omitted the module-
+    level AGENT_INSTRUCTION constant is used unchanged, preserving existing
+    behaviour byte-for-byte.
+    """
 
     # Define tools inside a closure to inject the ports
     async def search_kb_tool(query: str) -> str:
@@ -159,7 +169,7 @@ def build_ai_agent(
     return Agent(
         name="support_agent",
         model=settings.gemini_model,
-        instruction=AGENT_INSTRUCTION,
+        instruction=instruction_provider or AGENT_INSTRUCTION,
         generate_content_config=types.GenerateContentConfig(
             temperature=0.3,
         ),

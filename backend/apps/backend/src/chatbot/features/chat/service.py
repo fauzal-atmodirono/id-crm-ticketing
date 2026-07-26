@@ -17,6 +17,7 @@ from chatbot.features.chat.adapters.bigquery_metrics import NoOpMetrics
 from chatbot.features.chat.adapters.firestore_session_service import FirestoreSessionService
 from chatbot.features.chat.adapters.noop_conversation_log import NoOpConversationLog
 from chatbot.features.chat.agents import build_ai_agent, build_summarizer_agent
+from chatbot.features.chat.prompts import AGENT_INSTRUCTION
 from chatbot.features.chat.csat import record_csat_on_ticket
 from chatbot.features.chat.detection import should_open_ticket
 from chatbot.features.chat.handoff_bridge import HandoffBridge
@@ -126,8 +127,18 @@ class OrchestratorService:
         )
         self._metrics: MetricsPort = metrics_port or NoOpMetrics()
 
+        # Per-session override map: session_id -> instruction string.
+        # Empty by default → every session gets AGENT_INSTRUCTION (no behaviour
+        # change until a caller registers a persona via this dict).
+        self._instruction_by_session: dict[str, str] = {}
+
         # Initialize ADK agents
-        self._support_agent = build_ai_agent(settings, ticketing_port, knowledge_port)
+        self._support_agent = build_ai_agent(
+            settings,
+            ticketing_port,
+            knowledge_port,
+            instruction_provider=self._chat_instruction_provider,
+        )
         self._summarizer_agent = build_summarizer_agent(settings)
 
         # Initialize raw GenAI client for transcription/STT
@@ -164,6 +175,19 @@ class OrchestratorService:
             app_name="chatbot",
             session_service=self._adk_sessions,
         )
+
+    def _chat_instruction_provider(self, ctx: Any) -> str:
+        """ADK InstructionProvider: per-session composed instruction, else base.
+
+        Reads the session id from the ReadonlyContext via ``ctx.session.id``
+        (the public property exposed by google.adk.agents.ReadonlyContext).
+        Any exception reading the session id → fail-open, return AGENT_INSTRUCTION.
+        """
+        try:
+            session_id = ctx.session.id
+        except Exception:
+            return AGENT_INSTRUCTION
+        return self._instruction_by_session.get(session_id, AGENT_INSTRUCTION)
 
     def _sync_history_from_state(self, session_id: str, session: Session) -> list[dict[str, Any]]:
         state_history = session.state.setdefault("chat_history", [])

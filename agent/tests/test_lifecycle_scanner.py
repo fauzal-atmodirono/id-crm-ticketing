@@ -52,3 +52,74 @@ async def test_scan_skips_email_channel(wired, monkeypatch):
     await lifecycle_store.seed_active(70, channel="Channel::Email")
     await lifecycle_scanner.scan_once()
     assert await lifecycle_store.get_state(70) == "active"  # untouched
+
+
+def _assigned_conv_client(idle_minutes: int, now: datetime):
+    """A chatwoot client returning one open, ASSIGNED conversation idle
+    `idle_minutes` minutes (in inbox 4, WhatsApp)."""
+    client = AsyncMock()
+    last_activity = int(now.timestamp()) - idle_minutes * 60
+    client.list_conversations.side_effect = lambda status=None, assignee_type=None: (
+        {"data": {"payload": [
+            {"id": 71, "inbox_id": 4, "last_activity_at": last_activity,
+             "meta": {"assignee": {"id": 1}}},
+        ]}} if status == "open" else {"data": {"payload": []}}
+    )
+    client.get_inbox.return_value = {
+        "channel_type": "Channel::Whatsapp", "working_hours_enabled": False,
+    }
+    return client
+
+
+@pytest.fixture
+def assigned_wired(monkeypatch):
+    now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    client = _assigned_conv_client(idle_minutes=40, now=now)
+    monkeypatch.setattr(lifecycle_scanner, "get_chatwoot_client", lambda: client)
+    monkeypatch.setattr(lifecycle, "get_chatwoot_client", lambda: client)
+    monkeypatch.setattr(lifecycle_scanner, "_now", lambda: now)
+    return client
+
+
+async def test_scan_auto_resolves_stale_assigned_handoff(assigned_wired, monkeypatch):
+    # An assigned (handed-off) conversation idle past the SLA is silently
+    # auto-resolved so the abandoned handoff can't swallow future messages.
+    from app.config import get_settings
+
+    monkeypatch.setattr(
+        get_settings(), "lifecycle_assigned_idle_resolve_minutes", 30, raising=False
+    )
+    await lifecycle_scanner.scan_once()
+    assert await lifecycle_store.get_state(71) == "closed"
+    assigned_wired.toggle_status.assert_awaited_with(71, "resolved")
+
+
+async def test_scan_leaves_assigned_untouched_when_disabled(assigned_wired, monkeypatch):
+    # Default (0) disables the feature: an assigned conversation is left entirely
+    # to the human — never seeded, never resolved.
+    from app.config import get_settings
+
+    monkeypatch.setattr(
+        get_settings(), "lifecycle_assigned_idle_resolve_minutes", 0, raising=False
+    )
+    await lifecycle_scanner.scan_once()
+    assert await lifecycle_store.get_state(71) is None
+    assigned_wired.toggle_status.assert_not_awaited()
+
+
+async def test_scan_leaves_assigned_untouched_when_not_idle_enough(monkeypatch):
+    # Assigned but only idle 5 min < 30 min SLA → left alone (human may still be
+    # mid-conversation).
+    from app.config import get_settings
+
+    now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    client = _assigned_conv_client(idle_minutes=5, now=now)
+    monkeypatch.setattr(lifecycle_scanner, "get_chatwoot_client", lambda: client)
+    monkeypatch.setattr(lifecycle, "get_chatwoot_client", lambda: client)
+    monkeypatch.setattr(lifecycle_scanner, "_now", lambda: now)
+    monkeypatch.setattr(
+        get_settings(), "lifecycle_assigned_idle_resolve_minutes", 30, raising=False
+    )
+    await lifecycle_scanner.scan_once()
+    assert await lifecycle_store.get_state(71) is None
+    client.toggle_status.assert_not_awaited()

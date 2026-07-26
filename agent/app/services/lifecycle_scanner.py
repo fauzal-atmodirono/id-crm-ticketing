@@ -106,13 +106,19 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
     if conversation_id is None or inbox_id is None:
         return
 
-    # Bot-phase only: once an agent is assigned, they own the conversation.
-    if (conv.get("meta") or {}).get("assignee"):
-        return
-
     inbox = await _get_inbox(chatwoot, inbox_id, inbox_cache)
     channel = inbox.get("channel_type")
     if channel in _SKIP_CHANNELS:
+        return
+
+    # Assigned (handed-off) conversations belong to a human — the bot idle
+    # warn/close flow does not run on them. But an abandoned handoff must not
+    # dead-end (the customer's later messages funnel into the still-open thread
+    # while the bot stays silent), so after a longer idle SLA we silently
+    # auto-resolve it. Gated: 0 disables → assigned conversations left untouched
+    # (today's behavior). Email is already excluded above.
+    if (conv.get("meta") or {}).get("assignee"):
+        await _maybe_resolve_stale_handoff(conv, settings, now)
         return
 
     row = await lifecycle_store.get_row(conversation_id)
@@ -177,6 +183,31 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
         await lifecycle._mirror_state(conversation_id, lifecycle.CLOSED)
         await categorize.maybe_categorize(conversation_id)
         await lifecycle._resolve(conversation_id)
+
+
+async def _maybe_resolve_stale_handoff(conv: dict, settings, now: datetime) -> None:
+    """Silently auto-resolve a handed-off (assigned) conversation idle past
+    ``lifecycle_assigned_idle_resolve_minutes`` so an abandoned handoff self-clears.
+
+    No-op when the SLA is 0/disabled or the conversation isn't idle enough. Sets
+    CLOSED before resolving so the resulting resolved webhook's survey
+    (``lifecycle.on_human_resolved``) is suppressed — no human actually handled
+    it, so an agent-rating survey would be wrong. Idle is measured from
+    ``last_activity_at`` (any message, agent or customer, resets it), so this only
+    fires when both sides have gone quiet.
+    """
+    minutes = settings.lifecycle_assigned_idle_resolve_minutes
+    if minutes <= 0:
+        return
+    conversation_id = conv.get("id")
+    idle = _minutes_since(conv.get("last_activity_at"), now)
+    if idle is None or idle < minutes:
+        return
+    if await lifecycle_store.get_state(conversation_id) == lifecycle.CLOSED:
+        return  # already auto-resolved on a prior tick
+    await lifecycle_store.transition(conversation_id, lifecycle.CLOSED)
+    await lifecycle._mirror_state(conversation_id, lifecycle.CLOSED)
+    await lifecycle._resolve(conversation_id)
 
 
 async def run_scanner() -> None:

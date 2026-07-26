@@ -87,6 +87,12 @@ class Settings(BaseSettings):
     lifecycle_idle_close_grace_minutes: int = 5
     lifecycle_idle_close_out_of_hours_grace_minutes: int = 0
     lifecycle_confirm_grace_minutes: int = 10
+    # Auto-resolve a handed-off (assigned) conversation once it has been idle
+    # this many minutes, so an abandoned handoff self-clears instead of
+    # swallowing the customer's later messages (which funnel into the still-open
+    # thread while the bot stays silent). 0 = disabled: assigned conversations
+    # are left entirely to the human (today's behavior).
+    lifecycle_assigned_idle_resolve_minutes: int = 0
     lifecycle_survey_enabled: bool = True
     lifecycle_disclaimer_enabled: bool = True
     lifecycle_auto_categorize: bool = False

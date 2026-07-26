@@ -258,7 +258,7 @@ class ProtonConfigClient:
             return answer
         return None
 
-    async def chat_turn(self, session_id: str, text: str) -> dict | None:
+    async def chat_turn(self, session_id: str, text: str, inbox_id: int | None = None) -> dict | None:
         """Full conversational turn via the backend ADK agent (POST /chat/turn).
 
         This is the same agent the Proton website uses: it answers KB/spec
@@ -274,9 +274,12 @@ class ProtonConfigClient:
             # (sized for the fast /kb config endpoints). Override per-request so
             # a normal slow turn isn't mistaken for a failure and fail-opened to
             # a handoff.
+            payload: dict = {"session_id": session_id, "text": text}
+            if inbox_id is not None:
+                payload["inbox_id"] = inbox_id
             response = await self._client.post(
                 "/chat/turn",
-                json={"session_id": session_id, "text": text},
+                json=payload,
                 timeout=60.0,
             )
             response.raise_for_status()

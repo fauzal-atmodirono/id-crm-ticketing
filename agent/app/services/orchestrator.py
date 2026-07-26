@@ -401,7 +401,8 @@ async def _process_conversation(conversation_id: int) -> None:
     # gemini.decide router below is bypassed entirely when this flag is on.
     if settings.chat_agent_enabled:
         await _process_via_chat_agent(
-            conversation_id, message_list, effective_mode, chatwoot, handoff_message
+            conversation_id, message_list, effective_mode, chatwoot, handoff_message,
+            inbox_id=inbox_id,
         )
         return
 
@@ -488,6 +489,7 @@ async def _process_via_chat_agent(
     effective_mode: str,
     chatwoot,
     handoff_message: str,
+    inbox_id: int | None = None,
 ) -> None:
     """Drive one turn through the backend ADK agent (POST /chat/turn) and map the
     result onto Chatwoot. Chatwoot owns the handoff; the backend only signals it.
@@ -499,7 +501,7 @@ async def _process_via_chat_agent(
 
     proton = get_proton_config_client()
     result = (
-        await proton.chat_turn(f"crm-{conversation_id}", text)
+        await proton.chat_turn(f"crm-{conversation_id}", text, inbox_id)
         if proton is not None
         else None
     )

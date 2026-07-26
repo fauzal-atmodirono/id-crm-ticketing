@@ -97,10 +97,10 @@ class AskRequest(AssistBase):
     question: str = Field(min_length=1)
 
 
-def _build_persona_prefix(product_name: str, guardrails: list[str]) -> str:
-    """Build a brief persona prefix from product_name and guardrails only.
+def _build_persona_prefix(product_name: str, guardrails: list[str], language: str = "") -> str:
+    """Build a brief persona prefix from product_name, guardrails, and language.
 
-    Returns an empty string when both are absent so the task prompt is
+    Returns an empty string when all are absent so the task prompt is
     unchanged — behaviour-preserving for the no-assistant / empty-assistant path.
     """
     parts: list[str] = []
@@ -108,6 +108,9 @@ def _build_persona_prefix(product_name: str, guardrails: list[str]) -> str:
         parts.append(f"Product: {product_name}")
     if guardrails:
         parts.append("## Guardrails\n" + "\n".join(f"- {g}" for g in guardrails))
+    language = (language or "").strip()
+    if language:
+        parts.append(f"Always respond in {language}.")
     return "\n".join(parts)
 
 
@@ -153,7 +156,8 @@ def build_assist_router(
             return ""
         from chatbot.features.assist.assistant_runtime import resolve_assistant  # noqa: PLC0415
         assistant = await resolve_assistant(assistants_store, assistant_id)
-        return _build_persona_prefix(assistant.product_name, assistant.config.guardrails)
+        language = getattr(assistant.config, "language", "") or ""
+        return _build_persona_prefix(assistant.product_name, assistant.config.guardrails, language)
 
     async def _generate(system: str, user_prompt: str) -> str:
         model = await _resolve_model()

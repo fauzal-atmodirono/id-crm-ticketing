@@ -95,6 +95,10 @@ def build_system_prompt(
                 playbook_lines.append(f"Allowed tools: {', '.join(s.tools)}")
         parts.append("\n".join(playbook_lines))
 
+    language = getattr(assistant.config, "language", "") or ""
+    if language.strip():
+        parts.append(f"## Language\nAlways respond in {language.strip()}.")
+
     return "\n".join(parts)
 
 

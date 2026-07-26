@@ -425,14 +425,27 @@ class OrchestratorService:
         session_state = final_session.state if final_session else {}
 
         handoff_payload = None
-        if session_state.get("handoff_triggered") is True and not (
-            session_id.startswith("whatsapp-") or session_id.startswith("email-")
+        handoff_triggered = session_state.get("handoff_triggered") is True
+        if handoff_triggered and not (
+            session_id.startswith("whatsapp-")
+            or session_id.startswith("email-")
+            or session_id.startswith("crm-")
         ):
             reason = session_state.get("handoff_reason", "help_request")
 
             # Execute human escalation handoff
             handoff_payload = await self._escalate_handoff(session_id, reason)
             reply_text = None  # Clear reply so chatbot doesn't post text when handing off
+        elif handoff_triggered and session_id.startswith("crm-"):
+            # CRM-owned handoff: the caller (the CRM agent service) owns the
+            # actual handoff in its own system (Chatwoot). Signal the reason
+            # only — no summarizer, no live bridge, no backend ticket, and do
+            # NOT pause AI here (Chatwoot drives the reopen). Suppress the reply.
+            handoff_payload = HandoffPayload(
+                reason=session_state.get("handoff_reason", "help_request"),
+                language=session_state.get("language", "unknown"),
+            )
+            reply_text = None
         elif reply_text:
             # 6. Append assistant message to history (skip when handing off).
             updated_session = await self._adk_sessions.get_session(

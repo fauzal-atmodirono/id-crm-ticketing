@@ -190,6 +190,54 @@ async def test_handle_turn_triggers_escalation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_handle_turn_crm_session_signals_handoff_without_escalating() -> None:
+    """A `crm-` session is channel-owned: on handoff the backend returns a
+    lightweight HandoffPayload (reason from state) WITHOUT running its own
+    escalation — no summarizer turn, no ticket, AI is NOT paused here — because
+    the CRM caller (Chatwoot, via the agent service) owns the actual handoff.
+    The reply is still suppressed so no partial bot text is posted."""
+    settings = get_settings()
+    chat_port = InMemoryChatAdapter()
+    ticketing_port = InMemoryTicketingAdapter()
+    knowledge_port = InMemoryKnowledgeAdapter()
+    voice_client = MockVoiceAdapter()
+
+    runner_calls = 0
+
+    def fake_runner_factory(_agent: Any) -> _FakeRunner:
+        nonlocal runner_calls
+        runner_calls += 1
+        return _FakeRunner(
+            reply="partial answer",
+            session_service=svc._adk_sessions,
+            session_id="crm-42",
+            trigger_handoff=True,
+        )
+
+    svc = OrchestratorService(
+        settings=settings,
+        chat_port=chat_port,
+        ticketing_port=ticketing_port,
+        knowledge_port=knowledge_port,
+        tts_port=voice_client,
+        runner_factory=fake_runner_factory,
+    )
+
+    result = await svc.handle_turn(session_id="crm-42", text="I want to talk to a human")
+
+    # Signal returned, reply suppressed.
+    assert result.handoff is not None
+    assert result.handoff.reason == "help_request"
+    assert result.reply is None
+    # No backend escalation ran: no summarizer turn (only the support agent
+    # ran), no summary, no ticket, AI not paused.
+    assert runner_calls == 1
+    assert result.handoff.summary is None
+    assert len(ticketing_port.tickets) == 0
+    assert await ticketing_port.is_ai_paused("crm-42") is False
+
+
+@pytest.mark.asyncio
 async def test_handle_voice_turn_happy_path() -> None:
     settings = get_settings()
     chat_port = InMemoryChatAdapter()

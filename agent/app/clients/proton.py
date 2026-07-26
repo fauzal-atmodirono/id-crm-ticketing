@@ -257,3 +257,26 @@ class ProtonConfigClient:
         if isinstance(answer, str) and answer.strip():
             return answer
         return None
+
+    async def chat_turn(self, session_id: str, text: str) -> dict | None:
+        """Full conversational turn via the backend ADK agent (POST /chat/turn).
+
+        This is the same agent the Proton website uses: it answers KB/spec
+        questions with tools and only signals a handoff on genuine intent.
+        Returns the parsed response dict — keys ``reply`` (str|None),
+        ``handoff`` (dict|None), ``products`` (list), ``forwarded_to_agent``
+        (bool) — or None on any error, non-2xx, or non-dict body (fail-open, so
+        the caller can degrade to a Chatwoot handoff). The endpoint is
+        unauthenticated; the client's x-api-key header is harmless."""
+        try:
+            response = await self._client.post(
+                "/chat/turn", json={"session_id": session_id, "text": text}
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception:
+            logger.debug("proton_config: chat_turn failed", exc_info=True)
+            return None
+        if not isinstance(data, dict):
+            return None
+        return data

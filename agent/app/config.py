@@ -69,6 +69,13 @@ class Settings(BaseSettings):
     agent_mode: str = "suggest"
     kb_grounded_replies: bool = False
     auto_resolve: bool = False
+    # Route the agent-bot's decision through the backend's full ADK conversational
+    # agent (POST /chat/turn) instead of the local 3-way gemini.decide router.
+    # When True, the bot answers KB/spec questions itself and only hands off on
+    # genuine intent (help request, negative sentiment, sales lead, KB miss) —
+    # matching the Proton website agent. Default False = legacy router (byte-
+    # identical). Supersedes kb_grounded_replies on this path when enabled.
+    chat_agent_enabled: bool = False
 
     # Conversation lifecycle & auto-close (feature is a no-op when disabled).
     # Drives the Proton process-flow SOP: idle warn/close, resolution

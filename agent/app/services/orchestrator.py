@@ -395,6 +395,16 @@ async def _process_conversation(conversation_id: int) -> None:
             conversation_id,
         )
         return
+
+    # Brain-swap: route the decision through the backend's full ADK agent
+    # (answers KB/spec questions, hands off only on genuine intent). The legacy
+    # gemini.decide router below is bypassed entirely when this flag is on.
+    if settings.chat_agent_enabled:
+        await _process_via_chat_agent(
+            conversation_id, message_list, effective_mode, chatwoot, handoff_message
+        )
+        return
+
     context = _build_context(message_list)
 
     decision = await gemini.decide(system_prompt, context)
@@ -428,6 +438,114 @@ async def _process_conversation(conversation_id: int) -> None:
             decision.action,
             conversation_id,
         )
+
+
+def _latest_incoming_text(message_list: list[dict]) -> str:
+    """The trailing run of incoming customer messages (since the last non-private
+    outgoing message), joined into one turn for the backend agent. The backend
+    owns the rest of the multi-turn history keyed by the crm- session id, so we
+    only send what the customer has said since the bot last spoke."""
+    texts: list[str] = []
+    for message in reversed(message_list):
+        if message.get("private"):
+            continue
+        mtype = message.get("message_type")
+        if mtype == 0:  # incoming (customer)
+            content = (message.get("content") or "").strip()
+            if content:
+                texts.append(content)
+        elif mtype == 1:  # outgoing (bot/agent) → older than the last reply
+            break
+    return "\n".join(reversed(texts))
+
+
+async def _log_chat_action(conversation_id: int, decision: str, output: str) -> None:
+    """Audit row for a /chat/turn decision (mirrors _log_decision; a DB blip
+    must never abort the turn)."""
+    settings = get_settings()
+    try:
+        async with async_session_maker() as session:
+            session.add(
+                AiAction(
+                    conversation_ref=f"chatwoot:{conversation_id}",
+                    decision=decision,
+                    model=settings.gemini_model,
+                    prompt_tokens=None,
+                    output=output[:2000],
+                )
+            )
+            await session.commit()
+    except SQLAlchemyError:
+        logger.exception(
+            "orchestrator: failed to log chat-agent ai_actions row for conversation %s",
+            conversation_id,
+        )
+
+
+async def _process_via_chat_agent(
+    conversation_id: int,
+    message_list: list[dict],
+    effective_mode: str,
+    chatwoot,
+    handoff_message: str,
+) -> None:
+    """Drive one turn through the backend ADK agent (POST /chat/turn) and map the
+    result onto Chatwoot. Chatwoot owns the handoff; the backend only signals it.
+    Fail-open: a missing/failed backend degrades to a Chatwoot handoff so the
+    conversation is never left silent."""
+    text = _latest_incoming_text(message_list)
+    if not text:
+        return
+
+    proton = get_proton_config_client()
+    result = (
+        await proton.chat_turn(f"crm-{conversation_id}", text)
+        if proton is not None
+        else None
+    )
+
+    if result is None:
+        # Backend unconfigured/unreachable/error → hand off rather than go silent.
+        await _log_chat_action(conversation_id, "chat_turn:unavailable", "backend unavailable")
+        await _handoff_to_human_via_chatwoot(conversation_id, chatwoot, handoff_message)
+        return
+
+    if result.get("forwarded_to_agent"):
+        # Already handed off; the human owns this conversation now. Nothing to do.
+        await _log_chat_action(conversation_id, "chat_turn:forwarded", "")
+        return
+
+    handoff = result.get("handoff")
+    if handoff:
+        reason = (handoff or {}).get("reason", "") if isinstance(handoff, dict) else ""
+        await _log_chat_action(conversation_id, "chat_turn:handoff", str(reason))
+        await _handoff_to_human_via_chatwoot(conversation_id, chatwoot, handoff_message)
+        return
+
+    reply = (result.get("reply") or "").strip()
+    if not reply:
+        # No reply and no handoff (e.g. empty generation) → fail-open handoff.
+        await _log_chat_action(conversation_id, "chat_turn:empty", "")
+        await _handoff_to_human_via_chatwoot(conversation_id, chatwoot, handoff_message)
+        return
+
+    await _log_chat_action(conversation_id, "chat_turn:reply", reply)
+    if effective_mode == "auto":
+        settings = get_settings()
+        await chatwoot.create_message(
+            conversation_id,
+            reply,
+            private=False,
+            token_override=settings.chatwoot_bot_token,
+        )
+        # Stays pending — auto-sent replies don't hand off to a human.
+    else:
+        await chatwoot.create_message(
+            conversation_id,
+            f"🤖 Suggested reply:\n\n{reply}",
+            private=True,
+        )
+        await chatwoot.toggle_status(conversation_id, "open")
 
 
 async def _handoff_to_human_via_chatwoot(

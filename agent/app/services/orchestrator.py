@@ -483,6 +483,41 @@ async def _log_chat_action(conversation_id: int, decision: str, output: str) -> 
         )
 
 
+# Twilio caps a WhatsApp message body at 1600 chars and rejects the whole
+# message (status=failed, no SID) when exceeded — the customer then gets nothing.
+# Split auto-sent replies below that with a safety margin so long KB answers
+# (e.g. full vehicle specs) still arrive, as a few sequential bubbles.
+WHATSAPP_MAX_CHARS = 1500
+
+
+def _split_message(text: str, limit: int = WHATSAPP_MAX_CHARS) -> list[str]:
+    """Split ``text`` into chunks each <= ``limit`` chars, breaking on paragraph,
+    line, then word boundaries so a long reply survives channels that reject
+    over-length messages. Only splits mid-token if a single token exceeds the
+    limit. Empty string → no chunks."""
+    text = text or ""
+    if not text:
+        return []
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        window = remaining[:limit]
+        cut = window.rfind("\n\n")
+        if cut < limit // 2:
+            cut = window.rfind("\n")
+        if cut < limit // 2:
+            cut = window.rfind(" ")
+        if cut <= 0:
+            cut = limit  # single over-long token: hard cut
+        chunks.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
 async def _process_via_chat_agent(
     conversation_id: int,
     message_list: list[dict],
@@ -534,12 +569,15 @@ async def _process_via_chat_agent(
     await _log_chat_action(conversation_id, "chat_turn:reply", reply)
     if effective_mode == "auto":
         settings = get_settings()
-        await chatwoot.create_message(
-            conversation_id,
-            reply,
-            private=False,
-            token_override=settings.chatwoot_bot_token,
-        )
+        # Split over-length replies so a channel like Twilio WhatsApp (1600-char
+        # cap) doesn't reject the whole message and leave the customer silent.
+        for chunk in _split_message(reply):
+            await chatwoot.create_message(
+                conversation_id,
+                chunk,
+                private=False,
+                token_override=settings.chatwoot_bot_token,
+            )
         # Stays pending — auto-sent replies don't hand off to a human.
     else:
         await chatwoot.create_message(

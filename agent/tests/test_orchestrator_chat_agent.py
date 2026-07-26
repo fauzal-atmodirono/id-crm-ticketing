@@ -129,6 +129,55 @@ async def test_chat_agent_auto_posts_kb_reply_and_stays_pending(monkeypatch):
     assert not toggle_status.called  # auto stays pending, no human handoff
 
 
+def test_split_message_short_is_single_chunk():
+    assert orchestrator._split_message("hello") == ["hello"]
+    assert orchestrator._split_message("") == []
+
+
+def test_split_message_long_splits_into_bounded_chunks():
+    limit = orchestrator.WHATSAPP_MAX_CHARS
+    para = ("word " * 400).strip()  # ~2000 chars
+    text = para + "\n\n" + para
+    chunks = orchestrator._split_message(text)
+    assert len(chunks) >= 2
+    assert all(len(c) <= limit for c in chunks)
+    # No non-whitespace character is lost across the split seams.
+    norm = lambda s: "".join(s.split())
+    assert norm("".join(chunks)) == norm(text)
+
+
+@respx.mock
+async def test_chat_agent_auto_splits_long_reply_for_whatsapp(monkeypatch):
+    # A reply longer than the Twilio WhatsApp limit must be split into multiple
+    # in-limit messages, or Twilio rejects the whole thing (status=failed) and the
+    # customer gets nothing.
+    import json
+
+    _mock_common_routes("auto")
+    long_reply = ("Spesifikasi Proton S70 sangat lengkap. " * 80).strip()  # ~3100 chars
+    respx.post(f"{PROTON}/chat/turn").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "reply": long_reply,
+                "handoff": None,
+                "products": [],
+                "forwarded_to_agent": False,
+            },
+        )
+    )
+    create_message = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages"
+    ).mock(return_value=httpx.Response(200, json={"id": 999}))
+
+    await _run(monkeypatch)
+
+    assert create_message.call_count >= 2
+    for call in create_message.calls:
+        body = json.loads(call.request.content)
+        assert len(body["content"]) <= orchestrator.WHATSAPP_MAX_CHARS
+
+
 @respx.mock
 async def test_chat_agent_handoff_signal_acks_and_reopens(monkeypatch):
     settings = get_settings()

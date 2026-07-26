@@ -77,6 +77,7 @@ echo "==> Provisioning tenant '${TENANT}' (PUBLIC_IP=${PUBLIC_IP})"
 CHATWOOT_DB_PASSWORD="$(openssl rand -hex 16)"
 ZAMMAD_DB_PASSWORD="$(openssl rand -hex 16)"
 AGENT_DB_PASSWORD="$(openssl rand -hex 16)"
+BACKEND_DB_PASSWORD="$(openssl rand -hex 16)"
 REDIS_PASSWORD="$(openssl rand -hex 16)"
 SECRET_KEY_BASE="$(openssl rand -hex 64)"
 
@@ -86,6 +87,8 @@ sed \
   -e "s/^CHATWOOT_DB_PASSWORD=.*/CHATWOOT_DB_PASSWORD=${CHATWOOT_DB_PASSWORD}/" \
   -e "s/^ZAMMAD_DB_PASSWORD=.*/ZAMMAD_DB_PASSWORD=${ZAMMAD_DB_PASSWORD}/" \
   -e "s/^AGENT_DB_PASSWORD=.*/AGENT_DB_PASSWORD=${AGENT_DB_PASSWORD}/" \
+  -e "s/^BACKEND_DB_PASSWORD=.*/BACKEND_DB_PASSWORD=${BACKEND_DB_PASSWORD}/" \
+  -e "s|^KNOWLEDGE_DATABASE_URL=.*|KNOWLEDGE_DATABASE_URL=postgresql://backend_${TENANT}:${BACKEND_DB_PASSWORD}@postgres:5432/backend_${TENANT}|" \
   -e "s/^REDIS_PASSWORD=.*/REDIS_PASSWORD=${REDIS_PASSWORD}/" \
   -e "s/^SECRET_KEY_BASE=.*/SECRET_KEY_BASE=${SECRET_KEY_BASE}/" \
   -e "s|^HOST_PREFIX=.*|HOST_PREFIX=${HOST_PREFIX}|" \
@@ -93,15 +96,17 @@ sed \
 echo "==> Wrote ${ENV_FILE} (hostnames: ${HOST_PREFIX:-<bare>}crm.${PUBLIC_IP}.nip.io)"
 
 # --- 2. Create Postgres roles + databases on the running server -------------
-echo "==> Creating databases chatwoot_${TENANT} / zammad_${TENANT} / agent_${TENANT}"
+echo "==> Creating databases chatwoot_${TENANT} / zammad_${TENANT} / agent_${TENANT} / backend_${TENANT}"
 docker compose -p "${INFRA_PROJECT}" -f "${INFRA_FILE}" exec -T postgres \
   psql -v ON_ERROR_STOP=1 -U postgres -d postgres <<SQL
-CREATE ROLE chatwoot_${TENANT} LOGIN PASSWORD '${CHATWOOT_DB_PASSWORD}';
-CREATE ROLE zammad_${TENANT}   LOGIN PASSWORD '${ZAMMAD_DB_PASSWORD}';
-CREATE ROLE agent_${TENANT}    LOGIN PASSWORD '${AGENT_DB_PASSWORD}';
+CREATE ROLE chatwoot_${TENANT}  LOGIN PASSWORD '${CHATWOOT_DB_PASSWORD}';
+CREATE ROLE zammad_${TENANT}    LOGIN PASSWORD '${ZAMMAD_DB_PASSWORD}';
+CREATE ROLE agent_${TENANT}     LOGIN PASSWORD '${AGENT_DB_PASSWORD}';
+CREATE ROLE backend_${TENANT}   LOGIN PASSWORD '${BACKEND_DB_PASSWORD}';
 CREATE DATABASE chatwoot_${TENANT} OWNER chatwoot_${TENANT};
 CREATE DATABASE zammad_${TENANT}   OWNER zammad_${TENANT};
 CREATE DATABASE agent_${TENANT}    OWNER agent_${TENANT};
+CREATE DATABASE backend_${TENANT}  OWNER backend_${TENANT};
 SQL
 
 # Chatwoot needs superuser-only extensions in its DB. It connects as the
@@ -112,6 +117,12 @@ SQL
 docker compose -p "${INFRA_PROJECT}" -f "${INFRA_FILE}" exec -T postgres \
   psql -v ON_ERROR_STOP=1 -U postgres -d "chatwoot_${TENANT}" \
   -c 'CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_stat_statements;'
+
+# backend knowledge DB needs the vector extension enabled by a superuser (the
+# backend_<tenant> role is non-superuser and cannot CREATE EXTENSION vector itself).
+docker compose -p "${INFRA_PROJECT}" -f "${INFRA_FILE}" exec -T postgres \
+  psql -v ON_ERROR_STOP=1 -U postgres -d "backend_${TENANT}" \
+  -c 'CREATE EXTENSION IF NOT EXISTS vector;'
 
 # --- 3. Render + install the Caddy route, then reload -----------------------
 cat > "caddy/tenants/${TENANT}.caddy" <<CADDY

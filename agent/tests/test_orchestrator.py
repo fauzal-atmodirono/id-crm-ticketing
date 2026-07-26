@@ -497,3 +497,44 @@ def test_build_thread_maps_roles_and_drops_noise():
 def test_build_thread_empty_when_nothing_qualifies():
     from app.services.orchestrator import _build_thread
     assert _build_thread([{"message_type": 2, "content": "act", "private": False}]) == []
+
+
+async def test_lifecycle_pre_check_threads_inbox_id(monkeypatch):
+    """_maybe_handle_lifecycle_reply must pass the inbox_id from the conversation
+    object in the payload through to handle_lifecycle_reply so that survey_ai
+    and thanks message overrides are resolvable per-operator."""
+    from unittest.mock import AsyncMock
+    from app.services import lifecycle, lifecycle_store
+
+    # Set up lifecycle state so the pre-check routes through handle_lifecycle_reply.
+    conv_id = 99
+    inbox_id_in_payload = 7
+    await lifecycle_store.transition(conv_id, lifecycle.AWAITING_SURVEY, survey_variant="ai")
+
+    captured: dict = {}
+
+    async def _fake_handle(conversation_id, text, state, inbox_id=None):
+        captured["inbox_id"] = inbox_id
+
+    monkeypatch.setattr(lifecycle, "handle_lifecycle_reply", _fake_handle)
+
+    payload = {
+        "event": "message_created",
+        "id": 801,
+        "content": "4",
+        "message_type": "incoming",
+        "private": False,
+        "conversation": {"id": conv_id, "status": "open", "inbox_id": inbox_id_in_payload},
+        "sender": {"id": 10, "name": "User", "type": "contact"},
+    }
+
+    # Enable lifecycle in settings so the pre-check runs.
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "lifecycle_enabled", True, raising=False)
+
+    await orchestrator._maybe_handle_lifecycle_reply(payload)
+
+    assert captured.get("inbox_id") == inbox_id_in_payload, (
+        f"Expected inbox_id={inbox_id_in_payload!r} but got {captured.get('inbox_id')!r}; "
+        "survey_ai/thanks overrides would silently fall back to defaults"
+    )

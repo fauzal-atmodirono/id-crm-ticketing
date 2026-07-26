@@ -154,8 +154,9 @@ async def _maybe_handle_lifecycle_reply(payload: dict) -> None:
 
     if state in (lifecycle.AWAITING_RESOLUTION, lifecycle.AWAITING_SURVEY):
         text = payload.get("content") or ""
+        inbox_id: int | None = (payload.get("conversation") or {}).get("inbox_id")
         try:
-            await lifecycle.handle_lifecycle_reply(conversation_id, text, state)
+            await lifecycle.handle_lifecycle_reply(conversation_id, text, state, inbox_id)
         except Exception:
             logger.debug(
                 "orchestrator: lifecycle reply handling failed for %s", conversation_id,

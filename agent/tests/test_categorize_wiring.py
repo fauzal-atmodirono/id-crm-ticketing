@@ -28,6 +28,23 @@ async def test_maybe_categorize_applies_label(chatwoot, enabled, monkeypatch):
     chatwoot.add_labels.assert_awaited_once_with(77, ["category_battery"])
 
 
+async def test_maybe_categorize_does_not_double_prefix(chatwoot, monkeypatch):
+    # When the taxonomy is configured with already-prefixed slugs (e.g.
+    # "category_inquiry", as the Proton tenant is), the applied label must stay
+    # "category_inquiry" — not become "category_category_inquiry", which wouldn't
+    # match the predefined labels or the saved filters.
+    s = categorize.get_settings()
+    monkeypatch.setattr(s, "lifecycle_auto_categorize", True, raising=False)
+    monkeypatch.setattr(
+        s, "lifecycle_category_labels", "category_inquiry,category_complaint", raising=False
+    )
+    monkeypatch.setattr(
+        categorize, "classify_category", AsyncMock(return_value="category_inquiry")
+    )
+    await categorize.maybe_categorize(77)
+    chatwoot.add_labels.assert_awaited_once_with(77, ["category_inquiry"])
+
+
 async def test_maybe_categorize_noop_when_disabled(chatwoot, monkeypatch):
     s = categorize.get_settings()
     monkeypatch.setattr(s, "lifecycle_auto_categorize", False, raising=False)

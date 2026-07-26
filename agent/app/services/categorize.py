@@ -78,7 +78,10 @@ async def maybe_categorize(conversation_id: int) -> None:
         slug = await classify_category(transcript, candidates)
         if slug is None:
             return
-        await chatwoot.add_labels(conversation_id, [f"category_{slug}"])
+        # Idempotent prefix: the tenant taxonomy may list bare slugs ("inquiry")
+        # or already-prefixed ones ("category_inquiry"); never double-prefix.
+        label = slug if slug.startswith("category_") else f"category_{slug}"
+        await chatwoot.add_labels(conversation_id, [label])
     except Exception:
         logger.exception(
             "categorize: maybe_categorize failed for conversation %s", conversation_id

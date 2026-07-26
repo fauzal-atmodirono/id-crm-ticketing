@@ -2,6 +2,8 @@
 # These are created as team-wide ("account"-scoped) saved views in Chatwoot.
 # Chatwoot filter operators: equal_to, not_equal_to, contains, does_not_contain,
 #   is_present, is_not_present, is_greater_than, is_less_than, days_before
+# NOTE: the `labels` attribute ONLY accepts equal_to / not_equal_to /
+#   is_present / is_not_present — using `contains` returns 422 (InvalidOperator).
 # attribute_key for labels: "labels"  (values: list of label names)
 # attribute_key for status: "status"  (values: "open","resolved","pending","snoozed","all")
 
@@ -11,7 +13,7 @@ filters:
     query:
       payload:
         - attribute_key: labels
-          filter_operator: contains
+          filter_operator: equal_to
           query_operator: null
           values:
             - category_complaint
@@ -21,7 +23,7 @@ filters:
     query:
       payload:
         - attribute_key: labels
-          filter_operator: contains
+          filter_operator: equal_to
           query_operator: null
           values:
             - category_inquiry
@@ -31,7 +33,7 @@ filters:
     query:
       payload:
         - attribute_key: labels
-          filter_operator: contains
+          filter_operator: equal_to
           query_operator: AND
           values:
             - sla_breach
@@ -46,7 +48,7 @@ filters:
     query:
       payload:
         - attribute_key: labels
-          filter_operator: contains
+          filter_operator: equal_to
           query_operator: AND
           values:
             - escalate
@@ -61,7 +63,7 @@ filters:
     query:
       payload:
         - attribute_key: labels
-          filter_operator: contains
+          filter_operator: equal_to
           query_operator: null
           values:
             - division_apps
@@ -71,7 +73,7 @@ filters:
     query:
       payload:
         - attribute_key: labels
-          filter_operator: contains
+          filter_operator: equal_to
           query_operator: null
           values:
             - division_aftersales
@@ -81,7 +83,7 @@ filters:
     query:
       payload:
         - attribute_key: labels
-          filter_operator: contains
+          filter_operator: equal_to
           query_operator: null
           values:
             - division_sales
@@ -91,7 +93,7 @@ filters:
     query:
       payload:
         - attribute_key: labels
-          filter_operator: contains
+          filter_operator: equal_to
           query_operator: null
           values:
             - division_charging

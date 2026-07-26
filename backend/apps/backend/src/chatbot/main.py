@@ -29,9 +29,7 @@ from chatbot.features.chat.escalation_notifier import EscalationNotifier
 from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.kb_assistants_router import build_kb_assistants_router
-from chatbot.features.chat.kb_db import build_engine, build_session_maker
 from chatbot.features.chat.kb_documents_router import build_kb_documents_router
-from chatbot.features.chat.kb_repository import InMemoryKbRepository, PgKbRepository
 from chatbot.features.chat.kb_inboxes_router import build_kb_inboxes_router
 from chatbot.features.chat.kb_scenarios_router import build_kb_scenarios_router
 from chatbot.features.chat.kb_settings_router import build_kb_settings_router
@@ -184,16 +182,7 @@ def _wire_agent_assist(
 
     app.include_router(build_kb_suggest_router(knowledge_port, live_faq_store, embedder))
     app.include_router(build_faq_admin_router(live_faq_store, settings))
-    # Wire pgvector KB repo: PgKbRepository when knowledge_pg_enabled, else an
-    # in-memory stub so the endpoints stay functional for operators who haven't
-    # provisioned postgres yet (all writes persist only for the process lifetime).
-    if settings.knowledge_pg_enabled and settings.knowledge_database_url:
-        _kb_repo = PgKbRepository(
-            build_session_maker(build_engine(settings.knowledge_database_url))
-        )
-    else:
-        _kb_repo = InMemoryKbRepository()
-    app.include_router(build_kb_documents_router(_kb_repo, embedder, settings))
+    app.include_router(build_kb_documents_router(settings))
     app.include_router(
         build_kb_assistants_router(
             assistants_store,  # type: ignore[arg-type]

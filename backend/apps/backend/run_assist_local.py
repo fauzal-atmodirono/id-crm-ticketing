@@ -24,6 +24,7 @@ from chatbot.features.assist.router import build_assist_router
 from chatbot.features.chat.adapters.assistants_store import build_assistants_store
 from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
 from chatbot.features.chat.adapters.inbox_assignment_store import build_inbox_assignment_store
+from chatbot.features.chat.adapters.inbox_timing_store import build_inbox_timing_store
 from chatbot.features.chat.adapters.live_faq import InMemoryLiveFaqStore, VertexEmbedder
 from chatbot.features.chat.adapters.merged_knowledge import MergedKnowledgeAdapter
 from chatbot.features.chat.adapters.scenarios_store import build_scenarios_store
@@ -100,6 +101,7 @@ def build() -> FastAPI:
     tools_store = build_tools_store(settings)
     scenarios_store = build_scenarios_store(settings)
     assignment_store = build_inbox_assignment_store(settings)
+    timing_store = build_inbox_timing_store(settings)
     app.include_router(
         build_kb_assistants_router(
             assistants_store,
@@ -114,7 +116,8 @@ def build() -> FastAPI:
     chatwoot_adapter = ChatwootAdapter(settings)
     app.include_router(
         build_kb_inboxes_router(
-            assignment_store, assistants_store, tenant_settings_store, chatwoot_adapter, settings
+            assignment_store, assistants_store, tenant_settings_store, chatwoot_adapter, settings,
+            timing_store,
         )
     )
     app.include_router(

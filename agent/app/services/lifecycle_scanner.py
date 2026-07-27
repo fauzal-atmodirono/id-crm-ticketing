@@ -141,14 +141,27 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
     state_age = (now - state_changed_at).total_seconds() / 60.0
 
     in_hours = business_hours.is_within_business_hours(inbox, now)
-    warn_after = settings.lifecycle_idle_warn_minutes
+
+    # Per-inbox overrides (fail-open): a value present (incl. 0) wins over the
+    # env default; None/absent inherits the global default so behavior with no
+    # stored timing is byte-identical to before.
+    timing = await lifecycle._fetch_lifecycle_timing(inbox_id) or {}
+
+    def _pick(key: str, default: int) -> int:
+        v = timing.get(key)
+        return v if isinstance(v, int) and not isinstance(v, bool) else default
+
+    warn_after = _pick("idle_warn_minutes", settings.lifecycle_idle_warn_minutes)
     grace = (
-        settings.lifecycle_idle_close_grace_minutes
+        _pick("idle_close_grace_minutes", settings.lifecycle_idle_close_grace_minutes)
         if in_hours
-        else settings.lifecycle_idle_close_out_of_hours_grace_minutes
+        else _pick(
+            "idle_close_out_of_hours_grace_minutes",
+            settings.lifecycle_idle_close_out_of_hours_grace_minutes,
+        )
     )
     close_after = warn_after + grace
-    confirm_after = settings.lifecycle_confirm_grace_minutes
+    confirm_after = _pick("confirm_grace_minutes", settings.lifecycle_confirm_grace_minutes)
 
     action = decide_idle_action(
         state, idle, state_age, warn_after, close_after, confirm_after

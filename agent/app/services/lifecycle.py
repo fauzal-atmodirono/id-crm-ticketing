@@ -90,6 +90,21 @@ async def _fetch_assistant_messages(inbox_id: int | None) -> dict | None:
         return None
 
 
+async def _fetch_lifecycle_timing(inbox_id: int | None) -> dict | None:
+    """Fetch per-inbox lifecycle timing overrides for inbox_id, fail-open to None."""
+    proton = get_proton_config_client()
+    if proton is None or inbox_id is None:
+        return None
+    try:
+        return await proton.get_assistant_lifecycle_timing(inbox_id)
+    except Exception:
+        logger.debug(
+            "lifecycle: could not fetch lifecycle timing for inbox %s", inbox_id,
+            exc_info=True,
+        )
+        return None
+
+
 async def _mirror_state(conversation_id: int, state: str) -> None:
     """Best-effort mirror of the lifecycle state into a Chatwoot custom
     attribute for agent visibility. Never raises."""

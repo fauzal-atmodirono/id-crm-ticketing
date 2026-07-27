@@ -123,3 +123,32 @@ async def test_scan_leaves_assigned_untouched_when_not_idle_enough(monkeypatch):
     await lifecycle_scanner.scan_once()
     assert await lifecycle_store.get_state(71) is None
     client.toggle_status.assert_not_awaited()
+
+
+async def test_scan_uses_per_inbox_warn_override(wired, monkeypatch):
+    # Env default warn=10; conversation is idle 12 min. Override warn to 20 min
+    # (via per-inbox timing) so the conversation is NOT yet warned.
+    from app.services import lifecycle
+
+    async def _timing(inbox_id):
+        return {"idle_warn_minutes": 20, "idle_close_grace_minutes": None,
+                "idle_close_out_of_hours_grace_minutes": None, "confirm_grace_minutes": None}
+
+    monkeypatch.setattr(lifecycle, "_fetch_lifecycle_timing", _timing)
+    await lifecycle_store.seed_active(70, channel="Channel::Whatsapp")
+    await lifecycle_scanner.scan_once()
+    assert await lifecycle_store.get_state(70) == "active"  # 12 < 20 -> no warn
+    wired.create_message.assert_not_awaited()
+
+
+async def test_scan_falls_back_to_env_default_when_no_timing(wired, monkeypatch):
+    # No per-inbox timing -> env default warn=10; idle 12 -> warned (today's behavior).
+    from app.services import lifecycle
+
+    async def _timing(inbox_id):
+        return None
+
+    monkeypatch.setattr(lifecycle, "_fetch_lifecycle_timing", _timing)
+    await lifecycle_store.seed_active(70, channel="Channel::Whatsapp")
+    await lifecycle_scanner.scan_once()
+    assert await lifecycle_store.get_state(70) == "idle_warned"

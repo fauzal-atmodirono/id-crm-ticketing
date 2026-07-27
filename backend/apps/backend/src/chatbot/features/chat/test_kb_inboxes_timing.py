@@ -24,6 +24,8 @@ _ALL_NULL = {
     "idle_close_grace_minutes": None,
     "idle_close_out_of_hours_grace_minutes": None,
     "confirm_grace_minutes": None,
+    "idle_warning_message": None,
+    "inactivity_enabled": None,
 }
 
 
@@ -67,8 +69,8 @@ def test_put_then_get_roundtrip():
             "idle_close_out_of_hours_grace_minutes": 0, "confirm_grace_minutes": 8}
     r = client.put("/kb/inboxes/5/timing", json=body, headers=_H)
     assert r.status_code == 200
-    assert r.json() == body
-    assert client.get("/kb/inboxes/5/timing", headers=_H).json() == body
+    assert r.json() == {**body, "idle_warning_message": None, "inactivity_enabled": None}
+    assert client.get("/kb/inboxes/5/timing", headers=_H).json() == {**body, "idle_warning_message": None, "inactivity_enabled": None}
 
 
 def test_put_null_field_is_unset():
@@ -113,3 +115,33 @@ def test_list_rows_include_timing():
     row = next(r for r in rows if r["inbox_id"] == 5)
     assert row["idle_warn_minutes"] == 7
     assert row["confirm_grace_minutes"] is None
+
+
+def test_put_get_message_and_enabled_roundtrip():
+    client, _ = _client()
+    body = {
+        "idle_warn_minutes": None, "idle_close_grace_minutes": None,
+        "idle_close_out_of_hours_grace_minutes": None, "confirm_grace_minutes": None,
+        "idle_warning_message": "Closing in {{minutes}} min.",
+        "inactivity_enabled": False,
+    }
+    r = client.put("/kb/inboxes/5/timing", json=body, headers=_H)
+    assert r.status_code == 200
+    got = client.get("/kb/inboxes/5/timing", headers=_H).json()
+    assert got["idle_warning_message"] == "Closing in {{minutes}} min."
+    assert got["inactivity_enabled"] is False
+    # unset numbers still null
+    assert got["idle_warn_minutes"] is None
+
+
+def test_unset_message_and_enabled_are_null():
+    client, _ = _client()
+    got = client.get("/kb/inboxes/99/timing", headers=_H).json()
+    assert got["idle_warning_message"] is None
+    assert got["inactivity_enabled"] is None
+
+
+def test_message_max_length_422():
+    client, _ = _client()
+    r = client.put("/kb/inboxes/5/timing", json={"idle_warning_message": "x" * 2001}, headers=_H)
+    assert r.status_code == 422

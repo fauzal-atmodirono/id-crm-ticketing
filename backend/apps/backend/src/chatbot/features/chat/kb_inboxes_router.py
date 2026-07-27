@@ -24,7 +24,7 @@ import structlog
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from chatbot.features.chat.adapters.inbox_timing_store import TIMING_KEYS
+from chatbot.features.chat.adapters.inbox_timing_store import TIMING_KEYS, MESSAGE_KEY, ENABLED_KEY
 from chatbot.features.chat.inbox_resolver import effective_assignment
 
 if TYPE_CHECKING:
@@ -64,12 +64,17 @@ class InboxTimingBody(BaseModel):
     idle_close_grace_minutes: int | None = Field(default=None, ge=0, le=1440)
     idle_close_out_of_hours_grace_minutes: int | None = Field(default=None, ge=0, le=1440)
     confirm_grace_minutes: int | None = Field(default=None, ge=0, le=1440)
+    idle_warning_message: str | None = Field(default=None, max_length=2000)
+    inactivity_enabled: bool | None = None
 
 
-def _normalize_timing(stored: dict[str, int] | None) -> dict[str, int | None]:
-    """Return the four keys, each int (if stored) or None (if unset)."""
+def _normalize_timing(stored: dict[str, Any] | None) -> dict[str, Any]:
+    """Return the four int keys plus the message (str|None) and enabled (bool|None)."""
     stored = stored or {}
-    return {k: stored.get(k) for k in TIMING_KEYS}
+    out: dict[str, Any] = {k: stored.get(k) for k in TIMING_KEYS}
+    out[MESSAGE_KEY] = stored.get(MESSAGE_KEY)
+    out[ENABLED_KEY] = stored.get(ENABLED_KEY)
+    return out
 
 
 async def _resolve_assistant_name(assistants_store: AssistantsStorePort, assistant_id: str) -> str:
@@ -236,7 +241,7 @@ def build_kb_inboxes_router(
     async def get_inbox_timing(
         inbox_id: int,
         x_api_key: str | None = Header(default=None),
-    ) -> dict[str, int | None]:
+    ) -> dict[str, Any]:
         """Return the four lifecycle timing values for an inbox (null = unset)."""
         _authorize(x_api_key)
         return _normalize_timing(await timing_store.get(inbox_id))
@@ -246,7 +251,7 @@ def build_kb_inboxes_router(
         inbox_id: int,
         body: InboxTimingBody,
         x_api_key: str | None = Header(default=None),
-    ) -> dict[str, int | None]:
+    ) -> dict[str, Any]:
         """Full-replace the inbox timing. Non-null fields are stored; if none are
         set the doc is deleted (revert to env defaults)."""
         _authorize(x_api_key)

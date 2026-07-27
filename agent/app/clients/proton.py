@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 
 MAX_DEBOUNCE_SECONDS = 300.0
 
+_LIFECYCLE_TIMING_KEYS = (
+    "idle_warn_minutes",
+    "idle_close_grace_minutes",
+    "idle_close_out_of_hours_grace_minutes",
+    "confirm_grace_minutes",
+)
+
 
 class ProtonConfigClient:
     """Thin cached client for the proton-conversational-ai config API."""
@@ -224,6 +231,43 @@ class ProtonConfigClient:
         except Exception:
             logger.debug(
                 "proton_config: error fetching assistant persona for inbox %s",
+                inbox_id,
+                exc_info=True,
+            )
+            return None
+
+    async def get_assistant_lifecycle_timing(
+        self, inbox_id: int
+    ) -> dict[str, int | None] | None:
+        """Per-inbox lifecycle timing overrides, or None. Fail-open.
+
+        Reads the four timing keys from the row for *inbox_id* in the cached
+        GET /kb/inboxes response (shares the same fetch/TTL as the mode + message
+        resolvers, so no extra HTTP round-trip). Each value is an int when set,
+        else None (inherit the agent's env default). Returns None when no row
+        matches or on any error — never raises.
+        """
+        try:
+            data = await self._fetch_cached("/kb/inboxes")
+            if not isinstance(data, dict):
+                return None
+            inboxes = data.get("inboxes")
+            if not isinstance(inboxes, list):
+                return None
+            row = next(
+                (r for r in inboxes if isinstance(r, dict) and r.get("inbox_id") == inbox_id),
+                None,
+            )
+            if row is None:
+                return None
+            result: dict[str, int | None] = {}
+            for key in _LIFECYCLE_TIMING_KEYS:
+                v = row.get(key)
+                result[key] = v if isinstance(v, int) and not isinstance(v, bool) else None
+            return result
+        except Exception:
+            logger.debug(
+                "proton_config: error fetching lifecycle timing for inbox %s",
                 inbox_id,
                 exc_info=True,
             )

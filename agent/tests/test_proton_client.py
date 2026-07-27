@@ -462,3 +462,73 @@ async def test_copilot_answer_error_returns_none():
     answer = await client.copilot_answer("chatwoot-conv-42", [{"role": "user", "content": "hi"}], 7)
     assert answer is None
     await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# get_assistant_lifecycle_timing
+# ---------------------------------------------------------------------------
+
+_TIMING_INBOXES = {
+    "inboxes": [
+        {"inbox_id": 10, "assistant_id": "asst-abc",
+         "idle_warn_minutes": 12, "idle_close_grace_minutes": 3,
+         "idle_close_out_of_hours_grace_minutes": 0, "confirm_grace_minutes": 8},
+        {"inbox_id": 20, "assistant_id": "asst-xyz"},  # no timing keys
+        {"inbox_id": 30, "idle_warn_minutes": "bad"},  # non-int -> None
+    ]
+}
+
+
+@respx.mock
+async def test_lifecycle_timing_full_row():
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        return_value=httpx.Response(200, json=_TIMING_INBOXES)
+    )
+    client = _make_client()
+    assert await client.get_assistant_lifecycle_timing(10) == {
+        "idle_warn_minutes": 12,
+        "idle_close_grace_minutes": 3,
+        "idle_close_out_of_hours_grace_minutes": 0,
+        "confirm_grace_minutes": 8,
+    }
+
+
+@respx.mock
+async def test_lifecycle_timing_row_without_keys_is_all_none():
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        return_value=httpx.Response(200, json=_TIMING_INBOXES)
+    )
+    client = _make_client()
+    assert await client.get_assistant_lifecycle_timing(20) == {
+        "idle_warn_minutes": None,
+        "idle_close_grace_minutes": None,
+        "idle_close_out_of_hours_grace_minutes": None,
+        "confirm_grace_minutes": None,
+    }
+
+
+@respx.mock
+async def test_lifecycle_timing_coerces_non_int_to_none():
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        return_value=httpx.Response(200, json=_TIMING_INBOXES)
+    )
+    client = _make_client()
+    assert (await client.get_assistant_lifecycle_timing(30))["idle_warn_minutes"] is None
+
+
+@respx.mock
+async def test_lifecycle_timing_unknown_inbox_returns_none():
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        return_value=httpx.Response(200, json=_TIMING_INBOXES)
+    )
+    client = _make_client()
+    assert await client.get_assistant_lifecycle_timing(404) is None
+
+
+@respx.mock
+async def test_lifecycle_timing_http_error_returns_none():
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        return_value=httpx.Response(500, json={})
+    )
+    client = _make_client()
+    assert await client.get_assistant_lifecycle_timing(10) is None

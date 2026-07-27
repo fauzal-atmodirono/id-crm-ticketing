@@ -14,6 +14,7 @@ from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
 from chatbot.features.chat.adapters.gcp_voice import GeminiTextToSpeechAdapter
 from chatbot.features.chat.adapters.handoff_store import build_handoff_store
 from chatbot.features.chat.adapters.inbox_assignment_store import build_inbox_assignment_store
+from chatbot.features.chat.adapters.inbox_timing_store import build_inbox_timing_store
 from chatbot.features.chat.adapters.live_faq import VertexEmbedder, build_live_faq_store
 from chatbot.features.chat.adapters.mock import InMemoryKnowledgeAdapter, MockVoiceAdapter
 from chatbot.features.chat.adapters.noop_conversation_log import NoOpConversationLog
@@ -168,6 +169,7 @@ def _wire_agent_assist(
     tools_store: object,
     scenarios_store: object,
     assignment_store: object,
+    timing_store: object,
 ) -> None:
     """Wire the agent-assist FAQ routers: kb-suggest (Vertex Search + live FAQ
     semantic merge), faq-feedback, and the real-time FAQ admin CRUD.
@@ -206,6 +208,7 @@ def _wire_agent_assist(
             tenant_settings_store,  # type: ignore[arg-type]
             chatwoot_adapter_for_inboxes,
             settings,
+            timing_store,  # type: ignore[arg-type]
         )
     )
 
@@ -368,6 +371,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     _shared_tools_store = build_tools_store(settings)
     _shared_scenarios_store = build_scenarios_store(settings)
     _shared_assignment_store = build_inbox_assignment_store(settings)
+    _shared_timing_store = build_inbox_timing_store(settings)
 
     orchestrator = OrchestratorService(
         settings=settings,
@@ -415,6 +419,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         tools_store=_shared_tools_store,
         scenarios_store=_shared_scenarios_store,
         assignment_store=_shared_assignment_store,
+        timing_store=_shared_timing_store,
     )
 
     # Merge CRM-authored live-FAQ into the KB that /assist + Copilot ground on,

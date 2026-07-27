@@ -12,6 +12,7 @@ from chatbot.features.chat.adapters.assistants_store import (
     InMemoryAssistantsStore,
 )
 from chatbot.features.chat.adapters.inbox_assignment_store import InMemoryInboxAssignmentStore
+from chatbot.features.chat.adapters.inbox_timing_store import InMemoryInboxTimingStore
 from chatbot.features.chat.adapters.tenant_settings_store import InMemoryTenantSettingsStore
 from chatbot.features.chat.kb_inboxes_router import build_kb_inboxes_router
 from chatbot.platform.config import Settings
@@ -92,7 +93,8 @@ def _build_client(
     app = FastAPI()
     app.include_router(
         build_kb_inboxes_router(
-            assignment_store, assistants_store, tenant_store, chatwoot, settings
+            assignment_store, assistants_store, tenant_store, chatwoot, settings,
+            InMemoryInboxTimingStore()
         )
     )
     return TestClient(app, raise_server_exceptions=False)
@@ -302,7 +304,8 @@ def test_put_then_get_reflects_assignment() -> None:
     app = FastAPI()
     app.include_router(
         build_kb_inboxes_router(
-            assignment_store, assistants_store, tenant_store, chatwoot, settings_obj
+            assignment_store, assistants_store, tenant_store, chatwoot, settings_obj,
+            InMemoryInboxTimingStore()
         )
     )
     c = TestClient(app, raise_server_exceptions=False)

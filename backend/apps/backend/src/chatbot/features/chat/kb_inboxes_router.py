@@ -22,14 +22,16 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 from fastapi import APIRouter, Header, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from chatbot.features.chat.adapters.inbox_timing_store import TIMING_KEYS
 from chatbot.features.chat.inbox_resolver import effective_assignment
 
 if TYPE_CHECKING:
     from chatbot.features.chat.adapters.assistants_store import AssistantsStorePort
     from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
     from chatbot.features.chat.adapters.inbox_assignment_store import InboxAssignmentStorePort
+    from chatbot.features.chat.adapters.inbox_timing_store import InboxTimingStorePort
     from chatbot.features.chat.adapters.tenant_settings_store import TenantSettingsStorePort
     from chatbot.platform.config import Settings
 
@@ -51,6 +53,25 @@ class InboxAssignmentBody(BaseModel):
     mode: str | None = None
 
 
+class InboxTimingBody(BaseModel):
+    """Full-replace body for PUT /kb/inboxes/{id}/timing.
+
+    Each field is optional; a value that is None (or omitted) means "unset"
+    (inherit the agent env default). Non-null values must be 0..1440.
+    """
+
+    idle_warn_minutes: int | None = Field(default=None, ge=0, le=1440)
+    idle_close_grace_minutes: int | None = Field(default=None, ge=0, le=1440)
+    idle_close_out_of_hours_grace_minutes: int | None = Field(default=None, ge=0, le=1440)
+    confirm_grace_minutes: int | None = Field(default=None, ge=0, le=1440)
+
+
+def _normalize_timing(stored: dict[str, int] | None) -> dict[str, int | None]:
+    """Return the four keys, each int (if stored) or None (if unset)."""
+    stored = stored or {}
+    return {k: stored.get(k) for k in TIMING_KEYS}
+
+
 async def _resolve_assistant_name(assistants_store: AssistantsStorePort, assistant_id: str) -> str:
     """Return the assistant name for the given id, or '' on any failure."""
     try:
@@ -67,6 +88,7 @@ def build_kb_inboxes_router(
     tenant_settings_store: TenantSettingsStorePort,
     chatwoot_adapter: ChatwootAdapter | None,
     settings: Settings,
+    timing_store: InboxTimingStorePort,
 ) -> APIRouter:
     """Build the /kb/inboxes router.
 
@@ -114,6 +136,13 @@ def build_kb_inboxes_router(
             _log.error("kb_inboxes_assignment_store_failed", error=str(exc))
             stored = {}
 
+        # Fetch all timing (best-effort; {} on any failure).
+        try:
+            all_timing = await timing_store.get_all()
+        except Exception as exc:
+            _log.error("kb_inboxes_timing_store_failed", error=str(exc))
+            all_timing = {}
+
         # Build a set of inbox_ids already covered by Chatwoot list.
         chatwoot_ids: set[int] = {inbox["id"] for inbox in chatwoot_inboxes}
 
@@ -136,6 +165,7 @@ def build_kb_inboxes_router(
                     "assistant_name": name,
                     "mode": eff["mode"],
                     "source": eff["source"],
+                    **_normalize_timing(all_timing.get(inbox_id)),
                 }
             )
 
@@ -153,6 +183,7 @@ def build_kb_inboxes_router(
                     "assistant_name": name,
                     "mode": entry["mode"],
                     "source": "override",
+                    **_normalize_timing(all_timing.get(inbox_id)),
                 }
             )
 
@@ -200,5 +231,32 @@ def build_kb_inboxes_router(
             "assistant_id": body.assistant_id,
             "mode": body.mode,
         }
+
+    @router.get("/kb/inboxes/{inbox_id}/timing")
+    async def get_inbox_timing(
+        inbox_id: int,
+        x_api_key: str | None = Header(default=None),
+    ) -> dict[str, int | None]:
+        """Return the four lifecycle timing values for an inbox (null = unset)."""
+        _authorize(x_api_key)
+        return _normalize_timing(await timing_store.get(inbox_id))
+
+    @router.put("/kb/inboxes/{inbox_id}/timing")
+    async def put_inbox_timing(
+        inbox_id: int,
+        body: InboxTimingBody,
+        x_api_key: str | None = Header(default=None),
+    ) -> dict[str, int | None]:
+        """Full-replace the inbox timing. Non-null fields are stored; if none are
+        set the doc is deleted (revert to env defaults)."""
+        _authorize(x_api_key)
+        to_store = {
+            k: v for k, v in body.model_dump().items() if v is not None
+        }
+        if to_store:
+            await timing_store.set(inbox_id, to_store)
+        else:
+            await timing_store.delete(inbox_id)
+        return _normalize_timing(await timing_store.get(inbox_id))
 
     return router

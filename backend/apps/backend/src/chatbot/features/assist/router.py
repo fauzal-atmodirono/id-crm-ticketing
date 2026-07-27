@@ -133,11 +133,14 @@ def _retrieval_query(messages: list[str], max_turns: int = 6) -> str:
     the last message when no customer-labelled turn is present, so callers that
     pass unlabelled messages behave exactly as before.
     """
-    customer = [
-        m.split(":", 1)[1].strip()
-        for m in messages
-        if ":" in m and m.split(":", 1)[0].strip().lower() == "customer"
-    ]
+    customer: list[str] = []
+    for m in messages:
+        label, sep, body = m.partition(":")
+        if not sep or label.strip().lower() != "customer":
+            continue
+        body = body.strip()
+        if body:
+            customer.append(body)
     if not customer:
         return messages[-1]
     return "\n".join(customer[-max_turns:])

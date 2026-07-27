@@ -479,6 +479,27 @@ def test_retrieval_query_falls_back_to_last_message_when_no_customer_turn() -> N
     assert _retrieval_query(["Agent: hello", "Agent: still there?"]) == "Agent: still there?"
 
 
+def test_retrieval_query_cap_counts_customer_turns_only() -> None:
+    # Agent turns are excluded and do NOT count toward max_turns.
+    messages = [
+        "Customer: c1",
+        "Agent: a1",
+        "Customer: c2",
+        "Agent: a2",
+        "Customer: c3",
+        "Agent: a3",
+        "Customer: c4",
+    ]
+    assert _retrieval_query(messages, max_turns=2) == "c3\nc4"
+
+
+def test_retrieval_query_skips_empty_body_customer_turn() -> None:
+    # An empty "Customer:" turn must not add a stray blank line to the query.
+    assert _retrieval_query(["Customer:", "Customer: real"]) == "real"
+    # And when only empty-body customer turns exist, fall back to messages[-1].
+    assert _retrieval_query(["Customer:   "]) == "Customer:   "
+
+
 def test_suggest_grounds_kb_on_customer_intent_not_last_line() -> None:
     """KB search receives the customer's intent, not a lone trailing word."""
 

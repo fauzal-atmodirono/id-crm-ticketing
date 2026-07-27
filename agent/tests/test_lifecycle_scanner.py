@@ -152,3 +152,19 @@ async def test_scan_falls_back_to_env_default_when_no_timing(wired, monkeypatch)
     await lifecycle_store.seed_active(70, channel="Channel::Whatsapp")
     await lifecycle_scanner.scan_once()
     assert await lifecycle_store.get_state(70) == "idle_warned"
+
+
+async def test_warn_message_uses_per_inbox_grace(wired, monkeypatch):
+    # Per-inbox close grace = 7 -> the warning must say "7 minutes".
+    from app.services import lifecycle
+
+    async def _timing(inbox_id):
+        return {"idle_warn_minutes": None, "idle_close_grace_minutes": 7,
+                "idle_close_out_of_hours_grace_minutes": None, "confirm_grace_minutes": None}
+
+    monkeypatch.setattr(lifecycle, "_fetch_lifecycle_timing", _timing)
+    await lifecycle_store.seed_active(70, channel="Channel::Whatsapp")
+    await lifecycle_scanner.scan_once()
+    # The warning is the first create_message call in the warn action.
+    posted = [c.args[1] for c in wired.create_message.await_args_list]
+    assert any("7 minutes" in str(m) for m in posted), posted

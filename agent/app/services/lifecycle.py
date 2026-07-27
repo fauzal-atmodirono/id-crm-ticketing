@@ -50,7 +50,7 @@ DISCLAIMER_DEFAULT = (
     "specific concerns or complex issues, please contact our live agent for "
     "further assistance."
 )
-IDLE_WARNING_DEFAULT = "Your chat will close in 5 minutes if we do not hear from you."
+IDLE_WARNING_DEFAULT = "Your chat will close in {{minutes}} minutes if we do not hear from you."
 IDLE_CLOSE_DEFAULT = "Closed due to inactivity."
 RESOLUTION_PROMPT_DEFAULT = "Is your case resolved? Please reply YES or NO."
 SURVEY_AI_DEFAULT = "Thank you. Please rate our AI assistant from 1 to 5."
@@ -79,6 +79,12 @@ def _resolve_message(messages: dict | None, key: str, default: str) -> str:
         if isinstance(val, str) and val.strip():
             return val
     return default
+
+
+def render_idle_warning(text: str, minutes: int) -> str:
+    """Replace the {{minutes}} token with the effective close-grace value.
+    A message without the token is returned unchanged (backward compatible)."""
+    return text.replace("{{minutes}}", str(minutes))
 
 
 async def _fetch_assistant_messages(inbox_id: int | None) -> dict | None:

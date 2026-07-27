@@ -172,9 +172,11 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
     msgs = await lifecycle._fetch_assistant_messages(inbox_id)
 
     if action == "warn":
+        warning = lifecycle._resolve_message(
+            msgs, "idle_warning", lifecycle.IDLE_WARNING_DEFAULT
+        )
         await lifecycle._post(
-            conversation_id,
-            lifecycle._resolve_message(msgs, "idle_warning", lifecycle.IDLE_WARNING_DEFAULT),
+            conversation_id, lifecycle.render_idle_warning(warning, grace)
         )
         await lifecycle_store.transition(
             conversation_id, lifecycle.IDLE_WARNED, warned_at=now

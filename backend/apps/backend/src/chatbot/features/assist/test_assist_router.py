@@ -519,3 +519,22 @@ def test_suggest_grounds_kb_on_customer_intent_not_last_line() -> None:
     )
     assert r.status_code == 200
     assert kb.last_query == "nak test drive S70\nbangsar"
+
+
+# ---------------------------------------------------------------------------
+# _SUGGEST_SYSTEM prompt content (connect-the-dots + no-duplicate-handoff)
+# ---------------------------------------------------------------------------
+
+
+def test_suggest_system_prompt_instructs_full_context_and_no_repeat_handoff() -> None:
+    p = _SUGGEST_SYSTEM.lower()
+    # Reads the whole conversation / connects the dots.
+    assert "entire conversation" in p
+    # Explicitly avoids re-announcing an already-sent handoff.
+    assert "do not repeat" in p
+    assert "handoff" in p
+    # Existing guarantees are preserved.
+    assert "exact same language" in p
+    assert "return only the reply text" in p
+    # Template placeholder still present.
+    assert "{faq_context}" in _SUGGEST_SYSTEM

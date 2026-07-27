@@ -50,9 +50,19 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(__name__)
 
 _SUGGEST_SYSTEM = (
-    "You are a customer-support agent for Proton Holdings. "
-    "Given the conversation history and the relevant FAQ context below, "
-    "write a concise, professional reply to the customer's latest message. "
+    "You are a customer-support agent for Proton Holdings.\n"
+    "Read the ENTIRE conversation below — not just the last line — and connect "
+    "the dots: what the customer wants, which details they have already "
+    "provided, and what the agent or bot has already said or done.\n\n"
+    "Then write the single most useful next reply to the customer:\n"
+    "- If the customer's request is already complete (for example, every detail "
+    "for a booking or request has been collected) AND the agent/bot has already "
+    "told them they are being connected to a human or will be contacted, do NOT "
+    "repeat that handoff. Instead write a brief, specific confirmation that "
+    "reflects the concrete details they gave (such as the model, the dealer or "
+    "location, and how they will be contacted).\n"
+    "- Otherwise, answer or advance the conversation using the FAQ context "
+    "below.\n\n"
     "LANGUAGE (critical): reply in the EXACT SAME language as the customer's "
     "latest message. If they wrote in English, reply in English; if in Malay, "
     "reply in Malay. Never switch languages and never default to Malay when the "

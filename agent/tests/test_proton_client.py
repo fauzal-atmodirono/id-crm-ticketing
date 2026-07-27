@@ -490,6 +490,8 @@ async def test_lifecycle_timing_full_row():
         "idle_close_grace_minutes": 3,
         "idle_close_out_of_hours_grace_minutes": 0,
         "confirm_grace_minutes": 8,
+        "idle_warning_message": None,
+        "inactivity_enabled": None,
     }
 
 
@@ -504,6 +506,8 @@ async def test_lifecycle_timing_row_without_keys_is_all_none():
         "idle_close_grace_minutes": None,
         "idle_close_out_of_hours_grace_minutes": None,
         "confirm_grace_minutes": None,
+        "idle_warning_message": None,
+        "inactivity_enabled": None,
     }
 
 
@@ -532,3 +536,34 @@ async def test_lifecycle_timing_http_error_returns_none():
     )
     client = _make_client()
     assert await client.get_assistant_lifecycle_timing(10) is None
+
+
+_TIMING_MSG_INBOXES = {
+    "inboxes": [
+        {"inbox_id": 40, "idle_warn_minutes": 3,
+         "idle_warning_message": "Bye in {{minutes}}", "inactivity_enabled": False},
+        {"inbox_id": 41, "inactivity_enabled": True},
+    ]
+}
+
+
+@respx.mock
+async def test_lifecycle_timing_includes_message_and_enabled():
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        return_value=httpx.Response(200, json=_TIMING_MSG_INBOXES)
+    )
+    client = _make_client()
+    t = await client.get_assistant_lifecycle_timing(40)
+    assert t["idle_warning_message"] == "Bye in {{minutes}}"
+    assert t["inactivity_enabled"] is False
+
+
+@respx.mock
+async def test_lifecycle_timing_message_absent_is_none():
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(
+        return_value=httpx.Response(200, json=_TIMING_MSG_INBOXES)
+    )
+    client = _make_client()
+    t = await client.get_assistant_lifecycle_timing(41)
+    assert t["idle_warning_message"] is None
+    assert t["inactivity_enabled"] is True

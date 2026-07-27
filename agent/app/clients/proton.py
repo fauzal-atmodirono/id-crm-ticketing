@@ -238,7 +238,7 @@ class ProtonConfigClient:
 
     async def get_assistant_lifecycle_timing(
         self, inbox_id: int
-    ) -> dict[str, int | None] | None:
+    ) -> dict[str, Any] | None:
         """Per-inbox lifecycle timing overrides, or None. Fail-open.
 
         Reads the four timing keys from the row for *inbox_id* in the cached
@@ -260,10 +260,14 @@ class ProtonConfigClient:
             )
             if row is None:
                 return None
-            result: dict[str, int | None] = {}
+            result: dict[str, Any] = {}
             for key in _LIFECYCLE_TIMING_KEYS:
                 v = row.get(key)
                 result[key] = v if isinstance(v, int) and not isinstance(v, bool) else None
+            msg = row.get("idle_warning_message")
+            result["idle_warning_message"] = msg if isinstance(msg, str) else None
+            en = row.get("inactivity_enabled")
+            result["inactivity_enabled"] = en if isinstance(en, bool) else None
             return result
         except Exception:
             logger.debug(

@@ -168,3 +168,30 @@ async def test_warn_message_uses_per_inbox_grace(wired, monkeypatch):
     # The warning is the first create_message call in the warn action.
     posted = [c.args[1] for c in wired.create_message.await_args_list]
     assert any("7 minutes" in str(m) for m in posted), posted
+
+
+async def test_scan_skips_disabled_inbox(wired, monkeypatch):
+    from app.services import lifecycle
+
+    async def _timing(inbox_id):
+        return {"inactivity_enabled": False}
+
+    monkeypatch.setattr(lifecycle, "_fetch_lifecycle_timing", _timing)
+    await lifecycle_store.seed_active(70, channel="Channel::Whatsapp")
+    await lifecycle_scanner.scan_once()
+    assert await lifecycle_store.get_state(70) == "active"  # disabled -> no warn
+    wired.create_message.assert_not_awaited()
+
+
+async def test_scan_uses_per_inbox_warning_message(wired, monkeypatch):
+    from app.services import lifecycle
+
+    async def _timing(inbox_id):
+        return {"idle_close_grace_minutes": 4,
+                "idle_warning_message": "Auto-close in {{minutes}}m."}
+
+    monkeypatch.setattr(lifecycle, "_fetch_lifecycle_timing", _timing)
+    await lifecycle_store.seed_active(70, channel="Channel::Whatsapp")
+    await lifecycle_scanner.scan_once()
+    posted = [c.args[1] for c in wired.create_message.await_args_list]
+    assert any("Auto-close in 4m." in str(m) for m in posted), posted

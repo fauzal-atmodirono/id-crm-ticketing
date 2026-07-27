@@ -146,6 +146,8 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
     # env default; None/absent inherits the global default so behavior with no
     # stored timing is byte-identical to before.
     timing = await lifecycle._fetch_lifecycle_timing(inbox_id) or {}
+    if timing.get("inactivity_enabled") is False:
+        return  # inactivity & auto-close disabled for this inbox
 
     def _pick(key: str, default: int) -> int:
         v = timing.get(key)
@@ -172,9 +174,13 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
     msgs = await lifecycle._fetch_assistant_messages(inbox_id)
 
     if action == "warn":
-        warning = lifecycle._resolve_message(
-            msgs, "idle_warning", lifecycle.IDLE_WARNING_DEFAULT
-        )
+        per_inbox_msg = timing.get("idle_warning_message")
+        if isinstance(per_inbox_msg, str) and per_inbox_msg.strip():
+            warning = per_inbox_msg
+        else:
+            warning = lifecycle._resolve_message(
+                msgs, "idle_warning", lifecycle.IDLE_WARNING_DEFAULT
+            )
         await lifecycle._post(
             conversation_id, lifecycle.render_idle_warning(warning, grace)
         )

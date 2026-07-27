@@ -114,6 +114,25 @@ def _build_persona_prefix(product_name: str, guardrails: list[str], language: st
     return "\n".join(parts)
 
 
+def _retrieval_query(messages: list[str], max_turns: int = 6) -> str:
+    """Build the KB query from the customer's turns, not just the last line.
+
+    ``messages`` are ``"Customer: ..."`` / ``"Agent: ..."`` strings (see the
+    Chatwoot composer). Grounding on the whole customer intent keeps retrieval
+    from being derailed by a one-word last turn like "bangsar". Falls back to
+    the last message when no customer-labelled turn is present, so callers that
+    pass unlabelled messages behave exactly as before.
+    """
+    customer = [
+        m.split(":", 1)[1].strip()
+        for m in messages
+        if ":" in m and m.split(":", 1)[0].strip().lower() == "customer"
+    ]
+    if not customer:
+        return messages[-1]
+    return "\n".join(customer[-max_turns:])
+
+
 def build_assist_router(
     settings: Settings,
     knowledge_port: KnowledgePort,
@@ -139,15 +158,13 @@ def build_assist_router(
         key = settings.proton_backend_key
         if not key:
             raise HTTPException(status_code=503, detail="Assist endpoints not configured")
-        if (
-            x_api_key is None
-            or not hmac.compare_digest(x_api_key.encode(), key.encode())
-        ):
+        if x_api_key is None or not hmac.compare_digest(x_api_key.encode(), key.encode()):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
     async def _resolve_model() -> str:
         if tenant_settings_store is not None:
             from chatbot.features.chat.settings_facade import get_effective_value  # noqa: PLC0415
+
             return await get_effective_value(tenant_settings_store, settings, "assist_gemini_model")
         return settings.assist_gemini_model
 
@@ -155,6 +172,7 @@ def build_assist_router(
         if assistants_store is None:
             return ""
         from chatbot.features.assist.assistant_runtime import resolve_assistant  # noqa: PLC0415
+
         assistant = await resolve_assistant(assistants_store, assistant_id)
         language = getattr(assistant.config, "language", "") or ""
         return _build_persona_prefix(assistant.product_name, assistant.config.guardrails, language)
@@ -169,7 +187,7 @@ def build_assist_router(
         return (response.text or "").strip()
 
     def _format_messages(messages: list[str]) -> str:
-        return "\n".join(f"[{i+1}] {m}" for i, m in enumerate(messages))
+        return "\n".join(f"[{i + 1}] {m}" for i, m in enumerate(messages))
 
     async def _kb_context(query: str, limit: int) -> tuple[str, list[dict[str, Any]]]:
         articles = await knowledge_port.search_kb(query, limit)
@@ -181,9 +199,7 @@ def build_assist_router(
             }
             for a in articles
         ]
-        faq_context = "\n---\n".join(
-            f"Q: {a.title}\nA: {a.content[:_SNIPPET]}" for a in articles
-        )
+        faq_context = "\n---\n".join(f"Q: {a.title}\nA: {a.content[:_SNIPPET]}" for a in articles)
         return faq_context, sources
 
     async def _apply_persona(task_system: str, assistant_id: str | None) -> str:
@@ -203,7 +219,7 @@ def build_assist_router(
     ) -> dict[str, Any]:
         _authorize(x_api_key)
         _log.info("assist_suggest", conv_id=req.conversation_id)
-        query = req.messages[-1]  # ground on the customer's latest message
+        query = _retrieval_query(req.messages)
         faq_context, sources = await _kb_context(query, req.limit)
         task_system = _SUGGEST_SYSTEM.format(faq_context=faq_context or "(none)")
         system = await _apply_persona(task_system, req.assistant_id)
@@ -234,8 +250,7 @@ def build_assist_router(
         task_system = _ASK_SYSTEM.format(faq_context=faq_context or "(none)")
         system = await _apply_persona(task_system, req.assistant_id)
         user_prompt = (
-            f"Conversation:\n{_format_messages(req.messages)}\n\n"
-            f"Agent question: {req.question}"
+            f"Conversation:\n{_format_messages(req.messages)}\n\nAgent question: {req.question}"
         )
         answer = await _generate(system, user_prompt)
         return {"answer": answer}

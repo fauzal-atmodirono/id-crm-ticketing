@@ -2,6 +2,7 @@
 
 Uses a stub Gemini client and a stub KnowledgePort so no real GCP calls are made.
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -13,16 +14,17 @@ from chatbot.features.assist.router import (
     _ASK_SYSTEM,
     _SUGGEST_SYSTEM,
     _SUMMARIZE_SYSTEM,
+    _retrieval_query,
     build_assist_router,
 )
 from chatbot.features.chat.adapters.assistants_store import Assistant, AssistantConfig
 from chatbot.features.chat.models import KbArticle
 from chatbot.platform.config import Settings
 
-
 # ---------------------------------------------------------------------------
 # Stubs
 # ---------------------------------------------------------------------------
+
 
 class _FakeKnowledge:
     async def search_kb(self, query: str, limit: int = 3) -> list:
@@ -54,6 +56,7 @@ def _client(key: str = "testkey") -> tuple[TestClient, MagicMock]:
 # ---------------------------------------------------------------------------
 # Auth guard (all three endpoints)
 # ---------------------------------------------------------------------------
+
 
 def test_suggest_requires_api_key() -> None:
     client, _ = _client()
@@ -89,6 +92,7 @@ def test_ask_requires_api_key() -> None:
 # ---------------------------------------------------------------------------
 # Happy paths
 # ---------------------------------------------------------------------------
+
 
 def test_suggest_returns_draft_and_sources() -> None:
     client, mock_genai = _client()
@@ -136,6 +140,7 @@ def test_ask_returns_answer() -> None:
 # ---------------------------------------------------------------------------
 # 503 when proton_backend_key is empty (misconfigured deployment)
 # ---------------------------------------------------------------------------
+
 
 def test_suggest_503_when_key_unconfigured() -> None:
     mock_genai = MagicMock()
@@ -353,6 +358,7 @@ def test_ask_includes_assistant_persona_in_system_prompt() -> None:
 
 def test_suggest_default_path_is_behaviour_preserving() -> None:
     """No stores, no assistant_id: model == settings value AND system == original task prompt."""
+
     class _SingleArticle:
         async def search_kb(self, query: str, limit: int = 3) -> list:
             return [KbArticle(title="FAQ Title", content="FAQ content body", url="http://faq/1")]
@@ -442,3 +448,74 @@ def test_ask_default_path_is_behaviour_preserving() -> None:
     expected_faq = "Q: FAQ Title\nA: FAQ content body"
     expected_system = _ASK_SYSTEM.format(faq_context=expected_faq)
     assert call_kwargs["config"]["system_instruction"] == expected_system
+
+
+# ---------------------------------------------------------------------------
+# _retrieval_query (pure helper) + grounding wiring
+# ---------------------------------------------------------------------------
+
+
+def test_retrieval_query_uses_customer_turns_only() -> None:
+    messages = [
+        "Customer: nak tanya spec S70",
+        "Agent: Berikut spesifikasi Proton S70 ...",
+        "Customer: saya nak test drive",
+        "Customer: bangsar",
+    ]
+    q = _retrieval_query(messages)
+    assert q == "nak tanya spec S70\nsaya nak test drive\nbangsar"
+    assert "Berikut spesifikasi" not in q  # agent turn excluded
+
+
+def test_retrieval_query_caps_to_max_turns() -> None:
+    messages = [f"Customer: msg{i}" for i in range(10)]
+    q = _retrieval_query(messages, max_turns=3)
+    assert q == "msg7\nmsg8\nmsg9"
+
+
+def test_retrieval_query_falls_back_to_last_message_when_no_customer_turn() -> None:
+    # No "Customer:" label (e.g. the existing default-path shape ["Hi"]).
+    assert _retrieval_query(["Hi"]) == "Hi"
+    assert _retrieval_query(["Agent: hello", "Agent: still there?"]) == "Agent: still there?"
+
+
+def test_suggest_grounds_kb_on_customer_intent_not_last_line() -> None:
+    """KB search receives the customer's intent, not a lone trailing word."""
+
+    class _RecordingKnowledge:
+        def __init__(self) -> None:
+            self.last_query: str | None = None
+
+        async def search_kb(self, query: str, limit: int = 3) -> list:
+            self.last_query = query
+            return [KbArticle(title="FAQ Title", content="FAQ content body", url="http://faq/1")]
+
+    kb = _RecordingKnowledge()
+    mock_genai = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = "reply"
+    mock_genai.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+    app = FastAPI()
+    app.include_router(
+        build_assist_router(
+            settings=_settings(),
+            knowledge_port=kb,
+            genai_client=mock_genai,
+        )
+    )
+    client = TestClient(app)
+    r = client.post(
+        "/assist/suggest",
+        json={
+            "conversation_id": "1",
+            "messages": [
+                "Customer: nak test drive S70",
+                "Agent: boleh, di dealer mana?",
+                "Customer: bangsar",
+            ],
+        },
+        headers={"x-api-key": "testkey"},
+    )
+    assert r.status_code == 200
+    assert kb.last_query == "nak test drive S70\nbangsar"

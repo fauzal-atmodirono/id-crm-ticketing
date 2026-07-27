@@ -195,3 +195,27 @@ async def test_scan_uses_per_inbox_warning_message(wired, monkeypatch):
     await lifecycle_scanner.scan_once()
     posted = [c.args[1] for c in wired.create_message.await_args_list]
     assert any("Auto-close in 4m." in str(m) for m in posted), posted
+
+
+async def test_close_uses_per_inbox_messages(wired, monkeypatch):
+    from datetime import datetime, timezone
+    from app.services import lifecycle, lifecycle_store
+
+    async def _timing(inbox_id):
+        # grace=2 -> close_after=10+2=12 <= idle=12, so "close" fires.
+        return {
+            "idle_close_grace_minutes": 2,
+            "idle_close_message": "BYE",
+            "resolution_prompt_message": "OK? Y/N",
+        }
+
+    monkeypatch.setattr(lifecycle, "_fetch_lifecycle_timing", _timing)
+    # Seed IDLE_WARNED so decide_idle_action evaluates the close branch.
+    await lifecycle_store.seed_active(70, channel="Channel::Whatsapp")
+    await lifecycle_store.transition(
+        70, lifecycle.IDLE_WARNED, warned_at=datetime(2026, 7, 20, 11, 40, tzinfo=timezone.utc)
+    )
+    await lifecycle_scanner.scan_once()
+    posted = [c.args[1] for c in wired.create_message.await_args_list]
+    assert any("BYE" in str(m) for m in posted), posted
+    assert any("OK? Y/N" in str(m) for m in posted), posted

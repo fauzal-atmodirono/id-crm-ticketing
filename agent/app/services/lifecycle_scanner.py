@@ -174,13 +174,9 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
     msgs = await lifecycle._fetch_assistant_messages(inbox_id)
 
     if action == "warn":
-        per_inbox_msg = timing.get("idle_warning_message")
-        if isinstance(per_inbox_msg, str) and per_inbox_msg.strip():
-            warning = per_inbox_msg
-        else:
-            warning = lifecycle._resolve_message(
-                msgs, "idle_warning", lifecycle.IDLE_WARNING_DEFAULT
-            )
+        warning = lifecycle._resolve_lifecycle_message(
+            timing, msgs, "idle_warning", lifecycle.IDLE_WARNING_DEFAULT
+        )
         await lifecycle._post(
             conversation_id, lifecycle.render_idle_warning(warning, grace)
         )
@@ -191,11 +187,11 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
     elif action == "close":
         await lifecycle._post(
             conversation_id,
-            lifecycle._resolve_message(msgs, "idle_close", lifecycle.IDLE_CLOSE_DEFAULT),
+            lifecycle._resolve_lifecycle_message(timing, msgs, "idle_close", lifecycle.IDLE_CLOSE_DEFAULT),
         )
         await lifecycle._post(
             conversation_id,
-            lifecycle._resolve_message(msgs, "resolution_prompt", lifecycle.RESOLUTION_PROMPT_DEFAULT),
+            lifecycle._resolve_lifecycle_message(timing, msgs, "resolution_prompt", lifecycle.RESOLUTION_PROMPT_DEFAULT),
         )
         await lifecycle_store.transition(conversation_id, lifecycle.AWAITING_RESOLUTION)
         await lifecycle._mirror_state(conversation_id, lifecycle.AWAITING_RESOLUTION)

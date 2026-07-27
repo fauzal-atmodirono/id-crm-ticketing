@@ -81,6 +81,17 @@ def _resolve_message(messages: dict | None, key: str, default: str) -> str:
     return default
 
 
+def _resolve_lifecycle_message(
+    timing: dict | None, msgs: dict | None, key: str, default: str
+) -> str:
+    """Per-inbox override -> persona message -> SOP default. The per-inbox store
+    key is f"{key}_message"; `key` is the persona key (e.g. "idle_close")."""
+    per = (timing or {}).get(f"{key}_message")
+    if isinstance(per, str) and per.strip():
+        return per
+    return _resolve_message(msgs, key, default)
+
+
 def render_idle_warning(text: str, minutes: int) -> str:
     """Replace the {{minutes}} token with the effective close-grace value.
     A message without the token is returned unchanged (backward compatible)."""
@@ -316,6 +327,7 @@ async def handle_lifecycle_reply(
     on open/resolved conversations."""
     settings = get_settings()
     msgs = await _fetch_assistant_messages(inbox_id)
+    timing = await _fetch_lifecycle_timing(inbox_id)
 
     if state == AWAITING_RESOLUTION:
         answer = parse_yes_no(text)
@@ -323,7 +335,7 @@ async def handle_lifecycle_reply(
             # Not resolved (or unclear → err toward a human): reopen for an agent.
             await _post(
                 conversation_id,
-                _resolve_message(msgs, "assign_agent", ASSIGN_AGENT_DEFAULT),
+                _resolve_lifecycle_message(timing, msgs, "assign_agent", ASSIGN_AGENT_DEFAULT),
             )
             await _reopen(conversation_id)
             await lifecycle_store.transition(conversation_id, CLOSED)
@@ -333,7 +345,7 @@ async def handle_lifecycle_reply(
         if settings.lifecycle_survey_enabled:
             await _post(
                 conversation_id,
-                _resolve_message(msgs, "survey_ai", SURVEY_AI_DEFAULT),
+                _resolve_lifecycle_message(timing, msgs, "survey_ai", SURVEY_AI_DEFAULT),
             )
             await lifecycle_store.transition(
                 conversation_id, AWAITING_SURVEY, survey_variant="ai"
@@ -353,7 +365,7 @@ async def handle_lifecycle_reply(
         await _record_survey(conversation_id, variant or "ai", score, text)
         await _post(
             conversation_id,
-            _resolve_message(msgs, "thanks", THANKS_DEFAULT),
+            _resolve_lifecycle_message(timing, msgs, "thanks", THANKS_DEFAULT),
         )
         # CLOSED is set BEFORE resolving so the resulting status webhook sees a
         # terminal lifecycle and on_human_resolved skips (no double survey).
@@ -390,9 +402,10 @@ async def on_human_resolved(payload: dict) -> None:
 
     inbox_id: int | None = payload.get("inbox_id")
     msgs = await _fetch_assistant_messages(inbox_id)
+    timing = await _fetch_lifecycle_timing(inbox_id)
     await _post(
         conversation_id,
-        _resolve_message(msgs, "survey_agent", SURVEY_AGENT_DEFAULT),
+        _resolve_lifecycle_message(timing, msgs, "survey_agent", SURVEY_AGENT_DEFAULT),
     )
     try:
         await lifecycle_store.transition(

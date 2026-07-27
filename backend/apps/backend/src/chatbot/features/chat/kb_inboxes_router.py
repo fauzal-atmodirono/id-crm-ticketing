@@ -24,7 +24,7 @@ import structlog
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from chatbot.features.chat.adapters.inbox_timing_store import TIMING_KEYS, MESSAGE_KEY, ENABLED_KEY
+from chatbot.features.chat.adapters.inbox_timing_store import TIMING_KEYS, MESSAGE_KEYS, ENABLED_KEY
 from chatbot.features.chat.inbox_resolver import effective_assignment
 
 if TYPE_CHECKING:
@@ -65,14 +65,21 @@ class InboxTimingBody(BaseModel):
     idle_close_out_of_hours_grace_minutes: int | None = Field(default=None, ge=0, le=1440)
     confirm_grace_minutes: int | None = Field(default=None, ge=0, le=1440)
     idle_warning_message: str | None = Field(default=None, max_length=2000)
+    idle_close_message: str | None = Field(default=None, max_length=2000)
+    resolution_prompt_message: str | None = Field(default=None, max_length=2000)
+    assign_agent_message: str | None = Field(default=None, max_length=2000)
+    survey_ai_message: str | None = Field(default=None, max_length=2000)
+    survey_agent_message: str | None = Field(default=None, max_length=2000)
+    thanks_message: str | None = Field(default=None, max_length=2000)
     inactivity_enabled: bool | None = None
 
 
 def _normalize_timing(stored: dict[str, Any] | None) -> dict[str, Any]:
-    """Return the four int keys plus the message (str|None) and enabled (bool|None)."""
+    """Return the four int keys plus the seven messages (str|None) and enabled (bool|None)."""
     stored = stored or {}
     out: dict[str, Any] = {k: stored.get(k) for k in TIMING_KEYS}
-    out[MESSAGE_KEY] = stored.get(MESSAGE_KEY)
+    for mk in MESSAGE_KEYS:
+        out[mk] = stored.get(mk)
     out[ENABLED_KEY] = stored.get(ENABLED_KEY)
     return out
 

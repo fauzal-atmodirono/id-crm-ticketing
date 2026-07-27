@@ -25,6 +25,12 @@ _ALL_NULL = {
     "idle_close_out_of_hours_grace_minutes": None,
     "confirm_grace_minutes": None,
     "idle_warning_message": None,
+    "idle_close_message": None,
+    "resolution_prompt_message": None,
+    "assign_agent_message": None,
+    "survey_ai_message": None,
+    "survey_agent_message": None,
+    "thanks_message": None,
     "inactivity_enabled": None,
 }
 
@@ -69,8 +75,8 @@ def test_put_then_get_roundtrip():
             "idle_close_out_of_hours_grace_minutes": 0, "confirm_grace_minutes": 8}
     r = client.put("/kb/inboxes/5/timing", json=body, headers=_H)
     assert r.status_code == 200
-    assert r.json() == {**body, "idle_warning_message": None, "inactivity_enabled": None}
-    assert client.get("/kb/inboxes/5/timing", headers=_H).json() == {**body, "idle_warning_message": None, "inactivity_enabled": None}
+    assert r.json() == {**body, "idle_warning_message": None, "idle_close_message": None, "resolution_prompt_message": None, "assign_agent_message": None, "survey_ai_message": None, "survey_agent_message": None, "thanks_message": None, "inactivity_enabled": None}
+    assert client.get("/kb/inboxes/5/timing", headers=_H).json() == {**body, "idle_warning_message": None, "idle_close_message": None, "resolution_prompt_message": None, "assign_agent_message": None, "survey_ai_message": None, "survey_agent_message": None, "thanks_message": None, "inactivity_enabled": None}
 
 
 def test_put_null_field_is_unset():
@@ -144,4 +150,23 @@ def test_unset_message_and_enabled_are_null():
 def test_message_max_length_422():
     client, _ = _client()
     r = client.put("/kb/inboxes/5/timing", json={"idle_warning_message": "x" * 2001}, headers=_H)
+    assert r.status_code == 422
+
+
+def test_all_message_fields_roundtrip():
+    client, _ = _client()
+    body = {
+        "idle_close_message": "Closed.", "resolution_prompt_message": "Resolved? Y/N",
+        "assign_agent_message": "Assigning…", "survey_ai_message": "Rate AI",
+        "survey_agent_message": "Rate agent", "thanks_message": "Ta",
+    }
+    assert client.put("/kb/inboxes/5/timing", json=body, headers=_H).status_code == 200
+    got = client.get("/kb/inboxes/5/timing", headers=_H).json()
+    for k, v in body.items():
+        assert got[k] == v
+
+
+def test_message_field_max_length_422():
+    client, _ = _client()
+    r = client.put("/kb/inboxes/5/timing", json={"thanks_message": "x" * 2001}, headers=_H)
     assert r.status_code == 422

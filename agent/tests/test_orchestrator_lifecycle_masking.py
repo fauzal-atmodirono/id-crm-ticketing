@@ -53,3 +53,24 @@ def test_lifecycle_message_between_customer_turns_is_transparent():
 def test_plain_trailing_incoming_unchanged():
     messages = [_out("earlier reply"), _in("new question")]
     assert orchestrator._latest_incoming_text(messages) == "new question"
+
+
+def test_native_greeting_is_skipped_by_content_match():
+    # halo -> native greeting (outgoing, no marker). Passing the greeting text
+    # lets the orchestrator skip it so "halo" still reaches the backend.
+    greeting = "DISCLAIMER: native greeting text"
+    messages = [_in("halo"), _out(greeting)]
+    assert orchestrator._latest_incoming_text(messages, greeting) == "halo"
+
+
+def test_non_greeting_outgoing_still_bounds_turn():
+    # A real bot reply (not the greeting) still bounds the turn even when a
+    # greeting_text is supplied.
+    messages = [_in("halo"), _out("Hi! How can I help?"), _in("spec?")]
+    assert orchestrator._latest_incoming_text(messages, "some greeting") == "spec?"
+
+
+def test_empty_greeting_text_preserves_behavior():
+    # No greeting supplied -> unchanged: the outgoing message bounds the turn.
+    messages = [_in("halo"), _out("Hi! How can I help?")]
+    assert orchestrator._latest_incoming_text(messages, "") == ""

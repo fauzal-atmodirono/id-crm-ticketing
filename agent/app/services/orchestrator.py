@@ -441,26 +441,28 @@ async def _process_conversation(conversation_id: int) -> None:
         )
 
 
-def _latest_incoming_text(message_list: list[dict]) -> str:
+def _latest_incoming_text(message_list: list[dict], greeting_text: str = "") -> str:
     """The trailing run of incoming customer messages (since the last non-private
     outgoing message), joined into one turn for the backend agent. The backend
     owns the rest of the multi-turn history keyed by the crm- session id, so we
-    only send what the customer has said since the bot last spoke."""
+    only send what the customer has said since the bot last spoke.
+
+    Two kinds of outgoing message are NOT the bot's reply and must not bound the
+    turn: our own lifecycle notices (marked content_attributes.proton_lifecycle)
+    and Chatwoot's native channel greeting (content == the inbox greeting_text)."""
+    greeting = (greeting_text or "").strip()
     texts: list[str] = []
     for message in reversed(message_list):
         if message.get("private"):
             continue
-        # Lifecycle system messages (disclaimer, idle warn/close, resolution
-        # prompt, surveys) are outgoing+public but are NOT the bot's reply to the
-        # customer. They must not bound the turn, or the disclaimer posted right
-        # after the customer's first message would mask it and /chat/turn would
-        # never run. lifecycle stamps them with this marker.
         ca = message.get("content_attributes")
         if isinstance(ca, dict) and ca.get("proton_lifecycle"):
             continue
+        content = (message.get("content") or "").strip()
         mtype = message.get("message_type")
+        if mtype == 1 and greeting and content == greeting:
+            continue  # native channel greeting — not a real bot reply
         if mtype == 0:  # incoming (customer)
-            content = (message.get("content") or "").strip()
             if content:
                 texts.append(content)
         elif mtype == 1:  # outgoing (bot/agent) → older than the last reply
@@ -532,7 +534,15 @@ async def _process_via_chat_agent(
     result onto Chatwoot. Chatwoot owns the handoff; the backend only signals it.
     Fail-open: a missing/failed backend degrades to a Chatwoot handoff so the
     conversation is never left silent."""
-    text = _latest_incoming_text(message_list)
+    greeting_text = ""
+    if inbox_id is not None:
+        try:
+            inbox = await chatwoot.get_inbox(inbox_id)
+            if isinstance(inbox, dict) and inbox.get("greeting_enabled"):
+                greeting_text = inbox.get("greeting_message") or ""
+        except Exception:
+            greeting_text = ""  # fail-open: no greeting skip, behave as before
+    text = _latest_incoming_text(message_list, greeting_text)
     if not text:
         return
 

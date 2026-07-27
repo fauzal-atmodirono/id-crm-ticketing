@@ -25,7 +25,7 @@ index 2d559c6..e22bf85 100644
  
  // GET /kb/settings -> { <key>: { value, source: "override"|"env" } }
 diff --git a/app/javascript/dashboard/routes/dashboard/settings/inbox/components/WeeklyAvailability.vue b/app/javascript/dashboard/routes/dashboard/settings/inbox/components/WeeklyAvailability.vue
-index 62c4200..339003e 100644
+index 62c4200..fab691b 100644
 --- a/app/javascript/dashboard/routes/dashboard/settings/inbox/components/WeeklyAvailability.vue
 +++ b/app/javascript/dashboard/routes/dashboard/settings/inbox/components/WeeklyAvailability.vue
 @@ -14,12 +14,35 @@ import {
@@ -64,13 +64,19 @@ index 62c4200..339003e 100644
  export default {
    components: {
      SettingsToggleSection,
-@@ -51,6 +74,15 @@ export default {
+@@ -51,6 +74,21 @@ export default {
          6: 'Saturday',
        },
        timeSlots: [...defaultTimeSlot],
 +      inactivityFields: INACTIVITY_FIELDS,
 +      inactivityEnabled: true,
 +      idleWarningMessage: '',
++      idleCloseMessage: '',
++      resolutionPromptMessage: '',
++      assignAgentMessage: '',
++      surveyAiMessage: '',
++      surveyAgentMessage: '',
++      thanksMessage: '',
 +      timing: {
 +        idle_warn_minutes: null,
 +        idle_close_grace_minutes: null,
@@ -80,7 +86,7 @@ index 62c4200..339003e 100644
      };
    },
    computed: {
-@@ -106,6 +138,32 @@ export default {
+@@ -106,6 +144,38 @@ export default {
        this.timeZone =
          this.timeZones.find(item => timeZone === item.value) ||
          DEFAULT_TIMEZONE;
@@ -100,6 +106,12 @@ index 62c4200..339003e 100644
 +          };
 +          this.inactivityEnabled = t.inactivity_enabled ?? true;
 +          this.idleWarningMessage = t.idle_warning_message ?? '';
++          this.idleCloseMessage = t.idle_close_message ?? '';
++          this.resolutionPromptMessage = t.resolution_prompt_message ?? '';
++          this.assignAgentMessage = t.assign_agent_message ?? '';
++          this.surveyAiMessage = t.survey_ai_message ?? '';
++          this.surveyAgentMessage = t.survey_agent_message ?? '';
++          this.thanksMessage = t.thanks_message ?? '';
 +        }
 +      } catch (error) {
 +        // fail-open: keep inherit (null) defaults if the fetch fails
@@ -113,7 +125,7 @@ index 62c4200..339003e 100644
      },
      onSlotUpdate(slotIndex, slotData) {
        this.timeSlots = this.timeSlots.map(item =>
-@@ -124,6 +182,22 @@ export default {
+@@ -124,6 +194,28 @@ export default {
            channel: {},
          };
          await this.$store.dispatch('inboxes/updateInbox', payload);
@@ -131,12 +143,18 @@ index 62c4200..339003e 100644
 +            this.timing.confirm_grace_minutes
 +          ),
 +          idle_warning_message: this.idleWarningMessage.trim() || null,
++          idle_close_message: this.idleCloseMessage.trim() || null,
++          resolution_prompt_message: this.resolutionPromptMessage.trim() || null,
++          assign_agent_message: this.assignAgentMessage.trim() || null,
++          survey_ai_message: this.surveyAiMessage.trim() || null,
++          survey_agent_message: this.surveyAgentMessage.trim() || null,
++          thanks_message: this.thanksMessage.trim() || null,
 +          inactivity_enabled: this.inactivityEnabled,
 +        });
          useAlert(this.$t('INBOX_MGMT.EDIT.API.SUCCESS_MESSAGE'));
        } catch (error) {
          useAlert(error.message || this.$t('INBOX_MGMT.EDIT.API.ERROR_MESSAGE'));
-@@ -214,6 +288,50 @@ export default {
+@@ -214,6 +306,86 @@ export default {
            </table>
          </div>
        </div>
@@ -166,6 +184,42 @@ index 62c4200..339003e 100644
 +          <p class="mt-1 text-xs text-n-slate-11">
 +            Use <code v-pre>{{minutes}}</code> for the close-grace value. Leave empty to use the default.
 +          </p>
++        </div>
++        <div class="mt-4">
++          <label class="block mb-1 text-sm font-medium text-n-slate-12">Chat closed message</label>
++          <textarea v-model="idleCloseMessage" rows="2"
++            placeholder="Closed due to inactivity."
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12 focus:outline-none" />
++        </div>
++        <div class="mt-4">
++          <label class="block mb-1 text-sm font-medium text-n-slate-12">Resolution prompt</label>
++          <textarea v-model="resolutionPromptMessage" rows="2"
++            placeholder="Is your case resolved? Please reply YES or NO."
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12 focus:outline-none" />
++        </div>
++        <div class="mt-4">
++          <label class="block mb-1 text-sm font-medium text-n-slate-12">Assign-to-agent message</label>
++          <textarea v-model="assignAgentMessage" rows="2"
++            placeholder="Thank you. We will assign an agent to assist you further."
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12 focus:outline-none" />
++        </div>
++        <div class="mt-4">
++          <label class="block mb-1 text-sm font-medium text-n-slate-12">AI rating survey</label>
++          <textarea v-model="surveyAiMessage" rows="2"
++            placeholder="Thank you. Please rate our AI assistant from 1 to 5."
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12 focus:outline-none" />
++        </div>
++        <div class="mt-4">
++          <label class="block mb-1 text-sm font-medium text-n-slate-12">Agent rating survey</label>
++          <textarea v-model="surveyAgentMessage" rows="2"
++            placeholder="Thank you. Please rate our support agent from 1 to 5."
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12 focus:outline-none" />
++        </div>
++        <div class="mt-4">
++          <label class="block mb-1 text-sm font-medium text-n-slate-12">Thank-you message</label>
++          <textarea v-model="thanksMessage" rows="2"
++            placeholder="Thank you for your feedback!"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12 focus:outline-none" />
 +        </div>
 +        <!-- existing v-for number inputs stay below, unchanged -->
 +        <div v-for="f in inactivityFields" :key="f.key" class="mb-4">

@@ -25,7 +25,7 @@ index 2d559c6..e22bf85 100644
  
  // GET /kb/settings -> { <key>: { value, source: "override"|"env" } }
 diff --git a/app/javascript/dashboard/routes/dashboard/settings/inbox/components/WeeklyAvailability.vue b/app/javascript/dashboard/routes/dashboard/settings/inbox/components/WeeklyAvailability.vue
-index 62c4200..c720bc4 100644
+index 62c4200..339003e 100644
 --- a/app/javascript/dashboard/routes/dashboard/settings/inbox/components/WeeklyAvailability.vue
 +++ b/app/javascript/dashboard/routes/dashboard/settings/inbox/components/WeeklyAvailability.vue
 @@ -14,12 +14,35 @@ import {
@@ -164,7 +164,7 @@ index 62c4200..c720bc4 100644
 +            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12 focus:outline-none"
 +          />
 +          <p class="mt-1 text-xs text-n-slate-11">
-+            Use <code>{{ '{{minutes}}' }}</code> for the close-grace value. Leave empty to use the default.
++            Use <code v-pre>{{minutes}}</code> for the close-grace value. Leave empty to use the default.
 +          </p>
 +        </div>
 +        <!-- existing v-for number inputs stay below, unchanged -->

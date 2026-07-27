@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from chatbot.features.chat.adapters.inbox_timing_store import (
     TIMING_KEYS,
+    MESSAGE_KEY,
+    ENABLED_KEY,
     InboxTimingStorePort,
     InMemoryInboxTimingStore,
 )
@@ -63,3 +65,30 @@ async def test_delete_removes_entry():
     await store.delete(1)
     assert await store.get(1) is None
     await store.delete(1)  # idempotent, no raise
+
+
+async def test_roundtrip_message_and_enabled():
+    store = InMemoryInboxTimingStore()
+    await store.set(7, {
+        "idle_warn_minutes": 3,
+        MESSAGE_KEY: "Closing in {{minutes}} min.",
+        ENABLED_KEY: False,
+    })
+    assert await store.get(7) == {
+        "idle_warn_minutes": 3,
+        MESSAGE_KEY: "Closing in {{minutes}} min.",
+        ENABLED_KEY: False,
+    }
+
+
+async def test_partial_only_enabled():
+    store = InMemoryInboxTimingStore()
+    await store.set(7, {ENABLED_KEY: True})
+    assert await store.get(7) == {ENABLED_KEY: True}
+
+
+async def test_wrong_types_dropped():
+    store = InMemoryInboxTimingStore()
+    # message must be str, enabled must be bool — wrong types are ignored.
+    await store.set(7, {MESSAGE_KEY: 123, ENABLED_KEY: "yes", "idle_warn_minutes": 5})
+    assert await store.get(7) == {"idle_warn_minutes": 5}

@@ -36,6 +36,26 @@ TIMING_KEYS: tuple[str, ...] = (
     "confirm_grace_minutes",
 )
 
+MESSAGE_KEY = "idle_warning_message"
+ENABLED_KEY = "inactivity_enabled"
+
+
+def _clean_timing(data: dict[str, Any]) -> dict[str, Any]:
+    """Keep only recognised keys with the right type: the four ints (0..1440
+    not enforced here — the router validates), a str message, a bool enabled."""
+    out: dict[str, Any] = {}
+    for k in TIMING_KEYS:
+        v = data.get(k)
+        if isinstance(v, int) and not isinstance(v, bool):
+            out[k] = v
+    msg = data.get(MESSAGE_KEY)
+    if isinstance(msg, str):
+        out[MESSAGE_KEY] = msg
+    en = data.get(ENABLED_KEY)
+    if isinstance(en, bool):
+        out[ENABLED_KEY] = en
+    return out
+
 
 @runtime_checkable
 class InboxTimingStorePort(Protocol):
@@ -44,11 +64,11 @@ class InboxTimingStorePort(Protocol):
     Reads never raise (get -> None, get_all -> {}); writes swallow after logging.
     """
 
-    async def get_all(self) -> dict[int, dict[str, int]]: ...
+    async def get_all(self) -> dict[int, dict[str, Any]]: ...
 
-    async def get(self, inbox_id: int) -> dict[str, int] | None: ...
+    async def get(self, inbox_id: int) -> dict[str, Any] | None: ...
 
-    async def set(self, inbox_id: int, timing: dict[str, int]) -> None: ...
+    async def set(self, inbox_id: int, timing: dict[str, Any]) -> None: ...
 
     async def delete(self, inbox_id: int) -> None: ...
 
@@ -57,17 +77,17 @@ class InMemoryInboxTimingStore:
     """Volatile timing store — for tests and local dev."""
 
     def __init__(self) -> None:
-        self._data: dict[int, dict[str, int]] = {}
+        self._data: dict[int, dict[str, Any]] = {}
 
-    async def get_all(self) -> dict[int, dict[str, int]]:
+    async def get_all(self) -> dict[int, dict[str, Any]]:
         return {k: dict(v) for k, v in self._data.items()}
 
-    async def get(self, inbox_id: int) -> dict[str, int] | None:
+    async def get(self, inbox_id: int) -> dict[str, Any] | None:
         entry = self._data.get(inbox_id)
         return dict(entry) if entry is not None else None
 
-    async def set(self, inbox_id: int, timing: dict[str, int]) -> None:
-        self._data[inbox_id] = {k: int(v) for k, v in timing.items() if k in TIMING_KEYS}
+    async def set(self, inbox_id: int, timing: dict[str, Any]) -> None:
+        self._data[inbox_id] = _clean_timing(timing)
 
     async def delete(self, inbox_id: int) -> None:
         self._data.pop(inbox_id, None)
@@ -95,17 +115,12 @@ class FirestoreInboxTimingStore:
         return self._client.collection(self._COLLECTION)
 
     @staticmethod
-    def _clean(data: dict[str, Any]) -> dict[str, int]:
-        out: dict[str, int] = {}
-        for k in TIMING_KEYS:
-            v = data.get(k)
-            if isinstance(v, int) and not isinstance(v, bool):
-                out[k] = v
-        return out
+    def _clean(data: dict[str, Any]) -> dict[str, Any]:
+        return _clean_timing(data)
 
-    async def get_all(self) -> dict[int, dict[str, int]]:
-        def _read() -> dict[int, dict[str, int]]:
-            result: dict[int, dict[str, int]] = {}
+    async def get_all(self) -> dict[int, dict[str, Any]]:
+        def _read() -> dict[int, dict[str, Any]]:
+            result: dict[int, dict[str, Any]] = {}
             for doc in self._collection().stream():
                 try:
                     inbox_id = int(doc.id)
@@ -120,8 +135,8 @@ class FirestoreInboxTimingStore:
             _log.error("inbox_timing_get_all_failed", error=str(e))
             return {}
 
-    async def get(self, inbox_id: int) -> dict[str, int] | None:
-        def _read() -> dict[str, int] | None:
+    async def get(self, inbox_id: int) -> dict[str, Any] | None:
+        def _read() -> dict[str, Any] | None:
             snap = self._collection().document(str(inbox_id)).get()
             if not snap.exists:
                 return None
@@ -134,8 +149,8 @@ class FirestoreInboxTimingStore:
             _log.error("inbox_timing_get_failed", inbox_id=inbox_id, error=str(e))
             return None
 
-    async def set(self, inbox_id: int, timing: dict[str, int]) -> None:
-        cleaned = {k: int(v) for k, v in timing.items() if k in TIMING_KEYS}
+    async def set(self, inbox_id: int, timing: dict[str, Any]) -> None:
+        cleaned = _clean_timing(timing)
 
         def _write() -> None:
             self._collection().document(str(inbox_id)).set(cleaned)

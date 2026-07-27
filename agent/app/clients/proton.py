@@ -32,6 +32,11 @@ _LIFECYCLE_TIMING_KEYS = (
     "confirm_grace_minutes",
 )
 
+_LIFECYCLE_MESSAGE_KEYS = (
+    "idle_warning_message", "idle_close_message", "resolution_prompt_message",
+    "assign_agent_message", "survey_ai_message", "survey_agent_message", "thanks_message",
+)
+
 
 class ProtonConfigClient:
     """Thin cached client for the proton-conversational-ai config API."""
@@ -264,8 +269,9 @@ class ProtonConfigClient:
             for key in _LIFECYCLE_TIMING_KEYS:
                 v = row.get(key)
                 result[key] = v if isinstance(v, int) and not isinstance(v, bool) else None
-            msg = row.get("idle_warning_message")
-            result["idle_warning_message"] = msg if isinstance(msg, str) else None
+            for mk in _LIFECYCLE_MESSAGE_KEYS:
+                mv = row.get(mk)
+                result[mk] = mv if isinstance(mv, str) else None
             en = row.get("inactivity_enabled")
             result["inactivity_enabled"] = en if isinstance(en, bool) else None
             return result

@@ -491,6 +491,12 @@ async def test_lifecycle_timing_full_row():
         "idle_close_out_of_hours_grace_minutes": 0,
         "confirm_grace_minutes": 8,
         "idle_warning_message": None,
+        "idle_close_message": None,
+        "resolution_prompt_message": None,
+        "assign_agent_message": None,
+        "survey_ai_message": None,
+        "survey_agent_message": None,
+        "thanks_message": None,
         "inactivity_enabled": None,
     }
 
@@ -507,6 +513,12 @@ async def test_lifecycle_timing_row_without_keys_is_all_none():
         "idle_close_out_of_hours_grace_minutes": None,
         "confirm_grace_minutes": None,
         "idle_warning_message": None,
+        "idle_close_message": None,
+        "resolution_prompt_message": None,
+        "assign_agent_message": None,
+        "survey_ai_message": None,
+        "survey_agent_message": None,
+        "thanks_message": None,
         "inactivity_enabled": None,
     }
 
@@ -567,3 +579,19 @@ async def test_lifecycle_timing_message_absent_is_none():
     t = await client.get_assistant_lifecycle_timing(41)
     assert t["idle_warning_message"] is None
     assert t["inactivity_enabled"] is True
+
+
+_MSG_ROW = {"inboxes": [{"inbox_id": 50,
+    "idle_close_message": "Closed.", "thanks_message": "Ta", "survey_ai_message": ""}]}
+
+
+@respx.mock
+async def test_lifecycle_timing_all_message_keys():
+    respx.get(f"{PROTON_BASE}/kb/inboxes").mock(return_value=httpx.Response(200, json=_MSG_ROW))
+    client = _make_client()
+    t = await client.get_assistant_lifecycle_timing(50)
+    assert t["idle_close_message"] == "Closed."
+    assert t["thanks_message"] == "Ta"
+    assert t["survey_ai_message"] == ""          # empty string preserved (resolver treats as unset)
+    assert t["assign_agent_message"] is None     # absent -> None
+    assert t["resolution_prompt_message"] is None

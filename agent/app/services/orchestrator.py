@@ -450,6 +450,14 @@ def _latest_incoming_text(message_list: list[dict]) -> str:
     for message in reversed(message_list):
         if message.get("private"):
             continue
+        # Lifecycle system messages (disclaimer, idle warn/close, resolution
+        # prompt, surveys) are outgoing+public but are NOT the bot's reply to the
+        # customer. They must not bound the turn, or the disclaimer posted right
+        # after the customer's first message would mask it and /chat/turn would
+        # never run. lifecycle stamps them with this marker.
+        ca = message.get("content_attributes")
+        if isinstance(ca, dict) and ca.get("proton_lifecycle"):
+            continue
         mtype = message.get("message_type")
         if mtype == 0:  # incoming (customer)
             content = (message.get("content") or "").strip()

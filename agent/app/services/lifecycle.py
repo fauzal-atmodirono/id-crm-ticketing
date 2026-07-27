@@ -34,6 +34,12 @@ AWAITING_RESOLUTION = "awaiting_resolution"
 AWAITING_SURVEY = "awaiting_survey"
 CLOSED = "closed"
 
+# Marker stamped on every customer-facing lifecycle message (disclaimer, idle
+# warn/close, resolution prompt, surveys). The brain-swap orchestrator reads it
+# to tell these system notices apart from the bot's own conversational replies
+# so they never mask the customer's turn (see orchestrator._latest_incoming_text).
+_LIFECYCLE_MARKER = {"proton_lifecycle": True}
+
 # SOP verbatim message defaults (overridable via proton persona messages).
 DISCLAIMER_DEFAULT = (
     "DISCLAIMER: "
@@ -210,7 +216,9 @@ async def on_conversation_created(payload: dict) -> None:
     if not text:
         return
     try:
-        await get_chatwoot_client().create_message(conversation_id, text, private=False)
+        await get_chatwoot_client().create_message(
+            conversation_id, text, private=False, content_attributes=_LIFECYCLE_MARKER
+        )
     except Exception:
         logger.exception(
             "lifecycle: failed to post disclaimer/auto-ack for conversation %s",
@@ -268,7 +276,9 @@ async def _post(conversation_id: int, text: str) -> None:
     """Post a public message, swallowing transient errors."""
     try:
         chatwoot = get_chatwoot_client()
-        await chatwoot.create_message(conversation_id, text, private=False)
+        await chatwoot.create_message(
+            conversation_id, text, private=False, content_attributes=_LIFECYCLE_MARKER
+        )
     except Exception:
         logger.exception("lifecycle: failed to post message to %s", conversation_id)
 

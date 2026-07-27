@@ -58,10 +58,14 @@ class ChatwootClient:
         content: str,
         private: bool = True,
         token_override: str | None = None,
+        content_attributes: dict | None = None,
     ) -> Any:
+        body: dict[str, Any] = {"content": content, "private": private}
+        if content_attributes:
+            body["content_attributes"] = content_attributes
         response = await self._client.post(
             f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}/messages",
-            json={"content": content, "private": private},
+            json=body,
             headers=self._override_headers(token_override),
         )
         response.raise_for_status()

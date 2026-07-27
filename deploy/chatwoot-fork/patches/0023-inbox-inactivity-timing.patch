@@ -1,0 +1,169 @@
+diff --git a/app/javascript/dashboard/api/protonKnowledge.js b/app/javascript/dashboard/api/protonKnowledge.js
+index 2d559c6..9ce78c8 100644
+--- a/app/javascript/dashboard/api/protonKnowledge.js
++++ b/app/javascript/dashboard/api/protonKnowledge.js
+@@ -237,6 +237,20 @@ export function setInbox(inboxId, body) {
+   });
+ }
+ 
++// GET /kb/inboxes/{id}/timing -> { idle_warn_minutes, idle_close_grace_minutes,
++//   idle_close_out_of_hours_grace_minutes, confirm_grace_minutes } (each int|null)
++export function getInboxTiming(inboxId) {
++  return kbRequest(`/kb/inboxes/${encodeURIComponent(inboxId)}/timing`);
++}
++
++// PUT /kb/inboxes/{id}/timing  body: the four fields (null = inherit default)
++export function setInboxTiming(inboxId, body) {
++  return kbRequest(`/kb/inboxes/${encodeURIComponent(inboxId)}/timing`, {
++    method: 'PUT',
++    body: JSON.stringify(body),
++  });
++}
++
+ // ── Tenant settings ───────────────────────────────────────────────────────────
+ 
+ // GET /kb/settings -> { <key>: { value, source: "override"|"env" } }
+diff --git a/app/javascript/dashboard/components/proton/InboxInactivityTiming.vue b/app/javascript/dashboard/components/proton/InboxInactivityTiming.vue
+new file mode 100644
+index 0000000..e0ea347
+--- /dev/null
++++ b/app/javascript/dashboard/components/proton/InboxInactivityTiming.vue
+@@ -0,0 +1,110 @@
++<script>
++import { useAlert } from 'dashboard/composables';
++import { getInboxTiming, setInboxTiming } from 'dashboard/api/protonKnowledge';
++
++const FIELDS = [
++  { key: 'idle_warn_minutes', label: 'Warn after idle (min)', placeholder: '10' },
++  { key: 'idle_close_grace_minutes', label: 'Close grace — in business hours (min)', placeholder: '5' },
++  { key: 'idle_close_out_of_hours_grace_minutes', label: 'Close grace — out of hours (min)', placeholder: '0' },
++  { key: 'confirm_grace_minutes', label: 'Resolution-confirm grace (min)', placeholder: '10' },
++];
++
++export default {
++  props: {
++    inbox: {
++      type: Object,
++      default: () => ({}),
++    },
++  },
++  data() {
++    return {
++      fields: FIELDS,
++      timing: {
++        idle_warn_minutes: null,
++        idle_close_grace_minutes: null,
++        idle_close_out_of_hours_grace_minutes: null,
++        confirm_grace_minutes: null,
++      },
++      isSaving: false,
++    };
++  },
++  watch: {
++    'inbox.id': {
++      immediate: true,
++      handler(id) {
++        if (id) this.loadTiming(id);
++      },
++    },
++  },
++  methods: {
++    async loadTiming(id) {
++      try {
++        const t = await getInboxTiming(id);
++        if (t) {
++          this.timing = {
++            idle_warn_minutes: t.idle_warn_minutes ?? null,
++            idle_close_grace_minutes: t.idle_close_grace_minutes ?? null,
++            idle_close_out_of_hours_grace_minutes:
++              t.idle_close_out_of_hours_grace_minutes ?? null,
++            confirm_grace_minutes: t.confirm_grace_minutes ?? null,
++          };
++        }
++      } catch (e) {
++        // fail-open: leave defaults (all null = inherit)
++      }
++    },
++    normalize(v) {
++      if (v === '' || v === null || v === undefined) return null;
++      const n = Number(v);
++      if (Number.isNaN(n)) return null;
++      return Math.max(0, Math.min(1440, Math.round(n)));
++    },
++    async saveTiming() {
++      this.isSaving = true;
++      try {
++        await setInboxTiming(this.inbox.id, {
++          idle_warn_minutes: this.normalize(this.timing.idle_warn_minutes),
++          idle_close_grace_minutes: this.normalize(this.timing.idle_close_grace_minutes),
++          idle_close_out_of_hours_grace_minutes: this.normalize(
++            this.timing.idle_close_out_of_hours_grace_minutes
++          ),
++          confirm_grace_minutes: this.normalize(this.timing.confirm_grace_minutes),
++        });
++        useAlert('Inactivity timing saved.');
++      } catch (e) {
++        useAlert(e.message || 'Failed to save inactivity timing.');
++      } finally {
++        this.isSaving = false;
++      }
++    },
++  },
++};
++</script>
++
++<template>
++  <form class="flex flex-col mx-6 max-w-4xl" @submit.prevent="saveTiming">
++    <div class="my-4">
++      <h4 class="text-lg text-n-slate-12">Inactivity &amp; auto-close</h4>
++      <p class="text-sm text-n-slate-11">
++        Warn the customer after N idle minutes, close after the grace period
++        (separate in-hours vs out-of-hours grace), then the resolution-confirm
++        grace. Leave a field empty to use the global default.
++      </p>
++    </div>
++    <div v-for="f in fields" :key="f.key" class="mb-4">
++      <label class="block mb-1 text-sm font-medium text-n-slate-12">{{ f.label }}</label>
++      <input
++        v-model="timing[f.key]"
++        type="number"
++        min="0"
++        max="1440"
++        step="1"
++        :placeholder="f.placeholder"
++        class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++      />
++    </div>
++    <div>
++      <woot-button type="submit" :is-loading="isSaving">Save timing</woot-button>
++    </div>
++  </form>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue b/app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue
+index 9e5206b..916e145 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue
+@@ -19,6 +19,7 @@ import WhatsappReauthorize from './channels/whatsapp/Reauthorize.vue';
+ import InboxHealthAPI from 'dashboard/api/inboxHealth';
+ import PreChatFormSettings from './PreChatForm/Settings.vue';
+ import WeeklyAvailability from './components/WeeklyAvailability.vue';
++import InboxInactivityTiming from 'dashboard/components/proton/InboxInactivityTiming.vue';
+ import GreetingsEditor from 'shared/components/GreetingsEditor.vue';
+ import ConfigurationPage from './settingsPage/ConfigurationPage.vue';
+ import VoiceConfigurationPage from './settingsPage/VoiceConfigurationPage.vue';
+@@ -59,6 +60,7 @@ export default {
+     SettingsFieldSection,
+     SettingsAccordion,
+     WeeklyAvailability,
++    InboxInactivityTiming,
+     SenderNameExamplePreview,
+     LockToSingleConversationPreview,
+     MicrosoftReauthorize,
+@@ -1294,6 +1296,7 @@ export default {
+         </div>
+         <div v-if="selectedTabKey === 'business-hours'">
+           <WeeklyAvailability :inbox="inbox" />
++          <InboxInactivityTiming :inbox="inbox" />
+         </div>
+         <div v-if="selectedTabKey === 'bot-configuration'">
+           <BotConfiguration :inbox="inbox" />

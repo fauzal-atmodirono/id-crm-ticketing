@@ -25,7 +25,7 @@ index 2d559c6..e22bf85 100644
  
  // GET /kb/settings -> { <key>: { value, source: "override"|"env" } }
 diff --git a/app/javascript/dashboard/routes/dashboard/settings/inbox/components/WeeklyAvailability.vue b/app/javascript/dashboard/routes/dashboard/settings/inbox/components/WeeklyAvailability.vue
-index 62c4200..b00980d 100644
+index 62c4200..c720bc4 100644
 --- a/app/javascript/dashboard/routes/dashboard/settings/inbox/components/WeeklyAvailability.vue
 +++ b/app/javascript/dashboard/routes/dashboard/settings/inbox/components/WeeklyAvailability.vue
 @@ -14,12 +14,35 @@ import {
@@ -64,11 +64,13 @@ index 62c4200..b00980d 100644
  export default {
    components: {
      SettingsToggleSection,
-@@ -51,6 +74,13 @@ export default {
+@@ -51,6 +74,15 @@ export default {
          6: 'Saturday',
        },
        timeSlots: [...defaultTimeSlot],
 +      inactivityFields: INACTIVITY_FIELDS,
++      inactivityEnabled: true,
++      idleWarningMessage: '',
 +      timing: {
 +        idle_warn_minutes: null,
 +        idle_close_grace_minutes: null,
@@ -78,7 +80,7 @@ index 62c4200..b00980d 100644
      };
    },
    computed: {
-@@ -106,6 +136,30 @@ export default {
+@@ -106,6 +138,32 @@ export default {
        this.timeZone =
          this.timeZones.find(item => timeZone === item.value) ||
          DEFAULT_TIMEZONE;
@@ -96,6 +98,8 @@ index 62c4200..b00980d 100644
 +              t.idle_close_out_of_hours_grace_minutes ?? null,
 +            confirm_grace_minutes: t.confirm_grace_minutes ?? null,
 +          };
++          this.inactivityEnabled = t.inactivity_enabled ?? true;
++          this.idleWarningMessage = t.idle_warning_message ?? '';
 +        }
 +      } catch (error) {
 +        // fail-open: keep inherit (null) defaults if the fetch fails
@@ -109,7 +113,7 @@ index 62c4200..b00980d 100644
      },
      onSlotUpdate(slotIndex, slotData) {
        this.timeSlots = this.timeSlots.map(item =>
-@@ -124,6 +178,20 @@ export default {
+@@ -124,6 +182,22 @@ export default {
            channel: {},
          };
          await this.$store.dispatch('inboxes/updateInbox', payload);
@@ -126,11 +130,13 @@ index 62c4200..b00980d 100644
 +          confirm_grace_minutes: this.normalizeTiming(
 +            this.timing.confirm_grace_minutes
 +          ),
++          idle_warning_message: this.idleWarningMessage.trim() || null,
++          inactivity_enabled: this.inactivityEnabled,
 +        });
          useAlert(this.$t('INBOX_MGMT.EDIT.API.SUCCESS_MESSAGE'));
        } catch (error) {
          useAlert(error.message || this.$t('INBOX_MGMT.EDIT.API.ERROR_MESSAGE'));
-@@ -214,6 +282,35 @@ export default {
+@@ -214,6 +288,50 @@ export default {
            </table>
          </div>
        </div>
@@ -142,11 +148,26 @@ index 62c4200..b00980d 100644
 +          </span>
 +          <div class="flex-1 h-px bg-n-weak" />
 +        </div>
-+        <p class="text-sm text-n-slate-11 mb-4">
-+          Warn the customer after N idle minutes, close after the grace period
-+          (separate in-hours vs out-of-hours grace), then the resolution-confirm
-+          grace. Leave a field empty to use the global default.
-+        </p>
++        <SettingsToggleSection
++          v-model="inactivityEnabled"
++          header="Enable inactivity &amp; auto-close for this inbox"
++          description="Warn the customer after N idle minutes, then auto-close after the grace period. Turn off to disable idle warnings and auto-close for this inbox."
++        />
++        <div class="mt-4">
++          <label class="block mb-1 text-sm font-medium text-n-slate-12">
++            Idle warning message
++          </label>
++          <textarea
++            v-model="idleWarningMessage"
++            rows="2"
++            placeholder="Your chat will close in {{minutes}} minutes if we do not hear from you."
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12 focus:outline-none"
++          />
++          <p class="mt-1 text-xs text-n-slate-11">
++            Use <code>{{ '{{minutes}}' }}</code> for the close-grace value. Leave empty to use the default.
++          </p>
++        </div>
++        <!-- existing v-for number inputs stay below, unchanged -->
 +        <div v-for="f in inactivityFields" :key="f.key" class="mb-4">
 +          <label class="block mb-1 text-sm font-medium text-n-slate-12">
 +            {{ f.label }}

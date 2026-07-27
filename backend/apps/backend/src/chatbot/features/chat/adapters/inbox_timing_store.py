@@ -36,21 +36,32 @@ TIMING_KEYS: tuple[str, ...] = (
     "confirm_grace_minutes",
 )
 
-MESSAGE_KEY = "idle_warning_message"
+MESSAGE_KEYS: tuple[str, ...] = (
+    "idle_warning_message",
+    "idle_close_message",
+    "resolution_prompt_message",
+    "assign_agent_message",
+    "survey_ai_message",
+    "survey_agent_message",
+    "thanks_message",
+)
+
+MESSAGE_KEY = MESSAGE_KEYS[0]  # backward-compat alias
 ENABLED_KEY = "inactivity_enabled"
 
 
 def _clean_timing(data: dict[str, Any]) -> dict[str, Any]:
     """Keep only recognised keys with the right type: the four ints (0..1440
-    not enforced here — the router validates), a str message, a bool enabled."""
+    not enforced here — the router validates), the seven str messages, a bool enabled."""
     out: dict[str, Any] = {}
     for k in TIMING_KEYS:
         v = data.get(k)
         if isinstance(v, int) and not isinstance(v, bool):
             out[k] = v
-    msg = data.get(MESSAGE_KEY)
-    if isinstance(msg, str):
-        out[MESSAGE_KEY] = msg
+    for mk in MESSAGE_KEYS:
+        mv = data.get(mk)
+        if isinstance(mv, str):
+            out[mk] = mv
     en = data.get(ENABLED_KEY)
     if isinstance(en, bool):
         out[ENABLED_KEY] = en

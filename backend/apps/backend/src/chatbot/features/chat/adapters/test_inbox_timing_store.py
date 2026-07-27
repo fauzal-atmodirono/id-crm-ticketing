@@ -4,6 +4,7 @@ from __future__ import annotations
 from chatbot.features.chat.adapters.inbox_timing_store import (
     TIMING_KEYS,
     MESSAGE_KEY,
+    MESSAGE_KEYS,
     ENABLED_KEY,
     InboxTimingStorePort,
     InMemoryInboxTimingStore,
@@ -92,3 +93,27 @@ async def test_wrong_types_dropped():
     # message must be str, enabled must be bool — wrong types are ignored.
     await store.set(7, {MESSAGE_KEY: 123, ENABLED_KEY: "yes", "idle_warn_minutes": 5})
     assert await store.get(7) == {"idle_warn_minutes": 5}
+
+
+def test_message_keys_are_the_seven():
+    assert MESSAGE_KEYS == (
+        "idle_warning_message", "idle_close_message", "resolution_prompt_message",
+        "assign_agent_message", "survey_ai_message", "survey_agent_message", "thanks_message",
+    )
+
+
+async def test_roundtrip_all_messages():
+    store = InMemoryInboxTimingStore()
+    payload = {k: f"msg-{k}" for k in MESSAGE_KEYS}
+    payload["idle_warn_minutes"] = 3
+    await store.set(7, payload)
+    got = await store.get(7)
+    for k in MESSAGE_KEYS:
+        assert got[k] == f"msg-{k}"
+    assert got["idle_warn_minutes"] == 3
+
+
+async def test_message_wrong_type_dropped():
+    store = InMemoryInboxTimingStore()
+    await store.set(7, {"idle_close_message": 123, "thanks_message": "ok"})
+    assert await store.get(7) == {"thanks_message": "ok"}

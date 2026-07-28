@@ -19,6 +19,7 @@ from chatbot.features.chat.ports import (
     HumanAgentBridgePort,
     TicketingPort,
 )
+from chatbot.features.routing.channels import canonical_channel
 
 if TYPE_CHECKING:
     from chatbot.features.chat.adapters.zammad import ZammadClient
@@ -162,11 +163,9 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         inbox_id = self._settings.chatwoot_inbox_id
         for inbox in await self.list_inboxes():
             if inbox.get("id") == inbox_id:
-                channel = str(inbox.get("name") or inbox.get("channel_type") or "").strip()
-                if channel:
-                    self._channel_cache = channel
-                    return channel
-                break
+                channel = canonical_channel(inbox.get("channel_type"))
+                self._channel_cache = channel
+                return channel
         return "web"
 
     async def _assign_conversation(

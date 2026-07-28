@@ -622,6 +622,9 @@ async def _handoff_to_human_via_chatwoot(
                 conversation_id,
             )
     await chatwoot.toggle_status(conversation_id, "open")
+    proton = get_proton_config_client()
+    if proton is not None:
+        await proton.assign_agent(conversation_id)
 
 
 async def _execute_decision(

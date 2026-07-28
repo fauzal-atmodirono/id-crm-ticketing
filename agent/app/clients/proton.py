@@ -344,3 +344,15 @@ class ProtonConfigClient:
         if not isinstance(data, dict):
             return None
         return data
+
+    async def assign_agent(self, conversation_id: int) -> None:
+        """Ask the backend to assign the priority agent for this conversation
+        (POST /routing/assign). Fail-open: any error is logged and swallowed so
+        the handoff (already reopened) is never blocked."""
+        try:
+            response = await self._client.post(
+                "/routing/assign", json={"conversation_id": conversation_id}
+            )
+            response.raise_for_status()
+        except Exception:
+            logger.debug("proton_config: assign_agent failed", exc_info=True)

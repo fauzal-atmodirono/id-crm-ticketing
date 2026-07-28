@@ -595,3 +595,26 @@ async def test_lifecycle_timing_all_message_keys():
     assert t["survey_ai_message"] == ""          # empty string preserved (resolver treats as unset)
     assert t["assign_agent_message"] is None     # absent -> None
     assert t["resolution_prompt_message"] is None
+
+
+# ---------------------------------------------------------------------------
+# assign_agent
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_assign_agent_posts_conversation_id():
+    route = respx.post(f"{PROTON_BASE}/routing/assign").mock(
+        return_value=httpx.Response(200, json={"assigned_agent_id": 9})
+    )
+    client = _make_client()
+    await client.assign_agent(70)
+    assert route.called
+    assert route.calls.last.request.content == b'{"conversation_id":70}'
+
+
+@respx.mock
+async def test_assign_agent_failopen_on_error():
+    respx.post(f"{PROTON_BASE}/routing/assign").mock(return_value=httpx.Response(500, json={}))
+    client = _make_client()
+    await client.assign_agent(70)  # must not raise

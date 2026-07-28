@@ -29,33 +29,16 @@ index e22bf85..a0b5034 100644
  // ── Tenant settings ───────────────────────────────────────────────────────────
  
  // GET /kb/settings -> { <key>: { value, source: "override"|"env" } }
-diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
-index 8afc556..aefe31b 100644
---- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
-+++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
-@@ -581,6 +581,13 @@ const menuItems = computed(() => {
-                   section: 'settings',
-                 }),
-               },
-+              {
-+                name: 'Agent Priorities',
-+                label: 'Agent Priorities',
-+                to: accountScopedRoute('proton_knowledge', {
-+                  section: 'agent-priorities',
-+                }),
-+              },
-             ],
-           },
-         ]
-diff --git a/app/javascript/dashboard/components/proton/AgentPriorities.vue b/app/javascript/dashboard/components/proton/AgentPriorities.vue
+diff --git a/app/javascript/dashboard/components/proton/AgentPrioritiesEditor.vue b/app/javascript/dashboard/components/proton/AgentPrioritiesEditor.vue
 new file mode 100644
-index 0000000..e622228
+index 0000000..058598f
 --- /dev/null
-+++ b/app/javascript/dashboard/components/proton/AgentPriorities.vue
-@@ -0,0 +1,238 @@
-+<!-- AgentPriorities.vue — OUR file. Native, Chatwoot-styled page for configuring
-+     per-agent channel priorities. Each agent has a Primary channel (the first in
-+     channel_priorities[]) and zero-or-more "Also handles" channels (the rest).
++++ b/app/javascript/dashboard/components/proton/AgentPrioritiesEditor.vue
+@@ -0,0 +1,208 @@
++<!-- AgentPrioritiesEditor.vue — OUR file. Chrome-less editor for per-agent
++     channel priorities. Embedded in Settings → Inboxes → Collaborators tab.
++     Each agent has a Primary channel (the first in channel_priorities[]) and
++     zero-or-more "Also handles" channels (the rest).
 +     Reads from GET /routing/agents + GET /routing/priorities; writes via
 +     POST /routing/priorities. Part of Phase 5 WhatsApp custom auto-assignment. -->
 +<script>
@@ -69,11 +52,11 @@ index 0000000..e622228
 +const CHANNELS = ['whatsapp', 'call', 'email', 'social', 'web'];
 +
 +export default {
-+  name: 'AgentPriorities',
++  name: 'AgentPrioritiesEditor',
 +  data() {
 +    return {
 +      rows: [],
-+      loading: false,
++      loading: true,
 +      errored: false,
 +      savingRows: new Set(),
 +      channels: CHANNELS,
@@ -91,7 +74,6 @@ index 0000000..e622228
 +          getRoutingAgents(),
 +          getRoutingPriorities(),
 +        ]);
-+        // Build a lookup: agent_id -> channel_priorities[]
 +        const priMap = {};
 +        const priArr = Array.isArray(priorities)
 +          ? priorities
@@ -167,155 +149,124 @@ index 0000000..e622228
 +</script>
 +
 +<template>
-+  <div class="flex flex-col w-full h-full">
-+    <!-- Toolbar -->
-+    <div
-+      class="flex items-center flex-shrink-0 gap-3 px-4 py-3 border-b border-n-weak"
-+    >
-+      <button
-+        class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1"
-+        :disabled="loading"
-+        @click="load"
-+      >
-+        Refresh
-+      </button>
-+      <span class="ml-auto text-xs text-n-slate-11">
-+        {{ rows.length }} agent{{ rows.length === 1 ? '' : 's' }}
-+      </span>
++  <div>
++    <p class="mb-3 text-xs text-n-slate-11">
++      Priorities apply account-wide per agent; used to auto-assign a priority agent on handoff.
++    </p>
++    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
++      Loading agents...
 +    </div>
-+
-+    <!-- Header note -->
 +    <div
-+      class="px-4 py-2 text-xs border-b text-n-slate-11 border-n-weak bg-n-alpha-black1"
++      v-else-if="errored"
++      class="py-10 text-sm text-center text-n-slate-11"
 +    >
-+      Set each agent's primary channel and any additional channels they handle.
-+      The primary channel is preferred for auto-assignment; also-handles channels
-+      are used as fallback when the primary queue is busy.
++      Could not load agent priorities.
 +    </div>
-+
-+    <!-- Body -->
-+    <div class="flex-1 p-4 overflow-auto">
-+      <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
-+        Loading agents...
-+      </div>
-+      <div
-+        v-else-if="errored"
-+        class="py-10 text-sm text-center text-n-slate-11"
-+      >
-+        Could not load agent priorities.
-+      </div>
-+      <div
-+        v-else-if="!rows.length"
-+        class="py-10 text-sm text-center text-n-slate-11"
-+      >
-+        No agents found.
-+      </div>
-+      <div
-+        v-else
-+        class="overflow-hidden border rounded-lg border-n-weak bg-n-background"
-+      >
-+        <table class="w-full text-sm border-collapse">
-+          <thead>
-+            <tr class="text-left border-b border-n-weak bg-n-alpha-black1">
-+              <th class="px-3 py-2 font-medium text-n-slate-11">Agent</th>
-+              <th class="px-3 py-2 font-medium text-n-slate-11">Status</th>
-+              <th class="px-3 py-2 font-medium text-n-slate-11">Primary channel</th>
-+              <th class="px-3 py-2 font-medium text-n-slate-11">Also handles</th>
-+              <th class="px-3 py-2 font-medium text-n-slate-11"></th>
-+            </tr>
-+          </thead>
-+          <tbody>
-+            <tr
-+              v-for="row in rows"
-+              :key="row.id"
-+              class="border-b border-n-weak last:border-0 align-middle"
-+            >
-+              <!-- Agent name -->
-+              <td class="px-3 py-2 font-medium text-n-slate-12">
-+                {{ row.name }}
-+              </td>
-+              <!-- Availability status -->
-+              <td class="px-3 py-2 text-n-slate-11">
-+                {{ statusLabel(row.availability_status) }}
-+              </td>
-+              <!-- Primary channel select -->
-+              <td class="px-3 py-2">
-+                <select
-+                  v-model="row.primary"
-+                  class="w-full max-w-[160px] px-2 py-1 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none disabled:opacity-50"
-+                  :disabled="savingRows.has(row.id)"
++    <div
++      v-else-if="!rows.length"
++      class="py-10 text-sm text-center text-n-slate-11"
++    >
++      No agents found.
++    </div>
++    <div
++      v-else
++      class="overflow-hidden border rounded-lg border-n-weak bg-n-background"
++    >
++      <table class="w-full text-sm border-collapse">
++        <thead>
++          <tr class="text-left border-b border-n-weak bg-n-alpha-black1">
++            <th class="px-3 py-2 font-medium text-n-slate-11">Agent</th>
++            <th class="px-3 py-2 font-medium text-n-slate-11">Status</th>
++            <th class="px-3 py-2 font-medium text-n-slate-11">Primary channel</th>
++            <th class="px-3 py-2 font-medium text-n-slate-11">Also handles</th>
++            <th class="px-3 py-2 font-medium text-n-slate-11"></th>
++          </tr>
++        </thead>
++        <tbody>
++          <tr
++            v-for="row in rows"
++            :key="row.id"
++            class="border-b border-n-weak last:border-0 align-middle"
++          >
++            <td class="px-3 py-2 font-medium text-n-slate-12">
++              {{ row.name }}
++            </td>
++            <td class="px-3 py-2 text-n-slate-11">
++              {{ statusLabel(row.availability_status) }}
++            </td>
++            <td class="px-3 py-2">
++              <select
++                v-model="row.primary"
++                class="w-full max-w-[160px] px-2 py-1 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none disabled:opacity-50"
++                :disabled="savingRows.has(row.id)"
++              >
++                <option value="">select</option>
++                <option
++                  v-for="ch in channels"
++                  :key="ch"
++                  :value="ch"
 +                >
-+                  <option value="">— select —</option>
-+                  <option
-+                    v-for="ch in channels"
-+                    :key="ch"
-+                    :value="ch"
-+                  >
-+                    {{ ch }}
-+                  </option>
-+                </select>
-+              </td>
-+              <!-- Also-handles checkboxes -->
-+              <td class="px-3 py-2">
-+                <div class="flex flex-wrap gap-3">
-+                  <label
-+                    v-for="ch in channels"
-+                    :key="ch"
-+                    class="flex items-center gap-1 text-xs text-n-slate-11 cursor-pointer select-none"
-+                  >
-+                    <input
-+                      type="checkbox"
-+                      :checked="row.also.includes(ch)"
-+                      :disabled="savingRows.has(row.id)"
-+                      class="accent-n-brand"
-+                      @change="toggleAlso(row, ch)"
-+                    />
-+                    {{ ch }}
-+                  </label>
-+                </div>
-+              </td>
-+              <!-- Save button -->
-+              <td class="px-3 py-2">
-+                <button
-+                  class="px-3 py-1.5 text-xs font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1 disabled:opacity-50"
-+                  :disabled="savingRows.has(row.id)"
-+                  @click="save(row)"
++                  {{ ch }}
++                </option>
++              </select>
++            </td>
++            <td class="px-3 py-2">
++              <div class="flex flex-wrap gap-3">
++                <label
++                  v-for="ch in channels"
++                  :key="ch"
++                  class="flex items-center gap-1 text-xs text-n-slate-11 cursor-pointer select-none"
 +                >
-+                  Save
-+                </button>
-+              </td>
-+            </tr>
-+          </tbody>
-+        </table>
-+      </div>
++                  <input
++                    type="checkbox"
++                    :checked="row.also.includes(ch)"
++                    :disabled="savingRows.has(row.id)"
++                    class="accent-n-brand"
++                    @change="toggleAlso(row, ch)"
++                  />
++                  {{ ch }}
++                </label>
++              </div>
++            </td>
++            <td class="px-3 py-2">
++              <button
++                class="px-3 py-1.5 text-xs font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1 disabled:opacity-50"
++                :disabled="savingRows.has(row.id)"
++                @click="save(row)"
++              >
++                Save
++              </button>
++            </td>
++          </tr>
++        </tbody>
++      </table>
 +    </div>
 +  </div>
 +</template>
-diff --git a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
-index 75b0f9a..2daecdf 100644
---- a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
-+++ b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
-@@ -14,6 +14,7 @@ import KnowledgePlayground from 'dashboard/components/proton/KnowledgePlayground
- import KnowledgeTools from 'dashboard/components/proton/KnowledgeTools.vue';
- import KnowledgeScenarios from 'dashboard/components/proton/KnowledgeScenarios.vue';
- import KnowledgeInboxes from 'dashboard/components/proton/KnowledgeInboxes.vue';
-+import AgentPriorities from 'dashboard/components/proton/AgentPriorities.vue';
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue b/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue
+index 5962027..a002228 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue
+@@ -16,6 +16,7 @@ import Icon from 'dashboard/components-next/icon/Icon.vue';
+ import TagInput from 'dashboard/components-next/taginput/TagInput.vue';
+ import assignmentPoliciesAPI from 'dashboard/api/assignmentPolicies';
+ import { useI18n } from 'vue-i18n';
++import AgentPrioritiesEditor from 'dashboard/components/proton/AgentPrioritiesEditor.vue';
  
- const route = useRoute();
+ const props = defineProps({
+   inbox: {
+@@ -668,6 +669,14 @@ onMounted(() => {
+       </SettingsToggleSection>
+     </SettingsAccordion>
  
-@@ -27,6 +28,7 @@ const SECTIONS = {
-   inboxes: 'Inboxes',
-   tools: 'Tools',
-   settings: 'Settings',
-+  'agent-priorities': 'Agent Priorities',
- };
- 
- const section = computed(() => route.params.section || 'faqs');
-@@ -52,6 +54,7 @@ const sectionLabel = computed(() => SECTIONS[section.value] || section.value);
-     <KnowledgeScenarios v-else-if="section === 'scenarios'" />
-     <KnowledgeTools v-else-if="section === 'tools'" />
-     <KnowledgeInboxes v-else-if="section === 'inboxes'" />
-+    <AgentPriorities v-else-if="section === 'agent-priorities'" />
-     <div
-       v-else
-       class="flex flex-col items-center justify-center flex-1 gap-2 text-center"
++    <SettingsFieldSection
++      label="Agent Channel Priorities"
++      help-text="Set each agent's primary channel and any additional channels they handle."
++      class="[&>div]:!items-start"
++    >
++      <AgentPrioritiesEditor />
++    </SettingsFieldSection>
++
+     <woot-modal
+       v-if="showDeleteConfirmModal"
+       :show="showDeleteConfirmModal"

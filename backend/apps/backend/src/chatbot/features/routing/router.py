@@ -67,8 +67,8 @@ def build_routing_router(
     settings: Settings,
     store: ChannelPriorityStore,
     presence: PresenceFetcher,
-    routing_svc=None,
-    assigner=None,
+    routing_svc,
+    assigner,
 ) -> APIRouter:
     """Build and return the routing config FastAPI router."""
     router = APIRouter(tags=["routing"])

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -44,7 +46,7 @@ def _app(api_key: str = "secret") -> tuple[TestClient, ChannelPriorityStore]:
     fetcher.fetch_agents = _fetch_agents  # type: ignore[method-assign]
 
     app = FastAPI()
-    app.include_router(build_routing_router(settings, store, fetcher))
+    app.include_router(build_routing_router(settings, store, fetcher, AsyncMock(), AsyncMock()))
     return TestClient(app), store
 
 
@@ -130,3 +132,78 @@ def test_put_priority_requires_api_key() -> None:
         json={"channel_priorities": ["web"]},
     )
     assert resp.status_code == 401
+
+
+# --- /routing/assign tests ---
+
+
+def _assign_app(routing_enabled: bool, pick_result: int | None, key: str = "k"):  # type: ignore[return]
+    settings = Settings(
+        routing_admin_api_key=key,
+        routing_enabled=routing_enabled,
+        chatwoot_api_url="http://cw",
+        chatwoot_account_id=1,
+        chatwoot_api_token="t",
+    )
+    store = AsyncMock()
+    presence = AsyncMock()
+    routing_svc = AsyncMock()
+    routing_svc.pick_agent = AsyncMock(return_value=pick_result)
+    assigner = AsyncMock()
+    assigner.resolve_channel = AsyncMock(return_value="whatsapp")
+    assigner.assign = AsyncMock()
+    app = FastAPI()
+    app.include_router(build_routing_router(settings, store, presence, routing_svc, assigner))
+    return TestClient(app), assigner, routing_svc
+
+
+def test_assign_picks_and_assigns() -> None:
+    client, assigner, svc = _assign_app(True, 9)
+    r = client.post("/routing/assign", json={"conversation_id": 5}, headers={"x-api-key": "k"})
+    assert r.status_code == 200 and r.json()["assigned_agent_id"] == 9
+    assigner.assign.assert_awaited_once_with(5, 9)
+
+
+def test_assign_no_agent_no_assign() -> None:
+    client, assigner, svc = _assign_app(True, None)
+    r = client.post("/routing/assign", json={"conversation_id": 5}, headers={"x-api-key": "k"})
+    assert r.json()["assigned_agent_id"] is None
+    assigner.assign.assert_not_awaited()
+
+
+def test_assign_disabled_noop() -> None:
+    client, assigner, svc = _assign_app(False, 9)
+    r = client.post("/routing/assign", json={"conversation_id": 5}, headers={"x-api-key": "k"})
+    assert r.json() == {"assigned_agent_id": None, "disabled": True}
+    svc.pick_agent.assert_not_awaited()
+    assigner.assign.assert_not_awaited()
+
+
+def test_assign_auth_401_without_key() -> None:
+    client, _, _ = _assign_app(True, 9)
+    assert client.post("/routing/assign", json={"conversation_id": 5}).status_code == 401
+
+
+def test_assign_accepts_proton_backend_key() -> None:
+    settings = Settings(
+        proton_backend_key="pk",
+        routing_enabled=True,
+        chatwoot_api_url="http://cw",
+        chatwoot_account_id=1,
+        chatwoot_api_token="t",
+    )
+    store = AsyncMock()
+    presence = AsyncMock()
+    svc = AsyncMock()
+    svc.pick_agent = AsyncMock(return_value=None)
+    assigner = AsyncMock()
+    assigner.resolve_channel = AsyncMock(return_value="whatsapp")
+    app = FastAPI()
+    app.include_router(build_routing_router(settings, store, presence, svc, assigner))
+    client = TestClient(app)
+    assert (
+        client.post(
+            "/routing/assign", json={"conversation_id": 5}, headers={"x-api-key": "pk"}
+        ).status_code
+        == 200
+    )

@@ -60,6 +60,7 @@ from chatbot.features.metrics.qa_adapter import build_qa_label_port
 from chatbot.features.metrics.qa_router import build_qa_router
 from chatbot.features.metrics.query_adapter import build_metrics_query_port
 from chatbot.features.metrics.scheduler import start_metrics_scheduler, start_report_scheduler
+from chatbot.features.routing.assigner import RoutingAssigner
 from chatbot.features.routing.presence import PresenceFetcher
 from chatbot.features.routing.router import build_routing_router
 from chatbot.features.routing.service import RoutingService
@@ -407,7 +408,12 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     _routing_svc = RoutingService(presence=_routing_presence, store=_routing_priority_store)
     if settings.routing_enabled and chatwoot_client is not None:
         chatwoot_client._routing_service = _routing_svc  # type: ignore[assignment]
-    app.include_router(build_routing_router(settings, _routing_priority_store, _routing_presence))
+    _routing_assigner = RoutingAssigner(settings)
+    app.include_router(
+        build_routing_router(
+            settings, _routing_priority_store, _routing_presence, _routing_svc, _routing_assigner
+        )
+    )
 
     # --- Agent-assist FAQ ---
     _wire_agent_assist(

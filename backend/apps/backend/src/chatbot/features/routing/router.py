@@ -36,15 +36,29 @@ class _PriorityOut(BaseModel):
     channel_priorities: list[str]
 
 
+class _AssignIn(BaseModel):
+    conversation_id: int
+
+
 def _require_api_key(settings: Settings):
-    """Return a FastAPI dependency that 401s when the x-api-key header is wrong."""
+    """Return a FastAPI dependency that 401s when the x-api-key header is wrong.
+
+    Accepts any of: routing_admin_api_key, faq_admin_api_key, proton_backend_key.
+    All comparisons are constant-time to prevent timing attacks.
+    """
 
     def _check(x_api_key: str | None = Header(default=None)) -> None:
-        expected = settings.routing_admin_api_key
-        if not expected or not x_api_key:
+        if not x_api_key:
             raise HTTPException(status_code=401, detail="Missing or invalid API key")
-        if not hmac.compare_digest(x_api_key, expected):
-            raise HTTPException(status_code=401, detail="Missing or invalid API key")
+        candidates = [
+            settings.routing_admin_api_key,
+            settings.faq_admin_api_key,
+            settings.proton_backend_key,
+        ]
+        for key in candidates:
+            if key and hmac.compare_digest(x_api_key, key):
+                return
+        raise HTTPException(status_code=401, detail="Missing or invalid API key")
 
     return _check
 
@@ -53,6 +67,8 @@ def build_routing_router(
     settings: Settings,
     store: ChannelPriorityStore,
     presence: PresenceFetcher,
+    routing_svc=None,
+    assigner=None,
 ) -> APIRouter:
     """Build and return the routing config FastAPI router."""
     router = APIRouter(tags=["routing"])
@@ -90,5 +106,15 @@ def build_routing_router(
     async def delete_priority(agent_id: int) -> dict[str, str]:
         await store.delete(agent_id)
         return {"status": "deleted", "agent_id": str(agent_id)}
+
+    @router.post("/routing/assign", dependencies=[Depends(auth)])
+    async def assign_conversation(body: _AssignIn) -> dict:
+        if not settings.routing_enabled:
+            return {"assigned_agent_id": None, "disabled": True}
+        channel = await assigner.resolve_channel(body.conversation_id)
+        agent_id = await routing_svc.pick_agent(channel)
+        if agent_id is not None:
+            await assigner.assign(body.conversation_id, agent_id)
+        return {"assigned_agent_id": agent_id, "channel": channel}
 
     return router

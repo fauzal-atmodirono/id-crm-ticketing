@@ -31,10 +31,10 @@ index e22bf85..a0b5034 100644
  // GET /kb/settings -> { <key>: { value, source: "override"|"env" } }
 diff --git a/app/javascript/dashboard/components/proton/AgentPrioritiesEditor.vue b/app/javascript/dashboard/components/proton/AgentPrioritiesEditor.vue
 new file mode 100644
-index 0000000..058598f
+index 0000000..1f5592e
 --- /dev/null
 +++ b/app/javascript/dashboard/components/proton/AgentPrioritiesEditor.vue
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,188 @@
 +<!-- AgentPrioritiesEditor.vue — OUR file. Chrome-less editor for per-agent
 +     channel priorities. Embedded in Settings → Inboxes → Collaborators tab.
 +     Each agent has a Primary channel (the first in channel_priorities[]) and
@@ -50,6 +50,7 @@ index 0000000..058598f
 +} from 'dashboard/api/protonKnowledge';
 +
 +const CHANNELS = ['whatsapp', 'call', 'email', 'social', 'web'];
++const CHANNEL_LABELS = { whatsapp: 'WhatsApp', call: 'Call', email: 'Email', social: 'Social', web: 'Web' };
 +
 +export default {
 +  name: 'AgentPrioritiesEditor',
@@ -144,103 +145,82 @@ index 0000000..058598f
 +      if (!status) return '—';
 +      return status.charAt(0).toUpperCase() + status.slice(1).replace(/_/g, ' ');
 +    },
++
++    channelLabel(ch) { return CHANNEL_LABELS[ch] || ch; },
 +  },
 +};
 +</script>
 +
 +<template>
 +  <div>
-+    <p class="mb-3 text-xs text-n-slate-11">
-+      Priorities apply account-wide per agent; used to auto-assign a priority agent on handoff.
++    <p class="mb-4 text-sm text-n-slate-11">
++      Priorities apply account-wide per agent. On a handoff, the highest-priority online agent for the channel is auto-assigned.
 +    </p>
-+    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
-+      Loading agents...
-+    </div>
-+    <div
-+      v-else-if="errored"
-+      class="py-10 text-sm text-center text-n-slate-11"
-+    >
-+      Could not load agent priorities.
-+    </div>
-+    <div
-+      v-else-if="!rows.length"
-+      class="py-10 text-sm text-center text-n-slate-11"
-+    >
-+      No agents found.
-+    </div>
-+    <div
-+      v-else
-+      class="overflow-hidden border rounded-lg border-n-weak bg-n-background"
-+    >
-+      <table class="w-full text-sm border-collapse">
-+        <thead>
-+          <tr class="text-left border-b border-n-weak bg-n-alpha-black1">
-+            <th class="px-3 py-2 font-medium text-n-slate-11">Agent</th>
-+            <th class="px-3 py-2 font-medium text-n-slate-11">Status</th>
-+            <th class="px-3 py-2 font-medium text-n-slate-11">Primary channel</th>
-+            <th class="px-3 py-2 font-medium text-n-slate-11">Also handles</th>
-+            <th class="px-3 py-2 font-medium text-n-slate-11"></th>
-+          </tr>
-+        </thead>
-+        <tbody>
-+          <tr
-+            v-for="row in rows"
-+            :key="row.id"
-+            class="border-b border-n-weak last:border-0 align-middle"
-+          >
-+            <td class="px-3 py-2 font-medium text-n-slate-12">
-+              {{ row.name }}
-+            </td>
-+            <td class="px-3 py-2 text-n-slate-11">
++    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">Loading agents…</div>
++    <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">Could not load agent priorities.</div>
++    <div v-else-if="!rows.length" class="py-10 text-sm text-center text-n-slate-11">No agents in this inbox yet.</div>
++    <table v-else class="min-w-full table-auto outline outline-1 -outline-offset-1 outline-n-weak rounded-xl">
++      <thead>
++        <tr class="border-b border-n-weak">
++          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Agent</th>
++          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Status</th>
++          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Primary channel</th>
++          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Also handles</th>
++          <th class="py-3 px-4"></th>
++        </tr>
++      </thead>
++      <tbody class="divide-y divide-n-weak">
++        <tr v-for="row in rows" :key="row.id" class="align-middle">
++          <td class="py-3 px-4 text-sm font-medium text-n-slate-12 whitespace-nowrap">{{ row.name }}</td>
++          <td class="py-3 px-4 whitespace-nowrap">
++            <span class="inline-flex items-center gap-1.5 text-sm text-n-slate-11">
++              <span
++                class="w-2 h-2 rounded-full"
++                :class="row.availability_status === 'online' ? 'bg-n-teal-9' : 'bg-n-slate-8'"
++              />
 +              {{ statusLabel(row.availability_status) }}
-+            </td>
-+            <td class="px-3 py-2">
-+              <select
-+                v-model="row.primary"
-+                class="w-full max-w-[160px] px-2 py-1 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none disabled:opacity-50"
-+                :disabled="savingRows.has(row.id)"
-+              >
-+                <option value="">select</option>
-+                <option
-+                  v-for="ch in channels"
-+                  :key="ch"
-+                  :value="ch"
-+                >
-+                  {{ ch }}
-+                </option>
-+              </select>
-+            </td>
-+            <td class="px-3 py-2">
-+              <div class="flex flex-wrap gap-3">
-+                <label
-+                  v-for="ch in channels"
-+                  :key="ch"
-+                  class="flex items-center gap-1 text-xs text-n-slate-11 cursor-pointer select-none"
-+                >
-+                  <input
-+                    type="checkbox"
-+                    :checked="row.also.includes(ch)"
-+                    :disabled="savingRows.has(row.id)"
-+                    class="accent-n-brand"
-+                    @change="toggleAlso(row, ch)"
-+                  />
-+                  {{ ch }}
-+                </label>
-+              </div>
-+            </td>
-+            <td class="px-3 py-2">
++            </span>
++          </td>
++          <td class="py-3 px-4">
++            <select
++              v-model="row.primary"
++              :disabled="savingRows.has(row.id)"
++              class="w-40 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12 focus:outline-none disabled:opacity-50"
++            >
++              <option value="">Select…</option>
++              <option v-for="ch in channels" :key="ch" :value="ch">{{ channelLabel(ch) }}</option>
++            </select>
++          </td>
++          <td class="py-3 px-4">
++            <div class="flex flex-wrap gap-2">
 +              <button
-+                class="px-3 py-1.5 text-xs font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1 disabled:opacity-50"
++                v-for="ch in channels"
++                :key="ch"
++                type="button"
 +                :disabled="savingRows.has(row.id)"
-+                @click="save(row)"
++                class="px-2.5 py-1 text-xs font-medium border rounded-full transition-colors disabled:opacity-50"
++                :class="row.also.includes(ch)
++                  ? 'border-n-brand bg-n-alpha-black2 text-n-brand'
++                  : 'border-n-weak text-n-slate-11 hover:bg-n-alpha-black1'"
++                @click="toggleAlso(row, ch)"
 +              >
-+                Save
++                {{ channelLabel(ch) }}
 +              </button>
-+            </td>
-+          </tr>
-+        </tbody>
-+      </table>
-+    </div>
++            </div>
++          </td>
++          <td class="py-3 px-4 text-end whitespace-nowrap">
++            <button
++              type="button"
++              :disabled="savingRows.has(row.id)"
++              class="px-3 py-1.5 text-sm font-medium rounded-lg bg-n-brand text-white hover:opacity-90 disabled:opacity-50"
++              @click="save(row)"
++            >
++              Save
++            </button>
++          </td>
++        </tr>
++      </tbody>
++    </table>
 +  </div>
 +</template>
 diff --git a/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue b/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue

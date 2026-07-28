@@ -1,0 +1,321 @@
+diff --git a/app/javascript/dashboard/api/protonKnowledge.js b/app/javascript/dashboard/api/protonKnowledge.js
+index e22bf85..a0b5034 100644
+--- a/app/javascript/dashboard/api/protonKnowledge.js
++++ b/app/javascript/dashboard/api/protonKnowledge.js
+@@ -252,6 +252,26 @@ export function setInboxTiming(inboxId, body) {
+   });
+ }
+ 
++// ── Agent routing priorities ──────────────────────────────────────────────────
++
++// GET /routing/agents -> [{ id, name, availability_status }]
++export function getRoutingAgents() {
++  return kbRequest('/routing/agents');
++}
++
++// GET /routing/priorities -> [{ agent_id, channel_priorities: [] }]
++export function getRoutingPriorities() {
++  return kbRequest('/routing/priorities');
++}
++
++// POST /routing/priorities  body: { agent_id, channel_priorities: [] }
++export function setRoutingPriority(agentId, channelPriorities) {
++  return kbRequest('/routing/priorities', {
++    method: 'POST',
++    body: { agent_id: agentId, channel_priorities: channelPriorities },
++  });
++}
++
+ // ── Tenant settings ───────────────────────────────────────────────────────────
+ 
+ // GET /kb/settings -> { <key>: { value, source: "override"|"env" } }
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 8afc556..aefe31b 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -581,6 +581,13 @@ const menuItems = computed(() => {
+                   section: 'settings',
+                 }),
+               },
++              {
++                name: 'Agent Priorities',
++                label: 'Agent Priorities',
++                to: accountScopedRoute('proton_knowledge', {
++                  section: 'agent-priorities',
++                }),
++              },
+             ],
+           },
+         ]
+diff --git a/app/javascript/dashboard/components/proton/AgentPriorities.vue b/app/javascript/dashboard/components/proton/AgentPriorities.vue
+new file mode 100644
+index 0000000..e622228
+--- /dev/null
++++ b/app/javascript/dashboard/components/proton/AgentPriorities.vue
+@@ -0,0 +1,238 @@
++<!-- AgentPriorities.vue — OUR file. Native, Chatwoot-styled page for configuring
++     per-agent channel priorities. Each agent has a Primary channel (the first in
++     channel_priorities[]) and zero-or-more "Also handles" channels (the rest).
++     Reads from GET /routing/agents + GET /routing/priorities; writes via
++     POST /routing/priorities. Part of Phase 5 WhatsApp custom auto-assignment. -->
++<script>
++import { useAlert } from 'dashboard/composables';
++import {
++  getRoutingAgents,
++  getRoutingPriorities,
++  setRoutingPriority,
++} from 'dashboard/api/protonKnowledge';
++
++const CHANNELS = ['whatsapp', 'call', 'email', 'social', 'web'];
++
++export default {
++  name: 'AgentPriorities',
++  data() {
++    return {
++      rows: [],
++      loading: false,
++      errored: false,
++      savingRows: new Set(),
++      channels: CHANNELS,
++    };
++  },
++  async mounted() {
++    await this.load();
++  },
++  methods: {
++    async load() {
++      this.loading = true;
++      this.errored = false;
++      try {
++        const [agents, priorities] = await Promise.all([
++          getRoutingAgents(),
++          getRoutingPriorities(),
++        ]);
++        // Build a lookup: agent_id -> channel_priorities[]
++        const priMap = {};
++        const priArr = Array.isArray(priorities)
++          ? priorities
++          : priorities.priorities || [];
++        priArr.forEach(p => {
++          priMap[p.agent_id] = p.channel_priorities || [];
++        });
++
++        const agentArr = Array.isArray(agents)
++          ? agents
++          : agents.agents || [];
++
++        this.rows = agentArr.map(a => {
++          const cp = priMap[a.id] || [];
++          return {
++            id: a.id,
++            name: a.name || String(a.id),
++            availability_status: a.availability_status || '',
++            primary: cp[0] || '',
++            also: cp.slice(1),
++          };
++        });
++      } catch (err) {
++        this.errored = true;
++        if (err.status === 401) {
++          useAlert('Unauthorized (401) — check the backend key configuration.');
++        } else if (err.status === 503) {
++          useAlert('Routing service unavailable (503) on the backend.');
++        } else {
++          useAlert('Failed to load agent priorities: ' + (err.message || String(err)));
++        }
++      } finally {
++        this.loading = false;
++      }
++    },
++
++    toggleAlso(row, channel) {
++      if (row.also.includes(channel)) {
++        row.also = row.also.filter(c => c !== channel);
++      } else {
++        row.also = [...row.also, channel];
++      }
++    },
++
++    async save(row) {
++      if (!row.primary) {
++        useAlert('Pick a primary channel before saving.');
++        return;
++      }
++      const channelPriorities = [
++        row.primary,
++        ...row.also.filter(c => c !== row.primary),
++      ];
++      this.savingRows = new Set([...this.savingRows, row.id]);
++      try {
++        await setRoutingPriority(row.id, channelPriorities);
++        useAlert('Agent "' + row.name + '" priorities saved.');
++      } catch (err) {
++        useAlert('Failed to save "' + row.name + '": ' + (err.message || String(err)));
++      } finally {
++        const next = new Set(this.savingRows);
++        next.delete(row.id);
++        this.savingRows = next;
++      }
++    },
++
++    statusLabel(status) {
++      if (!status) return '—';
++      return status.charAt(0).toUpperCase() + status.slice(1).replace(/_/g, ' ');
++    },
++  },
++};
++</script>
++
++<template>
++  <div class="flex flex-col w-full h-full">
++    <!-- Toolbar -->
++    <div
++      class="flex items-center flex-shrink-0 gap-3 px-4 py-3 border-b border-n-weak"
++    >
++      <button
++        class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1"
++        :disabled="loading"
++        @click="load"
++      >
++        Refresh
++      </button>
++      <span class="ml-auto text-xs text-n-slate-11">
++        {{ rows.length }} agent{{ rows.length === 1 ? '' : 's' }}
++      </span>
++    </div>
++
++    <!-- Header note -->
++    <div
++      class="px-4 py-2 text-xs border-b text-n-slate-11 border-n-weak bg-n-alpha-black1"
++    >
++      Set each agent's primary channel and any additional channels they handle.
++      The primary channel is preferred for auto-assignment; also-handles channels
++      are used as fallback when the primary queue is busy.
++    </div>
++
++    <!-- Body -->
++    <div class="flex-1 p-4 overflow-auto">
++      <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
++        Loading agents...
++      </div>
++      <div
++        v-else-if="errored"
++        class="py-10 text-sm text-center text-n-slate-11"
++      >
++        Could not load agent priorities.
++      </div>
++      <div
++        v-else-if="!rows.length"
++        class="py-10 text-sm text-center text-n-slate-11"
++      >
++        No agents found.
++      </div>
++      <div
++        v-else
++        class="overflow-hidden border rounded-lg border-n-weak bg-n-background"
++      >
++        <table class="w-full text-sm border-collapse">
++          <thead>
++            <tr class="text-left border-b border-n-weak bg-n-alpha-black1">
++              <th class="px-3 py-2 font-medium text-n-slate-11">Agent</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Status</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Primary channel</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">Also handles</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11"></th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="row in rows"
++              :key="row.id"
++              class="border-b border-n-weak last:border-0 align-middle"
++            >
++              <!-- Agent name -->
++              <td class="px-3 py-2 font-medium text-n-slate-12">
++                {{ row.name }}
++              </td>
++              <!-- Availability status -->
++              <td class="px-3 py-2 text-n-slate-11">
++                {{ statusLabel(row.availability_status) }}
++              </td>
++              <!-- Primary channel select -->
++              <td class="px-3 py-2">
++                <select
++                  v-model="row.primary"
++                  class="w-full max-w-[160px] px-2 py-1 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none disabled:opacity-50"
++                  :disabled="savingRows.has(row.id)"
++                >
++                  <option value="">— select —</option>
++                  <option
++                    v-for="ch in channels"
++                    :key="ch"
++                    :value="ch"
++                  >
++                    {{ ch }}
++                  </option>
++                </select>
++              </td>
++              <!-- Also-handles checkboxes -->
++              <td class="px-3 py-2">
++                <div class="flex flex-wrap gap-3">
++                  <label
++                    v-for="ch in channels"
++                    :key="ch"
++                    class="flex items-center gap-1 text-xs text-n-slate-11 cursor-pointer select-none"
++                  >
++                    <input
++                      type="checkbox"
++                      :checked="row.also.includes(ch)"
++                      :disabled="savingRows.has(row.id)"
++                      class="accent-n-brand"
++                      @change="toggleAlso(row, ch)"
++                    />
++                    {{ ch }}
++                  </label>
++                </div>
++              </td>
++              <!-- Save button -->
++              <td class="px-3 py-2">
++                <button
++                  class="px-3 py-1.5 text-xs font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1 disabled:opacity-50"
++                  :disabled="savingRows.has(row.id)"
++                  @click="save(row)"
++                >
++                  Save
++                </button>
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++    </div>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+index 75b0f9a..2daecdf 100644
+--- a/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
++++ b/app/javascript/dashboard/views/ProtonKnowledgeHost.vue
+@@ -14,6 +14,7 @@ import KnowledgePlayground from 'dashboard/components/proton/KnowledgePlayground
+ import KnowledgeTools from 'dashboard/components/proton/KnowledgeTools.vue';
+ import KnowledgeScenarios from 'dashboard/components/proton/KnowledgeScenarios.vue';
+ import KnowledgeInboxes from 'dashboard/components/proton/KnowledgeInboxes.vue';
++import AgentPriorities from 'dashboard/components/proton/AgentPriorities.vue';
+ 
+ const route = useRoute();
+ 
+@@ -27,6 +28,7 @@ const SECTIONS = {
+   inboxes: 'Inboxes',
+   tools: 'Tools',
+   settings: 'Settings',
++  'agent-priorities': 'Agent Priorities',
+ };
+ 
+ const section = computed(() => route.params.section || 'faqs');
+@@ -52,6 +54,7 @@ const sectionLabel = computed(() => SECTIONS[section.value] || section.value);
+     <KnowledgeScenarios v-else-if="section === 'scenarios'" />
+     <KnowledgeTools v-else-if="section === 'tools'" />
+     <KnowledgeInboxes v-else-if="section === 'inboxes'" />
++    <AgentPriorities v-else-if="section === 'agent-priorities'" />
+     <div
+       v-else
+       class="flex flex-col items-center justify-center flex-1 gap-2 text-center"

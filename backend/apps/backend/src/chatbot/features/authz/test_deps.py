@@ -84,3 +84,25 @@ async def test_rbac_enabled_missing_token_denies(tmp_path):
     client = _app_with_endpoint(dep)
 
     assert client.get("/protected").status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_rbac_enabled_invalid_token_denies(tmp_path, respx_mock):
+    """A present-but-bad token (Chatwoot rejects it) must resolve to a 401
+    deny through require_permission's own wiring, not just TokenValidator's
+    unit tests."""
+    settings = get_settings().model_copy(update={"rbac_enabled": True})
+    engine = build_engine(f"sqlite+aiosqlite:///{tmp_path}/deps_test4.db")
+    await init_authz_db(engine)
+    repo = AuthzRepository(build_session_maker(engine))
+    await seed_defaults(repo)
+
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(401, json={"error": "Invalid access token"})
+    )
+    validator = TokenValidator(settings)
+    dep = require_permission("sla.manage", repo=repo, validator=validator, settings=settings)
+    client = _app_with_endpoint(dep)
+
+    res = client.get("/protected", headers={"x-chatwoot-access-token": "tok-bogus"})
+    assert res.status_code == 401

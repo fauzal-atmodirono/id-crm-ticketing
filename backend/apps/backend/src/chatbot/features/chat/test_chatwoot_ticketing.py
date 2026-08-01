@@ -198,10 +198,11 @@ async def test_create_ticket_complaint_urgency_adds_ticketing_label() -> None:
 
 @pytest.mark.asyncio
 async def test_create_ticket_writes_dimension_labels_in_single_final_call() -> None:
-    # The AI classification must land as labels using the SAME convention the
-    # metrics mapping parses (category_/subcat_/division_/dept_/sla_), and must
-    # ride in the ONE final labels call alongside the escalation labels — a second
-    # labels POST would re-fire the webhook and spawn a duplicate Zammad ticket.
+    # division/department/sla still land as labels using the SAME convention the
+    # metrics mapping parses (division_/dept_/sla_), and must ride in the ONE
+    # final labels call alongside the escalation labels — a second labels POST
+    # would re-fire the webhook and spawn a duplicate Zammad ticket. category/
+    # subcategory have moved to custom attributes (see the test below).
     fake = _FakeClient({("POST", "/conversations"): {"id": 99}})
     adapter = ChatwootAdapter(
         Settings(
@@ -227,17 +228,60 @@ async def test_create_ticket_writes_dimension_labels_in_single_final_call() -> N
     assert len(labels_calls) == 1, "exactly one labels call (no duplicate-ticket trigger)"
     labels = labels_calls[0]["labels"]  # type: ignore[index]
     assert labels == [
-        "category_aftersales",
-        "subcat_battery_health",
         "division_aftersales",
         "dept_service_center",
         "sla_480",
         "ai-escalation",
         "escalate",
     ]
-    # sla_minutes also persisted as a numeric custom attribute
-    ca = next(pl for _m, p, pl in fake.calls if p.endswith("/custom_attributes"))
-    assert ca == {"custom_attributes": {"sla_minutes": 480}}
+    assert not any(lbl.startswith("category_") for lbl in labels)
+    assert not any(lbl.startswith("subcat_") for lbl in labels)
+    # category/subcategory/sla_minutes persisted as custom attributes, in the
+    # SAME single custom_attributes call.
+    custom_attrs_calls = [pl for _m, p, pl in fake.calls if p.endswith("/custom_attributes")]
+    assert len(custom_attrs_calls) == 1, "ONE custom_attributes call, not two"
+    ca = custom_attrs_calls[0]
+    assert ca == {
+        "custom_attributes": {
+            "sla_minutes": 480,
+            "case_category": "Aftersales",
+            "case_subcategory": "Battery Health",
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_ticket_writes_case_category_as_custom_attribute() -> None:
+    # case_category/case_subcategory are Chatwoot custom attribute definitions
+    # (List-type, single-select) — they must be written via custom_attributes,
+    # not labels, and merged into the SAME call that already writes sla_minutes.
+    fake = _FakeClient({("POST", "/conversations"): {"id": 99}})
+    adapter = _adapter(fake)
+    await adapter.create_ticket(
+        session_id="s1",
+        title="t",
+        body="b",
+        urgency="high",
+        category="sales",
+        subcategory="Test Drive Booking",
+        division="Sales",
+        department="dept_sales",
+        sla_minutes=60,
+    )
+
+    custom_attrs_calls = [pl for _m, p, pl in fake.calls if p.endswith("/custom_attributes")]
+    assert len(custom_attrs_calls) == 1  # ONE call, not two — merged with sla_minutes
+    body = custom_attrs_calls[0]
+    assert body is not None
+    assert body["custom_attributes"]["case_category"] == "sales"
+    assert body["custom_attributes"]["case_subcategory"] == "Test Drive Booking"
+    assert body["custom_attributes"]["sla_minutes"] == 60
+
+    labels_calls = [pl for _m, p, pl in fake.calls if p.endswith("/labels")]
+    labels = labels_calls[0]["labels"]  # type: ignore[index]
+    assert not any(lbl.startswith("category_") for lbl in labels)
+    assert not any(lbl.startswith("subcat_") for lbl in labels)
+    assert any(lbl.startswith("division_") for lbl in labels)  # unaffected
 
 
 @pytest.mark.asyncio

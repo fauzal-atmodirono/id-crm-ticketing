@@ -140,9 +140,10 @@ async def test_open_handoff_marks_conversation_as_ai_handoff() -> None:
 
 @pytest.mark.asyncio
 async def test_open_handoff_writes_dimension_labels_in_single_final_call() -> None:
-    # The bridge path (Chatwoot escalation) must persist the AI classification as
-    # labels the metrics sync can read back, in the ONE final labels call — a
-    # second labels POST would spawn a duplicate Zammad ticket.
+    # The bridge path (Chatwoot escalation) must persist division/department/sla
+    # as labels the metrics sync can read back, in the ONE final labels call — a
+    # second labels POST would spawn a duplicate Zammad ticket. category/
+    # subcategory have moved to custom attributes (see the test below).
     adapter = ChatwootAdapter(
         Settings(
             chatwoot_account_id=1,
@@ -169,17 +170,26 @@ async def test_open_handoff_writes_dimension_labels_in_single_final_call() -> No
     await adapter.open_handoff(payload)
     labels_calls = [pl for _m, p, pl in fake.calls if p.endswith("/labels")]
     assert len(labels_calls) == 1
-    assert labels_calls[0]["labels"] == [  # type: ignore[index]
-        "category_aftersales",
-        "subcat_battery",
+    labels = labels_calls[0]["labels"]  # type: ignore[index]
+    assert labels == [
         "division_aftersales",
         "dept_service_center",
         "sla_480",
         "ai-escalation",
         "escalate",
     ]
-    ca = next(pl for _m, p, pl in fake.calls if p.endswith("/custom_attributes"))
-    assert ca == {"custom_attributes": {"sla_minutes": 480}}
+    assert not any(lbl.startswith("category_") for lbl in labels)
+    assert not any(lbl.startswith("subcat_") for lbl in labels)
+    custom_attrs_calls = [pl for _m, p, pl in fake.calls if p.endswith("/custom_attributes")]
+    assert len(custom_attrs_calls) == 1, "ONE custom_attributes call, not two"
+    ca = custom_attrs_calls[0]
+    assert ca == {
+        "custom_attributes": {
+            "sla_minutes": 480,
+            "case_category": "Aftersales",
+            "case_subcategory": "Battery",
+        }
+    }
 
 
 @pytest.mark.asyncio

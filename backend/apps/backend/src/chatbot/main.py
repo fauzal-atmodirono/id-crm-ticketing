@@ -480,6 +480,34 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             from chatbot.features.chat.kb_db import init_kb_db
             await init_kb_db(engine)
 
+    # --- RBAC (roles/permissions; default-off) ---
+    authz_repo = None
+    if settings.rbac_enabled and settings.rbac_database_url:
+        from chatbot.features.authz.db import build_engine as build_authz_engine
+        from chatbot.features.authz.db import build_session_maker as build_authz_session_maker
+        from chatbot.features.authz.identity import TokenValidator
+        from chatbot.features.authz.repository import AuthzRepository
+        from chatbot.features.authz.router import build_authz_router
+
+        authz_engine = build_authz_engine(settings.rbac_database_url)
+        authz_session_maker = build_authz_session_maker(authz_engine)
+        authz_repo = AuthzRepository(authz_session_maker)
+        authz_validator = TokenValidator(settings)
+        app.include_router(build_authz_router(authz_repo, authz_validator, settings))
+        app.state.authz_engine = authz_engine
+        app.state.authz_repo = authz_repo
+
+    @app.on_event("startup")
+    async def _init_authz_db() -> None:
+        engine = getattr(app.state, "authz_engine", None)
+        repo = getattr(app.state, "authz_repo", None)
+        if engine is not None and repo is not None:
+            from chatbot.features.authz.db import init_authz_db
+            from chatbot.features.authz.seed import seed_defaults
+
+            await init_authz_db(engine)
+            await seed_defaults(repo)
+
     # --- Proton AI-assist (rewired Captain AI) ---
     _wire_assist(
         app,

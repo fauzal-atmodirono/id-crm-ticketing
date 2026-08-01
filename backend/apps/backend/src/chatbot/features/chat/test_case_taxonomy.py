@@ -66,3 +66,21 @@ def test_subcategories_default_to_empty_list_when_absent():
 def test_subcategories_wrong_type_ignored_not_crash():
     tax = build_case_taxonomy(_settings('{"sales": {"label": "Sales", "subcategories": "not-a-list"}}'))
     assert tax.subcategories_for("sales") == []
+
+
+def test_default_settings_produce_non_empty_taxonomy():
+    # No case_taxonomy_json override — exercises the actual shipped default
+    # value in config.py end-to-end, so a typo in that hand-written JSON
+    # string fails this test instead of silently degrading to an empty
+    # taxonomy (fail-open) with only a warning-level log.
+    tax = build_case_taxonomy(Settings(_env_file=None))
+    assert tax.is_empty() is False
+    assert tax.main_categories() == [
+        "sales",
+        "aftersales",
+        "apps",
+        "charging",
+        "roadside_assistance",
+        "general_enquiry",
+        "complaint",
+    ]

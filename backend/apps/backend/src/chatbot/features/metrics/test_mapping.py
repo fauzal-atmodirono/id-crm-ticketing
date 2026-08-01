@@ -414,3 +414,33 @@ def test_chatwoot_dealer_in_conversation_row_type() -> None:
     assert isinstance(row, ConversationRow)
     assert hasattr(row, "dealer")
     assert row.dealer == "jakarta"
+
+
+# --- Task 5: case_category/case_subcategory from custom_attributes -----------
+
+
+def test_map_chatwoot_conversation_reads_case_category_from_custom_attributes() -> None:
+    """category/subcategory read from custom_attributes, not labels."""
+    row = map_chatwoot_conversation_to_row(
+        _conv(
+            labels=["division_sales", "sla_60"],
+            custom_attributes={
+                "case_category": "Sales",
+                "case_subcategory": "Sales: Test Drive Booking",
+            },
+        )
+    )
+    assert row is not None
+    assert row.category == "Sales"
+    assert row.subcategory == "Sales: Test Drive Booking"
+    assert row.division == "sales"  # explicit division_ label still wins
+
+
+def test_map_chatwoot_conversation_missing_custom_attributes_yields_none_category() -> None:
+    """No custom_attributes → category/subcategory are None."""
+    row = map_chatwoot_conversation_to_row(
+        _conv(labels=["division_apps"])
+    )
+    assert row is not None
+    assert row.category is None
+    assert row.subcategory is None

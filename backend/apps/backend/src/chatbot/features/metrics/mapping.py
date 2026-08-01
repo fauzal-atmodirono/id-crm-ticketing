@@ -305,8 +305,10 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
     created_iso = _epoch_to_iso(conv.get("created_at"))
     updated_iso = _epoch_to_iso(conv.get("last_activity_at") or conv.get("updated_at"))
 
-    category = _first_tag(labels, _CATEGORY_TAG)
-    subcategory = _first_tag(labels, _SUBCAT_TAG)
+    custom_attrs = conv.get("custom_attributes")
+    custom_attrs = custom_attrs if isinstance(custom_attrs, dict) else {}
+    category = custom_attrs.get("case_category") or _first_tag(labels, _CATEGORY_TAG)
+    subcategory = custom_attrs.get("case_subcategory") or _first_tag(labels, _SUBCAT_TAG)
     department = _first_tag(labels, _DEPT_TAG)
     # Prefer an explicit division_* label; else derive it from the category.
     division = _first_tag(labels, _DIVISION_TAG) or (

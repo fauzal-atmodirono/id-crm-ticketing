@@ -13,7 +13,13 @@ x-chatwoot-env: &chatwoot-env
   INSTALLATION_ENV: docker
   RAILS_LOG_TO_STDOUT: "true"
   SECRET_KEY_BASE: ${SECRET_KEY_BASE}
-  FRONTEND_URL: http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io
+  # Override for local dev to dodge browsers' HTTPS-upgrade of "public-looking"
+  # nip.io hostnames (Caddy only serves this site over plain http://, so a
+  # forced-https retry gets connection-reset). *.localhost is exempt from that
+  # upgrade per RFC 6761, so tenants/default.env sets this to http://crm.localhost.
+  # Must stay equal to PROTON_BACKEND_PUBLIC_URL below — that's what keeps the
+  # SPA's backend fetches same-origin.
+  FRONTEND_URL: ${FRONTEND_URL_OVERRIDE:-http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io}
   POSTGRES_HOST: postgres
   POSTGRES_USERNAME: chatwoot_${TENANT}
   POSTGRES_PASSWORD: ${CHATWOOT_DB_PASSWORD}

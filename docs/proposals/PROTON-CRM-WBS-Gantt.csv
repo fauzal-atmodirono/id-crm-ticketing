@@ -1,0 +1,50 @@
+WBS,Task Name,Phase,Owner Role,Start Date,End Date,Duration (workdays),Predecessors,% Complete,Milestone,Deliverable
+0,Project Management & Governance,PM,PM,2026-08-04,2026-11-23,80,,0,FALSE,Status reports & RAID log
+0.1,Kickoff,P0,PM,2026-08-04,2026-08-04,0,,0,TRUE,Kickoff deck
+1,P0: Discovery & GCP Foundation,P0,SA,2026-08-04,2026-08-17,10,0.1,0,FALSE,
+1.1,Requirements & SOP discovery workshops,P0,SA,2026-08-04,2026-08-10,5,0.1,0,FALSE,Requirements & SOP catalog
+1.2,Solution architecture & migration plan,P0,SA,2026-08-11,2026-08-14,4,1.1,0,FALSE,Architecture design doc
+1.3,"GCP org/project, IAM, VPC & landing zone",P0,DevOps,2026-08-06,2026-08-12,5,0.1,0,FALSE,Landing zone (Terraform)
+1.4,"Provision Cloud SQL, Memorystore, BigQuery, AR",P0,DevOps,2026-08-13,2026-08-17,3,1.3,0,FALSE,Managed data services
+1.5,GCP Landing Zone Ready,P0,DevOps,2026-08-17,2026-08-17,0,"1.3,1.4",0,TRUE,
+2,P1: Core Platform Cutover,P1,SA,2026-08-18,2026-09-21,25,1.5,0,FALSE,
+2.1,Provision GKE Standard cluster + per-tenant node pools,P1,DevOps,2026-08-18,2026-08-21,4,1.5,0,FALSE,GKE cluster
+2.2,"Namespaces, RBAC, ingress & Caddy/reverse proxy",P1,DevOps,2026-08-24,2026-08-26,3,2.1,0,FALSE,Cluster networking
+2.3,Deploy Chatwoot on GKE,P1,DevOps,2026-08-24,2026-08-26,3,2.1,0,FALSE,Chatwoot deployment
+2.4,Deploy agent + backend services,P1,BE,2026-08-27,2026-08-31,3,2.3,0,FALSE,agent+backend services
+2.5,Platform Live on GKE,P1,SA,2026-09-01,2026-09-01,0,"2.3,2.4",0,TRUE,
+2.6,Zendesk data extract & mapping,P1,BE,2026-08-24,2026-08-28,5,1.5,0,FALSE,Data mapping spec
+2.7,Migrate Zendesk contacts/tickets/history,P1,BE,2026-09-01,2026-09-04,4,"2.6,2.5",0,FALSE,Migrated dataset
+2.8,Data Migrated,P1,BE,2026-09-07,2026-09-07,0,2.7,0,TRUE,
+2.9,Wire WhatsApp (Twilio) channel,P1,BE,2026-09-01,2026-09-04,4,2.5,0,FALSE,WhatsApp inbox
+2.10,Wire Website widget & API channels,P1,FE,2026-09-01,2026-09-04,4,2.5,0,FALSE,Web/API channels
+2.11,Channels Wired,P1,SA,2026-09-07,2026-09-07,0,"2.9,2.10",0,TRUE,
+2.12,KB migration to pgvector + Vertex corpus,P1,BE,2026-09-01,2026-09-07,5,2.5,0,FALSE,Migrated KB
+2.13,AI decisioning + SOP lifecycle flows,P1,BE,2026-09-08,2026-09-14,5,"2.12,2.11",0,FALSE,AI/SOP flows
+2.14,P1 integration testing,P1,QA,2026-09-15,2026-09-21,5,2.13,0,FALSE,P1 test report
+3,P2: Gap Closure,P2,SA,2026-09-08,2026-10-26,35,2.5,0,FALSE,
+3.1,Email escalation: auto-ack + internal case forward (SOP),P2,BE,2026-09-08,2026-09-16,7,2.5,0,FALSE,Email escalation flow
+3.2,"Customer 360 card (4-section, <3s sync)",P2,FE,2026-09-08,2026-09-17,8,2.5,0,FALSE,Customer 360 UI
+3.3,DMS/TSP integration for Customer 360,P2,BE,2026-09-18,2026-09-28,7,3.2,0,FALSE,DMS/TSP connectors
+3.4,Case management: hierarchical categories,P2,BE,2026-09-11,2026-09-18,6,2.5,0,FALSE,Category taxonomy
+3.5,Per-ticket dashboard + RBAC roles,P2,FE,2026-09-21,2026-09-28,6,3.4,0,FALSE,Ticket dashboard + RBAC
+3.6,Reporting: BigQuery pipelines + role-based views,P2,BI,2026-09-15,2026-09-23,7,2.8,0,FALSE,BI data pipelines
+3.7,"Power BI dashboards + anomaly, NPS/CRR",P2,BI,2026-09-24,2026-10-01,6,3.6,0,FALSE,Power BI reports
+3.8,"Agent mgmt: channel priority, auto-busy, round-robin",P2,BE,2026-09-17,2026-09-24,6,2.5,0,FALSE,Agent routing rules
+3.9,Multimodal WhatsApp + multi-language,P2,BE,2026-09-22,2026-09-28,5,2.9,0,FALSE,Multimodal/i18n support
+3.10,Bulk FAQ/PDF upload ingestion,P2,BE,2026-09-15,2026-09-18,4,2.12,0,FALSE,Bulk KB upload
+3.11,Email & Social channel enablement,P2,FE,2026-09-18,2026-09-24,5,2.11,0,FALSE,Email/Social inboxes
+3.12,P2 integration & regression testing,P2,QA,2026-10-13,2026-10-21,7,"3.1,3.3,3.5,3.7,3.8,3.9,3.10,3.11",0,FALSE,P2 test report
+3.13,P2 Gap-Closure Complete,P2,SA,2026-10-21,2026-10-21,0,3.12,0,TRUE,
+4,"P3: Hardening, Parallel-Run & Handover",P3,SA,2026-10-21,2026-11-23,24,3.13,0,FALSE,
+4.1,"HA, autoscaling & resource tuning",P3,DevOps,2026-10-21,2026-10-27,5,3.13,0,FALSE,HA/autoscaling config
+4.2,"Monitoring, alerting & logging",P3,DevOps,2026-10-21,2026-10-27,5,3.13,0,FALSE,Observability stack
+4.3,Backups & disaster-recovery runbook,P3,DevOps,2026-10-28,2026-11-02,4,4.1,0,FALSE,Backup/DR plan
+4.4,User Acceptance Testing (UAT),P3,QA,2026-10-28,2026-11-05,7,"4.1,4.2",0,FALSE,UAT results
+4.5,UAT Sign-off,P3,PM,2026-11-05,2026-11-05,0,4.4,0,TRUE,UAT sign-off
+4.6,Parallel-run (Zendesk + new CRM),P3,PM,2026-11-06,2026-11-12,5,4.5,0,FALSE,Parallel-run report
+4.7,Go-Live / Cutover,P3,SA,2026-11-12,2026-11-12,0,4.6,0,TRUE,Cutover runbook
+4.8,Zendesk decommission,P3,DevOps,2026-11-13,2026-11-17,3,4.7,0,FALSE,Decommission record
+4.9,Zendesk Decommissioned,P3,DevOps,2026-11-17,2026-11-17,0,4.8,0,TRUE,
+4.10,Ops runbook + admin/agent training & handover,P3,PM,2026-11-13,2026-11-19,5,4.7,0,FALSE,Runbook & training
+4.11,Project Closure,P3,PM,2026-11-23,2026-11-23,0,"4.10,4.9",0,TRUE,Closure report

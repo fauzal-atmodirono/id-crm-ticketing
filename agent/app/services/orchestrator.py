@@ -584,13 +584,13 @@ async def _process_via_chat_agent(
                 if not data_url:
                     continue
                 if file_type == "audio" and audio_base64 is None:
-                    fetched = await fetch_attachment_bytes(data_url)
+                    fetched = await fetch_attachment_bytes(data_url, file_type_hint=file_type)
                     if fetched is not None:
                         data, mime = fetched
                         audio_base64 = base64.b64encode(data).decode()
                         audio_mime_type = mime
                 elif file_type == "image" and image_base64 is None:
-                    fetched = await fetch_attachment_bytes(data_url)
+                    fetched = await fetch_attachment_bytes(data_url, file_type_hint=file_type)
                     if fetched is not None:
                         data, mime = fetched
                         image_base64 = base64.b64encode(data).decode()

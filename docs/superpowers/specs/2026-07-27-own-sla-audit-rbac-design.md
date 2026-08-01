@@ -1,8 +1,15 @@
 # Own SLA + Audit + RBAC — replace Chatwoot enterprise surfaces (design)
 
-**Date:** 2026-07-27 · **Status:** design for review · **Companion:**
-`2026-07-19-enterprise-cleanup-design.md`,
-`2026-07-18-crm-enhancement-program-spec.md`.
+**Date:** 2026-07-27 · **Re-verified:** 2026-08-01 (all technical claims re-checked
+against current code — still accurate; no RBAC/roles work has landed since) ·
+**Status:** Approved · **Companion:** `2026-07-19-enterprise-cleanup-design.md`,
+`2026-07-18-crm-enhancement-program-spec.md`. Roadmap item #2 in
+`docs/roadmap/2026-08-01-next-development-roadmap.md`, approved to implement
+together with `2026-08-01-case-categories-subcategories-design.md` in one run.
+
+**2026-08-01 update:** D2 resolved — SLA policy is **per-inbox from day one**
+(see Feature 1 and D2 below), superseding this doc's original "global first"
+recommendation.
 
 ## Problem
 
@@ -74,15 +81,21 @@ enterprise pages; the features below replace them.
 
 - **Keep** `features/chat/sla.py` and its scheduler as-is.
 - **New SLA-policy store** in the backend's per-tenant Postgres (the same
-  Postgres the KB feature provisions under `KNOWLEDGE_PG_ENABLED`). Columns
-  cover the values `sla.py` reads today: response window, resolution window,
-  per-channel ACK overrides, PIC WhatsApp number, engine on/off. `sla.py` reads
-  the store with the existing env values (`config.py` `sla_*`) as the seed /
-  fallback default — so an unpopulated store = today's behavior.
+  Postgres the KB feature provisions under `KNOWLEDGE_PG_ENABLED`), keyed by
+  **`(tenant, inbox_id)`** with `inbox_id` nullable — a null-`inbox_id` row is
+  the tenant-wide default; a specific-`inbox_id` row overrides it for that
+  inbox. Columns cover the values `sla.py` reads today: response window,
+  resolution window, per-channel ACK overrides, PIC WhatsApp number, engine
+  on/off. `sla.py`'s lookup order is **inbox-specific row → tenant-default row
+  → existing env values (`config.py` `sla_*`)** — so an unpopulated store (no
+  rows at all) is still today's behavior, byte-identical.
 - **New UI:** an "SLA Policies" page in the forked CRM, added as a new
   `patches/NNNN-*.patch` following the `KnowledgeSettings.vue` pattern (patches
-  0013/0022). Reads/writes the policy store via a backend admin endpoint (RBAC
-  gated — see Feature 3).
+  0013/0022). An inbox picker (plus a "Tenant default" option) selects which
+  row is being edited; unset fields on an inbox-specific row inherit from the
+  tenant default rather than requiring every field to be re-entered per inbox.
+  Reads/writes the policy store via a backend admin endpoint (RBAC gated — see
+  Feature 3).
 
 ### Feature 2 — Audit (viewer only; stores unchanged)
 
@@ -164,8 +177,9 @@ Chatwoot Rails (conversations/inboxes)
 ## Testing
 
 - **Backend unit tests:** authz allow/deny matrix; idempotent role seeding;
-  SLA-policy store read/seed/override; audit list/filter endpoint. Mirror the
-  existing `pytest` + `respx` conventions (Chatwoot profile stubbed).
+  SLA-policy store read/seed/override, including the inbox-specific →
+  tenant-default → env-fallback resolution order; audit list/filter endpoint.
+  Mirror the existing `pytest` + `respx` conventions (Chatwoot profile stubbed).
 - **Fork patches:** `git apply --check` cumulative with existing patches; image
   build (vite compile gate); browser smoke — the three enterprise pages gone,
   the new SLA/Audit/Roles pages present and permission-gated.
@@ -196,7 +210,10 @@ and reversible — drop the new patches / re-run the inverse flag set.
 - **D1 — Identity mechanism.** Recommended: forward Chatwoot access token,
   validate via `/api/v1/profile` (cached). Alternative (rejected): trust an
   SPA-supplied user-id header behind Caddy (spoofable).
-- **D2 — SLA policy scope.** Global per tenant vs per-inbox. Default: start
-  global per tenant; per-inbox override is a later increment.
+- **D2 — SLA policy scope. RESOLVED 2026-08-01: per-inbox from day one.**
+  Policy store keyed by `(tenant, inbox_id)` with `inbox_id` nullable as the
+  tenant-wide default; `sla.py` resolves inbox-specific → tenant-default →
+  env fallback. See Feature 1 above (supersedes this doc's original
+  "global first, per-inbox later" recommendation).
 - **D3 — Audit storage.** Firestore retained now; migrating audit to per-tenant
   Postgres for a dependency-free resale build is a deferred item.

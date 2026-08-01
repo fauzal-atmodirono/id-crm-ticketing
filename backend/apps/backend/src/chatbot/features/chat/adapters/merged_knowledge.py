@@ -54,13 +54,46 @@ class MergedKnowledgeAdapter:
         pg = await self._pg_articles(query, limit)
         live = await self._live_articles(query, limit)
         base = await self._base.search_kb(query, limit)
+
+        # pg/live intentionally rank first (freshly operator-authored
+        # knowledge), but must never consume the ENTIRE limit when a
+        # relevant base-KB result exists — that's the "Copilot can't find
+        # things the main agent can" bug (the main agent queries base/Vertex
+        # directly, unaffected by this merge). Reserve at least half of
+        # `limit` (rounded up, min 1) for base.
+        base_reserved = max(1, -(-limit // 2))  # ceil(limit / 2)
+        priority_budget = max(0, limit - base_reserved)
+
         merged: list[KbArticle] = []
         seen: set[str] = set()
-        for a in [*pg, *live, *base]:
-            key = (a.title or "").strip().lower()
+
+        def _add(article: KbArticle) -> bool:
+            key = (article.title or "").strip().lower()
             if key and key in seen:
-                continue
+                return False
             if key:
                 seen.add(key)
-            merged.append(a)
+            merged.append(article)
+            return True
+
+        priority_added = 0
+        for a in [*pg, *live]:
+            if priority_added >= priority_budget:
+                break
+            if _add(a):
+                priority_added += 1
+
+        for a in base:
+            if len(merged) >= limit:
+                break
+            _add(a)
+
+        # If base didn't have enough results to fill its reserved slots, top
+        # up with any remaining pg/live hits beyond the initial budget.
+        if len(merged) < limit:
+            for a in [*pg, *live]:
+                if len(merged) >= limit:
+                    break
+                _add(a)
+
         return merged[:limit]

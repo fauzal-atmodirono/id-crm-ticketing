@@ -74,3 +74,24 @@ def test_empty_greeting_text_preserves_behavior():
     # No greeting supplied -> unchanged: the outgoing message bounds the turn.
     messages = [_in("halo"), _out("Hi! How can I help?")]
     assert orchestrator._latest_incoming_text(messages, "") == ""
+
+
+def test_latest_incoming_messages_includes_empty_content_attachment_only():
+    # _latest_incoming_text drops empty-content messages (nothing to join),
+    # but _latest_incoming_messages must keep them -- Task 4 scans these raw
+    # message dicts for attachments, which _latest_incoming_text never sees.
+    attachment_only = {
+        "message_type": 0,
+        "private": False,
+        "content": "",
+        "attachments": [{"file_type": "audio", "data_url": "https://cdn/x.ogg"}],
+    }
+    messages = [_out("earlier reply"), attachment_only]
+    result = orchestrator._latest_incoming_messages(messages)
+    assert result == [attachment_only]
+
+
+def test_latest_incoming_messages_respects_same_boundary_as_text_helper():
+    messages = [_in("halo"), _out("DISCLAIMER: ...", lifecycle=True), _in("spec S70?")]
+    result = orchestrator._latest_incoming_messages(messages)
+    assert [m["content"] for m in result] == ["halo", "spec S70?"]

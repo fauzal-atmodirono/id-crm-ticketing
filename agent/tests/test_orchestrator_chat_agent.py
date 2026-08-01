@@ -73,12 +73,16 @@ def _setup(monkeypatch):
     orchestrator._pending_tasks.clear()
 
 
-def _mock_common_routes(mode_key: str = "auto", channel: str = "Channel::TwilioSms"):
+def _mock_common_routes(
+    mode_key: str = "auto",
+    channel: str = "Channel::TwilioSms",
+    messages_response: dict | None = None,
+):
     respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42").mock(
         return_value=httpx.Response(200, json=CONVERSATION_RESPONSE)
     )
     respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
-        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+        return_value=httpx.Response(200, json=messages_response or MESSAGES_RESPONSE)
     )
     # Channel resolution for outbound formatting (WhatsApp vs raw).
     respx.get(f"{CHATWOOT}/api/v1/accounts/1/inboxes/7").mock(
@@ -320,3 +324,165 @@ async def test_chat_agent_suggest_mode_posts_private_note_and_reopens(monkeypatc
     assert b"Suggested KB answer." in body
     assert b'"private": true' in body or b'"private":true' in body
     assert toggle_status.call_count == 1  # suggest reopens for the human
+
+
+# --- WhatsApp voice/image understanding (Task 4) --------------------------
+#
+# Whole-flow tests through handle_bot_event -> _process_via_chat_agent, in
+# the same style as the rest of this file: a real httpx client hitting
+# respx-mocked routes (Chatwoot + Proton + the attachment CDN), not stubbed
+# collaborator objects. The trailing incoming message from Chatwoot has empty
+# content (a voice note / photo with no caption) and an `attachments` array,
+# matching Chatwoot's real message shape (`file_type` + `data_url`).
+
+AUDIO_ATTACHMENT_URL = "https://cdn.example.com/voice.ogg"
+IMAGE_ATTACHMENT_URL = "https://cdn.example.com/photo.jpg"
+
+
+def _attachment_only_messages(file_type: str, data_url: str) -> dict:
+    return {
+        "payload": [
+            {
+                "id": 1,
+                "content": "",
+                "message_type": 0,
+                "private": False,
+                "created_at": 1_700_000_000,
+                "sender": {"id": 55, "name": "Alice", "email": "alice@example.com"},
+                "attachments": [{"file_type": file_type, "data_url": data_url}],
+            }
+        ]
+    }
+
+
+@respx.mock
+async def test_chat_agent_forwards_audio_attachment_when_flag_enabled(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "whatsapp_media_understanding_enabled", True)
+    _mock_common_routes(
+        "auto", messages_response=_attachment_only_messages("audio", AUDIO_ATTACHMENT_URL)
+    )
+    respx.get(AUDIO_ATTACHMENT_URL).mock(
+        return_value=httpx.Response(
+            200, content=b"ogg-bytes", headers={"Content-Type": "audio/ogg"}
+        )
+    )
+    chat_turn = respx.post(f"{PROTON}/chat/turn").mock(
+        return_value=httpx.Response(
+            200,
+            json={"reply": "Baik, saya dengar.", "handoff": None, "products": [], "forwarded_to_agent": False},
+        )
+    )
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json={"id": 999})
+    )
+
+    await _run(monkeypatch)
+
+    assert chat_turn.called
+    body = chat_turn.calls.last.request.content.decode()
+    assert '"audio_mime_type": "audio/ogg"' in body or '"audio_mime_type":"audio/ogg"' in body
+    import base64
+    import json
+
+    payload = json.loads(chat_turn.calls.last.request.content)
+    assert payload["audio_base64"] == base64.b64encode(b"ogg-bytes").decode()
+    assert "image_base64" not in payload  # only the audio attachment was present
+
+
+@respx.mock
+async def test_chat_agent_forwards_image_attachment_when_flag_enabled(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "whatsapp_media_understanding_enabled", True)
+    _mock_common_routes(
+        "auto", messages_response=_attachment_only_messages("image", IMAGE_ATTACHMENT_URL)
+    )
+    respx.get(IMAGE_ATTACHMENT_URL).mock(
+        return_value=httpx.Response(
+            200, content=b"jpeg-bytes", headers={"Content-Type": "image/jpeg"}
+        )
+    )
+    chat_turn = respx.post(f"{PROTON}/chat/turn").mock(
+        return_value=httpx.Response(
+            200,
+            json={"reply": "Foto diterima.", "handoff": None, "products": [], "forwarded_to_agent": False},
+        )
+    )
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json={"id": 999})
+    )
+
+    await _run(monkeypatch)
+
+    assert chat_turn.called
+    import base64
+    import json
+
+    payload = json.loads(chat_turn.calls.last.request.content)
+    assert payload["image_base64"] == base64.b64encode(b"jpeg-bytes").decode()
+    assert payload["image_mime_type"] == "image/jpeg"
+    assert "audio_base64" not in payload
+
+
+@respx.mock
+async def test_chat_agent_ignores_attachments_when_flag_off(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "whatsapp_media_understanding_enabled", False)
+    monkeypatch.setattr(settings, "handoff_default_message", "One moment please.")
+    _mock_common_routes(
+        "auto", messages_response=_attachment_only_messages("audio", AUDIO_ATTACHMENT_URL)
+    )
+    # Deliberately NOT mocking the attachment CDN route: if the orchestrator
+    # tried to fetch it despite the flag being off, respx would raise for the
+    # unmocked route and fail this test.
+    chat_turn = respx.post(f"{PROTON}/chat/turn").mock(
+        return_value=httpx.Response(
+            200, json={"reply": "should not be reached", "handoff": None, "products": [], "forwarded_to_agent": False}
+        )
+    )
+    create_message = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages"
+    ).mock(return_value=httpx.Response(200, json={"id": 999}))
+    toggle_status = respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status")
+
+    await _run(monkeypatch)
+
+    # No text and (with the flag off) no media -> today's empty-text
+    # short-circuit: no /chat/turn call, no Chatwoot side effects at all
+    # (fail-open to nothing; the silent-drop log itself is asserted
+    # separately in test_chat_agent_logs_attachment_only_drop).
+    assert not chat_turn.called
+    assert not create_message.called
+    assert not toggle_status.called
+
+
+@respx.mock
+async def test_chat_agent_logs_attachment_only_drop(monkeypatch, caplog):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "whatsapp_media_understanding_enabled", False)
+    _mock_common_routes(
+        "auto", messages_response=_attachment_only_messages("image", IMAGE_ATTACHMENT_URL)
+    )
+
+    with caplog.at_level("WARNING"):
+        await _run(monkeypatch)
+
+    assert "orchestrator_attachment_only_message_dropped" in caplog.text
+    assert "42" in caplog.text
+
+
+@respx.mock
+async def test_chat_agent_attachment_fetch_failure_falls_back_gracefully(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "whatsapp_media_understanding_enabled", True)
+    _mock_common_routes(
+        "auto", messages_response=_attachment_only_messages("audio", AUDIO_ATTACHMENT_URL)
+    )
+    respx.get(AUDIO_ATTACHMENT_URL).mock(return_value=httpx.Response(404))
+    chat_turn = respx.post(f"{PROTON}/chat/turn")
+
+    # Must not raise. With no text and a failed fetch there's nothing to send
+    # to the backend, so /chat/turn is never called (today's short-circuit).
+    await _run(monkeypatch)
+
+    assert not chat_turn.called

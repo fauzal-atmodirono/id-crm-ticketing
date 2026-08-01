@@ -18,6 +18,7 @@ conversation is reopened for a human to review — the AI never auto-sends.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 
@@ -30,6 +31,7 @@ from app.config import get_settings
 from app.db.models import AiAction
 from app.db.session import async_session_maker
 from app.services import lifecycle, lifecycle_store, sync, whatsapp_format
+from app.services.media import fetch_attachment_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -441,17 +443,22 @@ async def _process_conversation(conversation_id: int) -> None:
         )
 
 
-def _latest_incoming_text(message_list: list[dict], greeting_text: str = "") -> str:
-    """The trailing run of incoming customer messages (since the last non-private
-    outgoing message), joined into one turn for the backend agent. The backend
-    owns the rest of the multi-turn history keyed by the crm- session id, so we
-    only send what the customer has said since the bot last spoke.
+def _latest_incoming_messages(message_list: list[dict], greeting_text: str = "") -> list[dict]:
+    """The trailing run of incoming (message_type=0) customer message dicts, in
+    chronological order, since the last non-private outgoing message. Shared by
+    `_latest_incoming_text` (which joins their text) and `_process_via_chat_agent`
+    (which also scans them for attachments) so the greeting/lifecycle-skip rules
+    that decide where the turn boundary sits live in exactly one place.
+
+    Unlike `_latest_incoming_text`, messages with empty `content` (e.g. a voice
+    note or photo with no caption) are kept — there's nothing to join into text,
+    but there may still be an attachment worth inspecting.
 
     Two kinds of outgoing message are NOT the bot's reply and must not bound the
     turn: our own lifecycle notices (marked content_attributes.proton_lifecycle)
     and Chatwoot's native channel greeting (content == the inbox greeting_text)."""
     greeting = (greeting_text or "").strip()
-    texts: list[str] = []
+    messages: list[dict] = []
     for message in reversed(message_list):
         if message.get("private"):
             continue
@@ -463,11 +470,22 @@ def _latest_incoming_text(message_list: list[dict], greeting_text: str = "") -> 
         if mtype == 1 and greeting and content == greeting:
             continue  # native channel greeting — not a real bot reply
         if mtype == 0:  # incoming (customer)
-            if content:
-                texts.append(content)
+            messages.append(message)
         elif mtype == 1:  # outgoing (bot/agent) → older than the last reply
             break
-    return "\n".join(reversed(texts))
+    return list(reversed(messages))
+
+
+def _latest_incoming_text(message_list: list[dict], greeting_text: str = "") -> str:
+    """The trailing run of incoming customer messages (since the last non-private
+    outgoing message), joined into one turn for the backend agent. The backend
+    owns the rest of the multi-turn history keyed by the crm- session id, so we
+    only send what the customer has said since the bot last spoke."""
+    texts = [
+        (message.get("content") or "").strip()
+        for message in _latest_incoming_messages(message_list, greeting_text)
+    ]
+    return "\n".join(t for t in texts if t)
 
 
 async def _log_chat_action(conversation_id: int, decision: str, output: str) -> None:
@@ -542,13 +560,72 @@ async def _process_via_chat_agent(
                 greeting_text = inbox.get("greeting_message") or ""
         except Exception:
             greeting_text = ""  # fail-open: no greeting skip, behave as before
-    text = _latest_incoming_text(message_list, greeting_text)
-    if not text:
+
+    trailing_messages = _latest_incoming_messages(message_list, greeting_text)
+    texts = [(m.get("content") or "").strip() for m in trailing_messages]
+    text = "\n".join(t for t in texts if t)
+
+    settings = get_settings()
+    # Voice-note / image understanding: pull the first audio and first image
+    # attachment (YAGNI — one of each per turn, not every attachment) off the
+    # trailing incoming messages and fetch their bytes, but only when the flag
+    # is on. `has_attachment` is tracked regardless of the flag purely so an
+    # attachment-only message with no caption can be logged instead of
+    # silently vanishing (see the empty-text short-circuit below).
+    audio_base64 = audio_mime_type = None
+    image_base64 = image_mime_type = None
+    has_attachment = False
+    if settings.whatsapp_media_understanding_enabled:
+        for message in trailing_messages:
+            for attachment in message.get("attachments") or []:
+                has_attachment = True
+                file_type = attachment.get("file_type")
+                data_url = attachment.get("data_url")
+                if not data_url:
+                    continue
+                if file_type == "audio" and audio_base64 is None:
+                    fetched = await fetch_attachment_bytes(data_url)
+                    if fetched is not None:
+                        data, mime = fetched
+                        audio_base64 = base64.b64encode(data).decode()
+                        audio_mime_type = mime
+                elif file_type == "image" and image_base64 is None:
+                    fetched = await fetch_attachment_bytes(data_url)
+                    if fetched is not None:
+                        data, mime = fetched
+                        image_base64 = base64.b64encode(data).decode()
+                        image_mime_type = mime
+    else:
+        has_attachment = any(m.get("attachments") for m in trailing_messages)
+
+    if not text and audio_base64 is None and image_base64 is None:
+        if has_attachment:
+            # Pre-existing bug: an attachment-only message (voice note/photo,
+            # no caption) used to hit this short-circuit and vanish with zero
+            # logging. Always log the drop, flag on or off — when the flag is
+            # off this is expected (attachments aren't understood yet); when
+            # the flag is on it means every attachment on the turn failed to
+            # fetch (see `fetch_attachment_bytes`'s own warning log for why).
+            logger.warning(
+                "orchestrator_attachment_only_message_dropped: conversation %s "
+                "has attachment(s) but no usable text or fetched media "
+                "(media_understanding_enabled=%s)",
+                conversation_id,
+                settings.whatsapp_media_understanding_enabled,
+            )
         return
 
     proton = get_proton_config_client()
     result = (
-        await proton.chat_turn(f"crm-{conversation_id}", text, inbox_id)
+        await proton.chat_turn(
+            f"crm-{conversation_id}",
+            text,
+            inbox_id,
+            audio_base64=audio_base64,
+            audio_mime_type=audio_mime_type,
+            image_base64=image_base64,
+            image_mime_type=image_mime_type,
+        )
         if proton is not None
         else None
     )
@@ -580,7 +657,6 @@ async def _process_via_chat_agent(
 
     await _log_chat_action(conversation_id, "chat_turn:reply", reply)
     if effective_mode == "auto":
-        settings = get_settings()
         # Format + split per channel: WhatsApp gets Markdown->WhatsApp conversion
         # and 1600-char chunking (else Twilio rejects the whole message); web/
         # email keep the raw reply.

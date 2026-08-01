@@ -76,6 +76,13 @@ class Settings(BaseSettings):
     # matching the Proton website agent. Default False = legacy router (byte-
     # identical). Supersedes kb_grounded_replies on this path when enabled.
     chat_agent_enabled: bool = False
+    # Voice-note + image understanding for the agent-bot's chat-agent path
+    # (orchestrator.py's _process_via_chat_agent, chat_agent_enabled=True
+    # only). Default False = today's text-only behavior, byte-identical.
+    # When True, incoming WhatsApp attachments (audio/image) are downloaded
+    # and forwarded to backend/'s /chat/turn as multimodal Parts alongside
+    # the text.
+    whatsapp_media_understanding_enabled: bool = False
 
     # Conversation lifecycle & auto-close (feature is a no-op when disabled).
     # Drives the Proton process-flow SOP: idle warn/close, resolution

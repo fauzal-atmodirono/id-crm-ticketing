@@ -39,8 +39,8 @@ async def test_valid_category_and_subcategory_written() -> None:
         ctx, category="sales", subcategory="Test Drive Booking", priority="HIGH", sla_minutes=60
     )  # type: ignore[operator]
 
-    assert ctx.state["category"] == "sales"
-    assert ctx.state["subcategory"] == "Test Drive Booking"
+    assert ctx.state["category"] == "Sales"
+    assert ctx.state["subcategory"] == "Sales: Test Drive Booking"
     assert ctx.state["priority"] == "HIGH"
     assert ctx.state["sla_minutes"] == 60
 
@@ -78,3 +78,40 @@ async def test_empty_taxonomy_falls_back_to_accepting_free_text() -> None:
 
     assert ctx.state["category"] == "Anything"
     assert ctx.state["subcategory"] == "Whatever"
+
+
+@pytest.mark.asyncio
+async def test_invalid_category_return_string_does_not_claim_success() -> None:
+    tool = _classify_tool(VALID)
+    ctx = SimpleNamespace(state={})
+
+    result = await tool(
+        ctx, category="not_a_real_category", subcategory="x", priority="LOW", sla_minutes=30
+    )  # type: ignore[operator]
+
+    assert "not_a_real_category" in result
+    assert "not recorded" in result
+    assert "classified as" not in result
+
+
+@pytest.mark.asyncio
+async def test_written_category_matches_taxonomy_label_format() -> None:
+    """Contract test guarding against Finding 1's exact bug class: the value
+    written to state must be a taxonomy LABEL (the format the Chatwoot List
+    custom attribute / provisioning script expects), not the raw slug."""
+    from chatbot.features.chat.case_taxonomy import build_case_taxonomy
+    from chatbot.platform.config import get_settings
+
+    settings = get_settings().model_copy(update={"case_taxonomy_json": VALID})
+    case_taxonomy = build_case_taxonomy(settings)
+
+    tool = _classify_tool(VALID)
+    ctx = SimpleNamespace(state={})
+
+    await tool(
+        ctx, category="sales", subcategory="Test Drive Booking", priority="HIGH", sla_minutes=60
+    )  # type: ignore[operator]
+
+    assert ctx.state["category"] in [
+        case_taxonomy.label_for(slug) for slug in case_taxonomy.main_categories()
+    ]

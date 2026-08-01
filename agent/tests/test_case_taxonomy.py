@@ -4,7 +4,6 @@ from app.services.case_taxonomy import build_case_taxonomy
 
 def _settings(taxonomy_json: str):
     s = get_settings()
-    object.__setattr__(s, "case_taxonomy_json", taxonomy_json) if False else None
     return s.model_copy(update={"case_taxonomy_json": taxonomy_json})
 
 

@@ -100,12 +100,18 @@ async def maybe_categorize(conversation_id: int, *, settings=None, chatwoot=None
         if category is None:
             return
 
-        attrs = {"case_category": category}
+        # Write the LABEL + flattened "<Label>: <Subcategory>" format, matching
+        # what provision_case_taxonomy.py provisions as the Chatwoot List custom
+        # attribute options (chatwoot-config/provision_case_taxonomy.py). Fallback
+        # to the raw slug only in the unreachable case label_for() returns None for
+        # a category that was just validated as a taxonomy member.
+        label = taxonomy.label_for(category) or category
+        attrs = {"case_category": label}
         subcategory_candidates = taxonomy.subcategories_for(category)
         if subcategory_candidates:
             subcategory = await classify_category(transcript, subcategory_candidates)
             if subcategory is not None:
-                attrs["case_subcategory"] = subcategory
+                attrs["case_subcategory"] = f"{label}: {subcategory}"
 
         await chatwoot.set_custom_attributes(conversation_id, attrs)
     except Exception:

@@ -78,21 +78,34 @@ def build_ai_agent(
             # No taxonomy configured — pre-feature fallback: accept free text.
             tool_context.state["category"] = category
             tool_context.state["subcategory"] = subcategory
+            written = True
         elif case_taxonomy.is_valid_category(category) and case_taxonomy.is_valid_subcategory(
             category, subcategory
         ):
-            tool_context.state["category"] = category
-            tool_context.state["subcategory"] = subcategory
+            # Write the LABEL + flattened "<Label>: <Subcategory>" format, matching
+            # what provision_case_taxonomy.py provisions as the Chatwoot List custom
+            # attribute options — the LLM-facing contract (slug + bare subcategory)
+            # is validated above and stays unchanged.
+            label = case_taxonomy.label_for(category)
+            tool_context.state["category"] = label
+            tool_context.state["subcategory"] = f"{label}: {subcategory}"
+            written = True
         else:
+            written = False
             _log.warning(
                 "classify_ticket_tool_invalid_category",
                 category=category,
                 subcategory=subcategory,
             )
 
+        if written:
+            return (
+                f"[internal] ticket classified as {category} -> {subcategory} "
+                f"({priority}, SLA {sla_minutes}m)."
+            )
         return (
-            f"[internal] ticket classified as {category} -> {subcategory} "
-            f"({priority}, SLA {sla_minutes}m)."
+            f"[internal] category '{category}' / subcategory '{subcategory}' is not a "
+            f"valid taxonomy entry; not recorded ({priority}, SLA {sla_minutes}m)."
         )
 
     if not case_taxonomy.is_empty():

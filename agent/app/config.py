@@ -107,10 +107,27 @@ class Settings(BaseSettings):
     # Case category/subcategory taxonomy — set to the SAME value as backend/'s
     # CASE_TAXONOMY_JSON (both services parse it independently; there is no
     # shared library between them). Used by services/categorize.py as the
-    # resolution-time fallback classifier's candidate list. Empty -> the
-    # fallback classifier no-ops (same as today's lifecycle_category_labels
-    # behavior when empty).
-    case_taxonomy_json: str = ""
+    # resolution-time fallback classifier's candidate list. Ships with the
+    # SAME working default as backend/'s Settings.case_taxonomy_json so a
+    # tenant that turns on lifecycle_auto_categorize without overriding this
+    # var gets sensible behavior instead of a silent no-op; override per
+    # tenant once the client finalizes their scheme — no code change needed.
+    case_taxonomy_json: str = (
+        '{"sales":{"label":"Sales","subcategories":["Test Drive Booking",'
+        '"Pricing Inquiry","Vehicle Availability","Trade-In","Financing"]},'
+        '"aftersales":{"label":"Aftersales","subcategories":["Service Booking",'
+        '"Warranty Claim","Spare Parts","Recall"]},'
+        '"apps":{"label":"Apps","subcategories":["Login Issue","App Crash",'
+        '"Feature Request","Account Sync"]},'
+        '"charging":{"label":"Charging","subcategories":["Charger Fault",'
+        '"Charging Station Locator","Billing"]},'
+        '"roadside_assistance":{"label":"Roadside Assistance","subcategories":'
+        '["Breakdown","Accident","Towing"]},'
+        '"general_enquiry":{"label":"General Enquiry","subcategories":'
+        '["Product Info","Dealer Locator","Other"]},'
+        '"complaint":{"label":"Complaint","subcategories":["Service Quality",'
+        '"Product Defect","Staff Conduct","Other"]}}'
+    )
 
     # C1: email once-per-thread auto-acknowledgement.
     email_autoack_enabled: bool = False

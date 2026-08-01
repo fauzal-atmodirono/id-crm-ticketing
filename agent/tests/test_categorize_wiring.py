@@ -32,7 +32,7 @@ def enabled(monkeypatch):
 async def test_maybe_categorize_sets_custom_attribute(chatwoot, enabled, monkeypatch):
     monkeypatch.setattr(categorize, "classify_category", AsyncMock(return_value="battery"))
     await categorize.maybe_categorize(77)
-    chatwoot.set_custom_attributes.assert_awaited_once_with(77, {"case_category": "battery"})
+    chatwoot.set_custom_attributes.assert_awaited_once_with(77, {"case_category": "Battery"})
 
 
 async def test_maybe_categorize_sets_subcategory_when_taxonomy_defines_one(
@@ -57,7 +57,7 @@ async def test_maybe_categorize_sets_subcategory_when_taxonomy_defines_one(
     monkeypatch.setattr(categorize, "classify_category", fake_classify)
     await categorize.maybe_categorize(77)
     chatwoot.set_custom_attributes.assert_awaited_once_with(
-        77, {"case_category": "sales", "case_subcategory": "Test Drive Booking"}
+        77, {"case_category": "Sales", "case_subcategory": "Sales: Test Drive Booking"}
     )
 
 
@@ -76,7 +76,7 @@ async def test_maybe_categorize_omits_subcategory_when_no_match(chatwoot, monkey
 
     monkeypatch.setattr(categorize, "classify_category", fake_classify)
     await categorize.maybe_categorize(77)
-    chatwoot.set_custom_attributes.assert_awaited_once_with(77, {"case_category": "sales"})
+    chatwoot.set_custom_attributes.assert_awaited_once_with(77, {"case_category": "Sales"})
 
 
 async def test_maybe_categorize_skips_when_already_classified(chatwoot, enabled):
@@ -152,4 +152,4 @@ async def test_maybe_categorize_accepts_injected_settings_and_chatwoot(monkeypat
     )
     monkeypatch.setattr(categorize, "classify_category", AsyncMock(return_value="sales"))
     await categorize.maybe_categorize(1, settings=injected_settings, chatwoot=injected_client)
-    injected_client.set_custom_attributes.assert_awaited_once_with(1, {"case_category": "sales"})
+    injected_client.set_custom_attributes.assert_awaited_once_with(1, {"case_category": "Sales"})

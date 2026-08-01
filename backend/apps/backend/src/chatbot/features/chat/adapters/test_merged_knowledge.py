@@ -136,3 +136,98 @@ async def test_never_raises_on_embedder_failure() -> None:
 
     assert len(results) == 1
     assert results[0].title == "Base Only"
+
+
+@pytest.mark.asyncio
+async def test_base_result_survives_when_priority_sources_would_fill_limit() -> None:
+    """The exact demo symptom: several loosely-matching live-FAQ hits must not
+    crowd out a genuinely relevant base (Vertex) result."""
+    from chatbot.features.chat.adapters.merged_knowledge import MergedKnowledgeAdapter
+
+    fake_live = _FakeLiveStore(
+        [
+            (LiveFaqEntry(id="e1", question="Q1", answer="A1"), 0.6),
+            (LiveFaqEntry(id="e2", question="Q2", answer="A2"), 0.6),
+        ]
+    )
+    fake_base = _FakeBase(
+        [KbArticle(title="iMAS 5 specs", content="...", source_type="vertex")]
+    )
+    embedder = _FakeEmbedder()
+
+    adapter = MergedKnowledgeAdapter(fake_base, fake_live, embedder, pg_port=None)
+    results = await adapter.search_kb("imas 5 specs", limit=2)
+
+    titles = [r.title for r in results]
+    assert "iMAS 5 specs" in titles  # base result must survive truncation
+
+
+@pytest.mark.asyncio
+async def test_priority_sources_still_win_their_reserved_slots() -> None:
+    """pg/live ranking first (within their budget) must still hold — this fix
+    reserves room for base, it does not invert the intentional priority."""
+    from chatbot.features.chat.adapters.merged_knowledge import MergedKnowledgeAdapter
+
+    fake_pg = _FakeBase([KbArticle(title="PG hit", content="...", source_type="pgvector")])
+    fake_live = _FakeLiveStore([])
+    fake_base = _FakeBase(
+        [
+            KbArticle(title="Base 1", content="...", source_type="vertex"),
+            KbArticle(title="Base 2", content="...", source_type="vertex"),
+        ]
+    )
+    embedder = _FakeEmbedder()
+
+    adapter = MergedKnowledgeAdapter(fake_base, fake_live, embedder, pg_port=fake_pg)
+    results = await adapter.search_kb("query", limit=2)
+
+    assert results[0].title == "PG hit"  # priority source still first
+
+
+@pytest.mark.asyncio
+async def test_dedup_by_title_across_two_pass_merge() -> None:
+    """A title appearing in both a priority source and base must not appear
+    twice or consume two slots."""
+    from chatbot.features.chat.adapters.merged_knowledge import MergedKnowledgeAdapter
+
+    fake_pg = _FakeBase(
+        [KbArticle(title="Shared Title", content="pg version", source_type="pgvector")]
+    )
+    fake_live = _FakeLiveStore([])
+    fake_base = _FakeBase(
+        [
+            KbArticle(title="Shared Title", content="base version", source_type="vertex"),
+            KbArticle(title="Unique Base", content="...", source_type="vertex"),
+        ]
+    )
+    embedder = _FakeEmbedder()
+
+    adapter = MergedKnowledgeAdapter(fake_base, fake_live, embedder, pg_port=fake_pg)
+    results = await adapter.search_kb("query", limit=3)
+
+    titles = [r.title for r in results]
+    assert titles.count("Shared Title") == 1
+    assert "Unique Base" in titles
+
+
+@pytest.mark.asyncio
+async def test_leftover_priority_hits_top_up_when_base_is_short() -> None:
+    """If base has fewer results than its reserved budget, remaining slots
+    come from leftover pg/live hits rather than being left empty."""
+    from chatbot.features.chat.adapters.merged_knowledge import MergedKnowledgeAdapter
+
+    fake_pg = _FakeBase(
+        [
+            KbArticle(title="PG 1", content="...", source_type="pgvector"),
+            KbArticle(title="PG 2", content="...", source_type="pgvector"),
+            KbArticle(title="PG 3", content="...", source_type="pgvector"),
+        ]
+    )
+    fake_live = _FakeLiveStore([])
+    fake_base = _FakeBase([])  # base has nothing
+    embedder = _FakeEmbedder()
+
+    adapter = MergedKnowledgeAdapter(fake_base, fake_live, embedder, pg_port=fake_pg)
+    results = await adapter.search_kb("query", limit=3)
+
+    assert len(results) == 3  # all 3 slots filled from pg, not left short

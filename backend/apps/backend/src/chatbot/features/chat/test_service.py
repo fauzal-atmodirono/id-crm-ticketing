@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
@@ -99,6 +100,157 @@ async def test_handle_turn_happy_path() -> None:
     assert len(svc._history["s1"]) == 2
     assert svc._history["s1"][0].text == "I need support"
     assert svc._history["s1"][1].text == reply_text
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_with_audio_builds_multimodal_content() -> None:
+    """audio_base64/audio_mime_type on handle_turn become a second Part
+    appended to the same user Content — mirrors handle_voice_turn's
+    types.Part.from_bytes pattern, just decoded from base64 first."""
+    settings = get_settings()
+    svc = OrchestratorService(
+        settings=settings,
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=InMemoryTicketingAdapter(),
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=MockVoiceAdapter(),
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def fake_run_support_agent(_session_id: str, new_message: Any) -> tuple[str, list[str], bool]:
+        captured["parts"] = new_message.parts
+        return "ok", [], False
+
+    svc._run_support_agent = fake_run_support_agent  # type: ignore[method-assign]
+
+    audio_b64 = base64.b64encode(b"fake-ogg-bytes").decode()
+    await svc.handle_turn(
+        session_id="media-1",
+        text="check this out",
+        audio_base64=audio_b64,
+        audio_mime_type="audio/ogg",
+    )
+
+    assert len(captured["parts"]) == 2  # text part + audio part
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_with_image_builds_multimodal_content() -> None:
+    settings = get_settings()
+    svc = OrchestratorService(
+        settings=settings,
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=InMemoryTicketingAdapter(),
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=MockVoiceAdapter(),
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def fake_run_support_agent(_session_id: str, new_message: Any) -> tuple[str, list[str], bool]:
+        captured["parts"] = new_message.parts
+        return "ok", [], False
+
+    svc._run_support_agent = fake_run_support_agent  # type: ignore[method-assign]
+
+    image_b64 = base64.b64encode(b"fake-jpeg-bytes").decode()
+    await svc.handle_turn(
+        session_id="media-2",
+        text="what is this",
+        image_base64=image_b64,
+        image_mime_type="image/jpeg",
+    )
+
+    assert len(captured["parts"]) == 2  # text part + image part
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_with_audio_and_image_builds_three_parts() -> None:
+    settings = get_settings()
+    svc = OrchestratorService(
+        settings=settings,
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=InMemoryTicketingAdapter(),
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=MockVoiceAdapter(),
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def fake_run_support_agent(_session_id: str, new_message: Any) -> tuple[str, list[str], bool]:
+        captured["parts"] = new_message.parts
+        return "ok", [], False
+
+    svc._run_support_agent = fake_run_support_agent  # type: ignore[method-assign]
+
+    await svc.handle_turn(
+        session_id="media-3",
+        text="both",
+        audio_base64=base64.b64encode(b"a").decode(),
+        audio_mime_type="audio/ogg",
+        image_base64=base64.b64encode(b"i").decode(),
+        image_mime_type="image/jpeg",
+    )
+
+    assert len(captured["parts"]) == 3  # text + audio + image
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_invalid_audio_base64_degrades_gracefully() -> None:
+    """A malformed audio_base64 must not raise — it's dropped and the turn
+    proceeds text-only, same as if no audio had been sent."""
+    settings = get_settings()
+    svc = OrchestratorService(
+        settings=settings,
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=InMemoryTicketingAdapter(),
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=MockVoiceAdapter(),
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def fake_run_support_agent(_session_id: str, new_message: Any) -> tuple[str, list[str], bool]:
+        captured["parts"] = new_message.parts
+        return "ok", [], False
+
+    svc._run_support_agent = fake_run_support_agent  # type: ignore[method-assign]
+
+    result = await svc.handle_turn(
+        session_id="media-bad",
+        text="hello",
+        audio_base64="not-valid-base64!!!",
+        audio_mime_type="audio/ogg",
+    )
+
+    assert result.reply == "ok"
+    assert len(captured["parts"]) == 1  # bad audio dropped, text-only
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_without_media_is_unchanged() -> None:
+    """No audio/image params → single-Part Content, byte-identical to the
+    pre-multimodal behavior."""
+    settings = get_settings()
+    svc = OrchestratorService(
+        settings=settings,
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=InMemoryTicketingAdapter(),
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=MockVoiceAdapter(),
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def fake_run_support_agent(_session_id: str, new_message: Any) -> tuple[str, list[str], bool]:
+        captured["parts"] = new_message.parts
+        return "ok", [], False
+
+    svc._run_support_agent = fake_run_support_agent  # type: ignore[method-assign]
+
+    await svc.handle_turn(session_id="media-none", text="just text")
+    assert len(captured["parts"]) == 1  # text part only — unchanged from today
 
 
 @pytest.mark.asyncio

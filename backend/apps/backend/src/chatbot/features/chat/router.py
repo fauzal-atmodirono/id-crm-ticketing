@@ -58,6 +58,10 @@ class ChatTurnRequest(BaseModel):
     session_id: str
     text: str
     inbox_id: int | None = None
+    audio_base64: str | None = None
+    audio_mime_type: str | None = None
+    image_base64: str | None = None
+    image_mime_type: str | None = None
 
 
 class CsatRequest(BaseModel):
@@ -1064,7 +1068,15 @@ class ChatRouter:
     async def chat_turn(self, req: ChatTurnRequest) -> ChatTurnResponse:
         """Run a single text chat turn and return the assistant's reply."""
         _log.info("chat_turn_received", session_id=req.session_id, text_length=len(req.text))
-        result = await self.orchestrator.handle_turn(session_id=req.session_id, text=req.text, inbox_id=req.inbox_id)
+        result = await self.orchestrator.handle_turn(
+            session_id=req.session_id,
+            text=req.text,
+            inbox_id=req.inbox_id,
+            audio_base64=req.audio_base64,
+            audio_mime_type=req.audio_mime_type,
+            image_base64=req.image_base64,
+            image_mime_type=req.image_mime_type,
+        )
         return ChatTurnResponse(
             reply=result.reply,
             language=result.language,

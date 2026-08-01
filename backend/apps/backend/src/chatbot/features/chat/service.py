@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 from collections.abc import Callable
@@ -406,7 +407,16 @@ class OrchestratorService:
         except Exception as e:  # instrumentation must never break the turn
             _log.error("emit_turn_metrics_failed", session_id=session_id, error=str(e))
 
-    async def handle_turn(self, session_id: str, text: str, inbox_id: int | None = None) -> TurnResult:
+    async def handle_turn(
+        self,
+        session_id: str,
+        text: str,
+        inbox_id: int | None = None,
+        audio_base64: str | None = None,
+        audio_mime_type: str | None = None,
+        image_base64: str | None = None,
+        image_mime_type: str | None = None,
+    ) -> TurnResult:
         """Process a single text-based chatbot turn."""
         _log.info("processing_chatbot_turn", session_id=session_id, text_length=len(text))
         t0 = perf_counter()
@@ -457,10 +467,22 @@ class OrchestratorService:
         self._user_turn_counts[session_id] = self._user_turn_counts.get(session_id, 0) + 1
 
         # 4. Formulate the GenAI content structure
-        new_message = types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=text)],
-        )
+        parts: list[types.Part] = [types.Part.from_text(text=text)]
+        if audio_base64 and audio_mime_type:
+            try:
+                parts.append(
+                    types.Part.from_bytes(data=base64.b64decode(audio_base64), mime_type=audio_mime_type)
+                )
+            except Exception:
+                _log.warning("handle_turn_audio_decode_failed", session_id=session_id)
+        if image_base64 and image_mime_type:
+            try:
+                parts.append(
+                    types.Part.from_bytes(data=base64.b64decode(image_base64), mime_type=image_mime_type)
+                )
+            except Exception:
+                _log.warning("handle_turn_image_decode_failed", session_id=session_id)
+        new_message = types.Content(role="user", parts=parts)
 
         # Register the operator persona for this session (fail-open: no-op when
         # inbox_id is None or stores are not wired).

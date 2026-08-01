@@ -69,10 +69,10 @@ index a296deb..8afc556 100644
                  label: 'Playground',
 diff --git a/app/javascript/dashboard/components/proton/KnowledgeUploads.vue b/app/javascript/dashboard/components/proton/KnowledgeUploads.vue
 new file mode 100644
-index 0000000..03241e2
+index 0000000..734136e
 --- /dev/null
 +++ b/app/javascript/dashboard/components/proton/KnowledgeUploads.vue
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,347 @@
 +<!-- KnowledgeUploads.vue — OUR file. Native Chatwoot-styled view for managing
 +     operator-authored documents in the pgvector knowledge base. Supports pasting
 +     text and uploading files (.pdf/.docx/.md/.txt/.markdown), with async ingestion
@@ -197,6 +197,10 @@ index 0000000..03241e2
 +  } catch (err) {
 +    if (err.status === 401) {
 +      useAlert('Unauthorized (401) — check the backend key configuration.');
++    } else if (err.status === 404) {
++      useAlert(
++        "Document upload isn't enabled for this workspace yet. Contact your administrator."
++      );
 +    } else if (err.status === 503) {
 +      useAlert('Knowledge store unavailable (503).');
 +    } else {

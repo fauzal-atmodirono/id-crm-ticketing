@@ -10,12 +10,13 @@ Chatwoot's native WhatsApp inbox already receives and displays inbound voice not
 
 ## Decision (autonomous, documented for review)
 
-- **Scope is the Chatwoot-native path only.** `backend/`'s standalone Twilio integration (which has more of this plumbing already built — `_transcribe_audio`, `handle_voice_turn`) is explicitly out of scope: it doesn't touch Chatwoot at all, so building there wouldn't move the needle for the actual product (agents already see the media; only the AI-side gap matters, and that gap is in `agent/`, not `backend/`). `backend/`'s functions are used here only as a **reference pattern** to copy (same `google.genai.Client`, same `types.Part.from_bytes` call shape) — no code is shared between the two services, consistent with this repo's existing agent/backend decoupling.
-- **Audio → transcribe to text, then treat as if typed.** A new `_transcribe_whatsapp_audio(audio_bytes, mime_type) -> str` helper (mirrors `backend/`'s `_transcribe_audio`) converts a voice note to a transcript. That transcript is substituted for the message's empty `content` before `_build_context`/`_latest_incoming_text` run — so the rest of the pipeline (context building, `decide()`, reply posting) needs **no changes** for the audio case. This is simpler and lower-risk than threading raw audio bytes through `decide()`'s single flattened-string call shape.
-- **Images → pass as a Gemini multimodal Part into `decide()`.** Unlike audio, an image can't be meaningfully flattened to text ahead of time (a photo of a damaged part needs visual understanding, not transcription). `gemini.py::decide()` and `generate()` get a new optional `media_parts: list[types.Part] | None = None` param; when present, `contents` switches from the plain string to `types.Content(role="user", parts=[types.Part.from_text(text=conversation_context), *media_parts])` — additive, byte-identical default when `media_parts` is `None`.
-- **Attachment bytes are fetched with a plain, unauthenticated `httpx.AsyncClient`**, not `ChatwootClient` — Chatwoot's `data_url`s are absolute, directly-fetchable (pre-signed cloud storage or Chatwoot's own asset route), and reusing `ChatwootClient` would leak the account API token to that external host for no benefit.
-- **One flag gates the whole feature**: `whatsapp_media_understanding_enabled` (agent/, default `False`, fail-open/default-preserving — today's text-only behavior when off).
-- **Fix the silent-drop bug regardless of the flag.** Even with the feature disabled, an attachment-only message should not vanish with zero observability. When the flag is off and a message has attachments but no usable text, log it (structured, one line) and let the existing short-circuit stand (no customer-facing behavior change) — this makes the gap visible in logs/metrics instead of silent, without changing behavior for tenants that haven't opted in.
+- **Scope is the Chatwoot-native path only, specifically the `chat_agent_enabled=True` branch** (`_process_via_chat_agent`, which proxies to `backend/`'s `POST /chat/turn`) — **not** the legacy local `gemini.decide()` router (`_process_conversation`'s `chat_agent_enabled=False` branch), and **not** `backend/`'s separate standalone Twilio integration. Two corrections made while grounding this design against the actual code (no user available to review — self-caught before finalizing):
+  1. `_process_via_chat_agent` does not call `agent/`'s local `gemini.py` at all — it HTTP-POSTs to `backend/`'s `/chat/turn`. So the media support must be added to **`backend/`'s `/chat/turn` request/response and `handle_turn`**, not to `agent/app/ai/gemini.py`.
+  2. Given that, audio does **not** need a separate pre-transcription step. `backend/`'s `handle_turn` (`service.py:460-463`) already builds a single-`Part` `types.Content` from text; extending it to accept raw audio/image bytes as additional `Part`s reuses the *exact* multimodal pattern `handle_voice_turn` already uses for the voice channel — Gemini understands audio directly within one multimodal turn, no separate transcription call required for the reply itself.
+- **`backend/`'s `ChatTurnRequest`/`handle_turn` gain optional media fields.** `ChatTurnRequest` (`router.py:57-60`) gets `audio_base64: str | None`, `audio_mime_type: str | None`, `image_base64: str | None`, `image_mime_type: str | None` — base64 because this is a JSON HTTP request, not a multipart upload (unlike `/voice/turn`, which is out of scope here). `handle_turn` gains matching optional params and appends `types.Part.from_bytes(data=base64.b64decode(...), mime_type=...)` to the `parts` list built at `service.py:460-463`, one per attachment present. Default `None` on every field = byte-identical to today for every existing caller (the legacy WhatsApp-standalone path, web chat, etc.) — purely additive.
+- **`agent/`'s orchestrator fetches attachment bytes and forwards them.** In `_process_via_chat_agent`, when the trailing incoming message(s) have `attachments` (and the feature flag is on): fetch each attachment's bytes via a new, plain unauthenticated `httpx.AsyncClient` (not `ChatwootClient` — Chatwoot's `data_url`s are absolute, directly-fetchable, pre-signed or Chatwoot-served URLs; reusing `ChatwootClient` would leak the account API token to that external host for no benefit), base64-encode, and include in the `/chat/turn` POST body.
+- **One flag gates the whole feature**: `whatsapp_media_understanding_enabled` (agent/, default `False`, fail-open/default-preserving — today's text-only behavior when off). `backend/`'s side needs no flag — the new fields are optional and no-op when absent, matching this codebase's "additive, default-preserving" convention throughout.
+- **Fix the silent-drop bug regardless of the flag.** Even with the feature disabled, an attachment-only message should not vanish with zero observability. When the flag is off (or fetch fails) and a message has attachments but no usable text, log it (structured, one line) and let the existing short-circuit stand (no customer-facing behavior change) — this makes the gap visible in logs/metrics instead of silent, without changing behavior for tenants that haven't opted in.
 
 ## Non-goals
 
@@ -31,12 +32,11 @@ Chatwoot's native WhatsApp inbox already receives and displays inbound voice not
 `agent/app/config.py`, near the Gemini/AI behavior block (`chat_agent_enabled`, etc.):
 
 ```python
-# Voice-note transcription + image understanding for the agent-bot path
-# (orchestrator.py, ADK chat-agent flow only). Default False = today's
-# text-only behavior, byte-identical. When True, incoming WhatsApp
-# attachments (audio/image) are downloaded and understood: audio is
-# transcribed to text before context-building; images are sent to Gemini
-# as multimodal Parts alongside the conversation context.
+# Voice-note + image understanding for the agent-bot's chat-agent path
+# (orchestrator.py's _process_via_chat_agent, chat_agent_enabled=True only).
+# Default False = today's text-only behavior, byte-identical. When True,
+# incoming WhatsApp attachments (audio/image) are downloaded and forwarded
+# to backend/'s /chat/turn as multimodal Parts alongside the text.
 whatsapp_media_understanding_enabled: bool = False
 ```
 
@@ -54,55 +54,58 @@ async def fetch_attachment_bytes(data_url: str) -> tuple[bytes, str] | None:
 
 Uses a short-lived `httpx.AsyncClient()` (no Chatwoot auth headers), `GET`s `data_url`, derives mime type from the response's `Content-Type` header (falling back to the attachment's own `file_type` field — `"image"`/`"audio"` — mapped to a sensible default mime type if the header is missing/generic). Returns `None` and logs a warning on any exception, timeout, or non-2xx — never raises.
 
-### 3. Audio transcription (new)
+### 3. `backend/`'s `/chat/turn` — optional multimodal input
 
-`agent/app/services/media.py`, alongside the fetcher:
-
-```python
-async def transcribe_whatsapp_audio(audio_bytes: bytes, mime_type: str, *, client=None) -> str | None:
-    """Transcribe a voice note via Gemini. Returns the transcript, or None on
-    any failure (fail-open — audio the model can't transcribe just drops back
-    to today's behavior for that message)."""
-```
-
-Mirrors `backend/`'s `_transcribe_audio` call shape exactly (`types.Content(parts=[Part.from_bytes(...), Part.from_text(text="Transcribe this audio verbatim...")])` via the same `google.genai.Client` `agent/`'s `gemini.py` already constructs), adapted to `agent/`'s sync-call-via-`asyncio.to_thread` convention (matching `decide()`'s existing pattern, not `backend/`'s native-async client).
-
-### 4. `gemini.py` — optional multimodal input
-
-`decide()` and `generate()` (`agent/app/ai/gemini.py`) gain `media_parts: list[types.Part] | None = None`. When `None` (the default — every existing call site, unchanged), behavior is byte-identical to today (`contents=conversation_context`, a plain string). When present:
+`ChatTurnRequest` (`backend/apps/backend/src/chatbot/features/chat/router.py:57-60`) gains:
 
 ```python
-contents = types.Content(
-    role="user",
-    parts=[types.Part.from_text(text=conversation_context), *media_parts],
-)
+class ChatTurnRequest(BaseModel):
+    session_id: str
+    text: str
+    inbox_id: int | None = None
+    audio_base64: str | None = None
+    audio_mime_type: str | None = None
+    image_base64: str | None = None
+    image_mime_type: str | None = None
 ```
 
-### 5. Orchestrator wiring
+`chat_turn` (`router.py:1064`) passes the four new fields through to `handle_turn`. `handle_turn` (`service.py:409`) gains matching optional params and extends the `parts` list built at `service.py:460-463`:
 
-`agent/app/services/orchestrator.py`'s `_process_via_chat_agent` (the ADK path — where this feature lands per the non-goals above):
+```python
+parts = [types.Part.from_text(text=text)]
+if audio_base64 and audio_mime_type:
+    parts.append(types.Part.from_bytes(data=base64.b64decode(audio_base64), mime_type=audio_mime_type))
+if image_base64 and image_mime_type:
+    parts.append(types.Part.from_bytes(data=base64.b64decode(image_base64), mime_type=image_mime_type))
+new_message = types.Content(role="user", parts=parts)
+```
 
-- Before calling `_latest_incoming_text`, scan the trailing run of incoming messages for `message.get("attachments")`. For each attachment (only when `settings.whatsapp_media_understanding_enabled`):
-  - `file_type == "audio"` → `fetch_attachment_bytes` → `transcribe_whatsapp_audio` → if a transcript comes back, treat it as that message's effective text (feed into `_latest_incoming_text`'s join, same as if the customer had typed it).
-  - `file_type == "image"` → `fetch_attachment_bytes` → build a `types.Part.from_bytes(data=..., mime_type=...)`, collected into a `media_parts` list for this turn.
-- Pass the collected `media_parts` (if any) through to the `decide(...)` call.
-- When the flag is off (or no attachments): behavior is completely unchanged — including the silent-drop fix in Design item 6 below, which fires independent of the flag.
+All four fields default to `None` — every existing caller (web chat, the legacy WhatsApp-standalone integration, anything else hitting `/chat/turn`) is unaffected; this is purely additive, matching `handle_voice_turn`'s already-established multimodal-Part pattern one endpoint over.
 
-### 6. Silent-drop observability fix (flag-independent)
+### 4. Orchestrator wiring
 
-In `_process_via_chat_agent`'s existing `if not text: return` short-circuit: when the effective text is empty AND the latest incoming message(s) had at least one attachment, log one structured warning (e.g. `orchestrator_attachment_only_message_dropped`, with conversation id and attachment file_types) before returning. No behavior change — purely closes the "silent" part of "silent-drop" so this is observable in logs/metrics regardless of whether the media-understanding flag is on.
+`agent/app/services/orchestrator.py`'s `_process_via_chat_agent` (the only path that calls `/chat/turn` — see Decision above for why the legacy `gemini.decide()` router is explicitly out of scope):
+
+- Before building the request to `/chat/turn`, scan the trailing run of incoming messages (same messages `_latest_incoming_text` already walks) for `message.get("attachments")`. For each attachment, only when `settings.whatsapp_media_understanding_enabled`:
+  - `file_type == "audio"` → `fetch_attachment_bytes` → base64-encode → set `audio_base64`/`audio_mime_type` on the outgoing request.
+  - `file_type == "image"` → same → `image_base64`/`image_mime_type`.
+- Include whichever fields were populated in the POST body to `/chat/turn`; when nothing was fetched (flag off, no attachments, or fetch failed), the request is identical to today's (all four fields absent/`None`).
+
+### 5. Silent-drop observability fix (flag-independent)
+
+In `_process_via_chat_agent`'s existing empty-text short-circuit: when the effective text is empty AND the latest incoming message(s) had at least one attachment, log one structured warning (e.g. `orchestrator_attachment_only_message_dropped`, with conversation id and attachment file_types) before returning. No behavior change — purely closes the "silent" part of "silent-drop" so this is observable in logs/metrics regardless of whether the media-understanding flag is on.
 
 ## Error handling
 
-- `fetch_attachment_bytes` and `transcribe_whatsapp_audio` never raise — any failure returns `None`/falls back, logged as a warning. A broken attachment URL or a Gemini transcription failure degrades to "treat this message as if it had no usable text" (today's exact behavior for an attachment-only message, just now logged per item 6), never breaks the turn.
-- `decide()`/`generate()` with `media_parts` follow the exact same existing exception handling as the plain-text path (already fail-open per the codebase's established convention — `decide()`'s function-calling contract falls back to `handoff_to_human` on any anomaly).
+- `fetch_attachment_bytes` never raises — any failure (timeout, non-2xx, malformed URL) returns `None` and logs a warning. A fetch failure means that attachment's field(s) are simply omitted from the `/chat/turn` request — degrades to today's exact behavior for that attachment (text-only, or the empty-text short-circuit if there was no caption), never breaks the turn.
+- `handle_turn`'s new `base64.b64decode(...)` calls are wrapped so a malformed base64 payload (shouldn't happen given `agent/` controls the encoding, but defense-in-depth) degrades to the text-only `Content` rather than raising into the turn.
 
 ## Testing
 
-- `test_media.py` (new): `fetch_attachment_bytes` — success, 404, timeout, malformed URL (mirrors `respx`-based test conventions already used in `agent/tests/`). `transcribe_whatsapp_audio` — success (mocked Gemini response), failure (exception → `None`).
-- `gemini.py` tests: `decide()`/`generate()` called with `media_parts=None` produce the identical `contents=` string call as before (regression guard); called with a `media_parts` list produce the `types.Content(...)` shape.
-- `orchestrator.py` tests: attachment-only audio message → transcript flows into context → `decide()` called with the transcript as if typed. Attachment-only image message → `decide()` called with `media_parts` containing the image `Part`. Flag off → attachments ignored, today's short-circuit still fires, but the new warning log line is emitted. Flag on + fetch failure → falls back to today's short-circuit behavior, no crash.
+- `test_media.py` (new, `agent/tests/`): `fetch_attachment_bytes` — success, 404, timeout, malformed URL (mirrors `respx`-based test conventions already used in `agent/tests/`).
+- `backend/`'s `test_router.py`/`test_service.py` (existing files, extend): `ChatTurnRequest` with `audio_base64`/`image_base64` set produces a multimodal `types.Content` with the extra `Part`(s); all fields absent (today's only caller shape) produces the identical single-`Part` `Content` as before (regression guard) — mirrors whatever test already covers `handle_voice_turn`'s multimodal-Part construction, if one exists, for the assertion style.
+- `orchestrator.py` tests: attachment-only audio message + flag on → `/chat/turn` POST body includes `audio_base64`. Attachment-only image message + flag on → POST body includes `image_base64`. Flag off → attachments ignored, today's short-circuit still fires, but the new warning log line is emitted. Flag on + fetch failure → falls back to today's short-circuit/text-only behavior, no crash.
 
 ## Rollout
 
-Agent redeploy only (no backend/ or Chatwoot fork change). Default off — zero behavior change for any tenant until `WHATSAPP_MEDIA_UNDERSTANDING_ENABLED=true` is set. Meta WhatsApp Business media-message policy/verification is an external prerequisite outside this repo's control, same category as other external blockers already noted in the roadmap doc.
+Both `agent/` and `backend/` redeploy (no Chatwoot fork/image change — this is backend-only wiring, no SPA surface). Default off — zero behavior change for any tenant until `WHATSAPP_MEDIA_UNDERSTANDING_ENABLED=true` is set on `agent/`; `backend/`'s new `/chat/turn` fields are optional and inert for every other caller regardless of that flag. Meta WhatsApp Business media-message policy/verification is an external prerequisite outside this repo's control, same category as other external blockers already noted in the roadmap doc.

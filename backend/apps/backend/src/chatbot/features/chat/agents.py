@@ -2,16 +2,20 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import structlog
 from google.adk.agents import Agent
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
+from chatbot.features.chat.case_taxonomy import build_case_taxonomy
 from chatbot.features.chat.product_cleanup import clean_description, clean_title, dedupe_cards
 from chatbot.features.chat.prompts import AGENT_INSTRUCTION, SUMMARIZER_INSTRUCTION
 
 if TYPE_CHECKING:
     from chatbot.features.chat.ports import KnowledgePort, TicketingPort
     from chatbot.platform.config import Settings
+
+_log = structlog.get_logger(__name__)
 
 
 def build_ai_agent(
@@ -28,6 +32,7 @@ def build_ai_agent(
     level AGENT_INSTRUCTION constant is used unchanged, preserving existing
     behaviour byte-for-byte.
     """
+    case_taxonomy = build_case_taxonomy(settings)
 
     # Define tools inside a closure to inject the ports
     async def search_kb_tool(query: str) -> str:
@@ -61,20 +66,48 @@ def build_ai_agent(
 
         Args:
             tool_context: Context injected by the ADK runner.
-            category: General category of the problem (e.g. Account, Technical).
-            subcategory: Precise subcategory (e.g. Password Reset, System Crash).
+            category: General category of the problem.
+            subcategory: Precise subcategory matching the chosen category.
             priority: Priority tier (LOW, MEDIUM, HIGH, URGENT).
             sla_minutes: Targeted SLA duration in minutes.
         """
-        # Save classification state locally in the tool context
-        tool_context.state["category"] = category
-        tool_context.state["subcategory"] = subcategory
         tool_context.state["priority"] = priority
         tool_context.state["sla_minutes"] = sla_minutes
+
+        if case_taxonomy.is_empty():
+            # No taxonomy configured — pre-feature fallback: accept free text.
+            tool_context.state["category"] = category
+            tool_context.state["subcategory"] = subcategory
+        elif case_taxonomy.is_valid_category(category) and case_taxonomy.is_valid_subcategory(
+            category, subcategory
+        ):
+            tool_context.state["category"] = category
+            tool_context.state["subcategory"] = subcategory
+        else:
+            _log.warning(
+                "classify_ticket_tool_invalid_category",
+                category=category,
+                subcategory=subcategory,
+            )
 
         return (
             f"[internal] ticket classified as {category} -> {subcategory} "
             f"({priority}, SLA {sla_minutes}m)."
+        )
+
+    if not case_taxonomy.is_empty():
+        classify_ticket_tool.__doc__ = (
+            "Classify the current ticket details.\n\n"
+            "Args:\n"
+            "    tool_context: Context injected by the ADK runner.\n"
+            f"    category: MUST be exactly one of: {', '.join(case_taxonomy.main_categories())}.\n"
+            "    subcategory: MUST match one of the subcategories for the chosen category:\n"
+            + "\n".join(
+                f"        {slug} -> {', '.join(case_taxonomy.subcategories_for(slug))}"
+                for slug in case_taxonomy.main_categories()
+            )
+            + "\n    priority: Priority tier (LOW, MEDIUM, HIGH, URGENT).\n"
+            "    sla_minutes: Targeted SLA duration in minutes."
         )
 
     async def book_test_drive_tool(

@@ -312,7 +312,16 @@ class ProtonConfigClient:
             return answer
         return None
 
-    async def chat_turn(self, session_id: str, text: str, inbox_id: int | None = None) -> dict | None:
+    async def chat_turn(
+        self,
+        session_id: str,
+        text: str,
+        inbox_id: int | None = None,
+        audio_base64: str | None = None,
+        audio_mime_type: str | None = None,
+        image_base64: str | None = None,
+        image_mime_type: str | None = None,
+    ) -> dict | None:
         """Full conversational turn via the backend ADK agent (POST /chat/turn).
 
         This is the same agent the Proton website uses: it answers KB/spec
@@ -331,6 +340,14 @@ class ProtonConfigClient:
             payload: dict = {"session_id": session_id, "text": text}
             if inbox_id is not None:
                 payload["inbox_id"] = inbox_id
+            if audio_base64 is not None:
+                payload["audio_base64"] = audio_base64
+            if audio_mime_type is not None:
+                payload["audio_mime_type"] = audio_mime_type
+            if image_base64 is not None:
+                payload["image_base64"] = image_base64
+            if image_mime_type is not None:
+                payload["image_mime_type"] = image_mime_type
             response = await self._client.post(
                 "/chat/turn",
                 json=payload,

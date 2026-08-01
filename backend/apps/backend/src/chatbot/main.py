@@ -496,6 +496,12 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         app.include_router(build_authz_router(authz_repo, authz_validator, settings))
         app.state.authz_engine = authz_engine
         app.state.authz_repo = authz_repo
+    elif settings.rbac_enabled:
+        import structlog as _sl
+        _sl.get_logger(__name__).warning(
+            "rbac_enabled_but_no_database_url",
+            detail="RBAC_ENABLED is true but RBAC_DATABASE_URL is empty; /authz not mounted",
+        )
 
     @app.on_event("startup")
     async def _init_authz_db() -> None:
@@ -507,6 +513,10 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
 
             await init_authz_db(engine)
             await seed_defaults(repo)
+            if settings.rbac_bootstrap_admin_user_id is not None:
+                # Break-glass bootstrap: idempotent (assign_role no-ops if the
+                # assignment already exists), safe to run on every startup.
+                await repo.assign_role(settings.rbac_bootstrap_admin_user_id, "administrator")
 
     # --- Proton AI-assist (rewired Captain AI) ---
     _wire_assist(

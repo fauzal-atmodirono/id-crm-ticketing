@@ -131,6 +131,15 @@ class Settings(BaseSettings):
     # existing shared-secret check (today's behavior), no RBAC tables used.
     rbac_enabled: bool = False
     rbac_database_url: str = ""
+    # Break-glass bootstrap: the Chatwoot user id to auto-assign the seeded
+    # 'administrator' role to on every startup, when set. Without this, a
+    # fresh RBAC-enabled DB has an 'administrator' role but nobody assigned to
+    # it, and the only way to grant it is POST /authz/roles/{id}/assign —
+    # which itself requires roles.manage, a permission nobody has yet. Unset
+    # (default) = no auto-assignment; an operator must assign manually (e.g.
+    # direct SQL), same as today. Safe to leave set across restarts: the
+    # underlying assign is idempotent (checks existence before inserting).
+    rbac_bootstrap_admin_user_id: int | None = None
     # --- Phase 5: Agent routing & presence ---
     # Master switch: when False (default) the routing service is bypassed and
     # the static chatwoot_agent_team_id team assignment remains active.

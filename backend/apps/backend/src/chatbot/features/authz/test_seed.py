@@ -46,3 +46,20 @@ async def test_administrator_role_has_every_registered_permission(repo):
             )
         ).scalars().all()
     assert set(rows) == set(PERMISSION_REGISTRY.keys())
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_admin_assignment_grants_full_permission_set(repo):
+    # Mirrors main.py's startup wiring: seed_defaults() then assign_role() for
+    # RBAC_BOOTSTRAP_ADMIN_USER_ID. Confirms the composition actually grants
+    # the bootstrapped user every registered permission, and that re-running
+    # both calls (as happens on every restart) stays idempotent.
+    await seed_defaults(repo)
+    await repo.assign_role(999, "administrator")
+    assert await repo.permissions_for_user(999) == set(PERMISSION_REGISTRY.keys())
+
+    # Simulate a second startup: seeding + bootstrap assignment again must not
+    # raise or change the resulting permission set.
+    await seed_defaults(repo)
+    await repo.assign_role(999, "administrator")
+    assert await repo.permissions_for_user(999) == set(PERMISSION_REGISTRY.keys())

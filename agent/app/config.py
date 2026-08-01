@@ -100,7 +100,18 @@ class Settings(BaseSettings):
     # SOP completion (B: categorization taxonomy; C1: email auto-ack).
     # Comma-separated category slugs the bot may assign on resolution (must
     # match the tenant's deployed taxonomy). Empty → auto-categorize no-ops.
+    # DEPRECATED: superseded by case_taxonomy_json; kept for backward
+    # compatibility so old deployments that set this don't hard-fail on startup.
     lifecycle_category_labels: str = ""
+
+    # Case category/subcategory taxonomy — set to the SAME value as backend/'s
+    # CASE_TAXONOMY_JSON (both services parse it independently; there is no
+    # shared library between them). Used by services/categorize.py as the
+    # resolution-time fallback classifier's candidate list. Empty -> the
+    # fallback classifier no-ops (same as today's lifecycle_category_labels
+    # behavior when empty).
+    case_taxonomy_json: str = ""
+
     # C1: email once-per-thread auto-acknowledgement.
     email_autoack_enabled: bool = False
     email_autoack_template: str = (

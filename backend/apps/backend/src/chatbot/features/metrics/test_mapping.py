@@ -262,9 +262,14 @@ def test_chatwoot_open_status_is_agent_and_not_resolved() -> None:
     assert row.resolved_at is None
 
 
-def test_chatwoot_dimension_labels_parsed() -> None:
+def test_chatwoot_dimension_labels_and_custom_attrs_parsed() -> None:
+    """department/sla still come from labels; category/subcategory come from
+    custom_attributes (category_/subcat_ labels are no longer read)."""
     row = map_chatwoot_conversation_to_row(
-        _conv(labels=["category_aftersales", "subcat_battery", "dept_service", "sla_480"])
+        _conv(
+            labels=["dept_service", "sla_480"],
+            custom_attributes={"case_category": "aftersales", "case_subcategory": "battery"},
+        )
     )
     assert row is not None
     assert row.category == "aftersales"
@@ -318,10 +323,12 @@ def test_chatwoot_skip_empty_conversation() -> None:
 
 
 def test_chatwoot_keep_label_only_conversation() -> None:
+    # A stale category_ label no longer feeds row.category (custom_attributes-only
+    # now), but its mere presence still keeps the conversation from being skipped.
     row = map_chatwoot_conversation_to_row(
         {"id": 2, "status": "resolved", "labels": ["category_sales"]}
     )
-    assert row is not None and row.channel == "Other" and row.category == "sales"
+    assert row is not None and row.channel == "Other" and row.category is None
 
 
 def test_chatwoot_malformed_timestamp_is_none() -> None:

@@ -79,8 +79,9 @@ def test_run_sync_maps_and_loads() -> None:
         {
             "id": 1,
             "status": "resolved",
-            "labels": ["csat_5", "category_aftersales"],
+            "labels": ["csat_5"],
             "meta": {"sender": {"identifier": "whatsapp-+60"}},
+            "custom_attributes": {"case_category": "aftersales"},
         },
         {"id": 2, "status": "resolved", "labels": []},  # skipped: no source, no csat/nps, no labels
     ]
@@ -94,6 +95,7 @@ def test_run_sync_maps_and_loads() -> None:
     assert result == {"conversations": 2, "rows": 1}
     assert len(loaded) == 1
     assert loaded[0].channel == "WhatsApp" and loaded[0].csat_score == 5
+    # category comes from custom_attributes (not labels); division is derived from it
     assert loaded[0].category == "aftersales" and loaded[0].division == "Aftersales"
 
 

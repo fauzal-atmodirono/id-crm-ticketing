@@ -326,6 +326,29 @@ class Settings(BaseSettings):
     # Empty string disables PIC routing (no lookup attempted).
     pic_map_json: str = ""
 
+    # Case category/subcategory taxonomy — JSON object keyed by main-category
+    # slug: {"label": str, "subcategories": [str, ...]}. Same fail-open pattern
+    # as PIC_MAP_JSON: malformed/empty -> empty taxonomy, classify_ticket_tool
+    # falls back to accepting free text (pre-taxonomy behavior). Ships with a
+    # working default so the system functions out of the box; override per
+    # tenant once the client finalizes their scheme — no code change needed.
+    case_taxonomy_json: str = (
+        '{"sales":{"label":"Sales","subcategories":["Test Drive Booking",'
+        '"Pricing Inquiry","Vehicle Availability","Trade-In","Financing"]},'
+        '"aftersales":{"label":"Aftersales","subcategories":["Service Booking",'
+        '"Warranty Claim","Spare Parts","Recall"]},'
+        '"apps":{"label":"Apps","subcategories":["Login Issue","App Crash",'
+        '"Feature Request","Account Sync"]},'
+        '"charging":{"label":"Charging","subcategories":["Charger Fault",'
+        '"Charging Station Locator","Billing"]},'
+        '"roadside_assistance":{"label":"Roadside Assistance","subcategories":'
+        '["Breakdown","Accident","Towing"]},'
+        '"general_enquiry":{"label":"General Enquiry","subcategories":'
+        '["Product Info","Dealer Locator","Other"]},'
+        '"complaint":{"label":"Complaint","subcategories":["Service Quality",'
+        '"Product Defect","Staff Conduct","Other"]}}'
+    )
+
     # Phase 2 — escalation notifications
     escalation_email_enabled: bool = False
     escalation_cc_pic: bool = True

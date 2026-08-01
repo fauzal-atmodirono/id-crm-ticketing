@@ -125,6 +125,12 @@ class Settings(BaseSettings):
     kb_chunk_overlap_tokens: int = 100
     kb_score_floor: float = 0.55
     kb_max_upload_bytes: int = 10_485_760  # 10 MiB cap on /kb/knowledge/file uploads
+    # RBAC — independent Postgres connection, deliberately NOT shared with
+    # knowledge_database_url: RBAC must work without requiring the pgvector KB
+    # feature to be enabled. Empty -> require_permission falls back to the
+    # existing shared-secret check (today's behavior), no RBAC tables used.
+    rbac_enabled: bool = False
+    rbac_database_url: str = ""
     # --- Phase 5: Agent routing & presence ---
     # Master switch: when False (default) the routing service is bypassed and
     # the static chatwoot_agent_team_id team assignment remains active.

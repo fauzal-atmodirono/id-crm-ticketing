@@ -29,24 +29,79 @@ Two bugs surfaced in the client demo:
 
 ## Design
 
-### 1. Relevance-ranked merge (`merged_knowledge.py`)
+### 1. Guaranteed base-KB representation in the merge (`merged_knowledge.py`)
 
-`MergedKnowledgeAdapter.search_kb` currently does (approximately):
+Corrected understanding from reading the actual code (superseding an earlier draft of this design that assumed a plain relevance-sort fix — that would have fought this file's own documented intent): `KbArticle` (the shared result type across all three sources) carries **no score field at all**, and the file's own docstring/comments explicitly document that live-FAQ hits are *meant* to rank first ("freshly-authored knowledge" should surface ahead of the static batch KB). So the bug isn't "wrong ordering" — the ordering is intentional. The bug is that **`pg`+`live` can consume 100% of a small `limit` and leave zero room for `base`**, even when a `base` (Vertex) result would have been exactly what the customer/agent needed — matching the "iMAS 5 specs" symptom exactly (a batch-KB fact with no corresponding live-FAQ entry, silently squeezed out).
 
+`search_kb` currently does:
 ```python
-merged = [*pg_results, *live_results, *base_results]
-return merged[:limit]
+async def search_kb(self, query: str, limit: int = 2) -> list[KbArticle]:
+    pg = await self._pg_articles(query, limit)
+    live = await self._live_articles(query, limit)
+    base = await self._base.search_kb(query, limit)
+    merged: list[KbArticle] = []
+    seen: set[str] = set()
+    for a in [*pg, *live, *base]:
+        key = (a.title or "").strip().lower()
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        merged.append(a)
+    return merged[:limit]
 ```
 
-Change to rank by each result's own relevance/similarity score (already computed by each underlying source — pgvector's cosine similarity, live-FAQ's `_rank` score per `live_faq.py`, Vertex's native relevance ordering) before truncating:
+Fix: reserve a minimum slot budget for `base` so it's never entirely crowded out, while still letting `pg`/`live` take priority within their budget (preserving the intentional "freshly-authored knowledge first" behavior):
 
 ```python
-merged = [*pg_results, *live_results, *base_results]
-merged.sort(key=lambda r: r.score, reverse=True)  # exact field name TBD by implementer — read the actual result dataclass first
-return merged[:limit]
-```
+async def search_kb(self, query: str, limit: int = 2) -> list[KbArticle]:
+    pg = await self._pg_articles(query, limit)
+    live = await self._live_articles(query, limit)
+    base = await self._base.search_kb(query, limit)
 
-If the three source result types don't already carry a directly-comparable score field (e.g. Vertex's relevance metric and pgvector's cosine similarity may be on different scales), the fallback is a **stable interleave** (round-robin across the three sources, one from each in turn, until `limit` is reached) rather than the current strict-priority-then-truncate — this at minimum guarantees no single source can starve out the other two entirely, even without perfectly comparable scores. The implementer should read the actual result dataclasses from all three sources (pgvector adapter, `live_faq.py`, Vertex adapter) before deciding which of these two approaches (true relevance sort vs. guaranteed interleave) is achievable — this is a legitimate implementation-time judgment call the plan should surface, not force blindly.
+    # pg/live intentionally rank first (freshly operator-authored knowledge),
+    # but must never be allowed to consume the ENTIRE limit when a relevant
+    # base-KB result exists — that's the "Copilot can't find things the main
+    # agent can" bug (the main agent queries base/Vertex directly, unaffected
+    # by this merge). Reserve at least half of `limit` (rounded up, min 1)
+    # for base.
+    base_reserved = max(1, -(-limit // 2))  # ceil(limit / 2)
+    priority_budget = max(0, limit - base_reserved)
+
+    merged: list[KbArticle] = []
+    seen: set[str] = set()
+
+    def _add(article: KbArticle) -> bool:
+        key = (article.title or "").strip().lower()
+        if key and key in seen:
+            return False
+        if key:
+            seen.add(key)
+        merged.append(article)
+        return True
+
+    priority_added = 0
+    for a in [*pg, *live]:
+        if priority_added >= priority_budget:
+            break
+        if _add(a):
+            priority_added += 1
+
+    for a in base:
+        if len(merged) >= limit:
+            break
+        _add(a)
+
+    # If base didn't have enough results to fill the reserved slots, top up
+    # with any remaining pg/live hits beyond the initial priority budget.
+    if len(merged) < limit:
+        for a in [*pg, *live]:
+            if len(merged) >= limit:
+                break
+            _add(a)
+
+    return merged[:limit]
+```
 
 ### 2. Upload button — clear error on 404 (Chatwoot fork patch)
 
@@ -63,7 +118,7 @@ Add a short note to `deploy/tenants/example.env` near `KNOWLEDGE_PG_ENABLED`/`KN
 
 ## Testing
 
-- `test_merged_knowledge.py` (existing, extend): a case where a lower-relevance live-FAQ result and a higher-relevance base-Vertex result are both returned by their sources, with a `limit` smaller than the combined count — assert the higher-relevance result survives truncation (regression guard for the exact demo symptom: a correct Vertex result must not be crowded out by weaker FAQ matches). Match whichever of the two implementation approaches (true sort vs. interleave) Design item 1 lands on.
+- `test_merged_knowledge.py` (existing, extend): (a) more `pg`+`live` hits than `limit` alone, plus a `base` hit — assert at least one `base` result survives truncation (the exact demo symptom: a correct Vertex result must not be entirely crowded out). (b) `pg`/`live` still win their reserved priority slots when both `pg`/`live` and `base` have results (regression guard — the fix must not accidentally invert the intentional freshly-authored-knowledge-first behavior). (c) dedup by title still works across the new two-pass merge (a title appearing in both `live` and `base` must not appear twice, and must not consume two separate slots). (d) `base` has fewer results than its reserved budget — remaining slots correctly top up from leftover `pg`/`live` hits, not left empty when more relevant content exists.
 - Chatwoot fork: a Vitest/component test if this patch area already has one (check the patch's own test coverage conventions first), else a manual smoke-test note in the patch's own description, matching this repo's existing convention for frontend-only fixes with no unit-test harness in place.
 
 ## Rollout

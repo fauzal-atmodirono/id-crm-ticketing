@@ -35,7 +35,9 @@ async def test_valid_category_and_subcategory_written() -> None:
     tool = _classify_tool(VALID)
     ctx = SimpleNamespace(state={})
 
-    await tool(ctx, category="sales", subcategory="Test Drive Booking", priority="HIGH", sla_minutes=60)  # type: ignore[operator]
+    await tool(
+        ctx, category="sales", subcategory="Test Drive Booking", priority="HIGH", sla_minutes=60
+    )  # type: ignore[operator]
 
     assert ctx.state["category"] == "sales"
     assert ctx.state["subcategory"] == "Test Drive Booking"

@@ -27,8 +27,12 @@ async def test_classify_empty_candidates_is_none():
     assert await categorize.classify_category("hello", []) is None
 
 
-def test_candidate_slugs_parses_csv():
+def test_candidate_slugs_returns_taxonomy_main_categories():
+    from app.services.case_taxonomy import build_case_taxonomy
     from app.config import Settings
 
-    s = Settings(lifecycle_category_labels="battery, sales ,,aftersales")
-    assert categorize._candidate_slugs(s) == ["battery", "sales", "aftersales"]
+    s = Settings(
+        case_taxonomy_json='{"battery": {"label": "Battery"}, "sales": {"label": "Sales"}}'
+    )
+    taxonomy = build_case_taxonomy(s)
+    assert categorize._candidate_slugs(taxonomy) == ["battery", "sales"]

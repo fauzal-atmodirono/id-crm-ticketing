@@ -97,7 +97,10 @@ def build_system_prompt(
 
     language = getattr(assistant.config, "language", "") or ""
     if language.strip():
-        parts.append(f"## Language\nAlways respond in {language.strip()}.")
+        parts.append(
+            f"## Language\nPrefer {language.strip()} when the agent's language "
+            "is unclear, but always match the language the agent used."
+        )
 
     return "\n".join(parts)
 

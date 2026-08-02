@@ -120,7 +120,11 @@ def _build_persona_prefix(product_name: str, guardrails: list[str], language: st
         parts.append("## Guardrails\n" + "\n".join(f"- {g}" for g in guardrails))
     language = (language or "").strip()
     if language:
-        parts.append(f"Always respond in {language}.")
+        parts.append(
+            f"Default to {language} when no language is otherwise indicated, "
+            "but always follow this task's own language instructions below "
+            "if they say otherwise."
+        )
     return "\n".join(parts)
 
 

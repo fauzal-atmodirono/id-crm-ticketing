@@ -19,9 +19,12 @@ def _assistant(**cfg) -> Assistant:
 
 def test_language_section_added_when_set() -> None:
     p = build_system_prompt(_assistant(language="Bahasa Melayu"))
-    assert "Always respond in Bahasa Melayu." in p
+    assert (
+        "Prefer Bahasa Melayu when the agent's language is unclear, but "
+        "always match the language the agent used." in p
+    )
 
 
 def test_no_language_section_when_empty() -> None:
     p = build_system_prompt(_assistant())
-    assert "Always respond in" not in p
+    assert "Prefer" not in p and "## Language" not in p

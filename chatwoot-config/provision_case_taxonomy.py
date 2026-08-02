@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Provision the case_category / case_subcategory Chatwoot custom attribute
-definitions from CASE_TAXONOMY_JSON, so Chatwoot's native conversation
-sidebar renders them as single-select dropdowns (List type) — the mechanism
-that enforces "one main category" without any custom frontend code.
+"""Provision the case_category/case_subcategory/case_type/vehicle_model
+Chatwoot custom attribute definitions from CASE_TAXONOMY_JSON (nested) and
+CASE_TYPE_OPTIONS_JSON/VEHICLE_MODELS_JSON (flat), so Chatwoot's native
+conversation sidebar renders them as single-select dropdowns (List type) —
+the mechanism that enforces "one main category" without any custom frontend
+code.
 
 Unlike provision_features.py (account *features*, not in Chatwoot's public
 REST API — requires `rails runner`), custom attribute definitions ARE public
@@ -48,6 +50,21 @@ def _subcategory_options(taxonomy: dict) -> list[str]:
         for sub in v.get("subcategories", []) or []:
             options.append(f"{label}: {sub}")
     return options
+
+
+def _flat_options(raw_json: str) -> list[str]:
+    """Parse a `{"options": [...]}` blob (same shape as backend/'s
+    OptionList config) into a plain list, defaulting to [] on any error —
+    this script has no logger, so a bad env var just yields no options
+    provisioned for that attribute (upsert with an empty list clears it)."""
+    try:
+        data = json.loads(raw_json)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    options = data.get("options")
+    return [str(o) for o in options] if isinstance(options, list) else []
 
 
 def _find_existing(client: httpx.Client, base: str, key: str) -> dict | None:
@@ -100,9 +117,16 @@ def main() -> int:
 
     base = f"{args.chatwoot_url.rstrip('/')}/api/v1/accounts/{args.account_id}"
     headers = {"api_access_token": args.api_token, "Api-Access-Token": args.api_token}
+    case_types_raw = os.environ.get("CASE_TYPE_OPTIONS_JSON", "").strip()
+    vehicle_models_raw = os.environ.get("VEHICLE_MODELS_JSON", "").strip()
+
     with httpx.Client(headers=headers, timeout=15.0) as client:
         _upsert(client, base, "case_category", "Case Category", _category_options(taxonomy), args.dry_run)
         _upsert(client, base, "case_subcategory", "Case Subcategory", _subcategory_options(taxonomy), args.dry_run)
+        if case_types_raw:
+            _upsert(client, base, "case_type", "Case Type", _flat_options(case_types_raw), args.dry_run)
+        if vehicle_models_raw:
+            _upsert(client, base, "vehicle_model", "Vehicle Model", _flat_options(vehicle_models_raw), args.dry_run)
     return 0
 
 

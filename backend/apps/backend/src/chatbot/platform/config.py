@@ -366,6 +366,18 @@ class Settings(BaseSettings):
         '"Product Defect","Staff Conduct","Other"]}}'
     )
 
+    # Vehicle-model / product-line dimension — JSON object {"options": [str, ...]}.
+    # Same fail-open pattern as CASE_TAXONOMY_JSON. Empty -> the vehicle_model
+    # custom attribute is never offered/written (byte-identical to today) —
+    # tenants with no product-line concept simply leave this unset.
+    vehicle_models_json: str = '{"options": ["e.MAS 5", "e.MAS 7", "e.MAS 7 PHEV", "Not Applicable"]}'
+
+    # Case-type dimension (Inquiry/Complaint/Feedback) — JSON object
+    # {"options": [str, ...]}. Same fail-open pattern. Ships with a working
+    # default since this concept is fairly universal to support work, but
+    # stays configurable/overridable per tenant like every other dimension here.
+    case_type_options_json: str = '{"options": ["Inquiry", "Complaint", "Feedback"]}'
+
     # Phase 2 — escalation notifications
     escalation_email_enabled: bool = False
     # When true (default), escalation emails CC the department's configured

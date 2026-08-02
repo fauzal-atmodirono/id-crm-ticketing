@@ -1,6 +1,10 @@
 import pytest
 
-from chatbot.features.chat.sla_policy_db import build_engine, build_session_maker, init_sla_policy_db
+from chatbot.features.chat.sla_policy_db import (
+    build_engine,
+    build_session_maker,
+    init_sla_policy_db,
+)
 from chatbot.features.chat.sla_policy_repository import SlaPolicyRepository
 
 

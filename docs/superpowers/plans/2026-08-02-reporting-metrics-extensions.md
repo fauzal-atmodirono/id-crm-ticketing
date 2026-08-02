@@ -3131,6 +3131,106 @@ git commit -m "docs: document VEHICLE_MODELS_JSON/CASE_TYPE_OPTIONS_JSON/RESOLUT
 
 ---
 
+### Task 24: Align illustrative `case_taxonomy_json` default with the real Proton division/concern taxonomy
+
+**Added mid-execution (2026-08-02):** the user pointed at two real Proton ops reporting decks (`docs/client-materials/Weekly Report Proton e.MAS.pptx`, `docs/client-materials/MONTHLY REPORTING FOR  Proton e.MAS.pptx`) and asked to reconcile our taxonomy defaults against them. Research (full-deck extraction + comparison against `config.py`/`labels.yaml`) found the illustrative `case_taxonomy_json` default in both `backend/apps/backend/src/chatbot/platform/config.py` and its mirror `agent/app/config.py` has three **structural** mismatches against the real division/case_type split the reports actually use (not just missing entries — the shape is wrong):
+
+1. `complaint` is a top-level *category* in the current default, but in the real reports "Complaint" is the **case_type** (orthogonal to every division: Sales complaints, Aftersales complaints, etc.) — this plan's own Task 1/2/3 just added a dedicated `case_type_options_json` (`Inquiry`/`Complaint`/`Feedback`) that now owns this dimension, so keeping `complaint` as a `case_taxonomy_json` category is redundant/conflicting with the new field.
+2. `roadside_assistance` and `general_enquiry` are top-level categories in the current default but don't correspond to any real top-level division — in the real reports, roadside-assistance concerns are a *subcategory* under **Aftersales** (there's also a fully separate, already-planned standalone RSA incident-log module from Tasks 18-20 — that's a different thing: a detailed incident log vs. how a *conversation* about RSA gets classified; both can coexist).
+3. Three real, high-volume divisions are missing entirely from the current default: **Product** (Infotainment/Telematics), **Marketing**, and **Others** (the real reports' explicit "not related to Proton e.MAS" catch-all — 32% of one month's inquiries).
+
+`case_type_options_json` (`Inquiry`/`Complaint`/`Feedback`) and `vehicle_models_json` (`e.MAS 5`/`e.MAS 7`/`e.MAS 7 PHEV`/`Not Applicable`) were verified against the same decks and are already correct — no change needed to either. `deploy/tenants/example.env`'s `CASE_TAXONOMY_JSON=` ships empty by design (real tenant values live in the gitignored per-tenant env) — this task only fixes the illustrative default shipped as a Python fallback in the two `config.py` files, so it's a genuinely representative example rather than fighting the env-var-driven design by hardcoding Proton's full ~150-entry concern list.
+
+`chatwoot-config/labels.yaml` (a separate, older `category_*`/`division_*` label system, unrelated to this JSON-driven `case_taxonomy.py` mechanism) is explicitly OUT OF SCOPE for this task — it needs its own separate investigation before touching, not bundled here.
+
+**Files:**
+- Modify: `backend/apps/backend/src/chatbot/platform/config.py` (`case_taxonomy_json` default, lines 352-367)
+- Modify: `agent/app/config.py` (mirrored `case_taxonomy_json` default — grep for `roadside_assistance` to find it)
+- Modify: `backend/apps/backend/src/chatbot/features/chat/test_case_taxonomy.py` (`test_default_settings_produce_non_empty_taxonomy`, currently asserts `main_categories() == ["sales", "aftersales", "apps", "charging", "roadside_assistance", "general_enquiry", "complaint"]` at lines 71-86 — this MUST be updated to the new category list or it will fail)
+- Check for and update any equivalent default-taxonomy-asserting test in `agent/tests/` (grep `roadside_assistance` or `general_enquiry` across `agent/tests/` first — none was found during research, but re-verify since agent/'s test suite may have grown since)
+
+**Interfaces:** None — this only changes a `Settings` field's default string value and its two mirror-location tests. No function signatures change.
+
+- [ ] **Step 1: Confirm current defaults and dependent tests**
+
+Run `grep -rn "roadside_assistance\|general_enquiry" backend/apps/backend/src agent/app agent/tests` to confirm exactly which files reference the current default's category slugs before changing it (re-run this — do not trust the count above blindly, code may have moved since this task was written).
+
+- [ ] **Step 2: Replace the `case_taxonomy_json` default in `backend/apps/backend/src/chatbot/platform/config.py`**
+
+Replace the current default value (the `case_taxonomy_json: str = (...)` block, currently lines 352-367) with:
+
+```python
+    case_taxonomy_json: str = (
+        '{"sales":{"label":"Sales","subcategories":["Accessories","Booking",'
+        '"Insurance","New Model","Promotion","Refund","Test Drive","Trade In",'
+        '"Transfer Ownership","Vehicle Delivery","Vehicle Details",'
+        '"Customer Experience"]},'
+        '"aftersales":{"label":"Aftersales","subcategories":["Body",'
+        '"Roadside Assistance","Service / Recall Campaign","Service Operation",'
+        '"Spare Part","Warranty","User Manual","Features"]},'
+        '"apps":{"label":"Apps","subcategories":["Information","Operation",'
+        '"User ID","No QR Scanner","Notification","Profile","Remote Control"]},'
+        '"charging":{"label":"Charging","subcategories":["Home Charging",'
+        '"Public Charging"]},'
+        '"product":{"label":"Product","subcategories":["Infotainment",'
+        '"Telematics"]},'
+        '"marketing":{"label":"Marketing","subcategories":["Event / Campaign",'
+        '"Partnership / Collaboration","Proposal","Sponsorship"]},'
+        '"others":{"label":"Others","subcategories":['
+        '"Not Related to Proton e.MAS"]}}'
+    )
+```
+
+Keep the existing docstring/comment above the field (lines 346-351) — only the string value changes. Do not touch `vehicle_models_json`/`case_type_options_json` in this same block — they're confirmed correct and out of scope for this task.
+
+- [ ] **Step 3: Apply the identical replacement to `agent/app/config.py`**
+
+Find the mirrored `case_taxonomy_json` field there (grep `roadside_assistance` in `agent/app/config.py` to locate it) and apply the exact SAME new JSON string — this repo's convention (documented at both fields' original definition) is that the two services' defaults must stay byte-identical, since they're read from the SAME tenant env var in production (only the Python fallback differs per-service source file).
+
+- [ ] **Step 4: Update `test_default_settings_produce_non_empty_taxonomy`**
+
+In `backend/apps/backend/src/chatbot/features/chat/test_case_taxonomy.py`, change the `main_categories()` assertion (lines 78-86) from the old 7-slug list to:
+
+```python
+    assert tax.main_categories() == [
+        "sales",
+        "aftersales",
+        "apps",
+        "charging",
+        "product",
+        "marketing",
+        "others",
+    ]
+```
+
+- [ ] **Step 5: Update the equivalent agent/ test if one exists**
+
+If Step 1's grep found a default-taxonomy-asserting test in `agent/tests/`, update it the same way. If none exists, skip this step (agent/'s `case_taxonomy.py` mirror may not have an equivalent "assert the real shipped default end-to-end" test — don't add one if the plan's Task 2 didn't establish that pattern there).
+
+- [ ] **Step 6: Run tests to verify they pass**
+
+Run:
+```bash
+cd backend/apps/backend && .venv/bin/python -m pytest src/chatbot/features/chat/test_case_taxonomy.py src/chatbot/features/chat/test_classify_ticket_tool.py -v
+cd ../../../agent && .venv/bin/python -m pytest tests/ -k taxonomy -v
+```
+Expected: PASS. Then run each service's full suite once (`backend/apps/backend`: `.venv/bin/python -m pytest src/ -v`; `agent`: `.venv/bin/python -m pytest tests/ -v`) to confirm no other test asserts on the old category slugs (e.g. via a snapshot or a hardcoded classify_ticket_tool docstring check) — if something else breaks, read it before changing it further; the old slugs may be referenced somewhere Step 1's grep didn't catch if it used different exact search terms.
+
+- [ ] **Step 7: Commit**
+
+```bash
+cd backend/apps/backend
+git add src/chatbot/platform/config.py src/chatbot/features/chat/test_case_taxonomy.py
+git commit -m "fix(chat): align default case_taxonomy_json with real Proton division/concern taxonomy"
+cd ../../../agent
+git add app/config.py
+git commit -m "fix: mirror the real-taxonomy case_taxonomy_json default in agent/"
+```
+
+(commit each service's change separately, matching this plan's existing per-service commit convention from Tasks 1/2.)
+
+---
+
 ### Task 22: Fork patch — native report tabs (Dealer Escalation, SLA Compliance, WIP/Aging, category×vehicle-model)
 
 **Files:**

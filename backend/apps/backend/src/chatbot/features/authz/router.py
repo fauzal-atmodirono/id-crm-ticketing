@@ -98,15 +98,28 @@ def build_authz_router(
         pre_snapshot: dict[int, tuple[int | None, list[str]]],
     ) -> None:
         """Push every snapshotted user's POST-mutation resolved native set to
-        Chatwoot. On any ChatwootRoleMirrorError mid-loop, roll back every
-        user already applied in THIS call to their pre_snapshot state (not
-        just the caller's own DB mutation) before re-raising — closes the
-        fail-open residue window where an earlier user in the loop keeps a
-        Chatwoot change the request as a whole reports as failed. Callers
-        must compensating-revert their own DB change and re-raise as a 502."""
+        Chatwoot. On any ChatwootRoleMirrorError mid-loop, roll back EVERY
+        user in pre_snapshot to their pre-mutation state (not just the users
+        whose forward-pass iteration fully completed, and not just the
+        caller's own DB mutation) before re-raising.
+
+        Rolling back the whole snapshot — not just an `applied` subset — is
+        required because a single user's forward pass is not atomic: for a
+        fresh user it does ensure_custom_role (creates a Chatwoot role) →
+        set_native_role_mirror (commits a DB row) → set_agent_custom_role. If
+        set_agent_custom_role raises for the in-flight user, that user would
+        never be marked "applied", leaving their just-created Chatwoot role
+        and just-committed mirror row orphaned — and a LATER successful sync
+        touching the same user would read that orphaned prior_mirror_id, find
+        new_id == prior_mirror_id after a PATCH, and skip calling
+        set_agent_custom_role again, silently never applying the intended
+        restriction. Rolling back every snapshotted user closes that window:
+        untouched users are a harmless no-op (their live state already
+        matches the snapshot), and the in-flight user is correctly detected
+        via repo.get_native_role_mirror and cleaned up. Callers must
+        compensating-revert their own DB change and re-raise as a 502."""
         if mirror is None:
             return
-        applied: list[int] = []
         try:
             for user_id, (prior_mirror_id, _prior_resolved) in pre_snapshot.items():
                 resolved = await repo.resolve_native_permissions(user_id)
@@ -126,9 +139,8 @@ def build_authz_router(
                     if new_id != prior_mirror_id:
                         await repo.set_native_role_mirror(user_id, new_id)
                         await mirror.set_agent_custom_role(user_id, new_id)
-                applied.append(user_id)
         except ChatwootRoleMirrorError:
-            for user_id in applied:
+            for user_id in pre_snapshot:
                 prior_mirror_id, prior_resolved = pre_snapshot[user_id]
                 prior_stripped = [p.removeprefix("chatwoot.") for p in prior_resolved]
                 try:

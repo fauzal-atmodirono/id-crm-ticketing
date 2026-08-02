@@ -351,6 +351,52 @@ async def test_grant_native_key_rolls_back_already_applied_user_on_partial_mirro
     assert (5, None) in mirror.agent_calls  # rollback: unassigned back to none
 
 
+async def test_grant_native_key_rolls_back_orphaned_state_when_set_agent_custom_role_fails(
+    mirror_client,
+):
+    """Failure injected at set_agent_custom_role — AFTER ensure_custom_role
+    already created a Chatwoot role and set_native_role_mirror already
+    committed the DB row for THIS SAME user in this same forward-pass
+    iteration (the in-flight-partial-application case: distinct from
+    test_grant_native_key_rolls_back_already_applied_user_on_partial_mirror_failure
+    above, which fails at a *different*, not-yet-started user).
+
+    Regression test for the bug where the rollback loop only iterated
+    `applied` — a user whose own forward pass raised mid-way was never added
+    to `applied`, so their just-created Chatwoot role and just-committed
+    mirror row were never cleaned up. A LATER successful sync touching the
+    same user would then read that orphaned prior_mirror_id, find
+    new_id == prior_mirror_id after a PATCH, and silently skip calling
+    set_agent_custom_role again — the operator's intended restriction would
+    never actually apply to that user."""
+    client, repo, mirror = mirror_client
+    await repo.assign_role(chatwoot_user_id=5, role_id="leader")
+    # user 5 has no prior mirror, so the forward pass does: ensure_custom_role
+    # (call 1, creates a fresh role + commits set_native_role_mirror) ->
+    # set_agent_custom_role (call 2), which we make fail.
+    mirror.fail_on_call = 2
+
+    res = client.post(
+        "/authz/roles/leader/permissions",
+        json={"permission_key": "chatwoot.conversation_manage"},
+        headers={"x-chatwoot-access-token": "admin-tok"},
+    )
+    assert res.status_code == 502
+
+    # (a) the orphaned mirror row was cleaned up, not left pointing at a
+    # Chatwoot role the request as a whole reported as failed.
+    assert await repo.get_native_role_mirror(5) is None
+
+    # (b) the just-created Chatwoot role was deleted on rollback.
+    assert mirror.delete_calls == [101]
+
+    # (c) the user was never left pointing at the orphaned role: the forward
+    # pass's set_agent_custom_role(5, 101) raised before being recorded, and
+    # the rollback's compensating call explicitly unset it back to None.
+    assert (5, 101) not in mirror.agent_calls
+    assert (5, None) in mirror.agent_calls
+
+
 async def test_grant_non_native_key_unaffected_by_missing_mirror(tmp_path, respx_mock):
     """No mirror wired at all (mirror=None, matching Phases 1-2's existing
     `client` fixture) — a plain sla.manage-style grant must behave exactly

@@ -21,6 +21,7 @@ from chatbot.features.chat.sla import (
     scan_conversations,
     start_sla_scheduler,
 )
+from chatbot.features.chat.sla_policy_db import SlaPolicyValues
 from chatbot.platform.config import Settings
 
 _NOW = datetime(2026, 7, 17, 12, 0, 0, tzinfo=UTC)
@@ -167,6 +168,124 @@ def test_breach_fires_pic_alert_callback() -> None:
     assert len(calls) == 1
     assert calls[0][0] == "808"
     assert calls[0][1] == NO_RESPONSE_BREACH
+
+
+# --- Task 3: policy-store threshold overrides -------------------------------
+
+
+class _FakePolicyRepo:
+    """Lightweight in-test double for SlaPolicyRepository — no DB involved."""
+
+    def __init__(self, values: SlaPolicyValues | None) -> None:
+        self._values = values
+
+    async def resolve(self, inbox_id: int | None) -> SlaPolicyValues | None:
+        del inbox_id
+        return self._values
+
+
+def test_scan_conversations_byte_identical_when_policy_repo_is_none() -> None:
+    """Omitting policy_repo and passing policy_repo=None explicitly must produce
+    identical results — guards against the new parameter changing default behavior."""
+    settings = _settings(sla_response_hours=8, sla_resolution_hours=1000)
+    conv = _conv(1001, status="open", created_at=_epoch(10))  # 10h old > 8h response
+
+    fired_omitted = asyncio.run(
+        scan_conversations(settings, InMemoryAuditLog(), now=_NOW, fetch=lambda _s: [conv])
+    )
+    fired_explicit_none = asyncio.run(
+        scan_conversations(
+            settings, InMemoryAuditLog(), now=_NOW, fetch=lambda _s: [conv], policy_repo=None
+        )
+    )
+    assert fired_omitted == fired_explicit_none
+    assert len(fired_omitted) == 1
+    assert fired_omitted[0].to_state == NO_RESPONSE_BREACH
+
+
+def test_scan_conversations_uses_policy_store_response_hours_when_set() -> None:
+    """policy_repo.resolve() returning response_hours=1.0 must be used ahead of the
+    (much larger) env default — a 2h-old conversation breaches on the store value."""
+    audit = InMemoryAuditLog()
+    settings = _settings(sla_response_hours=8, sla_resolution_hours=1000)
+    conv = _conv(1002, status="open", created_at=_epoch(2), inbox_id=5)  # 2h old
+    policy_repo = _FakePolicyRepo(SlaPolicyValues(response_hours=1.0))
+
+    fired = asyncio.run(
+        scan_conversations(
+            settings, audit, now=_NOW, fetch=lambda _s: [conv], policy_repo=policy_repo
+        )
+    )
+    assert len(fired) == 1
+    assert fired[0].to_state == NO_RESPONSE_BREACH
+
+
+def test_scan_conversations_falls_back_to_env_when_policy_repo_resolve_returns_none() -> None:
+    """policy_repo.resolve() returning None (no rows at all) must match the
+    policy_repo=None case exactly."""
+    settings = _settings(sla_response_hours=8, sla_resolution_hours=1000)
+    conv = _conv(1003, status="open", created_at=_epoch(10), inbox_id=5)  # 10h old > 8h
+
+    fired_no_repo = asyncio.run(
+        scan_conversations(settings, InMemoryAuditLog(), now=_NOW, fetch=lambda _s: [conv])
+    )
+    fired_empty_repo = asyncio.run(
+        scan_conversations(
+            settings,
+            InMemoryAuditLog(),
+            now=_NOW,
+            fetch=lambda _s: [conv],
+            policy_repo=_FakePolicyRepo(None),
+        )
+    )
+    assert fired_no_repo == fired_empty_repo
+    assert len(fired_no_repo) == 1
+    assert fired_no_repo[0].to_state == NO_RESPONSE_BREACH
+
+
+def test_scan_conversations_uses_policy_store_resolution_hours_when_set() -> None:
+    """policy_repo.resolve() returning resolution_hours must be used ahead of the
+    env default for the unresolved-breach threshold."""
+    audit = InMemoryAuditLog()
+    settings = _settings(sla_response_hours=1000, sla_resolution_hours=1000)
+    conv = _conv(1004, status="pending", created_at=_epoch(2), inbox_id=5)  # 2h old
+    policy_repo = _FakePolicyRepo(SlaPolicyValues(resolution_hours=1.0))
+
+    fired = asyncio.run(
+        scan_conversations(
+            settings, audit, now=_NOW, fetch=lambda _s: [conv], policy_repo=policy_repo
+        )
+    )
+    assert len(fired) == 1
+    assert fired[0].to_state == UNRESOLVED_BREACH
+
+
+def test_scan_conversations_uses_policy_store_ack_minutes_by_channel_when_set() -> None:
+    """policy_repo-provided ack_minutes_by_channel_json must be preferred over the
+    settings-level map for the per-channel ack threshold."""
+    audit = InMemoryAuditLog()
+    settings = _settings(
+        sla_response_hours=1000,
+        sla_resolution_hours=1000,
+        sla_ack_minutes_by_channel_json='{"whatsapp": 600}',
+    )
+    conv = _conv(
+        1005,
+        status="open",
+        created_at=_epoch(2),  # 2h old = 120 minutes
+        inbox_id=5,
+        meta={"channel": "Channel::Whatsapp"},
+    )
+    # Policy store says 60 minutes for whatsapp -> breaches; settings' 600 would not.
+    policy_repo = _FakePolicyRepo(SlaPolicyValues(ack_minutes_by_channel_json='{"whatsapp": 60}'))
+
+    fired = asyncio.run(
+        scan_conversations(
+            settings, audit, now=_NOW, fetch=lambda _s: [conv], policy_repo=policy_repo
+        )
+    )
+    assert len(fired) == 1
+    assert fired[0].to_state == NO_RESPONSE_BREACH
 
 
 # --- scheduler guard -------------------------------------------------------

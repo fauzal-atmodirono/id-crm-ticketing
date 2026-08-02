@@ -51,6 +51,7 @@ import structlog
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from chatbot.features.chat.ports import AuditEntry, AuditLogPort
+from chatbot.features.chat.sla_policy_repository import SlaPolicyRepository
 from chatbot.features.metrics.mapping import _chatwoot_sla_minutes
 from chatbot.features.metrics.sync import fetch_conversations
 
@@ -161,6 +162,7 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
     fetch: Callable[[Settings], list[dict[str, Any]]] | None = None,
     alert: Callable[[str, str, str], Any] | None = None,
     level2_alert: Callable[[str, str, str], Any] | None = None,
+    policy_repo: SlaPolicyRepository | None = None,
 ) -> list[AuditEntry]:
     """Scan Chatwoot conversations once and fire any un-fired SLA breaches.
 
@@ -168,14 +170,33 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
     nothing breached / everything already fired). ``now``, ``fetch`` and ``alert``
     are injectable so tests use short thresholds, a fake clock, and a mocked
     Chatwoot fetch instead of waiting real hours.
+
+    ``policy_repo``, when provided, is resolved per-conversation (scoped to the
+    conversation's ``inbox_id``) and its non-None ``response_hours``/
+    ``resolution_hours``/``ack_minutes_by_channel_json`` fields override the
+    equivalent ``settings.sla_*`` values for that conversation only. When
+    ``policy_repo`` is None, or ``resolve()`` returns None / an all-None-fields
+    result for a given inbox, behavior is byte-identical to the env-only path
+    (this is a hard requirement — this engine drives live SLA breach alerts).
+
+    Known limitation: ``pic_whatsapp`` and ``engine_enabled`` from the policy
+    store are NOT applied here. ``pic_whatsapp`` is baked into the ``alert``
+    callback before it reaches this function (built once per scan in
+    ``_build_pic_alert``, called from ``run_sla_scan_job``/``start_sla_scheduler``
+    with no per-conversation inbox context), and ``sla_engine_enabled`` is read
+    once, globally, in ``start_sla_scheduler`` before any scan starts — neither
+    has a per-conversation usage site in this loop. Applying per-inbox overrides
+    for either would require restructuring how alerts are built/dispatched (and,
+    for engine_enabled, how the scheduler gate works), which is out of scope for
+    this task.
     """
     clock = now or datetime.now(UTC)
     conversations = (fetch or fetch_conversations)(settings)
-    response_threshold = settings.sla_response_hours * _SECONDS_PER_HOUR
-    resolution_threshold_default = settings.sla_resolution_hours * _SECONDS_PER_HOUR
 
-    # Parse the per-channel ack override map once per scan.  Empty / bad JSON
-    # returns {} so every conversation falls back to response_threshold (global).
+    # Parse the per-channel ack override map once per scan (the settings-level
+    # fallback; a per-conversation policy-store map, when present, takes
+    # precedence below). Empty / bad JSON returns {} so every conversation
+    # falls back to response_threshold (global).
     ack_minutes_by_channel = _parse_ack_minutes(settings.sla_ack_minutes_by_channel_json)
 
     fired: list[AuditEntry] = []
@@ -189,6 +210,34 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
         if age is None:
             continue
 
+        # Resolve the operator-configured policy store scoped to this
+        # conversation's inbox (tenant-default merged under inbox-specific).
+        # When policy_repo is None, or resolve() returns None / leaves a field
+        # unset, the equivalent settings.sla_* value is used unchanged — this
+        # keeps behavior byte-identical to the pre-policy-store engine.
+        resolved_policy = None
+        if policy_repo is not None:
+            resolved_policy = await policy_repo.resolve(conv.get("inbox_id"))
+
+        response_hours = (
+            resolved_policy.response_hours
+            if resolved_policy is not None and resolved_policy.response_hours is not None
+            else settings.sla_response_hours
+        )
+        resolution_hours = (
+            resolved_policy.resolution_hours
+            if resolved_policy is not None and resolved_policy.resolution_hours is not None
+            else settings.sla_resolution_hours
+        )
+        response_threshold = response_hours * _SECONDS_PER_HOUR
+        resolution_threshold_default = resolution_hours * _SECONDS_PER_HOUR
+
+        conv_ack_minutes_by_channel = (
+            _parse_ack_minutes(resolved_policy.ack_minutes_by_channel_json)
+            if resolved_policy is not None and resolved_policy.ack_minutes_by_channel_json
+            else ack_minutes_by_channel
+        )
+
         prior = await _prior_states(audit, ticket_id)
         session_id = f"chatwoot-conv-{ticket_id}"
 
@@ -199,10 +248,11 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
         )
 
         # Per-channel ack threshold: use the channel override (minutes→seconds)
-        # when present, else fall back to the global response_threshold.
-        # Unknown channel_type or empty map → global default (fail-open).
+        # when present, else fall back to the response_threshold computed above
+        # (global, or the policy-store response_hours override).
+        # Unknown channel_type or empty map → default (fail-open).
         channel = _conversation_channel(conv)
-        ack_override = ack_minutes_by_channel.get(channel) if channel else None
+        ack_override = conv_ack_minutes_by_channel.get(channel) if channel else None
         conv_response_threshold = (
             ack_override * 60 if ack_override is not None else response_threshold
         )
@@ -377,13 +427,20 @@ def run_sla_scan_job(
     audit: AuditLogPort,
     *,
     twilio_adapter: TwilioChannelAdapter | None = None,
+    policy_repo: SlaPolicyRepository | None = None,
 ) -> list[AuditEntry]:
     """Synchronous entry point for the scheduler. Best-effort: never raises."""
     alert = _build_pic_alert(settings, twilio_adapter)
     level2_alert = _build_level2_alert(settings, twilio_adapter)
     try:
         return asyncio.run(
-            scan_conversations(settings, audit, alert=alert, level2_alert=level2_alert)
+            scan_conversations(
+                settings,
+                audit,
+                alert=alert,
+                level2_alert=level2_alert,
+                policy_repo=policy_repo,
+            )
         )
     except Exception as e:  # a failed scheduled scan must never crash the app
         _log.error("sla_scan_job_failed", error=str(e))
@@ -441,17 +498,27 @@ def start_sla_scheduler(
     twilio_adapter: TwilioChannelAdapter | None = None,
     scheduler: Any | None = None,
     job: Callable[[], object] | None = None,
+    policy_repo: SlaPolicyRepository | None = None,
 ) -> Any | None:
     """Start the in-app SLA scan scheduler when enabled; else return None.
 
     Mirrors ``metrics.scheduler.start_metrics_scheduler``: guarded behind
     ``sla_engine_enabled`` (default False, so nothing runs unless opted in) and
     injectable (``scheduler`` / ``job``) for tests.
+
+    Note: ``sla_engine_enabled`` is only ever read here, once, globally, before
+    any scan starts — a per-inbox ``engine_enabled`` override from the policy
+    store is out of scope for this task (see ``scan_conversations``'s
+    docstring for the full rationale).
     """
     if not settings.sla_engine_enabled:
         return None
     sched = scheduler or BackgroundScheduler()
-    run = job or (lambda: run_sla_scan_job(settings, audit, twilio_adapter=twilio_adapter))
+    run = job or (
+        lambda: run_sla_scan_job(
+            settings, audit, twilio_adapter=twilio_adapter, policy_repo=policy_repo
+        )
+    )
     sched.add_job(
         run,
         trigger="interval",

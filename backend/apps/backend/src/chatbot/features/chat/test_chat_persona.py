@@ -34,4 +34,8 @@ def test_guardrails_and_language_appended():
     )
     assert out.startswith(BASE)
     assert "## Guardrails" in out and "- No prices" in out and "- No promises" in out
-    assert "## Language" in out and "Always respond in Bahasa Melayu." in out
+    assert "## Language" in out
+    assert (
+        "Prefer Bahasa Melayu when the customer's language is unclear, but "
+        "always match the language the customer writes in." in out
+    )

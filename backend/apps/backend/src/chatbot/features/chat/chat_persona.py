@@ -26,5 +26,8 @@ def compose_chat_agent_instruction(base: str, assistant) -> str:
     if guardrails:
         parts.append("## Guardrails\n" + "\n".join(f"- {g}" for g in guardrails))
     if language:
-        parts.append(f"## Language\nAlways respond in {language}.")
+        parts.append(
+            f"## Language\nPrefer {language} when the customer's language is "
+            "unclear, but always match the language the customer writes in."
+        )
     return "\n\n".join(parts)

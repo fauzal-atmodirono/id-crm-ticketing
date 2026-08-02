@@ -193,6 +193,44 @@ async def test_open_handoff_writes_dimension_labels_in_single_final_call() -> No
 
 
 @pytest.mark.asyncio
+async def test_open_handoff_writes_case_type_and_vehicle_model_as_custom_attributes() -> None:
+    # case_type/vehicle_model must ride in the SAME custom_attributes call as
+    # case_category/case_subcategory/sla_minutes (see the dimension-labels test).
+    adapter = ChatwootAdapter(
+        Settings(chatwoot_account_id=1, chatwoot_inbox_id=7, chatwoot_agent_team_id=3)
+    )
+    fake = _FakeClient({("POST", "/conversations"): {"id": 99}})
+    adapter._request = fake._request  # type: ignore[method-assign]
+    payload = HandoffOpenPayload(
+        session_id="sim-1",
+        customer_name="Aina",
+        customer_email="",
+        ai_summary="Customer is unhappy.",
+        transcript=(Message(role="user", text="my battery is dead"),),
+        category="Aftersales",
+        subcategory="Battery",
+        case_type="Complaint",
+        vehicle_model="e.MAS 7",
+        division="Aftersales",
+        department="Service Center",
+        sla_minutes=480,
+    )
+    await adapter.open_handoff(payload)
+    custom_attrs_calls = [pl for _m, p, pl in fake.calls if p.endswith("/custom_attributes")]
+    assert len(custom_attrs_calls) == 1, "ONE custom_attributes call, not two"
+    ca = custom_attrs_calls[0]
+    assert ca == {
+        "custom_attributes": {
+            "sla_minutes": 480,
+            "case_category": "Aftersales",
+            "case_subcategory": "Battery",
+            "case_type": "Complaint",
+            "vehicle_model": "e.MAS 7",
+        }
+    }
+
+
+@pytest.mark.asyncio
 async def test_open_handoff_plain_human_request_stays_chatwoot_only() -> None:
     # A "talk to a human" handoff (help_request, non-urgent) must NOT get the
     # complaint/Zammad label — it stays a live Chatwoot conversation only.

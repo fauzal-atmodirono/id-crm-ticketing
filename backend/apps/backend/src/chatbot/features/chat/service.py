@@ -1225,6 +1225,8 @@ class OrchestratorService:
                 customer_phone=lead_details.get("customer_phone"),
                 category=_raw_cat,
                 subcategory=session_state.get("subcategory"),
+                case_type=session_state.get("case_type"),
+                vehicle_model=session_state.get("vehicle_model"),
                 division=(CATEGORY_TO_DIVISION.get(str(_raw_cat).lower()) if _raw_cat else None),
                 sla_minutes=session_state.get("sla_minutes"),
             )
@@ -1310,6 +1312,8 @@ class OrchestratorService:
             preferred_model=preferred_model,
             category=_raw_cat,
             subcategory=cls.get("subcategory"),
+            case_type=cls.get("case_type"),
+            vehicle_model=cls.get("vehicle_model"),
             division=(CATEGORY_TO_DIVISION.get(str(_raw_cat).lower()) if _raw_cat else None),
             department=cls.get("department"),
             sla_minutes=cls.get("sla_minutes"),

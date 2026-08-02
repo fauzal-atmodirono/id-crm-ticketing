@@ -47,6 +47,8 @@ class TicketingPort(Protocol):
         customer_phone: str | None = None,
         category: str | None = None,
         subcategory: str | None = None,
+        case_type: str | None = None,
+        vehicle_model: str | None = None,
         division: str | None = None,
         department: str | None = None,
         sla_minutes: int | None = None,

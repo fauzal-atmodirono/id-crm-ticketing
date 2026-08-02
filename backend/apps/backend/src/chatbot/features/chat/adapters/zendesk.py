@@ -86,6 +86,8 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
         customer_phone: str | None = None,
         category: str | None = None,
         subcategory: str | None = None,
+        case_type: str | None = None,
+        vehicle_model: str | None = None,
         division: str | None = None,
         department: str | None = None,
         sla_minutes: int | None = None,
@@ -132,6 +134,10 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
             tags.append(f"category_{_norm(category)}")
         if subcategory:
             tags.append(f"subcat_{_norm(subcategory)}")
+        if case_type:
+            tags.append(f"case_type_{_norm(case_type)}")
+        if vehicle_model:
+            tags.append(f"vehicle_model_{_norm(vehicle_model)}")
         if division:
             tags.append(f"division_{_norm(division)}")
         if department:

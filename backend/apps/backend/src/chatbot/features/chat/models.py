@@ -106,6 +106,8 @@ class HandoffOpenPayload:
     # the ticket/conversation for the downstream metrics sync to read back.
     category: str | None = None
     subcategory: str | None = None
+    case_type: str | None = None
+    vehicle_model: str | None = None
     division: str | None = None
     department: str | None = None
     sla_minutes: int | None = None

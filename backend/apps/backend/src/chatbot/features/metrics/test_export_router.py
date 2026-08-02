@@ -26,3 +26,31 @@ def test_export_pdf() -> None:
 
 def test_export_bad_format_is_400() -> None:
     assert _client().get("/metrics/export?format=csv").status_code == 400
+
+
+def test_dealer_escalation_csv_export() -> None:
+    response = _client().get("/metrics/dealer-escalation/export?format=csv")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/csv; charset=utf-8"
+
+
+def test_sla_buckets_csv_export() -> None:
+    response = _client().get("/metrics/sla-buckets/export")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/csv; charset=utf-8"
+
+
+def test_case_aging_csv_export() -> None:
+    response = _client().get("/metrics/case-aging/export")
+    assert response.status_code == 200
+    assert "attachment" in response.headers["content-disposition"]
+
+
+def test_volume_by_type_csv_export() -> None:
+    response = _client().get("/metrics/volume-by-type/export")
+    assert response.status_code == 200
+
+
+def test_departments_csv_export() -> None:
+    response = _client().get("/metrics/departments/export")
+    assert response.status_code == 200

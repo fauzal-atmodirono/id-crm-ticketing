@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
-from chatbot.features.metrics.export import render_pdf, render_xlsx
+from chatbot.features.metrics.export import render_csv, render_pdf, render_xlsx
 
 if TYPE_CHECKING:
     from chatbot.features.metrics.query_port import MetricsQueryPort
@@ -34,5 +34,21 @@ def build_metrics_export_router(port: MetricsQueryPort) -> APIRouter:
                 headers={"Content-Disposition": "attachment; filename=bot-metrics.pdf"},
             )
         raise HTTPException(status_code=400, detail="format must be xlsx or pdf")
+
+    def _csv_route(path: str, filename: str, fetch: Callable[[], Awaitable[Any]]) -> None:
+        @router.get(path, name=f"export_csv_{filename}")
+        async def _export_csv() -> Response:
+            metrics = await fetch()
+            return Response(
+                content=render_csv(metrics),
+                media_type="text/csv; charset=utf-8",
+                headers={"Content-Disposition": f"attachment; filename={filename}.csv"},
+            )
+
+    _csv_route("/metrics/dealer-escalation/export", "dealer-escalation", port.fetch_dealer_escalation)
+    _csv_route("/metrics/sla-buckets/export", "sla-buckets", port.fetch_sla_buckets)
+    _csv_route("/metrics/case-aging/export", "case-aging", port.fetch_case_aging)
+    _csv_route("/metrics/volume-by-type/export", "volume-by-type", port.fetch_volume_by_type_division)
+    _csv_route("/metrics/departments/export", "departments", port.fetch_departments)
 
     return router

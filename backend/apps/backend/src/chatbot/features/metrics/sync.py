@@ -20,6 +20,7 @@ from google.cloud import bigquery
 from chatbot.features.metrics.bigquery_schema import CONVERSATIONS_SCHEMA, view_ddls
 from chatbot.features.metrics.mapping import (
     ConversationRow,
+    apply_working_hours,
     map_chatwoot_conversation_to_row,
 )
 
@@ -90,6 +91,33 @@ def fetch_conversations(
     return conversations
 
 
+def fetch_inbox_hours(
+    settings: Settings, inbox_id: int, *, get_page: Callable[[str], dict[str, Any]] | None = None
+) -> dict[str, Any] | None:
+    """GET one inbox's business-hours config. Returns None on any failure
+    (network error, 4xx/5xx, malformed response) — the caller then falls
+    back to calendar-time for every row in that inbox, never raises."""
+    if get_page is None:
+        token = settings.chatwoot_api_token
+        headers = {"Api-Access-Token": token, "api_access_token": token}
+
+        def get_page(url: str) -> dict[str, Any]:
+            with httpx.Client(timeout=15.0) as client:
+                res = client.get(url, headers=headers)
+                res.raise_for_status()
+                return dict(res.json())
+
+    url = (
+        f"{settings.chatwoot_api_url.rstrip('/')}"
+        f"/api/v1/accounts/{settings.chatwoot_account_id}/inboxes/{inbox_id}"
+    )
+    try:
+        return get_page(url)
+    except Exception as e:
+        _log.warning("fetch_inbox_hours_failed", inbox_id=inbox_id, error=str(e))
+        return None
+
+
 def load_conversations(settings: Settings, rows: list[ConversationRow]) -> None:
     """WRITE_TRUNCATE-load the conversation rows into BigQuery (live)."""
     client = bigquery.Client(project=settings.bigquery_project_id)
@@ -126,6 +154,8 @@ def load_conversations(settings: Settings, rows: list[ConversationRow]) -> None:
             "dealer": r.dealer,  # Phase-3
             "case_type": r.case_type,
             "vehicle_model": r.vehicle_model,
+            "first_response_working_minutes": r.first_response_working_minutes,
+            "resolution_working_minutes": r.resolution_working_minutes,
         }
         for r in rows
     ]
@@ -150,11 +180,40 @@ def run_sync(
     settings: Settings,
     *,
     fetch: Callable[[Settings], list[dict[str, Any]]] | None = None,
+    fetch_inbox: Callable[[Settings, int], dict[str, Any] | None] | None = None,
     load: Callable[[Settings, list[ConversationRow]], None] | None = None,
 ) -> dict[str, int]:
-    """Fetch conversations, map to rows, load. Returns counts. Injectable for tests."""
+    """Fetch conversations, map to rows, augment with business-hours timing,
+    load. Returns counts. Injectable for tests.
+
+    Each unique inbox_id's business-hours config is fetched at most once per
+    sync run (cached in ``inbox_cache``). A per-inbox fetch failure — whether
+    ``fetch_inbox_fn`` returns None (the documented contract) or raises
+    (defensive: a caller-supplied ``fetch_inbox`` isn't guaranteed to honor
+    that contract) — degrades only that inbox's rows to calendar-time via
+    ``apply_working_hours(row, None)``; it never aborts the whole sync.
+    """
     conversations = (fetch or fetch_conversations)(settings)
-    rows = [row for c in conversations if (row := map_chatwoot_conversation_to_row(c)) is not None]
+    fetch_inbox_fn = fetch_inbox or fetch_inbox_hours
+    inbox_cache: dict[int, dict[str, Any] | None] = {}
+
+    rows: list[ConversationRow] = []
+    for conv in conversations:
+        row = map_chatwoot_conversation_to_row(conv)
+        if row is None:
+            continue
+        inbox_id = conv.get("inbox_id")
+        inbox: dict[str, Any] | None = None
+        if isinstance(inbox_id, int):
+            if inbox_id not in inbox_cache:
+                try:
+                    inbox_cache[inbox_id] = fetch_inbox_fn(settings, inbox_id)
+                except Exception as e:
+                    _log.warning("fetch_inbox_failed_in_sync", inbox_id=inbox_id, error=str(e))
+                    inbox_cache[inbox_id] = None
+            inbox = inbox_cache[inbox_id]
+        rows.append(apply_working_hours(row, inbox))
+
     (load or load_conversations)(settings, rows)
     _log.info("metrics_sync_done", conversations=len(conversations), rows=len(rows))
     return {"conversations": len(conversations), "rows": len(rows)}

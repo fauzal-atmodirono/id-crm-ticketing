@@ -2,6 +2,7 @@ import pytest
 
 from chatbot.features.metrics.mapping import (
     ConversationRow,
+    apply_working_hours,
     channel_from_external_id,
     map_chatwoot_conversation_to_row,
     map_ticket_to_row,
@@ -478,3 +479,44 @@ def test_map_chatwoot_conversation_missing_case_type_yields_none() -> None:
     assert row is not None
     assert row.case_type is None
     assert row.vehicle_model is None
+
+
+INBOX = {
+    "working_hours_enabled": True,
+    "timezone": "UTC",
+    "working_hours": [
+        {"day_of_week": d, "open_hour": 9, "open_minutes": 0, "close_hour": 18, "close_minutes": 0,
+         "open_all_day": False, "closed_all_day": False}
+        for d in (1, 2, 3, 4, 5)
+    ] + [{"day_of_week": d, "closed_all_day": True} for d in (0, 6)],
+}
+
+
+def _row(**overrides: object) -> ConversationRow:
+    base: dict[str, object] = {
+        "conversation_id": "1", "channel": "Web", "created_at": "2026-07-06T10:00:00+00:00",
+        "updated_at": "2026-07-06T12:30:00+00:00", "status": "resolved", "resolved_by": "agent",
+        "csat_score": None, "nps_score": None,
+        "first_response_at": "2026-07-06T10:30:00+00:00",
+        "resolved_at": "2026-07-06T12:30:00+00:00",
+    }
+    base.update(overrides)
+    return ConversationRow(**base)  # type: ignore[arg-type]
+
+
+def test_apply_working_hours_computes_both_durations() -> None:
+    row = apply_working_hours(_row(), INBOX)
+    assert row.first_response_working_minutes == 30
+    assert row.resolution_working_minutes == 150
+
+
+def test_apply_working_hours_none_inbox_falls_back_to_calendar_minutes() -> None:
+    row = apply_working_hours(_row(), None)
+    assert row.first_response_working_minutes == 30  # same as calendar here (all within one day)
+    assert row.resolution_working_minutes == 150
+
+
+def test_apply_working_hours_missing_timestamps_yields_none() -> None:
+    row = apply_working_hours(_row(first_response_at=None, resolved_at=None), INBOX)
+    assert row.first_response_working_minutes is None
+    assert row.resolution_working_minutes is None

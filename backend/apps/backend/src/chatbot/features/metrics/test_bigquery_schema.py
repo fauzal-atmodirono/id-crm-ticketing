@@ -27,6 +27,8 @@ def test_schema_has_expected_fields() -> None:
         "dealer",  # new Phase-3 field
         "case_type",
         "vehicle_model",
+        "first_response_working_minutes",
+        "resolution_working_minutes",
     }
 
 
@@ -203,3 +205,9 @@ def test_schema_has_case_type_and_vehicle_model_fields() -> None:
     names = {f.name for f in CONVERSATIONS_SCHEMA}
     assert "case_type" in names
     assert "vehicle_model" in names
+
+
+def test_schema_has_working_minutes_fields() -> None:
+    names = {f.name for f in CONVERSATIONS_SCHEMA}
+    assert "first_response_working_minutes" in names
+    assert "resolution_working_minutes" in names

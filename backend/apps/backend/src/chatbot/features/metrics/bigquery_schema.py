@@ -30,6 +30,8 @@ CONVERSATIONS_SCHEMA: list[bigquery.SchemaField] = [
     bigquery.SchemaField("dealer", "STRING"),  # Phase-3: dealer dimension for CRR grouping
     bigquery.SchemaField("case_type", "STRING"),
     bigquery.SchemaField("vehicle_model", "STRING"),
+    bigquery.SchemaField("first_response_working_minutes", "INT64"),
+    bigquery.SchemaField("resolution_working_minutes", "INT64"),
 ]
 
 

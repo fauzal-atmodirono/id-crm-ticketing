@@ -60,10 +60,10 @@ index 1232a5a..8c73f84 100644
          ...settings.routes,
 diff --git a/app/javascript/dashboard/views/ProtonAuditLogPage.vue b/app/javascript/dashboard/views/ProtonAuditLogPage.vue
 new file mode 100644
-index 0000000..eb62711
+index 0000000..e74c455
 --- /dev/null
 +++ b/app/javascript/dashboard/views/ProtonAuditLogPage.vue
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,121 @@
 +<!-- ProtonAuditLogPage.vue — OUR file. Filterable, read-only viewer over
 +     the backend's cross-ticket audit trail (Firestore case_audit_log).
 +     Filters: actor, date range. Storage is unchanged — this only adds a
@@ -95,7 +95,13 @@ index 0000000..eb62711
 +        const data = await listAudit({
 +          actor: this.actorFilter || undefined,
 +          fromTs: this.fromFilter ? new Date(this.fromFilter).toISOString() : undefined,
-+          toTs: this.toFilter ? new Date(this.toFilter).toISOString() : undefined,
++          // Use end-of-day (23:59:59.999 UTC), not midnight, so the picked
++          // "To" date is fully included — the backend's `at <= to_ts`
++          // comparison would otherwise exclude nearly the whole selected
++          // day. `at` is stored in UTC (datetime.now(UTC).isoformat()), so
++          // treating the YYYY-MM-DD picker value as a UTC calendar date
++          // here introduces no timezone mismatch.
++          toTs: this.toFilter ? new Date(`${this.toFilter}T23:59:59.999Z`).toISOString() : undefined,
 +        });
 +        this.rows = Array.isArray(data.audit) ? data.audit : [];
 +      } catch (err) {

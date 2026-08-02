@@ -40,7 +40,10 @@ async def test_register_persona_when_inbox_resolves_nonempty():
     await svc._register_chat_persona("crm-1", inbox_id=3)
     reg = svc._instruction_by_session.get("crm-1")
     assert reg is not None and reg.startswith(AGENT_INSTRUCTION)
-    assert "Always respond in Bahasa Melayu." in reg
+    assert (
+        "Prefer Bahasa Melayu when the customer's language is unclear, but "
+        "always match the language the customer writes in." in reg
+    )
 
 
 @pytest.mark.asyncio

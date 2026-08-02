@@ -61,6 +61,9 @@ def test_view_ddls_keys_and_targets() -> None:
         "v_dealer_escalation",
         "v_dealer_escalation_slowest_cases",
         "v_case_aging",
+        # Task 13: v_volume_by_type_division and v_category_by_vehicle_model
+        "v_volume_by_type_division",
+        "v_category_by_vehicle_model",
     }
     assert "`proj.ds.v_volume_by_month_channel`" in ddls["v_volume_by_month_channel"]
     assert "`proj.ds.conversations`" in ddls["v_volume_by_month_channel"]
@@ -257,3 +260,11 @@ def test_view_ddls_includes_dealer_escalation_and_case_aging() -> None:
     assert "conversation_id" in ddls["v_dealer_escalation_slowest_cases"]
     assert "v_case_aging" in ddls
     assert "bucket_label" in ddls["v_case_aging"]
+
+
+def test_view_ddls_includes_volume_and_category_cross_tabs() -> None:
+    ddls = view_ddls("proj", "ds", "conversations", "{}")
+    assert "v_volume_by_type_division" in ddls
+    assert "case_type" in ddls["v_volume_by_type_division"]
+    assert "v_category_by_vehicle_model" in ddls
+    assert "vehicle_model" in ddls["v_category_by_vehicle_model"]

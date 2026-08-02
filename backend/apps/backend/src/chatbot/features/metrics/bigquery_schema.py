@@ -303,4 +303,20 @@ def view_ddls(
             f"FROM {fq} WHERE status IN ('open', 'pending') AND created_at IS NOT NULL "
             f"ORDER BY age_days DESC"
         ),
+        "v_volume_by_type_division": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_by_type_division` AS "
+            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, channel, "
+            f"COALESCE(case_type, 'Unknown') AS case_type, "
+            f"COALESCE(division, 'Unknown') AS division, COUNT(*) AS volume "
+            f"FROM {fq} GROUP BY month, channel, case_type, division"
+        ),
+        "v_category_by_vehicle_model": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_category_by_vehicle_model` AS "
+            f"SELECT COALESCE(category, 'Unknown') AS category, "
+            f"COALESCE(subcategory, 'Unknown') AS subcategory, "
+            f"COALESCE(vehicle_model, 'Unknown') AS vehicle_model, "
+            f"COALESCE(case_type, 'Unknown') AS case_type, COUNT(*) AS cases "
+            f"FROM {fq} GROUP BY category, subcategory, vehicle_model, case_type "
+            f"ORDER BY cases DESC"
+        ),
     }

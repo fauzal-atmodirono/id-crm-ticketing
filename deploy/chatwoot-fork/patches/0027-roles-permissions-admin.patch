@@ -1,0 +1,328 @@
+diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
+index 75b9805..46ed977 100644
+--- a/app/javascript/dashboard/api/protonAdmin.js
++++ b/app/javascript/dashboard/api/protonAdmin.js
+@@ -75,3 +75,57 @@ export function listAudit({ actor, fromTs, toTs, limit } = {}) {
+   const qs = params.toString();
+   return adminRequest(`/admin/audit${qs ? `?${qs}` : ''}`);
+ }
++
++// ── Roles & permissions ──────────────────────────────────────────────────
++
++export async function listRoles() {
++  const data = await adminRequest('/authz/roles');
++  return Array.isArray(data.roles) ? data.roles : [];
++}
++
++export function createRole({ id, name, description = '' }) {
++  return adminRequest('/authz/roles', { method: 'POST', body: { id, name, description } });
++}
++
++export async function permissionRegistry() {
++  const data = await adminRequest('/authz/permission-registry');
++  return Array.isArray(data.permissions) ? data.permissions : [];
++}
++
++export async function rolePermissions(roleId) {
++  const data = await adminRequest(`/authz/roles/${encodeURIComponent(roleId)}/permissions`);
++  return Array.isArray(data.permissions) ? data.permissions : [];
++}
++
++export function grantRolePermission(roleId, permissionKey) {
++  return adminRequest(`/authz/roles/${encodeURIComponent(roleId)}/permissions`, {
++    method: 'POST',
++    body: { permission_key: permissionKey },
++  });
++}
++
++export function revokeRolePermission(roleId, permissionKey) {
++  return adminRequest(
++    `/authz/roles/${encodeURIComponent(roleId)}/permissions/${encodeURIComponent(permissionKey)}`,
++    { method: 'DELETE' }
++  );
++}
++
++export async function roleUsers(roleId) {
++  const data = await adminRequest(`/authz/roles/${encodeURIComponent(roleId)}/users`);
++  return Array.isArray(data.chatwoot_user_ids) ? data.chatwoot_user_ids : [];
++}
++
++export function assignRole(roleId, chatwootUserId) {
++  return adminRequest(`/authz/roles/${encodeURIComponent(roleId)}/assign`, {
++    method: 'POST',
++    body: { chatwoot_user_id: chatwootUserId },
++  });
++}
++
++export function unassignRole(roleId, chatwootUserId) {
++  return adminRequest(`/authz/roles/${encodeURIComponent(roleId)}/assign`, {
++    method: 'DELETE',
++    body: { chatwoot_user_id: chatwootUserId },
++  });
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index b600d64..bc16289 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -607,6 +607,16 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
++    ...(protonHasPermission('roles.manage')
++      ? [
++          {
++            name: 'RolesPermissions',
++            icon: 'i-lucide-shield-check',
++            label: 'Roles & Permissions',
++            to: accountScopedRoute('proton_roles_permissions'),
++          },
++        ]
++      : []),
+     {
+       name: 'Contacts',
+       label: t('SIDEBAR.CONTACTS'),
+diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+index 8c73f84..15dfad6 100644
+--- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+@@ -45,6 +45,12 @@ export default {
+           component: () => import('../../views/ProtonAuditLogPage.vue'),
+           meta: { permissions: ['administrator'] },
+         },
++        {
++          path: 'proton/roles-permissions',
++          name: 'proton_roles_permissions',
++          component: () => import('../../views/ProtonRolesPermissionsPage.vue'),
++          meta: { permissions: ['administrator'] },
++        },
+         ...inboxRoutes,
+         ...conversation.routes,
+         ...settings.routes,
+diff --git a/app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue b/app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue
+new file mode 100644
+index 0000000..dc17601
+--- /dev/null
++++ b/app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue
+@@ -0,0 +1,222 @@
++<!-- ProtonRolesPermissionsPage.vue — OUR file. Roles & Permissions admin:
++     pick a role, toggle which permissions it grants (from the fixed
++     backend-defined registry), and manage which Chatwoot user ids are
++     assigned to it. Replaces Chatwoot's enterprise-licensed custom_roles
++     page. -->
++<script>
++import { useAlert } from 'dashboard/composables';
++import {
++  listRoles,
++  createRole,
++  permissionRegistry,
++  rolePermissions,
++  grantRolePermission,
++  revokeRolePermission,
++  roleUsers,
++  assignRole,
++  unassignRole,
++} from 'dashboard/api/protonAdmin';
++
++export default {
++  name: 'ProtonRolesPermissionsPage',
++  data() {
++    return {
++      roles: [],
++      registry: [],
++      selectedRoleId: '',
++      selectedRolePermissions: [],
++      selectedRoleUsers: [],
++      newRoleId: '',
++      newRoleName: '',
++      newUserId: '',
++      loading: true,
++      errored: false,
++    };
++  },
++  async mounted() {
++    await this.loadRolesAndRegistry();
++  },
++  methods: {
++    async loadRolesAndRegistry() {
++      this.loading = true;
++      this.errored = false;
++      try {
++        const [roles, registry] = await Promise.all([listRoles(), permissionRegistry()]);
++        this.roles = roles;
++        this.registry = registry;
++        if (roles.length && !this.selectedRoleId) {
++          this.selectedRoleId = roles[0].id;
++          await this.loadRoleDetail();
++        }
++      } catch (err) {
++        this.errored = true;
++        useAlert('Failed to load roles: ' + (err.message || String(err)));
++      } finally {
++        this.loading = false;
++      }
++    },
++    async onSelectRole() {
++      await this.loadRoleDetail();
++    },
++    async loadRoleDetail() {
++      if (!this.selectedRoleId) return;
++      try {
++        const [perms, users] = await Promise.all([
++          rolePermissions(this.selectedRoleId),
++          roleUsers(this.selectedRoleId),
++        ]);
++        this.selectedRolePermissions = perms;
++        this.selectedRoleUsers = users;
++      } catch (err) {
++        useAlert('Failed to load role detail: ' + (err.message || String(err)));
++      }
++    },
++    async togglePermission(key) {
++      const has = this.selectedRolePermissions.includes(key);
++      try {
++        if (has) {
++          await revokeRolePermission(this.selectedRoleId, key);
++        } else {
++          await grantRolePermission(this.selectedRoleId, key);
++        }
++        await this.loadRoleDetail();
++      } catch (err) {
++        useAlert('Failed to update permission: ' + (err.message || String(err)));
++      }
++    },
++    async addUser() {
++      const userId = Number(this.newUserId);
++      if (!userId) {
++        useAlert('Enter a valid Chatwoot user id.');
++        return;
++      }
++      try {
++        await assignRole(this.selectedRoleId, userId);
++        this.newUserId = '';
++        await this.loadRoleDetail();
++      } catch (err) {
++        useAlert('Failed to assign user: ' + (err.message || String(err)));
++      }
++    },
++    async removeUser(userId) {
++      try {
++        await unassignRole(this.selectedRoleId, userId);
++        await this.loadRoleDetail();
++      } catch (err) {
++        useAlert('Failed to unassign user: ' + (err.message || String(err)));
++      }
++    },
++    async addRole() {
++      if (!this.newRoleId || !this.newRoleName) {
++        useAlert('Role id and name are required.');
++        return;
++      }
++      try {
++        await createRole({ id: this.newRoleId, name: this.newRoleName });
++        this.newRoleId = '';
++        this.newRoleName = '';
++        await this.loadRolesAndRegistry();
++        useAlert('Role created.');
++      } catch (err) {
++        useAlert('Failed to create role: ' + (err.message || String(err)));
++      }
++    },
++  },
++};
++</script>
++
++<template>
++  <div class="p-6">
++    <h1 class="mb-1 text-lg font-medium text-n-slate-12">Roles & Permissions</h1>
++    <p class="mb-6 text-sm text-n-slate-11">
++      Manage roles, the permissions each role grants, and which users hold each role.
++    </p>
++
++    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">Loading…</div>
++    <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">
++      Could not load roles.
++    </div>
++    <div v-else class="grid grid-cols-1 gap-8 lg:grid-cols-2">
++      <div>
++        <label class="block mb-1 text-sm font-medium text-n-slate-12">Role</label>
++        <select
++          v-model="selectedRoleId"
++          class="w-full px-3 py-2 mb-4 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          @change="onSelectRole"
++        >
++          <option v-for="r in roles" :key="r.id" :value="r.id">{{ r.name }}</option>
++        </select>
++
++        <div class="flex items-end gap-2 mb-6">
++          <div>
++            <label class="block mb-1 text-xs text-n-slate-11">New role id</label>
++            <input
++              v-model="newRoleId"
++              type="text"
++              class="w-32 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++            />
++          </div>
++          <div>
++            <label class="block mb-1 text-xs text-n-slate-11">Name</label>
++            <input
++              v-model="newRoleName"
++              type="text"
++              class="w-40 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++            />
++          </div>
++          <button
++            type="button"
++            class="px-3 py-2 text-sm font-medium rounded-lg bg-n-brand text-white hover:opacity-90"
++            @click="addRole"
++          >
++            Create role
++          </button>
++        </div>
++
++        <h2 class="mb-2 text-sm font-medium text-n-slate-12">Permissions</h2>
++        <div class="flex flex-col gap-2">
++          <label v-for="p in registry" :key="p.key" class="flex items-center gap-2 text-sm text-n-slate-11">
++            <input
++              type="checkbox"
++              :checked="selectedRolePermissions.includes(p.key)"
++              @change="togglePermission(p.key)"
++            />
++            {{ p.key }} — {{ p.description }}
++          </label>
++        </div>
++      </div>
++
++      <div>
++        <h2 class="mb-2 text-sm font-medium text-n-slate-12">Assigned users (Chatwoot user id)</h2>
++        <div class="flex items-end gap-2 mb-4">
++          <input
++            v-model="newUserId"
++            type="text"
++            placeholder="e.g. 101"
++            class="w-40 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++          <button
++            type="button"
++            class="px-3 py-2 text-sm font-medium rounded-lg bg-n-brand text-white hover:opacity-90"
++            @click="addUser"
++          >
++            Assign
++          </button>
++        </div>
++        <ul class="flex flex-col gap-2">
++          <li
++            v-for="userId in selectedRoleUsers"
++            :key="userId"
++            class="flex items-center justify-between px-3 py-2 text-sm border rounded-lg border-n-weak text-n-slate-12"
++          >
++            {{ userId }}
++            <button type="button" class="text-xs text-n-ruby-9" @click="removeUser(userId)">
++              Remove
++            </button>
++          </li>
++          <li v-if="!selectedRoleUsers.length" class="text-sm text-n-slate-11">No users assigned.</li>
++        </ul>
++      </div>
++    </div>
++  </div>
++</template>

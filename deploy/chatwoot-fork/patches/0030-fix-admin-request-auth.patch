@@ -1,0 +1,45 @@
+diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
+index 46ed977..8f7bc9f 100644
+--- a/app/javascript/dashboard/api/protonAdmin.js
++++ b/app/javascript/dashboard/api/protonAdmin.js
+@@ -2,24 +2,34 @@
+ // three RBAC-gated admin pages (SLA Policies, Audit Log, Roles &
+ // Permissions). Unlike protonKnowledge.js's kbRequest (which only forwards
+ // the shared backendKey), adminRequest ALSO forwards the caller's Chatwoot
+-// access token, since these endpoints are gated by Phase 1's per-user
+-// require_permission dependency, not the shared secret alone.
++// browser session — the devise_token_auth access-token/client/uid triplet
++// from the same auth cookie Chatwoot's own axios client reads (see
++// helper/APIHelper.js) — NOT Chatwoot's separate static per-user "Access
++// Token" API credential, which the SPA has no way to read automatically.
++// The backend validates this triplet against Chatwoot's own
++// /auth/validate_token, since these endpoints are gated by Phase 1's
++// per-user require_permission dependency, not the shared secret alone.
+ import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
+-import { useMapGetter } from 'dashboard/composables/store';
++import Auth from './auth';
+ 
+ export async function adminRequest(path, { method = 'GET', body } = {}) {
+   const { backendUrl, backendKey } = useProtonConfig();
+   if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
+ 
+-  const currentUser = useMapGetter('getCurrentUser');
+-  const accessToken = currentUser.value?.access_token ?? '';
++  const authData = Auth.hasAuthCookie() ? Auth.getAuthData() : null;
+ 
+   const response = await fetch(`${backendUrl}${path}`, {
+     method,
+     headers: {
+       'Content-Type': 'application/json',
+       ...(backendKey ? { 'x-api-key': backendKey } : {}),
+-      ...(accessToken ? { 'x-chatwoot-access-token': accessToken } : {}),
++      ...(authData
++        ? {
++            'x-chatwoot-access-token': authData['access-token'],
++            'x-chatwoot-client': authData.client,
++            'x-chatwoot-uid': authData.uid,
++          }
++        : {}),
+     },
+     ...(body ? { body: JSON.stringify(body) } : {}),
+   });

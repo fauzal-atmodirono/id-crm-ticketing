@@ -504,6 +504,10 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         app.state.authz_engine = authz_engine
         app.state.authz_repo = authz_repo
 
+        from chatbot.features.chat.audit_router import build_audit_router
+
+        app.include_router(build_audit_router(audit_log, authz_repo, authz_validator, settings))
+
         sla_policy_engine = build_sla_policy_engine(settings.rbac_database_url)
         sla_policy_repo = SlaPolicyRepository(build_sla_policy_session_maker(sla_policy_engine))
         app.include_router(

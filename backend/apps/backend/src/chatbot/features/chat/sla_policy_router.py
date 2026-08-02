@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from chatbot.features.authz.deps import require_permission
+from chatbot.features.chat.sla_policy_db import SlaPolicyValues
 
 if TYPE_CHECKING:
     from chatbot.features.authz.identity import TokenValidator
@@ -39,9 +40,7 @@ def _to_dict(values) -> dict:
     }
 
 
-def _empty():
-    from chatbot.features.chat.sla_policy_db import SlaPolicyValues
-
+def _empty() -> SlaPolicyValues:
     return SlaPolicyValues()
 
 

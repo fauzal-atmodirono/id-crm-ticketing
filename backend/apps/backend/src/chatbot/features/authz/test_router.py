@@ -76,3 +76,129 @@ def test_administrator_can_create_role_and_assign(client):
         headers={"x-chatwoot-access-token": "admin-tok"},
     )
     assert res.status_code == 200
+
+
+def test_permission_registry_endpoint(client):
+    res = client.get("/authz/permission-registry", headers={"x-chatwoot-access-token": "admin-tok"})
+    assert res.status_code == 200
+    data = res.json()
+    assert "permissions" in data
+    assert len(data["permissions"]) > 0
+    assert all("key" in p and "description" in p for p in data["permissions"])
+
+
+def test_permission_registry_requires_roles_manage_permission(client):
+    res = client.get("/authz/permission-registry", headers={"x-chatwoot-access-token": "agent-tok"})
+    assert res.status_code == 403
+
+
+def test_role_permissions_endpoint(client):
+    res = client.get("/authz/roles/administrator/permissions", headers={"x-chatwoot-access-token": "admin-tok"})
+    assert res.status_code == 200
+    data = res.json()
+    assert "permissions" in data
+    assert isinstance(data["permissions"], list)
+
+
+def test_role_permissions_requires_roles_manage_permission(client):
+    res = client.get("/authz/roles/administrator/permissions", headers={"x-chatwoot-access-token": "agent-tok"})
+    assert res.status_code == 403
+
+
+def test_grant_role_permission_endpoint(client):
+    res = client.post(
+        "/authz/roles/agent/permissions",
+        json={"permission_key": "sla.manage"},
+        headers={"x-chatwoot-access-token": "admin-tok"},
+    )
+    assert res.status_code == 200
+    assert res.json() == {"ok": True}
+
+    # Verify the permission was actually granted
+    res = client.get("/authz/roles/agent/permissions", headers={"x-chatwoot-access-token": "admin-tok"})
+    assert res.status_code == 200
+    perms = res.json()["permissions"]
+    assert "sla.manage" in perms
+
+
+def test_grant_role_permission_requires_roles_manage_permission(client):
+    res = client.post(
+        "/authz/roles/agent/permissions",
+        json={"permission_key": "sla.manage"},
+        headers={"x-chatwoot-access-token": "agent-tok"},
+    )
+    assert res.status_code == 403
+
+
+def test_revoke_role_permission_endpoint(client):
+    # First grant a permission
+    client.post(
+        "/authz/roles/agent/permissions",
+        json={"permission_key": "sla.manage"},
+        headers={"x-chatwoot-access-token": "admin-tok"},
+    )
+
+    # Now revoke it
+    res = client.delete(
+        "/authz/roles/agent/permissions/sla.manage",
+        headers={"x-chatwoot-access-token": "admin-tok"},
+    )
+    assert res.status_code == 200
+    assert res.json() == {"ok": True}
+
+    # Verify the permission was actually revoked
+    res = client.get("/authz/roles/agent/permissions", headers={"x-chatwoot-access-token": "admin-tok"})
+    assert res.status_code == 200
+    perms = res.json()["permissions"]
+    assert "sla.manage" not in perms
+
+
+def test_revoke_role_permission_requires_roles_manage_permission(client):
+    res = client.delete(
+        "/authz/roles/agent/permissions/sla.manage",
+        headers={"x-chatwoot-access-token": "agent-tok"},
+    )
+    assert res.status_code == 403
+
+
+def test_role_users_endpoint(client):
+    res = client.get("/authz/roles/agent/users", headers={"x-chatwoot-access-token": "admin-tok"})
+    assert res.status_code == 200
+    data = res.json()
+    assert "chatwoot_user_ids" in data
+    assert 2 in data["chatwoot_user_ids"]
+
+
+def test_role_users_requires_roles_manage_permission(client):
+    res = client.get("/authz/roles/agent/users", headers={"x-chatwoot-access-token": "agent-tok"})
+    assert res.status_code == 403
+
+
+def test_unassign_role_endpoint(client):
+    # First verify the user has the agent role
+    res = client.get("/authz/roles/agent/users", headers={"x-chatwoot-access-token": "admin-tok"})
+    assert 2 in res.json()["chatwoot_user_ids"]
+
+    # Now unassign the role
+    res = client.request(
+        "DELETE",
+        "/authz/roles/agent/assign",
+        json={"chatwoot_user_id": 2},
+        headers={"x-chatwoot-access-token": "admin-tok"},
+    )
+    assert res.status_code == 200
+    assert res.json() == {"ok": True}
+
+    # Verify the role was actually removed
+    res = client.get("/authz/roles/agent/users", headers={"x-chatwoot-access-token": "admin-tok"})
+    assert 2 not in res.json()["chatwoot_user_ids"]
+
+
+def test_unassign_role_requires_roles_manage_permission(client):
+    res = client.request(
+        "DELETE",
+        "/authz/roles/agent/assign",
+        json={"chatwoot_user_id": 2},
+        headers={"x-chatwoot-access-token": "agent-tok"},
+    )
+    assert res.status_code == 403

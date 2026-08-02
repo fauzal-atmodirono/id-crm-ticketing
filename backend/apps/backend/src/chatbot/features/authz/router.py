@@ -33,6 +33,10 @@ class AssignRoleBody(BaseModel):
     chatwoot_user_id: int
 
 
+class GrantPermissionBody(BaseModel):
+    permission_key: str
+
+
 def build_authz_router(
     repo: AuthzRepository, validator: TokenValidator, settings: Settings
 ) -> APIRouter:
@@ -75,6 +79,38 @@ def build_authz_router(
     @router.post("/roles/{role_id}/assign", dependencies=[Depends(manage_roles)])
     async def assign_role(role_id: str, body: AssignRoleBody) -> dict:
         await repo.assign_role(body.chatwoot_user_id, role_id)
+        return {"ok": True}
+
+    @router.get("/permission-registry", dependencies=[Depends(manage_roles)])
+    async def permission_registry() -> dict:
+        perms = await repo.list_permissions()
+        return {"permissions": [{"key": p.key, "description": p.description} for p in perms]}
+
+    @router.get("/roles/{role_id}/permissions", dependencies=[Depends(manage_roles)])
+    async def role_permissions(role_id: str) -> dict:
+        perms = await repo.role_permissions(role_id)
+        return {"permissions": sorted(perms)}
+
+    @router.post("/roles/{role_id}/permissions", dependencies=[Depends(manage_roles)])
+    async def grant_role_permission(role_id: str, body: GrantPermissionBody) -> dict:
+        await repo.grant_permission(role_id, body.permission_key)
+        return {"ok": True}
+
+    @router.delete(
+        "/roles/{role_id}/permissions/{permission_key}", dependencies=[Depends(manage_roles)]
+    )
+    async def revoke_role_permission(role_id: str, permission_key: str) -> dict:
+        await repo.revoke_permission(role_id, permission_key)
+        return {"ok": True}
+
+    @router.get("/roles/{role_id}/users", dependencies=[Depends(manage_roles)])
+    async def role_users(role_id: str) -> dict:
+        user_ids = await repo.users_for_role(role_id)
+        return {"chatwoot_user_ids": user_ids}
+
+    @router.delete("/roles/{role_id}/assign", dependencies=[Depends(manage_roles)])
+    async def unassign_role(role_id: str, body: AssignRoleBody) -> dict:
+        await repo.unassign_role(body.chatwoot_user_id, role_id)
         return {"ok": True}
 
     return router

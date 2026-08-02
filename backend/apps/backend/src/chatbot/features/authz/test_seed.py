@@ -2,7 +2,12 @@ import pytest
 
 from chatbot.features.authz.db import build_engine, build_session_maker, init_authz_db
 from chatbot.features.authz.repository import AuthzRepository
-from chatbot.features.authz.seed import PERMISSION_REGISTRY, seed_defaults
+from chatbot.features.authz.seed import (
+    ALL_NATIVE_KEYS,
+    NATIVE_PERMISSION_REGISTRY,
+    PERMISSION_REGISTRY,
+    seed_defaults,
+)
 
 
 @pytest.fixture
@@ -63,3 +68,29 @@ async def test_bootstrap_admin_assignment_grants_full_permission_set(repo):
     await seed_defaults(repo)
     await repo.assign_role(999, "administrator")
     assert await repo.permissions_for_user(999) == set(PERMISSION_REGISTRY.keys())
+
+
+@pytest.mark.asyncio
+async def test_native_permissions_are_registered(repo):
+    await seed_defaults(repo)
+    perms = await repo.list_permissions()
+    keys = {p.key for p in perms}
+    assert ALL_NATIVE_KEYS <= keys
+
+
+@pytest.mark.asyncio
+async def test_native_permissions_not_auto_granted_to_administrator(repo):
+    await seed_defaults(repo)
+    admin_perms = await repo.role_permissions("administrator")
+    assert admin_perms.isdisjoint(ALL_NATIVE_KEYS)
+
+
+@pytest.mark.asyncio
+async def test_native_permissions_not_auto_granted_to_agent(repo):
+    await seed_defaults(repo)
+    agent_perms = await repo.role_permissions("agent")
+    assert agent_perms.isdisjoint(ALL_NATIVE_KEYS)
+
+
+def test_native_permission_registry_has_six_keys():
+    assert len(NATIVE_PERMISSION_REGISTRY) == 6

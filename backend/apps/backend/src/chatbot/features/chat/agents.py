@@ -107,36 +107,73 @@ def build_ai_agent(  # noqa: PLR0915 — one builder, many tool closures
 
         if case_type_options.is_empty() or case_type_options.is_valid(case_type):
             tool_context.state["case_type"] = case_type
+            case_type_written = True
         else:
+            case_type_written = False
             _log.warning("classify_ticket_tool_invalid_case_type", case_type=case_type)
 
         if vehicle_model_options.is_empty() or vehicle_model_options.is_valid(vehicle_model):
             tool_context.state["vehicle_model"] = vehicle_model
+            vehicle_model_written = True
         else:
+            vehicle_model_written = False
             _log.warning("classify_ticket_tool_invalid_vehicle_model", vehicle_model=vehicle_model)
+
+        # Only echo case_type/vehicle_model in the response as recorded when they
+        # actually passed validation and were written to state — otherwise the
+        # message must say so explicitly, mirroring how category/subcategory
+        # rejection is reported below (never claim a value was recorded when it
+        # was silently dropped).
+        type_fragment = (
+            f"type={case_type}" if case_type_written else "case_type not recorded (invalid value)"
+        )
+        model_fragment = (
+            f"model={vehicle_model}"
+            if vehicle_model_written
+            else "vehicle_model not recorded (invalid value)"
+        )
 
         if written:
             return (
                 f"[internal] ticket classified as {category} -> {subcategory} "
-                f"({priority}, SLA {sla_minutes}m, type={case_type}, model={vehicle_model})."
+                f"({priority}, SLA {sla_minutes}m, {type_fragment}, {model_fragment})."
             )
         return (
             f"[internal] category '{category}' / subcategory '{subcategory}' is not a "
             f"valid taxonomy entry; not recorded ({priority}, SLA {sla_minutes}m)."
         )
 
-    if not case_taxonomy.is_empty():
+    # Each of the three dimensions (category/subcategory taxonomy, case_type,
+    # vehicle_model) is configured and validated independently, so the docstring
+    # must reflect that: it's rebuilt whenever ANY of them is non-empty, and each
+    # guidance block gates on its OWN emptiness rather than the taxonomy's.
+    if (
+        not case_taxonomy.is_empty()
+        or not case_type_options.is_empty()
+        or not vehicle_model_options.is_empty()
+    ):
+        if not case_taxonomy.is_empty():
+            category_block = (
+                f"    category: MUST be exactly one of: {', '.join(case_taxonomy.main_categories())}.\n"
+                "    subcategory: MUST match one of the subcategories for the chosen category:\n"
+                + "\n".join(
+                    f"        {slug} -> {', '.join(case_taxonomy.subcategories_for(slug))}"
+                    for slug in case_taxonomy.main_categories()
+                )
+                + "\n"
+            )
+        else:
+            category_block = (
+                "    category: General category of the problem.\n"
+                "    subcategory: Precise subcategory matching the chosen category.\n"
+            )
+
         classify_ticket_tool.__doc__ = (
             "Classify the current ticket details.\n\n"
             "Args:\n"
             "    tool_context: Context injected by the ADK runner.\n"
-            f"    category: MUST be exactly one of: {', '.join(case_taxonomy.main_categories())}.\n"
-            "    subcategory: MUST match one of the subcategories for the chosen category:\n"
-            + "\n".join(
-                f"        {slug} -> {', '.join(case_taxonomy.subcategories_for(slug))}"
-                for slug in case_taxonomy.main_categories()
-            )
-            + "\n    priority: Priority tier (LOW, MEDIUM, HIGH, URGENT).\n"
+            + category_block
+            + "    priority: Priority tier (LOW, MEDIUM, HIGH, URGENT).\n"
             "    sla_minutes: Targeted SLA duration in minutes."
             + (
                 f"\n    case_type: MUST be exactly one of: {', '.join(case_type_options.options())}."

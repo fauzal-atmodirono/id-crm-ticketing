@@ -228,3 +228,43 @@ async def test_empty_option_lists_fall_back_to_accepting_free_text() -> None:
 
     assert ctx.state["case_type"] == "Anything"
     assert ctx.state["vehicle_model"] == "Whatever"
+
+
+@pytest.mark.asyncio
+async def test_invalid_case_type_return_string_does_not_claim_it_was_recorded() -> None:
+    """Regression test for reviewer Finding 1: a valid category/subcategory
+    classification must not have its return message claim an invalid
+    case_type was recorded — the message must reflect what was ACTUALLY
+    written to tool_context.state, not just echo the raw input."""
+    tool = _classify_tool_with_overrides(
+        case_taxonomy_json=VALID, case_type_options_json=CASE_TYPES, vehicle_models_json=MODELS
+    )
+    ctx = SimpleNamespace(state={})
+
+    result = await tool(
+        ctx,
+        category="sales",
+        subcategory="Test Drive Booking",
+        priority="HIGH",
+        sla_minutes=60,
+        case_type="Not A Real Type",
+        vehicle_model="e.MAS 7",
+    )  # type: ignore[operator]
+
+    assert "case_type" not in ctx.state
+    assert ctx.state["vehicle_model"] == "e.MAS 7"
+    assert "type=Not A Real Type" not in result
+    assert "not recorded" in result
+
+
+def test_docstring_includes_case_type_guidance_even_when_taxonomy_empty() -> None:
+    """Regression test for reviewer Finding 2: case_type/vehicle_model guidance
+    must appear in the docstring whenever THEIR OWN option list is configured,
+    independent of whether case_taxonomy is configured."""
+    tool = _classify_tool_with_overrides(
+        case_taxonomy_json="", case_type_options_json=CASE_TYPES, vehicle_models_json=""
+    )
+
+    assert tool.__doc__ is not None
+    assert "case_type: MUST be exactly one of: Inquiry, Complaint." in tool.__doc__
+    assert "vehicle_model" not in tool.__doc__

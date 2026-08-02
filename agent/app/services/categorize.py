@@ -11,7 +11,10 @@ subcategories for it, one subcategory) from the tenant's configured taxonomy
 (``case_taxonomy_json``) for the conversation transcript, using the plain-text
 Gemini entry point. Fail-open: any error or an answer that is not one of the
 candidates yields ``None`` (no attribute written), never an exception —
-categorization must never block the resolution it rides on.
+categorization must never block the resolution it rides on. It also applies
+the same fallback classification to `case_type`/`vehicle_model` against the
+tenant's configured option lists (see `app.services.option_lists`), each
+independently skipped when unconfigured or already set.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from app.ai import gemini
 from app.clients.deps import get_chatwoot_client
 from app.config import get_settings
 from app.services.case_taxonomy import CaseTaxonomy, build_case_taxonomy
+from app.services.option_lists import build_option_list
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +76,12 @@ async def maybe_categorize(conversation_id: int, *, settings=None, chatwoot=None
     `backend/`'s mid-conversation classifier never set `case_category` on it.
     Writes `case_category` (and `case_subcategory`, if the taxonomy defines
     subcategories for the picked category and one matches) as Chatwoot
-    conversation custom attributes. Any error is logged and swallowed — this
-    never blocks the resolution it rides on."""
+    conversation custom attributes. Also best-effort classifies `case_type`
+    and `vehicle_model` against the tenant's configured option lists
+    (`case_type_options_json`/`vehicle_models_json`), each independently
+    skipped when its option list is empty or the field is already set. Any
+    error is logged and swallowed — this never blocks the resolution it rides
+    on."""
     settings = settings or get_settings()
     chatwoot = chatwoot or get_chatwoot_client()
 
@@ -112,6 +120,18 @@ async def maybe_categorize(conversation_id: int, *, settings=None, chatwoot=None
             subcategory = await classify_category(transcript, subcategory_candidates)
             if subcategory is not None:
                 attrs["case_subcategory"] = f"{label}: {subcategory}"
+
+        case_type_options = build_option_list(settings.case_type_options_json)
+        if case_type_options.options() and not existing.get("case_type"):
+            case_type = await classify_category(transcript, case_type_options.options())
+            if case_type is not None:
+                attrs["case_type"] = case_type
+
+        vehicle_model_options = build_option_list(settings.vehicle_models_json)
+        if vehicle_model_options.options() and not existing.get("vehicle_model"):
+            vehicle_model = await classify_category(transcript, vehicle_model_options.options())
+            if vehicle_model is not None:
+                attrs["vehicle_model"] = vehicle_model
 
         await chatwoot.set_custom_attributes(conversation_id, attrs)
     except Exception:

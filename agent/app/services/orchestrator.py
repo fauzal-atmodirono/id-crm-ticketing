@@ -61,6 +61,8 @@ class _DebounceState:
 # processing it's left to finish and a fresh debounce is scheduled instead.
 _pending_tasks: dict[int, _DebounceState] = {}
 
+LANGUAGE_MATCH_INSTRUCTION = "Always reply in the same language the customer is using."
+
 SYSTEM_PROMPT = (
     "You are a support agent for the company, handling a live customer "
     "conversation. Decide exactly one action by calling a function: "
@@ -69,8 +71,7 @@ SYSTEM_PROMPT = (
     "alone, or handoff_to_human for anything else you're unsure about. Keep "
     "replies short, friendly, and strictly grounded in what the conversation "
     "actually says — never invent facts, prices, policies, or commitments "
-    "you can't verify from it. Always reply in the same language the customer "
-    "is using."
+    "you can't verify from it. " + LANGUAGE_MATCH_INSTRUCTION
 )
 
 
@@ -79,7 +80,11 @@ def _build_system_prompt(persona: dict | None) -> str:
 
     None or all-empty persona -> the module SYSTEM_PROMPT verbatim (byte-identical
     default). Otherwise: base = instructions if set else SYSTEM_PROMPT; then append
-    a Guardrails section and an explicit language line when present.
+    a Guardrails section and a language-preference line when present.
+
+    LANGUAGE_MATCH_INSTRUCTION is always present in the output, even when custom
+    instructions replace SYSTEM_PROMPT — operators routinely forget to restate it,
+    and dropping it caused the bot to answer in the wrong language (WA-2/IVR-4).
     """
     if not persona:
         return SYSTEM_PROMPT
@@ -89,10 +94,15 @@ def _build_system_prompt(persona: dict | None) -> str:
     if not instructions and not guardrails and not language:
         return SYSTEM_PROMPT
     parts = [instructions or SYSTEM_PROMPT]
+    if instructions:
+        parts.append(LANGUAGE_MATCH_INSTRUCTION)
     if guardrails:
         parts.append("## Guardrails\n" + "\n".join(f"- {g}" for g in guardrails))
     if language:
-        parts.append(f"Always reply in {language}.")
+        parts.append(
+            f"Prefer {language} when the customer's language is unclear, but "
+            "always match the language the customer writes in."
+        )
     return "\n\n".join(parts)
 
 

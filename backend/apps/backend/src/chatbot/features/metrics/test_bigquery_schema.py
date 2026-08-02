@@ -57,6 +57,10 @@ def test_view_ddls_keys_and_targets() -> None:
         "v_case_lifecycle",
         "v_state_trend",
         "v_resolution_sla_buckets",
+        # Task 12: v_dealer_escalation
+        "v_dealer_escalation",
+        "v_dealer_escalation_slowest_cases",
+        "v_case_aging",
     }
     assert "`proj.ds.v_volume_by_month_channel`" in ddls["v_volume_by_month_channel"]
     assert "`proj.ds.conversations`" in ddls["v_volume_by_month_channel"]
@@ -243,3 +247,13 @@ def test_sla_bucket_case_sql_skips_case_type_with_non_numeric_bucket_edge() -> N
     assert "complaint" not in ddl  # malformed case_type excluded entirely
     assert "inquiry" in ddl  # sibling valid case_type still buckets normally
     assert "480" in ddl  # 8wh * 60 minutes, from the still-valid "inquiry" entry
+
+
+def test_view_ddls_includes_dealer_escalation_and_case_aging() -> None:
+    ddls = view_ddls("proj", "ds", "conversations", "{}")
+    assert "v_dealer_escalation" in ddls
+    assert "dealer_escalated_at" in ddls["v_dealer_escalation"]
+    assert "v_dealer_escalation_slowest_cases" in ddls
+    assert "conversation_id" in ddls["v_dealer_escalation_slowest_cases"]
+    assert "v_case_aging" in ddls
+    assert "bucket_label" in ddls["v_case_aging"]

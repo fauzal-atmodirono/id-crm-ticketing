@@ -272,4 +272,35 @@ def view_ddls(
             f"FROM {fq} WHERE resolution_working_minutes IS NOT NULL "
             f"GROUP BY case_type, bucket_label"
         ),
+        "v_dealer_escalation": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_dealer_escalation` AS "
+            f"SELECT COALESCE(dealer, 'Unknown') AS dealer, "
+            f"COUNT(*) AS cases_escalated, "
+            f"AVG(TIMESTAMP_DIFF(resolved_at, dealer_escalated_at, HOUR)) / 24.0 AS avg_turnaround_days, "
+            f"APPROX_QUANTILES(TIMESTAMP_DIFF(resolved_at, dealer_escalated_at, HOUR), 100)[OFFSET(50)] "
+            f"/ 24.0 AS p50_turnaround_days, "
+            f"APPROX_QUANTILES(TIMESTAMP_DIFF(resolved_at, dealer_escalated_at, HOUR), 100)[OFFSET(90)] "
+            f"/ 24.0 AS p90_turnaround_days "
+            f"FROM {fq} WHERE dealer_escalated_at IS NOT NULL GROUP BY dealer"
+        ),
+        "v_dealer_escalation_slowest_cases": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_dealer_escalation_slowest_cases` AS "
+            f"SELECT conversation_id, COALESCE(dealer, 'Unknown') AS dealer, "
+            f"TIMESTAMP_DIFF(resolved_at, dealer_escalated_at, HOUR) / 24.0 AS turnaround_days "
+            f"FROM {fq} WHERE dealer_escalated_at IS NOT NULL AND resolved_at IS NOT NULL "
+            f"ORDER BY turnaround_days DESC LIMIT 50"
+        ),
+        "v_case_aging": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_case_aging` AS "
+            f"SELECT conversation_id, COALESCE(case_type, 'Unknown') AS case_type, "
+            f"COALESCE(division, 'Unknown') AS division, COALESCE(dealer, 'Unknown') AS dealer, "
+            f"COALESCE(pic, 'Unassigned') AS pic, status, created_at, "
+            f"TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), created_at, HOUR) / 24.0 AS age_days, "
+            f"CASE "
+            f"WHEN TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), created_at, DAY) <= 3 THEN '1-3 days' "
+            f"WHEN TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), created_at, DAY) <= 6 THEN '4-6 days' "
+            f"ELSE '7+ days' END AS bucket_label "
+            f"FROM {fq} WHERE status IN ('open', 'pending') AND created_at IS NOT NULL "
+            f"ORDER BY age_days DESC"
+        ),
     }

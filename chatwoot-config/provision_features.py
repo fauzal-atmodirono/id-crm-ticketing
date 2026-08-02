@@ -24,14 +24,14 @@ DISABLE = [
     "custom_tools",
     "captain_document_auto_sync",
     "contact_chatwoot_support_team",  # Chatwoot's own support upsell
+    "sla",               # Phase 2 replaces with our own SLA system
+    "audit_logs",        # Phase 2 replaces with our own audit trail
+    "custom_roles",      # Phase 2 replaces with our own RBAC
 ]
 
 # White-label + reusable capabilities we make our own — turned ON.
 ENABLE = [
     "disable_branding",  # remove "Powered by Chatwoot"
-    "sla",               # powers escalation (Phase 2)
-    "audit_logs",        # our audit trail / reporting
-    "custom_roles",      # RBAC
 ]
 
 RUBY_TEMPLATE = """

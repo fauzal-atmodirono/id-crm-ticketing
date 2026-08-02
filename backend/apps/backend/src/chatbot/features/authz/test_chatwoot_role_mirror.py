@@ -40,6 +40,24 @@ async def test_ensure_custom_role_raises_on_http_error(settings, respx_mock):
         await mirror.ensure_custom_role(None, "Leader", "desc", [])
 
 
+async def test_ensure_custom_role_raises_on_missing_id_in_2xx_response(settings, respx_mock):
+    respx_mock.post(
+        f"{settings.chatwoot_api_url}/api/v1/accounts/{settings.chatwoot_account_id}/custom_roles"
+    ).mock(return_value=httpx.Response(200, json={"name": "Leader"}))
+    mirror = ChatwootRoleMirror(settings)
+    with pytest.raises(ChatwootRoleMirrorError):
+        await mirror.ensure_custom_role(None, "Leader", "desc", [])
+
+
+async def test_ensure_custom_role_raises_on_non_numeric_id_in_2xx_response(settings, respx_mock):
+    respx_mock.post(
+        f"{settings.chatwoot_api_url}/api/v1/accounts/{settings.chatwoot_account_id}/custom_roles"
+    ).mock(return_value=httpx.Response(200, json={"id": "not-a-number"}))
+    mirror = ChatwootRoleMirror(settings)
+    with pytest.raises(ChatwootRoleMirrorError):
+        await mirror.ensure_custom_role(None, "Leader", "desc", [])
+
+
 async def test_delete_custom_role_raises_on_http_error(settings, respx_mock):
     respx_mock.delete(
         f"{settings.chatwoot_api_url}/api/v1/accounts/{settings.chatwoot_account_id}/custom_roles/7"

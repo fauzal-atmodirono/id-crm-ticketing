@@ -73,7 +73,13 @@ class ChatwootRoleMirror:
             res = await self._request("POST", "/custom_roles", body)
         else:
             res = await self._request("PATCH", f"/custom_roles/{chatwoot_role_id}", body)
-        return int(res["id"])
+        try:
+            return int(res["id"])
+        except (KeyError, ValueError, TypeError) as e:
+            _log.error("chatwoot_role_mirror_malformed_response", response=res, error=str(e))
+            raise ChatwootRoleMirrorError(
+                f"custom_roles response missing valid 'id': {res!r}"
+            ) from e
 
     async def delete_custom_role(self, chatwoot_role_id: int) -> None:
         await self._request("DELETE", f"/custom_roles/{chatwoot_role_id}")

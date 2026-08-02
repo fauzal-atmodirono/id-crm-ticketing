@@ -488,6 +488,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         from chatbot.features.authz.db import build_session_maker as build_authz_session_maker
         from chatbot.features.authz.identity import TokenValidator
         from chatbot.features.authz.repository import AuthzRepository
+        from chatbot.features.authz.chatwoot_role_mirror import ChatwootRoleMirror
         from chatbot.features.authz.router import build_authz_router
         from chatbot.features.chat.sla_policy_db import build_engine as build_sla_policy_engine
         from chatbot.features.chat.sla_policy_db import (
@@ -500,7 +501,8 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         authz_session_maker = build_authz_session_maker(authz_engine)
         authz_repo = AuthzRepository(authz_session_maker)
         authz_validator = TokenValidator(settings)
-        app.include_router(build_authz_router(authz_repo, authz_validator, settings))
+        authz_mirror = ChatwootRoleMirror(settings)
+        app.include_router(build_authz_router(authz_repo, authz_validator, settings, mirror=authz_mirror))
         app.state.authz_engine = authz_engine
         app.state.authz_repo = authz_repo
 

@@ -168,9 +168,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 return channel
         return "web"
 
-    async def _assign_conversation(
-        self, conv_id: str, fallback_team_id: int | None = None
-    ) -> None:
+    async def _assign_conversation(self, conv_id: str, fallback_team_id: int | None = None) -> None:
         """Assign to an agent (routing) or a team (fallback).
 
         When routing_enabled and a RoutingService is wired, resolve the real
@@ -191,7 +189,11 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                     {"assignee_id": agent_id},
                 )
                 return
-        team_id = fallback_team_id if fallback_team_id is not None else (self._settings.chatwoot_agent_team_id or None)
+        team_id = (
+            fallback_team_id
+            if fallback_team_id is not None
+            else (self._settings.chatwoot_agent_team_id or None)
+        )
         if team_id:
             await self._request(
                 "POST",
@@ -228,7 +230,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             return [label]
         return []
 
-    async def _escalate_to_zammad(
+    async def _fire_escalation(
         self,
         conv_id: str,
         title: str,
@@ -238,52 +240,54 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         reason: str | None,
         department: str | None = None,
     ) -> None:
-        """Create a Zammad ticket and fire escalation side-effects (PIC routing,
-        email CC, WA alert, case_state attribute). No-op when direct ticketing
-        is inactive or the case is not a complaint. Errors from side-effects
-        are swallowed so the turn never breaks.
+        """Fire escalation side-effects (email + CC, WA alert, case_state).
+
+        Chatwoot-first: the notification always fires for a complaint, whether or
+        not Zammad is in the loop. When direct Zammad ticketing is active a
+        back-office ticket is ALSO created and the email references it; otherwise
+        the email references the Chatwoot conversation. No-op when the case is
+        not a complaint. Errors from side-effects are swallowed so the turn
+        never breaks.
         """
-        if not self._direct_zammad_active() or self._zammad is None:
-            return
         if not self._is_complaint(reason, urgency):
             return
 
-        # Resolve PIC for the department — used for Zammad group override.
+        # Resolve PIC for the department — drives Zammad group override + routing.
         pic = None
         if self._pic_registry is not None and department:
             key = department.removeprefix("dept_")
             pic = self._pic_registry.lookup(key)
 
-        group = pic.zammad_group if pic is not None else None
+        # Create the back-office Zammad ticket ONLY when direct ticketing is on.
+        zammad_ticket_number: str | None = None
+        if self._direct_zammad_active() and self._zammad is not None:
+            group = pic.zammad_group if pic is not None else None
+            ticket = await self._zammad.create_ticket(
+                title=title,
+                body=body,
+                customer_email=self._synth_customer_email(session_id),
+                priority=(urgency or "medium"),
+                group=group,
+            )
+            if ticket is not None:
+                # Assign Zammad ticket to the PIC's email if available.
+                if pic is not None:
+                    await self._zammad.assign_owner(ticket.id, pic.pic_email)
+                zoom_url = f"{self._settings.zammad_api_url.rstrip('/')}/#ticket/zoom/{ticket.id}"
+                await self.add_private_note(
+                    conv_id, f"Escalated to Zammad ticket #{ticket.number}: {zoom_url}"
+                )
+                zammad_ticket_number = ticket.number
 
-        ticket = await self._zammad.create_ticket(
-            title=title,
-            body=body,
-            customer_email=self._synth_customer_email(session_id),
-            priority=(urgency or "medium"),
-            group=group,
-        )
-        if ticket is None:
-            return
-
-        # Assign Zammad ticket to the PIC's email if available.
-        if pic is not None:
-            await self._zammad.assign_owner(ticket.id, pic.pic_email)
-
-        zoom_url = f"{self._settings.zammad_api_url.rstrip('/')}/#ticket/zoom/{ticket.id}"
-        await self.add_private_note(
-            conv_id, f"Escalated to Zammad ticket #{ticket.number}: {zoom_url}"
-        )
-
-        # Fire escalation side-effects (email CC, WA alert, case_state write).
+        # Fire escalation side-effects (email + CC, WA alert, case_state write) —
+        # independent of Zammad so this works in a Chatwoot-only deployment.
         if self._escalation_notifier is not None:
             await self._escalation_notifier.notify(
                 conv_id=conv_id,
-                ticket_id=ticket.id,
                 title=title,
                 body=body,
                 department=department,
-                zammad_ticket_number=ticket.number,
+                zammad_ticket_number=zammad_ticket_number,
             )
 
     @staticmethod
@@ -497,11 +501,12 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         )
         await self._assign_conversation(conv_id)
         await self.add_private_note(conv_id, f"[AI escalation] {title}\n\n{body}")
-        # Direct Zammad ticketing: on a complaint, POST the back-office ticket
-        # ourselves and drop a Chatwoot private note linking to it (instead of
-        # relying on the `escalate` label + external agent-service sync).
-        await self._escalate_to_zammad(conv_id, title, body, session_id, urgency, None,
-                                        department=department)
+        # Fire escalation side-effects (email + CC, WA alert, case_state). When
+        # direct Zammad ticketing is on this also POSTs the back-office ticket and
+        # drops a Chatwoot private note linking to it; otherwise it's Chatwoot-only.
+        await self._fire_escalation(
+            conv_id, title, body, session_id, urgency, None, department=department
+        )
         # case_category/case_subcategory + sla_minutes as custom attributes —
         # case_category/subcategory are List-type Chatwoot attribute
         # definitions (see chatwoot-config/provision_case_taxonomy.py), so
@@ -697,11 +702,11 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         transcript = "\n".join(f"{m.role}: {m.text}" for m in payload.transcript)
         note = f"[AI handoff] {payload.ai_summary}\n\n--- transcript ---\n{transcript}"
         await self.add_private_note(conv_id, note)
-        # Direct Zammad ticketing: on a complaint, POST the back-office ticket
-        # ourselves and drop a Chatwoot private note linking to it (instead of
-        # relying on the `escalate` label + external agent-service sync). Title
-        # comes from the AI summary; body carries the summary + full transcript.
-        await self._escalate_to_zammad(
+        # Fire escalation side-effects (email + CC, WA alert, case_state). When
+        # direct Zammad ticketing is on this also POSTs the back-office ticket and
+        # drops a Chatwoot private note linking to it; otherwise it's Chatwoot-only.
+        # Title comes from the AI summary; body carries the summary + full transcript.
+        await self._fire_escalation(
             conv_id,
             payload.ai_summary,
             note,

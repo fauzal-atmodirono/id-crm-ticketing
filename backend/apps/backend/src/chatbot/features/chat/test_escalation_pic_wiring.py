@@ -8,6 +8,7 @@ Covers:
 - Fallback when no PIC found (group=None, no WA alert)
 - ZammadClient.assign_owner: user lookup + PATCH
 """
+
 from __future__ import annotations
 
 import json
@@ -32,15 +33,17 @@ def _settings(**kw: Any) -> Settings:
         "zammad_direct_ticketing": True,
         "escalation_email_enabled": False,  # email off so only WA + attr tested here
         "escalation_cc_pic": False,
-        "pic_map_json": json.dumps({
-            "apps": {
-                "pic_name": "Alice Tan",
-                "pic_email": "alice@proton.my",
-                "pic_whatsapp": "+60123456789",
-                "zammad_group": "Apps-Support",
-                "chatwoot_team_id": 3,
+        "pic_map_json": json.dumps(
+            {
+                "apps": {
+                    "pic_name": "Alice Tan",
+                    "pic_email": "alice@proton.my",
+                    "pic_whatsapp": "+60123456789",
+                    "zammad_group": "Apps-Support",
+                    "chatwoot_team_id": 3,
+                }
             }
-        }),
+        ),
     }
     base.update(kw)
     return Settings(_env_file=None, **base)
@@ -63,8 +66,9 @@ class _FakeZammad:
         self.assign_calls: list[tuple[str, str]] = []
         self.ticket = ZammadTicket(number="42", id="999")
 
-    async def create_ticket(self, title: str, body: str, customer_email: str,
-                             priority: str, group: str | None = None) -> ZammadTicket | None:
+    async def create_ticket(
+        self, title: str, body: str, customer_email: str, priority: str, group: str | None = None
+    ) -> ZammadTicket | None:
         self.create_calls.append({"group": group})
         return self.ticket
 
@@ -123,8 +127,9 @@ async def test_open_handoff_complaint_uses_pic_zammad_group() -> None:
     assert fake_zam.create_calls[0]["group"] == "Apps-Support"
 
     # Chatwoot team assignment uses the PIC's team_id
-    team_calls = [pl for _, p, pl in fake_cw.calls
-                  if "/assignments" in p and pl and pl.get("team_id") == 3]
+    team_calls = [
+        pl for _, p, pl in fake_cw.calls if "/assignments" in p and pl and pl.get("team_id") == 3
+    ]
     assert len(team_calls) == 1
 
     # WA alert sent to PIC
@@ -205,9 +210,7 @@ async def test_open_handoff_applies_pic_label_on_escalation() -> None:
 
     # Find the labels POST call and assert pic_alice_tan is present.
     label_calls = [
-        pl["labels"]
-        for _, path, pl in fake_cw.calls
-        if "/labels" in path and pl and "labels" in pl
+        pl["labels"] for _, path, pl in fake_cw.calls if "/labels" in path and pl and "labels" in pl
     ]
     assert label_calls, "Expected at least one labels POST"
     all_labels = label_calls[-1]  # the final labels merge call
@@ -226,12 +229,20 @@ async def test_zammad_assign_owner_calls_user_lookup_and_patch(
         def __init__(self, body: Any) -> None:
             self._body = body
             self.content = json.dumps(body).encode()
-        def raise_for_status(self) -> None: pass
-        def json(self) -> Any: return self._body
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> Any:
+            return self._body
 
     class _Client:
-        async def __aenter__(self) -> _Client: return self
-        async def __aexit__(self, *_: Any) -> bool: return False
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_: Any) -> bool:
+            return False
+
         async def request(self, method: str, url: str, **kw: Any) -> _FakeResp:
             calls.append((method, url, kw.get("json")))
             if "users" in url:
@@ -243,8 +254,14 @@ async def test_zammad_assign_owner_calls_user_lookup_and_patch(
         lambda *_a, **_k: _Client(),
     )
 
-    client = ZammadClient(Settings(_env_file=None, zammad_enabled=True,
-                                    zammad_api_url="https://zam.example", zammad_api_token="t"))
+    client = ZammadClient(
+        Settings(
+            _env_file=None,
+            zammad_enabled=True,
+            zammad_api_url="https://zam.example",
+            zammad_api_token="t",
+        )
+    )
     await client.assign_owner("999", "alice@proton.my")
 
     methods = [c[0] for c in calls]
@@ -252,3 +269,79 @@ async def test_zammad_assign_owner_calls_user_lookup_and_patch(
     assert "PUT" in methods
     put = next(c for c in calls if c[0] == "PUT")
     assert put[2] == {"owner_id": 5}
+
+
+class _FakeEmail:
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+
+    def send(
+        self, to: list[str], cc: list[str], subject: str, body: str, attachments: list
+    ) -> None:
+        self.sent.append({"to": to, "cc": cc, "subject": subject, "body": body})
+
+
+async def test_escalation_notifies_pic_in_chatwoot_only_mode() -> None:
+    """With Zammad direct-ticketing OFF (and no Zammad client at all), a complaint
+    handoff must STILL email + WhatsApp the PIC. The escalation notification is
+    Chatwoot-first, not gated on Zammad — this is the retire-Zammad path."""
+    s = _settings(
+        zammad_direct_ticketing=False,
+        escalation_email_enabled=True,
+        escalation_cc_pic=True,
+        pic_map_json=json.dumps(
+            {
+                "apps": {
+                    "pic_name": "Alice Tan",
+                    "pic_email": "alice@proton.my",
+                    "pic_whatsapp": "+60123456789",
+                    "zammad_group": "Apps-Support",
+                    "chatwoot_team_id": 3,
+                    "cc_emails": ["manager@proton.my"],
+                }
+            }
+        ),
+    )
+    fake_cw = _FakeCW()
+    fake_twilio = _FakeTwilio()
+    fake_email = _FakeEmail()
+
+    registry = build_pic_registry(s)
+    notifier = EscalationNotifier(
+        settings=s,
+        pic_registry=registry,
+        email_sender=fake_email,  # type: ignore[arg-type]
+        twilio_adapter=fake_twilio,  # type: ignore[arg-type]
+        chatwoot_request=fake_cw._request,
+    )
+
+    adapter = ChatwootAdapter(
+        settings=s,
+        zammad=None,  # no Zammad client at all
+        pic_registry=registry,
+        escalation_notifier=notifier,
+    )
+    adapter._request = fake_cw._request  # type: ignore[method-assign]
+
+    payload = HandoffOpenPayload(
+        session_id="sim-cwonly",
+        customer_name="Budi",
+        customer_email="",
+        ai_summary="App crashes on login",
+        transcript=(Message(role="user", text="the app crashes"),),
+        urgency="high",
+        reason="negative_sentiment",
+        department="apps",
+    )
+    await adapter.open_handoff(payload)
+
+    # Email fired to the PIC (To) + CC'd the relevant personnel — with no Zammad ticket.
+    assert len(fake_email.sent) == 1
+    assert fake_email.sent[0]["to"] == ["alice@proton.my"]
+    assert fake_email.sent[0]["cc"] == ["manager@proton.my"]
+    assert "Chatwoot conversation #99" in fake_email.sent[0]["body"]
+    assert "Zammad" not in fake_email.sent[0]["body"]
+
+    # WhatsApp alert still fired to the PIC.
+    assert len(fake_twilio.sent) == 1
+    assert "+60123456789" in fake_twilio.sent[0][0]

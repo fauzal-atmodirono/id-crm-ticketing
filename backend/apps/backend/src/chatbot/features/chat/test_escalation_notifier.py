@@ -43,8 +43,9 @@ async def test_notify_sends_email_and_wa_when_dept_matched() -> None:
     cw_calls: list[tuple[str, str, Any]] = []
 
     class _FakeEmailSender:
-        def send(self, to: list[str], cc: list[str], subject: str,
-                 body: str, attachments: list) -> None:
+        def send(
+            self, to: list[str], cc: list[str], subject: str, body: str, attachments: list
+        ) -> None:
             sent_emails.append({"to": to, "cc": cc, "subject": subject, "body": body})
 
     async def _fake_cw(method: str, path: str, payload: Any = None) -> dict:
@@ -65,7 +66,6 @@ async def test_notify_sends_email_and_wa_when_dept_matched() -> None:
 
     pic = await notifier.notify(
         conv_id="42",
-        ticket_id="ZAM-777",
         title="Battery fault",
         body="Customer has a dead battery on X50.",
         department="apps",
@@ -89,8 +89,7 @@ async def test_notify_sends_email_and_wa_when_dept_matched() -> None:
     assert "Battery fault" in wa_text or "42" in wa_text
 
     # Chatwoot custom attribute "case_state" set
-    attr_calls = [(m, p, pl) for m, p, pl in cw_calls
-                  if "/custom_attributes" in p]
+    attr_calls = [(m, p, pl) for m, p, pl in cw_calls if "/custom_attributes" in p]
     assert len(attr_calls) >= 1
     attrs = attr_calls[0][2]["custom_attributes"]
     assert "case_state" in attrs
@@ -111,8 +110,11 @@ async def test_notify_no_op_when_department_not_in_registry() -> None:
         chatwoot_request=AsyncMock(return_value={}),
     )
     pic = await notifier.notify(
-        conv_id="1", ticket_id="Z1", title="t", body="b",
-        department="charging", zammad_ticket_number=None,
+        conv_id="1",
+        title="t",
+        body="b",
+        department="charging",
+        zammad_ticket_number=None,
     )
     assert pic is None
     assert sent_emails == []
@@ -132,8 +134,9 @@ async def test_notify_skips_email_when_disabled() -> None:
         twilio_adapter=None,
         chatwoot_request=AsyncMock(return_value={}),
     )
-    await notifier.notify(conv_id="1", ticket_id="Z1", title="t", body="b",
-                          department="apps", zammad_ticket_number=None)
+    await notifier.notify(
+        conv_id="1", title="t", body="b", department="apps", zammad_ticket_number=None
+    )
     assert sent_emails == []
 
 
@@ -151,8 +154,9 @@ async def test_notify_skips_wa_when_no_twilio_adapter() -> None:
         twilio_adapter=None,  # no Twilio
         chatwoot_request=AsyncMock(return_value={}),
     )
-    pic = await notifier.notify(conv_id="1", ticket_id="Z1", title="t", body="b",
-                                department="apps", zammad_ticket_number="1")
+    pic = await notifier.notify(
+        conv_id="1", title="t", body="b", department="apps", zammad_ticket_number="1"
+    )
     # email still sent; no WA error
     assert pic is not None
     assert len(sent_emails) == 1
@@ -194,7 +198,6 @@ async def test_notify_does_not_raise_when_email_sender_raises() -> None:
     # Must not raise
     pic = await notifier.notify(
         conv_id="99",
-        ticket_id="Z99",
         title="Crash test",
         body="email will explode",
         department="apps",
@@ -231,7 +234,6 @@ async def test_notify_does_not_raise_when_chatwoot_request_raises() -> None:
     # Must not raise
     pic = await notifier.notify(
         conv_id="88",
-        ticket_id="Z88",
         title="CW crash test",
         body="chatwoot will explode",
         department="apps",
@@ -241,3 +243,93 @@ async def test_notify_does_not_raise_when_chatwoot_request_raises() -> None:
     # Returns normally; PIC resolved; email attempted
     assert pic is not None
     assert len(sent_emails) == 1
+
+
+# ---------------------------------------------------------------------------
+# Per-department CC (relevant personnel) + Chatwoot-first email reference
+# ---------------------------------------------------------------------------
+
+_APPS_PIC_WITH_CC = PicEntry(
+    pic_name="Alice Tan",
+    pic_email="alice@proton.my",
+    pic_whatsapp="+60123456789",
+    zammad_group="Apps-Support",
+    chatwoot_team_id=3,
+    cc_emails=["manager@proton.my", "team-dl@proton.my"],
+)
+
+
+async def test_notify_ccs_pic_cc_emails_when_enabled() -> None:
+    sent: list[dict[str, Any]] = []
+
+    class _FakeEmailSender:
+        def send(
+            self, to: list[str], cc: list[str], subject: str, body: str, attachments: list
+        ) -> None:
+            sent.append({"to": to, "cc": cc})
+
+    notifier = EscalationNotifier(
+        settings=_settings(escalation_cc_pic=True),
+        pic_registry=PicRegistry({"apps": _APPS_PIC_WITH_CC}),
+        email_sender=_FakeEmailSender(),  # type: ignore[arg-type]
+        twilio_adapter=None,
+        chatwoot_request=AsyncMock(return_value={}),
+    )
+    await notifier.notify(
+        conv_id="1", title="t", body="b", department="apps", zammad_ticket_number="1"
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["to"] == ["alice@proton.my"]
+    assert sent[0]["cc"] == ["manager@proton.my", "team-dl@proton.my"]
+
+
+async def test_notify_omits_cc_when_escalation_cc_pic_disabled() -> None:
+    sent: list[dict[str, Any]] = []
+
+    class _FakeEmailSender:
+        def send(
+            self, to: list[str], cc: list[str], subject: str, body: str, attachments: list
+        ) -> None:
+            sent.append({"cc": cc})
+
+    notifier = EscalationNotifier(
+        settings=_settings(escalation_cc_pic=False),
+        pic_registry=PicRegistry({"apps": _APPS_PIC_WITH_CC}),
+        email_sender=_FakeEmailSender(),  # type: ignore[arg-type]
+        twilio_adapter=None,
+        chatwoot_request=AsyncMock(return_value={}),
+    )
+    await notifier.notify(
+        conv_id="1", title="t", body="b", department="apps", zammad_ticket_number="1"
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["cc"] == []
+
+
+async def test_email_reference_uses_chatwoot_conversation_when_no_ticket() -> None:
+    """With no Zammad ticket (Chatwoot-only deploy), the email references the
+    Chatwoot conversation, not a Zammad ticket."""
+    bodies: list[str] = []
+
+    class _FakeEmailSender:
+        def send(
+            self, to: list[str], cc: list[str], subject: str, body: str, attachments: list
+        ) -> None:
+            bodies.append(body)
+
+    notifier = EscalationNotifier(
+        settings=_settings(),
+        pic_registry=_registry(),
+        email_sender=_FakeEmailSender(),  # type: ignore[arg-type]
+        twilio_adapter=None,
+        chatwoot_request=AsyncMock(return_value={}),
+    )
+    await notifier.notify(
+        conv_id="42", title="t", body="b", department="apps", zammad_ticket_number=None
+    )
+
+    assert len(bodies) == 1
+    assert "Chatwoot conversation #42" in bodies[0]
+    assert "Zammad" not in bodies[0]

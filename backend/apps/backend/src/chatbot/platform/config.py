@@ -337,7 +337,9 @@ class Settings(BaseSettings):
 
     # Phase 2 — dept→PIC mapping. JSON object keyed by department slug
     # (matches the dept_<x> label key, e.g. "apps", "sales"). Each value:
-    # {pic_name, pic_email, pic_whatsapp, zammad_group, chatwoot_team_id?}.
+    # {pic_name, pic_email, pic_whatsapp, zammad_group, chatwoot_team_id?,
+    # cc_emails?}. cc_emails is a list of extra addresses CC'd on the escalation
+    # email (the "relevant personnel"), used when escalation_cc_pic is true.
     # Empty string disables PIC routing (no lookup attempted).
     pic_map_json: str = ""
 
@@ -366,6 +368,8 @@ class Settings(BaseSettings):
 
     # Phase 2 — escalation notifications
     escalation_email_enabled: bool = False
+    # When true (default), escalation emails CC the department's configured
+    # cc_emails (the "relevant personnel" beyond the To-recipient PIC).
     escalation_cc_pic: bool = True
     escalation_level2_whatsapp: str = ""   # E.164, e.g. "+60112345678"
     escalation_tier2_hours: float = 4.0   # hours after first breach before level-2 alert

@@ -4,10 +4,11 @@ Loaded once from the PIC_MAP_JSON environment variable (a JSON object keyed by
 department slug). Lookup normalises the key to lowercase so callers do not need
 to worry about casing.
 """
+
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import structlog
@@ -25,6 +26,9 @@ class PicEntry:
     pic_whatsapp: str
     zammad_group: str
     chatwoot_team_id: int | None = None
+    # Extra "relevant personnel" CC'd on the escalation email (e.g. a manager or a
+    # team distribution list). Empty = To-the-PIC only. Gated by escalation_cc_pic.
+    cc_emails: list[str] = field(default_factory=list)
 
 
 class PicRegistry:
@@ -65,6 +69,8 @@ def build_pic_registry(settings: Settings) -> PicRegistry:
         if not isinstance(val, dict):
             continue
         try:
+            cc_raw = val.get("cc_emails", [])
+            cc_emails = [str(x) for x in cc_raw] if isinstance(cc_raw, list) else []
             table[key.lower()] = PicEntry(
                 pic_name=str(val["pic_name"]),
                 pic_email=str(val["pic_email"]),
@@ -73,6 +79,7 @@ def build_pic_registry(settings: Settings) -> PicRegistry:
                 chatwoot_team_id=int(val["chatwoot_team_id"])
                 if val.get("chatwoot_team_id") is not None
                 else None,
+                cc_emails=cc_emails,
             )
         except (KeyError, TypeError, ValueError) as exc:
             _log.warning("pic_map_entry_invalid", dept=key, error=str(exc))

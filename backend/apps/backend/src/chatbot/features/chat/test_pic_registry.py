@@ -12,15 +12,17 @@ def _settings(pic_map: dict | None = None) -> Settings:
 
 
 def test_lookup_returns_matching_entry() -> None:
-    s = _settings({
-        "apps": {
-            "pic_name": "Alice Tan",
-            "pic_email": "alice@proton.my",
-            "pic_whatsapp": "+60123456789",
-            "zammad_group": "Apps-Support",
-            "chatwoot_team_id": 3,
+    s = _settings(
+        {
+            "apps": {
+                "pic_name": "Alice Tan",
+                "pic_email": "alice@proton.my",
+                "pic_whatsapp": "+60123456789",
+                "zammad_group": "Apps-Support",
+                "chatwoot_team_id": 3,
+            }
         }
-    })
+    )
     reg = build_pic_registry(s)
     entry = reg.lookup("apps")
     assert entry is not None
@@ -32,17 +34,33 @@ def test_lookup_returns_matching_entry() -> None:
 
 
 def test_lookup_normalises_department_key() -> None:
-    s = _settings({"apps": {"pic_name": "A", "pic_email": "a@b.my",
-                             "pic_whatsapp": "+601", "zammad_group": "G"}})
+    s = _settings(
+        {
+            "apps": {
+                "pic_name": "A",
+                "pic_email": "a@b.my",
+                "pic_whatsapp": "+601",
+                "zammad_group": "G",
+            }
+        }
+    )
     reg = build_pic_registry(s)
     # dept label from Chatwoot is "dept_apps" — caller strips prefix; test raw key
-    assert reg.lookup("Apps") is not None   # case insensitive
+    assert reg.lookup("Apps") is not None  # case insensitive
     assert reg.lookup("APPS") is not None
 
 
 def test_lookup_returns_none_for_unknown_dept() -> None:
-    s = _settings({"apps": {"pic_name": "A", "pic_email": "a@b.my",
-                             "pic_whatsapp": "+601", "zammad_group": "G"}})
+    s = _settings(
+        {
+            "apps": {
+                "pic_name": "A",
+                "pic_email": "a@b.my",
+                "pic_whatsapp": "+601",
+                "zammad_group": "G",
+            }
+        }
+    )
     reg = build_pic_registry(s)
     assert reg.lookup("charging") is None
 
@@ -60,9 +78,71 @@ def test_malformed_json_returns_none_not_crash() -> None:
 
 
 def test_missing_optional_chatwoot_team_id_defaults_to_none() -> None:
-    s = _settings({"apps": {"pic_name": "A", "pic_email": "a@b.my",
-                             "pic_whatsapp": "+601", "zammad_group": "G"}})
+    s = _settings(
+        {
+            "apps": {
+                "pic_name": "A",
+                "pic_email": "a@b.my",
+                "pic_whatsapp": "+601",
+                "zammad_group": "G",
+            }
+        }
+    )
     reg = build_pic_registry(s)
     entry = reg.lookup("apps")
     assert entry is not None
     assert entry.chatwoot_team_id is None
+
+
+def test_lookup_parses_cc_emails_list() -> None:
+    s = _settings(
+        {
+            "apps": {
+                "pic_name": "Alice Tan",
+                "pic_email": "alice@proton.my",
+                "pic_whatsapp": "+60123456789",
+                "zammad_group": "Apps-Support",
+                "cc_emails": ["manager@proton.my", "team-dl@proton.my"],
+            }
+        }
+    )
+    reg = build_pic_registry(s)
+    entry = reg.lookup("apps")
+    assert entry is not None
+    assert entry.cc_emails == ["manager@proton.my", "team-dl@proton.my"]
+
+
+def test_cc_emails_defaults_to_empty_when_absent() -> None:
+    s = _settings(
+        {
+            "apps": {
+                "pic_name": "A",
+                "pic_email": "a@b.my",
+                "pic_whatsapp": "+601",
+                "zammad_group": "G",
+            }
+        }
+    )
+    reg = build_pic_registry(s)
+    entry = reg.lookup("apps")
+    assert entry is not None
+    assert entry.cc_emails == []
+
+
+def test_cc_emails_ignored_when_not_a_list() -> None:
+    """A malformed cc_emails (e.g. a bare string) degrades to empty, not a crash."""
+    s = _settings(
+        {
+            "apps": {
+                "pic_name": "A",
+                "pic_email": "a@b.my",
+                "pic_whatsapp": "+601",
+                "zammad_group": "G",
+                "cc_emails": "manager@proton.my",
+            }
+        }
+    )
+    reg = build_pic_registry(s)
+    entry = reg.lookup("apps")
+    assert entry is not None
+    assert entry.cc_emails == []

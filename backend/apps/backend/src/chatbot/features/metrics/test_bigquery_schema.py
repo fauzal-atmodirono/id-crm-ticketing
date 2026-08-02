@@ -228,3 +228,18 @@ def test_view_ddls_requires_sla_targets_and_creates_bucket_view() -> None:
 def test_view_ddls_malformed_sla_targets_yields_view_with_no_case_types() -> None:
     ddls = view_ddls("proj", "ds", "conversations", "{not valid json")
     assert "v_resolution_sla_buckets" in ddls  # view still created, just matches nothing
+
+
+def test_sla_bucket_case_sql_skips_case_type_with_non_numeric_bucket_edge() -> None:
+    # Valid top-level JSON, but "complaint"'s buckets_wh has a non-numeric entry
+    # (a plausible operator typo, e.g. "8hr" instead of 8). This must not raise
+    # -- the malformed case_type is simply excluded, same as a length-mismatch.
+    targets = (
+        '{"complaint": {"buckets_wh": ["not-a-number"], "labels": ["a", "b"]}, '
+        '"inquiry": {"buckets_wh": [8], "labels": ["Within 8wh", ">8wh"]}}'
+    )
+    ddls = view_ddls("proj", "ds", "conversations", targets)  # must not raise
+    ddl = ddls["v_resolution_sla_buckets"]
+    assert "complaint" not in ddl  # malformed case_type excluded entirely
+    assert "inquiry" in ddl  # sibling valid case_type still buckets normally
+    assert "480" in ddl  # 8wh * 60 minutes, from the still-valid "inquiry" entry

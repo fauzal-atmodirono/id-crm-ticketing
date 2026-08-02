@@ -58,19 +58,29 @@ def _sla_bucket_case_sql(sla_targets_json: str) -> str:
         labels = spec.get("labels")
         if not isinstance(edges, list) or not isinstance(labels, list) or len(labels) != len(edges) + 1:
             continue
+        if not all(isinstance(label, str) for label in labels):
+            continue
+        case_type_branches: list[str] = []
         prev_minutes = 0
-        for edge_wh, label in zip(edges, labels[:-1], strict=True):
-            edge_minutes = int(edge_wh) * 60
-            branches.append(
-                f"WHEN LOWER(case_type) = '{case_type.lower()}' "
-                f"AND resolution_working_minutes >= {prev_minutes} "
-                f"AND resolution_working_minutes < {edge_minutes} THEN '{label}'"
-            )
-            prev_minutes = edge_minutes
-        branches.append(
+        try:
+            for edge_wh, label in zip(edges, labels[:-1], strict=True):
+                edge_minutes = int(edge_wh) * 60
+                case_type_branches.append(
+                    f"WHEN LOWER(case_type) = '{case_type.lower()}' "
+                    f"AND resolution_working_minutes >= {prev_minutes} "
+                    f"AND resolution_working_minutes < {edge_minutes} THEN '{label}'"
+                )
+                prev_minutes = edge_minutes
+        except (ValueError, TypeError):
+            # A non-numeric buckets_wh entry (e.g. an operator typo like "8hr")
+            # -> skip this case_type entirely rather than emit a partial,
+            # syntactically-broken CASE branch or crash view_ddls()/ensure_views().
+            continue
+        case_type_branches.append(
             f"WHEN LOWER(case_type) = '{case_type.lower()}' "
             f"AND resolution_working_minutes >= {prev_minutes} THEN '{labels[-1]}'"
         )
+        branches.extend(case_type_branches)
     if not branches:
         return "NULL"
     return "CASE " + " ".join(branches) + " ELSE NULL END"

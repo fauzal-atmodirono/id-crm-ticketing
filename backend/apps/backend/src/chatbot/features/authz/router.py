@@ -15,9 +15,12 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
+from chatbot.features.authz.chatwoot_role_mirror import ChatwootRoleMirrorError
 from chatbot.features.authz.deps import require_permission
+from chatbot.features.authz.seed import ALL_NATIVE_KEYS, NATIVE_CONVERSATION_KEYS
 
 if TYPE_CHECKING:
+    from chatbot.features.authz.chatwoot_role_mirror import ChatwootRoleMirror
     from chatbot.features.authz.identity import TokenValidator
     from chatbot.features.authz.repository import AuthzRepository
     from chatbot.platform.config import Settings
@@ -38,7 +41,10 @@ class GrantPermissionBody(BaseModel):
 
 
 def build_authz_router(
-    repo: AuthzRepository, validator: TokenValidator, settings: Settings
+    repo: AuthzRepository,
+    validator: TokenValidator,
+    settings: Settings,
+    mirror: ChatwootRoleMirror | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/authz", tags=["authz"])
 
@@ -71,6 +77,31 @@ def build_authz_router(
         "roles.manage", repo=repo, validator=validator, settings=settings
     )
 
+    async def _resync_role_mirror(role_id: str) -> None:
+        """After any grant/revoke of a native key OR any role
+        assign/unassign, recompute EVERY affected user's resolved native set
+        and push it to Chatwoot. Raises ChatwootRoleMirrorError on failure —
+        callers must compensating-revert their own DB change and re-raise as
+        a 502."""
+        if mirror is None:
+            return
+        for user_id in await repo.users_for_role(role_id):
+            resolved = await repo.resolve_native_permissions(user_id)
+            stripped = [p.removeprefix("chatwoot.") for p in resolved]
+            existing_mirror_id = await repo.get_native_role_mirror(user_id)
+            if not stripped:
+                if existing_mirror_id is not None:
+                    await mirror.delete_custom_role(existing_mirror_id)
+                    await repo.delete_native_role_mirror(user_id)
+                    await mirror.set_agent_custom_role(user_id, None)
+                continue
+            new_id = await mirror.ensure_custom_role(
+                existing_mirror_id, f"RBAC user {user_id}", "Mirrored by RBAC Phase 3", stripped
+            )
+            if new_id != existing_mirror_id:
+                await repo.set_native_role_mirror(user_id, new_id)
+                await mirror.set_agent_custom_role(user_id, new_id)
+
     @router.post("/roles", dependencies=[Depends(manage_roles)])
     async def create_role(body: CreateRoleBody) -> dict:
         await repo.create_role(body.id, body.name, body.description)
@@ -79,6 +110,11 @@ def build_authz_router(
     @router.post("/roles/{role_id}/assign", dependencies=[Depends(manage_roles)])
     async def assign_role(role_id: str, body: AssignRoleBody) -> dict:
         await repo.assign_role(body.chatwoot_user_id, role_id)
+        try:
+            await _resync_role_mirror(role_id)
+        except ChatwootRoleMirrorError as exc:
+            await repo.unassign_role(body.chatwoot_user_id, role_id)
+            raise HTTPException(status_code=502, detail=f"Chatwoot sync failed: {exc}") from exc
         return {"ok": True}
 
     @router.get("/permission-registry", dependencies=[Depends(manage_roles)])
@@ -93,14 +129,38 @@ def build_authz_router(
 
     @router.post("/roles/{role_id}/permissions", dependencies=[Depends(manage_roles)])
     async def grant_role_permission(role_id: str, body: GrantPermissionBody) -> dict:
-        await repo.grant_permission(role_id, body.permission_key)
+        key = body.permission_key
+        if key not in ALL_NATIVE_KEYS or mirror is None:
+            await repo.grant_permission(role_id, key)
+            return {"ok": True}
+        if key in NATIVE_CONVERSATION_KEYS:
+            previous = await repo.role_permissions(role_id) & NATIVE_CONVERSATION_KEYS
+            await repo.grant_conversation_permission_exclusive(role_id, key)
+        else:
+            previous = set()
+            await repo.grant_permission(role_id, key)
+        try:
+            await _resync_role_mirror(role_id)
+        except ChatwootRoleMirrorError as exc:
+            await repo.revoke_permission(role_id, key)
+            for old_key in previous:
+                await repo.grant_permission(role_id, old_key)
+            raise HTTPException(status_code=502, detail=f"Chatwoot sync failed: {exc}") from exc
         return {"ok": True}
 
     @router.delete(
         "/roles/{role_id}/permissions/{permission_key}", dependencies=[Depends(manage_roles)]
     )
     async def revoke_role_permission(role_id: str, permission_key: str) -> dict:
+        was_native = permission_key in ALL_NATIVE_KEYS and mirror is not None
         await repo.revoke_permission(role_id, permission_key)
+        if not was_native:
+            return {"ok": True}
+        try:
+            await _resync_role_mirror(role_id)
+        except ChatwootRoleMirrorError as exc:
+            await repo.grant_permission(role_id, permission_key)
+            raise HTTPException(status_code=502, detail=f"Chatwoot sync failed: {exc}") from exc
         return {"ok": True}
 
     @router.get("/roles/{role_id}/users", dependencies=[Depends(manage_roles)])
@@ -111,6 +171,11 @@ def build_authz_router(
     @router.delete("/roles/{role_id}/assign", dependencies=[Depends(manage_roles)])
     async def unassign_role(role_id: str, body: AssignRoleBody) -> dict:
         await repo.unassign_role(body.chatwoot_user_id, role_id)
+        try:
+            await _resync_role_mirror(role_id)
+        except ChatwootRoleMirrorError as exc:
+            await repo.assign_role(body.chatwoot_user_id, role_id)
+            raise HTTPException(status_code=502, detail=f"Chatwoot sync failed: {exc}") from exc
         return {"ok": True}
 
     return router

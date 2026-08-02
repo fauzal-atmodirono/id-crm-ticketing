@@ -3,6 +3,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from chatbot.features.authz.chatwoot_role_mirror import ChatwootRoleMirror, ChatwootRoleMirrorError
 from chatbot.features.authz.db import build_engine, build_session_maker, init_authz_db
 from chatbot.features.authz.identity import TokenValidator
 from chatbot.features.authz.repository import AuthzRepository
@@ -202,3 +203,146 @@ def test_unassign_role_requires_roles_manage_permission(client):
         headers={"x-chatwoot-access-token": "agent-tok"},
     )
     assert res.status_code == 403
+
+
+class _FakeMirror:
+    def __init__(self, fail: bool = False):
+        self.fail = fail
+        self.ensure_calls = []
+        self.delete_calls = []
+        self.agent_calls = []
+        self._next_id = 100
+
+    async def ensure_custom_role(self, chatwoot_role_id, name, description, permissions):
+        if self.fail:
+            raise ChatwootRoleMirrorError("boom")
+        self.ensure_calls.append((chatwoot_role_id, name, description, list(permissions)))
+        if chatwoot_role_id is not None:
+            return chatwoot_role_id
+        self._next_id += 1
+        return self._next_id
+
+    async def delete_custom_role(self, chatwoot_role_id):
+        if self.fail:
+            raise ChatwootRoleMirrorError("boom")
+        self.delete_calls.append(chatwoot_role_id)
+
+    async def set_agent_custom_role(self, chatwoot_user_id, chatwoot_role_id):
+        if self.fail:
+            raise ChatwootRoleMirrorError("boom")
+        self.agent_calls.append((chatwoot_user_id, chatwoot_role_id))
+
+
+@pytest.fixture
+async def mirror_client(tmp_path, respx_mock):
+    """Same setup as `client`, but with a working _FakeMirror wired in — use
+    for Phase 3's native-key tests."""
+    settings = get_settings().model_copy(update={"rbac_enabled": True})
+    engine = build_engine(f"sqlite+aiosqlite:///{tmp_path}/mirror_router_test.db")
+    await init_authz_db(engine)
+    repo = AuthzRepository(build_session_maker(engine))
+    await seed_defaults(repo)
+    await repo.assign_role(chatwoot_user_id=1, role_id="administrator")
+    await repo.create_role("leader", "Leader", "")
+
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 1})
+    )
+    validator = TokenValidator(settings)
+    mirror = _FakeMirror()
+    app = FastAPI()
+    app.include_router(build_authz_router(repo, validator, settings, mirror=mirror))
+    return TestClient(app), repo, mirror
+
+
+async def test_grant_native_conversation_key_syncs_mirror_and_assigns_agent(mirror_client):
+    client, repo, mirror = mirror_client
+    await repo.assign_role(chatwoot_user_id=5, role_id="leader")
+    res = client.post(
+        "/authz/roles/leader/permissions",
+        json={"permission_key": "chatwoot.conversation_unassigned_manage"},
+        headers={"x-chatwoot-access-token": "admin-tok"},
+    )
+    assert res.status_code == 200
+    assert mirror.ensure_calls[-1][3] == ["conversation_unassigned_manage"]
+    assert mirror.agent_calls[-1][0] == 5
+    assert mirror.agent_calls[-1][1] is not None
+
+
+async def test_grant_second_conversation_key_replaces_first_in_mirror(mirror_client):
+    client, repo, mirror = mirror_client
+    await repo.assign_role(chatwoot_user_id=5, role_id="leader")
+    client.post(
+        "/authz/roles/leader/permissions",
+        json={"permission_key": "chatwoot.conversation_manage"},
+        headers={"x-chatwoot-access-token": "admin-tok"},
+    )
+    client.post(
+        "/authz/roles/leader/permissions",
+        json={"permission_key": "chatwoot.conversation_unassigned_manage"},
+        headers={"x-chatwoot-access-token": "admin-tok"},
+    )
+    perms = await repo.role_permissions("leader")
+    assert "chatwoot.conversation_manage" not in perms
+    assert "chatwoot.conversation_unassigned_manage" in perms
+    assert mirror.ensure_calls[-1][3] == ["conversation_unassigned_manage"]
+
+
+async def test_grant_native_key_rolls_back_db_on_mirror_failure(mirror_client):
+    client, repo, mirror = mirror_client
+    await repo.assign_role(chatwoot_user_id=5, role_id="leader")
+    mirror.fail = True
+    res = client.post(
+        "/authz/roles/leader/permissions",
+        json={"permission_key": "chatwoot.conversation_manage"},
+        headers={"x-chatwoot-access-token": "admin-tok"},
+    )
+    assert res.status_code == 502
+    perms = await repo.role_permissions("leader")
+    assert "chatwoot.conversation_manage" not in perms
+
+
+async def test_grant_non_native_key_unaffected_by_missing_mirror(tmp_path, respx_mock):
+    """No mirror wired at all (mirror=None, matching Phases 1-2's existing
+    `client` fixture) — a plain sla.manage-style grant must behave exactly
+    as it did before Phase 3."""
+    settings = get_settings().model_copy(update={"rbac_enabled": True})
+    engine = build_engine(f"sqlite+aiosqlite:///{tmp_path}/no_mirror_test.db")
+    await init_authz_db(engine)
+    repo = AuthzRepository(build_session_maker(engine))
+    await seed_defaults(repo)
+    await repo.assign_role(chatwoot_user_id=1, role_id="administrator")
+    await repo.create_role("leader", "Leader", "")
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 1})
+    )
+    validator = TokenValidator(settings)
+    app = FastAPI()
+    app.include_router(build_authz_router(repo, validator, settings))  # mirror defaults to None
+    client = TestClient(app)
+    res = client.post(
+        "/authz/roles/leader/permissions",
+        json={"permission_key": "audit.view"},
+        headers={"x-chatwoot-access-token": "admin-tok"},
+    )
+    assert res.status_code == 200
+    assert "audit.view" in await repo.role_permissions("leader")
+
+
+async def test_revoke_last_native_key_deletes_mirror_and_clears_agent(mirror_client):
+    client, repo, mirror = mirror_client
+    await repo.assign_role(chatwoot_user_id=5, role_id="leader")
+    client.post(
+        "/authz/roles/leader/permissions",
+        json={"permission_key": "chatwoot.conversation_manage"},
+        headers={"x-chatwoot-access-token": "admin-tok"},
+    )
+    mirror.ensure_calls.clear()
+    mirror.agent_calls.clear()
+    res = client.delete(
+        "/authz/roles/leader/permissions/chatwoot.conversation_manage",
+        headers={"x-chatwoot-access-token": "admin-tok"},
+    )
+    assert res.status_code == 200
+    assert await repo.get_native_role_mirror(5) is None
+    assert (5, None) in mirror.agent_calls

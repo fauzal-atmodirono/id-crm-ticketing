@@ -12,8 +12,8 @@ from chatbot.platform.config import get_settings
 @respx.mock
 async def test_resolve_user_id_valid_token():
     settings = get_settings()
-    route = respx.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
-        return_value=httpx.Response(200, json={"data": {"id": 7, "name": "Agent Smith"}})
+    route = respx.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 7, "name": "Agent Smith"})
     )
     validator = TokenValidator(settings)
     user_id = await validator.resolve_user_id("tok-abc", "client-1", "uid-1")
@@ -25,7 +25,7 @@ async def test_resolve_user_id_valid_token():
 @respx.mock
 async def test_resolve_user_id_invalid_token_returns_none():
     settings = get_settings()
-    respx.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
+    respx.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
         return_value=httpx.Response(401)
     )
     validator = TokenValidator(settings)
@@ -36,7 +36,7 @@ async def test_resolve_user_id_invalid_token_returns_none():
 @respx.mock
 async def test_resolve_user_id_network_error_returns_none_not_raises():
     settings = get_settings()
-    respx.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
+    respx.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
         side_effect=httpx.ConnectError("down")
     )
     validator = TokenValidator(settings)
@@ -47,8 +47,8 @@ async def test_resolve_user_id_network_error_returns_none_not_raises():
 @respx.mock
 async def test_result_is_cached_within_ttl():
     settings = get_settings()
-    route = respx.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
-        return_value=httpx.Response(200, json={"data": {"id": 7}})
+    route = respx.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 7})
     )
     validator = TokenValidator(settings, cache_ttl_seconds=60)
     await validator.resolve_user_id("tok-abc", "client-1", "uid-1")
@@ -60,8 +60,8 @@ async def test_result_is_cached_within_ttl():
 @respx.mock
 async def test_different_client_or_uid_is_not_cache_hit():
     settings = get_settings()
-    route = respx.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
-        return_value=httpx.Response(200, json={"data": {"id": 7}})
+    route = respx.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 7})
     )
     validator = TokenValidator(settings, cache_ttl_seconds=60)
     await validator.resolve_user_id("tok-abc", "client-1", "uid-1")
@@ -73,8 +73,8 @@ async def test_different_client_or_uid_is_not_cache_hit():
 @respx.mock
 async def test_cache_expires_after_ttl(monkeypatch):
     settings = get_settings()
-    route = respx.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
-        return_value=httpx.Response(200, json={"data": {"id": 7}})
+    route = respx.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 7})
     )
     validator = TokenValidator(settings, cache_ttl_seconds=0.01)
     await validator.resolve_user_id("tok-abc", "client-1", "uid-1")

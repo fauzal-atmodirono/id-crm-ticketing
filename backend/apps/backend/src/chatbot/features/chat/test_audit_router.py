@@ -61,8 +61,8 @@ async def test_list_audit_requires_audit_view_permission(tmp_path, respx_mock):
     await seed_defaults(authz_repo)
     await authz_repo.assign_role(chatwoot_user_id=21, role_id="agent")  # lacks audit.view
 
-    respx_mock.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
-        return_value=httpx.Response(200, json={"data": {"id": 21}})
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 21})
     )
     validator = TokenValidator(settings)
     audit_log = await _seeded_audit_log()
@@ -80,8 +80,8 @@ async def test_list_audit_returns_all_entries_when_permitted(tmp_path, respx_moc
     await seed_defaults(authz_repo)
     await authz_repo.assign_role(chatwoot_user_id=22, role_id="administrator")
 
-    respx_mock.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
-        return_value=httpx.Response(200, json={"data": {"id": 22}})
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 22})
     )
     validator = TokenValidator(settings)
     audit_log = await _seeded_audit_log()
@@ -101,8 +101,8 @@ async def test_list_audit_filters_by_actor(tmp_path, respx_mock):
     await seed_defaults(authz_repo)
     await authz_repo.assign_role(chatwoot_user_id=23, role_id="administrator")
 
-    respx_mock.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
-        return_value=httpx.Response(200, json={"data": {"id": 23}})
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 23})
     )
     validator = TokenValidator(settings)
     audit_log = await _seeded_audit_log()

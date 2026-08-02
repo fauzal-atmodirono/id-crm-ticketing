@@ -22,9 +22,9 @@ async def client(tmp_path, respx_mock):
     await repo.assign_role(chatwoot_user_id=1, role_id="administrator")
     await repo.assign_role(chatwoot_user_id=2, role_id="agent")
 
-    respx_mock.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
         side_effect=lambda request: httpx.Response(
-            200, json={"data": {"id": 1 if request.headers["access-token"] == "admin-tok" else 2}}
+            200, json={"id": 1 if request.headers["access-token"] == "admin-tok" else 2}
         )
     )
     validator = TokenValidator(settings)
@@ -253,8 +253,8 @@ async def mirror_client(tmp_path, respx_mock):
     await repo.assign_role(chatwoot_user_id=1, role_id="administrator")
     await repo.create_role("leader", "Leader", "")
 
-    respx_mock.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
-        return_value=httpx.Response(200, json={"data": {"id": 1}})
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 1})
     )
     validator = TokenValidator(settings)
     mirror = _FakeMirror()
@@ -408,8 +408,8 @@ async def test_grant_non_native_key_unaffected_by_missing_mirror(tmp_path, respx
     await seed_defaults(repo)
     await repo.assign_role(chatwoot_user_id=1, role_id="administrator")
     await repo.create_role("leader", "Leader", "")
-    respx_mock.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
-        return_value=httpx.Response(200, json={"data": {"id": 1}})
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 1})
     )
     validator = TokenValidator(settings)
     app = FastAPI()

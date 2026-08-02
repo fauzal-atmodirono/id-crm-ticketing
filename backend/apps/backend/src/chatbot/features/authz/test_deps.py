@@ -42,8 +42,8 @@ async def test_rbac_enabled_allows_user_with_permission(tmp_path, respx_mock):
     await seed_defaults(repo)
     await repo.assign_role(chatwoot_user_id=7, role_id="administrator")
 
-    respx_mock.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
-        return_value=httpx.Response(200, json={"data": {"id": 7}})
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 7})
     )
     validator = TokenValidator(settings)
     dep = require_permission("sla.manage", repo=repo, validator=validator, settings=settings)
@@ -69,8 +69,8 @@ async def test_rbac_enabled_denies_user_without_permission(tmp_path, respx_mock)
     await seed_defaults(repo)
     await repo.assign_role(chatwoot_user_id=8, role_id="agent")  # agent lacks sla.manage
 
-    respx_mock.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
-        return_value=httpx.Response(200, json={"data": {"id": 8}})
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 8})
     )
     validator = TokenValidator(settings)
     dep = require_permission("sla.manage", repo=repo, validator=validator, settings=settings)
@@ -127,7 +127,7 @@ async def test_rbac_enabled_invalid_token_denies(tmp_path, respx_mock):
     repo = AuthzRepository(build_session_maker(engine))
     await seed_defaults(repo)
 
-    respx_mock.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
         return_value=httpx.Response(401, json={"success": False, "errors": ["Invalid login credentials"]})
     )
     validator = TokenValidator(settings)

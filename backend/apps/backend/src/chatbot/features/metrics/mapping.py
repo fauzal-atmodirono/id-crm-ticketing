@@ -64,6 +64,8 @@ class ConversationRow:
     resolved_at: str | None = None
     reopen_count: int | None = None
     dealer: str | None = None  # Phase-3: dealer dimension (dealer_<slug> label)
+    case_type: str | None = None
+    vehicle_model: str | None = None
 
 
 def channel_from_external_id(external_id: str | None) -> str:
@@ -309,6 +311,8 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
     custom_attrs = custom_attrs if isinstance(custom_attrs, dict) else {}
     category = custom_attrs.get("case_category")
     subcategory = custom_attrs.get("case_subcategory")
+    case_type = custom_attrs.get("case_type")
+    vehicle_model = custom_attrs.get("vehicle_model")
     department = _first_tag(labels, _DEPT_TAG)
     # Prefer an explicit division_* label; else derive it from the category.
     division = _first_tag(labels, _DIVISION_TAG) or (
@@ -352,4 +356,6 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
         resolved_at=resolved_at,
         reopen_count=reopen_count,
         dealer=dealer,
+        case_type=case_type,
+        vehicle_model=vehicle_model,
     )

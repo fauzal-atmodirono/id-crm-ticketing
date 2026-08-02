@@ -132,3 +132,40 @@ def test_load_conversations_includes_dealer_field() -> None:
 
     assert json_rows, "no rows captured"
     assert json_rows[0]["dealer"] == "surabaya_utara"
+
+
+def test_load_conversations_includes_case_type_and_vehicle_model_fields() -> None:
+    """load_conversations must pass case_type/vehicle_model in every row dict."""
+    row = ConversationRow(
+        conversation_id="1",
+        channel="WhatsApp",
+        created_at=None,
+        updated_at=None,
+        status="resolved",
+        resolved_by="bot",
+        csat_score=None,
+        nps_score=None,
+        case_type="Inquiry",
+        vehicle_model="e.MAS 7",
+    )
+
+    class FakeSettings:
+        bigquery_project_id = "p"
+        bigquery_dataset = "d"
+        bigquery_conversations_table = "conversations"
+
+    with mock.patch("chatbot.features.metrics.sync.bigquery") as bq:
+        bq.Client.return_value.create_dataset.return_value = None
+        job = mock.MagicMock()
+        bq.Client.return_value.load_table_from_json.return_value = job
+        job.result.return_value = None
+        bq.LoadJobConfig.return_value = mock.MagicMock()
+        bq.SchemaField = mock.MagicMock()
+
+        load_conversations(FakeSettings(), [row])  # type: ignore[arg-type]
+        call_args = bq.Client.return_value.load_table_from_json.call_args
+        json_rows = call_args[0][0]
+
+    assert json_rows, "no rows captured"
+    assert json_rows[0]["case_type"] == "Inquiry"
+    assert json_rows[0]["vehicle_model"] == "e.MAS 7"

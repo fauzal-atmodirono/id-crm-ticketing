@@ -124,6 +124,8 @@ def load_conversations(settings: Settings, rows: list[ConversationRow]) -> None:
             "resolved_at": r.resolved_at,
             "reopen_count": r.reopen_count,
             "dealer": r.dealer,  # Phase-3
+            "case_type": r.case_type,
+            "vehicle_model": r.vehicle_model,
         }
         for r in rows
     ]

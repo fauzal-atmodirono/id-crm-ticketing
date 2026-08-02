@@ -25,6 +25,8 @@ def test_schema_has_expected_fields() -> None:
         "resolved_at",
         "reopen_count",
         "dealer",  # new Phase-3 field
+        "case_type",
+        "vehicle_model",
     }
 
 
@@ -195,3 +197,9 @@ def test_schema_dealer_field_is_nullable_string() -> None:
     assert "dealer" in by_name
     assert by_name["dealer"].field_type == "STRING"
     assert by_name["dealer"].mode in ("NULLABLE", "")
+
+
+def test_schema_has_case_type_and_vehicle_model_fields() -> None:
+    names = {f.name for f in CONVERSATIONS_SCHEMA}
+    assert "case_type" in names
+    assert "vehicle_model" in names

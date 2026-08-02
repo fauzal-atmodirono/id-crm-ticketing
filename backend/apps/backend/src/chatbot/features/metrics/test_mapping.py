@@ -451,3 +451,30 @@ def test_map_chatwoot_conversation_missing_custom_attributes_yields_none_categor
     assert row is not None
     assert row.category is None
     assert row.subcategory is None
+
+
+def test_map_chatwoot_conversation_reads_case_type_and_vehicle_model() -> None:
+    conv = {
+        "id": 50,
+        "status": "resolved",
+        "created_at": 1700000000,
+        "last_activity_at": 1700003600,
+        "labels": ["division_sales"],
+        "custom_attributes": {"case_type": "Inquiry", "vehicle_model": "e.MAS 7"},
+        "meta": {"sender": {"id": 1, "phone_number": "+60123456789"}},
+    }
+    row = map_chatwoot_conversation_to_row(conv)
+    assert row is not None
+    assert row.case_type == "Inquiry"
+    assert row.vehicle_model == "e.MAS 7"
+
+
+def test_map_chatwoot_conversation_missing_case_type_yields_none() -> None:
+    conv = {
+        "id": 51, "status": "open", "created_at": 1700000000,
+        "labels": ["division_apps"], "meta": {"sender": {"id": 1}},
+    }
+    row = map_chatwoot_conversation_to_row(conv)
+    assert row is not None
+    assert row.case_type is None
+    assert row.vehicle_model is None

@@ -206,16 +206,26 @@ def test_unassign_role_requires_roles_manage_permission(client):
 
 
 class _FakeMirror:
-    def __init__(self, fail: bool = False):
+    def __init__(self, fail: bool = False, fail_on_call: int | None = None):
         self.fail = fail
+        # 1-indexed call number (across ensure/delete/set_agent combined) on
+        # which to raise — lets tests prove that N-1 already-applied calls
+        # get rolled back when call N fails, instead of only ever failing
+        # everything from the first call.
+        self.fail_on_call = fail_on_call
+        self.call_count = 0
         self.ensure_calls = []
         self.delete_calls = []
         self.agent_calls = []
         self._next_id = 100
 
-    async def ensure_custom_role(self, chatwoot_role_id, name, description, permissions):
-        if self.fail:
+    def _maybe_fail(self):
+        self.call_count += 1
+        if self.fail or self.call_count == self.fail_on_call:
             raise ChatwootRoleMirrorError("boom")
+
+    async def ensure_custom_role(self, chatwoot_role_id, name, description, permissions):
+        self._maybe_fail()
         self.ensure_calls.append((chatwoot_role_id, name, description, list(permissions)))
         if chatwoot_role_id is not None:
             return chatwoot_role_id
@@ -223,13 +233,11 @@ class _FakeMirror:
         return self._next_id
 
     async def delete_custom_role(self, chatwoot_role_id):
-        if self.fail:
-            raise ChatwootRoleMirrorError("boom")
+        self._maybe_fail()
         self.delete_calls.append(chatwoot_role_id)
 
     async def set_agent_custom_role(self, chatwoot_user_id, chatwoot_role_id):
-        if self.fail:
-            raise ChatwootRoleMirrorError("boom")
+        self._maybe_fail()
         self.agent_calls.append((chatwoot_user_id, chatwoot_role_id))
 
 
@@ -300,6 +308,47 @@ async def test_grant_native_key_rolls_back_db_on_mirror_failure(mirror_client):
     assert res.status_code == 502
     perms = await repo.role_permissions("leader")
     assert "chatwoot.conversation_manage" not in perms
+
+
+async def test_grant_native_key_rolls_back_already_applied_user_on_partial_mirror_failure(
+    mirror_client,
+):
+    """Two members of the same role: user 5 is processed first and succeeds
+    (gets a Chatwoot custom role created + assigned), user 6 is processed
+    second and fails. The whole request must still 502 — but crucially, user
+    5's already-applied Chatwoot state must be rolled back too, not just the
+    role-level DB grant. Regression test for the fail-open residue bug where
+    only the triggering DB-level change was reverted, leaving user 5's
+    Chatwoot access silently changed even though the operator saw a 502."""
+    client, repo, mirror = mirror_client
+    await repo.assign_role(chatwoot_user_id=5, role_id="leader")
+    await repo.assign_role(chatwoot_user_id=6, role_id="leader")
+    # Snapshot order is sorted ascending (5 before 6), so per user the
+    # resync does: user 5 -> ensure (call 1) + set_agent (call 2);
+    # user 6 -> ensure (call 3), which we make fail.
+    mirror.fail_on_call = 3
+
+    res = client.post(
+        "/authz/roles/leader/permissions",
+        json={"permission_key": "chatwoot.conversation_manage"},
+        headers={"x-chatwoot-access-token": "admin-tok"},
+    )
+    assert res.status_code == 502
+
+    # Role-level DB grant was reverted (pre-existing behavior).
+    assert "chatwoot.conversation_manage" not in await repo.role_permissions("leader")
+
+    # User 5's already-applied Chatwoot state must have been rolled back:
+    # the custom role created for them during the forward pass was deleted,
+    # their mirror row was cleared, and their agent custom_role_id was unset
+    # back to None (their pre-mutation state).
+    assert await repo.get_native_role_mirror(5) is None
+    assert await repo.get_native_role_mirror(6) is None
+    assert len(mirror.ensure_calls) == 1  # only user 5's initial create succeeded
+    assert mirror.ensure_calls[0][0] is None  # created fresh (no prior mirror)
+    assert mirror.delete_calls == [101]  # the just-created role, deleted on rollback
+    assert (5, 101) in mirror.agent_calls  # forward: assigned
+    assert (5, None) in mirror.agent_calls  # rollback: unassigned back to none
 
 
 async def test_grant_non_native_key_unaffected_by_missing_mirror(tmp_path, respx_mock):

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
@@ -24,6 +25,8 @@ if TYPE_CHECKING:
     from chatbot.features.authz.identity import TokenValidator
     from chatbot.features.authz.repository import AuthzRepository
     from chatbot.platform.config import Settings
+
+_log = structlog.get_logger(__name__)
 
 
 class CreateRoleBody(BaseModel):
@@ -77,30 +80,82 @@ def build_authz_router(
         "roles.manage", repo=repo, validator=validator, settings=settings
     )
 
-    async def _resync_role_mirror(role_id: str) -> None:
-        """After any grant/revoke of a native key OR any role
-        assign/unassign, recompute EVERY affected user's resolved native set
-        and push it to Chatwoot. Raises ChatwootRoleMirrorError on failure —
-        callers must compensating-revert their own DB change and re-raise as
-        a 502."""
+    async def _snapshot_users(
+        user_ids: set[int],
+    ) -> dict[int, tuple[int | None, list[str]]]:
+        """Capture every user's PRE-mutation (mirror_id, resolved native
+        permissions) so `_resync_role_mirror` can roll back an already-applied
+        user's Chatwoot state if a later user in the same call fails."""
+        snapshot: dict[int, tuple[int | None, list[str]]] = {}
+        for user_id in sorted(user_ids):
+            snapshot[user_id] = (
+                await repo.get_native_role_mirror(user_id),
+                await repo.resolve_native_permissions(user_id),
+            )
+        return snapshot
+
+    async def _resync_role_mirror(  # noqa: PLR0912 — forward pass + per-user compensating rollback, both branchy by nature
+        pre_snapshot: dict[int, tuple[int | None, list[str]]],
+    ) -> None:
+        """Push every snapshotted user's POST-mutation resolved native set to
+        Chatwoot. On any ChatwootRoleMirrorError mid-loop, roll back every
+        user already applied in THIS call to their pre_snapshot state (not
+        just the caller's own DB mutation) before re-raising — closes the
+        fail-open residue window where an earlier user in the loop keeps a
+        Chatwoot change the request as a whole reports as failed. Callers
+        must compensating-revert their own DB change and re-raise as a 502."""
         if mirror is None:
             return
-        for user_id in await repo.users_for_role(role_id):
-            resolved = await repo.resolve_native_permissions(user_id)
-            stripped = [p.removeprefix("chatwoot.") for p in resolved]
-            existing_mirror_id = await repo.get_native_role_mirror(user_id)
-            if not stripped:
-                if existing_mirror_id is not None:
-                    await mirror.delete_custom_role(existing_mirror_id)
-                    await repo.delete_native_role_mirror(user_id)
-                    await mirror.set_agent_custom_role(user_id, None)
-                continue
-            new_id = await mirror.ensure_custom_role(
-                existing_mirror_id, f"RBAC user {user_id}", "Mirrored by RBAC Phase 3", stripped
-            )
-            if new_id != existing_mirror_id:
-                await repo.set_native_role_mirror(user_id, new_id)
-                await mirror.set_agent_custom_role(user_id, new_id)
+        applied: list[int] = []
+        try:
+            for user_id, (prior_mirror_id, _prior_resolved) in pre_snapshot.items():
+                resolved = await repo.resolve_native_permissions(user_id)
+                stripped = [p.removeprefix("chatwoot.") for p in resolved]
+                if not stripped:
+                    if prior_mirror_id is not None:
+                        await mirror.delete_custom_role(prior_mirror_id)
+                        await repo.delete_native_role_mirror(user_id)
+                        await mirror.set_agent_custom_role(user_id, None)
+                else:
+                    new_id = await mirror.ensure_custom_role(
+                        prior_mirror_id,
+                        f"RBAC user {user_id}",
+                        "Mirrored by RBAC Phase 3",
+                        stripped,
+                    )
+                    if new_id != prior_mirror_id:
+                        await repo.set_native_role_mirror(user_id, new_id)
+                        await mirror.set_agent_custom_role(user_id, new_id)
+                applied.append(user_id)
+        except ChatwootRoleMirrorError:
+            for user_id in applied:
+                prior_mirror_id, prior_resolved = pre_snapshot[user_id]
+                prior_stripped = [p.removeprefix("chatwoot.") for p in prior_resolved]
+                try:
+                    if not prior_stripped:
+                        current_mirror_id = await repo.get_native_role_mirror(user_id)
+                        if current_mirror_id is not None:
+                            await mirror.delete_custom_role(current_mirror_id)
+                            await repo.delete_native_role_mirror(user_id)
+                            await mirror.set_agent_custom_role(user_id, None)
+                    else:
+                        restored_id = await mirror.ensure_custom_role(
+                            prior_mirror_id,
+                            f"RBAC user {user_id}",
+                            "Mirrored by RBAC Phase 3",
+                            prior_stripped,
+                        )
+                        if restored_id != prior_mirror_id:
+                            await repo.set_native_role_mirror(user_id, restored_id)
+                        await mirror.set_agent_custom_role(user_id, prior_mirror_id)
+                except ChatwootRoleMirrorError:
+                    # Best-effort: rollback of an already-applied user can
+                    # itself fail. Log and continue rolling back the rest
+                    # rather than abandoning the loop — partial rollback is
+                    # still strictly better than no rollback. The original
+                    # failure re-raises after this loop regardless.
+                    _log.error("chatwoot_role_mirror_rollback_failed", user_id=user_id)
+            raise
 
     @router.post("/roles", dependencies=[Depends(manage_roles)])
     async def create_role(body: CreateRoleBody) -> dict:
@@ -109,9 +164,16 @@ def build_authz_router(
 
     @router.post("/roles/{role_id}/assign", dependencies=[Depends(manage_roles)])
     async def assign_role(role_id: str, body: AssignRoleBody) -> dict:
+        pre_snapshot: dict[int, tuple[int | None, list[str]]] = {}
+        if mirror is not None:
+            affected_user_ids = set(await repo.users_for_role(role_id))
+            # Not yet a member pre-mutation — add explicitly so their
+            # pre-grant state is captured too.
+            affected_user_ids.add(body.chatwoot_user_id)
+            pre_snapshot = await _snapshot_users(affected_user_ids)
         await repo.assign_role(body.chatwoot_user_id, role_id)
         try:
-            await _resync_role_mirror(role_id)
+            await _resync_role_mirror(pre_snapshot)
         except ChatwootRoleMirrorError as exc:
             await repo.unassign_role(body.chatwoot_user_id, role_id)
             raise HTTPException(status_code=502, detail=f"Chatwoot sync failed: {exc}") from exc
@@ -133,6 +195,7 @@ def build_authz_router(
         if key not in ALL_NATIVE_KEYS or mirror is None:
             await repo.grant_permission(role_id, key)
             return {"ok": True}
+        pre_snapshot = await _snapshot_users(set(await repo.users_for_role(role_id)))
         if key in NATIVE_CONVERSATION_KEYS:
             previous = await repo.role_permissions(role_id) & NATIVE_CONVERSATION_KEYS
             await repo.grant_conversation_permission_exclusive(role_id, key)
@@ -140,7 +203,7 @@ def build_authz_router(
             previous = set()
             await repo.grant_permission(role_id, key)
         try:
-            await _resync_role_mirror(role_id)
+            await _resync_role_mirror(pre_snapshot)
         except ChatwootRoleMirrorError as exc:
             await repo.revoke_permission(role_id, key)
             for old_key in previous:
@@ -153,11 +216,14 @@ def build_authz_router(
     )
     async def revoke_role_permission(role_id: str, permission_key: str) -> dict:
         was_native = permission_key in ALL_NATIVE_KEYS and mirror is not None
+        pre_snapshot = (
+            await _snapshot_users(set(await repo.users_for_role(role_id))) if was_native else {}
+        )
         await repo.revoke_permission(role_id, permission_key)
         if not was_native:
             return {"ok": True}
         try:
-            await _resync_role_mirror(role_id)
+            await _resync_role_mirror(pre_snapshot)
         except ChatwootRoleMirrorError as exc:
             await repo.grant_permission(role_id, permission_key)
             raise HTTPException(status_code=502, detail=f"Chatwoot sync failed: {exc}") from exc
@@ -170,9 +236,14 @@ def build_authz_router(
 
     @router.delete("/roles/{role_id}/assign", dependencies=[Depends(manage_roles)])
     async def unassign_role(role_id: str, body: AssignRoleBody) -> dict:
+        pre_snapshot = (
+            await _snapshot_users(set(await repo.users_for_role(role_id)))
+            if mirror is not None
+            else {}
+        )
         await repo.unassign_role(body.chatwoot_user_id, role_id)
         try:
-            await _resync_role_mirror(role_id)
+            await _resync_role_mirror(pre_snapshot)
         except ChatwootRoleMirrorError as exc:
             await repo.assign_role(body.chatwoot_user_id, role_id)
             raise HTTPException(status_code=502, detail=f"Chatwoot sync failed: {exc}") from exc

@@ -3,7 +3,15 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from chatbot.features.authz.db import Permission, Role, RolePermission, UserRole
+from chatbot.features.authz.db import (
+    NATIVE_BOOLEAN_KEYS,
+    NATIVE_CONVERSATION_KEYS,
+    Permission,
+    Role,
+    RolePermission,
+    UserNativeRoleMirror,
+    UserRole,
+)
 
 
 class AuthzRepository:
@@ -94,4 +102,66 @@ class AuthzRepository:
             if existing is None:
                 return
             await session.delete(existing)
+            await session.commit()
+
+    async def resolve_native_permissions(self, chatwoot_user_id: int) -> list[str]:
+        """Most-permissive-wins native (chatwoot.*) set for a user, across ALL
+        their roles. At most one conversation_* key (highest-ranked present
+        wins: manage-all > unassigned > participating-only), plus the union
+        of the boolean-style keys. Order in the returned list is stable
+        (conversation key first if present, then sorted booleans) so callers
+        can diff/compare without re-sorting."""
+        all_perms = await self.permissions_for_user(chatwoot_user_id)
+        result: list[str] = []
+        for key in (
+            "chatwoot.conversation_manage",
+            "chatwoot.conversation_unassigned_manage",
+            "chatwoot.conversation_participating_manage",
+        ):
+            if key in all_perms:
+                result.append(key)
+                break
+        result.extend(sorted(all_perms & NATIVE_BOOLEAN_KEYS))
+        return result
+
+    async def grant_conversation_permission_exclusive(
+        self, role_id: str, permission_key: str
+    ) -> None:
+        """Grant one of the three conversation_* keys on a role, first
+        revoking the other two on that SAME role (a role carries at most
+        one). Only meaningful for permission_key in NATIVE_CONVERSATION_KEYS
+        — callers (Task 5's router) are responsible for routing only those
+        three keys through this method; other keys use plain grant_permission
+        unchanged."""
+        for other in NATIVE_CONVERSATION_KEYS - {permission_key}:
+            await self.revoke_permission(role_id, other)
+        await self.grant_permission(role_id, permission_key)
+
+    async def get_native_role_mirror(self, chatwoot_user_id: int) -> int | None:
+        async with self._sm() as session:
+            row = await session.get(UserNativeRoleMirror, chatwoot_user_id)
+            return row.chatwoot_custom_role_id if row is not None else None
+
+    async def set_native_role_mirror(
+        self, chatwoot_user_id: int, chatwoot_custom_role_id: int
+    ) -> None:
+        async with self._sm() as session:
+            row = await session.get(UserNativeRoleMirror, chatwoot_user_id)
+            if row is None:
+                session.add(
+                    UserNativeRoleMirror(
+                        chatwoot_user_id=chatwoot_user_id,
+                        chatwoot_custom_role_id=chatwoot_custom_role_id,
+                    )
+                )
+            else:
+                row.chatwoot_custom_role_id = chatwoot_custom_role_id
+            await session.commit()
+
+    async def delete_native_role_mirror(self, chatwoot_user_id: int) -> None:
+        async with self._sm() as session:
+            row = await session.get(UserNativeRoleMirror, chatwoot_user_id)
+            if row is None:
+                return
+            await session.delete(row)
             await session.commit()

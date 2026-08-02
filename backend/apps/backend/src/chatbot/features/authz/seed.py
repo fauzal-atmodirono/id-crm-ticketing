@@ -11,7 +11,21 @@ endpoint, Task 5).
 
 from __future__ import annotations
 
+from chatbot.features.authz.db import (
+    ALL_NATIVE_KEYS,
+    NATIVE_BOOLEAN_KEYS,
+    NATIVE_CONVERSATION_KEYS,
+)
 from chatbot.features.authz.repository import AuthzRepository
+
+__all__ = [
+    "ALL_NATIVE_KEYS",
+    "NATIVE_BOOLEAN_KEYS",
+    "NATIVE_CONVERSATION_KEYS",
+    "NATIVE_PERMISSION_REGISTRY",
+    "PERMISSION_REGISTRY",
+    "seed_defaults",
+]
 
 PERMISSION_REGISTRY: dict[str, str] = {
     "knowledge.edit": "Edit Knowledge Base content",
@@ -31,22 +45,11 @@ _AGENT_PERMISSIONS = {"knowledge.edit"}
 # a tenant that never explicitly grants one of these stays byte-identical to
 # pre-Phase-3 behavior (no CustomRole ever created, no user's custom_role_id
 # ever touched).
-NATIVE_CONVERSATION_KEYS: frozenset[str] = frozenset(
-    {
-        "chatwoot.conversation_manage",
-        "chatwoot.conversation_unassigned_manage",
-        "chatwoot.conversation_participating_manage",
-    }
-)
-NATIVE_BOOLEAN_KEYS: frozenset[str] = frozenset(
-    {
-        "chatwoot.contact_manage",
-        "chatwoot.report_manage",
-        "chatwoot.knowledge_base_manage",
-    }
-)
-ALL_NATIVE_KEYS: frozenset[str] = NATIVE_CONVERSATION_KEYS | NATIVE_BOOLEAN_KEYS
-
+#
+# NATIVE_CONVERSATION_KEYS / NATIVE_BOOLEAN_KEYS / ALL_NATIVE_KEYS live in
+# db.py (imported above and re-exported here for backward compatibility) to
+# avoid a circular import: this module imports AuthzRepository from
+# repository.py, so repository.py cannot import these constants from here.
 NATIVE_PERMISSION_REGISTRY: dict[str, str] = {
     "chatwoot.conversation_manage": "Chatwoot: see and reply to all conversations",
     "chatwoot.conversation_unassigned_manage": "Chatwoot: see unassigned conversations + own",

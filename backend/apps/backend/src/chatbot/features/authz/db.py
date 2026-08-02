@@ -64,6 +64,27 @@ class UserNativeRoleMirror(Base):
     )
 
 
+# Native Chatwoot conversation/inbox visibility keys — single source of truth.
+# Lives here (rather than seed.py, which imports AuthzRepository from
+# repository.py at module level) so repository.py can import these without a
+# circular import; seed.py re-exports them for backward compatibility.
+NATIVE_CONVERSATION_KEYS: frozenset[str] = frozenset(
+    {
+        "chatwoot.conversation_manage",
+        "chatwoot.conversation_unassigned_manage",
+        "chatwoot.conversation_participating_manage",
+    }
+)
+NATIVE_BOOLEAN_KEYS: frozenset[str] = frozenset(
+    {
+        "chatwoot.contact_manage",
+        "chatwoot.report_manage",
+        "chatwoot.knowledge_base_manage",
+    }
+)
+ALL_NATIVE_KEYS: frozenset[str] = NATIVE_CONVERSATION_KEYS | NATIVE_BOOLEAN_KEYS
+
+
 def _to_async_url(url: str) -> str:
     if url.startswith("postgresql://"):
         return url.replace("postgresql://", "postgresql+psycopg://", 1)

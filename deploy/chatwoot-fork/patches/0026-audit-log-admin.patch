@@ -1,0 +1,181 @@
+diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
+index b6f3823..75b9805 100644
+--- a/app/javascript/dashboard/api/protonAdmin.js
++++ b/app/javascript/dashboard/api/protonAdmin.js
+@@ -61,3 +61,17 @@ export async function myPermissions() {
+   const data = await adminRequest('/authz/permissions');
+   return Array.isArray(data.permissions) ? data.permissions : [];
+ }
++
++// ── Audit log ─────────────────────────────────────────────────────────────
++
++// GET /admin/audit?actor=&from_ts=&to_ts=&limit= -> { audit: [{ ticket_id,
++//   session_id, actor, from_state, to_state, at, remark }] }
++export function listAudit({ actor, fromTs, toTs, limit } = {}) {
++  const params = new URLSearchParams();
++  if (actor) params.set('actor', actor);
++  if (fromTs) params.set('from_ts', fromTs);
++  if (toTs) params.set('to_ts', toTs);
++  if (limit) params.set('limit', String(limit));
++  const qs = params.toString();
++  return adminRequest(`/admin/audit${qs ? `?${qs}` : ''}`);
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 504cf39..b600d64 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -597,6 +597,16 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
++    ...(protonHasPermission('audit.view')
++      ? [
++          {
++            name: 'AuditLog',
++            icon: 'i-lucide-scroll-text',
++            label: 'Audit Log',
++            to: accountScopedRoute('proton_audit_log'),
++          },
++        ]
++      : []),
+     {
+       name: 'Contacts',
+       label: t('SIDEBAR.CONTACTS'),
+diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+index 1232a5a..8c73f84 100644
+--- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+@@ -39,6 +39,12 @@ export default {
+           component: () => import('../../views/ProtonSlaPoliciesPage.vue'),
+           meta: { permissions: ['administrator'] },
+         },
++        {
++          path: 'proton/audit-log',
++          name: 'proton_audit_log',
++          component: () => import('../../views/ProtonAuditLogPage.vue'),
++          meta: { permissions: ['administrator'] },
++        },
+         ...inboxRoutes,
+         ...conversation.routes,
+         ...settings.routes,
+diff --git a/app/javascript/dashboard/views/ProtonAuditLogPage.vue b/app/javascript/dashboard/views/ProtonAuditLogPage.vue
+new file mode 100644
+index 0000000..eb62711
+--- /dev/null
++++ b/app/javascript/dashboard/views/ProtonAuditLogPage.vue
+@@ -0,0 +1,115 @@
++<!-- ProtonAuditLogPage.vue — OUR file. Filterable, read-only viewer over
++     the backend's cross-ticket audit trail (Firestore case_audit_log).
++     Filters: actor, date range. Storage is unchanged — this only adds a
++     list/filter view on top of the existing per-case audit data. -->
++<script>
++import { useAlert } from 'dashboard/composables';
++import { listAudit } from 'dashboard/api/protonAdmin';
++
++export default {
++  name: 'ProtonAuditLogPage',
++  data() {
++    return {
++      rows: [],
++      actorFilter: '',
++      fromFilter: '',
++      toFilter: '',
++      loading: true,
++      errored: false,
++    };
++  },
++  async mounted() {
++    await this.load();
++  },
++  methods: {
++    async load() {
++      this.loading = true;
++      this.errored = false;
++      try {
++        const data = await listAudit({
++          actor: this.actorFilter || undefined,
++          fromTs: this.fromFilter ? new Date(this.fromFilter).toISOString() : undefined,
++          toTs: this.toFilter ? new Date(this.toFilter).toISOString() : undefined,
++        });
++        this.rows = Array.isArray(data.audit) ? data.audit : [];
++      } catch (err) {
++        this.errored = true;
++        useAlert('Failed to load audit log: ' + (err.message || String(err)));
++      } finally {
++        this.loading = false;
++      }
++    },
++  },
++};
++</script>
++
++<template>
++  <div class="p-6">
++    <h1 class="mb-1 text-lg font-medium text-n-slate-12">Audit Log</h1>
++    <p class="mb-6 text-sm text-n-slate-11">Cross-ticket case state changes, newest first.</p>
++
++    <div class="flex flex-wrap items-end gap-3 mb-4">
++      <div>
++        <label class="block mb-1 text-xs text-n-slate-11">Actor</label>
++        <input
++          v-model="actorFilter"
++          type="text"
++          class="w-40 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        />
++      </div>
++      <div>
++        <label class="block mb-1 text-xs text-n-slate-11">From</label>
++        <input
++          v-model="fromFilter"
++          type="date"
++          class="px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        />
++      </div>
++      <div>
++        <label class="block mb-1 text-xs text-n-slate-11">To</label>
++        <input
++          v-model="toFilter"
++          type="date"
++          class="px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        />
++      </div>
++      <button
++        type="button"
++        class="px-3 py-2 text-sm font-medium rounded-lg bg-n-brand text-white hover:opacity-90"
++        @click="load"
++      >
++        Filter
++      </button>
++    </div>
++
++    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">Loading…</div>
++    <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">
++      Could not load the audit log.
++    </div>
++    <div v-else-if="!rows.length" class="py-10 text-sm text-center text-n-slate-11">
++      No entries match this filter.
++    </div>
++    <table v-else class="min-w-full table-auto outline outline-1 -outline-offset-1 outline-n-weak rounded-xl">
++      <thead>
++        <tr class="border-b border-n-weak">
++          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">At</th>
++          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Ticket</th>
++          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Actor</th>
++          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Transition</th>
++          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Remark</th>
++        </tr>
++      </thead>
++      <tbody class="divide-y divide-n-weak">
++        <tr v-for="(row, i) in rows" :key="i">
++          <td class="py-3 px-4 text-sm text-n-slate-11 whitespace-nowrap">{{ row.at }}</td>
++          <td class="py-3 px-4 text-sm text-n-slate-12 whitespace-nowrap">{{ row.ticket_id }}</td>
++          <td class="py-3 px-4 text-sm text-n-slate-12 whitespace-nowrap">{{ row.actor }}</td>
++          <td class="py-3 px-4 text-sm text-n-slate-11 whitespace-nowrap">
++            {{ row.from_state }} → {{ row.to_state }}
++          </td>
++          <td class="py-3 px-4 text-sm text-n-slate-11">{{ row.remark }}</td>
++        </tr>
++      </tbody>
++    </table>
++  </div>
++</template>

@@ -520,3 +520,15 @@ def test_apply_working_hours_missing_timestamps_yields_none() -> None:
     row = apply_working_hours(_row(first_response_at=None, resolved_at=None), INBOX)
     assert row.first_response_working_minutes is None
     assert row.resolution_working_minutes is None
+
+
+def test_map_chatwoot_conversation_reads_dealer_escalated_at() -> None:
+    conv = {
+        "id": 60, "status": "resolved", "created_at": 1700000000,
+        "labels": ["dealer_kl_glenmarie"],
+        "custom_attributes": {"dealer_escalated_at": "2026-07-01T00:00:00+00:00"},
+        "meta": {"sender": {"id": 1}},
+    }
+    row = map_chatwoot_conversation_to_row(conv)
+    assert row is not None
+    assert row.dealer_escalated_at == "2026-07-01T00:00:00+00:00"

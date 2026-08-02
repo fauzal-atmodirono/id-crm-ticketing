@@ -66,6 +66,7 @@ class ConversationRow:
     resolved_at: str | None = None
     reopen_count: int | None = None
     dealer: str | None = None  # Phase-3: dealer dimension (dealer_<slug> label)
+    dealer_escalated_at: str | None = None  # Task 10: dealer escalation timestamp
     case_type: str | None = None
     vehicle_model: str | None = None
     first_response_working_minutes: int | None = None
@@ -327,6 +328,7 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
     agent_id = _chatwoot_agent_id(conv)
     pic = _first_tag(labels, _PIC_TAG) or agent_id
     dealer = _first_tag(labels, _DEALER_TAG)
+    dealer_escalated_at = custom_attrs.get("dealer_escalated_at")
     reopen_count = _chatwoot_reopen_count(conv)
 
     # Timings we can derive from the Chatwoot conversation itself:
@@ -360,6 +362,7 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
         resolved_at=resolved_at,
         reopen_count=reopen_count,
         dealer=dealer,
+        dealer_escalated_at=dealer_escalated_at,
         case_type=case_type,
         vehicle_model=vehicle_model,
     )

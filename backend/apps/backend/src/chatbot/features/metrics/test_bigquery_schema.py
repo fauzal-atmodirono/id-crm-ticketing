@@ -25,6 +25,7 @@ def test_schema_has_expected_fields() -> None:
         "resolved_at",
         "reopen_count",
         "dealer",  # new Phase-3 field
+        "dealer_escalated_at",  # Task 10
         "case_type",
         "vehicle_model",
         "first_response_working_minutes",

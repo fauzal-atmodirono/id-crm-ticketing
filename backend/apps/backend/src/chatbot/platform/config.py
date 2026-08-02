@@ -140,6 +140,12 @@ class Settings(BaseSettings):
     # direct SQL), same as today. Safe to leave set across restarts: the
     # underlying assign is idempotent (checks existence before inserting).
     rbac_bootstrap_admin_user_id: int | None = None
+
+    # RSA (roadside assistance) incident log — own Postgres table, gated the
+    # same way the pgvector KB and RBAC are: default-off, needs BOTH flags to
+    # activate. Manual staff data entry only, no dispatch-system integration.
+    rsa_enabled: bool = False
+    rsa_database_url: str = ""
     # --- Phase 5: Agent routing & presence ---
     # Master switch: when False (default) the routing service is bypassed and
     # the static chatwoot_agent_team_id team assignment remains active.

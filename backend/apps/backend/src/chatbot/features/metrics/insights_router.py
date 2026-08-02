@@ -1,4 +1,5 @@
-"""GET /metrics/{departments,callcenter,lifecycle} — gated report reads.
+"""GET /metrics/{departments,callcenter,lifecycle,dealer-escalation,sla-buckets,
+case-aging,volume-by-type} — gated report reads.
 
 Agent/PIC-level aggregates, so x-api-key gated (unlike /metrics/dashboard)."""
 from __future__ import annotations

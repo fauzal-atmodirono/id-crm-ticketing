@@ -1,0 +1,332 @@
+diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
+new file mode 100644
+index 0000000..b6f3823
+--- /dev/null
++++ b/app/javascript/dashboard/api/protonAdmin.js
+@@ -0,0 +1,63 @@
++// protonAdmin.js — OUR file. Shared request helper + API calls for the
++// three RBAC-gated admin pages (SLA Policies, Audit Log, Roles &
++// Permissions). Unlike protonKnowledge.js's kbRequest (which only forwards
++// the shared backendKey), adminRequest ALSO forwards the caller's Chatwoot
++// access token, since these endpoints are gated by Phase 1's per-user
++// require_permission dependency, not the shared secret alone.
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++import { useMapGetter } from 'dashboard/composables/store';
++
++export async function adminRequest(path, { method = 'GET', body } = {}) {
++  const { backendUrl, backendKey } = useProtonConfig();
++  if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
++
++  const currentUser = useMapGetter('getCurrentUser');
++  const accessToken = currentUser.value?.access_token ?? '';
++
++  const response = await fetch(`${backendUrl}${path}`, {
++    method,
++    headers: {
++      'Content-Type': 'application/json',
++      ...(backendKey ? { 'x-api-key': backendKey } : {}),
++      ...(accessToken ? { 'x-chatwoot-access-token': accessToken } : {}),
++    },
++    ...(body ? { body: JSON.stringify(body) } : {}),
++  });
++
++  if (!response.ok) {
++    const text = await response.text().catch(() => response.statusText);
++    const err = new Error(`${response.status}: ${text.slice(0, 200)}`);
++    err.status = response.status;
++    throw err;
++  }
++  const text = await response.text();
++  return text ? JSON.parse(text) : {};
++}
++
++// ── SLA policy ─────────────────────────────────────────────────────────────
++
++export function getSlaDefault() {
++  return adminRequest('/admin/sla-policy/default');
++}
++
++export function putSlaDefault(body) {
++  return adminRequest('/admin/sla-policy/default', { method: 'PUT', body });
++}
++
++export function getSlaForInbox(inboxId) {
++  return adminRequest(`/admin/sla-policy/inbox/${encodeURIComponent(inboxId)}`);
++}
++
++export function putSlaForInbox(inboxId, body) {
++  return adminRequest(`/admin/sla-policy/inbox/${encodeURIComponent(inboxId)}`, {
++    method: 'PUT',
++    body,
++  });
++}
++
++// ── My permissions (for nav/page gating) ────────────────────────────────────
++
++export async function myPermissions() {
++  const data = await adminRequest('/authz/permissions');
++  return Array.isArray(data.permissions) ? data.permissions : [];
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 8afc556..504cf39 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -11,6 +11,7 @@ import { vOnClickOutside } from '@vueuse/components';
+ import { FEATURE_FLAGS } from 'dashboard/featureFlags';
+ import { useWindowSize, useEventListener } from '@vueuse/core';
+ import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';
+ 
+ import Button from 'dashboard/components-next/button/Button.vue';
+ import SidebarGroup from './SidebarGroup.vue';
+@@ -64,6 +65,7 @@ const isFeatureEnabledonAccount = useMapGetter(
+ 
+ const { hasFeature: protonHasFeature } = useProtonConfig();
+ const protonAiAssistEnabled = computed(() => protonHasFeature('ai_assist'));
++const { hasPermission: protonHasPermission } = useProtonPermissions();
+ 
+ const hasAdvancedAssignment = computed(() => {
+   return isFeatureEnabledonAccount.value(
+@@ -585,6 +587,16 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
++    ...(protonHasPermission('sla.manage')
++      ? [
++          {
++            name: 'SlaPolicies',
++            icon: 'i-lucide-timer',
++            label: 'SLA Policies',
++            to: accountScopedRoute('proton_sla_policies'),
++          },
++        ]
++      : []),
+     {
+       name: 'Contacts',
+       label: t('SIDEBAR.CONTACTS'),
+diff --git a/app/javascript/dashboard/composables/useProtonPermissions.js b/app/javascript/dashboard/composables/useProtonPermissions.js
+new file mode 100644
+index 0000000..82a5dab
+--- /dev/null
++++ b/app/javascript/dashboard/composables/useProtonPermissions.js
+@@ -0,0 +1,36 @@
++// useProtonPermissions.js — OUR file. Fetches the current user's RBAC
++// permission set once (module-level cache, shared across every component
++// that imports this) and exposes a reactive hasPermission(key) check for
++// nav/page-visibility gating. This is UX-only — the backend's
++// require_permission dependency is the actual security boundary; a hidden
++// nav item does not replace server-side enforcement.
++import { ref } from 'vue';
++import { myPermissions } from 'dashboard/api/protonAdmin';
++
++const permissions = ref(null); // null = not yet loaded
++const loading = ref(false);
++let loadPromise = null;
++
++async function ensureLoaded() {
++  if (permissions.value !== null || loadPromise) return loadPromise;
++  loading.value = true;
++  loadPromise = myPermissions()
++    .then(perms => {
++      permissions.value = perms;
++    })
++    .catch(() => {
++      permissions.value = []; // fail closed for nav visibility on error
++    })
++    .finally(() => {
++      loading.value = false;
++    });
++  return loadPromise;
++}
++
++export function useProtonPermissions() {
++  ensureLoaded();
++  return {
++    loading,
++    hasPermission: key => (permissions.value || []).includes(key),
++  };
++}
+diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+index c21fac2..1232a5a 100644
+--- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+@@ -33,6 +33,12 @@ export default {
+           component: () => import('../../views/ProtonKnowledgeHost.vue'),
+           meta: { permissions: ['administrator', 'agent'] },
+         },
++        {
++          path: 'proton/sla-policies',
++          name: 'proton_sla_policies',
++          component: () => import('../../views/ProtonSlaPoliciesPage.vue'),
++          meta: { permissions: ['administrator'] },
++        },
+         ...inboxRoutes,
+         ...conversation.routes,
+         ...settings.routes,
+diff --git a/app/javascript/dashboard/views/ProtonSlaPoliciesPage.vue b/app/javascript/dashboard/views/ProtonSlaPoliciesPage.vue
+new file mode 100644
+index 0000000..ba9782b
+--- /dev/null
++++ b/app/javascript/dashboard/views/ProtonSlaPoliciesPage.vue
+@@ -0,0 +1,161 @@
++<!-- ProtonSlaPoliciesPage.vue — OUR file. Top-level admin page: edit the
++     tenant-default SLA policy or a specific inbox's override. An inbox
++     picker (plus "Tenant default") selects which row is being edited;
++     unset fields on an inbox row inherit from the tenant default rather
++     than requiring every field to be re-entered per inbox (shown via
++     placeholder text, not auto-filled values, so "unset" stays distinguishable
++     from "explicitly set to the same value"). -->
++<script>
++import { useAlert } from 'dashboard/composables';
++import { listInboxes } from 'dashboard/api/protonKnowledge';
++import {
++  getSlaDefault,
++  putSlaDefault,
++  getSlaForInbox,
++  putSlaForInbox,
++} from 'dashboard/api/protonAdmin';
++
++const EMPTY_FORM = {
++  response_hours: null,
++  resolution_hours: null,
++  ack_minutes_by_channel_json: null,
++  pic_whatsapp: null,
++  engine_enabled: null,
++};
++
++export default {
++  name: 'ProtonSlaPoliciesPage',
++  data() {
++    return {
++      inboxes: [],
++      selectedInboxId: '', // '' = tenant default
++      form: { ...EMPTY_FORM },
++      loading: true,
++      saving: false,
++      errored: false,
++    };
++  },
++  async mounted() {
++    await this.loadInboxes();
++    await this.loadPolicy();
++  },
++  methods: {
++    async loadInboxes() {
++      try {
++        const rows = await listInboxes();
++        this.inboxes = rows.map(r => ({ inbox_id: r.inbox_id, name: r.name || String(r.inbox_id) }));
++      } catch (err) {
++        useAlert('Failed to load inbox list: ' + (err.message || String(err)));
++      }
++    },
++    async loadPolicy() {
++      this.loading = true;
++      this.errored = false;
++      try {
++        const data = this.selectedInboxId
++          ? await getSlaForInbox(this.selectedInboxId)
++          : await getSlaDefault();
++        this.form = { ...EMPTY_FORM, ...data };
++      } catch (err) {
++        this.errored = true;
++        useAlert('Failed to load SLA policy: ' + (err.message || String(err)));
++      } finally {
++        this.loading = false;
++      }
++    },
++    async onSelectInbox() {
++      await this.loadPolicy();
++    },
++    async save() {
++      this.saving = true;
++      try {
++        if (this.selectedInboxId) {
++          await putSlaForInbox(this.selectedInboxId, this.form);
++        } else {
++          await putSlaDefault(this.form);
++        }
++        useAlert('SLA policy saved.');
++      } catch (err) {
++        useAlert('Failed to save SLA policy: ' + (err.message || String(err)));
++      } finally {
++        this.saving = false;
++      }
++    },
++  },
++};
++</script>
++
++<template>
++  <div class="p-6">
++    <h1 class="mb-1 text-lg font-medium text-n-slate-12">SLA Policies</h1>
++    <p class="mb-6 text-sm text-n-slate-11">
++      Edit the tenant-wide default, or override it for a specific inbox. Unset fields inherit from
++      the tenant default.
++    </p>
++
++    <div class="mb-4">
++      <label class="block mb-1 text-sm font-medium text-n-slate-12">Scope</label>
++      <select
++        v-model="selectedInboxId"
++        class="w-64 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        @change="onSelectInbox"
++      >
++        <option value="">Tenant default</option>
++        <option v-for="ib in inboxes" :key="ib.inbox_id" :value="ib.inbox_id">{{ ib.name }}</option>
++      </select>
++    </div>
++
++    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">Loading…</div>
++    <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">
++      Could not load this policy.
++    </div>
++    <form v-else class="grid max-w-lg grid-cols-1 gap-4" @submit.prevent="save">
++      <div>
++        <label class="block mb-1 text-sm text-n-slate-11">Response window (hours)</label>
++        <input
++          v-model.number="form.response_hours"
++          type="number"
++          step="0.5"
++          class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        />
++      </div>
++      <div>
++        <label class="block mb-1 text-sm text-n-slate-11">Resolution window (hours)</label>
++        <input
++          v-model.number="form.resolution_hours"
++          type="number"
++          step="0.5"
++          class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        />
++      </div>
++      <div>
++        <label class="block mb-1 text-sm text-n-slate-11">Per-channel ACK minutes (JSON)</label>
++        <input
++          v-model="form.ack_minutes_by_channel_json"
++          type="text"
++          placeholder='{"whatsapp": 15}'
++          class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        />
++      </div>
++      <div>
++        <label class="block mb-1 text-sm text-n-slate-11">PIC WhatsApp number</label>
++        <input
++          v-model="form.pic_whatsapp"
++          type="text"
++          class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        />
++      </div>
++      <div class="flex items-center gap-2">
++        <input v-model="form.engine_enabled" type="checkbox" />
++        <label class="text-sm text-n-slate-11">Engine enabled override</label>
++      </div>
++      <button
++        type="submit"
++        :disabled="saving"
++        class="px-4 py-2 text-sm font-medium rounded-lg w-fit bg-n-brand text-white hover:opacity-90 disabled:opacity-50"
++      >
++        Save
++      </button>
++    </form>
++  </div>
++</template>

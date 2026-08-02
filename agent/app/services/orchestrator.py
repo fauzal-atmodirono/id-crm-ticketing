@@ -372,8 +372,9 @@ async def _process_conversation(conversation_id: int) -> None:
     system_prompt = _build_system_prompt(persona)
 
     # Fetch persona messages for the inbox (fail-open: None on any error).
-    # Only the handoff_message is consumed here; welcome_message has no trigger
-    # in the agent-bot flow, and resolution_message is handled by sync.py.
+    # Only handoff_message is consumed here; welcome_message is consumed at
+    # conversation-created time by lifecycle.py, and resolution_message is
+    # handled by sync.py.
     handoff_message = ""
     if proton is not None and inbox_id is not None:
         try:

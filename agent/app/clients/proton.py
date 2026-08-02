@@ -182,8 +182,9 @@ class ProtonConfigClient:
         string when the field is absent). Returns None on ANY exception,
         non-2xx response, or missing data — never raises.
 
-        Note: ``welcome`` is included for completeness but is not consumed by
-        any current flow (the agent-bot has no conversation-created trigger).
+        Note: ``welcome`` overrides ``DISCLAIMER_DEFAULT`` at conversation
+        creation (see lifecycle.py's ``_welcome_text``) — not a separate
+        greeting from the AI disclaimer.
         """
         try:
             assistant = await self._resolve_assistant(inbox_id)

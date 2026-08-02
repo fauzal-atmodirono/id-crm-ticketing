@@ -61,3 +61,37 @@ class AuthzRepository:
     async def list_roles(self) -> list[Role]:
         async with self._sm() as session:
             return list((await session.execute(select(Role))).scalars().all())
+
+    async def list_permissions(self) -> list[Permission]:
+        async with self._sm() as session:
+            return list((await session.execute(select(Permission))).scalars().all())
+
+    async def role_permissions(self, role_id: str) -> set[str]:
+        async with self._sm() as session:
+            rows = await session.execute(
+                select(RolePermission.permission_key).where(RolePermission.role_id == role_id)
+            )
+            return {r[0] for r in rows.all()}
+
+    async def revoke_permission(self, role_id: str, permission_key: str) -> None:
+        async with self._sm() as session:
+            existing = await session.get(RolePermission, (role_id, permission_key))
+            if existing is None:
+                return
+            await session.delete(existing)
+            await session.commit()
+
+    async def users_for_role(self, role_id: str) -> list[int]:
+        async with self._sm() as session:
+            rows = await session.execute(
+                select(UserRole.chatwoot_user_id).where(UserRole.role_id == role_id)
+            )
+            return [r[0] for r in rows.all()]
+
+    async def unassign_role(self, chatwoot_user_id: int, role_id: str) -> None:
+        async with self._sm() as session:
+            existing = await session.get(UserRole, (chatwoot_user_id, role_id))
+            if existing is None:
+                return
+            await session.delete(existing)
+            await session.commit()

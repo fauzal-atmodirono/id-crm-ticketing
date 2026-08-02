@@ -482,12 +482,19 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
 
     # --- RBAC (roles/permissions; default-off) ---
     authz_repo = None
+    sla_policy_repo = None
     if settings.rbac_enabled and settings.rbac_database_url:
         from chatbot.features.authz.db import build_engine as build_authz_engine
         from chatbot.features.authz.db import build_session_maker as build_authz_session_maker
         from chatbot.features.authz.identity import TokenValidator
         from chatbot.features.authz.repository import AuthzRepository
         from chatbot.features.authz.router import build_authz_router
+        from chatbot.features.chat.sla_policy_db import build_engine as build_sla_policy_engine
+        from chatbot.features.chat.sla_policy_db import (
+            build_session_maker as build_sla_policy_session_maker,
+        )
+        from chatbot.features.chat.sla_policy_repository import SlaPolicyRepository
+        from chatbot.features.chat.sla_policy_router import build_sla_policy_router
 
         authz_engine = build_authz_engine(settings.rbac_database_url)
         authz_session_maker = build_authz_session_maker(authz_engine)
@@ -496,6 +503,13 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         app.include_router(build_authz_router(authz_repo, authz_validator, settings))
         app.state.authz_engine = authz_engine
         app.state.authz_repo = authz_repo
+
+        sla_policy_engine = build_sla_policy_engine(settings.rbac_database_url)
+        sla_policy_repo = SlaPolicyRepository(build_sla_policy_session_maker(sla_policy_engine))
+        app.include_router(
+            build_sla_policy_router(sla_policy_repo, authz_repo, authz_validator, settings)
+        )
+        app.state.sla_policy_engine = sla_policy_engine
     elif settings.rbac_enabled:
         import structlog as _sl
         _sl.get_logger(__name__).warning(
@@ -517,6 +531,12 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
                 # Break-glass bootstrap: idempotent (assign_role no-ops if the
                 # assignment already exists), safe to run on every startup.
                 await repo.assign_role(settings.rbac_bootstrap_admin_user_id, "administrator")
+
+        sla_policy_engine = getattr(app.state, "sla_policy_engine", None)
+        if sla_policy_engine is not None:
+            from chatbot.features.chat.sla_policy_db import init_sla_policy_db
+
+            await init_sla_policy_db(sla_policy_engine)
 
     # --- Proton AI-assist (rewired Captain AI) ---
     _wire_assist(
@@ -544,7 +564,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # --- SLA-timer escalation engine (Chatwoot has no native SLA engine) ---
     # Guarded behind sla_engine_enabled (default OFF) exactly like the metrics
     # scheduler, so nothing scans unless a deployment explicitly opts in.
-    sla_scheduler = start_sla_scheduler(settings, audit_log, twilio_adapter=twilio_adapter)
+    sla_scheduler = start_sla_scheduler(
+        settings, audit_log, twilio_adapter=twilio_adapter, policy_repo=sla_policy_repo
+    )
     if sla_scheduler is not None:
 
         @app.on_event("shutdown")

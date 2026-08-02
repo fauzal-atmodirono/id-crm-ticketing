@@ -173,6 +173,7 @@ def ensure_views(settings: Settings) -> None:
         settings.bigquery_project_id,
         settings.bigquery_dataset,
         settings.bigquery_conversations_table,
+        settings.resolution_sla_targets_json,
     ).values():
         client.query(ddl).result()
 

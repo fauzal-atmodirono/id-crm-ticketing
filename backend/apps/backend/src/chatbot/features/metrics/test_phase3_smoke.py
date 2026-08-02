@@ -5,7 +5,8 @@ Implements Task 8 of the Phase-3 plan (2026-07-18-phase3-reporting-bi.md).
 These tests are entirely offline — no BigQuery credentials, no network calls.
 They verify that every piece built in Tasks 1-7 is consistent end-to-end:
 
-  Step 2 (plan): view_ddls() returns exactly the expected 19 keys, every DDL
+  Step 2 (plan): view_ddls() returns exactly the expected 20 keys (19 Phase-3
+                 keys + Task 11's v_resolution_sla_buckets), every DDL
                  contains ``CREATE OR REPLACE VIEW``, references its own view
                  name, and references the base ``conversations`` table.
 
@@ -66,6 +67,7 @@ _EXPECTED_VIEW_KEYS = {
     "v_first_response_by_channel",
     "v_case_lifecycle",
     "v_state_trend",
+    "v_resolution_sla_buckets",  # Task 11
 }
 
 _PROJECT = "myproject"
@@ -78,14 +80,14 @@ _TABLE = "conversations"
 # ---------------------------------------------------------------------------
 
 
-def test_view_ddls_returns_exactly_19_views() -> None:
-    """view_ddls() must return exactly 19 view keys (13 original + 6 Phase-3)."""
+def test_view_ddls_returns_exactly_20_views() -> None:
+    """view_ddls() must return exactly 20 view keys (13 original + 6 Phase-3 + 1 Task-11)."""
     ddls = view_ddls(_PROJECT, _DATASET, _TABLE)
     assert set(ddls) == _EXPECTED_VIEW_KEYS, (
         f"Missing: {_EXPECTED_VIEW_KEYS - set(ddls)}  "
         f"Extra: {set(ddls) - _EXPECTED_VIEW_KEYS}"
     )
-    assert len(ddls) == 19
+    assert len(ddls) == 20
 
 
 @pytest.mark.parametrize("key", sorted(_EXPECTED_VIEW_KEYS))

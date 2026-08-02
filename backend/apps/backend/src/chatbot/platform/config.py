@@ -381,6 +381,19 @@ class Settings(BaseSettings):
     # stays configurable/overridable per tenant like every other dimension here.
     case_type_options_json: str = '{"options": ["Inquiry", "Complaint", "Feedback"]}'
 
+    # SOP resolution-time targets, in working hours, per case_type. JSON:
+    # {"<case_type lowercased>": {"buckets_wh": [int, ...], "labels": [str, ...]}}.
+    # buckets_wh are the upper edges (exclusive) of every bucket except the
+    # last, which is open-ended; labels must have exactly one more entry than
+    # buckets_wh. Malformed/missing entries fall back to being excluded from
+    # v_resolution_sla_buckets (that case_type's rows simply won't bucket).
+    resolution_sla_targets_json: str = (
+        '{"inquiry": {"buckets_wh": [8], "labels": ["Within 8wh", ">8wh"]},'
+        '"complaint": {"buckets_wh": [24, 48, 72], '
+        '"labels": ["<24wh", "24-48wh", "48-72wh", ">72wh"]},'
+        '"feedback": {"buckets_wh": [48], "labels": ["Within 48h", ">48h"]}}'
+    )
+
     # Phase 2 — escalation notifications
     escalation_email_enabled: bool = False
     # When true (default), escalation emails CC the department's configured

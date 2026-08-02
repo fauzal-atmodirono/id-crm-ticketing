@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import json
+
 from google.cloud import bigquery
 
 CONVERSATIONS_SCHEMA: list[bigquery.SchemaField] = [
@@ -36,9 +38,50 @@ CONVERSATIONS_SCHEMA: list[bigquery.SchemaField] = [
 ]
 
 
-def view_ddls(project: str, dataset: str, table: str = "conversations") -> dict[str, str]:
+def _sla_bucket_case_sql(sla_targets_json: str) -> str:
+    """Build a SQL CASE expression bucketing resolution_working_minutes per
+    case_type, from RESOLUTION_SLA_TARGETS_JSON. Malformed JSON -> a CASE
+    that matches nothing (ELSE NULL), so the view still creates cleanly and
+    just returns zero rows until the config is fixed."""
+    try:
+        targets = json.loads(sla_targets_json or "{}")
+    except (ValueError, TypeError):
+        targets = {}
+    if not isinstance(targets, dict):
+        targets = {}
+
+    branches: list[str] = []
+    for case_type, spec in targets.items():
+        if not isinstance(spec, dict):
+            continue
+        edges = spec.get("buckets_wh")
+        labels = spec.get("labels")
+        if not isinstance(edges, list) or not isinstance(labels, list) or len(labels) != len(edges) + 1:
+            continue
+        prev_minutes = 0
+        for edge_wh, label in zip(edges, labels[:-1], strict=True):
+            edge_minutes = int(edge_wh) * 60
+            branches.append(
+                f"WHEN LOWER(case_type) = '{case_type.lower()}' "
+                f"AND resolution_working_minutes >= {prev_minutes} "
+                f"AND resolution_working_minutes < {edge_minutes} THEN '{label}'"
+            )
+            prev_minutes = edge_minutes
+        branches.append(
+            f"WHEN LOWER(case_type) = '{case_type.lower()}' "
+            f"AND resolution_working_minutes >= {prev_minutes} THEN '{labels[-1]}'"
+        )
+    if not branches:
+        return "NULL"
+    return "CASE " + " ".join(branches) + " ELSE NULL END"
+
+
+def view_ddls(
+    project: str, dataset: str, table: str = "conversations", sla_targets_json: str = "{}"
+) -> dict[str, str]:
     """The CREATE OR REPLACE VIEW statements for the Looker tiles."""
     fq = f"`{project}.{dataset}.{table}`"
+    bucket_case = _sla_bucket_case_sql(sla_targets_json)
     return {
         "v_volume_by_month_channel": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_by_month_channel` AS "
@@ -210,5 +253,13 @@ def view_ddls(project: str, dataset: str, table: str = "conversations") -> dict[
             f"FROM {fq} WHERE created_at IS NOT NULL "
             f"GROUP BY month, status, division "
             f"ORDER BY month, status"
+        ),
+        "v_resolution_sla_buckets": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_resolution_sla_buckets` AS "
+            f"SELECT COALESCE(case_type, 'Unknown') AS case_type, "
+            f"{bucket_case} AS bucket_label, "
+            f"COUNT(*) AS cases "
+            f"FROM {fq} WHERE resolution_working_minutes IS NOT NULL "
+            f"GROUP BY case_type, bucket_label"
         ),
     }

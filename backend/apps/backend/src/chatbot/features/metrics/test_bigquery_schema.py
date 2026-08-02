@@ -56,6 +56,7 @@ def test_view_ddls_keys_and_targets() -> None:
         "v_first_response_by_channel",
         "v_case_lifecycle",
         "v_state_trend",
+        "v_resolution_sla_buckets",
     }
     assert "`proj.ds.v_volume_by_month_channel`" in ddls["v_volume_by_month_channel"]
     assert "`proj.ds.conversations`" in ddls["v_volume_by_month_channel"]
@@ -212,3 +213,18 @@ def test_schema_has_working_minutes_fields() -> None:
     names = {f.name for f in CONVERSATIONS_SCHEMA}
     assert "first_response_working_minutes" in names
     assert "resolution_working_minutes" in names
+
+
+def test_view_ddls_requires_sla_targets_and_creates_bucket_view() -> None:
+    targets = '{"complaint": {"buckets_wh": [24, 48, 72], "labels": ["<24wh", "24-48wh", "48-72wh", ">72wh"]}}'
+    ddls = view_ddls("proj", "ds", "conversations", targets)
+    assert "v_resolution_sla_buckets" in ddls
+    ddl = ddls["v_resolution_sla_buckets"]
+    assert "resolution_working_minutes" in ddl
+    assert "1440" in ddl  # 24wh * 60 minutes
+    assert "case_type" in ddl
+
+
+def test_view_ddls_malformed_sla_targets_yields_view_with_no_case_types() -> None:
+    ddls = view_ddls("proj", "ds", "conversations", "{not valid json")
+    assert "v_resolution_sla_buckets" in ddls  # view still created, just matches nothing

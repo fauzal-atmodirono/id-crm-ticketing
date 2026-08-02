@@ -350,20 +350,23 @@ class Settings(BaseSettings):
     # working default so the system functions out of the box; override per
     # tenant once the client finalizes their scheme — no code change needed.
     case_taxonomy_json: str = (
-        '{"sales":{"label":"Sales","subcategories":["Test Drive Booking",'
-        '"Pricing Inquiry","Vehicle Availability","Trade-In","Financing"]},'
-        '"aftersales":{"label":"Aftersales","subcategories":["Service Booking",'
-        '"Warranty Claim","Spare Parts","Recall"]},'
-        '"apps":{"label":"Apps","subcategories":["Login Issue","App Crash",'
-        '"Feature Request","Account Sync"]},'
-        '"charging":{"label":"Charging","subcategories":["Charger Fault",'
-        '"Charging Station Locator","Billing"]},'
-        '"roadside_assistance":{"label":"Roadside Assistance","subcategories":'
-        '["Breakdown","Accident","Towing"]},'
-        '"general_enquiry":{"label":"General Enquiry","subcategories":'
-        '["Product Info","Dealer Locator","Other"]},'
-        '"complaint":{"label":"Complaint","subcategories":["Service Quality",'
-        '"Product Defect","Staff Conduct","Other"]}}'
+        '{"sales":{"label":"Sales","subcategories":["Accessories","Booking",'
+        '"Insurance","New Model","Promotion","Refund","Test Drive","Trade In",'
+        '"Transfer Ownership","Vehicle Delivery","Vehicle Details",'
+        '"Customer Experience"]},'
+        '"aftersales":{"label":"Aftersales","subcategories":["Body",'
+        '"Roadside Assistance","Service / Recall Campaign","Service Operation",'
+        '"Spare Part","Warranty","User Manual","Features"]},'
+        '"apps":{"label":"Apps","subcategories":["Information","Operation",'
+        '"User ID","No QR Scanner","Notification","Profile","Remote Control"]},'
+        '"charging":{"label":"Charging","subcategories":["Home Charging",'
+        '"Public Charging"]},'
+        '"product":{"label":"Product","subcategories":["Infotainment",'
+        '"Telematics"]},'
+        '"marketing":{"label":"Marketing","subcategories":["Event / Campaign",'
+        '"Partnership / Collaboration","Proposal","Sponsorship"]},'
+        '"others":{"label":"Others","subcategories":['
+        '"Not Related to Proton e.MAS"]}}'
     )
 
     # Vehicle-model / product-line dimension — JSON object {"options": [str, ...]}.

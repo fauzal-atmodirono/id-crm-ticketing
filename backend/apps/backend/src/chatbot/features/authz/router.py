@@ -51,10 +51,16 @@ def build_authz_router(
 ) -> APIRouter:
     router = APIRouter(prefix="/authz", tags=["authz"])
 
-    async def _caller_user_id(x_chatwoot_access_token: str | None = Header(default=None)) -> int:
-        if not x_chatwoot_access_token:
+    async def _caller_user_id(
+        x_chatwoot_access_token: str | None = Header(default=None),
+        x_chatwoot_client: str | None = Header(default=None),
+        x_chatwoot_uid: str | None = Header(default=None),
+    ) -> int:
+        if not x_chatwoot_access_token or not x_chatwoot_client or not x_chatwoot_uid:
             raise HTTPException(status_code=401, detail="Missing Chatwoot access token")
-        user_id = await validator.resolve_user_id(x_chatwoot_access_token)
+        user_id = await validator.resolve_user_id(
+            x_chatwoot_access_token, x_chatwoot_client, x_chatwoot_uid
+        )
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid or expired token")
         return user_id

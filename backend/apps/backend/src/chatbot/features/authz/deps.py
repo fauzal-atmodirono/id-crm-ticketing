@@ -42,15 +42,25 @@ def require_permission(
     async def _check(
         x_api_key: str | None = Header(default=None),
         x_chatwoot_access_token: str | None = Header(default=None),
+        x_chatwoot_client: str | None = Header(default=None),
+        x_chatwoot_uid: str | None = Header(default=None),
     ) -> None:
         if not settings.rbac_enabled:
             _shared_secret_check(settings, x_api_key)
             return
 
-        if not x_chatwoot_access_token or repo is None or validator is None:
+        if (
+            not x_chatwoot_access_token
+            or not x_chatwoot_client
+            or not x_chatwoot_uid
+            or repo is None
+            or validator is None
+        ):
             raise HTTPException(status_code=401, detail="Missing Chatwoot access token")
 
-        user_id = await validator.resolve_user_id(x_chatwoot_access_token)
+        user_id = await validator.resolve_user_id(
+            x_chatwoot_access_token, x_chatwoot_client, x_chatwoot_uid
+        )
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid or expired token")
 

@@ -44,15 +44,15 @@ async def test_get_default_requires_sla_manage_permission(tmp_path, respx_mock):
     await seed_defaults(authz_repo)
     await authz_repo.assign_role(chatwoot_user_id=9, role_id="agent")  # lacks sla.manage
 
-    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
-        return_value=httpx.Response(200, json={"id": 9})
+    respx_mock.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
+        return_value=httpx.Response(200, json={"data": {"id": 9}})
     )
     validator = TokenValidator(settings)
     router = build_sla_policy_router(sla_repo, authz_repo, validator, settings)
     client = _app_with_router(router)
 
     res = client.get(
-        "/admin/sla-policy/default", headers={"x-chatwoot-access-token": "tok-abc"}
+        "/admin/sla-policy/default", headers={"x-chatwoot-access-token": "tok-abc", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"}
     )
     assert res.status_code == 403
 
@@ -64,15 +64,15 @@ async def test_get_default_returns_empty_policy_when_unset(tmp_path, respx_mock)
     await seed_defaults(authz_repo)
     await authz_repo.assign_role(chatwoot_user_id=10, role_id="administrator")
 
-    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
-        return_value=httpx.Response(200, json={"id": 10})
+    respx_mock.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
+        return_value=httpx.Response(200, json={"data": {"id": 10}})
     )
     validator = TokenValidator(settings)
     router = build_sla_policy_router(sla_repo, authz_repo, validator, settings)
     client = _app_with_router(router)
 
     res = client.get(
-        "/admin/sla-policy/default", headers={"x-chatwoot-access-token": "tok-abc"}
+        "/admin/sla-policy/default", headers={"x-chatwoot-access-token": "tok-abc", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"}
     )
     assert res.status_code == 200
     body = res.json()
@@ -92,13 +92,13 @@ async def test_put_then_get_default_roundtrips(tmp_path, respx_mock):
     await seed_defaults(authz_repo)
     await authz_repo.assign_role(chatwoot_user_id=11, role_id="administrator")
 
-    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
-        return_value=httpx.Response(200, json={"id": 11})
+    respx_mock.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
+        return_value=httpx.Response(200, json={"data": {"id": 11}})
     )
     validator = TokenValidator(settings)
     router = build_sla_policy_router(sla_repo, authz_repo, validator, settings)
     client = _app_with_router(router)
-    headers = {"x-chatwoot-access-token": "tok-abc"}
+    headers = {"x-chatwoot-access-token": "tok-abc", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"}
 
     put_res = client.put(
         "/admin/sla-policy/default", json={"response_hours": 4.0}, headers=headers
@@ -118,13 +118,13 @@ async def test_put_then_get_inbox_roundtrips(tmp_path, respx_mock):
     await seed_defaults(authz_repo)
     await authz_repo.assign_role(chatwoot_user_id=12, role_id="administrator")
 
-    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
-        return_value=httpx.Response(200, json={"id": 12})
+    respx_mock.get(f"{settings.chatwoot_api_url}/auth/validate_token").mock(
+        return_value=httpx.Response(200, json={"data": {"id": 12}})
     )
     validator = TokenValidator(settings)
     router = build_sla_policy_router(sla_repo, authz_repo, validator, settings)
     client = _app_with_router(router)
-    headers = {"x-chatwoot-access-token": "tok-abc"}
+    headers = {"x-chatwoot-access-token": "tok-abc", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"}
 
     put_res = client.put(
         "/admin/sla-policy/inbox/42",

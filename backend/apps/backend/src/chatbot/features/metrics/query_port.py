@@ -119,12 +119,6 @@ class ReopenRow:
 
 
 @dataclass(frozen=True)
-class DepartmentsMetrics:
-    dept_pic: list[DeptPicRow]
-    reopen: list[ReopenRow]
-
-
-@dataclass(frozen=True)
 class SlaAchievementRow:
     channel: str
     division: str
@@ -227,12 +221,98 @@ class LifecycleMetrics:
     state_trend: list[StateTrendRow]
 
 
+@dataclass(frozen=True)
+class DealerEscalationRow:
+    dealer: str
+    cases_escalated: int
+    avg_turnaround_days: float | None
+    p50_turnaround_days: float | None
+    p90_turnaround_days: float | None
+
+
+@dataclass(frozen=True)
+class DealerSlowCaseRow:
+    conversation_id: str
+    dealer: str
+    turnaround_days: float | None
+
+
+@dataclass(frozen=True)
+class DealerEscalationMetrics:
+    by_dealer: list[DealerEscalationRow]
+    slowest_cases: list[DealerSlowCaseRow]
+
+
+@dataclass(frozen=True)
+class SlaBucketRow:
+    case_type: str
+    bucket_label: str | None
+    cases: int
+
+
+@dataclass(frozen=True)
+class SlaBucketMetrics:
+    buckets: list[SlaBucketRow]
+
+
+@dataclass(frozen=True)
+class CaseAgingRow:
+    conversation_id: str
+    case_type: str
+    division: str
+    dealer: str
+    pic: str
+    status: str
+    created_at: datetime | None
+    age_days: float | None
+    bucket_label: str
+
+
+@dataclass(frozen=True)
+class CaseAgingMetrics:
+    cases: list[CaseAgingRow]
+
+
+@dataclass(frozen=True)
+class VolumeByTypeDivisionRow:
+    month: str
+    channel: str
+    case_type: str
+    division: str
+    volume: int
+
+
+@dataclass(frozen=True)
+class VolumeByTypeDivisionMetrics:
+    volume: list[VolumeByTypeDivisionRow]
+
+
+@dataclass(frozen=True)
+class CategoryByVehicleModelRow:
+    category: str
+    subcategory: str
+    vehicle_model: str
+    case_type: str
+    cases: int
+
+
+@dataclass(frozen=True)
+class DepartmentsMetrics:
+    dept_pic: list[DeptPicRow]
+    reopen: list[ReopenRow]
+    category_by_vehicle_model: list[CategoryByVehicleModelRow]
+
+
 class MetricsQueryPort(Protocol):
     async def fetch_dashboard(self) -> DashboardMetrics: ...
     async def fetch_anomalies(self) -> list[AnomalyRow]: ...
     async def fetch_departments(self) -> DepartmentsMetrics: ...
     async def fetch_callcenter(self) -> CallCentreMetrics: ...
     async def fetch_lifecycle(self) -> LifecycleMetrics: ...
+    async def fetch_dealer_escalation(self) -> DealerEscalationMetrics: ...
+    async def fetch_sla_buckets(self) -> SlaBucketMetrics: ...
+    async def fetch_case_aging(self) -> CaseAgingMetrics: ...
+    async def fetch_volume_by_type_division(self) -> VolumeByTypeDivisionMetrics: ...
 
 
 class MockMetricsQuery:
@@ -248,6 +328,9 @@ class MockMetricsQuery:
         return DepartmentsMetrics(
             dept_pic=[DeptPicRow("Aftersales", "Ali", 40, 12.0, 240.0, 0.9)],
             reopen=[ReopenRow("Dealer KL", "Aftersales", "Ali", 40, 4, 0.1)],
+            category_by_vehicle_model=[
+                CategoryByVehicleModelRow("Charging", "Home Charging", "e.MAS 5", "Complaint", 12)
+            ],
         )
 
     async def fetch_callcenter(self) -> CallCentreMetrics:
@@ -327,4 +410,35 @@ class MockMetricsQuery:
                     cases=45,
                 )
             ],
+        )
+
+    async def fetch_dealer_escalation(self) -> DealerEscalationMetrics:
+        return DealerEscalationMetrics(
+            by_dealer=[DealerEscalationRow("Dealer KL", 12, 3.5, 3.0, 6.0)],
+            slowest_cases=[DealerSlowCaseRow("CONV042", "Dealer KL", 12.0)],
+        )
+
+    async def fetch_sla_buckets(self) -> SlaBucketMetrics:
+        return SlaBucketMetrics(
+            buckets=[
+                SlaBucketRow("Inquiry", "Within 8wh", 887),
+                SlaBucketRow("Inquiry", ">8wh", 137),
+                SlaBucketRow("Complaint", "<24wh", 378),
+                SlaBucketRow("Complaint", ">72wh", 290),
+            ]
+        )
+
+    async def fetch_case_aging(self) -> CaseAgingMetrics:
+        return CaseAgingMetrics(
+            cases=[
+                CaseAgingRow(
+                    "CONV099", "Complaint", "Sales", "Dealer KL", "Ali", "open",
+                    created_at=None, age_days=4.0, bucket_label="4-6 days",
+                )
+            ]
+        )
+
+    async def fetch_volume_by_type_division(self) -> VolumeByTypeDivisionMetrics:
+        return VolumeByTypeDivisionMetrics(
+            volume=[VolumeByTypeDivisionRow("2026-06", "WhatsApp", "Inquiry", "Sales", 682)]
         )

@@ -12,11 +12,17 @@ from google.cloud import bigquery
 from chatbot.features.metrics.query_port import (
     AnomalyRow,
     BounceRow,
+    CaseAgingMetrics,
+    CaseAgingRow,
     CallCentreMetrics,
     CaseLifecycleRow,
+    CategoryByVehicleModelRow,
     ComplaintTypeRow,
     CsatRow,
     DashboardMetrics,
+    DealerEscalationMetrics,
+    DealerEscalationRow,
+    DealerSlowCaseRow,
     DepartmentsMetrics,
     DeptPicRow,
     FallbackRow,
@@ -30,10 +36,14 @@ from chatbot.features.metrics.query_port import (
     ReopenRow,
     ResolutionRow,
     ResolutionTimeRow,
+    SlaBucketMetrics,
+    SlaBucketRow,
     SlaAchievementRow,
     SpeedRow,
     StateTrendRow,
     TasksPerAgentRow,
+    VolumeByTypeDivisionMetrics,
+    VolumeByTypeDivisionRow,
     VolumeRow,
 )
 
@@ -90,6 +100,7 @@ class BigQueryMetricsQuery:
         return DepartmentsMetrics(
             dept_pic=self._block("v_dept_pic_performance", DeptPicRow),
             reopen=self._block("v_reopen_rate", ReopenRow),
+            category_by_vehicle_model=self._block("v_category_by_vehicle_model", CategoryByVehicleModelRow),
         )
 
     async def fetch_departments(self) -> DepartmentsMetrics:
@@ -117,6 +128,39 @@ class BigQueryMetricsQuery:
 
     async def fetch_lifecycle(self) -> LifecycleMetrics:
         return await asyncio.to_thread(self._fetch_lifecycle_sync)
+
+    def _fetch_dealer_escalation_sync(self) -> DealerEscalationMetrics:
+        return DealerEscalationMetrics(
+            by_dealer=self._block("v_dealer_escalation", DealerEscalationRow),
+            slowest_cases=self._block("v_dealer_escalation_slowest_cases", DealerSlowCaseRow),
+        )
+
+    async def fetch_dealer_escalation(self) -> DealerEscalationMetrics:
+        return await asyncio.to_thread(self._fetch_dealer_escalation_sync)
+
+    def _fetch_sla_buckets_sync(self) -> SlaBucketMetrics:
+        return SlaBucketMetrics(
+            buckets=self._block("v_resolution_sla_buckets", SlaBucketRow),
+        )
+
+    async def fetch_sla_buckets(self) -> SlaBucketMetrics:
+        return await asyncio.to_thread(self._fetch_sla_buckets_sync)
+
+    def _fetch_case_aging_sync(self) -> CaseAgingMetrics:
+        return CaseAgingMetrics(
+            cases=self._block("v_case_aging", CaseAgingRow),
+        )
+
+    async def fetch_case_aging(self) -> CaseAgingMetrics:
+        return await asyncio.to_thread(self._fetch_case_aging_sync)
+
+    def _fetch_volume_by_type_division_sync(self) -> VolumeByTypeDivisionMetrics:
+        return VolumeByTypeDivisionMetrics(
+            volume=self._block("v_volume_by_type_division", VolumeByTypeDivisionRow),
+        )
+
+    async def fetch_volume_by_type_division(self) -> VolumeByTypeDivisionMetrics:
+        return await asyncio.to_thread(self._fetch_volume_by_type_division_sync)
 
 
 def build_metrics_query_port(settings: Settings) -> MetricsQueryPort:

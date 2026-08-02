@@ -5,6 +5,7 @@ from chatbot.features.authz.db import (
     Permission,
     Role,
     RolePermission,
+    UserNativeRoleMirror,
     UserRole,
     build_engine,
     build_session_maker,
@@ -37,3 +38,13 @@ async def test_tables_created_and_roundtrip(session_maker):
         user_roles = (await session.execute(select(UserRole))).scalars().all()
         assert user_roles[0].chatwoot_user_id == 7
         assert user_roles[0].role_id == "administrator"
+
+
+@pytest.mark.asyncio
+async def test_user_native_role_mirror_table_created(session_maker):
+    async with session_maker() as session:
+        session.add(UserNativeRoleMirror(chatwoot_user_id=42, chatwoot_custom_role_id=7))
+        await session.commit()
+        row = await session.get(UserNativeRoleMirror, 42)
+        assert row.chatwoot_custom_role_id == 7
+        assert row.updated_at is not None

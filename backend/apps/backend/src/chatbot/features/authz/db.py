@@ -48,6 +48,22 @@ class UserRole(Base):
     role_id: Mapped[str] = mapped_column(ForeignKey("roles.id"), primary_key=True)
 
 
+class UserNativeRoleMirror(Base):
+    """Maps a Chatwoot user to the single native CustomRole we mirror their
+    resolved chatwoot.* permission set into (see chatwoot_role_mirror.py).
+    One row per user who currently holds ANY native permission across any of
+    their roles; the row (and the Chatwoot CustomRole it points to) is
+    deleted when their resolved set becomes empty."""
+
+    __tablename__ = "user_native_role_mirror"
+
+    chatwoot_user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chatwoot_custom_role_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 def _to_async_url(url: str) -> str:
     if url.startswith("postgresql://"):
         return url.replace("postgresql://", "postgresql+psycopg://", 1)

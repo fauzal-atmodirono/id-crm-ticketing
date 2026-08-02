@@ -286,3 +286,12 @@ class AuditLogPort(Protocol):
     async def append(self, entry: AuditEntry) -> None: ...
 
     async def list_for_ticket(self, ticket_id: str) -> list[AuditEntry]: ...
+
+    async def list_filtered(
+        self,
+        *,
+        actor: str | None = None,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+        limit: int = 200,
+    ) -> list[AuditEntry]: ...

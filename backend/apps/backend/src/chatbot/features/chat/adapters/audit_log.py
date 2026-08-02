@@ -29,6 +29,24 @@ class InMemoryAuditLog(AuditLogPort):
     async def list_for_ticket(self, ticket_id: str) -> list[AuditEntry]:
         return list(self._by_ticket.get(ticket_id, []))
 
+    async def list_filtered(
+        self,
+        *,
+        actor: str | None = None,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+        limit: int = 200,
+    ) -> list[AuditEntry]:
+        all_entries = [e for entries in self._by_ticket.values() for e in entries]
+        if actor is not None:
+            all_entries = [e for e in all_entries if e.actor == actor]
+        if from_ts is not None:
+            all_entries = [e for e in all_entries if e.at >= from_ts]
+        if to_ts is not None:
+            all_entries = [e for e in all_entries if e.at <= to_ts]
+        all_entries.sort(key=lambda e: e.at, reverse=True)
+        return all_entries[:limit]
+
 
 class FirestoreAuditLog(AuditLogPort):
     """One document per event under `<collection>/<auto-id>`; queried by ticket_id."""
@@ -44,6 +62,10 @@ class FirestoreAuditLog(AuditLogPort):
     def _collection(self) -> Any:
         return self._client.collection(self._collection_name)
 
+    def _to_entry(self, doc: Any) -> AuditEntry:
+        """Convert a Firestore document to an AuditEntry."""
+        return AuditEntry(**doc.to_dict())
+
     async def append(self, entry: AuditEntry) -> None:
         def _write() -> None:
             self._collection().add(asdict(entry))
@@ -53,8 +75,31 @@ class FirestoreAuditLog(AuditLogPort):
     async def list_for_ticket(self, ticket_id: str) -> list[AuditEntry]:
         def _query() -> list[AuditEntry]:
             docs = self._collection().where("ticket_id", "==", ticket_id).stream()
-            rows = [AuditEntry(**doc.to_dict()) for doc in docs]
+            rows = [self._to_entry(doc) for doc in docs]
             return sorted(rows, key=lambda r: r.at)
+
+        return await asyncio.to_thread(_query)
+
+    async def list_filtered(
+        self,
+        *,
+        actor: str | None = None,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+        limit: int = 200,
+    ) -> list[AuditEntry]:
+        def _query() -> list[AuditEntry]:
+            query = self._collection()
+            if actor is not None:
+                query = query.where("actor", "==", actor)
+            if from_ts is not None:
+                query = query.where("at", ">=", from_ts)
+            if to_ts is not None:
+                query = query.where("at", "<=", to_ts)
+            docs = query.stream()
+            entries = [self._to_entry(doc) for doc in docs]
+            entries.sort(key=lambda e: e.at, reverse=True)
+            return entries[:limit]
 
         return await asyncio.to_thread(_query)
 

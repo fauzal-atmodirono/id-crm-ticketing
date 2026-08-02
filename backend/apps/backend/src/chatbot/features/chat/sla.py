@@ -179,16 +179,25 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
     result for a given inbox, behavior is byte-identical to the env-only path
     (this is a hard requirement — this engine drives live SLA breach alerts).
 
-    Known limitation: ``pic_whatsapp`` and ``engine_enabled`` from the policy
-    store are NOT applied here. ``pic_whatsapp`` is baked into the ``alert``
-    callback before it reaches this function (built once per scan in
-    ``_build_pic_alert``, called from ``run_sla_scan_job``/``start_sla_scheduler``
-    with no per-conversation inbox context), and ``sla_engine_enabled`` is read
-    once, globally, in ``start_sla_scheduler`` before any scan starts — neither
-    has a per-conversation usage site in this loop. Applying per-inbox overrides
-    for either would require restructuring how alerts are built/dispatched (and,
-    for engine_enabled, how the scheduler gate works), which is out of scope for
-    this task.
+    ``engine_enabled`` is applied as a per-conversation OPT-OUT: when the
+    resolved policy for a conversation's inbox has ``engine_enabled is False``,
+    that conversation is skipped entirely (treated as "SLA engine disabled for
+    this inbox"). ``engine_enabled`` of ``None`` (unset) or ``True`` never
+    changes behavior. This is distinct from the GLOBAL ``sla_engine_enabled``
+    gate in ``start_sla_scheduler``, which still governs whether the scheduler
+    (and therefore any scan at all) exists in the first place — a per-inbox
+    OPT-IN when the global gate is off remains structurally out of scope (see
+    ``start_sla_scheduler``'s docstring): that check runs once, before any scan
+    or conversation loop exists, so there is nothing to opt back into per-inbox
+    without restructuring the scheduler gate itself.
+
+    Known limitation: ``pic_whatsapp`` from the policy store is NOT applied
+    here. It is baked into the ``alert`` callback before it reaches this
+    function (built once per scan in ``_build_pic_alert``, called from
+    ``run_sla_scan_job``/``start_sla_scheduler`` with no per-conversation inbox
+    context) — applying a per-inbox override would require threading
+    ``twilio_adapter`` into this function and rebuilding the alert closure per
+    conversation, which is out of scope for this task.
     """
     clock = now or datetime.now(UTC)
     conversations = (fetch or fetch_conversations)(settings)
@@ -218,6 +227,14 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
         resolved_policy = None
         if policy_repo is not None:
             resolved_policy = await policy_repo.resolve(conv.get("inbox_id"))
+
+        # Per-inbox opt-out: an explicit engine_enabled=False in the policy
+        # store disables SLA scanning for this conversation's inbox only.
+        # None (unset) or True never changes behavior. This is separate from
+        # the global sla_engine_enabled gate in start_sla_scheduler, which
+        # still controls whether the scheduler runs at all.
+        if resolved_policy is not None and resolved_policy.engine_enabled is False:
+            continue
 
         response_hours = (
             resolved_policy.response_hours
@@ -507,9 +524,11 @@ def start_sla_scheduler(
     injectable (``scheduler`` / ``job``) for tests.
 
     Note: ``sla_engine_enabled`` is only ever read here, once, globally, before
-    any scan starts — a per-inbox ``engine_enabled`` override from the policy
-    store is out of scope for this task (see ``scan_conversations``'s
-    docstring for the full rationale).
+    any scan (or scheduler) exists. A per-inbox ``engine_enabled=False``
+    OPT-OUT is applied per-conversation inside ``scan_conversations`` (see its
+    docstring). A per-inbox OPT-IN when this global gate is off remains out of
+    scope: there is no scan loop to opt back into when the scheduler was never
+    started.
     """
     if not settings.sla_engine_enabled:
         return None

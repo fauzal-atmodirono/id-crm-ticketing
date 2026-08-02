@@ -288,6 +288,50 @@ def test_scan_conversations_uses_policy_store_ack_minutes_by_channel_when_set() 
     assert fired[0].to_state == NO_RESPONSE_BREACH
 
 
+def test_scan_conversations_skips_conversation_when_policy_engine_enabled_false() -> None:
+    """An explicit engine_enabled=False in the policy store opts a conversation's
+    inbox OUT of SLA scanning entirely; engine_enabled=None or True does not."""
+    settings = _settings(sla_response_hours=8, sla_resolution_hours=1000)
+    conv_disabled = _conv(1006, status="open", created_at=_epoch(10), inbox_id=5)
+    conv_unset = _conv(1007, status="open", created_at=_epoch(10), inbox_id=5)
+    conv_enabled = _conv(1008, status="open", created_at=_epoch(10), inbox_id=5)
+
+    fired_disabled = asyncio.run(
+        scan_conversations(
+            settings,
+            InMemoryAuditLog(),
+            now=_NOW,
+            fetch=lambda _s: [conv_disabled],
+            policy_repo=_FakePolicyRepo(SlaPolicyValues(engine_enabled=False)),
+        )
+    )
+    assert fired_disabled == []
+
+    fired_unset = asyncio.run(
+        scan_conversations(
+            settings,
+            InMemoryAuditLog(),
+            now=_NOW,
+            fetch=lambda _s: [conv_unset],
+            policy_repo=_FakePolicyRepo(SlaPolicyValues(engine_enabled=None)),
+        )
+    )
+    assert len(fired_unset) == 1
+    assert fired_unset[0].to_state == NO_RESPONSE_BREACH
+
+    fired_enabled = asyncio.run(
+        scan_conversations(
+            settings,
+            InMemoryAuditLog(),
+            now=_NOW,
+            fetch=lambda _s: [conv_enabled],
+            policy_repo=_FakePolicyRepo(SlaPolicyValues(engine_enabled=True)),
+        )
+    )
+    assert len(fired_enabled) == 1
+    assert fired_enabled[0].to_state == NO_RESPONSE_BREACH
+
+
 # --- scheduler guard -------------------------------------------------------
 
 

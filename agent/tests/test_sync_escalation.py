@@ -5,6 +5,8 @@ number. Re-processing the same conversation must not create a second
 ticket.
 """
 
+import json
+
 import httpx
 import respx
 from sqlalchemy import select
@@ -282,3 +284,75 @@ async def test_maybe_escalate_ignores_payload_without_escalate_label():
 
     assert not create_ticket.called
     assert not create_message.called
+
+
+@respx.mock
+async def test_stamps_dealer_escalated_at_on_first_dealer_label():
+    """The first time a `dealer_<slug>` label appears on a conversation,
+    `maybe_stamp_dealer_escalation` stamps `dealer_escalated_at` so the BI
+    turnaround-time view has a real escalation timestamp to diff against
+    `resolved_at`."""
+    get_conversation = respx.get(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/10"
+    ).mock(
+        return_value=httpx.Response(
+            200, json={"id": 10, "custom_attributes": {}}
+        )
+    )
+    set_attrs = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/10/custom_attributes"
+    ).mock(return_value=httpx.Response(200, json={}))
+
+    payload = {"id": 10, "labels": ["division_sales", "dealer_kl_glenmarie"]}
+    await sync.maybe_stamp_dealer_escalation(payload)
+
+    assert get_conversation.call_count == 1
+    assert set_attrs.call_count == 1
+    body = json.loads(set_attrs.calls.last.request.content)
+    assert "dealer_escalated_at" in body["custom_attributes"]
+
+
+@respx.mock
+async def test_no_dealer_label_no_op():
+    set_attrs = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/11/custom_attributes"
+    ).mock(return_value=httpx.Response(200, json={}))
+
+    payload = {"id": 11, "labels": ["division_sales"]}
+    await sync.maybe_stamp_dealer_escalation(payload)
+
+    assert not set_attrs.called
+
+
+@respx.mock
+async def test_already_stamped_never_overwritten():
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/12").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 12,
+                "custom_attributes": {
+                    "dealer_escalated_at": "2026-07-01T00:00:00+00:00"
+                },
+            },
+        )
+    )
+    set_attrs = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/12/custom_attributes"
+    ).mock(return_value=httpx.Response(200, json={}))
+
+    payload = {"id": 12, "labels": ["dealer_kl_glenmarie"]}
+    await sync.maybe_stamp_dealer_escalation(payload)
+
+    assert not set_attrs.called
+
+
+@respx.mock
+async def test_missing_conversation_id_no_op():
+    set_attrs = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/13/custom_attributes"
+    ).mock(return_value=httpx.Response(200, json={}))
+
+    await sync.maybe_stamp_dealer_escalation({"labels": ["dealer_kl_glenmarie"]})
+
+    assert not set_attrs.called

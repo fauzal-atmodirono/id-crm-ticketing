@@ -63,6 +63,11 @@ _pending_tasks: dict[int, _DebounceState] = {}
 
 LANGUAGE_MATCH_INSTRUCTION = "Always reply in the same language the customer is using."
 
+PENDING_KB_FALLBACK_MESSAGE = (
+    "I'm still processing some reference material — please try again in a "
+    "few minutes, or I can connect you with an agent."
+)
+
 SYSTEM_PROMPT = (
     "You are a support agent for the company, handling a live customer "
     "conversation. Decide exactly one action by calling a function: "
@@ -427,6 +432,8 @@ async def _process_conversation(conversation_id: int) -> None:
     # KB-grounded reply: for a plain answer, source the text from the backend
     # copilot (same KB + assistant as the website) instead of the local draft.
     # Router (send_reply vs escalate/handoff) is unchanged; fail-open to draft.
+    # If nothing is grounded but a KB document is still indexing, say so
+    # instead of falling through to Gemini's own ungrounded guess (WA-4).
     if (
         settings.kb_grounded_replies
         and decision.action == "send_reply"
@@ -440,6 +447,8 @@ async def _process_conversation(conversation_id: int) -> None:
             )
             if answer:
                 decision.args["text"] = answer
+            elif await proton.has_pending_kb_documents():
+                decision.args["text"] = PENDING_KB_FALLBACK_MESSAGE
 
     try:
         await _execute_decision(

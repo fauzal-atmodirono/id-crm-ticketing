@@ -618,3 +618,57 @@ async def test_assign_agent_failopen_on_error():
     respx.post(f"{PROTON_BASE}/routing/assign").mock(return_value=httpx.Response(500, json={}))
     client = _make_client()
     await client.assign_agent(70)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# has_pending_kb_documents
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_has_pending_kb_documents_true_when_any_pending():
+    respx.get(f"{PROTON_BASE}/kb/knowledge").mock(
+        return_value=httpx.Response(200, json={"documents": [
+            {"id": "1", "title": "A", "status": "indexed"},
+            {"id": "2", "title": "B", "status": "pending"},
+        ]})
+    )
+    client = _make_client()
+    assert await client.has_pending_kb_documents() is True
+    await client.aclose()
+
+
+@respx.mock
+async def test_has_pending_kb_documents_false_when_all_indexed():
+    respx.get(f"{PROTON_BASE}/kb/knowledge").mock(
+        return_value=httpx.Response(200, json={"documents": [
+            {"id": "1", "title": "A", "status": "indexed"},
+        ]})
+    )
+    client = _make_client()
+    assert await client.has_pending_kb_documents() is False
+    await client.aclose()
+
+
+@respx.mock
+async def test_has_pending_kb_documents_false_on_non_2xx():
+    respx.get(f"{PROTON_BASE}/kb/knowledge").mock(return_value=httpx.Response(503))
+    client = _make_client()
+    assert await client.has_pending_kb_documents() is False
+    await client.aclose()
+
+
+@respx.mock
+async def test_has_pending_kb_documents_false_on_connection_error():
+    respx.get(f"{PROTON_BASE}/kb/knowledge").mock(side_effect=httpx.ConnectError("boom"))
+    client = _make_client()
+    assert await client.has_pending_kb_documents() is False
+    await client.aclose()
+
+
+@respx.mock
+async def test_has_pending_kb_documents_false_on_bad_shape():
+    respx.get(f"{PROTON_BASE}/kb/knowledge").mock(return_value=httpx.Response(200, json={"oops": []}))
+    client = _make_client()
+    assert await client.has_pending_kb_documents() is False
+    await client.aclose()

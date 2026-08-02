@@ -614,6 +614,79 @@ async def test_send_reply_falls_back_to_local_when_copilot_none(monkeypatch):
 
 
 @respx.mock
+async def test_send_reply_falls_back_to_pending_message_when_kb_pending(monkeypatch):
+    from app.config import get_settings
+    settings = get_settings()
+    monkeypatch.setattr(settings, "kb_grounded_replies", True)
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42").mock(
+        return_value=httpx.Response(200, json=CONVERSATION_RESPONSE)
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json={"payload": [
+            {"message_type": 0, "content": "ada promo apa", "private": False,
+             "sender": {"name": "Cust", "email": "c@x.my"}},
+        ]})
+    )
+    respx.get(f"{PROTON}/kb/inboxes").mock(return_value=httpx.Response(200, json=INBOXES_WITH_MODE["auto"]))
+    respx.post(f"{PROTON}/assist/copilot").mock(return_value=httpx.Response(200, json={"answer": ""}))
+    respx.get(f"{PROTON}/kb/knowledge").mock(
+        return_value=httpx.Response(200, json={"documents": [{"id": "1", "title": "A", "status": "pending"}]})
+    )
+    create_message = respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json={"id": 1})
+    )
+    monkeypatch.setattr(gemini, "decide", _stub_decide(
+        gemini.Decision("send_reply", {"text": "LOCAL DRAFT"}, None, 5)
+    ))
+    client = _make_proton_client()
+    monkeypatch.setattr(orchestrator, "get_proton_config_client", lambda: client)
+
+    task = await orchestrator.handle_bot_event(_payload())
+    await task
+
+    import json as _json
+    posted = _json.loads(create_message.calls.last.request.content)
+    assert posted["content"] == orchestrator.PENDING_KB_FALLBACK_MESSAGE
+    await client.aclose()
+
+
+@respx.mock
+async def test_send_reply_uses_local_draft_when_no_answer_and_no_pending(monkeypatch):
+    from app.config import get_settings
+    settings = get_settings()
+    monkeypatch.setattr(settings, "kb_grounded_replies", True)
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42").mock(
+        return_value=httpx.Response(200, json=CONVERSATION_RESPONSE)
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json={"payload": [
+            {"message_type": 0, "content": "hi", "private": False, "sender": {"name": "C"}},
+        ]})
+    )
+    respx.get(f"{PROTON}/kb/inboxes").mock(return_value=httpx.Response(200, json=INBOXES_WITH_MODE["auto"]))
+    respx.post(f"{PROTON}/assist/copilot").mock(return_value=httpx.Response(200, json={"answer": ""}))
+    respx.get(f"{PROTON}/kb/knowledge").mock(
+        return_value=httpx.Response(200, json={"documents": [{"id": "1", "title": "A", "status": "indexed"}]})
+    )
+    create_message = respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json={"id": 1})
+    )
+    monkeypatch.setattr(gemini, "decide", _stub_decide(
+        gemini.Decision("send_reply", {"text": "LOCAL DRAFT"}, None, 5)
+    ))
+    client = _make_proton_client()
+    monkeypatch.setattr(orchestrator, "get_proton_config_client", lambda: client)
+
+    task = await orchestrator.handle_bot_event(_payload())
+    await task
+
+    import json as _json
+    posted = _json.loads(create_message.calls.last.request.content)
+    assert posted["content"] == "LOCAL DRAFT"
+    await client.aclose()
+
+
+@respx.mock
 async def test_flag_off_does_not_call_copilot(monkeypatch):
     from app.config import get_settings
     settings = get_settings()

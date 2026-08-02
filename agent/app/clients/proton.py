@@ -313,6 +313,22 @@ class ProtonConfigClient:
             return answer
         return None
 
+    async def has_pending_kb_documents(self) -> bool:
+        """True if GET /kb/knowledge lists at least one document with
+        status == "pending". Fail-open: any error, non-2xx, or bad shape
+        (already handled inside _fetch_cached) returns False, so the caller
+        just falls back to today's behavior instead of blocking on this."""
+        data = await self._fetch_cached("/kb/knowledge")
+        if not isinstance(data, dict):
+            return False
+        documents = data.get("documents")
+        if not isinstance(documents, list):
+            return False
+        return any(
+            isinstance(doc, dict) and doc.get("status") == "pending"
+            for doc in documents
+        )
+
     async def chat_turn(
         self,
         session_id: str,

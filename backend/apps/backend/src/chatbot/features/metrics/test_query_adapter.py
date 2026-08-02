@@ -10,9 +10,13 @@ from chatbot.features.metrics.query_adapter import (
 )
 from chatbot.features.metrics.query_port import (
     CallCentreMetrics,
+    CaseAgingMetrics,
+    DealerEscalationMetrics,
     DepartmentsMetrics,
     LifecycleMetrics,
     MockMetricsQuery,
+    SlaBucketMetrics,
+    VolumeByTypeDivisionMetrics,
 )
 from chatbot.platform.config import Settings
 
@@ -313,3 +317,111 @@ async def test_lifecycle_reads_expected_views() -> None:
     assert isinstance(result, LifecycleMetrics)
     assert len(result.cases) == 1
     assert len(result.state_trend) == 1
+
+
+@pytest.mark.asyncio
+async def test_dealer_escalation_reads_expected_views() -> None:
+    # Note: "v_dealer_escalation_slowest_cases" must come first in this dict —
+    # _FakeClient.query matches views by substring, and "v_dealer_escalation"
+    # is itself a substring of "v_dealer_escalation_slowest_cases", so the
+    # more specific key needs first-match priority.
+    client = _FakeClient(
+        {
+            "v_dealer_escalation_slowest_cases": [
+                {
+                    "conversation_id": "CONV001",
+                    "dealer": "Dealer KL",
+                    "turnaround_days": 9.0,
+                }
+            ],
+            "v_dealer_escalation": [
+                {
+                    "dealer": "Dealer KL",
+                    "cases_escalated": 12,
+                    "avg_turnaround_days": 2.5,
+                    "p50_turnaround_days": 2.0,
+                    "p90_turnaround_days": 5.0,
+                }
+            ],
+        }
+    )
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    q = BigQueryMetricsQuery(settings, client=client)
+    result = await q.fetch_dealer_escalation()
+    assert any("v_dealer_escalation" in sql for sql in client.queries)
+    assert any("v_dealer_escalation_slowest_cases" in sql for sql in client.queries)
+    assert isinstance(result, DealerEscalationMetrics)
+    assert len(result.by_dealer) == 1
+    assert len(result.slowest_cases) == 1
+    assert result.by_dealer[0].cases_escalated == 12
+    assert result.slowest_cases[0].turnaround_days == 9.0
+
+
+@pytest.mark.asyncio
+async def test_sla_buckets_reads_expected_views() -> None:
+    client = _FakeClient(
+        {
+            "v_resolution_sla_buckets": [
+                {"case_type": "Complaint", "bucket_label": "< 1 day", "cases": 30}
+            ],
+        }
+    )
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    q = BigQueryMetricsQuery(settings, client=client)
+    result = await q.fetch_sla_buckets()
+    assert any("v_resolution_sla_buckets" in sql for sql in client.queries)
+    assert isinstance(result, SlaBucketMetrics)
+    assert len(result.buckets) == 1
+    assert result.buckets[0].cases == 30
+
+
+@pytest.mark.asyncio
+async def test_case_aging_reads_expected_views() -> None:
+    client = _FakeClient(
+        {
+            "v_case_aging": [
+                {
+                    "conversation_id": "CONV002",
+                    "case_type": "Complaint",
+                    "division": "Sales",
+                    "dealer": "Dealer KL",
+                    "pic": "Ali",
+                    "status": "open",
+                    "created_at": None,
+                    "age_days": 3.5,
+                    "bucket_label": "1-7 days",
+                }
+            ],
+        }
+    )
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    q = BigQueryMetricsQuery(settings, client=client)
+    result = await q.fetch_case_aging()
+    assert any("v_case_aging" in sql for sql in client.queries)
+    assert isinstance(result, CaseAgingMetrics)
+    assert len(result.cases) == 1
+    assert result.cases[0].age_days == 3.5
+
+
+@pytest.mark.asyncio
+async def test_volume_by_type_division_reads_expected_views() -> None:
+    client = _FakeClient(
+        {
+            "v_volume_by_type_division": [
+                {
+                    "month": "2026-06",
+                    "channel": "web",
+                    "case_type": "Complaint",
+                    "division": "Sales",
+                    "volume": 25,
+                }
+            ],
+        }
+    )
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    q = BigQueryMetricsQuery(settings, client=client)
+    result = await q.fetch_volume_by_type_division()
+    assert any("v_volume_by_type_division" in sql for sql in client.queries)
+    assert isinstance(result, VolumeByTypeDivisionMetrics)
+    assert len(result.volume) == 1
+    assert result.volume[0].volume == 25

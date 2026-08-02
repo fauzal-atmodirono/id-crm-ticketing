@@ -136,6 +136,12 @@ class Settings(BaseSettings):
         '"Product Defect","Staff Conduct","Other"]}}'
     )
 
+    # Vehicle-model / case-type dimensions — SAME values as backend/'s
+    # VEHICLE_MODELS_JSON / CASE_TYPE_OPTIONS_JSON (each service parses
+    # independently). Used by services/categorize.py's fallback classifier.
+    vehicle_models_json: str = '{"options": ["e.MAS 5", "e.MAS 7", "e.MAS 7 PHEV", "Not Applicable"]}'
+    case_type_options_json: str = '{"options": ["Inquiry", "Complaint", "Feedback"]}'
+
     # C1: email once-per-thread auto-acknowledgement.
     email_autoack_enabled: bool = False
     email_autoack_template: str = (

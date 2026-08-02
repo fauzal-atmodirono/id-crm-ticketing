@@ -1,0 +1,26 @@
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeUploads.vue b/app/javascript/dashboard/components/proton/KnowledgeUploads.vue
+index 734136e..faa82be 100644
+--- a/app/javascript/dashboard/components/proton/KnowledgeUploads.vue
++++ b/app/javascript/dashboard/components/proton/KnowledgeUploads.vue
+@@ -58,6 +58,10 @@ const load = async () => {
+     errored.value = true;
+     if (err.status === 401) {
+       useAlert('Unauthorized (401) — check the backend key configuration.');
++    } else if (err.status === 404) {
++      useAlert(
++        "Document upload isn't enabled for this workspace yet. Contact your administrator."
++      );
+     } else if (err.status === 503) {
+       useAlert('Knowledge store unavailable (503) on the backend.');
+     } else {
+@@ -148,6 +152,10 @@ const remove = async entry => {
+   } catch (err) {
+     if (err.status === 401) {
+       useAlert('Unauthorized (401) — check the backend key configuration.');
++    } else if (err.status === 404) {
++      useAlert(
++        "Document upload isn't enabled for this workspace yet. Contact your administrator."
++      );
+     } else if (err.status === 503) {
+       useAlert('Knowledge store unavailable (503).');
+     } else {

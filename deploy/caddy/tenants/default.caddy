@@ -1,7 +1,7 @@
 http://crm.127-0-0-1.nip.io {
 	# Proton AI backend paths are proxied same-origin so the Chatwoot SPA
 	# reaches the backend without CORS or a browser-unreachable internal host.
-	@proton_backend path /metrics/* /kb/* /assist/* /routing/* /authz/* /admin/*
+	@proton_backend path /metrics/* /kb/* /assist/* /routing/* /authz/* /admin/* /rsa/*
 	reverse_proxy @proton_backend default-backend:8080
 	reverse_proxy default-chatwoot-rails:3000
 }
@@ -26,7 +26,7 @@ http://mail.127-0-0-1.nip.io {
 http://crm.localhost {
 	# Proton AI backend paths are proxied same-origin so the Chatwoot SPA
 	# reaches the backend without CORS or a browser-unreachable internal host.
-	@proton_backend path /metrics/* /kb/* /assist/* /routing/* /authz/* /admin/*
+	@proton_backend path /metrics/* /kb/* /assist/* /routing/* /authz/* /admin/* /rsa/*
 	reverse_proxy @proton_backend default-backend:8080
 	reverse_proxy default-chatwoot-rails:3000
 }

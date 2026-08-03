@@ -224,7 +224,7 @@ def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
 
     query_port = build_metrics_query_port(settings)
     app.include_router(build_metrics_query_router(query_port))
-    app.include_router(build_metrics_export_router(query_port))
+    app.include_router(build_metrics_export_router(query_port, settings))
     app.include_router(build_metrics_anomaly_router(query_port, settings))
     app.include_router(build_metrics_insights_router(query_port, settings))
 

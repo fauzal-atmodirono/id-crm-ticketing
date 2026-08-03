@@ -1,12 +1,16 @@
+import json
+
 import pytest
 
 from chatbot.features.metrics.mapping import (
+    CATEGORY_TO_DIVISION,
     ConversationRow,
     apply_working_hours,
     channel_from_external_id,
     map_chatwoot_conversation_to_row,
     map_ticket_to_row,
 )
+from chatbot.platform.config import Settings
 
 
 def _ticket(**kw: object) -> dict[str, object]:
@@ -142,6 +146,25 @@ def test_skip_non_conversation() -> None:
 def test_keep_csat_only_ticket_even_without_external_id() -> None:
     row = map_ticket_to_row({"id": 2, "status": "solved", "tags": ["csat_5"]})
     assert row is not None and row.channel == "Other" and row.csat_score == 5
+
+
+def test_category_to_division_covers_new_top_level_divisions() -> None:
+    """Task 24 added product/marketing/others to case_taxonomy_json; they must
+    resolve to a real division label, not fall through to None/"Unknown" in
+    the BigQuery views (v_volume_by_type_division, v_state_trend, v_case_aging)."""
+    assert CATEGORY_TO_DIVISION.get("product") == "Product"
+    assert CATEGORY_TO_DIVISION.get("marketing") == "Marketing"
+    assert CATEGORY_TO_DIVISION.get("others") == "Others"
+
+
+def test_category_to_division_covers_every_default_taxonomy_slug() -> None:
+    """Guard against this exact class of drift recurring: every top-level slug
+    in the default case_taxonomy_json must have a CATEGORY_TO_DIVISION entry."""
+    taxonomy = json.loads(Settings.model_fields["case_taxonomy_json"].default)
+    for slug in taxonomy:
+        assert CATEGORY_TO_DIVISION.get(slug) is not None, (
+            f"case_taxonomy_json slug {slug!r} has no CATEGORY_TO_DIVISION mapping"
+        )
 
 
 def test_division_derived_from_category_tag() -> None:

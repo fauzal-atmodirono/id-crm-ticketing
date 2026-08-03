@@ -34,6 +34,9 @@ CATEGORY_TO_DIVISION = {
     "service": "Aftersales",
     "charging": "Charging",
     "charger": "Charging",
+    "product": "Product",
+    "marketing": "Marketing",
+    "others": "Others",
 }
 _CATEGORY_TAG = re.compile(r"^category_(.+)$")
 _SUBCAT_TAG = re.compile(r"^subcat_(.+)$")

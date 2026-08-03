@@ -186,8 +186,14 @@ async def test_open_handoff_pic_team_preserved_when_routing_disabled() -> None:
 
     # Stub pic_registry: lookup("sales") returns an object with chatwoot_team_id=99
     # pic_name is required by _pic_label which also reads the pic object.
+    # lookup() is async (Task 2: store-first, env-var fallback), so the stub must
+    # be an async callable too.
     pic_stub = types.SimpleNamespace(chatwoot_team_id=99, pic_name="Sales PIC")
-    registry_stub = types.SimpleNamespace(lookup=lambda _dept: pic_stub)
+
+    async def _lookup(_dept: str) -> Any:
+        return pic_stub
+
+    registry_stub = types.SimpleNamespace(lookup=_lookup)
     adapter._pic_registry = registry_stub  # type: ignore[attr-defined]
 
     await adapter.open_handoff(

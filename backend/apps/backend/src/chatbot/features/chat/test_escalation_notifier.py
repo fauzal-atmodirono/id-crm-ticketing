@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 from chatbot.features.chat.escalation_notifier import EscalationNotifier, build_dealer_email_map
 from chatbot.features.chat.pic_registry import PicEntry, PicRegistry
+from chatbot.features.chat.pic_store import DealerRecord
 from chatbot.platform.config import Settings
 
 
@@ -452,3 +453,55 @@ async def test_notify_email_channel_escalation_noop_when_everything_off() -> Non
         department=None, dealer=None, customer_email="alex@customer.example",
     )
     assert sent == []
+
+
+# ---------------------------------------------------------------------------
+# Task 2: dealer resolution is store-first, dict fallback
+# ---------------------------------------------------------------------------
+
+
+async def test_dealer_forward_uses_store_record_when_present() -> None:
+    """DealerStore.get() wins over the legacy dealer_email_map dict."""
+    dealer_store = AsyncMock()
+    dealer_store.get.return_value = DealerRecord(dealer="kl_pj", email="store@dealer.example")
+
+    notifier, sent = _notifier(pic=None, dealer_map={"kl_pj": "legacy@dealer.example"})
+    notifier._dealer_store = dealer_store
+
+    await notifier.notify_email_channel_escalation(
+        conv_id="9", title="t", body="b",
+        department=None, dealer="kl_pj", customer_email=None,
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["to"] == ["store@dealer.example"]
+    dealer_store.get.assert_awaited_once_with("kl_pj")
+
+
+async def test_dealer_forward_falls_back_to_dict_when_store_has_no_entry() -> None:
+    dealer_store = AsyncMock()
+    dealer_store.get.return_value = None
+
+    notifier, sent = _notifier(pic=None, dealer_map={"kl_pj": "legacy@dealer.example"})
+    notifier._dealer_store = dealer_store
+
+    await notifier.notify_email_channel_escalation(
+        conv_id="9", title="t", body="b",
+        department=None, dealer="kl_pj", customer_email=None,
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["to"] == ["legacy@dealer.example"]
+
+
+async def test_dealer_forward_works_without_a_store_configured() -> None:
+    """dealer_store=None (default) -> unchanged legacy dict-only behaviour."""
+    notifier, sent = _notifier(pic=None, dealer_map={"kl_pj": "legacy@dealer.example"})
+
+    await notifier.notify_email_channel_escalation(
+        conv_id="9", title="t", body="b",
+        department=None, dealer="kl_pj", customer_email=None,
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["to"] == ["legacy@dealer.example"]

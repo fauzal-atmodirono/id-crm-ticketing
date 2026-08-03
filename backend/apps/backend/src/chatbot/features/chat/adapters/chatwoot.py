@@ -201,7 +201,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 {"team_id": team_id},
             )
 
-    def _pic_label(self, department: str | None) -> str | None:
+    async def _pic_label(self, department: str | None) -> str | None:
         """Return the ``pic_<name_slug>`` label for the resolved PIC, or None.
 
         Satisfies spec item 12: tag the escalated conversation with the PIC's
@@ -211,7 +211,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         if self._pic_registry is None or not department:
             return None
         key = department.removeprefix("dept_")
-        pic = self._pic_registry.lookup(key)
+        pic = await self._pic_registry.lookup(key)
         if pic is None:
             return None
         slug = pic.pic_name.strip().lower().replace(" ", "_")
@@ -256,7 +256,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         pic = None
         if self._pic_registry is not None and department:
             key = department.removeprefix("dept_")
-            pic = self._pic_registry.lookup(key)
+            pic = await self._pic_registry.lookup(key)
 
         # Create the back-office Zammad ticket ONLY when direct ticketing is on.
         zammad_ticket_number: str | None = None
@@ -538,7 +538,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         # the batch metrics sync can read them back — a separate labels POST would
         # re-fire the webhook and spawn a duplicate Zammad ticket.
         dimension_labels = self._dimension_labels(division, department, sla_minutes)
-        pic_lbl = self._pic_label(department)
+        pic_lbl = await self._pic_label(department)
         await self._request(
             "POST",
             f"/conversations/{conv_id}/labels",
@@ -729,7 +729,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         team_id_to_use = None
         if self._pic_registry is not None and payload.department:
             _key = payload.department.removeprefix("dept_")
-            _pic = self._pic_registry.lookup(_key)
+            _pic = await self._pic_registry.lookup(_key)
             if _pic is not None and _pic.chatwoot_team_id is not None:
                 team_id_to_use = _pic.chatwoot_team_id
         if team_id_to_use is None:
@@ -768,7 +768,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             payload.department,
             payload.sla_minutes,
         )
-        pic_lbl = self._pic_label(payload.department)
+        pic_lbl = await self._pic_label(payload.department)
         await self._request(
             "POST",
             f"/conversations/{conv_id}/labels",

@@ -26,6 +26,7 @@ from chatbot.features.chat.case_state import CHATWOOT_CASE_STATE_ATTR, CaseState
 if TYPE_CHECKING:
     from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
     from chatbot.features.chat.pic_registry import PicEntry, PicRegistry
+    from chatbot.features.chat.pic_store import DealerStore
     from chatbot.features.metrics.email_sender import SmtpEmailSender
     from chatbot.platform.config import Settings
 
@@ -69,6 +70,7 @@ class EscalationNotifier:
         twilio_adapter: TwilioChannelAdapter | None,
         chatwoot_request: _CWRequest,
         dealer_email_map: dict[str, str] | None = None,
+        dealer_store: DealerStore | None = None,
     ) -> None:
         self._settings = settings
         self._pic_registry = pic_registry
@@ -76,6 +78,7 @@ class EscalationNotifier:
         self._twilio = twilio_adapter
         self._cw = chatwoot_request
         self._dealer_email_map = dealer_email_map or {}
+        self._dealer_store = dealer_store
 
     async def notify(
         self,
@@ -92,7 +95,7 @@ class EscalationNotifier:
         exists the email references it, otherwise it references the Chatwoot
         conversation. All side-effects work in a Chatwoot-only deployment.
         """
-        pic = self._resolve_pic(department)
+        pic = await self._resolve_pic(department)
 
         await self._write_case_state(conv_id)
 
@@ -111,12 +114,12 @@ class EscalationNotifier:
         await self._send_wa(pic, conv_id=conv_id, title=title)
         return pic
 
-    def _resolve_pic(self, department: str | None) -> PicEntry | None:
+    async def _resolve_pic(self, department: str | None) -> PicEntry | None:
         if not department:
             return None
         # dept label is "dept_apps" — strip prefix if present
         key = department.removeprefix("dept_")
-        return self._pic_registry.lookup(key)
+        return await self._pic_registry.lookup(key)
 
     def _send_email(
         self,
@@ -190,14 +193,14 @@ class EscalationNotifier:
             self._send_customer_ack(customer_email, title=title)
 
         if self._settings.escalation_email_enabled:
-            pic = self._resolve_pic(department)
+            pic = await self._resolve_pic(department)
             if pic is not None:
                 self._send_email(
                     pic, conv_id=conv_id, title=title, body=body, zammad_ticket_number=None
                 )
 
         if dealer:
-            self._send_dealer_forward(dealer, conv_id=conv_id, title=title, body=body)
+            await self._send_dealer_forward(dealer, conv_id=conv_id, title=title, body=body)
 
     def _send_customer_ack(self, to_email: str, *, title: str) -> None:
         try:
@@ -211,8 +214,16 @@ class EscalationNotifier:
         except Exception as exc:
             _log.warning("escalation_customer_ack_failed", to_email=to_email, error=str(exc))
 
-    def _send_dealer_forward(self, dealer_slug: str, *, conv_id: str, title: str, body: str) -> None:
-        email = self._dealer_email_map.get(dealer_slug.lower())
+    async def _send_dealer_forward(
+        self, dealer_slug: str, *, conv_id: str, title: str, body: str
+    ) -> None:
+        email = None
+        if self._dealer_store is not None:
+            record = await self._dealer_store.get(dealer_slug.lower())
+            if record is not None:
+                email = record.email
+        if not email:
+            email = self._dealer_email_map.get(dealer_slug.lower())
         if not email:
             _log.info("escalation_dealer_unmapped", dealer=dealer_slug)
             return

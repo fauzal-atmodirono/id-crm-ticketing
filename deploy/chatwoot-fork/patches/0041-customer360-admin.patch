@@ -1,0 +1,322 @@
+diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
+index 92ee417..fbbf534 100644
+--- a/app/javascript/dashboard/api/protonAdmin.js
++++ b/app/javascript/dashboard/api/protonAdmin.js
+@@ -179,3 +179,14 @@ export function deleteDealer(dealer) {
+     method: 'DELETE',
+   });
+ }
++
++// ── Customer 360 foundational lookup ────────────────────────────────────
++// Backs customer360_router.py — a single search box keyed on phone number
++// (matched exactly, digits-only) or vehicle number (matched as a
++// case-insensitive substring against RSA incidents + the conversation
++// vehicle_model custom attribute). Read-only: no create/update/delete here.
++
++export function searchCustomer360(query) {
++  const params = new URLSearchParams({ q: query });
++  return adminRequest(`/admin/customer360/search?${params.toString()}`);
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index b55d863..8d1a7b7 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -642,6 +642,16 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
++    ...(protonHasPermission('customer360.view')
++      ? [
++          {
++            name: 'Customer360',
++            icon: 'i-lucide-search',
++            label: 'Customer 360',
++            to: accountScopedRoute('proton_customer360'),
++          },
++        ]
++      : []),
+     {
+       name: 'Contacts',
+       label: t('SIDEBAR.CONTACTS'),
+diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+index 4047445..805d479 100644
+--- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+@@ -63,6 +63,12 @@ export default {
+           component: () => import('../../views/ProtonEscalationRoutingPage.vue'),
+           meta: { permissions: ['administrator'] },
+         },
++        {
++          path: 'proton/customer360',
++          name: 'proton_customer360',
++          component: () => import('../../views/ProtonCustomer360Page.vue'),
++          meta: { permissions: ['administrator'] },
++        },
+         ...inboxRoutes,
+         ...conversation.routes,
+         ...settings.routes,
+diff --git a/app/javascript/dashboard/views/ProtonCustomer360Page.vue b/app/javascript/dashboard/views/ProtonCustomer360Page.vue
+new file mode 100644
+index 0000000..6f489fa
+--- /dev/null
++++ b/app/javascript/dashboard/views/ProtonCustomer360Page.vue
+@@ -0,0 +1,259 @@
++<!-- ProtonCustomer360Page.vue — OUR file. Customer 360 foundational lookup:
++     a single search box (phone number or vehicle number) backed by
++     GET /admin/customer360/search, aggregating what's already in the CRM —
++     the matching Chatwoot contact, their cross-channel conversations
++     (clickable through to the real conversation), and any RSA incidents
++     tied to the searched vehicle. Entirely read-only: no create/update/
++     delete actions live here (contact editing happens in Chatwoot's own
++     contact panel; incident editing lives on ProtonRsaPage.vue). Mirrors
++     ProtonEscalationRoutingPage.vue's shell (header, n-* tokens, useAlert
++     toasts). -->
++<script>
++import { useAlert } from 'dashboard/composables';
++import { searchCustomer360 } from 'dashboard/api/protonAdmin';
++import { frontendURL, conversationUrl } from 'dashboard/helper/URLHelper.js';
++
++export default {
++  name: 'ProtonCustomer360Page',
++  data() {
++    return {
++      query: '',
++      contact: null,
++      conversations: [],
++      rsaIncidents: [],
++      loading: false,
++      errored: false,
++      searched: false,
++    };
++  },
++  methods: {
++    async search() {
++      const q = this.query.trim();
++      if (q.length < 2) {
++        useAlert('Enter at least 2 characters to search.');
++        return;
++      }
++      this.loading = true;
++      this.errored = false;
++      try {
++        const data = await searchCustomer360(q);
++        this.contact = data.contact || null;
++        this.conversations = Array.isArray(data.conversations)
++          ? data.conversations
++          : [];
++        this.rsaIncidents = Array.isArray(data.rsa_incidents)
++          ? data.rsa_incidents
++          : [];
++        this.searched = true;
++      } catch (err) {
++        this.errored = true;
++        useAlert(
++          'Failed to search Customer 360: ' + (err.message || String(err))
++        );
++      } finally {
++        this.loading = false;
++      }
++    },
++    conversationLink(conversation) {
++      return frontendURL(
++        conversationUrl({
++          accountId: this.$route.params.accountId,
++          id: conversation.id,
++        })
++      );
++    },
++  },
++};
++</script>
++
++<template>
++  <div class="p-6">
++    <h1 class="mb-1 text-lg font-medium text-n-slate-12">Customer 360</h1>
++    <p class="mb-6 text-sm text-n-slate-11">
++      Look up a customer by phone number or vehicle number to see their
++      contact record, cross-channel conversations, and RSA incident
++      history in one place.
++    </p>
++
++    <form
++      class="flex max-w-xl gap-2 mb-8"
++      @submit.prevent="search"
++    >
++      <input
++        v-model="query"
++        type="text"
++        placeholder="Phone number or vehicle number"
++        class="flex-1 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++      />
++      <button
++        type="submit"
++        :disabled="loading"
++        class="px-4 py-2 text-sm font-medium rounded-lg w-fit bg-n-brand text-white hover:opacity-90 disabled:opacity-50"
++      >
++        {{ loading ? 'Searching…' : 'Search' }}
++      </button>
++    </form>
++
++    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
++      Loading…
++    </div>
++    <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">
++      Could not complete the search.
++    </div>
++
++    <template v-else-if="searched">
++      <!-- Contact -->
++      <h2 class="mb-3 text-base font-medium text-n-slate-12">Contact</h2>
++      <p v-if="!contact" class="mb-10 text-sm text-n-slate-11">
++        No matching contact found.
++      </p>
++      <div
++        v-else
++        class="max-w-xl px-4 py-3 mb-10 text-sm border rounded-lg border-n-weak text-n-slate-11"
++      >
++        <div class="mb-1 text-n-slate-12">{{ contact.name }}</div>
++        <div v-if="contact.phone_number">
++          Phone: {{ contact.phone_number }}
++        </div>
++        <div v-if="contact.email">Email: {{ contact.email }}</div>
++      </div>
++
++      <!-- Conversations -->
++      <h2 class="mb-3 text-base font-medium text-n-slate-12">
++        Conversations
++      </h2>
++      <p v-if="!conversations.length" class="mb-10 text-sm text-n-slate-11">
++        No conversations found.
++      </p>
++      <div v-else class="mb-10 overflow-x-auto border rounded-lg border-n-weak">
++        <table class="w-full text-sm border-collapse text-n-slate-11">
++          <thead>
++            <tr class="text-left border-b border-n-weak text-n-slate-12">
++              <th class="px-3 py-2 font-medium whitespace-nowrap">ID</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Inbox</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Status</th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="conversation in conversations"
++              :key="conversation.id"
++              class="border-b border-n-weak last:border-b-0"
++            >
++              <td class="px-3 py-2 whitespace-nowrap">
++                <router-link
++                  :to="conversationLink(conversation)"
++                  class="font-medium text-n-brand hover:underline"
++                >
++                  #{{ conversation.id }}
++                </router-link>
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ conversation.inbox_id }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ conversation.status }}
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++
++      <!-- RSA incidents (read-only) -->
++      <h2 class="mb-3 text-base font-medium text-n-slate-12">
++        RSA incidents
++      </h2>
++      <p v-if="!rsaIncidents.length" class="text-sm text-n-slate-11">
++        No RSA incidents found.
++      </p>
++      <div v-else class="overflow-x-auto border rounded-lg border-n-weak">
++        <table class="w-full text-sm border-collapse text-n-slate-11">
++          <thead>
++            <tr class="text-left border-b border-n-weak text-n-slate-12">
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Date</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">
++                Vehicle no.
++              </th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Model</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Cause</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">
++                Purchased from
++              </th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Breakdown</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Arrived</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Called in</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">
++                Towing assigned
++              </th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">
++                Arrived breakdown
++              </th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">
++                Arrived outlet
++              </th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Total km</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">
++                Late reason
++              </th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Remarks</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">
++                Created by
++              </th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="incident in rsaIncidents"
++              :key="incident.id"
++              class="border-b border-n-weak last:border-b-0"
++            >
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ incident.incident_date }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ incident.vehicle_no }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ incident.vehicle_model }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">{{ incident.cause }}</td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ incident.purchased_from }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ incident.breakdown_location }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ incident.arrived_location }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ incident.customer_called_in_time }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ incident.towing_assigned_time }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ incident.time_arrived_breakdown_area }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ incident.time_arrived_outlet }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ incident.total_km }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ incident.late_reason }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ incident.remarks }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ incident.created_by }}
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++    </template>
++  </div>
++</template>

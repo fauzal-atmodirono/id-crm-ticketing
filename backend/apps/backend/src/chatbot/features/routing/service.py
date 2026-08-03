@@ -4,6 +4,7 @@ import structlog
 
 from chatbot.features.routing.presence import PresenceFetcher
 from chatbot.features.routing.store import ChannelPriorityStore
+from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
 
@@ -26,19 +27,42 @@ class RoutingService:
 
     Returns ``None`` when all three tiers are exhausted (every agent is busy
     or offline). The caller should fall back to the static team assignment.
+
+    Concurrent-conversation cap (``settings.routing_max_concurrent_per_agent``):
+        When set to a positive integer, agents whose currently-open
+        conversation count (``PresenceFetcher.fetch_agent_open_counts``) is
+        already at or above the cap are excluded from ``online`` — and
+        therefore from all three tiers, since every tier filters through
+        ``online``. ``0`` (the default) disables the cap entirely and skips
+        the open-count fetch, preserving prior behavior byte-for-byte.
     """
 
-    def __init__(self, presence: PresenceFetcher, store: ChannelPriorityStore) -> None:
+    def __init__(
+        self, presence: PresenceFetcher, store: ChannelPriorityStore, settings: Settings
+    ) -> None:
         self._presence = presence
         self._store = store
+        self._settings = settings
 
     async def pick_agent(self, conv_channel: str) -> int | None:
         """Return the best available agent id for ``conv_channel``, or ``None``."""
         agents = await self._presence.fetch_agents()
         priorities = await self._store.list_all()
 
+        open_counts: dict[int, int] = {}
+        if self._settings.routing_max_concurrent_per_agent > 0:
+            open_counts = await self._presence.fetch_agent_open_counts()
+
         channel_lower = conv_channel.lower()
-        online = {a.id: a for a in agents if a.availability_status == "online"}
+        online = {
+            a.id: a
+            for a in agents
+            if a.availability_status == "online"
+            and (
+                self._settings.routing_max_concurrent_per_agent <= 0
+                or open_counts.get(a.id, 0) < self._settings.routing_max_concurrent_per_agent
+            )
+        }
         priority_map: dict[int, list[str]] = {
             p.agent_id: [c.lower() for c in p.channel_priorities] for p in priorities
         }

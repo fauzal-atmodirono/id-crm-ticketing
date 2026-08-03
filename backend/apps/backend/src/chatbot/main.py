@@ -411,7 +411,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # when routing is enabled.
     _routing_presence = PresenceFetcher(settings)
     _routing_priority_store = ChannelPriorityStore(settings)
-    _routing_svc = RoutingService(presence=_routing_presence, store=_routing_priority_store)
+    _routing_svc = RoutingService(
+        presence=_routing_presence, store=_routing_priority_store, settings=settings
+    )
     if settings.routing_enabled and chatwoot_client is not None:
         chatwoot_client._routing_service = _routing_svc  # type: ignore[assignment]
     _routing_assigner = RoutingAssigner(settings)

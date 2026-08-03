@@ -489,6 +489,10 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             await init_kb_db(engine)
 
     # --- RSA (roadside assistance) incident log (default-off) ---
+    # Initialized to None so the RBAC block below (which reuses this instance
+    # for the Customer 360 router) can check availability without a
+    # NameError when RSA is disabled.
+    rsa_repo = None
     if settings.rsa_enabled and settings.rsa_database_url:
         from chatbot.features.rsa.rsa_db import build_engine as build_rsa_engine
         from chatbot.features.rsa.rsa_db import build_session_maker as build_rsa_session_maker
@@ -552,6 +556,31 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         app.include_router(
             build_pic_admin_router(pic_store, dealer_store, authz_repo, authz_validator, settings)
         )
+
+        # Customer 360 foundational lookup (Track 5). Reuses the already-built
+        # chatwoot_client / rsa_repo instances above rather than constructing
+        # second copies. Both are optional (chatwoot_client is None on the
+        # zendesk crm_provider path; rsa_repo is None when RSA logging is
+        # disabled), so only mount when both prerequisites are actually wired.
+        if chatwoot_client is not None and rsa_repo is not None:
+            from chatbot.features.chat.customer360_router import build_customer360_router
+
+            app.include_router(
+                build_customer360_router(
+                    chatwoot_client, rsa_repo, authz_repo, authz_validator, settings
+                )
+            )
+        else:
+            import structlog as _sl
+            _sl.get_logger(__name__).warning(
+                "customer360_prerequisites_missing",
+                detail=(
+                    "RBAC is enabled but chatwoot_client and/or rsa_repo is not "
+                    "available; /admin/customer360 not mounted"
+                ),
+                chatwoot_available=chatwoot_client is not None,
+                rsa_available=rsa_repo is not None,
+            )
     elif settings.rbac_enabled:
         import structlog as _sl
         _sl.get_logger(__name__).warning(

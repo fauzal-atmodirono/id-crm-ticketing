@@ -417,6 +417,58 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             _log.warning("chatwoot_conversation_create_failed", session_id=session_id)
         return session_id
 
+    # --- Customer 360 lookup (public reads; no create/mutate side effects) ---
+    async def search_contacts(self, query: str) -> list[dict[str, Any]]:
+        """Search Chatwoot contacts by free-text query (name/email/phone/identifier).
+
+        Wraps the same ``/contacts/search`` endpoint ``_find_or_create_contact``
+        already calls internally on its duplicate-identifier fallback path, but
+        exposed publicly and generalized to any query string (not just a session
+        id) so callers like the Customer 360 lookup can search by phone number.
+        """
+        res = await self._request("GET", f"/contacts/search?q={quote(query, safe='')}", None)
+        payload = (res or {}).get("payload") if isinstance(res, dict) else None
+        return [c for c in (payload or []) if isinstance(c, dict)]
+
+    async def list_contact_conversations(self, contact_id: int) -> list[dict[str, Any]]:
+        """Return ALL conversations (any status, any inbox) for a contact.
+
+        Unlike ``_existing_conversation_id`` (which filters to our inbox's
+        active-only conversations to decide whether to reuse one for a new
+        message), this is a read-only cross-channel history view for Customer
+        360 — resolved conversations and other inboxes are included on purpose.
+        """
+        res = await self._request("GET", f"/contacts/{contact_id}/conversations", None)
+        return _conversations_from(res)
+
+    async def list_conversations(self, *, max_pages: int = 5) -> list[dict[str, Any]]:
+        """Page the account conversations endpoint, filtered to our inbox.
+
+        Same endpoint/response shape ``presence.fetch_agent_open_counts`` and
+        ``metrics.sync.fetch_conversations`` already page (``{"data":
+        {"payload": [...]}}``, no ``next_page`` field — stop on an empty page).
+        ``max_pages`` caps latency for this live-request lookup path (unlike
+        the batch BigQuery sync, which pages to exhaustion); a Customer 360
+        vehicle-number search only needs a best-effort recent-conversation
+        match, not a full historical scan.
+        """
+        conversations: list[dict[str, Any]] = []
+        inbox_id = self._settings.chatwoot_inbox_id
+        for page_num in range(1, max_pages + 1):
+            res = await self._request("GET", f"/conversations?status=all&page={page_num}")
+            if not isinstance(res, dict):
+                break
+            data = res.get("data")
+            batch = data.get("payload") if isinstance(data, dict) else res.get("payload")
+            if not isinstance(batch, list) or not batch:
+                break
+            conversations.extend(
+                c
+                for c in batch
+                if isinstance(c, dict) and c.get("inbox_id") in (inbox_id, None)
+            )
+        return conversations
+
     # --- ChatPort ---
     async def send_message(self, conversation_id: str, text: str) -> None:
         _log.info("sending_chatwoot_message", conversation_id=conversation_id)

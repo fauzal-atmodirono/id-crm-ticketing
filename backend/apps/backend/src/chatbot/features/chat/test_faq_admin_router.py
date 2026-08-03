@@ -147,3 +147,77 @@ def test_store_unavailable_returns_503_after_auth() -> None:
     client = TestClient(app)
     r = client.post("/kb/faq", json={"question": "Q", "answer": "A"}, headers={"x-api-key": _KEY})
     assert r.status_code == 503
+
+
+def test_bulk_create_requires_api_key() -> None:
+    store = FakeLiveFaqStore()
+    client = _client(store)
+    csv_data = b"question,answer,keywords,tags\nWhat is X?,X is Y,,\n"
+    r = client.post("/kb/faq/bulk", files={"file": ("test.csv", csv_data)})
+    assert r.status_code == 401
+    assert store.entries == {}
+
+
+def test_bulk_create_with_valid_csv() -> None:
+    store = FakeLiveFaqStore()
+    client = _client(store)
+    csv_data = b"question,answer,keywords,tags\nWhat is X?,X is Y,xyz;abc,tag1;tag2\nWhat is Y?,Y is Z,,tag3\n"
+    r = client.post(
+        "/kb/faq/bulk",
+        files={"file": ("test.csv", csv_data)},
+        headers={"x-api-key": _KEY},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["created"] == 2
+    assert body["errors"] == []
+    assert len(store.entries) == 2
+    # Check first entry
+    assert store.entries["faq-1"].question == "What is X?"
+    assert store.entries["faq-1"].answer == "X is Y"
+    assert store.entries["faq-1"].keywords == ["xyz", "abc"]
+    assert store.entries["faq-1"].tags == ["tag1", "tag2"]
+    # Check second entry
+    assert store.entries["faq-2"].question == "What is Y?"
+    assert store.entries["faq-2"].answer == "Y is Z"
+    assert store.entries["faq-2"].keywords == []
+    assert store.entries["faq-2"].tags == ["tag3"]
+
+
+def test_bulk_create_skips_invalid_rows() -> None:
+    store = FakeLiveFaqStore()
+    client = _client(store)
+    csv_data = b"question,answer,keywords,tags\nWhat is X?,X is Y,,\n,Missing question,\n\nY is Z,,\nWhat is Z?,Z is W,,\n"
+    r = client.post(
+        "/kb/faq/bulk",
+        files={"file": ("test.csv", csv_data)},
+        headers={"x-api-key": _KEY},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["created"] == 2  # rows 2 and 5 succeeded
+    assert len(body["errors"]) == 2  # rows 3 and 4 failed
+    assert body["errors"][0]["row"] == 3
+    assert body["errors"][0]["reason"] == "question and answer are required"
+    assert body["errors"][1]["row"] == 4
+    assert body["errors"][1]["reason"] == "question and answer are required"
+    # Only rows 2 and 5 should be in entries
+    assert len(store.entries) == 2
+    assert store.entries["faq-1"].question == "What is X?"
+    assert store.entries["faq-2"].question == "What is Z?"
+
+
+def test_bulk_create_rejects_oversized_file() -> None:
+    store = FakeLiveFaqStore()
+    settings = Settings(faq_admin_api_key=_KEY, kb_max_upload_bytes=10)
+    app = FastAPI()
+    app.include_router(build_faq_admin_router(store, settings))
+    client = TestClient(app)
+    csv_data = b"question,answer,keywords,tags\n" + b"X" * 100  # 100+ bytes, exceeds limit
+    r = client.post(
+        "/kb/faq/bulk",
+        files={"file": ("test.csv", csv_data)},
+        headers={"x-api-key": _KEY},
+    )
+    assert r.status_code == 413
+    assert store.entries == {}

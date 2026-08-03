@@ -10,10 +10,12 @@ reflects in `/kb/suggest` immediately.
 
 from __future__ import annotations
 
+import csv
 import hmac
+import io
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from chatbot.features.chat.ports import LiveFaqEntry
@@ -115,5 +117,42 @@ def build_faq_admin_router(store: LiveFaqPort | None, settings: Settings) -> API
         _authorize(x_api_key)
         entries = await _require_store().list_all()
         return {"entries": [_entry_dict(e) for e in entries]}
+
+    @router.post("/kb/faq/bulk")
+    async def bulk_create_faq(
+        file: UploadFile = File(...),
+        x_api_key: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        _authorize(x_api_key)
+        raw = await file.read()
+        if len(raw) > settings.kb_max_upload_bytes:
+            raise HTTPException(status_code=413, detail="File too large")
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(status_code=400, detail="File must be UTF-8 encoded CSV") from exc
+
+        reader = csv.DictReader(io.StringIO(text))
+        created = 0
+        errors: list[dict[str, Any]] = []
+        for i, row in enumerate(reader, start=2):  # row 1 is the header
+            question = (row.get("question") or "").strip()
+            answer = (row.get("answer") or "").strip()
+            if not question or not answer:
+                errors.append({"row": i, "reason": "question and answer are required"})
+                continue
+            keywords = [k.strip() for k in (row.get("keywords") or "").split(";") if k.strip()]
+            tags = [t.strip() for t in (row.get("tags") or "").split(";") if t.strip()]
+            try:
+                await _require_store().create(
+                    LiveFaqEntry(
+                        id="", question=question, answer=answer,
+                        keywords=keywords, tags=tags, active=True,
+                    )
+                )
+                created += 1
+            except Exception as exc:
+                errors.append({"row": i, "reason": str(exc)})
+        return {"created": created, "errors": errors}
 
     return router

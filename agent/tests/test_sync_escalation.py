@@ -11,12 +11,15 @@ import httpx
 import respx
 from sqlalchemy import select
 
+from app.clients.deps import get_proton_config_client
+from app.config import get_settings
 from app.db.models import ConversationLink
 from app.db.session import async_session_maker
 from app.services import sync
 
 CHATWOOT = "http://chatwoot-rails:3000"
 ZAMMAD = "http://zammad-nginx:8080"
+PROTON = "http://proton-backend:8080"
 
 MESSAGES_RESPONSE = {
     "payload": [
@@ -356,3 +359,76 @@ async def test_missing_conversation_id_no_op():
     await sync.maybe_stamp_dealer_escalation({"labels": ["dealer_kl_glenmarie"]})
 
     assert not set_attrs.called
+
+
+@respx.mock
+async def test_maybe_escalate_notifies_email_channel_conversation(monkeypatch):
+    """EM-7: an Email-channel conversation escalated (Chatwoot-only tenant,
+    Zammad disabled) fires the backend two-thread email notification with
+    the `dept_`/`dealer_` labels parsed out."""
+    monkeypatch.setattr(get_settings(), "zammad_ticketing_enabled", False)
+    monkeypatch.setattr(get_settings(), "email_escalation_enabled", True)
+    monkeypatch.setattr(get_settings(), "proton_backend_url", "http://proton-backend:8080")
+    monkeypatch.setattr(get_settings(), "proton_backend_key", "k")
+    get_proton_config_client.cache_clear()
+
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9").mock(
+        return_value=httpx.Response(200, json={"id": 9, "inbox_id": 5})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/inboxes/5").mock(
+        return_value=httpx.Response(200, json={"id": 5, "channel_type": "Channel::Email"})
+    )
+    notify_route = respx.post(f"{PROTON}/escalation/notify").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+
+    await sync.maybe_escalate(
+        {"id": 9, "labels": ["escalate", "dept_apps", "dealer_kl_pj"]}
+    )
+
+    assert notify_route.called
+    sent = json.loads(notify_route.calls[0].request.content)
+    assert sent["conversation_id"] == "9"
+    assert sent["department"] == "apps"
+    assert sent["dealer"] == "kl_pj"
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_maybe_escalate_skips_notify_for_non_email_channel(monkeypatch):
+    """A non-Email-channel conversation (e.g. SMS) must never trigger the
+    EM-7 two-thread email escalation -- it's a Chatwoot-native flow only."""
+    monkeypatch.setattr(get_settings(), "zammad_ticketing_enabled", False)
+    monkeypatch.setattr(get_settings(), "email_escalation_enabled", True)
+    monkeypatch.setattr(get_settings(), "proton_backend_url", "http://proton-backend:8080")
+    monkeypatch.setattr(get_settings(), "proton_backend_key", "k")
+    get_proton_config_client.cache_clear()
+
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9").mock(
+        return_value=httpx.Response(200, json={"id": 9, "inbox_id": 3})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/inboxes/3").mock(
+        return_value=httpx.Response(200, json={"id": 3, "channel_type": "Channel::TwilioSms"})
+    )
+    notify_route = respx.post(f"{PROTON}/escalation/notify").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+
+    await sync.maybe_escalate({"id": 9, "labels": ["escalate"]})
+
+    assert not notify_route.called
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_maybe_escalate_skips_notify_when_flag_off(monkeypatch):
+    """`email_escalation_enabled` defaults False -- the helper must return
+    before making any Chatwoot call (byte-identical no-op when unset)."""
+    monkeypatch.setattr(get_settings(), "zammad_ticketing_enabled", False)
+    monkeypatch.setattr(get_settings(), "email_escalation_enabled", False)
+
+    conv_route = respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9")
+
+    await sync.maybe_escalate({"id": 9, "labels": ["escalate"]})
+
+    assert not conv_route.called

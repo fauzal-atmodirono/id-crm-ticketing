@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     lifecycle_disclaimer_enabled: bool = True
     lifecycle_auto_categorize: bool = False
 
+    # EM-7: two-thread email escalation for natively-escalated Email-channel
+    # conversations. Requires PROTON_BACKEND_URL/KEY to be set (fail-open,
+    # no-op otherwise). Default off, byte-identical when unset.
+    email_escalation_enabled: bool = False
+
     # SOP completion (B: categorization taxonomy; C1: email auto-ack).
     # Comma-separated category slugs the bot may assign on resolution (must
     # match the tenant's deployed taxonomy). Empty → auto-categorize no-ops.

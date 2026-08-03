@@ -42,6 +42,7 @@ _ZAMMAD_PRIORITY_NAMES = {
 # Dealer labels are applied manually today (an agent picks `dealer_<slug>`
 # from Chatwoot's native label picker) -- see `maybe_stamp_dealer_escalation`.
 _DEALER_LABEL = re.compile(r"^dealer_(.+)$")
+_DEPT_LABEL = re.compile(r"^dept_(.+)$")
 
 
 def _format_timestamp(value: object) -> str:
@@ -212,14 +213,65 @@ async def record_conversation_status(payload: dict) -> None:
         await session.commit()
 
 
+async def _maybe_notify_email_escalation(conversation_id: int, labels: list[str]) -> None:
+    """EM-7: for an Email-channel conversation, ask the backend to send the
+    two-thread escalation email (customer ack + PIC/dealer forward).
+
+    Fail-open throughout: any missing config, unreachable service, or
+    resolution failure just means no email fires -- never raises, matching
+    every other background-task helper in this module.
+    """
+    settings = get_settings()
+    if not settings.email_escalation_enabled:
+        return
+
+    proton = get_proton_config_client()
+    if proton is None:
+        return
+
+    try:
+        chatwoot = get_chatwoot_client()
+        conversation = await chatwoot.get_conversation(conversation_id)
+        inbox_id = (conversation or {}).get("inbox_id")
+        if inbox_id is None:
+            return
+        inbox = await chatwoot.get_inbox(inbox_id)
+    except Exception:
+        logger.exception(
+            "maybe_escalate: failed to resolve channel for conversation %s", conversation_id
+        )
+        return
+
+    if (inbox or {}).get("channel_type") != "Channel::Email":
+        return
+
+    department = next(
+        (m.group(1) for lbl in labels if (m := _DEPT_LABEL.match(lbl))), None
+    )
+    dealer = next(
+        (m.group(1) for lbl in labels if (m := _DEALER_LABEL.match(lbl))), None
+    )
+
+    await proton.notify_email_escalation(
+        conversation_id=conversation_id,
+        title=f"Escalated conversation #{conversation_id}",
+        body=f"Conversation #{conversation_id} was escalated by an agent.",
+        department=department,
+        dealer=dealer,
+    )
+
+
 async def maybe_escalate(payload: dict) -> None:
     """Handle a Chatwoot `conversation_updated` event: escalate to a Zammad
     ticket if the `escalate` label is present and the conversation isn't
-    already linked."""
+    already linked. Also fires the EM-7 email-channel notification (Chatwoot-
+    only, independent of Zammad)."""
     conversation_id = payload.get("id")
     labels = payload.get("labels") or []
     if conversation_id is None or "escalate" not in labels:
         return
+
+    await _maybe_notify_email_escalation(conversation_id, labels)
 
     if not get_settings().zammad_ticketing_enabled:
         # Chatwoot-only tenant: the `escalate` label no longer creates a Zammad

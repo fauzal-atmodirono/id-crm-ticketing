@@ -3,9 +3,23 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock
 
-from chatbot.features.chat.escalation_notifier import EscalationNotifier
+from chatbot.features.chat.escalation_notifier import EscalationNotifier, build_dealer_email_map
 from chatbot.features.chat.pic_registry import PicEntry, PicRegistry
 from chatbot.platform.config import Settings
+
+
+def test_build_dealer_email_map_parses_json() -> None:
+    settings = _settings(
+        dealer_email_map_json='{"kl_pj": "kl-pj@dealer.example", "JB": "jb@dealer.example"}'
+    )
+    result = build_dealer_email_map(settings)
+    assert result == {"kl_pj": "kl-pj@dealer.example", "jb": "jb@dealer.example"}
+
+
+def test_build_dealer_email_map_empty_on_blank_or_bad_json() -> None:
+    assert build_dealer_email_map(_settings(dealer_email_map_json="")) == {}
+    assert build_dealer_email_map(_settings(dealer_email_map_json="not json")) == {}
+    assert build_dealer_email_map(_settings(dealer_email_map_json='["a", "b"]')) == {}
 
 
 def _settings(**kw: Any) -> Settings:
@@ -333,3 +347,108 @@ async def test_email_reference_uses_chatwoot_conversation_when_no_ticket() -> No
     assert len(bodies) == 1
     assert "Chatwoot conversation #42" in bodies[0]
     assert "Zammad" not in bodies[0]
+
+
+# ---------------------------------------------------------------------------
+# EM-7: notify_email_channel_escalation (two-thread email escalation)
+# ---------------------------------------------------------------------------
+
+
+def _notifier(
+    *,
+    pic: PicEntry | None = _APPS_PIC,
+    dealer_map: dict[str, str] | None = None,
+    email_sender=None,
+    settings_kw: dict[str, Any] | None = None,
+) -> tuple[EscalationNotifier, list[dict[str, Any]]]:
+    sent_emails: list[dict[str, Any]] = []
+
+    class _FakeEmailSender:
+        def send(self, to, cc, subject, body, attachments) -> None:
+            sent_emails.append({"to": to, "cc": cc, "subject": subject, "body": body})
+
+    async def _fake_cw(method: str, path: str, payload: Any = None) -> dict:
+        return {}
+
+    notifier = EscalationNotifier(
+        settings=_settings(**(settings_kw or {})),
+        pic_registry=_registry(pic),
+        email_sender=email_sender or _FakeEmailSender(),
+        twilio_adapter=None,
+        chatwoot_request=_fake_cw,
+        dealer_email_map=dealer_map or {},
+    )
+    return notifier, sent_emails
+
+
+async def test_notify_email_channel_escalation_sends_customer_ack_when_enabled() -> None:
+    notifier, sent = _notifier(
+        pic=None, settings_kw={"email_escalation_ack_enabled": True}
+    )
+    await notifier.notify_email_channel_escalation(
+        conv_id="9", title="Late delivery", body="details",
+        department=None, dealer=None, customer_email="alex@customer.example",
+    )
+    assert len(sent) == 1
+    assert sent[0]["to"] == ["alex@customer.example"]
+    assert "specialist team" in sent[0]["body"]
+
+
+async def test_notify_email_channel_escalation_skips_ack_when_disabled() -> None:
+    notifier, sent = _notifier(
+        pic=None, settings_kw={"email_escalation_ack_enabled": False}
+    )
+    await notifier.notify_email_channel_escalation(
+        conv_id="9", title="t", body="b",
+        department=None, dealer=None, customer_email="alex@customer.example",
+    )
+    assert sent == []
+
+
+async def test_notify_email_channel_escalation_sends_dealer_forward_when_mapped() -> None:
+    notifier, sent = _notifier(
+        pic=None, dealer_map={"kl_pj": "kl-pj@dealer.example"},
+    )
+    await notifier.notify_email_channel_escalation(
+        conv_id="9", title="t", body="b",
+        department=None, dealer="kl_pj", customer_email=None,
+    )
+    assert len(sent) == 1
+    assert sent[0]["to"] == ["kl-pj@dealer.example"]
+
+
+async def test_notify_email_channel_escalation_skips_dealer_when_unmapped() -> None:
+    notifier, sent = _notifier(pic=None, dealer_map={})
+    await notifier.notify_email_channel_escalation(
+        conv_id="9", title="t", body="b",
+        department=None, dealer="unknown_slug", customer_email=None,
+    )
+    assert sent == []
+
+
+async def test_notify_email_channel_escalation_sends_pic_and_dealer_together() -> None:
+    notifier, sent = _notifier(
+        pic=_APPS_PIC,
+        dealer_map={"kl_pj": "kl-pj@dealer.example"},
+        settings_kw={"escalation_email_enabled": True},
+    )
+    await notifier.notify_email_channel_escalation(
+        conv_id="9", title="t", body="b",
+        department="dept_apps", dealer="kl_pj", customer_email=None,
+    )
+    recipients = {tuple(e["to"]) for e in sent}
+    assert ("alice@proton.my",) in recipients
+    assert ("kl-pj@dealer.example",) in recipients
+
+
+async def test_notify_email_channel_escalation_noop_when_everything_off() -> None:
+    notifier, sent = _notifier(
+        pic=None,
+        dealer_map={},
+        settings_kw={"escalation_email_enabled": False, "email_escalation_ack_enabled": False},
+    )
+    await notifier.notify_email_channel_escalation(
+        conv_id="9", title="t", body="b",
+        department=None, dealer=None, customer_email="alex@customer.example",
+    )
+    assert sent == []

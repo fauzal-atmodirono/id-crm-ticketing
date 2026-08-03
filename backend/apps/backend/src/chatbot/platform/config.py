@@ -408,6 +408,18 @@ class Settings(BaseSettings):
     escalation_level2_whatsapp: str = ""   # E.164, e.g. "+60112345678"
     escalation_tier2_hours: float = 4.0   # hours after first breach before level-2 alert
 
+    # EM-7: two-thread email escalation for natively-escalated Email-channel
+    # conversations (agent applies the `escalate` label). Independent of the
+    # AI-driven escalation_email_enabled/escalation_cc_pic pair above, which
+    # covers a different trigger (the AI's own autonomous handoff decision).
+    email_escalation_ack_enabled: bool = False
+    email_escalation_ack_template: str = (
+        "Your case has been escalated to a specialist team who will follow up shortly."
+    )
+    # dealer slug -> email, e.g. {"kl_pj": "kl-pj-service@dealer.example"}.
+    # Empty (default) means no dealer email is ever sent.
+    dealer_email_map_json: str = ""
+
     # Settings configurations
     model_config = SettingsConfigDict(
         env_file=".env",

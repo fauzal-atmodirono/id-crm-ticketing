@@ -75,7 +75,6 @@ echo "==> Provisioning tenant '${TENANT}' (PUBLIC_IP=${PUBLIC_IP})"
 
 # --- 1. Generate per-tenant secrets + env file ------------------------------
 CHATWOOT_DB_PASSWORD="$(openssl rand -hex 16)"
-ZAMMAD_DB_PASSWORD="$(openssl rand -hex 16)"
 AGENT_DB_PASSWORD="$(openssl rand -hex 16)"
 BACKEND_DB_PASSWORD="$(openssl rand -hex 16)"
 REDIS_PASSWORD="$(openssl rand -hex 16)"
@@ -85,7 +84,6 @@ sed \
   -e "s/^TENANT=.*/TENANT=${TENANT}/" \
   -e "s/^PUBLIC_IP=.*/PUBLIC_IP=${PUBLIC_IP}/" \
   -e "s/^CHATWOOT_DB_PASSWORD=.*/CHATWOOT_DB_PASSWORD=${CHATWOOT_DB_PASSWORD}/" \
-  -e "s/^ZAMMAD_DB_PASSWORD=.*/ZAMMAD_DB_PASSWORD=${ZAMMAD_DB_PASSWORD}/" \
   -e "s/^AGENT_DB_PASSWORD=.*/AGENT_DB_PASSWORD=${AGENT_DB_PASSWORD}/" \
   -e "s/^BACKEND_DB_PASSWORD=.*/BACKEND_DB_PASSWORD=${BACKEND_DB_PASSWORD}/" \
   -e "s|^KNOWLEDGE_DATABASE_URL=.*|KNOWLEDGE_DATABASE_URL=postgresql://backend_${TENANT}:${BACKEND_DB_PASSWORD}@postgres:5432/backend_${TENANT}|" \
@@ -96,15 +94,13 @@ sed \
 echo "==> Wrote ${ENV_FILE} (hostnames: ${HOST_PREFIX:-<bare>}crm.${PUBLIC_IP}.nip.io)"
 
 # --- 2. Create Postgres roles + databases on the running server -------------
-echo "==> Creating databases chatwoot_${TENANT} / zammad_${TENANT} / agent_${TENANT} / backend_${TENANT}"
+echo "==> Creating databases chatwoot_${TENANT} / agent_${TENANT} / backend_${TENANT}"
 docker compose -p "${INFRA_PROJECT}" -f "${INFRA_FILE}" exec -T postgres \
   psql -v ON_ERROR_STOP=1 -U postgres -d postgres <<SQL
 CREATE ROLE chatwoot_${TENANT}  LOGIN PASSWORD '${CHATWOOT_DB_PASSWORD}';
-CREATE ROLE zammad_${TENANT}    LOGIN PASSWORD '${ZAMMAD_DB_PASSWORD}';
 CREATE ROLE agent_${TENANT}     LOGIN PASSWORD '${AGENT_DB_PASSWORD}';
 CREATE ROLE backend_${TENANT}   LOGIN PASSWORD '${BACKEND_DB_PASSWORD}';
 CREATE DATABASE chatwoot_${TENANT} OWNER chatwoot_${TENANT};
-CREATE DATABASE zammad_${TENANT}   OWNER zammad_${TENANT};
 CREATE DATABASE agent_${TENANT}    OWNER agent_${TENANT};
 CREATE DATABASE backend_${TENANT}  OWNER backend_${TENANT};
 SQL
@@ -132,10 +128,6 @@ http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io {
 	@proton_backend path /metrics/* /kb/* /assist/* /routing/* /authz/* /admin/* /rsa/*
 	reverse_proxy @proton_backend ${TENANT}-backend:8080
 	reverse_proxy ${TENANT}-chatwoot-rails:3000
-}
-
-http://${HOST_PREFIX}tickets.${PUBLIC_IP}.nip.io {
-	reverse_proxy ${TENANT}-zammad-nginx:8080
 }
 
 http://${HOST_PREFIX}agent.${PUBLIC_IP}.nip.io {
@@ -172,11 +164,10 @@ cat <<EOF
 ==> Tenant '${TENANT}' is up. Give containers a minute, then visit:
 
   http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io      (Chatwoot — onboarding wizard)
-  http://${HOST_PREFIX}tickets.${PUBLIC_IP}.nip.io  (Zammad — setup wizard)
   http://${HOST_PREFIX}agent.${PUBLIC_IP}.nip.io    (agent /healthz)
   http://${HOST_PREFIX}mail.${PUBLIC_IP}.nip.io     (shared Mailpit, basic_auth)
 
-Next: run each app's setup wizard, then fill the CHATWOOT_*/ZAMMAD_*/GEMINI_*
+Next: run each app's setup wizard, then fill the CHATWOOT_*/GEMINI_*
 tokens in ${ENV_FILE} (README §5–6) and re-apply the agent:
   docker compose -p ${TENANT} -f ${TENANT_FILE} --env-file ${ENV_FILE} up -d agent
 EOF

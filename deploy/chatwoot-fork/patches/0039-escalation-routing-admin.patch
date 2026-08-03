@@ -1,0 +1,614 @@
+diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
+index 8f7bc9f..92ee417 100644
+--- a/app/javascript/dashboard/api/protonAdmin.js
++++ b/app/javascript/dashboard/api/protonAdmin.js
+@@ -139,3 +139,43 @@ export function unassignRole(roleId, chatwootUserId) {
+     body: { chatwoot_user_id: chatwootUserId },
+   });
+ }
++
++// ── Escalation routing (department PICs + dealer contacts) ─────────────────
++// Backs pic_admin_router.py — PUT is upsert-by-key (department/dealer live
++// in the URL path, not the body), there is no separate POST.
++
++export async function listPics() {
++  const data = await adminRequest('/admin/escalation/pics');
++  return Array.isArray(data.pics) ? data.pics : [];
++}
++
++export function upsertPic(department, body) {
++  return adminRequest(`/admin/escalation/pics/${encodeURIComponent(department)}`, {
++    method: 'PUT',
++    body,
++  });
++}
++
++export function deletePic(department) {
++  return adminRequest(`/admin/escalation/pics/${encodeURIComponent(department)}`, {
++    method: 'DELETE',
++  });
++}
++
++export async function listDealers() {
++  const data = await adminRequest('/admin/escalation/dealers');
++  return Array.isArray(data.dealers) ? data.dealers : [];
++}
++
++export function upsertDealer(dealer, body) {
++  return adminRequest(`/admin/escalation/dealers/${encodeURIComponent(dealer)}`, {
++    method: 'PUT',
++    body,
++  });
++}
++
++export function deleteDealer(dealer) {
++  return adminRequest(`/admin/escalation/dealers/${encodeURIComponent(dealer)}`, {
++    method: 'DELETE',
++  });
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 163281b..b55d863 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -617,6 +617,16 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
++    ...(protonHasPermission('escalation.manage')
++      ? [
++          {
++            name: 'EscalationRouting',
++            icon: 'i-lucide-route',
++            label: 'Escalation Routing',
++            to: accountScopedRoute('proton_escalation_routing'),
++          },
++        ]
++      : []),
+     // RSA incident log — the backend /rsa/incidents* endpoints authorize by the
+     // shared x-api-key (like /kb + /metrics), NOT the RBAC require_permission
+     // used by SLA/Audit/Roles, so there is no dedicated `rsa.manage` permission
+diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+index 87b5ead..4047445 100644
+--- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+@@ -57,6 +57,12 @@ export default {
+           component: () => import('../../views/ProtonRsaPage.vue'),
+           meta: { permissions: ['administrator'] },
+         },
++        {
++          path: 'proton/escalation-routing',
++          name: 'proton_escalation_routing',
++          component: () => import('../../views/ProtonEscalationRoutingPage.vue'),
++          meta: { permissions: ['administrator'] },
++        },
+         ...inboxRoutes,
+         ...conversation.routes,
+         ...settings.routes,
+diff --git a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
+new file mode 100644
+index 0000000..33b8fcb
+--- /dev/null
++++ b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
+@@ -0,0 +1,522 @@
++<!-- ProtonEscalationRoutingPage.vue — OUR file. Escalation Routing admin:
++     department -> PIC (person-in-charge) contact mapping, and dealer ->
++     email mapping, backing SLA/escalation notification routing. Two
++     independent add/edit/delete tables sharing one page shell (mirrors
++     ProtonRsaPage.vue's shell: header, n-* tokens, useAlert toasts, inline
++     row edit). department/dealer are the PUT/DELETE URL path key in the
++     backend (pic_admin_router.py) and so are immutable once created —
++     editing a row updates the other fields via that same key; changing the
++     key itself means delete + re-add. -->
++<script>
++import { useAlert } from 'dashboard/composables';
++import {
++  listPics,
++  upsertPic,
++  deletePic,
++  listDealers,
++  upsertDealer,
++  deleteDealer,
++} from 'dashboard/api/protonAdmin';
++
++const EMPTY_PIC_FORM = {
++  department: '',
++  pic_name: '',
++  pic_email: '',
++  pic_whatsapp: '',
++  cc_emails: '', // comma-separated in the UI; split to an array on submit
++};
++
++const EMPTY_DEALER_FORM = {
++  dealer: '',
++  email: '',
++};
++
++function splitEmails(value) {
++  return String(value || '')
++    .split(',')
++    .map(s => s.trim())
++    .filter(Boolean);
++}
++
++export default {
++  name: 'ProtonEscalationRoutingPage',
++  data() {
++    return {
++      pics: [],
++      dealers: [],
++      picForm: { ...EMPTY_PIC_FORM },
++      dealerForm: { ...EMPTY_DEALER_FORM },
++      editingPicDepartment: null,
++      editPicForm: { ...EMPTY_PIC_FORM },
++      editingDealerName: null,
++      editDealerForm: { ...EMPTY_DEALER_FORM },
++      loading: true,
++      errored: false,
++      savingPic: false,
++      savingDealer: false,
++    };
++  },
++  async mounted() {
++    await this.load();
++  },
++  methods: {
++    async load() {
++      this.loading = true;
++      this.errored = false;
++      try {
++        const [pics, dealers] = await Promise.all([listPics(), listDealers()]);
++        this.pics = pics;
++        this.dealers = dealers;
++      } catch (err) {
++        this.errored = true;
++        useAlert(
++          'Failed to load escalation routing: ' + (err.message || String(err))
++        );
++      } finally {
++        this.loading = false;
++      }
++    },
++    // ── PIC (department -> contact) ─────────────────────────────────────
++    async createPic() {
++      if (
++        !this.picForm.department ||
++        !this.picForm.pic_name ||
++        !this.picForm.pic_email
++      ) {
++        useAlert('Department, PIC name and PIC email are required.');
++        return;
++      }
++      this.savingPic = true;
++      try {
++        await upsertPic(this.picForm.department, {
++          pic_name: this.picForm.pic_name,
++          pic_email: this.picForm.pic_email,
++          pic_whatsapp: this.picForm.pic_whatsapp,
++          cc_emails: splitEmails(this.picForm.cc_emails),
++        });
++        useAlert('PIC saved.');
++        this.picForm = { ...EMPTY_PIC_FORM };
++        await this.load();
++      } catch (err) {
++        useAlert('Failed to save PIC: ' + (err.message || String(err)));
++      } finally {
++        this.savingPic = false;
++      }
++    },
++    startEditPic(pic) {
++      this.editingPicDepartment = pic.department;
++      this.editPicForm = {
++        department: pic.department,
++        pic_name: pic.pic_name || '',
++        pic_email: pic.pic_email || '',
++        pic_whatsapp: pic.pic_whatsapp || '',
++        cc_emails: Array.isArray(pic.cc_emails) ? pic.cc_emails.join(', ') : '',
++      };
++    },
++    cancelEditPic() {
++      this.editingPicDepartment = null;
++      this.editPicForm = { ...EMPTY_PIC_FORM };
++    },
++    async saveEditPic() {
++      this.savingPic = true;
++      try {
++        await upsertPic(this.editingPicDepartment, {
++          pic_name: this.editPicForm.pic_name,
++          pic_email: this.editPicForm.pic_email,
++          pic_whatsapp: this.editPicForm.pic_whatsapp,
++          cc_emails: splitEmails(this.editPicForm.cc_emails),
++        });
++        useAlert('PIC updated.');
++        this.cancelEditPic();
++        await this.load();
++      } catch (err) {
++        useAlert('Failed to update PIC: ' + (err.message || String(err)));
++      } finally {
++        this.savingPic = false;
++      }
++    },
++    async removePic(department) {
++      // eslint-disable-next-line no-alert
++      if (
++        !window.confirm(
++          `Delete the PIC for "${department}"? This cannot be undone.`
++        )
++      ) {
++        return;
++      }
++      this.savingPic = true;
++      try {
++        await deletePic(department);
++        useAlert('PIC deleted.');
++        if (this.editingPicDepartment === department) this.cancelEditPic();
++        await this.load();
++      } catch (err) {
++        useAlert('Failed to delete PIC: ' + (err.message || String(err)));
++      } finally {
++        this.savingPic = false;
++      }
++    },
++    // ── Dealer (dealer -> email) ─────────────────────────────────────────
++    async createDealer() {
++      if (!this.dealerForm.dealer || !this.dealerForm.email) {
++        useAlert('Dealer and email are required.');
++        return;
++      }
++      this.savingDealer = true;
++      try {
++        await upsertDealer(this.dealerForm.dealer, {
++          email: this.dealerForm.email,
++        });
++        useAlert('Dealer saved.');
++        this.dealerForm = { ...EMPTY_DEALER_FORM };
++        await this.load();
++      } catch (err) {
++        useAlert('Failed to save dealer: ' + (err.message || String(err)));
++      } finally {
++        this.savingDealer = false;
++      }
++    },
++    startEditDealer(dealer) {
++      this.editingDealerName = dealer.dealer;
++      this.editDealerForm = { dealer: dealer.dealer, email: dealer.email || '' };
++    },
++    cancelEditDealer() {
++      this.editingDealerName = null;
++      this.editDealerForm = { ...EMPTY_DEALER_FORM };
++    },
++    async saveEditDealer() {
++      this.savingDealer = true;
++      try {
++        await upsertDealer(this.editingDealerName, {
++          email: this.editDealerForm.email,
++        });
++        useAlert('Dealer updated.');
++        this.cancelEditDealer();
++        await this.load();
++      } catch (err) {
++        useAlert('Failed to update dealer: ' + (err.message || String(err)));
++      } finally {
++        this.savingDealer = false;
++      }
++    },
++    async removeDealer(dealer) {
++      // eslint-disable-next-line no-alert
++      if (!window.confirm(`Delete dealer "${dealer}"? This cannot be undone.`)) {
++        return;
++      }
++      this.savingDealer = true;
++      try {
++        await deleteDealer(dealer);
++        useAlert('Dealer deleted.');
++        if (this.editingDealerName === dealer) this.cancelEditDealer();
++        await this.load();
++      } catch (err) {
++        useAlert('Failed to delete dealer: ' + (err.message || String(err)));
++      } finally {
++        this.savingDealer = false;
++      }
++    },
++  },
++};
++</script>
++
++<template>
++  <div class="p-6">
++    <h1 class="mb-1 text-lg font-medium text-n-slate-12">
++      Escalation Routing
++    </h1>
++    <p class="mb-6 text-sm text-n-slate-11">
++      Configure which person-in-charge (PIC) is notified for each
++      department, and which email address represents each dealer, for SLA
++      and escalation notifications.
++    </p>
++
++    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
++      Loading…
++    </div>
++    <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">
++      Could not load escalation routing.
++    </div>
++
++    <template v-else>
++      <!-- PIC section -->
++      <h2 class="mb-3 text-base font-medium text-n-slate-12">
++        Department PICs
++      </h2>
++      <form
++        class="grid max-w-3xl grid-cols-1 gap-4 mb-6 md:grid-cols-2"
++        @submit.prevent="createPic"
++      >
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">Department *</label>
++          <input
++            v-model="picForm.department"
++            type="text"
++            required
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">PIC name *</label>
++          <input
++            v-model="picForm.pic_name"
++            type="text"
++            required
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">PIC email *</label>
++          <input
++            v-model="picForm.pic_email"
++            type="email"
++            required
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">PIC WhatsApp</label>
++          <input
++            v-model="picForm.pic_whatsapp"
++            type="text"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div class="md:col-span-2">
++          <label class="block mb-1 text-sm text-n-slate-11">
++            CC emails (comma-separated)
++          </label>
++          <input
++            v-model="picForm.cc_emails"
++            type="text"
++            placeholder="ops@example.com, manager@example.com"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div class="md:col-span-2">
++          <button
++            type="submit"
++            :disabled="savingPic"
++            class="px-4 py-2 text-sm font-medium rounded-lg w-fit bg-n-brand text-white hover:opacity-90 disabled:opacity-50"
++          >
++            Add PIC
++          </button>
++        </div>
++      </form>
++
++      <p v-if="!pics.length" class="mb-10 text-sm text-n-slate-11">
++        No department PICs configured yet.
++      </p>
++      <div v-else class="mb-10 overflow-x-auto border rounded-lg border-n-weak">
++        <table class="w-full text-sm border-collapse text-n-slate-11">
++          <thead>
++            <tr class="text-left border-b border-n-weak text-n-slate-12">
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Department</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">PIC name</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">PIC email</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">
++                PIC WhatsApp
++              </th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">CC emails</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Actions</th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="pic in pics"
++              :key="pic.department"
++              class="border-b border-n-weak last:border-b-0"
++            >
++              <template v-if="editingPicDepartment === pic.department">
++                <td class="px-3 py-2 whitespace-nowrap text-n-slate-12">
++                  {{ pic.department }}
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editPicForm.pic_name"
++                    type="text"
++                    class="w-32 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editPicForm.pic_email"
++                    type="email"
++                    class="w-40 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editPicForm.pic_whatsapp"
++                    type="text"
++                    class="w-32 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editPicForm.cc_emails"
++                    type="text"
++                    class="w-48 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  <button
++                    type="button"
++                    :disabled="savingPic"
++                    class="mr-2 font-medium text-n-brand hover:underline disabled:opacity-50"
++                    @click="saveEditPic"
++                  >
++                    Save
++                  </button>
++                  <button
++                    type="button"
++                    class="text-n-slate-11 hover:underline"
++                    @click="cancelEditPic"
++                  >
++                    Cancel
++                  </button>
++                </td>
++              </template>
++              <template v-else>
++                <td class="px-3 py-2 whitespace-nowrap">{{ pic.department }}</td>
++                <td class="px-3 py-2 whitespace-nowrap">{{ pic.pic_name }}</td>
++                <td class="px-3 py-2 whitespace-nowrap">{{ pic.pic_email }}</td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ pic.pic_whatsapp }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ Array.isArray(pic.cc_emails) ? pic.cc_emails.join(', ') : '' }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  <button
++                    type="button"
++                    class="mr-2 font-medium text-n-brand hover:underline"
++                    @click="startEditPic(pic)"
++                  >
++                    Edit
++                  </button>
++                  <button
++                    type="button"
++                    :disabled="savingPic"
++                    class="text-n-ruby-11 hover:underline disabled:opacity-50"
++                    @click="removePic(pic.department)"
++                  >
++                    Delete
++                  </button>
++                </td>
++              </template>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++
++      <!-- Dealer section -->
++      <h2 class="mb-3 text-base font-medium text-n-slate-12">Dealers</h2>
++      <form
++        class="grid max-w-2xl grid-cols-1 gap-4 mb-6 md:grid-cols-2"
++        @submit.prevent="createDealer"
++      >
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">Dealer *</label>
++          <input
++            v-model="dealerForm.dealer"
++            type="text"
++            required
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">Email *</label>
++          <input
++            v-model="dealerForm.email"
++            type="email"
++            required
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div class="md:col-span-2">
++          <button
++            type="submit"
++            :disabled="savingDealer"
++            class="px-4 py-2 text-sm font-medium rounded-lg w-fit bg-n-brand text-white hover:opacity-90 disabled:opacity-50"
++          >
++            Add dealer
++          </button>
++        </div>
++      </form>
++
++      <p v-if="!dealers.length" class="text-sm text-n-slate-11">
++        No dealers configured yet.
++      </p>
++      <div v-else class="overflow-x-auto border rounded-lg border-n-weak">
++        <table class="w-full text-sm border-collapse text-n-slate-11">
++          <thead>
++            <tr class="text-left border-b border-n-weak text-n-slate-12">
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Dealer</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Email</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Actions</th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="dealer in dealers"
++              :key="dealer.dealer"
++              class="border-b border-n-weak last:border-b-0"
++            >
++              <template v-if="editingDealerName === dealer.dealer">
++                <td class="px-3 py-2 whitespace-nowrap text-n-slate-12">
++                  {{ dealer.dealer }}
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editDealerForm.email"
++                    type="email"
++                    class="w-48 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  <button
++                    type="button"
++                    :disabled="savingDealer"
++                    class="mr-2 font-medium text-n-brand hover:underline disabled:opacity-50"
++                    @click="saveEditDealer"
++                  >
++                    Save
++                  </button>
++                  <button
++                    type="button"
++                    class="text-n-slate-11 hover:underline"
++                    @click="cancelEditDealer"
++                  >
++                    Cancel
++                  </button>
++                </td>
++              </template>
++              <template v-else>
++                <td class="px-3 py-2 whitespace-nowrap">{{ dealer.dealer }}</td>
++                <td class="px-3 py-2 whitespace-nowrap">{{ dealer.email }}</td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  <button
++                    type="button"
++                    class="mr-2 font-medium text-n-brand hover:underline"
++                    @click="startEditDealer(dealer)"
++                  >
++                    Edit
++                  </button>
++                  <button
++                    type="button"
++                    :disabled="savingDealer"
++                    class="text-n-ruby-11 hover:underline disabled:opacity-50"
++                    @click="removeDealer(dealer.dealer)"
++                  >
++                    Delete
++                  </button>
++                </td>
++              </template>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++    </template>
++  </div>
++</template>

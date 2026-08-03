@@ -102,7 +102,10 @@ def _bridge(
         sent.append(msg)
 
     return PhoneBridge(
-        live, _FakeKnowledge(), log or _FakeLog(), send_twilio,
+        live,
+        _FakeKnowledge(),
+        log or _FakeLog(),
+        send_twilio,
         settings or Settings(_env_file=None),
     )
 

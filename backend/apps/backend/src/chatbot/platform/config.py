@@ -153,6 +153,10 @@ class Settings(BaseSettings):
     # API key that guards write access to the /routing/priorities endpoints.
     # An empty value 401s every write (no unauthenticated mutation).
     routing_admin_api_key: str = ""
+    # Per-agent round-robin ticket cap: max currently-open conversations an
+    # agent may hold before pick_agent skips them. 0 = unlimited (today's
+    # behavior, no cap enforced).
+    routing_max_concurrent_per_agent: int = 0
     live_faq_collection: str = "live_faq"
     embedding_model: str = "text-embedding-004"
 

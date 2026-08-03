@@ -36,9 +36,7 @@ class PresenceFetcher:
             f"/api/v1/accounts/{self._settings.chatwoot_account_id}"
         )
 
-    async def _request(
-        self, method: str, path: str, payload: dict[str, Any] | None = None
-    ) -> Any:
+    async def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
         # Deferred import avoids a circular dependency between the routing
         # package and the chat adapter package.
         import httpx  # noqa: PLC0415
@@ -52,9 +50,7 @@ class PresenceFetcher:
         url = f"{self._base()}{path}"
         try:
             async with httpx.AsyncClient() as client:
-                res = await client.request(
-                    method, url, json=payload, headers=headers, timeout=10.0
-                )
+                res = await client.request(method, url, json=payload, headers=headers, timeout=10.0)
                 res.raise_for_status()
                 return res.json() if res.content else {}
         except Exception as e:
@@ -69,7 +65,9 @@ class PresenceFetcher:
         """
         res = await self._request("GET", "/agents")
         if not isinstance(res, list):
-            _log.warning("presence_fetch_agents_unexpected_response", response_type=type(res).__name__)
+            _log.warning(
+                "presence_fetch_agents_unexpected_response", response_type=type(res).__name__
+            )
             return []
         agents: list[AgentRecord] = []
         for item in res:
@@ -94,3 +92,46 @@ class PresenceFetcher:
             if agent.id == agent_id:
                 return agent.availability_status
         return "offline"
+
+    async def fetch_agent_open_counts(self) -> dict[int, int]:
+        """agent_id -> count of currently-open conversations assigned to them.
+
+        Calls ``GET /conversations?status=open&page=N``, paging until a page
+        returns an empty conversation list. Verified against a live local
+        Chatwoot instance: the response is
+        ``{"data": {"meta": {...counts...}, "payload": [...]}}`` — there is
+        no ``total_pages``/``next_page`` field in ``meta`` (unlike this
+        method's first-draft assumption), so pagination has to stop on an
+        empty page instead, matching the same convention already used by
+        ``chatbot.features.metrics.sync.fetch_conversations``. Each
+        conversation's assignee is at ``conversation["meta"]["assignee"]["id"]``
+        (a *different* ``meta`` key, nested per-conversation rather than the
+        page-level one).
+
+        Empty dict on any failure (fail-open -- the cap check in pick_agent
+        becomes a no-op rather than blocking routing when this can't be
+        determined).
+        """
+        counts: dict[int, int] = {}
+        page = 1
+        try:
+            while True:
+                res = await self._request("GET", f"/conversations?status=open&page={page}")
+                if not isinstance(res, dict):
+                    break
+                data = res.get("data")
+                payload = data.get("payload") if isinstance(data, dict) else res.get("payload")
+                if not isinstance(payload, list) or not payload:
+                    break
+                for conv in payload:
+                    if not isinstance(conv, dict):
+                        continue
+                    assignee = (conv.get("meta") or {}).get("assignee") or {}
+                    agent_id = assignee.get("id")
+                    if agent_id is not None:
+                        counts[int(agent_id)] = counts.get(int(agent_id), 0) + 1
+                page += 1
+            return counts
+        except Exception as e:
+            _log.error("presence_fetch_open_counts_failed", error=str(e))
+            return {}

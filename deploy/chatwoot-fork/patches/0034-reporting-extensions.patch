@@ -1,0 +1,673 @@
+diff --git a/app/javascript/dashboard/api/protonMetrics.js b/app/javascript/dashboard/api/protonMetrics.js
+index ee5702f..e088129 100644
+--- a/app/javascript/dashboard/api/protonMetrics.js
++++ b/app/javascript/dashboard/api/protonMetrics.js
+@@ -53,6 +53,21 @@ export function getLifecycle() {
+   return metricsRequest('/metrics/lifecycle');
+ }
+ 
++// GET /metrics/dealer-escalation -> { by_dealer: [], slowest_cases: [] }
++export function getDealerEscalation() {
++  return metricsRequest('/metrics/dealer-escalation');
++}
++
++// GET /metrics/sla-buckets -> { buckets: [] }
++export function getSlaBuckets() {
++  return metricsRequest('/metrics/sla-buckets');
++}
++
++// GET /metrics/case-aging -> { cases: [] }
++export function getCaseAging() {
++  return metricsRequest('/metrics/case-aging');
++}
++
+ // Returns a URL string for opening /metrics/export in a new tab.
+ // format: 'csv' | 'xlsx'
+ export function exportUrl(format) {
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/AgentReportsIndex.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/AgentReportsIndex.vue
+index 8a857a9..c03efee 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/AgentReportsIndex.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/AgentReportsIndex.vue
+@@ -4,6 +4,7 @@ import ReportHeader from './components/ReportHeader.vue';
+ import SummaryReports from './components/SummaryReports.vue';
+ import V4Button from 'dashboard/components-next/button/Button.vue';
+ import ProtonAgentsSection from './components/proton/ProtonAgentsSection.vue';
++import ProtonCallCentrePlaceholder from './components/proton/ProtonCallCentrePlaceholder.vue';
+ 
+ const summarReportsRef = ref(null);
+ 
+@@ -35,4 +36,5 @@ const onDownloadClick = () => {
+   />
+ 
+   <ProtonAgentsSection />
++  <ProtonCallCentrePlaceholder />
+ </template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonCaseLifecycle.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonCaseLifecycle.vue
+index c0ceaea..8b8297e 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonCaseLifecycle.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonCaseLifecycle.vue
+@@ -2,6 +2,7 @@
+ import { ref, computed, onMounted } from 'vue';
+ import BarChart from 'shared/components/charts/BarChart.vue';
+ import LineChart from 'shared/components/charts/LineChart.vue';
++import ProtonWipAgingSection from './components/proton/ProtonWipAgingSection.vue';
+ import { getLifecycle } from 'dashboard/api/protonMetrics';
+ 
+ // ── Data ──────────────────────────────────────────────────────────────────────
+@@ -290,5 +291,8 @@ const recentCases = computed(() => {
+         </div>
+       </div>
+     </template>
++
++    <!-- WIP / case-aging table (self-fetching, independent of lifecycle state) -->
++    <ProtonWipAgingSection />
+   </div>
+ </template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonDepartments.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonDepartments.vue
+index d028db6..c2122db 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonDepartments.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonDepartments.vue
+@@ -7,6 +7,7 @@ import { getDepartments, getCallCentre } from 'dashboard/api/protonMetrics';
+ 
+ const deptPic = ref([]);
+ const reopen = ref([]);
++const categoryByVehicleModel = ref([]);
+ const complaintTypes = ref([]);
+ const error = ref(null);
+ const loading = ref(true);
+@@ -19,6 +20,7 @@ onMounted(async () => {
+     ]);
+     deptPic.value = deptResult.dept_pic ?? [];
+     reopen.value = deptResult.reopen ?? [];
++    categoryByVehicleModel.value = deptResult.category_by_vehicle_model ?? [];
+     complaintTypes.value = callCentreResult.complaint_types ?? [];
+   } catch (e) {
+     error.value = e.message || 'Failed to load department data';
+@@ -93,6 +95,14 @@ const sortedComplaintTypes = computed(() =>
+     .sort((a, b) => (b.cases ?? 0) - (a.cases ?? 0))
+     .slice(0, COMPLAINT_TOP_N)
+ );
++
++// ── Category × Vehicle-model cross-tab — sorted by cases desc ─────────────────
++
++const sortedCategoryByVehicleModel = computed(() =>
++  [...categoryByVehicleModel.value].sort(
++    (a, b) => (b.cases ?? 0) - (a.cases ?? 0)
++  )
++);
+ </script>
+ 
+ <template>
+@@ -377,6 +387,81 @@ const sortedComplaintTypes = computed(() =>
+           </table>
+         </div>
+       </div>
++
++      <!-- Category × Vehicle-model cross-tab -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Category × Vehicle Model
++        </h3>
++
++        <!-- Empty state -->
++        <div
++          v-if="!sortedCategoryByVehicleModel.length"
++          class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++        >
++          No category / vehicle-model data available
++        </div>
++
++        <!-- Table -->
++        <div v-else class="overflow-x-auto">
++          <table class="w-full text-sm">
++            <thead>
++              <tr class="border-b border-n-container">
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Category
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Subcategory
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Vehicle Model
++                </th>
++                <th
++                  class="text-left py-2 pr-4 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Case Type
++                </th>
++                <th
++                  class="text-right py-2 font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Cases
++                </th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr
++                v-for="(row, idx) in sortedCategoryByVehicleModel"
++                :key="`${row.category}-${row.subcategory}-${row.vehicle_model}-${row.case_type}-${idx}`"
++                class="border-b border-n-container last:border-0"
++              >
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.category ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.subcategory ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.vehicle_model ?? '—' }}
++                </td>
++                <td class="py-3 pr-4 text-n-slate-12">
++                  {{ row.case_type ?? '—' }}
++                </td>
++                <td class="py-3 text-right text-n-slate-12">
++                  {{ fmtNum(row.cases, 0) }}
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </div>
++      </div>
+     </template>
+   </div>
+ </template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/SLAReports.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/SLAReports.vue
+index 1ff64c9..6eeceb7 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/SLAReports.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/SLAReports.vue
+@@ -8,6 +8,8 @@ import SLAReportFilters from './components/SLA/SLAReportFilters.vue';
+ import { generateFileName } from 'dashboard/helper/downloadHelper';
+ import ReportHeader from './components/ReportHeader.vue';
+ import ProtonSlaSection from './components/proton/ProtonSlaSection.vue';
++import ProtonSlaComplianceSection from './components/proton/ProtonSlaComplianceSection.vue';
++import ProtonDealerEscalationSection from './components/proton/ProtonDealerEscalationSection.vue';
+ export default {
+   name: 'SLAReports',
+   components: {
+@@ -17,6 +19,8 @@ export default {
+     SLATable,
+     SLAReportFilters,
+     ProtonSlaSection,
++    ProtonSlaComplianceSection,
++    ProtonDealerEscalationSection,
+   },
+   data() {
+     return {
+@@ -107,5 +111,7 @@ export default {
+       @page-change="onPageChange"
+     />
+     <ProtonSlaSection />
++    <ProtonSlaComplianceSection />
++    <ProtonDealerEscalationSection />
+   </div>
+ </template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonCallCentrePlaceholder.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonCallCentrePlaceholder.vue
+new file mode 100644
+index 0000000..9395129
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonCallCentrePlaceholder.vue
+@@ -0,0 +1,20 @@
++<script setup>
++// Static placeholder — no data fetch. Call-centre metrics (AQT, response-time
++// SLA, abandon rate) depend on telephony instrumentation that is not built yet
++// (Phase 7). This keeps the surface discoverable rather than absent from the UI.
++</script>
++
++<template>
++  <div
++    class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++  >
++    <h3 class="text-sm font-semibold text-n-slate-12 mb-2">
++      Call-Centre Metrics
++    </h3>
++    <p class="text-sm text-n-slate-10">
++      Call-centre metrics (AQT, response-time SLA, abandon rate) require
++      telephony instrumentation not yet built (Phase 7) — check back once that
++      is implemented.
++    </p>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonDealerEscalationSection.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonDealerEscalationSection.vue
+new file mode 100644
+index 0000000..10b5233
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonDealerEscalationSection.vue
+@@ -0,0 +1,177 @@
++<script setup>
++import { ref, computed, onMounted } from 'vue';
++import { getDealerEscalation } from 'dashboard/api/protonMetrics';
++
++// ── State ──────────────────────────────────────────────────────────────────────
++
++const byDealer = ref([]);
++const slowestCases = ref([]);
++const error = ref(null);
++const loading = ref(true);
++
++onMounted(async () => {
++  try {
++    const result = await getDealerEscalation();
++    byDealer.value = result.by_dealer ?? [];
++    slowestCases.value = result.slowest_cases ?? [];
++  } catch (e) {
++    error.value = e.message || 'Failed to load dealer escalation data';
++  } finally {
++    loading.value = false;
++  }
++});
++
++// ── Computed ───────────────────────────────────────────────────────────────────
++
++const sortedByDealer = computed(() =>
++  [...byDealer.value].sort(
++    (a, b) => (b.cases_escalated ?? 0) - (a.cases_escalated ?? 0)
++  )
++);
++
++function fmtDays(val) {
++  if (val == null || Number.isNaN(Number(val))) return '—';
++  return Number(Number(val).toFixed(1));
++}
++</script>
++
++<template>
++  <div
++    class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++  >
++    <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++      Dealer Escalation Turnaround
++    </h3>
++
++    <!-- Loading state -->
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading dealer escalation data…"
++    />
++
++    <!-- Error state -->
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      {{ error }}
++    </div>
++
++    <!-- Empty state -->
++    <div
++      v-else-if="!sortedByDealer.length"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      No dealer escalation data available
++    </div>
++
++    <!-- Content -->
++    <template v-else>
++      <!-- By-dealer table -->
++      <div class="overflow-x-auto">
++        <table class="w-full text-sm text-left">
++          <thead>
++            <tr class="border-b border-n-container">
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap"
++              >
++                Dealer
++              </th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap text-right"
++              >
++                Cases Escalated
++              </th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap text-right"
++              >
++                Avg Turnaround (days)
++              </th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap text-right"
++              >
++                P50 (days)
++              </th>
++              <th
++                class="pb-2 text-xs font-medium text-n-slate-11 whitespace-nowrap text-right"
++              >
++                P90 (days)
++              </th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="(row, idx) in sortedByDealer"
++              :key="`${row.dealer}-${idx}`"
++              class="border-b border-n-container last:border-0"
++            >
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.dealer ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ row.cases_escalated ?? 0 }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ fmtDays(row.avg_turnaround_days) }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ fmtDays(row.p50_turnaround_days) }}
++              </td>
++              <td class="py-2 text-n-slate-12 text-right tabular-nums">
++                {{ fmtDays(row.p90_turnaround_days) }}
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++
++      <!-- Slowest cases sub-table -->
++      <template v-if="slowestCases.length">
++        <h4 class="text-xs font-semibold text-n-slate-11 mt-6 mb-3">
++          Slowest cases
++        </h4>
++        <div class="overflow-x-auto">
++          <table class="w-full text-sm text-left">
++            <thead>
++              <tr class="border-b border-n-container">
++                <th
++                  class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Conversation
++                </th>
++                <th
++                  class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap"
++                >
++                  Dealer
++                </th>
++                <th
++                  class="pb-2 text-xs font-medium text-n-slate-11 whitespace-nowrap text-right"
++                >
++                  Turnaround (days)
++                </th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr
++                v-for="(row, idx) in slowestCases"
++                :key="`${row.conversation_id}-${idx}`"
++                class="border-b border-n-container last:border-0"
++              >
++                <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                  {{ row.conversation_id ?? '—' }}
++                </td>
++                <td class="py-2 pr-4 text-n-slate-11 whitespace-nowrap">
++                  {{ row.dealer ?? '—' }}
++                </td>
++                <td class="py-2 text-n-slate-12 text-right tabular-nums">
++                  {{ fmtDays(row.turnaround_days) }}
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </div>
++      </template>
++    </template>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonSlaComplianceSection.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonSlaComplianceSection.vue
+new file mode 100644
+index 0000000..ec20daa
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonSlaComplianceSection.vue
+@@ -0,0 +1,111 @@
++<script setup>
++import { ref, computed, onMounted } from 'vue';
++import BarChart from 'shared/components/charts/BarChart.vue';
++import { getSlaBuckets } from 'dashboard/api/protonMetrics';
++
++// ── State ──────────────────────────────────────────────────────────────────────
++
++const buckets = ref([]);
++const error = ref(null);
++const loading = ref(true);
++
++onMounted(async () => {
++  try {
++    const result = await getSlaBuckets();
++    buckets.value = result.buckets ?? [];
++  } catch (e) {
++    error.value = e.message || 'Failed to load SLA bucket data';
++  } finally {
++    loading.value = false;
++  }
++});
++
++// ── Computed ───────────────────────────────────────────────────────────────────
++
++// Distinct series colours, indexed by case_type order of appearance.
++const SERIES_COLORS = [
++  '#6366f1',
++  '#22c55e',
++  '#f59e0b',
++  '#ef4444',
++  '#06b6d4',
++  '#a855f7',
++];
++
++// buckets: [{ case_type, bucket_label, cases }] — pivot into a grouped bar
++// chart where each bucket_label is a column and each case_type is a series.
++const slaBucketCollection = computed(() => {
++  if (!buckets.value.length) return null;
++
++  const bucketLabels = [];
++  const caseTypes = [];
++  buckets.value.forEach(row => {
++    const label = row.bucket_label ?? '—';
++    const caseType = row.case_type ?? '—';
++    if (!bucketLabels.includes(label)) bucketLabels.push(label);
++    if (!caseTypes.includes(caseType)) caseTypes.push(caseType);
++  });
++
++  const datasets = caseTypes.map((caseType, i) => ({
++    label: caseType,
++    backgroundColor: SERIES_COLORS[i % SERIES_COLORS.length],
++    data: bucketLabels.map(label =>
++      buckets.value
++        .filter(
++          row =>
++            (row.case_type ?? '—') === caseType &&
++            (row.bucket_label ?? '—') === label
++        )
++        .reduce((s, row) => s + (row.cases ?? 0), 0)
++    ),
++  }));
++
++  return { labels: bucketLabels, datasets };
++});
++
++const barChartOptions = {
++  plugins: { legend: { display: true, position: 'bottom' } },
++  scales: { y: { beginAtZero: true } },
++};
++</script>
++
++<template>
++  <div
++    class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++  >
++    <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++      SLA Compliance by Bucket
++    </h3>
++
++    <!-- Loading state -->
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading SLA compliance data…"
++    />
++
++    <!-- Error state -->
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      {{ error }}
++    </div>
++
++    <!-- Empty state -->
++    <div
++      v-else-if="!slaBucketCollection"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      No SLA compliance data available
++    </div>
++
++    <!-- Content -->
++    <div v-else class="h-64">
++      <BarChart
++        :collection="slaBucketCollection"
++        :chart-options="barChartOptions"
++      />
++    </div>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonWipAgingSection.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonWipAgingSection.vue
+new file mode 100644
+index 0000000..1c53ba7
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonWipAgingSection.vue
+@@ -0,0 +1,129 @@
++<script setup>
++import { ref, onMounted } from 'vue';
++import { getCaseAging } from 'dashboard/api/protonMetrics';
++
++// ── State ──────────────────────────────────────────────────────────────────────
++
++// Rows arrive pre-sorted by age_days DESC from v_case_aging, so no client-side
++// sort is applied — they are rendered in the order received.
++const cases = ref([]);
++const error = ref(null);
++const loading = ref(true);
++
++onMounted(async () => {
++  try {
++    const result = await getCaseAging();
++    cases.value = result.cases ?? [];
++  } catch (e) {
++    error.value = e.message || 'Failed to load case aging data';
++  } finally {
++    loading.value = false;
++  }
++});
++
++// ── Helpers ────────────────────────────────────────────────────────────────────
++
++function fmtDays(val) {
++  if (val == null || Number.isNaN(Number(val))) return '—';
++  return Number(Number(val).toFixed(1));
++}
++</script>
++
++<template>
++  <div
++    class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++  >
++    <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++      Work-in-Progress / Case Aging
++    </h3>
++
++    <!-- Loading state -->
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading case aging data…"
++    />
++
++    <!-- Error state -->
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      {{ error }}
++    </div>
++
++    <!-- Empty state -->
++    <div
++      v-else-if="!cases.length"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10"
++    >
++      No open cases to age
++    </div>
++
++    <!-- Table -->
++    <div v-else class="overflow-x-auto">
++      <table class="w-full text-sm text-left">
++        <thead>
++          <tr class="border-b border-n-container">
++            <th
++              class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap"
++            >
++              Case Type
++            </th>
++            <th
++              class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap"
++            >
++              Division
++            </th>
++            <th
++              class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap"
++            >
++              Dealer
++            </th>
++            <th
++              class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap"
++            >
++              PIC
++            </th>
++            <th
++              class="pb-2 pr-4 text-xs font-medium text-n-slate-11 whitespace-nowrap text-right"
++            >
++              Age (days)
++            </th>
++            <th
++              class="pb-2 text-xs font-medium text-n-slate-11 whitespace-nowrap"
++            >
++              Bucket
++            </th>
++          </tr>
++        </thead>
++        <tbody>
++          <tr
++            v-for="(row, idx) in cases"
++            :key="`${row.conversation_id}-${idx}`"
++            class="border-b border-n-container last:border-0"
++          >
++            <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++              {{ row.case_type ?? '—' }}
++            </td>
++            <td class="py-2 pr-4 text-n-slate-11 whitespace-nowrap">
++              {{ row.division ?? '—' }}
++            </td>
++            <td class="py-2 pr-4 text-n-slate-11 whitespace-nowrap">
++              {{ row.dealer ?? '—' }}
++            </td>
++            <td class="py-2 pr-4 text-n-slate-11 whitespace-nowrap">
++              {{ row.pic ?? '—' }}
++            </td>
++            <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++              {{ fmtDays(row.age_days) }}
++            </td>
++            <td class="py-2 text-n-slate-11 whitespace-nowrap">
++              {{ row.bucket_label ?? '—' }}
++            </td>
++          </tr>
++        </tbody>
++      </table>
++    </div>
++  </div>
++</template>

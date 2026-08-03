@@ -22,6 +22,7 @@ class LiveSession(Protocol):
     async def send_tool_response(
         self, call_id: str, name: str, response: dict[str, object]
     ) -> None: ...
+    async def send_text_hint(self, text: str) -> None: ...
     def events(self) -> AsyncIterator[LiveEvent]: ...
 
 
@@ -40,6 +41,12 @@ class _GeminiLiveSession:
         await self._session.send_tool_response(
             function_responses=[types.FunctionResponse(id=call_id, name=name, response=response)]
         )
+
+    async def send_text_hint(self, text: str) -> None:
+        """Send a short text-only input alongside the audio stream -- used
+        for IVR-4's per-turn language reminder. Not spoken aloud by the
+        caller and does not itself count as a caller turn."""
+        await self._session.send_realtime_input(text=text)
 
     async def events(self) -> AsyncIterator[LiveEvent]:
         # The SDK's receive() yields one complete turn then returns; re-enter it

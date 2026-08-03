@@ -46,3 +46,18 @@ async def test_events_spans_multiple_turns(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert got == ["t1a", "t1b", "t2a"]  # events from BOTH turns, not just turn 1
     assert session.receive_calls == 2  # re-entered receive() for turn 2 (the loop)
+
+
+@pytest.mark.asyncio
+async def test_send_text_hint_forwards_to_realtime_input() -> None:
+    """send_text_hint forwards text to send_realtime_input."""
+    sent: list[dict] = []
+
+    class _FakeSDKSession:
+        async def send_realtime_input(self, **kwargs: Any) -> None:
+            sent.append(kwargs)
+
+    session = gemini_live._GeminiLiveSession(_FakeSDKSession())  # type: ignore[arg-type]
+    await session.send_text_hint("match the caller's language")
+
+    assert sent == [{"text": "match the caller's language"}]

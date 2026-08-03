@@ -287,6 +287,13 @@ class Settings(BaseSettings):
     # the model auto-detect. Only honored by half-cascade Live models; native-audio
     # models auto-detect language and ignore it.
     gemini_live_language: str = ""
+    # IVR-4: after each caller utterance, send a short content-free reminder
+    # telling the model to re-evaluate the reply language fresh each turn,
+    # rather than anchoring to the conversation's established language.
+    # Default off -- byte-identical when unset; the exact Live API turn-
+    # injection semantics can't be verified without a real call, so this
+    # ships gated and can be flipped per-tenant to A/B against today.
+    phone_language_nudge_enabled: bool = False
     # Browser-softphone access tokens (Twilio Voice grant)
     twilio_api_key_sid: str = ""
     twilio_api_key_secret: str = ""

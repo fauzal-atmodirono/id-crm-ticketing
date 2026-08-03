@@ -1,0 +1,123 @@
+diff --git a/app/javascript/dashboard/api/protonKnowledge.js b/app/javascript/dashboard/api/protonKnowledge.js
+index a0b5034..4d90afa 100644
+--- a/app/javascript/dashboard/api/protonKnowledge.js
++++ b/app/javascript/dashboard/api/protonKnowledge.js
+@@ -49,6 +49,28 @@ export function deleteFaq(id) {
+   return kbRequest(`/kb/faq/${encodeURIComponent(id)}`, { method: 'DELETE' });
+ }
+ 
++// POST /kb/faq/bulk  (multipart CSV upload — cannot use kbRequest which forces
++// JSON). Returns { created: <int>, errors: [{ row, reason }, ...] }.
++export async function bulkUploadFaqs(file) {
++  const { backendUrl, backendKey } = useProtonConfig();
++  if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
++  const form = new FormData();
++  form.append('file', file);
++  const response = await fetch(`${backendUrl}/kb/faq/bulk`, {
++    method: 'POST',
++    headers: { ...(backendKey ? { 'x-api-key': backendKey } : {}) }, // NO Content-Type — browser sets multipart boundary
++    body: form,
++  });
++  if (!response.ok) {
++    const text = await response.text().catch(() => response.statusText);
++    const err = new Error(`${response.status}: ${text.slice(0, 200)}`);
++    err.status = response.status;
++    throw err;
++  }
++  const text = await response.text();
++  return text ? JSON.parse(text) : {};
++}
++
+ // GET /kb/documents -> [{ id, title, uri, snippet }] — the read-only listing of
+ // the tenant's Vertex AI Search data store (the bulk grounding corpus).
+ export async function listDocuments() {
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeFaqs.vue b/app/javascript/dashboard/components/proton/KnowledgeFaqs.vue
+index b68000a..238975c 100644
+--- a/app/javascript/dashboard/components/proton/KnowledgeFaqs.vue
++++ b/app/javascript/dashboard/components/proton/KnowledgeFaqs.vue
+@@ -11,6 +11,7 @@ import {
+   createFaq,
+   updateFaq,
+   deleteFaq,
++  bulkUploadFaqs,
+ } from 'dashboard/api/protonKnowledge';
+ 
+ const entries = ref([]);
+@@ -18,6 +19,10 @@ const loading = ref(false);
+ const errored = ref(false);
+ const search = ref('');
+ 
++// Bulk CSV upload
++const bulkFileInputRef = ref(null);
++const bulkUploading = ref(false);
++
+ const modalOpen = ref(false);
+ const saving = ref(false);
+ const editingId = ref(null);
+@@ -131,6 +136,45 @@ const remove = async entry => {
+   }
+ };
+ 
++const triggerBulkUpload = () => {
++  if (bulkFileInputRef.value) bulkFileInputRef.value.click();
++};
++
++const onBulkFileChange = async event => {
++  const file = event.target.files && event.target.files[0];
++  if (!file) return;
++  // Reset so the same file can be re-uploaded after a fix
++  event.target.value = '';
++  bulkUploading.value = true;
++  try {
++    const result = await bulkUploadFaqs(file);
++    const created = result.created || 0;
++    const errors = Array.isArray(result.errors) ? result.errors : [];
++    if (errors.length) {
++      const preview = errors
++        .slice(0, 5)
++        .map(e => `row ${e.row}: ${e.reason}`)
++        .join('; ');
++      useAlert(
++        `Bulk upload: ${created} created, ${errors.length} error${errors.length === 1 ? '' : 's'} (${preview}${errors.length > 5 ? '…' : ''})`
++      );
++    } else {
++      useAlert(`Bulk upload: ${created} entr${created === 1 ? 'y' : 'ies'} created.`);
++    }
++    await load();
++  } catch (err) {
++    if (err.status === 401) {
++      useAlert('Unauthorized (401) — check the backend key configuration.');
++    } else if (err.status === 503) {
++      useAlert('Knowledge store unavailable (503) on the backend.');
++    } else {
++      useAlert(`Bulk upload failed: ${err.message}`);
++    }
++  } finally {
++    bulkUploading.value = false;
++  }
++};
++
+ onMounted(load);
+ </script>
+ 
+@@ -145,6 +189,20 @@ onMounted(load);
+       >
+         + New entry
+       </button>
++      <button
++        class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1 disabled:opacity-50"
++        :disabled="bulkUploading"
++        @click="triggerBulkUpload"
++      >
++        {{ bulkUploading ? 'Uploading…' : 'Bulk upload (CSV)' }}
++      </button>
++      <input
++        ref="bulkFileInputRef"
++        type="file"
++        accept=".csv"
++        class="hidden"
++        @change="onBulkFileChange"
++      />
+       <button
+         class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1"
+         :disabled="loading"

@@ -49,7 +49,9 @@ once here instead of repeated per section.
 | Agent priority / auto-assignment per channel | **Settings → Inboxes → *(inbox)* → Collaborators**, section **"Agent Channel Priorities"** | Per-agent table: `Primary channel` dropdown + `Also handles` toggle-pills. *Correction:* no "earliest conversation first vs. round-robin" toggle exists in this section — if that behavior is needed, it's the plain native Chatwoot "Conversation Assignment" accordion elsewhere on the same page; verify live before relying on this. |
 | Persona, disclaimer, welcome/handoff messages, temperature, language | **Settings → Knowledge → Settings** (pick the assistant from the dropdown at top) | *Correction:* **not** the "Assistants" sub-item — that screen is just a bare list/rename modal (Name, Description, Product). The actual persona editor (`System instructions`, `Temperature`, `Language`, `Guardrails`, all 10 lifecycle `Messages` fields) lives on **Settings**, one level over. Empty persona = today's default disclaimer text, byte-identical. |
 | FAQ entries (manual Q&A) | **Settings → Knowledge → FAQs** | Bulk CSV upload is future work — one-by-one only today. |
-| Uploaded documents (KB grounding) | **Settings → Knowledge → Uploads** (button `Upload file` / `+ Add text`) | *Correction:* **not** the "Documents" sub-item — that tab is a **read-only** listing of the separate Vertex AI corpus. The actual operator upload/ingest screen is **Uploads**, and it's gated behind `KNOWLEDGE_PG_ENABLED` (shows a "not enabled" message instead of a 404 when off). Status column shows `indexed`/`pending`/`failed` — content isn't grounded until `indexed`. |
+| Uploaded documents (KB grounding) | **Settings → Knowledge → Uploads** (button `Upload file` / `+ Add text`) | *Correction:* **not** the "Documents" sub-item — that tab is a **read-only** listing of the separate Vertex AI corpus. The actual operator upload/ingest screen is **Uploads**, gated behind `KNOWLEDGE_PG_ENABLED` (shows a "not enabled" message instead of a 404 when off). Status column shows `indexed`/`pending`/`failed` — content isn't grounded until `indexed`. **Update 2026-08-03:** `KNOWLEDGE_PG_ENABLED=true` on proton — the screen is live, not gated. Patch `0033` also fixed a bug where a failed load/remove showed a raw "404: Not Found" alert instead of the friendly "not enabled" message. |
+| Reporting dashboards (dealer escalation, case aging/WIP, category × vehicle-model, volume by type) | **Reports** menu → new native report tabs, plus generalized CSV export on each | ⚠️ Code-complete (`reporting-metrics-extensions` run, 2026-08-03) but **not yet in the live Chatwoot bundle** — needs patches `0034`/`0035` rebuilt via Cloud Build + redeployed. CSV export routes are `x-api-key`-gated (`METRICS_API_KEY`), same as the JSON routes. |
+| Roadside-Assistance (RSA) incident log | New standalone entry/report page (patch `0035`) | ⚠️ Code-complete, default-off behind `RSA_ENABLED`+`RSA_DATABASE_URL`. Needs a per-tenant Postgres DB provisioned (mirrors the pgvector-KB rollout) + image rebuild to go live. See IVR-7 below for how this relates to the call-routing RSA flow. |
 | Attach an assistant/persona to a specific inbox | **Settings → Knowledge → Inboxes** | |
 | Test the bot before going live | **Settings → Knowledge → Playground** | |
 | Agent-facing "Ask Copilot" | Inside any open conversation → reply-box AI-actions menu → **Ask Copilot** (opens a right-side slide-in panel) | Needs the conversation's KB to be grounded first. |
@@ -112,17 +114,17 @@ flowchart TD
 | # | Step | Where in the UI | How to verify | Status |
 |---|---|---|---|---|
 | WA-1 | Disclaimer on first message | Open the WhatsApp inbox, send a message from a test WhatsApp number | Bot posts the AI-use disclaimer within seconds | ✅ Live |
-| WA-2 | Same-language reply | Send in Bahasa vs. English | Bot replies in the language the customer used | ⚠️ Partial — demo showed the AI answering in English even when addressed in Bahasa; flagged as a prompt/back-end bug to fix before production |
+| WA-2 | Same-language reply | Send in Bahasa vs. English | Bot replies in the language the customer used | ⚠️ Partial — **root cause fixed 2026-08-03** (`be7b715`/`6760596`: persona/language field was silently overriding "match the customer's language" instead of acting as a fallback) and deployed to proton (agent+backend rebuilt). Downgraded from ❌ known-bug to **pending a real WhatsApp smoke test only** — no code work left, just needs someone to confirm live. |
 | WA-3 | Out-of-hours auto-reply | Set inbox Business Hours to a window that excludes "now", send a message | Auto-reply with the hours/website text posts instead of the bot answering | ✅ Live (needs Business Hours configured per §2) |
-| WA-4 | FAQ-grounded answer | Ask a question covered by an uploaded FAQ/document | Bot answers using that content, not a generic reply | ⚠️ Partial — works once KB content is populated & "grounded"; the demo showed a query returning nothing because the target document hadn't finished grounding yet |
+| WA-4 | FAQ-grounded answer | Ask a question covered by an uploaded FAQ/document | Bot answers using that content, not a generic reply | ⚠️ Partial — works once KB content is populated & "grounded". **Update 2026-08-03:** if grounding finds nothing AND a document is still `pending` indexing, the bot now says "still processing" instead of guessing (`91a412e`, deployed) — the demo's failure mode (silent bad answer) is fixed; a genuinely-missing/never-uploaded topic still returns a generic reply as expected. |
 | WA-5 | Idle warning → auto-close | Leave the conversation idle past the configured minutes | Bot posts the 5-min warning, then the auto-close + "resolved? YES/NO" message | ✅ Live (see threshold note in §3.1) |
 | WA-6 | Resolution gate | Reply `NO` / `YES` to the prompt | `NO` reopens to active; `YES` moves to the rating survey | ✅ Live |
 | WA-7 | CSAT survey | Reply `1`–`5` to the survey | Rating appears under **Reports → CSAT**; conversation closes | ✅ Live |
-| WA-8 | Auto-categorization on bot resolution | Resolve via the bot flow (not a human) | A `category_*` label is applied — check the conversation's Labels | ⚠️ Partial — requires `LIFECYCLE_AUTO_CATEGORIZE=true` and the category list configured; hierarchical main→sub category (as PRO-NET requested) isn't built, labels are flat |
+| WA-8 | Auto-categorization on bot resolution | Resolve via the bot flow (not a human) | A `category_*` label is applied — check the conversation's Labels | ⚠️ Partial — requires `LIFECYCLE_AUTO_CATEGORIZE=true` and the category list configured; **the real taxonomy is now provisioned live on proton (2026-08-03)** — `case_category`/`case_subcategory` custom attributes (Sales/Aftersales/Apps/Charging/Roadside Assistance/General Enquiry/Complaint, 26 subcategories), reconciled against Proton's actual reporting decks. A doubled-prefix bug (`category_category_inquiry`) was also fixed. Hierarchical main→sub *dependency in the label picker UI* (as PRO-NET requested) still isn't built — labels remain a flat list to pick from. |
 | WA-9 | Escalate to live agent | Ask for a human agent | Assigned to the online agent with WhatsApp as priority-1 (Settings → Inboxes → Collaborators → Agent Priorities) | ✅ Live |
 | WA-10 | Manual reassignment | Team Leader reassigns the conversation in the UI | Assignee changes; entry appears in **Settings → Audit Log** | ✅ Live |
 | WA-11 | Escalation email | Apply the **escalate** label to a conversation | PIC receives an email (and WhatsApp alert, if enabled); check Escalation Policy mapping | ✅ Live, but attachments (photos/videos on the conversation) are **not yet forwarded** — text-only today |
-| WA-12 | Voice notes / image / video from customer | Send a voice note, image, or video in WhatsApp | Bot should transcribe/process it | ⚠️ Partial — text-only in the 2026-07-28 demo; presenter attributed this live to Meta Business/WABA verification on the Twilio sandbox number, though that's unconfirmed (see roadmap item). Root cause per design docs was inbound media parsing being out of scope for Phase A. AI understanding of voice/image is now code-complete behind `WHATSAPP_MEDIA_UNDERSTANDING_ENABLED` (default off) — still needs Meta verification confirmed + flag enabled to go live |
+| WA-12 | Voice notes / image / video from customer | Send a voice note, image, or video in WhatsApp | Bot should transcribe/process it | ⚠️ Partial — text-only in the 2026-07-28 demo; presenter attributed this live to Meta Business/WABA verification on the Twilio sandbox number, though that's unconfirmed. **Update 2026-08-03:** `WHATSAPP_MEDIA_UNDERSTANDING_ENABLED=true` is now live on proton (agent/backend redeployed) — audio + image understanding should work. **Still needs a real WhatsApp voice-note/photo smoke test** to confirm (couldn't be done in the dev sandbox, no real WhatsApp number available). Video understanding remains genuinely unbuilt (audio/image only), out of scope by design. |
 | WA-13 | "Which vehicle is this customer's?" lookup | Try to find the customer's vehicle/registration from the conversation | — | ❌ Not built — needs the Customer 360/DMS integration (see gap-analysis §6) |
 
 ### 3.3 Detailed step-by-step
@@ -139,7 +141,7 @@ The WhatsApp inbox itself is stock, unforked Chatwoot (a native **Twilio-channel
 1. In that conversation (or a fresh one), send a message in Bahasa (e.g. "Selamat pagi, saya nak tanya tentang kereta saya").
 2. Note the language of the bot's reply.
 3. Send a second message in English and note that reply's language too.
-4. Known bug as of the 2026-07-28 demo: the bot may answer in English regardless of the customer's language — record what you actually observe.
+4. As of 2026-08-03 the underlying override bug is fixed and deployed — expect the bot to now match the customer's language on both messages. If it still answers in English, that's a regression worth filing, not the known pre-fix behavior.
 
 **WA-3 — Out-of-hours auto-reply**
 1. Go to **Settings → Inboxes → *(WhatsApp inbox)* → Business Hours**.
@@ -152,7 +154,7 @@ The WhatsApp inbox itself is stock, unforked Chatwoot (a native **Twilio-channel
 1. Add content first: **Settings → Knowledge → FAQs → + New entry** (a Question/Answer pair), *or* **Settings → Knowledge → Uploads → Upload file / + Add text** (note: Uploads is gated behind `KNOWLEDGE_PG_ENABLED` — if it shows "not enabled," only manual FAQs are available on this tenant).
 2. If you uploaded a document, wait until its Status column shows `indexed` (not `pending`/`failed`).
 3. Send a WhatsApp message asking exactly the question you added.
-4. Confirm the bot's answer reflects that content rather than a generic reply. A still-`pending` upload returning nothing is the same gap observed live in the 2026-07-28 demo.
+4. Confirm the bot's answer reflects that content rather than a generic reply. If the upload is still `pending`, expect an explicit "still processing" reply now (not a silent generic answer, which was the 2026-07-28 demo gap) — wait for `indexed` and retry to see the real grounded answer.
 
 **WA-5 — Idle warning → auto-close**
 1. Check the configured thresholds first: **Settings → Inboxes → *(WhatsApp inbox)* → Business Hours**, scroll to the **"Inactivity & auto-close"** section, note `Warn after idle (min)` and both `Close grace` values.
@@ -173,10 +175,10 @@ The WhatsApp inbox itself is stock, unforked Chatwoot (a native **Twilio-channel
 4. Confirm the conversation's status is now Resolved.
 
 **WA-8 — Auto-categorization on bot resolution**
-1. Ask engineering to confirm `LIFECYCLE_AUTO_CATEGORIZE=true` and a category list are set for this tenant (env var, not a UI toggle).
+1. Ask engineering to confirm `LIFECYCLE_AUTO_CATEGORIZE=true` and a category list are set for this tenant (env var, not a UI toggle) — on proton this is the 7-division/26-subcategory taxonomy provisioned 2026-08-03.
 2. Run a full bot-only resolution (WA-6 `YES` → WA-7) with no human agent involved.
 3. Open the resolved conversation → right sidebar → **Conversation Actions → Labels**.
-4. Confirm a `category_*` label was applied automatically (flat list only — no sub-category yet).
+4. Confirm a single, correctly-prefixed `category_*` label was applied automatically (e.g. `category_sales`, not a doubled `category_category_sales` — that bug is fixed) — flat list only, no sub-category dependency in the picker yet.
 
 **WA-9 — Escalate to live agent**
 1. Go to **Settings → Inboxes → *(WhatsApp inbox)* → Collaborators → Agent Channel Priorities**.
@@ -198,8 +200,8 @@ The WhatsApp inbox itself is stock, unforked Chatwoot (a native **Twilio-channel
 
 **WA-12 — Voice notes / image / video from customer**
 1. From the test WhatsApp number, send a voice note, then separately a photo, then a video.
-2. Confirm each currently gets no AI response — the message may still visibly land in the conversation thread (Chatwoot's native Twilio channel displays inbound media to human agents regardless), but the bot won't act on it while `WHATSAPP_MEDIA_UNDERSTANDING_ENABLED` is off.
-3. Ask engineering whether that flag has been enabled for this tenant before re-testing; if/when it is, repeat and confirm the bot transcribes/describes the content.
+2. `WHATSAPP_MEDIA_UNDERSTANDING_ENABLED=true` is now live on proton — expect the bot to transcribe the voice note and describe/reason about the photo in its reply. The video should still get no AI understanding (out of scope by design), though it will still visibly land in the thread for a human agent to view.
+3. This flag flip hasn't been live-smoked with real WhatsApp media yet — if a voice note or photo gets no AI response, that's a real bug to report, not expected behavior anymore.
 
 **WA-13 — Vehicle lookup**
 Not built — no UI surface exists to test yet (needs the Customer 360/DMS integration).
@@ -368,12 +370,12 @@ same as any other channel:
 | IVR-1 | Call transcript lands in the CRM | Place a test call to the Twilio number | A conversation appears in the Call/Twilio inbox with the transcript | ✅ Live — demoed working end-to-end with real-time speech-to-text |
 | IVR-2 | AI answers vehicle questions from KB | Ask about specs/features on the call | AI answers correctly, sourced from the uploaded KB | ✅ Live (demoed with Proton X70 specs) |
 | IVR-3 | 1–5 rating survey at end of call | Answer the rating prompt | Rating appears in **Reports → CSAT** | ✅ Live |
-| IVR-4 | Same-language response | Speak in Bahasa | AI should respond in Bahasa | ⚠️ Partial — same language-matching bug as WA-2, observed live on this channel too |
+| IVR-4 | Same-language response | Speak in Bahasa | AI should respond in Bahasa | ⚠️ Partial — same root cause as WA-2, and the general text-path fix (`be7b715`/`6760596`) is deployed. **However** IVR is a separate voice pipeline (Gemini Live, not the text-path persona code) — a VM recon on 2026-08-03 found no pinned-language config to blame, so this may be a genuine Gemini Live auto-detect reliability issue rather than the same bug. **Not resolved** — needs its own diagnosis, not just re-testing WA-2's fix. |
 | IVR-5 | DTMF menu ("press 1 for…") vs. conversational routing | Call and see whether it's a traditional keypad menu or the AI naturally routes by intent | — | 🔲 **Decision pending** — two implementations exist: (a) classic Twilio TwiML press-1/press-2 IVR, (b) an "Agent B" orchestrator where the LLM understands intent (sales / repair / road-side-assist) and routes directly without a keypad menu. Proton needs to choose which goes to production. |
 | IVR-6 | Hand-off to a live human agent | Ask to speak to a person | Call transfers to an available agent | ❌ Not connected yet — demoed as a mocked hand-off only |
-| IVR-7 | Road-side-assist (RSA) after-hours routing | Call outside business hours reporting an accident | AI transfers directly to the 24/7 RSA line, bypassing normal agent-only hours | ✅ Designed & confirmed live in the meeting — business-hours-aware transfer exists in the orchestrator |
+| IVR-7 | Road-side-assist (RSA) after-hours routing | Call outside business hours reporting an accident | AI transfers directly to the 24/7 RSA line, bypassing normal agent-only hours | ✅ Designed & confirmed live in the meeting — business-hours-aware transfer exists in the orchestrator. A dedicated **RSA incident-log page** (patch `0035`, see §2) now exists to record/track those cases once an agent picks one up — separate from the call-routing itself, and not yet deployed (see §2 row). |
 | IVR-8 | Call recording | Any call | Recording available for QA/compliance | ❌ Not recorded in the demo build — confirmed needed for production, not yet implemented |
-| IVR-9 | WhatsApp voice-note equivalent | Send a WhatsApp voice message | AI transcribes/responds | ⚠️ Partial — same status as WA-12 (media understanding is code-complete behind `WHATSAPP_MEDIA_UNDERSTANDING_ENABLED`, default off; the "Meta verification" framing is an unconfirmed live-demo statement, see gap-analysis correction) |
+| IVR-9 | WhatsApp voice-note equivalent | Send a WhatsApp voice message | AI transcribes/responds | ⚠️ Partial — **Update 2026-08-03:** `WHATSAPP_MEDIA_UNDERSTANDING_ENABLED=true` is now live on proton (same as WA-12); still needs a real-WhatsApp-media smoke test to confirm end-to-end. The "Meta verification" framing from the demo remains an unconfirmed statement, not a coded gate. |
 
 ### 6.3 Detailed step-by-step
 
@@ -395,7 +397,7 @@ There's no IVR-configuration screen in the CRM — you're only verifying the **a
 
 **IVR-4 — Same-language response**
 1. Call and speak in Bahasa throughout.
-2. Note whether the AI responds in Bahasa or defaults to English — same known bug as WA-2.
+2. Note whether the AI responds in Bahasa or defaults to English. Unlike WA-2/text channels, this one is **not** confirmed fixed — the voice pipeline (Gemini Live) is separate code from the text-path persona fix, and a 2026-08-03 VM check ruled out the original hypothesis (a pinned language env var) without finding a replacement root cause. Treat any English-only response here as still-open, not a regression.
 
 **IVR-5 — DTMF menu vs. conversational routing**
 Decision pending — nothing to click yet; flag to Proton per §8 item 3.
@@ -476,9 +478,12 @@ These block turning the ⚠️/❌/🔲 rows above into ✅:
    conversational LLM routing (IVR-5). This also determines whether the
    existing press-1/press-2 flow in the SOP xlsx is still authoritative.
 4. **Language-matching bug** — WA-2 / IVR-4: AI should answer in the
-   customer's language; currently defaults to English. Needs a prompt/backend
-   fix before production, not a Proton decision, but flagged as a P0 bug from
-   the demo.
+   customer's language; currently defaults to English. **Update 2026-08-03:**
+   fixed for all text-based channels (WhatsApp, Ask Copilot, Suggest/Summarize/Ask)
+   and deployed to proton — only needs a live smoke test, not further Proton
+   input. **IVR-4 (voice) is still unresolved** — separate code path (Gemini
+   Live), root cause not yet found; this remains open engineering work, not a
+   Proton decision either.
 5. **Meta Business verification** — required to unlock Facebook/Instagram
    channels (§4) and WhatsApp voice-note/image/video understanding (WA-12).
 6. **FAQ/KB source of truth** — the SOP text literally says "AI answers
@@ -490,7 +495,11 @@ These block turning the ⚠️/❌/🔲 rows above into ✅:
    request it to validate PIC routing/notification rules.
 8. **Category hierarchy** — PRO-NET asked for main-category → subcategory
    dependency (select "Sales" → only "Sales" subcategories selectable);
-   confirm this is required before scoping the build (labels are flat today).
+   confirm this is required before scoping the build. **Update 2026-08-03:**
+   the underlying taxonomy is now real (7 divisions / 26 subcategories,
+   reconciled against Proton's own reporting decks) and reporting now slices
+   by it — but the label *picker in the UI is still flat*, no cascading
+   dependency yet. Confirm whether that UI behavior is worth building next.
 9. **Reporting** — Proton to share their target report/visualization
    examples so the team can assess embedding them (or an equivalent) into the
    CRM's native reports vs. staying with the current in-CRM WebBI-style

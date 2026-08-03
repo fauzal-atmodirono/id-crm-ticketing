@@ -118,8 +118,9 @@ class PhoneBridge:
                 if self.stream_sid:
                     await self._send_twilio({"event": "clear", "streamSid": self.stream_sid})
             elif isinstance(event, InputTranscript):
+                is_new_user_turn = not (self.transcript and self.transcript[-1][0] == "USER")
                 self._append_transcript("USER", event.text)
-                if self._settings.phone_language_nudge_enabled:
+                if is_new_user_turn and self._settings.phone_language_nudge_enabled:
                     await self._live.send_text_hint(
                         "(Reminder: match your next reply's language to what "
                         "the caller just said, even mid-conversation.)"

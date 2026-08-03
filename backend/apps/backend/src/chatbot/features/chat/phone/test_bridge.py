@@ -181,6 +181,30 @@ async def test_pump_skips_language_hint_when_disabled() -> None:
     assert live.text_hints == []
 
 
+async def test_pump_sends_language_hint_once_per_utterance_across_fragments() -> None:
+    # A single caller utterance streamed as two InputTranscript deltas must
+    # only trigger one language-nudge hint, not one per fragment.
+    live = _FakeLive([InputTranscript("Saya"), InputTranscript(" nak tanya")])
+    b = _bridge(live, [], settings=Settings(_env_file=None, phone_language_nudge_enabled=True))
+    await b.pump()
+    assert len(live.text_hints) == 1
+
+
+async def test_pump_sends_second_language_hint_for_new_utterance_after_assistant_turn() -> None:
+    # A genuinely new caller turn (after the assistant has replied) must
+    # still trigger its own hint.
+    live = _FakeLive(
+        [
+            InputTranscript("Saya nak tanya"),
+            OutputTranscript("Baik, boleh saya bantu?"),
+            InputTranscript("Terima kasih"),
+        ]
+    )
+    b = _bridge(live, [], settings=Settings(_env_file=None, phone_language_nudge_enabled=True))
+    await b.pump()
+    assert len(live.text_hints) == 2
+
+
 async def test_finalize_writes_transcript_to_zendesk() -> None:
     log = _FakeLog()
     live = _FakeLive([])

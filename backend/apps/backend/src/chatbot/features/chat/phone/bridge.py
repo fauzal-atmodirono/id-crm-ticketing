@@ -23,6 +23,7 @@ from chatbot.features.chat.phone.live_events import (
 if TYPE_CHECKING:
     from chatbot.features.chat.phone.gemini_live import LiveSession
     from chatbot.features.chat.ports import ConversationLogPort, KnowledgePort
+    from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
 
@@ -34,11 +35,13 @@ class PhoneBridge:
         knowledge_port: KnowledgePort,
         conversation_log_port: ConversationLogPort,
         send_twilio: Callable[[dict[str, object]], Awaitable[None]],
+        settings: Settings,
     ) -> None:
         self._live = live
         self._knowledge = knowledge_port
         self._log_port = conversation_log_port
         self._send_twilio = send_twilio
+        self._settings = settings
         self.stream_sid: str | None = None
         self.call_sid: str | None = None
         self.transcript: list[tuple[str, str]] = []
@@ -116,6 +119,11 @@ class PhoneBridge:
                     await self._send_twilio({"event": "clear", "streamSid": self.stream_sid})
             elif isinstance(event, InputTranscript):
                 self._append_transcript("USER", event.text)
+                if self._settings.phone_language_nudge_enabled:
+                    await self._live.send_text_hint(
+                        "(Reminder: match your next reply's language to what "
+                        "the caller just said, even mid-conversation.)"
+                    )
             elif isinstance(event, OutputTranscript):
                 self._append_transcript("ASSISTANT", event.text)
             elif isinstance(event, ToolCall):

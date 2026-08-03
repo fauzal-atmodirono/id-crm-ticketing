@@ -13,6 +13,7 @@ from chatbot.features.chat.phone.live_events import (
     ToolCall,
 )
 from chatbot.features.chat.ports import ConversationLogResult
+from chatbot.platform.config import Settings
 
 
 class _FakeLive:
@@ -20,12 +21,16 @@ class _FakeLive:
         self._scripted = scripted
         self.audio_sent: list[bytes] = []
         self.tool_responses: list[tuple[str, str, dict[str, Any]]] = []
+        self.text_hints: list[str] = []
 
     async def send_audio(self, pcm16k: bytes) -> None:
         self.audio_sent.append(pcm16k)
 
     async def send_tool_response(self, call_id: str, name: str, response: dict[str, Any]) -> None:
         self.tool_responses.append((call_id, name, response))
+
+    async def send_text_hint(self, text: str) -> None:
+        self.text_hints.append(text)
 
     async def events(self) -> AsyncIterator[LiveEvent]:
         for e in self._scripted:
@@ -88,12 +93,18 @@ class _FakeLog:
 
 
 def _bridge(
-    live: _FakeLive, sent: list[dict[str, object]], log: _FakeLog | None = None
+    live: _FakeLive,
+    sent: list[dict[str, object]],
+    log: _FakeLog | None = None,
+    settings: Settings | None = None,
 ) -> PhoneBridge:
     async def send_twilio(msg: dict[str, object]) -> None:
         sent.append(msg)
 
-    return PhoneBridge(live, _FakeKnowledge(), log or _FakeLog(), send_twilio)
+    return PhoneBridge(
+        live, _FakeKnowledge(), log or _FakeLog(), send_twilio,
+        settings or Settings(_env_file=None),
+    )
 
 
 async def test_handle_start_records_sids() -> None:
@@ -150,6 +161,21 @@ async def test_pump_accumulates_transcript() -> None:
     await b.pump()
     assert ("USER", "hi") in b.transcript
     assert ("ASSISTANT", "hello there") in b.transcript
+
+
+async def test_pump_sends_language_hint_after_input_transcript_when_enabled() -> None:
+    live = _FakeLive([InputTranscript("Saya nak tanya")])
+    b = _bridge(live, [], settings=Settings(_env_file=None, phone_language_nudge_enabled=True))
+    await b.pump()
+    assert len(live.text_hints) == 1
+    assert "language" in live.text_hints[0].lower()
+
+
+async def test_pump_skips_language_hint_when_disabled() -> None:
+    live = _FakeLive([InputTranscript("Saya nak tanya")])
+    b = _bridge(live, [], settings=Settings(_env_file=None, phone_language_nudge_enabled=False))
+    await b.pump()
+    assert live.text_hints == []
 
 
 async def test_finalize_writes_transcript_to_zendesk() -> None:

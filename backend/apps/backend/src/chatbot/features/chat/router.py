@@ -1281,6 +1281,7 @@ class ChatRouter:
                     self.orchestrator._knowledge_port,
                     self.orchestrator._conversation_log_port,
                     websocket.send_json,
+                    self.orchestrator._settings,
                 )
 
                 # The Twilio Media Streams protocol always sends a "start" event

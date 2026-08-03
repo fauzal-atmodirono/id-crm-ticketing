@@ -12,7 +12,8 @@ label on AI-driven escalations to avoid the two paths colliding.
 from __future__ import annotations
 
 import hmac
-from typing import TYPE_CHECKING, Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException

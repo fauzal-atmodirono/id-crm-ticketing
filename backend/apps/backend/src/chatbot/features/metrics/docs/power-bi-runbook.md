@@ -157,6 +157,6 @@ cleanly in iframes without additional licensing.
 |---|---|---|
 | "Access denied" on BQ connector | Service account lacks `bigquery.dataViewer` | Grant role in IAM console |
 | View returns 0 rows | Sync job hasn't run yet | Trigger `POST /metrics/sync` or wait for scheduler |
-| `v_reopen_rate` shows all `reopen_count = NULL` | Zammad webhook not writing `additional_attributes.reopen_count` | Verify Zammad webhook payload includes the field; see mapping.py `_chatwoot_reopen_count` |
+| `v_reopen_rate` shows all `reopen_count = NULL` | No integration writing `additional_attributes.reopen_count` | Verify the write-back payload includes the field; see mapping.py `_chatwoot_reopen_count` |
 | `dealer` column shows `Unknown` everywhere | No `dealer_<slug>` labels on conversations | Ensure ChatwootAdapter writes `dealer_<slug>` labels at classification time |
 | iframe shows blank in Chatwoot | `REPORTS_EMBED_URL` not set or misconfigured | Check tenant `.env` and restart container |

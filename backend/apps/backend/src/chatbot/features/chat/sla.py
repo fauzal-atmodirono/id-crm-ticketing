@@ -1,4 +1,4 @@
-"""SLA-timer escalation engine for PROTON on Chatwoot+Zammad.
+"""SLA-timer escalation engine for PROTON on Chatwoot.
 
 PROTON migrated off Zendesk (which fires SLA triggers natively) to Chatwoot,
 which has NO server-side SLA engine. This module replaces that missing capability

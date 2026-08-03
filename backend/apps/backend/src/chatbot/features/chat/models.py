@@ -112,8 +112,9 @@ class HandoffOpenPayload:
     department: str | None = None
     sla_minutes: int | None = None
     # Why the handoff fired. The bridge uses this to decide whether the case is a
-    # complaint (-> apply the Zammad-ticketing label) vs a plain "talk to a human"
-    # request that should stay a live Chatwoot conversation only.
+    # complaint (-> apply the complaint label + escalation notification) vs a
+    # plain "talk to a human" request that should stay a live Chatwoot
+    # conversation only.
     reason: str = "help_request"
 
 

@@ -22,7 +22,6 @@ from chatbot.features.chat.ports import (
 from chatbot.features.routing.channels import canonical_channel
 
 if TYPE_CHECKING:
-    from chatbot.features.chat.adapters.zammad import ZammadClient
     from chatbot.features.chat.escalation_notifier import EscalationNotifier
     from chatbot.features.chat.pic_registry import PicRegistry
     from chatbot.features.routing.service import RoutingService
@@ -85,28 +84,16 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
     def __init__(
         self,
         settings: Settings,
-        zammad: ZammadClient | None = None,
         pic_registry: PicRegistry | None = None,  # type: ignore[type-arg]  # Any to avoid circular import
         escalation_notifier: EscalationNotifier | None = None,  # type: ignore[type-arg]
     ) -> None:
         self._settings = settings
-        self._zammad = zammad
         self._pic_registry = pic_registry
         self._escalation_notifier = escalation_notifier
         self._paused_sessions: set[str] = set()
         self._conv_by_session: dict[str, str] = {}
         self._routing_service: RoutingService | None = None
         self._channel_cache: str | None = None
-
-    def _direct_zammad_active(self) -> bool:
-        """True when this adapter owns Zammad ticketing directly.
-
-        In direct mode the backend POSTs the Zammad ticket itself and MUST NOT
-        also apply the `escalate` complaint label — that label is what the
-        external agent-service sync (if ever wired) turns into a ticket, so
-        applying both would spawn a duplicate ticket.
-        """
-        return self._settings.zammad_direct_ticketing and self._zammad is not None
 
     def _synth_customer_email(self, session_id: str) -> str:
         """Deterministic synthetic email for a session's Chatwoot contact.
@@ -121,8 +108,8 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         """Labels applied to an escalated conversation.
 
         Comma-separated so one escalation can carry both our own marker
-        (``ai-escalation``) and a label that triggers a downstream integration
-        (e.g. the shared instance's ``escalate`` → Zammad-ticket sync).
+        (``ai-escalation``) and any additional label an operator wants applied
+        (e.g. for filtering agents' views).
         """
         return [
             label.strip()
@@ -131,10 +118,11 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         ]
 
     def _is_complaint(self, reason: str | None, urgency: str | None) -> bool:
-        """A handoff is a complaint (-> back-office Zammad ticket) only when the AI
-        flagged dissatisfaction or high urgency. A plain "talk to a human" request
-        stays a live Chatwoot conversation, so agents aren't handed a confusing
-        ticket for a conversation they should be having in the chat.
+        """A handoff is a complaint (-> escalation notification + complaint label)
+        only when the AI flagged dissatisfaction or high urgency. A plain "talk to
+        a human" request stays a live Chatwoot conversation, so agents aren't
+        handed a confusing complaint for a conversation they should be having in
+        the chat.
         """
         if urgency and urgency.strip().lower() in {"high", "urgent", "critical"}:
             return True
@@ -218,13 +206,10 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         return f"pic_{slug}"
 
     def _complaint_labels(self, reason: str | None, urgency: str | None) -> list[str]:
-        """The Zammad-ticketing `escalate` label, applied only for complaints in
-        LEGACY mode. When direct Zammad ticketing is active the backend creates
-        the ticket itself, so this label is suppressed to avoid a double-ticket if
-        the external agent-service sync is ever wired to it.
+        """The `escalate` complaint label, applied only for genuine complaints
+        (see `_is_complaint`) so a plain "talk to a human" handoff doesn't carry
+        it.
         """
-        if self._direct_zammad_active():
-            return []
         label = self._settings.chatwoot_complaint_label.strip()
         if label and self._is_complaint(reason, urgency):
             return [label]
@@ -235,59 +220,28 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         conv_id: str,
         title: str,
         body: str,
-        session_id: str,
         urgency: str | None,
         reason: str | None,
         department: str | None = None,
     ) -> None:
         """Fire escalation side-effects (email + CC, WA alert, case_state).
 
-        Chatwoot-first: the notification always fires for a complaint, whether or
-        not Zammad is in the loop. When direct Zammad ticketing is active a
-        back-office ticket is ALSO created and the email references it; otherwise
-        the email references the Chatwoot conversation. No-op when the case is
-        not a complaint. Errors from side-effects are swallowed so the turn
-        never breaks.
+        Chatwoot-first: the notification always fires for a complaint, and
+        references the Chatwoot conversation. No-op when the case is not a
+        complaint. Errors from side-effects are swallowed so the turn never
+        breaks.
         """
         if not self._is_complaint(reason, urgency):
             return
 
-        # Resolve PIC for the department — drives Zammad group override + routing.
-        pic = None
-        if self._pic_registry is not None and department:
-            key = department.removeprefix("dept_")
-            pic = await self._pic_registry.lookup(key)
-
-        # Create the back-office Zammad ticket ONLY when direct ticketing is on.
-        zammad_ticket_number: str | None = None
-        if self._direct_zammad_active() and self._zammad is not None:
-            group = pic.zammad_group if pic is not None else None
-            ticket = await self._zammad.create_ticket(
-                title=title,
-                body=body,
-                customer_email=self._synth_customer_email(session_id),
-                priority=(urgency or "medium"),
-                group=group,
-            )
-            if ticket is not None:
-                # Assign Zammad ticket to the PIC's email if available.
-                if pic is not None:
-                    await self._zammad.assign_owner(ticket.id, pic.pic_email)
-                zoom_url = f"{self._settings.zammad_api_url.rstrip('/')}/#ticket/zoom/{ticket.id}"
-                await self.add_private_note(
-                    conv_id, f"Escalated to Zammad ticket #{ticket.number}: {zoom_url}"
-                )
-                zammad_ticket_number = ticket.number
-
-        # Fire escalation side-effects (email + CC, WA alert, case_state write) —
-        # independent of Zammad so this works in a Chatwoot-only deployment.
+        # Fire escalation side-effects (email + CC, WA alert, case_state write).
+        # PIC resolution (for the email/WA target) happens inside the notifier.
         if self._escalation_notifier is not None:
             await self._escalation_notifier.notify(
                 conv_id=conv_id,
                 title=title,
                 body=body,
                 department=department,
-                zammad_ticket_number=zammad_ticket_number,
             )
 
     @staticmethod
@@ -304,8 +258,8 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         already parses (``division_*``, ``dept_*``, ``sla_<int>``) so the batch
         sync can read the dimensions straight back off the conversation. These
         are merged into the SINGLE final labels call alongside the escalation
-        labels — a separate labels POST would re-fire the conversation_updated
-        webhook and spawn a duplicate Zammad ticket.
+        labels — a separate labels POST would needlessly re-fire the
+        conversation_updated webhook.
         """
 
         def _norm(v: str) -> str:
@@ -503,11 +457,10 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         )
         await self._assign_conversation(conv_id)
         await self.add_private_note(conv_id, f"[AI escalation] {title}\n\n{body}")
-        # Fire escalation side-effects (email + CC, WA alert, case_state). When
-        # direct Zammad ticketing is on this also POSTs the back-office ticket and
-        # drops a Chatwoot private note linking to it; otherwise it's Chatwoot-only.
+        # Fire escalation side-effects (email + CC, WA alert, case_state) —
+        # Chatwoot-only.
         await self._fire_escalation(
-            conv_id, title, body, session_id, urgency, None, department=department
+            conv_id, title, body, urgency, None, department=department
         )
         # case_category/case_subcategory/case_type/vehicle_model + sla_minutes as
         # custom attributes — case_category/subcategory/case_type/vehicle_model
@@ -531,12 +484,12 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 f"/conversations/{conv_id}/custom_attributes",
                 {"custom_attributes": custom_attrs},
             )
-        # Apply the escalation labels LAST: a downstream sync escalates on a
+        # Apply the escalation labels LAST: a downstream sync may act on a
         # conversation_updated carrying the escalate label, so nothing must update
-        # the conversation after this or each update re-triggers a duplicate ticket.
+        # the conversation after this or each update re-triggers that sync.
         # The AI-classification dimension labels ride in this SAME single call so
         # the batch metrics sync can read them back — a separate labels POST would
-        # re-fire the webhook and spawn a duplicate Zammad ticket.
+        # needlessly re-fire the webhook.
         dimension_labels = self._dimension_labels(division, department, sla_minutes)
         pic_lbl = await self._pic_label(department)
         await self._request(
@@ -709,15 +662,13 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         transcript = "\n".join(f"{m.role}: {m.text}" for m in payload.transcript)
         note = f"[AI handoff] {payload.ai_summary}\n\n--- transcript ---\n{transcript}"
         await self.add_private_note(conv_id, note)
-        # Fire escalation side-effects (email + CC, WA alert, case_state). When
-        # direct Zammad ticketing is on this also POSTs the back-office ticket and
-        # drops a Chatwoot private note linking to it; otherwise it's Chatwoot-only.
+        # Fire escalation side-effects (email + CC, WA alert, case_state) —
+        # Chatwoot-only.
         # Title comes from the AI summary; body carries the summary + full transcript.
         await self._fire_escalation(
             conv_id,
             payload.ai_summary,
             note,
-            payload.session_id,
             payload.urgency,
             payload.reason,
             department=payload.department,
@@ -757,12 +708,12 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 f"/conversations/{conv_id}/custom_attributes",
                 {"custom_attributes": custom_attrs},
             )
-        # Apply the escalation labels LAST: a downstream sync escalates on a
+        # Apply the escalation labels LAST: a downstream sync may act on a
         # conversation_updated carrying the escalate label, so nothing must update
-        # the conversation after this or each update re-triggers a duplicate ticket.
+        # the conversation after this or each update re-triggers that sync.
         # The AI-classification dimension labels ride in this SAME single call so
         # the batch metrics sync can read them back — a separate labels POST would
-        # re-fire the webhook and spawn a duplicate Zammad ticket.
+        # needlessly re-fire the webhook.
         dimension_labels = self._dimension_labels(
             payload.division,
             payload.department,

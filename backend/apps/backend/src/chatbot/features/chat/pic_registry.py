@@ -25,7 +25,6 @@ class PicEntry:
     pic_name: str
     pic_email: str
     pic_whatsapp: str
-    zammad_group: str
     chatwoot_team_id: int | None = None
     # Extra "relevant personnel" CC'd on the escalation email (e.g. a manager or a
     # team distribution list). Empty = To-the-PIC only. Gated by escalation_cc_pic.
@@ -61,7 +60,6 @@ class PicRegistry:
                     pic_name=record.pic_name,
                     pic_email=record.pic_email,
                     pic_whatsapp=record.pic_whatsapp,
-                    zammad_group="",
                     cc_emails=record.cc_emails,
                 )
         return self._table.get(key)
@@ -96,7 +94,6 @@ def build_pic_registry(settings: Settings, store: PicStore | None = None) -> Pic
                 pic_name=str(val["pic_name"]),
                 pic_email=str(val["pic_email"]),
                 pic_whatsapp=str(val["pic_whatsapp"]),
-                zammad_group=str(val["zammad_group"]),
                 chatwoot_team_id=int(val["chatwoot_team_id"])
                 if val.get("chatwoot_team_id") is not None
                 else None,

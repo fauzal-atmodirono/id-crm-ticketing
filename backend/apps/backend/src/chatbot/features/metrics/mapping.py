@@ -2,7 +2,7 @@
 
 Handles both the legacy Zendesk ticket shape (``map_ticket_to_row``) and the
 Chatwoot conversation shape (``map_chatwoot_conversation_to_row``) that PROTON
-uses after the Chatwoot+Zammad migration.
+uses after migrating off Zendesk to Chatwoot.
 """
 
 from __future__ import annotations
@@ -280,7 +280,8 @@ def _chatwoot_sla_minutes(conv: dict[str, object], labels: list[str]) -> int | N
 
 
 def _chatwoot_reopen_count(conv: dict[str, object]) -> int | None:
-    """Read reopen_count from Chatwoot additional_attributes (written by Zammad webhook).
+    """Read reopen_count from Chatwoot additional_attributes (written by an
+    external write-back integration, when one is configured).
 
     Returns None when the key is absent, the dict is missing, or the value is
     not a valid integer — never raises.
@@ -337,10 +338,9 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
     # Timings we can derive from the Chatwoot conversation itself:
     #  - resolved_at  ← last_activity_at when the conversation is resolved
     #  - first_response_at ← first agent reply, when Chatwoot surfaces it
-    # TODO(zammad-timing): the exact Zendesk-style metric_set (reply/resolution
-    # calendar minutes, reopen count) lives on the joined Zammad ticket, not on
-    # the Chatwoot conversation. A deep Zammad-ticket join is out of scope here;
-    # these fields stay best-effort until that join is added.
+    # TODO(chatwoot-timing): the exact Zendesk-style metric_set (reply/resolution
+    # calendar minutes, reopen count) has no direct Chatwoot equivalent; these
+    # fields stay best-effort until a richer source is wired up.
     resolved_at = updated_iso if status == "resolved" else None
     first_response_at = _epoch_to_iso(conv.get("first_reply_created_at"))
 

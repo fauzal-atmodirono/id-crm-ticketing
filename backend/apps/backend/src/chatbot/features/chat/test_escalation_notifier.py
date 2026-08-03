@@ -41,7 +41,6 @@ _APPS_PIC = PicEntry(
     pic_name="Alice Tan",
     pic_email="alice@proton.my",
     pic_whatsapp="+60123456789",
-    zammad_group="Apps-Support",
     chatwoot_team_id=3,
 )
 
@@ -268,7 +267,6 @@ _APPS_PIC_WITH_CC = PicEntry(
     pic_name="Alice Tan",
     pic_email="alice@proton.my",
     pic_whatsapp="+60123456789",
-    zammad_group="Apps-Support",
     chatwoot_team_id=3,
     cc_emails=["manager@proton.my", "team-dl@proton.my"],
 )

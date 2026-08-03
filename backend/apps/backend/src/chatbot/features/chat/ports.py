@@ -34,7 +34,7 @@ class ChatPort(Protocol):
 
 
 class TicketingPort(Protocol):
-    """Port interface for ticketing and customer escalation systems (Zammad, Zendesk Support)."""
+    """Port interface for ticketing and customer escalation systems (Chatwoot, Zendesk Support)."""
 
     async def create_ticket(
         self,

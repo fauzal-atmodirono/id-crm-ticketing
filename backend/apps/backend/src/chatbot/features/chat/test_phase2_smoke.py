@@ -34,8 +34,6 @@ def test_pic_entry_full_construction() -> None:
         pic_name="Zaid",
         pic_email="zaid@proton.my",
         pic_whatsapp="+60199999999",
-        zammad_group="Sales-Support",
         chatwoot_team_id=7,
     )
-    assert entry.zammad_group == "Sales-Support"
     assert entry.chatwoot_team_id == 7

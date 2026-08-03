@@ -1,6 +1,6 @@
 """Chatwoot -> BigQuery sync: fetch conversations, map, load the conversations table.
 
-PROTON migrated its CRM from Zendesk to Chatwoot+Zammad. The batch (Lane B) sync
+PROTON migrated its CRM from Zendesk to Chatwoot. The batch (Lane B) sync
 that populates the BigQuery ``conversations`` table now pages the Chatwoot
 conversations API instead of the Zendesk incremental-tickets export. The AI
 classification (division/category/subcategory/department/sla) is read back off the

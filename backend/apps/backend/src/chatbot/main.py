@@ -24,7 +24,6 @@ from chatbot.features.chat.adapters.tenant_settings_store import build_tenant_se
 from chatbot.features.chat.adapters.tools_store import build_tools_store
 from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.adapters.vertex_search import VertexAISearchAdapter
-from chatbot.features.chat.adapters.zammad import ZammadClient
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
 from chatbot.features.chat.escalation_notifier import EscalationNotifier, build_dealer_email_map
 from chatbot.features.chat.escalation_router import build_escalation_router
@@ -308,14 +307,8 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             human_agent_bridge = SunshineConversationsAdapter(settings)
             handoff_bridge = HandoffBridge(store=build_handoff_store(settings))
     else:
-        # Own Zammad ticketing directly (when enabled) so a complaint escalation
-        # POSTs the back-office ticket ourselves instead of relying on the
-        # `escalate` label + external agent-service sync.
-        zammad_client = ZammadClient(settings) if settings.zammad_enabled else None
         # Construct without escalation_notifier first so we can pass _request into it.
-        chatwoot_client = ChatwootAdapter(
-            settings, zammad=zammad_client, pic_registry=pic_registry
-        )
+        chatwoot_client = ChatwootAdapter(settings, pic_registry=pic_registry)
         # twilio_adapter is constructed later; we defer EscalationNotifier wiring to
         # after the Twilio block below.  A post-construction assignment is safe here
         # because escalation only fires inside async request handling, which occurs

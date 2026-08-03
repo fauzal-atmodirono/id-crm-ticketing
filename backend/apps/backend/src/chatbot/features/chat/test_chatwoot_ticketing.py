@@ -177,8 +177,8 @@ async def test_contact_search_fallback_url_encodes_session_id() -> None:
 
 @pytest.mark.asyncio
 async def test_create_ticket_complaint_urgency_adds_ticketing_label() -> None:
-    # High urgency marks the case a complaint, so the Zammad-ticketing complaint
-    # label rides on top of the Chatwoot-only escalation marker.
+    # High urgency marks the case a complaint, so the complaint label rides on
+    # top of the Chatwoot-only escalation marker.
     fake = _FakeClient({("POST", "/conversations"): {"id": 99}})
     adapter = ChatwootAdapter(
         Settings(
@@ -201,8 +201,8 @@ async def test_create_ticket_writes_dimension_labels_in_single_final_call() -> N
     # division/department/sla still land as labels using the SAME convention the
     # metrics mapping parses (division_/dept_/sla_), and must ride in the ONE
     # final labels call alongside the escalation labels — a second labels POST
-    # would re-fire the webhook and spawn a duplicate Zammad ticket. category/
-    # subcategory have moved to custom attributes (see the test below).
+    # would needlessly re-fire the webhook. category/subcategory have moved to
+    # custom attributes (see the test below).
     fake = _FakeClient({("POST", "/conversations"): {"id": 99}})
     adapter = ChatwootAdapter(
         Settings(
@@ -318,7 +318,7 @@ async def test_create_ticket_writes_case_type_and_vehicle_model_as_custom_attrib
 @pytest.mark.asyncio
 async def test_create_ticket_non_complaint_stays_chatwoot_only() -> None:
     # Medium urgency (non-complaint) -> only the Chatwoot escalation marker; the
-    # Zammad-ticketing complaint label is NOT applied.
+    # complaint label is NOT applied.
     fake = _FakeClient({("POST", "/conversations"): {"id": 99}})
     adapter = ChatwootAdapter(
         Settings(
@@ -404,8 +404,8 @@ async def test_request_sends_dash_and_underscore_token_headers(
 
 @pytest.mark.asyncio
 async def test_contact_created_with_synthesized_email() -> None:
-    # Downstream ticketing (Chatwoot->Zammad) keys customers by email; web/WhatsApp
-    # contacts have none, so we synthesize a deterministic, format-valid one.
+    # Downstream systems key customers by email; web/WhatsApp contacts have none,
+    # so we synthesize a deterministic, format-valid one.
     fake = _FakeClient(
         {
             ("POST", "/contacts"): {"payload": {"contact": {"id": 55}}},

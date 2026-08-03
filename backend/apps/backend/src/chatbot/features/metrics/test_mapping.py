@@ -365,7 +365,7 @@ def test_chatwoot_malformed_timestamp_is_none() -> None:
 def test_chatwoot_output_matches_conversation_row_type() -> None:
     row = map_chatwoot_conversation_to_row(_conv(labels=[]))
     assert isinstance(row, ConversationRow)
-    assert row.reopen_count is None  # zammad-timing TODO: best-effort None
+    assert row.reopen_count is None  # chatwoot-timing TODO: best-effort None
 
 
 # --- Phase-3: dealer dimension + reopen_count wiring ---
@@ -395,7 +395,7 @@ def test_chatwoot_multiple_dealer_labels_takes_first() -> None:
 
 
 def test_chatwoot_reopen_count_from_additional_attributes() -> None:
-    """reopen_count is read from additional_attributes.reopen_count (Zammad write-back)."""
+    """reopen_count is read from additional_attributes.reopen_count (external write-back)."""
     row = map_chatwoot_conversation_to_row(
         _conv(additional_attributes={"reopen_count": 3})
     )

@@ -142,7 +142,7 @@ async def test_open_handoff_marks_conversation_as_ai_handoff() -> None:
 async def test_open_handoff_writes_dimension_labels_in_single_final_call() -> None:
     # The bridge path (Chatwoot escalation) must persist division/department/sla
     # as labels the metrics sync can read back, in the ONE final labels call — a
-    # second labels POST would spawn a duplicate Zammad ticket. category/
+    # second labels POST would needlessly re-fire the webhook. category/
     # subcategory have moved to custom attributes (see the test below).
     adapter = ChatwootAdapter(
         Settings(
@@ -165,7 +165,7 @@ async def test_open_handoff_writes_dimension_labels_in_single_final_call() -> No
         division="Aftersales",
         department="Service Center",
         sla_minutes=480,
-        reason="negative_sentiment",  # complaint -> Zammad ticketing label
+        reason="negative_sentiment",  # complaint -> complaint label applied
     )
     await adapter.open_handoff(payload)
     labels_calls = [pl for _m, p, pl in fake.calls if p.endswith("/labels")]
@@ -233,7 +233,7 @@ async def test_open_handoff_writes_case_type_and_vehicle_model_as_custom_attribu
 @pytest.mark.asyncio
 async def test_open_handoff_plain_human_request_stays_chatwoot_only() -> None:
     # A "talk to a human" handoff (help_request, non-urgent) must NOT get the
-    # complaint/Zammad label — it stays a live Chatwoot conversation only.
+    # complaint label — it stays a live Chatwoot conversation only.
     adapter = ChatwootAdapter(
         Settings(
             chatwoot_account_id=1,

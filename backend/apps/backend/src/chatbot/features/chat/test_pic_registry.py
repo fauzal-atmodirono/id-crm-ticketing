@@ -20,7 +20,6 @@ async def test_lookup_returns_matching_entry() -> None:
                 "pic_name": "Alice Tan",
                 "pic_email": "alice@proton.my",
                 "pic_whatsapp": "+60123456789",
-                "zammad_group": "Apps-Support",
                 "chatwoot_team_id": 3,
             }
         }
@@ -31,7 +30,6 @@ async def test_lookup_returns_matching_entry() -> None:
     assert entry.pic_name == "Alice Tan"
     assert entry.pic_email == "alice@proton.my"
     assert entry.pic_whatsapp == "+60123456789"
-    assert entry.zammad_group == "Apps-Support"
     assert entry.chatwoot_team_id == 3
 
 
@@ -42,7 +40,6 @@ async def test_lookup_normalises_department_key() -> None:
                 "pic_name": "A",
                 "pic_email": "a@b.my",
                 "pic_whatsapp": "+601",
-                "zammad_group": "G",
             }
         }
     )
@@ -59,7 +56,6 @@ async def test_lookup_returns_none_for_unknown_dept() -> None:
                 "pic_name": "A",
                 "pic_email": "a@b.my",
                 "pic_whatsapp": "+601",
-                "zammad_group": "G",
             }
         }
     )
@@ -86,7 +82,6 @@ async def test_missing_optional_chatwoot_team_id_defaults_to_none() -> None:
                 "pic_name": "A",
                 "pic_email": "a@b.my",
                 "pic_whatsapp": "+601",
-                "zammad_group": "G",
             }
         }
     )
@@ -103,7 +98,6 @@ async def test_lookup_parses_cc_emails_list() -> None:
                 "pic_name": "Alice Tan",
                 "pic_email": "alice@proton.my",
                 "pic_whatsapp": "+60123456789",
-                "zammad_group": "Apps-Support",
                 "cc_emails": ["manager@proton.my", "team-dl@proton.my"],
             }
         }
@@ -121,7 +115,6 @@ async def test_cc_emails_defaults_to_empty_when_absent() -> None:
                 "pic_name": "A",
                 "pic_email": "a@b.my",
                 "pic_whatsapp": "+601",
-                "zammad_group": "G",
             }
         }
     )
@@ -139,7 +132,6 @@ async def test_cc_emails_ignored_when_not_a_list() -> None:
                 "pic_name": "A",
                 "pic_email": "a@b.my",
                 "pic_whatsapp": "+601",
-                "zammad_group": "G",
                 "cc_emails": "manager@proton.my",
             }
         }
@@ -170,7 +162,6 @@ async def test_lookup_returns_store_record_when_present() -> None:
             pic_name="Legacy Person",
             pic_email="legacy@proton.my",
             pic_whatsapp="+60122222222",
-            zammad_group="Legacy-Group",
         )
     }
     reg = PicRegistry(table, store=store)
@@ -194,7 +185,6 @@ async def test_lookup_falls_back_to_legacy_table_when_store_has_no_entry() -> No
             pic_name="Legacy Person",
             pic_email="legacy@proton.my",
             pic_whatsapp="+60122222222",
-            zammad_group="Legacy-Group",
         )
     }
     reg = PicRegistry(table, store=store)
@@ -222,7 +212,6 @@ async def test_lookup_works_without_a_store_configured() -> None:
             pic_name="Legacy Person",
             pic_email="legacy@proton.my",
             pic_whatsapp="+60122222222",
-            zammad_group="Legacy-Group",
         )
     }
     reg = PicRegistry(table)

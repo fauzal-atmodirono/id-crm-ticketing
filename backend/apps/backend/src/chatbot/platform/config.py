@@ -218,21 +218,21 @@ class Settings(BaseSettings):
     chatwoot_escalation_label: str = "ai-escalation"
     # Complaint-only label: added on top of the escalation label ONLY when the
     # handoff is a genuine complaint (see chatwoot_complaint_reasons / high
-    # urgency). This is the label the shared instance's sync turns into a Zammad
-    # ticket, so plain "talk to a human" handoffs stay Chatwoot-only and don't
-    # spawn a confusing back-office ticket. Empty disables Zammad ticketing.
+    # urgency), so plain "talk to a human" handoffs stay Chatwoot-only. Empty
+    # disables the complaint label entirely.
     chatwoot_complaint_label: str = "escalate"
-    # Comma-separated HandoffReason values treated as complaints (-> Zammad ticket).
-    # High urgency also counts. Non-complaint reasons (help_request, sales_lead,
-    # unknown_retry_limit) stay live-chat-only in Chatwoot.
+    # Comma-separated HandoffReason values treated as complaints (-> complaint
+    # label + escalation notification). High urgency also counts. Non-complaint
+    # reasons (help_request, sales_lead, unknown_retry_limit) stay live-chat-only
+    # in Chatwoot.
     chatwoot_complaint_reasons: str = "negative_sentiment"
     # Shared secret required on inbound /webhooks/chatwoot calls (Chatwoot has no
     # built-in HMAC). Compared constant-time; empty leaves the endpoint open.
     chatwoot_webhook_secret: str = ""
     # Domain used to synthesize a customer email on Chatwoot contacts. Web/WhatsApp
-    # customers have no real email, but downstream ticketing that keys customers by
-    # email (e.g. a Chatwoot->Zammad sync) needs one. Deterministic per session:
-    # <sanitized session_id>@<domain>. Use a real TLD so email-format validation passes.
+    # customers have no real email, but downstream systems that key customers by
+    # email need one. Deterministic per session: <sanitized session_id>@<domain>.
+    # Use a real TLD so email-format validation passes.
     chatwoot_customer_email_domain: str = "proton-demo.my"
     # Whether an INCOMING message in the Chatwoot inbox runs the AI. Only true when
     # Chatwoot itself is the customer channel (website widget). For a handoff-console
@@ -250,21 +250,6 @@ class Settings(BaseSettings):
     # the provisioned email inbox to enable it. Honours email_draft_assist just
     # like the Zendesk email path (True = private draft note instead of a send).
     chatwoot_email_inbox_id: int = 0
-
-    # Zammad settings
-    zammad_api_url: str = "http://localhost:3000"
-    zammad_api_token: str = ""
-    zammad_enabled: bool = True
-    # When True, our backend creates the Zammad ticket DIRECTLY (via the Zammad
-    # REST API) on a complaint escalation and does NOT apply the Chatwoot
-    # complaint/`escalate` label — so if the external agent-service sync is ever
-    # wired to that label there is no double-ticket. When False (legacy) we fall
-    # back to just applying the `escalate` label and let the agent service turn
-    # it into a ticket. Requires zammad_enabled.
-    zammad_direct_ticketing: bool = True
-    # Zammad group the direct-ticketing path files tickets into (must exist in
-    # Zammad). "Users" is the default group present on the shared instance.
-    zammad_group: str = "Users"
 
     # Twilio (WhatsApp Phase A; Phone Phase C). Empty by default so dev
     # environments without Twilio credentials still boot.
@@ -350,7 +335,7 @@ class Settings(BaseSettings):
 
     # Phase 2 — dept→PIC mapping. JSON object keyed by department slug
     # (matches the dept_<x> label key, e.g. "apps", "sales"). Each value:
-    # {pic_name, pic_email, pic_whatsapp, zammad_group, chatwoot_team_id?,
+    # {pic_name, pic_email, pic_whatsapp, chatwoot_team_id?,
     # cc_emails?}. cc_emails is a list of extra addresses CC'd on the escalation
     # email (the "relevant personnel"), used when escalation_cc_pic is true.
     # Empty string disables PIC routing (no lookup attempted).

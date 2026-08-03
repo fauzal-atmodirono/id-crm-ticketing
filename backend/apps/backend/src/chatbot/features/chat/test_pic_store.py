@@ -195,6 +195,18 @@ async def test_pic_list_all_on_exception_returns_empty() -> None:
     assert result == []
 
 
+@pytest.mark.asyncio
+async def test_pic_delete_swallows_exception() -> None:
+    with patch(
+        "chatbot.features.chat.pic_store.firestore.Client", autospec=True
+    ) as MockClient:
+        doc = MagicMock()
+        doc.delete.side_effect = Exception("Firestore error")
+        MockClient.return_value.collection.return_value.document.return_value = doc
+        # Should not raise
+        await _pic_store().delete("sales")
+
+
 # DealerStore Tests
 
 
@@ -296,3 +308,15 @@ async def test_dealer_list_all_on_exception_returns_empty() -> None:
         MockClient.return_value.collection.side_effect = Exception("Firestore error")
         result = await _dealer_store().list_all()
     assert result == []
+
+
+@pytest.mark.asyncio
+async def test_dealer_delete_swallows_exception() -> None:
+    with patch(
+        "chatbot.features.chat.pic_store.firestore.Client", autospec=True
+    ) as MockClient:
+        doc = MagicMock()
+        doc.delete.side_effect = Exception("Firestore error")
+        MockClient.return_value.collection.return_value.document.return_value = doc
+        # Should not raise
+        await _dealer_store().delete("acme")

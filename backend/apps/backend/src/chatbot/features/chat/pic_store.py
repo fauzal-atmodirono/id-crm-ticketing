@@ -30,6 +30,22 @@ class PicRecord:
     pic_whatsapp: str
     cc_emails: list[str] = field(default_factory=list)
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, PicRecord):
+            return NotImplemented
+        return (
+            self.department == other.department
+            and self.pic_name == other.pic_name
+            and self.pic_email == other.pic_email
+            and self.pic_whatsapp == other.pic_whatsapp
+            and list(self.cc_emails) == list(other.cc_emails)
+        )
+
+    def __hash__(self) -> int:
+        return hash(
+            (self.department, self.pic_name, self.pic_email, self.pic_whatsapp, tuple(self.cc_emails))
+        )
+
 
 @dataclass(frozen=True)
 class DealerRecord:

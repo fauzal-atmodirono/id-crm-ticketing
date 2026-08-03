@@ -1,0 +1,38 @@
+diff --git a/app/javascript/dashboard/composables/useProtonPermissions.js b/app/javascript/dashboard/composables/useProtonPermissions.js
+index 82a5dab..d66756a 100644
+--- a/app/javascript/dashboard/composables/useProtonPermissions.js
++++ b/app/javascript/dashboard/composables/useProtonPermissions.js
+@@ -10,6 +10,7 @@ import { myPermissions } from 'dashboard/api/protonAdmin';
+ const permissions = ref(null); // null = not yet loaded
+ const loading = ref(false);
+ let loadPromise = null;
++let retryTimer = null;
+ 
+ async function ensureLoaded() {
+   if (permissions.value !== null || loadPromise) return loadPromise;
+@@ -19,7 +20,24 @@ async function ensureLoaded() {
+       permissions.value = perms;
+     })
+     .catch(() => {
+-      permissions.value = []; // fail closed for nav visibility on error
++      // Do NOT poison the module-level singleton with [] on a transient
++      // failure (a backend hiccup, or a fetch that raced ahead of the auth
++      // cookie / a not-yet-deployed backend fix). Setting permissions to []
++      // here — combined with the `permissions.value !== null` guard above —
++      // would permanently hide every permission-gated nav item for the whole
++      // page session, so a later successful /authz/permissions (200) never
++      // reaches the sidebar and only a full module-resetting reload recovers.
++      // Instead: leave permissions null (hasPermission() still returns false,
++      // i.e. fail-closed for visibility), clear the in-flight promise, and
++      // schedule one delayed retry so an already-mounted sidebar self-heals
++      // without a reload once the backend is reachable.
++      loadPromise = null;
++      if (retryTimer === null) {
++        retryTimer = setTimeout(() => {
++          retryTimer = null;
++          ensureLoaded();
++        }, 3000);
++      }
+     })
+     .finally(() => {
+       loading.value = false;

@@ -1,0 +1,17 @@
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 746772e..8c6154c 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -938,12 +938,6 @@ const menuItems = computed(() => {
+           icon: 'i-lucide-workflow',
+           to: accountScopedRoute('conversation_workflow_index'),
+         },
+-        {
+-          name: 'Settings Security',
+-          label: t('SIDEBAR.SECURITY'),
+-          icon: 'i-lucide-shield',
+-          to: accountScopedRoute('security_settings_index'),
+-        },
+         {
+           name: 'Settings Billing',
+           label: t('SIDEBAR.BILLING'),

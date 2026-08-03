@@ -21,12 +21,22 @@
 # -------------------------------------------------------------------
 
 ARG UPSTREAM_VERSION=v4.15.1
+# The id-crm-ticketing repo's own git commit that produced this image (short
+# SHA, passed by the caller — see README's "Build & push" sections). Chatwoot
+# reads a static `.git_sha` file baked into the upstream base image to render
+# "vX.Y.Z Build <sha>" in its UI (config/initializers/git_sha.rb); left alone,
+# every one of OUR custom builds shows the SAME upstream release commit no
+# matter how many of our own patches are actually in the image. Stage 2
+# overwrites that file with this value so the on-screen build id actually
+# reflects what's deployed.
+ARG PROTON_BUILD_SHA=unknown
 
 # ── Stage 1: patch + rebuild frontend ───────────────────────────────
 FROM chatwoot/chatwoot:${UPSTREAM_VERSION} AS builder
 
 # Re-declare so it is in scope after FROM.
 ARG UPSTREAM_VERSION
+ARG PROTON_BUILD_SHA
 
 USER root
 WORKDIR /app
@@ -62,6 +72,10 @@ ENV NODE_OPTIONS="--max-old-space-size=3072"
 RUN pnpm install --frozen-lockfile
 RUN pnpm exec vite build
 
+# Overwrite the baked-in upstream .git_sha with our own build identifier —
+# see the PROTON_BUILD_SHA comment above.
+RUN echo "${PROTON_BUILD_SHA}" > /app/.git_sha
+
 # ── Stage 2: runtime (reuse the same base, copy rebuilt assets) ─────
 FROM chatwoot/chatwoot:${UPSTREAM_VERSION} AS runtime
 
@@ -76,7 +90,16 @@ COPY --from=builder /app/public/vite /app/public/vite
 # stays off.
 COPY --from=builder /app/app/views/layouts/vueapp.html.erb /app/app/views/layouts/vueapp.html.erb
 
-# Proton-fork label for audit trails.
+# Overwrite the baked-in upstream .git_sha so the in-app "Build <sha>" display
+# (and GET /api) reflects OUR commit, not upstream's frozen v4.15.1 release
+# commit — see the PROTON_BUILD_SHA comment near the top of this file.
+COPY --from=builder /app/.git_sha /app/.git_sha
+
+# Proton-fork label for audit trails. Patch list isn't enumerated here (it
+# drifted stale in the past) — `docker inspect` this image's
+# org.proton.chatwoot.build label, then `git show <sha>:deploy/chatwoot-fork/patches/`
+# in id-crm-ticketing for the exact patch set that commit shipped.
 ARG UPSTREAM_VERSION
+ARG PROTON_BUILD_SHA
 LABEL org.proton.chatwoot.upstream="${UPSTREAM_VERSION}" \
-      org.proton.chatwoot.patch="0001,0002,0003,0004,0005,0006,0007,0008,0009,0010,0011,0012,0013,0014,0015,0016,0017,0018,0019,0020,0021,0022,0023,0024"
+      org.proton.chatwoot.build="${PROTON_BUILD_SHA}"

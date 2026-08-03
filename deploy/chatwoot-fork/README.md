@@ -83,13 +83,20 @@ git format-patch upstream/v4.15.1 --stdout -- app/javascript/ \
 ```bash
 REGISTRY=asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images
 VERSION=$(cat deploy/chatwoot-fork/UPSTREAM_VERSION)
+BUILD_SHA=$(git rev-parse --short HEAD)
 
 cd deploy/chatwoot-fork
 docker build --build-arg UPSTREAM_VERSION=$VERSION \
+  --build-arg PROTON_BUILD_SHA=$BUILD_SHA \
   -t $REGISTRY/proton-chatwoot:$VERSION-custom .
 
 docker push $REGISTRY/proton-chatwoot:$VERSION-custom
 ```
+
+`PROTON_BUILD_SHA` overwrites the upstream image's baked-in `.git_sha` file,
+which is what Chatwoot's UI reads to show "vX.Y.Z Build <sha>" — without it,
+every custom build shows the same frozen upstream release commit no matter
+how many of our own patches are in the image.
 
 Expected build time: ~10–15 min (Node/Ruby deps + Vite build).
 
@@ -98,7 +105,7 @@ Expected build time: ~10–15 min (Node/Ruby deps + Vite build).
 ```bash
 gcloud builds submit deploy/chatwoot-fork/ \
   --config deploy/chatwoot-fork/cloudbuild.yaml \
-  --substitutions _REGISTRY=asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images
+  --substitutions _REGISTRY=asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images,_BUILD_SHA=$(git rev-parse --short HEAD)
 ```
 
 ---

@@ -2,15 +2,21 @@
 # Trigger manually or on push to the chatwoot-fork/ subtree.
 #
 # Required substitutions (set in the Cloud Build trigger or --substitutions flag):
-#   _REGISTRY   e.g. asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images
+#   _REGISTRY    e.g. asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images
+#   _BUILD_SHA   the id-crm-ticketing repo's short git SHA at build time (e.g.
+#                $(git rev-parse --short HEAD), run from the repo root before
+#                invoking this build) -- baked into the image as the in-app
+#                "Build <sha>" identifier so it's not stuck showing upstream's
+#                frozen v4.15.1 release commit. Omit to leave it "unknown".
 #
-# Run manually:
+# Run manually (from the id-crm-ticketing repo root):
 #   gcloud builds submit deploy/chatwoot-fork/ \
 #     --config deploy/chatwoot-fork/cloudbuild.yaml \
-#     --substitutions _REGISTRY=asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images
+#     --substitutions _REGISTRY=asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images,_BUILD_SHA=$(git rev-parse --short HEAD)
 
 substitutions:
   _REGISTRY: asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images
+  _BUILD_SHA: unknown
 
 steps:
   - id: read-version
@@ -29,10 +35,12 @@ steps:
         source /workspace/build.env
         docker build \
           --build-arg UPSTREAM_VERSION=$${UPSTREAM_VERSION} \
+          --build-arg PROTON_BUILD_SHA=$${_BUILD_SHA} \
           -t $${_REGISTRY}/proton-chatwoot:$${UPSTREAM_VERSION}-custom \
           .
     env:
       - _REGISTRY=${_REGISTRY}
+      - _BUILD_SHA=${_BUILD_SHA}
 
   - id: push
     name: gcr.io/cloud-builders/docker

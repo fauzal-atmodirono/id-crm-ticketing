@@ -2,14 +2,13 @@
 
 Orchestrates:
 1. Email the PIC (To) + the department's CC "relevant personnel" (gated by
-   escalation_cc_pic); body references the Zammad ticket if one exists, else the
-   Chatwoot conversation — so this works in a Chatwoot-only deployment.
+   escalation_cc_pic); body references the Chatwoot conversation.
 2. WhatsApp alert to the PIC's registered number via Twilio.
 3. Write `case_state=WIP` to the Chatwoot conversation custom attributes.
 
 All three are best-effort: a failure in any step logs a warning and does NOT
-propagate — the escalation itself (Chatwoot labels, and a Zammad ticket when
-direct ticketing is on) has already succeeded before this is called.
+propagate — the escalation itself (Chatwoot labels) has already succeeded
+before this is called.
 """
 
 from __future__ import annotations
@@ -87,13 +86,11 @@ class EscalationNotifier:
         title: str,
         body: str,
         department: str | None,
-        zammad_ticket_number: str | None = None,
     ) -> PicEntry | None:
         """Run all three side-effects; return the resolved PicEntry or None.
 
-        ``zammad_ticket_number`` is optional: when a back-office Zammad ticket
-        exists the email references it, otherwise it references the Chatwoot
-        conversation. All side-effects work in a Chatwoot-only deployment.
+        The email references the Chatwoot conversation -- this is the
+        Chatwoot-only deployment path.
         """
         pic = await self._resolve_pic(department)
 
@@ -109,7 +106,6 @@ class EscalationNotifier:
                 conv_id=conv_id,
                 title=title,
                 body=body,
-                zammad_ticket_number=zammad_ticket_number,
             )
         await self._send_wa(pic, conv_id=conv_id, title=title)
         return pic
@@ -128,13 +124,8 @@ class EscalationNotifier:
         conv_id: str,
         title: str,
         body: str,
-        zammad_ticket_number: str | None,
     ) -> None:
-        reference = (
-            f"Zammad ticket #{zammad_ticket_number}"
-            if zammad_ticket_number
-            else f"Chatwoot conversation #{conv_id}"
-        )
+        reference = f"Chatwoot conversation #{conv_id}"
         # CC the department's configured "relevant personnel" (managers / DLs),
         # gated by escalation_cc_pic. Empty list = To-the-PIC only.
         cc = list(pic.cc_emails) if self._settings.escalation_cc_pic else []
@@ -195,9 +186,7 @@ class EscalationNotifier:
         if self._settings.escalation_email_enabled:
             pic = await self._resolve_pic(department)
             if pic is not None:
-                self._send_email(
-                    pic, conv_id=conv_id, title=title, body=body, zammad_ticket_number=None
-                )
+                self._send_email(pic, conv_id=conv_id, title=title, body=body)
 
         if dealer:
             await self._send_dealer_forward(dealer, conv_id=conv_id, title=title, body=body)

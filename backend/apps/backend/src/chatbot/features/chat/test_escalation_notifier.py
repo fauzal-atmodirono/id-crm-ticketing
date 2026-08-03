@@ -83,18 +83,17 @@ async def test_notify_sends_email_and_wa_when_dept_matched() -> None:
         title="Battery fault",
         body="Customer has a dead battery on X50.",
         department="apps",
-        zammad_ticket_number="12034",
     )
 
     assert pic is not None
     assert pic.pic_name == "Alice Tan"
 
-    # Email: To = PIC email; body contains title + ticket number
+    # Email: To = PIC email; body contains title + Chatwoot conversation reference
     assert len(sent_emails) == 1
     em = sent_emails[0]
     assert em["to"] == ["alice@proton.my"]
     assert "Battery fault" in em["body"]
-    assert "12034" in em["body"]
+    assert "Chatwoot conversation #42" in em["body"]
 
     # WhatsApp alert sent to PIC
     assert len(sent_wa) == 1
@@ -128,7 +127,6 @@ async def test_notify_no_op_when_department_not_in_registry() -> None:
         title="t",
         body="b",
         department="charging",
-        zammad_ticket_number=None,
     )
     assert pic is None
     assert sent_emails == []
@@ -148,9 +146,7 @@ async def test_notify_skips_email_when_disabled() -> None:
         twilio_adapter=None,
         chatwoot_request=AsyncMock(return_value={}),
     )
-    await notifier.notify(
-        conv_id="1", title="t", body="b", department="apps", zammad_ticket_number=None
-    )
+    await notifier.notify(conv_id="1", title="t", body="b", department="apps")
     assert sent_emails == []
 
 
@@ -168,9 +164,7 @@ async def test_notify_skips_wa_when_no_twilio_adapter() -> None:
         twilio_adapter=None,  # no Twilio
         chatwoot_request=AsyncMock(return_value={}),
     )
-    pic = await notifier.notify(
-        conv_id="1", title="t", body="b", department="apps", zammad_ticket_number="1"
-    )
+    pic = await notifier.notify(conv_id="1", title="t", body="b", department="apps")
     # email still sent; no WA error
     assert pic is not None
     assert len(sent_emails) == 1
@@ -215,7 +209,6 @@ async def test_notify_does_not_raise_when_email_sender_raises() -> None:
         title="Crash test",
         body="email will explode",
         department="apps",
-        zammad_ticket_number="99",
     )
 
     # PIC was resolved
@@ -251,7 +244,6 @@ async def test_notify_does_not_raise_when_chatwoot_request_raises() -> None:
         title="CW crash test",
         body="chatwoot will explode",
         department="apps",
-        zammad_ticket_number="88",
     )
 
     # Returns normally; PIC resolved; email attempted
@@ -288,9 +280,7 @@ async def test_notify_ccs_pic_cc_emails_when_enabled() -> None:
         twilio_adapter=None,
         chatwoot_request=AsyncMock(return_value={}),
     )
-    await notifier.notify(
-        conv_id="1", title="t", body="b", department="apps", zammad_ticket_number="1"
-    )
+    await notifier.notify(conv_id="1", title="t", body="b", department="apps")
 
     assert len(sent) == 1
     assert sent[0]["to"] == ["alice@proton.my"]
@@ -313,17 +303,15 @@ async def test_notify_omits_cc_when_escalation_cc_pic_disabled() -> None:
         twilio_adapter=None,
         chatwoot_request=AsyncMock(return_value={}),
     )
-    await notifier.notify(
-        conv_id="1", title="t", body="b", department="apps", zammad_ticket_number="1"
-    )
+    await notifier.notify(conv_id="1", title="t", body="b", department="apps")
 
     assert len(sent) == 1
     assert sent[0]["cc"] == []
 
 
-async def test_email_reference_uses_chatwoot_conversation_when_no_ticket() -> None:
-    """With no Zammad ticket (Chatwoot-only deploy), the email references the
-    Chatwoot conversation, not a Zammad ticket."""
+async def test_email_reference_uses_chatwoot_conversation() -> None:
+    """Chatwoot-only deploy: the email always references the Chatwoot
+    conversation."""
     bodies: list[str] = []
 
     class _FakeEmailSender:
@@ -339,13 +327,10 @@ async def test_email_reference_uses_chatwoot_conversation_when_no_ticket() -> No
         twilio_adapter=None,
         chatwoot_request=AsyncMock(return_value={}),
     )
-    await notifier.notify(
-        conv_id="42", title="t", body="b", department="apps", zammad_ticket_number=None
-    )
+    await notifier.notify(conv_id="42", title="t", body="b", department="apps")
 
     assert len(bodies) == 1
     assert "Chatwoot conversation #42" in bodies[0]
-    assert "Zammad" not in bodies[0]
 
 
 # ---------------------------------------------------------------------------

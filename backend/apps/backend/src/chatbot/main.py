@@ -27,6 +27,7 @@ from chatbot.features.chat.adapters.vertex_search import VertexAISearchAdapter
 from chatbot.features.chat.adapters.zammad import ZammadClient
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
 from chatbot.features.chat.escalation_notifier import EscalationNotifier, build_dealer_email_map
+from chatbot.features.chat.escalation_router import build_escalation_router
 from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.kb_assistants_router import build_kb_assistants_router
@@ -360,6 +361,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             dealer_email_map=build_dealer_email_map(settings),
         )
         chatwoot_client._escalation_notifier = escalation_notifier  # type: ignore[assignment]
+        app.include_router(
+            build_escalation_router(escalation_notifier, chatwoot_client._request, settings)  # type: ignore[arg-type]
+        )
 
     # --- Metrics port (per-turn BigQuery streaming) ---
     metrics_port = build_metrics_port(settings)

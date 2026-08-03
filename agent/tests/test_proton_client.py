@@ -672,3 +672,42 @@ async def test_has_pending_kb_documents_false_on_bad_shape():
     client = _make_client()
     assert await client.has_pending_kb_documents() is False
     await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# notify_email_escalation
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_notify_email_escalation_posts_payload():
+    route = respx.post(f"{PROTON_BASE}/escalation/notify").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+    client = ProtonConfigClient(base_url=PROTON_BASE, api_key="k")
+    await client.notify_email_escalation(
+        conversation_id=9, title="Late delivery", body="details",
+        department="dept_apps", dealer="kl_pj",
+    )
+    assert route.called
+    sent = route.calls[0].request
+    import json as _json
+    assert _json.loads(sent.content) == {
+        "conversation_id": "9",
+        "title": "Late delivery",
+        "body": "details",
+        "department": "dept_apps",
+        "dealer": "kl_pj",
+    }
+
+
+@respx.mock
+async def test_notify_email_escalation_swallows_errors():
+    respx.post(f"{PROTON_BASE}/escalation/notify").mock(
+        return_value=httpx.Response(500)
+    )
+    client = ProtonConfigClient(base_url=PROTON_BASE, api_key="k")
+    # Must not raise.
+    await client.notify_email_escalation(
+        conversation_id=9, title="t", body="b", department=None, dealer=None,
+    )

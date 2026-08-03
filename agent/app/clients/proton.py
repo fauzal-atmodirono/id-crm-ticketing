@@ -390,3 +390,30 @@ class ProtonConfigClient:
             response.raise_for_status()
         except Exception:
             logger.debug("proton_config: assign_agent failed", exc_info=True)
+
+    async def notify_email_escalation(
+        self,
+        conversation_id: int,
+        title: str,
+        body: str,
+        department: str | None,
+        dealer: str | None,
+    ) -> None:
+        """Ask the backend to send the EM-7 two-thread email escalation for a
+        natively-escalated Email-channel conversation (POST
+        /escalation/notify). Fire-and-forget: any error is logged and
+        swallowed, matching assign_agent's pattern."""
+        try:
+            response = await self._client.post(
+                "/escalation/notify",
+                json={
+                    "conversation_id": str(conversation_id),
+                    "title": title,
+                    "body": body,
+                    "department": department,
+                    "dealer": dealer,
+                },
+            )
+            response.raise_for_status()
+        except Exception:
+            logger.debug("proton_config: notify_email_escalation failed", exc_info=True)

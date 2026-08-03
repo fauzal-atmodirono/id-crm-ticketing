@@ -198,3 +198,28 @@ async def test_fetch_agent_open_counts_returns_empty_dict_on_failure() -> None:
     fetcher._base = raising._base  # type: ignore[method-assign]
     counts = await fetcher.fetch_agent_open_counts()
     assert counts == {}
+
+
+@pytest.mark.asyncio
+async def test_fetch_agent_open_counts_discards_partial_tally_on_mid_page_failure() -> None:
+    """Page 1 succeeds (contributing to the running tally) and page 2's
+    ``_request`` returns ``None`` -- the real, non-raising way ``_request``
+    surfaces an HTTP failure (it swallows exceptions internally and never
+    raises). The whole call must fail open to ``{}``, not leak the partial
+    count accumulated from page 1: pick_agent must never see a tally that
+    silently undercounts a busy agent's real open-conversation load."""
+    fake = _PagedAdapter(
+        {
+            1: {
+                "data": {
+                    "meta": {},
+                    "payload": [_conv(1, assignee_id=10), _conv(2, assignee_id=10)],
+                }
+            },
+            # page 2 deliberately omitted -> _PagedAdapter._request returns
+            # None for it, mirroring _request's real failure behavior.
+        }
+    )
+    fetcher = _paged_fetcher(fake)
+    counts = await fetcher.fetch_agent_open_counts()
+    assert counts == {}

@@ -110,7 +110,13 @@ class PresenceFetcher:
 
         Empty dict on any failure (fail-open -- the cap check in pick_agent
         becomes a no-op rather than blocking routing when this can't be
-        determined).
+        determined). This is unconditional: ``_request`` itself never raises
+        (it swallows HTTP errors and returns ``None``), so a failed fetch on
+        *any* page -- including a page after earlier pages already
+        succeeded -- is treated as a failure of the whole call and returns
+        ``{}`` rather than the partial tally accumulated so far. A partial
+        undercount would be worse than no data: pick_agent would treat
+        agents as having fewer open conversations than they really do.
         """
         counts: dict[int, int] = {}
         page = 1
@@ -118,7 +124,17 @@ class PresenceFetcher:
             while True:
                 res = await self._request("GET", f"/conversations?status=open&page={page}")
                 if not isinstance(res, dict):
-                    break
+                    # _request itself never raises -- it already swallows
+                    # HTTP errors and returns None -- so this is how a
+                    # mid-pagination failure actually surfaces. Discard any
+                    # partial tally from earlier pages rather than returning
+                    # an undercount.
+                    _log.error(
+                        "presence_fetch_open_counts_failed",
+                        error="page request returned non-dict response",
+                        page=page,
+                    )
+                    return {}
                 data = res.get("data")
                 payload = data.get("payload") if isinstance(data, dict) else res.get("payload")
                 if not isinstance(payload, list) or not payload:

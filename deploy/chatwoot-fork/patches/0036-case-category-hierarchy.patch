@@ -1,0 +1,48 @@
+diff --git a/app/javascript/dashboard/routes/dashboard/conversation/customAttributes/CustomAttributes.vue b/app/javascript/dashboard/routes/dashboard/conversation/customAttributes/CustomAttributes.vue
+index 1c73279..f6beac5 100644
+--- a/app/javascript/dashboard/routes/dashboard/conversation/customAttributes/CustomAttributes.vue
++++ b/app/javascript/dashboard/routes/dashboard/conversation/customAttributes/CustomAttributes.vue
+@@ -88,6 +88,21 @@ const filteredCustomAttributes = computed(() =>
+   })
+ );
+ 
++const CASCADING_PREFIX_ATTR = 'case_category';
++const CASCADING_CHILD_ATTR = 'case_subcategory';
++
++const valuesForAttribute = attribute => {
++  if (attribute.attribute_key !== CASCADING_CHILD_ATTR) {
++    return attribute.attribute_values;
++  }
++  const selectedCategory = customAttributes.value[CASCADING_PREFIX_ATTR];
++  if (!selectedCategory) {
++    return attribute.attribute_values;
++  }
++  const prefix = `${selectedCategory}: `;
++  return attribute.attribute_values.filter(v => v.startsWith(prefix));
++};
++
+ // Order key name for UI settings
+ const orderKey = computed(
+   () => `conversation_elements_order_${props.attributeFrom}`
+@@ -199,6 +214,12 @@ const onClickToggle = () => {
+ 
+ const onUpdate = async (key, value) => {
+   const updatedAttributes = { ...customAttributes.value, [key]: value };
++  if (key === CASCADING_PREFIX_ATTR) {
++    const currentSub = updatedAttributes[CASCADING_CHILD_ATTR];
++    if (currentSub && !currentSub.startsWith(`${value}: `)) {
++      updatedAttributes[CASCADING_CHILD_ATTR] = '';
++    }
++  }
+   try {
+     if (props.attributeType === 'conversation_attribute') {
+       await store.dispatch('updateCustomAttributes', {
+@@ -288,7 +309,7 @@ const evenClass = [
+               :key="element.id"
+               :attribute-key="element.attribute_key"
+               :attribute-type="element.attribute_display_type"
+-              :values="element.attribute_values"
++              :values="valuesForAttribute(element)"
+               :label="element.attribute_display_name"
+               :description="element.attribute_description"
+               :value="element.value"

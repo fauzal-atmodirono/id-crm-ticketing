@@ -34,6 +34,7 @@ PERMISSION_REGISTRY: dict[str, str] = {
     "sla.manage": "Manage SLA policies",
     "audit.view": "View the audit log",
     "roles.manage": "Manage roles and permission assignments",
+    "escalation.manage": "Manage PIC/dealer escalation routing",
 }
 
 _AGENT_PERMISSIONS = {"knowledge.edit"}

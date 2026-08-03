@@ -38,6 +38,7 @@ from chatbot.features.chat.kb_settings_router import build_kb_settings_router
 from chatbot.features.chat.kb_suggest_router import build_kb_suggest_router
 from chatbot.features.chat.kb_tools_router import build_kb_tools_router
 from chatbot.features.chat.pic_registry import build_pic_registry
+from chatbot.features.chat.pic_store import DealerStore, PicStore
 from chatbot.features.chat.ports import (
     ChatPort,
     ConversationLogPort,
@@ -290,7 +291,13 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     handoff_bridge: HandoffBridge | None = None
 
     # --- Phase-2: PIC registry + email sender (constructed once; used by all paths) ---
-    pic_registry = build_pic_registry(settings)
+    # pic_store/dealer_store are built unconditionally (regardless of RBAC status) so
+    # PicRegistry/EscalationNotifier can read operator-edited routing config even when
+    # RBAC — and therefore the admin CRUD router below — is off. The RBAC block reuses
+    # these same instances rather than constructing duplicates.
+    pic_store = PicStore(settings)
+    dealer_store = DealerStore(settings)
+    pic_registry = build_pic_registry(settings, store=pic_store)
     email_sender = SmtpEmailSender(settings)
 
     if settings.crm_provider == "zendesk":
@@ -359,6 +366,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             twilio_adapter=twilio_adapter,
             chatwoot_request=chatwoot_client._request,  # type: ignore[arg-type]
             dealer_email_map=build_dealer_email_map(settings),
+            dealer_store=dealer_store,
         )
         chatwoot_client._escalation_notifier = escalation_notifier  # type: ignore[assignment]
         app.include_router(
@@ -541,6 +549,14 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             build_sla_policy_router(sla_policy_repo, authz_repo, authz_validator, settings)
         )
         app.state.sla_policy_engine = sla_policy_engine
+
+        # Reuses the pic_store/dealer_store instances constructed unconditionally
+        # above — RBAC gates only the admin CRUD router, not the stores themselves.
+        from chatbot.features.chat.pic_admin_router import build_pic_admin_router
+
+        app.include_router(
+            build_pic_admin_router(pic_store, dealer_store, authz_repo, authz_validator, settings)
+        )
     elif settings.rbac_enabled:
         import structlog as _sl
         _sl.get_logger(__name__).warning(

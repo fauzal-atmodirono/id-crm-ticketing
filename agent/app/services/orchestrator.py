@@ -30,7 +30,7 @@ from app.clients.deps import get_chatwoot_client, get_proton_config_client
 from app.config import get_settings
 from app.db.models import AiAction
 from app.db.session import async_session_maker
-from app.services import lifecycle, lifecycle_store, sync, whatsapp_format
+from app.services import lifecycle, lifecycle_store, whatsapp_format
 from app.services.media import fetch_attachment_bytes
 
 logger = logging.getLogger(__name__)
@@ -388,8 +388,7 @@ async def _process_conversation(conversation_id: int) -> None:
 
     # Fetch persona messages for the inbox (fail-open: None on any error).
     # Only handoff_message is consumed here; welcome_message is consumed at
-    # conversation-created time by lifecycle.py, and resolution_message is
-    # handled by sync.py.
+    # conversation-created time by lifecycle.py.
     handoff_message = ""
     if proton is not None and inbox_id is not None:
         try:
@@ -745,22 +744,12 @@ async def _execute_decision(
             )
             await chatwoot.toggle_status(conversation_id, "open")
     elif decision.action == "escalate_to_ticket":
-        if get_settings().zammad_ticketing_enabled:
-            await sync.escalate_conversation(
-                conversation_id,
-                reason=decision.args.get("reason"),
-                priority=decision.args.get("priority"),
-                summary=decision.args.get("summary"),
-            )
-            await chatwoot.toggle_status(conversation_id, "open")
-        else:
-            # Chatwoot-only tenant (no Zammad): there is no ticketing backend
-            # to escalate into, so a Zammad call would only 403/error and leave
-            # the customer in silence. Hand off inside Chatwoot instead —
-            # acknowledge the customer and reopen for a human agent.
-            await _handoff_to_human_via_chatwoot(
-                conversation_id, chatwoot, handoff_message
-            )
+        # No external ticketing backend: escalation always becomes a
+        # Chatwoot handoff — acknowledge the customer and reopen for a human
+        # agent.
+        await _handoff_to_human_via_chatwoot(
+            conversation_id, chatwoot, handoff_message
+        )
     else:
         # handoff_to_human, or any unrecognized action -- always hand off
         # rather than doing nothing.

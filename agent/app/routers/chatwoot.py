@@ -2,7 +2,7 @@
 
 Verifies the HMAC signature, dedupes by `X-Chatwoot-Delivery`, and dispatches
 sync work to a FastAPI background task keyed off the `event` field so the
-response returns immediately — the slow Chatwoot/Zammad API calls never run
+response returns immediately — the slow downstream API calls never run
 inline in the request/response path.
 """
 

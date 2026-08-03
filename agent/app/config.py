@@ -12,18 +12,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Internal service URLs — used for all API calls (resolve via the
+    # Internal service URL — used for all API calls (resolve via the
     # platform docker network)
     chatwoot_url: str
-    zammad_url: str
 
-    # Public URLs — used only for human-facing links embedded in notes
-    # (Zammad ticket body linking back to the Chatwoot conversation, Chatwoot
-    # note linking to the Zammad ticket). Optional: fall back to the internal
-    # URLs above so nothing breaks if unset (links just won't be clickable
-    # from outside the docker network).
+    # Public URL — used only for human-facing links embedded in notes.
+    # Optional: falls back to the internal URL above so nothing breaks if
+    # unset (links just won't be clickable from outside the docker network).
     chatwoot_public_url: str | None = None
-    zammad_public_url: str | None = None
 
     # Chatwoot
     chatwoot_api_token: str
@@ -33,23 +29,6 @@ class Settings(BaseSettings):
     chatwoot_bot_secret: str
     chatwoot_bot_token: str
 
-    # Zammad
-    zammad_api_token: str
-    zammad_webhook_secret: str
-    zammad_integration_login: str = "integration@local"
-    # Feature flag for the Zammad -> Gemini draft-reply flow (services.responder)
-    zammad_ai_drafts: bool = True
-    # Master switch for the Zammad integration. Default True preserves all
-    # Chatwoot⇄Zammad flows. Set False for Chatwoot-only tenants (no Zammad):
-    # EVERY outbound Zammad call is then skipped and handoffs stay in Chatwoot —
-    #   * agent-bot `escalate_to_ticket` → Chatwoot handoff (ack + reopen);
-    #   * contact sync (`upsert_contact`) → skipped (no Zammad user mirror);
-    #   * the `escalate` label (`maybe_escalate`) → skipped;
-    #   * `escalate_conversation` → no-op at the top (chokepoint);
-    #   * inbound Zammad webhooks (`/webhooks/zammad`) → ignored.
-    # So an unauthorized/unreachable/abandoned Zammad can never 403 a flow or
-    # leave a customer in silence.
-    zammad_ticketing_enabled: bool = True
     # Customer-facing acknowledgment posted (publicly) before reopening on a
     # handoff/escalation when the assistant has no persona handoff_message.
     # Empty by default (behaviour-preserving); set per tenant so a handoff
@@ -179,13 +158,6 @@ class Settings(BaseSettings):
         otherwise the internal URL (still valid inside the docker network,
         just not clickable from outside it)."""
         return self.chatwoot_public_url or self.chatwoot_url
-
-    @property
-    def zammad_display_url(self) -> str:
-        """Zammad base URL for human-facing links: public if configured,
-        otherwise the internal URL (still valid inside the docker network,
-        just not clickable from outside it)."""
-        return self.zammad_public_url or self.zammad_url
 
 
 @lru_cache

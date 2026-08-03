@@ -15,7 +15,6 @@ from app.config import get_settings
 from app.db.session import init_db
 from app.routers import chatwoot as chatwoot_webhooks
 from app.routers import health
-from app.routers import zammad as zammad_webhooks
 from app.services import lifecycle_scanner
 
 logger = logging.getLogger(__name__)
@@ -44,7 +43,6 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Agent Service", lifespan=lifespan)
     app.include_router(health.router)
     app.include_router(chatwoot_webhooks.router)
-    app.include_router(zammad_webhooks.router)
     # Serve the static in-Chatwoot dashboard apps (Knowledge Manager, Taxonomy
     # Manager, …) at /apps/<name>/. The directory is bind-mounted from the repo's
     # apps/ dir (compose). Guarded so the service still boots if it is absent.

@@ -6,8 +6,8 @@ Two entry points:
     returns a `Decision`. If the model answers with plain text instead of a
     function call — or every attempt errors out — we fall back to a
     `handoff_to_human` decision so a conversation never silently stalls.
-  - `generate`: plain text generation (no tools), used by the Zammad
-    draft-reply flow.
+  - `generate`: plain text generation (no tools), used by the resolution-time
+    categorization fallback classifier (services.categorize).
 
 Both accept an injectable `client` so tests never touch the real API. The
 google-genai SDK's `generate_content` call is synchronous, so both entry
@@ -135,8 +135,9 @@ async def generate(
     context: str,
     client: genai.Client | None = None,
 ) -> str:
-    """Plain text generation (no tools), for the Zammad draft-reply flow.
-    Raises after exhausting retries — callers decide whether/how to degrade."""
+    """Plain text generation (no tools), for the resolution-time
+    categorization fallback classifier. Raises after exhausting retries —
+    callers decide whether/how to degrade."""
     settings = get_settings()
     genai_client = client if client is not None else _client()
 

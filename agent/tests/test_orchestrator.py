@@ -19,7 +19,7 @@ from app.ai import gemini
 from app.config import get_settings
 from app.db.models import AiAction
 from app.db.session import async_session_maker
-from app.services import orchestrator, sync
+from app.services import orchestrator
 
 CHATWOOT = "http://chatwoot-rails:3000"
 
@@ -170,44 +170,6 @@ async def test_auto_mode_send_reply_sends_public_message_via_bot_token_and_stays
 
 
 @respx.mock
-async def test_suggest_mode_escalate_to_ticket_calls_sync_and_reopens(monkeypatch):
-    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
-        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
-    )
-    toggle_status = respx.post(
-        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status"
-    ).mock(return_value=httpx.Response(200, json={"success": True}))
-
-    received = {}
-
-    async def _fake_escalate(conversation_id, reason=None, priority=None, summary=None):
-        received["args"] = (conversation_id, reason, priority, summary)
-
-    monkeypatch.setattr(sync, "escalate_conversation", _fake_escalate)
-    monkeypatch.setattr(
-        gemini,
-        "decide",
-        _stub_decide(
-            gemini.Decision(
-                "escalate_to_ticket",
-                {"reason": "needs a refund", "priority": "high", "summary": "Refund request"},
-                None,
-                7,
-            )
-        ),
-    )
-
-    task = await orchestrator.handle_bot_event(_payload())
-    await task
-
-    assert received["args"] == (42, "needs a refund", "high", "Refund request")
-    assert toggle_status.call_count == 1
-
-    rows = await _ai_action_rows("chatwoot:42")
-    assert rows[0].decision == "escalate_to_ticket"
-
-
-@respx.mock
 async def test_suggest_mode_handoff_to_human_reopens_without_sending_reply(monkeypatch):
     respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
         return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
@@ -232,17 +194,12 @@ async def test_suggest_mode_handoff_to_human_reopens_without_sending_reply(monke
 
 
 @respx.mock
-async def test_auto_escalate_chatwoot_only_acks_customer_and_reopens_without_zammad(monkeypatch):
-    """Chatwoot-only tenant (`zammad_ticketing_enabled=False`, no Zammad):
-    escalate_to_ticket must NOT call the Zammad escalation path. Instead it
-    acknowledges the customer publicly and reopens for a human, so a
-    missing/unauthorized Zammad backend can never leave the customer in
-    silence. Regression for the prod bug where a 403 from Zammad's /users/search
-    crashed the escalate path before the reopen → the WhatsApp customer got
-    nothing at all."""
+async def test_auto_escalate_acks_customer_and_reopens(monkeypatch):
+    """There is no external ticketing backend: `escalate_to_ticket` always
+    acknowledges the customer publicly and reopens for a human, so the
+    customer is never left in silence."""
     settings = get_settings()
     monkeypatch.setattr(settings, "agent_mode", "auto")
-    monkeypatch.setattr(settings, "zammad_ticketing_enabled", False)
     monkeypatch.setattr(
         settings,
         "handoff_default_message",
@@ -259,10 +216,6 @@ async def test_auto_escalate_chatwoot_only_acks_customer_and_reopens_without_zam
         f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status"
     ).mock(return_value=httpx.Response(200, json={"success": True}))
 
-    async def _boom_escalate(*args, **kwargs):
-        raise AssertionError("Zammad escalation must not run on a Chatwoot-only tenant")
-
-    monkeypatch.setattr(sync, "escalate_conversation", _boom_escalate)
     monkeypatch.setattr(
         gemini,
         "decide",

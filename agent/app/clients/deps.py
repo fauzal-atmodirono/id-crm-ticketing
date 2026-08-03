@@ -1,4 +1,4 @@
-"""Singleton accessors for the httpx-based Chatwoot/Zammad API clients.
+"""Singleton accessors for the httpx-based Chatwoot API client.
 
 The sync layer and webhook routers call these instead of constructing
 clients themselves, so there's exactly one long-lived `httpx.AsyncClient`
@@ -16,7 +16,6 @@ from functools import lru_cache
 
 from app.clients.chatwoot import ChatwootClient
 from app.clients.proton import ProtonConfigClient
-from app.clients.zammad import ZammadClient
 from app.config import get_settings
 
 
@@ -27,15 +26,6 @@ def get_chatwoot_client() -> ChatwootClient:
         base_url=settings.chatwoot_url,
         api_access_token=settings.chatwoot_api_token,
         account_id=settings.chatwoot_account_id,
-    )
-
-
-@lru_cache
-def get_zammad_client() -> ZammadClient:
-    settings = get_settings()
-    return ZammadClient(
-        base_url=settings.zammad_url,
-        api_token=settings.zammad_api_token,
     )
 
 
@@ -62,8 +52,6 @@ async def aclose_clients() -> None:
     exercise it)."""
     if get_chatwoot_client.cache_info().currsize:
         await get_chatwoot_client().aclose()
-    if get_zammad_client.cache_info().currsize:
-        await get_zammad_client().aclose()
     if get_proton_config_client.cache_info().currsize:
         proton = get_proton_config_client()
         if proton is not None:

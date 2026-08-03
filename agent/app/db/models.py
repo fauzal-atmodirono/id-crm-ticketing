@@ -1,9 +1,8 @@
 """SQLAlchemy 2.0 declarative models for the agent service's own database.
 
-These tables track the state the integration layer needs that doesn't
-belong in either Chatwoot or Zammad: which contact/conversation maps to
-which Zammad user/ticket, which webhook deliveries have already been
-processed (idempotency), and a log of AI decisions.
+These tables track state the integration layer needs that doesn't belong in
+Chatwoot itself: which webhook deliveries have already been processed
+(idempotency), a log of AI decisions, and conversation lifecycle state.
 """
 
 from datetime import datetime
@@ -14,54 +13,6 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
     pass
-
-
-class ContactLink(Base):
-    """Maps a Chatwoot contact to the corresponding Zammad user."""
-
-    __tablename__ = "contact_links"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    chatwoot_contact_id: Mapped[int] = mapped_column(
-        BigInteger, unique=True, nullable=False
-    )
-    zammad_user_id: Mapped[int] = mapped_column(
-        BigInteger, unique=True, nullable=False
-    )
-    email: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
-
-
-class ConversationLink(Base):
-    """Maps a Chatwoot conversation to the corresponding Zammad ticket."""
-
-    __tablename__ = "conversation_links"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    chatwoot_conversation_id: Mapped[int] = mapped_column(
-        BigInteger, unique=True, nullable=False
-    )
-    zammad_ticket_id: Mapped[int] = mapped_column(
-        BigInteger, unique=True, nullable=False
-    )
-    last_synced_state: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
 
 
 class ProcessedDelivery(Base):

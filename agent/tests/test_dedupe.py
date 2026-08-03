@@ -26,4 +26,4 @@ async def test_duplicate_delivery_id_rejected_regardless_of_source():
     # processed_deliveries.delivery_id is the primary key (not scoped per
     # source), so a repeat id from a different source is still a duplicate.
     assert await claim_delivery("cross-source-id", "chatwoot") is True
-    assert await claim_delivery("cross-source-id", "zammad") is False
+    assert await claim_delivery("cross-source-id", "chatwoot-bot") is False

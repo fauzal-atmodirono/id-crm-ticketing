@@ -20,19 +20,14 @@ def _cleanup_test_db() -> None:
 
 
 os.environ.setdefault("CHATWOOT_URL", "http://chatwoot-rails:3000")
-os.environ.setdefault("ZAMMAD_URL", "http://zammad-nginx:8080")
 os.environ.setdefault("CHATWOOT_API_TOKEN", "test-chatwoot-api-token")
 os.environ.setdefault("CHATWOOT_PLATFORM_TOKEN", "test-chatwoot-platform-token")
 os.environ.setdefault("CHATWOOT_ACCOUNT_ID", "1")
-os.environ.setdefault("ZAMMAD_API_TOKEN", "test-zammad-api-token")
 os.environ.setdefault("GEMINI_API_KEY", "test-gemini-api-key")
 os.environ.setdefault("GEMINI_MODEL", "gemini-2.5-flash")
 os.environ.setdefault("CHATWOOT_WEBHOOK_SECRET", "test-chatwoot-webhook-secret")
 os.environ.setdefault("CHATWOOT_BOT_SECRET", "test-chatwoot-bot-secret")
 os.environ.setdefault("CHATWOOT_BOT_TOKEN", "test-chatwoot-bot-token")
-os.environ.setdefault("ZAMMAD_WEBHOOK_SECRET", "test-zammad-webhook-secret")
-os.environ.setdefault("ZAMMAD_INTEGRATION_LOGIN", "integration@local")
-os.environ.setdefault("ZAMMAD_AI_DRAFTS", "true")
 os.environ.setdefault("AGENT_MODE", "suggest")
 os.environ.setdefault("AUTO_RESOLVE", "false")
 os.environ.setdefault("AGENT_DATABASE_URL", f"sqlite+aiosqlite:///{_TEST_DB_PATH}")
@@ -45,10 +40,10 @@ from app.db.session import async_session_maker, init_db
 
 @pytest.fixture(autouse=True)
 async def _reset_agent_db():
-    """Task 4 tests write rows to contact_links/conversation_links/
-    processed_deliveries. Create the tables once (idempotent) and wipe rows
-    after each test so tests sharing the session-scoped sqlite file stay
-    isolated from each other's unique-constrained rows.
+    """Tests write rows to tables like processed_deliveries/ai_actions.
+    Create the tables once (idempotent) and wipe rows after each test so
+    tests sharing the session-scoped sqlite file stay isolated from each
+    other's unique-constrained rows.
     """
     await init_db()
     yield

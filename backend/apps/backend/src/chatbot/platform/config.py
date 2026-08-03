@@ -140,6 +140,12 @@ class Settings(BaseSettings):
     # direct SQL), same as today. Safe to leave set across restarts: the
     # underlying assign is idempotent (checks existence before inserting).
     rbac_bootstrap_admin_user_id: int | None = None
+
+    # RSA (roadside assistance) incident log — own Postgres table, gated the
+    # same way the pgvector KB and RBAC are: default-off, needs BOTH flags to
+    # activate. Manual staff data entry only, no dispatch-system integration.
+    rsa_enabled: bool = False
+    rsa_database_url: str = ""
     # --- Phase 5: Agent routing & presence ---
     # Master switch: when False (default) the routing service is bypassed and
     # the static chatwoot_agent_team_id team assignment remains active.
@@ -350,20 +356,48 @@ class Settings(BaseSettings):
     # working default so the system functions out of the box; override per
     # tenant once the client finalizes their scheme — no code change needed.
     case_taxonomy_json: str = (
-        '{"sales":{"label":"Sales","subcategories":["Test Drive Booking",'
-        '"Pricing Inquiry","Vehicle Availability","Trade-In","Financing"]},'
-        '"aftersales":{"label":"Aftersales","subcategories":["Service Booking",'
-        '"Warranty Claim","Spare Parts","Recall"]},'
-        '"apps":{"label":"Apps","subcategories":["Login Issue","App Crash",'
-        '"Feature Request","Account Sync"]},'
-        '"charging":{"label":"Charging","subcategories":["Charger Fault",'
-        '"Charging Station Locator","Billing"]},'
-        '"roadside_assistance":{"label":"Roadside Assistance","subcategories":'
-        '["Breakdown","Accident","Towing"]},'
-        '"general_enquiry":{"label":"General Enquiry","subcategories":'
-        '["Product Info","Dealer Locator","Other"]},'
-        '"complaint":{"label":"Complaint","subcategories":["Service Quality",'
-        '"Product Defect","Staff Conduct","Other"]}}'
+        '{"sales":{"label":"Sales","subcategories":["Accessories","Booking",'
+        '"Insurance","New Model","Promotion","Refund","Test Drive","Trade In",'
+        '"Transfer Ownership","Vehicle Delivery","Vehicle Details",'
+        '"Customer Experience"]},'
+        '"aftersales":{"label":"Aftersales","subcategories":["Body",'
+        '"Roadside Assistance","Service / Recall Campaign","Service Operation",'
+        '"Spare Part","Warranty","User Manual","Features"]},'
+        '"apps":{"label":"Apps","subcategories":["Information","Operation",'
+        '"User ID","No QR Scanner","Notification","Profile","Remote Control"]},'
+        '"charging":{"label":"Charging","subcategories":["Home Charging",'
+        '"Public Charging"]},'
+        '"product":{"label":"Product","subcategories":["Infotainment",'
+        '"Telematics"]},'
+        '"marketing":{"label":"Marketing","subcategories":["Event / Campaign",'
+        '"Partnership / Collaboration","Proposal","Sponsorship"]},'
+        '"others":{"label":"Others","subcategories":['
+        '"Not Related to Proton e.MAS"]}}'
+    )
+
+    # Vehicle-model / product-line dimension — JSON object {"options": [str, ...]}.
+    # Same fail-open pattern as CASE_TAXONOMY_JSON. Empty -> the vehicle_model
+    # custom attribute is never offered/written (byte-identical to today) —
+    # tenants with no product-line concept simply leave this unset.
+    vehicle_models_json: str = '{"options": ["e.MAS 5", "e.MAS 7", "e.MAS 7 PHEV", "Not Applicable"]}'
+
+    # Case-type dimension (Inquiry/Complaint/Feedback) — JSON object
+    # {"options": [str, ...]}. Same fail-open pattern. Ships with a working
+    # default since this concept is fairly universal to support work, but
+    # stays configurable/overridable per tenant like every other dimension here.
+    case_type_options_json: str = '{"options": ["Inquiry", "Complaint", "Feedback"]}'
+
+    # SOP resolution-time targets, in working hours, per case_type. JSON:
+    # {"<case_type lowercased>": {"buckets_wh": [int, ...], "labels": [str, ...]}}.
+    # buckets_wh are the upper edges (exclusive) of every bucket except the
+    # last, which is open-ended; labels must have exactly one more entry than
+    # buckets_wh. Malformed/missing entries fall back to being excluded from
+    # v_resolution_sla_buckets (that case_type's rows simply won't bucket).
+    resolution_sla_targets_json: str = (
+        '{"inquiry": {"buckets_wh": [8], "labels": ["Within 8wh", ">8wh"]},'
+        '"complaint": {"buckets_wh": [24, 48, 72], '
+        '"labels": ["<24wh", "24-48wh", "48-72wh", ">72wh"]},'
+        '"feedback": {"buckets_wh": [48], "labels": ["Within 48h", ">48h"]}}'
     )
 
     # Phase 2 — escalation notifications

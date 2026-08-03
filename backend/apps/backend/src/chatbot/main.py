@@ -224,7 +224,7 @@ def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
 
     query_port = build_metrics_query_port(settings)
     app.include_router(build_metrics_query_router(query_port))
-    app.include_router(build_metrics_export_router(query_port))
+    app.include_router(build_metrics_export_router(query_port, settings))
     app.include_router(build_metrics_anomaly_router(query_port, settings))
     app.include_router(build_metrics_insights_router(query_port, settings))
 
@@ -479,6 +479,26 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         if engine is not None:
             from chatbot.features.chat.kb_db import init_kb_db
             await init_kb_db(engine)
+
+    # --- RSA (roadside assistance) incident log (default-off) ---
+    if settings.rsa_enabled and settings.rsa_database_url:
+        from chatbot.features.rsa.rsa_db import build_engine as build_rsa_engine
+        from chatbot.features.rsa.rsa_db import build_session_maker as build_rsa_session_maker
+        from chatbot.features.rsa.rsa_repository import PgRsaRepository
+        from chatbot.features.rsa.rsa_router import build_rsa_router
+
+        rsa_engine = build_rsa_engine(settings.rsa_database_url)
+        rsa_session_maker = build_rsa_session_maker(rsa_engine)
+        rsa_repo = PgRsaRepository(rsa_session_maker)
+        app.include_router(build_rsa_router(rsa_repo, settings))
+        app.state.rsa_engine = rsa_engine
+
+    @app.on_event("startup")
+    async def _init_rsa_db() -> None:
+        engine = getattr(app.state, "rsa_engine", None)
+        if engine is not None:
+            from chatbot.features.rsa.rsa_db import init_rsa_db
+            await init_rsa_db(engine)
 
     # --- RBAC (roles/permissions; default-off) ---
     authz_repo = None

@@ -60,6 +60,8 @@ async def test_create_ticket_emits_classification_tags() -> None:
             urgency="high",
             category="Aftersales",
             subcategory="Battery Issue",
+            case_type="Complaint",
+            vehicle_model="e.MAS 7",
             division="Aftersales",
             sla_minutes=480,
         )
@@ -69,6 +71,8 @@ async def test_create_ticket_emits_classification_tags() -> None:
     assert "proton_ai" in tags  # base tag preserved
     assert "category_aftersales" in tags
     assert "subcat_battery_issue" in tags
+    assert "case_type_complaint" in tags
+    assert "vehicle_model_e.mas_7" in tags
     assert "division_aftersales" in tags
     assert "sla_480" in tags
 

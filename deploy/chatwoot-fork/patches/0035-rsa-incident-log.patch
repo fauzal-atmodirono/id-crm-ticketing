@@ -1,0 +1,721 @@
+diff --git a/app/javascript/dashboard/api/protonRsa.js b/app/javascript/dashboard/api/protonRsa.js
+new file mode 100644
+index 0000000..042889a
+--- /dev/null
++++ b/app/javascript/dashboard/api/protonRsa.js
+@@ -0,0 +1,64 @@
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++
++// Thin client for the Proton backend RSA incident-log endpoints
++// (/rsa/incidents*). Auth is the shared PROTON_BACKEND_KEY sent as x-api-key —
++// the RSA router authorizes against faq_admin_api_key / proton_backend_key
++// exactly like the /kb/* and /metrics/* endpoints do (NOT the RBAC
++// require_permission session triplet used by protonAdmin.js's /admin + /authz
++// routes). Errors carry a numeric `.status` so callers can special-case
++// 401/503.
++async function rsaRequest(path, { method = 'GET', body } = {}) {
++  const { backendUrl, backendKey } = useProtonConfig();
++  if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
++
++  const response = await fetch(`${backendUrl}${path}`, {
++    method,
++    headers: {
++      'Content-Type': 'application/json',
++      ...(backendKey ? { 'x-api-key': backendKey } : {}),
++    },
++    ...(body ? { body: JSON.stringify(body) } : {}),
++  });
++
++  if (!response.ok) {
++    const text = await response.text().catch(() => response.statusText);
++    const err = new Error(`${response.status}: ${text.slice(0, 200)}`);
++    err.status = response.status;
++    throw err;
++  }
++  const text = await response.text();
++  return text ? JSON.parse(text) : {};
++}
++
++// GET /rsa/incidents -> [{ id, incident_date, vehicle_no, vehicle_model, cause,
++//   purchased_from, breakdown_location, arrived_location,
++//   customer_called_in_time, towing_assigned_time, time_arrived_breakdown_area,
++//   time_arrived_outlet, total_km, late_reason, remarks, created_by }]
++export async function listRsaIncidents() {
++  const data = await rsaRequest('/rsa/incidents');
++  return Array.isArray(data.incidents) ? data.incidents : [];
++}
++
++// GET /rsa/incidents/aggregate -> { by_cause: [{ cause, count }],
++//   by_dealer: [{ dealer, count }] }
++export function getRsaAggregate() {
++  return rsaRequest('/rsa/incidents/aggregate');
++}
++
++// body: the _IncidentRequest fields (incident_date, vehicle_no, cause required)
++export function createRsaIncident(payload) {
++  return rsaRequest('/rsa/incidents', { method: 'POST', body: payload });
++}
++
++export function updateRsaIncident(id, payload) {
++  return rsaRequest(`/rsa/incidents/${encodeURIComponent(id)}`, {
++    method: 'PATCH',
++    body: payload,
++  });
++}
++
++export function deleteRsaIncident(id) {
++  return rsaRequest(`/rsa/incidents/${encodeURIComponent(id)}`, {
++    method: 'DELETE',
++  });
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 8c6154c..163281b 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -617,6 +617,21 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
++    // RSA incident log — the backend /rsa/incidents* endpoints authorize by the
++    // shared x-api-key (like /kb + /metrics), NOT the RBAC require_permission
++    // used by SLA/Audit/Roles, so there is no dedicated `rsa.manage` permission
++    // in the authz seed. Gate on `sla.manage` — the same operational-admin
++    // cohort that manages SLA policies owns roadside-assistance data entry.
++    ...(protonHasPermission('sla.manage')
++      ? [
++          {
++            name: 'RsaIncidents',
++            icon: 'i-lucide-truck',
++            label: 'RSA Incident Log',
++            to: accountScopedRoute('proton_rsa_incidents'),
++          },
++        ]
++      : []),
+     {
+       name: 'Contacts',
+       label: t('SIDEBAR.CONTACTS'),
+diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+index 15dfad6..87b5ead 100644
+--- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+@@ -51,6 +51,12 @@ export default {
+           component: () => import('../../views/ProtonRolesPermissionsPage.vue'),
+           meta: { permissions: ['administrator'] },
+         },
++        {
++          path: 'proton/rsa-incidents',
++          name: 'proton_rsa_incidents',
++          component: () => import('../../views/ProtonRsaPage.vue'),
++          meta: { permissions: ['administrator'] },
++        },
+         ...inboxRoutes,
+         ...conversation.routes,
+         ...settings.routes,
+diff --git a/app/javascript/dashboard/views/ProtonRsaPage.vue b/app/javascript/dashboard/views/ProtonRsaPage.vue
+new file mode 100644
+index 0000000..4e10af1
+--- /dev/null
++++ b/app/javascript/dashboard/views/ProtonRsaPage.vue
+@@ -0,0 +1,602 @@
++<!-- ProtonRsaPage.vue — OUR file. Standalone roadside-assistance (RSA)
++     incident-log entry/report page. Three stacked sections sharing one page
++     shell: (a) an aggregate summary (cases by cause, cases by dealer, from
++     GET /rsa/incidents/aggregate), (b) a data-entry form that POSTs a new
++     incident, and (c) a table of existing incidents with per-row inline edit
++     (PATCH) and delete. Manual staff data entry only — no dispatch-system
++     integration. Mirrors ProtonSlaPoliciesPage.vue's shell (header, n-* tokens,
++     useAlert toasts). Field names match Task 20's _IncidentRequest exactly. -->
++<script>
++import { useAlert } from 'dashboard/composables';
++import {
++  listRsaIncidents,
++  getRsaAggregate,
++  createRsaIncident,
++  updateRsaIncident,
++  deleteRsaIncident,
++} from 'dashboard/api/protonRsa';
++
++// The editable fields, in deck-column order. Kept as one list so the create
++// form, the inline-edit row, and the payload builder all stay in lockstep.
++const EMPTY_FORM = {
++  incident_date: '',
++  vehicle_no: '',
++  vehicle_model: '',
++  cause: '',
++  purchased_from: '',
++  breakdown_location: '',
++  arrived_location: '',
++  customer_called_in_time: '',
++  towing_assigned_time: '',
++  time_arrived_breakdown_area: '',
++  time_arrived_outlet: '',
++  total_km: null,
++  late_reason: '',
++  remarks: '',
++};
++
++// datetime-local inputs want a 'YYYY-MM-DDTHH:mm' string; backend returns ISO
++// (possibly with seconds/offset), so slice for display and drop empties on send.
++function toLocalInput(value) {
++  return value ? String(value).slice(0, 16) : '';
++}
++
++export default {
++  name: 'ProtonRsaPage',
++  data() {
++    return {
++      aggregate: { by_cause: [], by_dealer: [] },
++      incidents: [],
++      form: { ...EMPTY_FORM },
++      editingId: null,
++      editForm: { ...EMPTY_FORM },
++      loading: true,
++      errored: false,
++      saving: false,
++    };
++  },
++  async mounted() {
++    await this.load();
++  },
++  methods: {
++    // Empty strings mean "unset" — convert them to null so the backend's
++    // Optional[...] fields (and PATCH's "skip null" filter) behave correctly.
++    buildPayload(source) {
++      const payload = {};
++      Object.keys(EMPTY_FORM).forEach(key => {
++        const value = source[key];
++        payload[key] = value === '' || value === undefined ? null : value;
++      });
++      return payload;
++    },
++    async load() {
++      this.loading = true;
++      this.errored = false;
++      try {
++        const [incidents, aggregate] = await Promise.all([
++          listRsaIncidents(),
++          getRsaAggregate(),
++        ]);
++        this.incidents = incidents;
++        this.aggregate = {
++          by_cause: Array.isArray(aggregate.by_cause) ? aggregate.by_cause : [],
++          by_dealer: Array.isArray(aggregate.by_dealer)
++            ? aggregate.by_dealer
++            : [],
++        };
++      } catch (err) {
++        this.errored = true;
++        useAlert(
++          'Failed to load RSA incidents: ' + (err.message || String(err))
++        );
++      } finally {
++        this.loading = false;
++      }
++    },
++    async create() {
++      this.saving = true;
++      try {
++        await createRsaIncident(this.buildPayload(this.form));
++        useAlert('Incident logged.');
++        this.form = { ...EMPTY_FORM };
++        await this.load();
++      } catch (err) {
++        useAlert('Failed to log incident: ' + (err.message || String(err)));
++      } finally {
++        this.saving = false;
++      }
++    },
++    startEdit(incident) {
++      this.editingId = incident.id;
++      this.editForm = {
++        ...EMPTY_FORM,
++        ...incident,
++        total_km: incident.total_km ?? null,
++        customer_called_in_time: toLocalInput(incident.customer_called_in_time),
++        towing_assigned_time: toLocalInput(incident.towing_assigned_time),
++        time_arrived_breakdown_area: toLocalInput(
++          incident.time_arrived_breakdown_area
++        ),
++        time_arrived_outlet: toLocalInput(incident.time_arrived_outlet),
++      };
++    },
++    cancelEdit() {
++      this.editingId = null;
++      this.editForm = { ...EMPTY_FORM };
++    },
++    async saveEdit(id) {
++      this.saving = true;
++      try {
++        await updateRsaIncident(id, this.buildPayload(this.editForm));
++        useAlert('Incident updated.');
++        this.cancelEdit();
++        await this.load();
++      } catch (err) {
++        useAlert('Failed to update incident: ' + (err.message || String(err)));
++      } finally {
++        this.saving = false;
++      }
++    },
++    async remove(id) {
++      // eslint-disable-next-line no-alert
++      if (!window.confirm('Delete this incident? This cannot be undone.')) {
++        return;
++      }
++      this.saving = true;
++      try {
++        await deleteRsaIncident(id);
++        useAlert('Incident deleted.');
++        if (this.editingId === id) this.cancelEdit();
++        await this.load();
++      } catch (err) {
++        useAlert('Failed to delete incident: ' + (err.message || String(err)));
++      } finally {
++        this.saving = false;
++      }
++    },
++  },
++};
++</script>
++
++<template>
++  <div class="p-6">
++    <h1 class="mb-1 text-lg font-medium text-n-slate-12">RSA Incident Log</h1>
++    <p class="mb-6 text-sm text-n-slate-11">
++      Log roadside-assistance incidents and review a running summary by cause
++      and dealer. Manual staff data entry — this does not connect to any
++      dispatch system.
++    </p>
++
++    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
++      Loading…
++    </div>
++    <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">
++      Could not load RSA incidents.
++    </div>
++
++    <template v-else>
++      <!-- (a) Aggregate summary -->
++      <section class="grid grid-cols-1 gap-6 mb-8 md:grid-cols-2 max-w-3xl">
++        <div class="p-4 border rounded-lg border-n-weak bg-n-alpha-black2">
++          <h2 class="mb-3 text-sm font-medium text-n-slate-12">
++            Cases by cause
++          </h2>
++          <p v-if="!aggregate.by_cause.length" class="text-sm text-n-slate-11">
++            No incidents yet.
++          </p>
++          <ul v-else class="flex flex-col gap-1 m-0 list-none">
++            <li
++              v-for="row in aggregate.by_cause"
++              :key="row.cause"
++              class="flex justify-between text-sm text-n-slate-11"
++            >
++              <span>{{ row.cause }}</span>
++              <span class="font-medium text-n-slate-12">{{ row.count }}</span>
++            </li>
++          </ul>
++        </div>
++        <div class="p-4 border rounded-lg border-n-weak bg-n-alpha-black2">
++          <h2 class="mb-3 text-sm font-medium text-n-slate-12">
++            Cases by dealer
++          </h2>
++          <p v-if="!aggregate.by_dealer.length" class="text-sm text-n-slate-11">
++            No incidents yet.
++          </p>
++          <ul v-else class="flex flex-col gap-1 m-0 list-none">
++            <li
++              v-for="row in aggregate.by_dealer"
++              :key="row.dealer"
++              class="flex justify-between text-sm text-n-slate-11"
++            >
++              <span>{{ row.dealer }}</span>
++              <span class="font-medium text-n-slate-12">{{ row.count }}</span>
++            </li>
++          </ul>
++        </div>
++      </section>
++
++      <!-- (b) Data-entry form -->
++      <h2 class="mb-3 text-base font-medium text-n-slate-12">
++        Log an incident
++      </h2>
++      <form
++        class="grid max-w-3xl grid-cols-1 gap-4 mb-10 md:grid-cols-2"
++        @submit.prevent="create"
++      >
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11"
++            >Incident date *</label
++          >
++          <input
++            v-model="form.incident_date"
++            type="date"
++            required
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11"
++            >Vehicle no. *</label
++          >
++          <input
++            v-model="form.vehicle_no"
++            type="text"
++            required
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11"
++            >Vehicle model</label
++          >
++          <input
++            v-model="form.vehicle_model"
++            type="text"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">Cause *</label>
++          <input
++            v-model="form.cause"
++            type="text"
++            required
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11"
++            >Purchased from</label
++          >
++          <input
++            v-model="form.purchased_from"
++            type="text"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">
++            Breakdown location
++          </label>
++          <input
++            v-model="form.breakdown_location"
++            type="text"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">
++            Arrived location
++          </label>
++          <input
++            v-model="form.arrived_location"
++            type="text"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">
++            Customer called-in time
++          </label>
++          <input
++            v-model="form.customer_called_in_time"
++            type="datetime-local"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">
++            Towing assigned time
++          </label>
++          <input
++            v-model="form.towing_assigned_time"
++            type="datetime-local"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">
++            Time arrived breakdown area
++          </label>
++          <input
++            v-model="form.time_arrived_breakdown_area"
++            type="datetime-local"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">
++            Time arrived outlet
++          </label>
++          <input
++            v-model="form.time_arrived_outlet"
++            type="datetime-local"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">Total km</label>
++          <input
++            v-model.number="form.total_km"
++            type="number"
++            min="0"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">Late reason</label>
++          <input
++            v-model="form.late_reason"
++            type="text"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">Remarks</label>
++          <input
++            v-model="form.remarks"
++            type="text"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div class="md:col-span-2">
++          <button
++            type="submit"
++            :disabled="saving"
++            class="px-4 py-2 text-sm font-medium rounded-lg w-fit bg-n-brand text-white hover:opacity-90 disabled:opacity-50"
++          >
++            Log incident
++          </button>
++        </div>
++      </form>
++
++      <!-- (c) Incident table with inline edit / delete -->
++      <h2 class="mb-3 text-base font-medium text-n-slate-12">Incidents</h2>
++      <p v-if="!incidents.length" class="text-sm text-n-slate-11">
++        No incidents logged yet.
++      </p>
++      <div v-else class="overflow-x-auto border rounded-lg border-n-weak">
++        <table class="w-full text-sm border-collapse text-n-slate-11">
++          <thead>
++            <tr class="text-left border-b border-n-weak text-n-slate-12">
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Date</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">
++                Vehicle no.
++              </th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Model</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Cause</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">
++                Purchased from
++              </th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Breakdown</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Arrived</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Called in</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">
++                Towing assigned
++              </th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">
++                Arrived breakdown
++              </th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">
++                Arrived outlet
++              </th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Total km</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">
++                Late reason
++              </th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Remarks</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Actions</th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="incident in incidents"
++              :key="incident.id"
++              class="border-b border-n-weak last:border-b-0"
++            >
++              <template v-if="editingId === incident.id">
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.incident_date"
++                    type="date"
++                    class="w-36 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.vehicle_no"
++                    type="text"
++                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.vehicle_model"
++                    type="text"
++                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.cause"
++                    type="text"
++                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.purchased_from"
++                    type="text"
++                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.breakdown_location"
++                    type="text"
++                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.arrived_location"
++                    type="text"
++                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.customer_called_in_time"
++                    type="datetime-local"
++                    class="w-44 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.towing_assigned_time"
++                    type="datetime-local"
++                    class="w-44 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.time_arrived_breakdown_area"
++                    type="datetime-local"
++                    class="w-44 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.time_arrived_outlet"
++                    type="datetime-local"
++                    class="w-44 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model.number="editForm.total_km"
++                    type="number"
++                    min="0"
++                    class="w-20 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.late_reason"
++                    type="text"
++                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.remarks"
++                    type="text"
++                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  <button
++                    type="button"
++                    :disabled="saving"
++                    class="mr-2 font-medium text-n-brand hover:underline disabled:opacity-50"
++                    @click="saveEdit(incident.id)"
++                  >
++                    Save
++                  </button>
++                  <button
++                    type="button"
++                    class="text-n-slate-11 hover:underline"
++                    @click="cancelEdit"
++                  >
++                    Cancel
++                  </button>
++                </td>
++              </template>
++              <template v-else>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.incident_date }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.vehicle_no }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.vehicle_model }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.cause }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.purchased_from }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.breakdown_location }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.arrived_location }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.customer_called_in_time }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.towing_assigned_time }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.time_arrived_breakdown_area }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.time_arrived_outlet }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.total_km }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.late_reason }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.remarks }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  <button
++                    type="button"
++                    class="mr-2 font-medium text-n-brand hover:underline"
++                    @click="startEdit(incident)"
++                  >
++                    Edit
++                  </button>
++                  <button
++                    type="button"
++                    :disabled="saving"
++                    class="text-n-ruby-11 hover:underline disabled:opacity-50"
++                    @click="remove(incident.id)"
++                  >
++                    Delete
++                  </button>
++                </td>
++              </template>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++    </template>
++  </div>
++</template>

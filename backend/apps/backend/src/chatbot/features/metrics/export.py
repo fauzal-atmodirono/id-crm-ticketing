@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import io
 from dataclasses import astuple, fields
 from typing import TYPE_CHECKING, Any, cast
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
     from chatbot.features.metrics.query_port import DashboardMetrics
 
 
-def _blocks(metrics: DashboardMetrics) -> list[tuple[str, list[Any]]]:
+def _blocks(metrics: Any) -> list[tuple[str, list[Any]]]:
     return [(f.name, getattr(metrics, f.name)) for f in fields(metrics)]
 
 
@@ -69,3 +70,24 @@ def render_pdf(metrics: DashboardMetrics) -> bytes:
         story.append(Spacer(1, 12))
     doc.build(story)
     return buf.getvalue()
+
+
+def render_csv(metrics: Any) -> bytes:
+    """CSV export for any dataclass whose fields are list[<dataclass>] — same
+    _blocks() reflection render_xlsx/render_pdf already use, so this
+    works for DashboardMetrics AND every new report bundle (DealerEscalation-
+    Metrics, SlaBucketMetrics, CaseAgingMetrics, VolumeByTypeDivisionMetrics,
+    DepartmentsMetrics, ...) with no per-view code."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    for name, rows in _blocks(metrics):
+        writer.writerow([name])
+        if rows:
+            first_row = cast(Any, rows[0])
+            writer.writerow([f.name for f in fields(first_row)])
+            for row in rows:
+                writer.writerow(list(astuple(cast(Any, row))))
+        else:
+            writer.writerow(["(no data)"])
+        writer.writerow([])
+    return buf.getvalue().encode("utf-8")

@@ -1,11 +1,16 @@
+import json
+
 import pytest
 
 from chatbot.features.metrics.mapping import (
+    CATEGORY_TO_DIVISION,
     ConversationRow,
+    apply_working_hours,
     channel_from_external_id,
     map_chatwoot_conversation_to_row,
     map_ticket_to_row,
 )
+from chatbot.platform.config import Settings
 
 
 def _ticket(**kw: object) -> dict[str, object]:
@@ -141,6 +146,25 @@ def test_skip_non_conversation() -> None:
 def test_keep_csat_only_ticket_even_without_external_id() -> None:
     row = map_ticket_to_row({"id": 2, "status": "solved", "tags": ["csat_5"]})
     assert row is not None and row.channel == "Other" and row.csat_score == 5
+
+
+def test_category_to_division_covers_new_top_level_divisions() -> None:
+    """Task 24 added product/marketing/others to case_taxonomy_json; they must
+    resolve to a real division label, not fall through to None/"Unknown" in
+    the BigQuery views (v_volume_by_type_division, v_state_trend, v_case_aging)."""
+    assert CATEGORY_TO_DIVISION.get("product") == "Product"
+    assert CATEGORY_TO_DIVISION.get("marketing") == "Marketing"
+    assert CATEGORY_TO_DIVISION.get("others") == "Others"
+
+
+def test_category_to_division_covers_every_default_taxonomy_slug() -> None:
+    """Guard against this exact class of drift recurring: every top-level slug
+    in the default case_taxonomy_json must have a CATEGORY_TO_DIVISION entry."""
+    taxonomy = json.loads(Settings.model_fields["case_taxonomy_json"].default)
+    for slug in taxonomy:
+        assert CATEGORY_TO_DIVISION.get(slug) is not None, (
+            f"case_taxonomy_json slug {slug!r} has no CATEGORY_TO_DIVISION mapping"
+        )
 
 
 def test_division_derived_from_category_tag() -> None:
@@ -451,3 +475,83 @@ def test_map_chatwoot_conversation_missing_custom_attributes_yields_none_categor
     assert row is not None
     assert row.category is None
     assert row.subcategory is None
+
+
+def test_map_chatwoot_conversation_reads_case_type_and_vehicle_model() -> None:
+    conv = {
+        "id": 50,
+        "status": "resolved",
+        "created_at": 1700000000,
+        "last_activity_at": 1700003600,
+        "labels": ["division_sales"],
+        "custom_attributes": {"case_type": "Inquiry", "vehicle_model": "e.MAS 7"},
+        "meta": {"sender": {"id": 1, "phone_number": "+60123456789"}},
+    }
+    row = map_chatwoot_conversation_to_row(conv)
+    assert row is not None
+    assert row.case_type == "Inquiry"
+    assert row.vehicle_model == "e.MAS 7"
+
+
+def test_map_chatwoot_conversation_missing_case_type_yields_none() -> None:
+    conv = {
+        "id": 51, "status": "open", "created_at": 1700000000,
+        "labels": ["division_apps"], "meta": {"sender": {"id": 1}},
+    }
+    row = map_chatwoot_conversation_to_row(conv)
+    assert row is not None
+    assert row.case_type is None
+    assert row.vehicle_model is None
+
+
+INBOX = {
+    "working_hours_enabled": True,
+    "timezone": "UTC",
+    "working_hours": [
+        {"day_of_week": d, "open_hour": 9, "open_minutes": 0, "close_hour": 18, "close_minutes": 0,
+         "open_all_day": False, "closed_all_day": False}
+        for d in (1, 2, 3, 4, 5)
+    ] + [{"day_of_week": d, "closed_all_day": True} for d in (0, 6)],
+}
+
+
+def _row(**overrides: object) -> ConversationRow:
+    base: dict[str, object] = {
+        "conversation_id": "1", "channel": "Web", "created_at": "2026-07-06T10:00:00+00:00",
+        "updated_at": "2026-07-06T12:30:00+00:00", "status": "resolved", "resolved_by": "agent",
+        "csat_score": None, "nps_score": None,
+        "first_response_at": "2026-07-06T10:30:00+00:00",
+        "resolved_at": "2026-07-06T12:30:00+00:00",
+    }
+    base.update(overrides)
+    return ConversationRow(**base)  # type: ignore[arg-type]
+
+
+def test_apply_working_hours_computes_both_durations() -> None:
+    row = apply_working_hours(_row(), INBOX)
+    assert row.first_response_working_minutes == 30
+    assert row.resolution_working_minutes == 150
+
+
+def test_apply_working_hours_none_inbox_falls_back_to_calendar_minutes() -> None:
+    row = apply_working_hours(_row(), None)
+    assert row.first_response_working_minutes == 30  # same as calendar here (all within one day)
+    assert row.resolution_working_minutes == 150
+
+
+def test_apply_working_hours_missing_timestamps_yields_none() -> None:
+    row = apply_working_hours(_row(first_response_at=None, resolved_at=None), INBOX)
+    assert row.first_response_working_minutes is None
+    assert row.resolution_working_minutes is None
+
+
+def test_map_chatwoot_conversation_reads_dealer_escalated_at() -> None:
+    conv = {
+        "id": 60, "status": "resolved", "created_at": 1700000000,
+        "labels": ["dealer_kl_glenmarie"],
+        "custom_attributes": {"dealer_escalated_at": "2026-07-01T00:00:00+00:00"},
+        "meta": {"sender": {"id": 1}},
+    }
+    row = map_chatwoot_conversation_to_row(conv)
+    assert row is not None
+    assert row.dealer_escalated_at == "2026-07-01T00:00:00+00:00"

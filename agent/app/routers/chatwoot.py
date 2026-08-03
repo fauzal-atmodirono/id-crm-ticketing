@@ -54,6 +54,7 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks):
         background_tasks.add_task(sync.upsert_contact, payload)
     elif event == "conversation_updated":
         background_tasks.add_task(sync.maybe_escalate, payload)
+        background_tasks.add_task(sync.maybe_stamp_dealer_escalation, payload)
     elif event == "conversation_created":
         if settings_flags.lifecycle_enabled:
             background_tasks.add_task(lifecycle.on_conversation_created, payload)

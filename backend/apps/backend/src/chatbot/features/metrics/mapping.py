@@ -8,8 +8,10 @@ uses after the Chatwoot+Zammad migration.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+
+from chatbot.features.metrics.business_hours import working_minutes_between
 
 _CHANNEL_BY_PREFIX = {
     "whatsapp": "WhatsApp",
@@ -32,6 +34,9 @@ CATEGORY_TO_DIVISION = {
     "service": "Aftersales",
     "charging": "Charging",
     "charger": "Charging",
+    "product": "Product",
+    "marketing": "Marketing",
+    "others": "Others",
 }
 _CATEGORY_TAG = re.compile(r"^category_(.+)$")
 _SUBCAT_TAG = re.compile(r"^subcat_(.+)$")
@@ -64,6 +69,11 @@ class ConversationRow:
     resolved_at: str | None = None
     reopen_count: int | None = None
     dealer: str | None = None  # Phase-3: dealer dimension (dealer_<slug> label)
+    dealer_escalated_at: str | None = None  # Task 10: dealer escalation timestamp
+    case_type: str | None = None
+    vehicle_model: str | None = None
+    first_response_working_minutes: int | None = None
+    resolution_working_minutes: int | None = None
 
 
 def channel_from_external_id(external_id: str | None) -> str:
@@ -309,6 +319,8 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
     custom_attrs = custom_attrs if isinstance(custom_attrs, dict) else {}
     category = custom_attrs.get("case_category")
     subcategory = custom_attrs.get("case_subcategory")
+    case_type = custom_attrs.get("case_type")
+    vehicle_model = custom_attrs.get("vehicle_model")
     department = _first_tag(labels, _DEPT_TAG)
     # Prefer an explicit division_* label; else derive it from the category.
     division = _first_tag(labels, _DIVISION_TAG) or (
@@ -319,6 +331,7 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
     agent_id = _chatwoot_agent_id(conv)
     pic = _first_tag(labels, _PIC_TAG) or agent_id
     dealer = _first_tag(labels, _DEALER_TAG)
+    dealer_escalated_at = custom_attrs.get("dealer_escalated_at")
     reopen_count = _chatwoot_reopen_count(conv)
 
     # Timings we can derive from the Chatwoot conversation itself:
@@ -352,4 +365,32 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
         resolved_at=resolved_at,
         reopen_count=reopen_count,
         dealer=dealer,
+        dealer_escalated_at=dealer_escalated_at,
+        case_type=case_type,
+        vehicle_model=vehicle_model,
+    )
+
+
+def apply_working_hours(
+    row: ConversationRow, inbox: dict[str, object] | None
+) -> ConversationRow:
+    """Return a copy of row with first_response_working_minutes/
+    resolution_working_minutes computed. inbox=None (hours fetch failed or
+    inbox has no hours configured) -> plain calendar-time minutes, per this
+    plan's fallback rule (never leaves these fields silently None when the
+    underlying timestamps exist)."""
+
+    def _minutes(start_iso: str | None, end_iso: str | None) -> int | None:
+        if not start_iso or not end_iso:
+            return None
+        start = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+        if inbox is None:
+            return max(0, int((end - start).total_seconds() // 60))
+        return working_minutes_between(start, end, inbox)
+
+    return replace(
+        row,
+        first_response_working_minutes=_minutes(row.created_at, row.first_response_at),
+        resolution_working_minutes=_minutes(row.created_at, row.resolved_at),
     )

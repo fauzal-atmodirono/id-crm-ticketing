@@ -484,6 +484,8 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         customer_phone: str | None = None,
         category: str | None = None,
         subcategory: str | None = None,
+        case_type: str | None = None,
+        vehicle_model: str | None = None,
         division: str | None = None,
         department: str | None = None,
         sla_minutes: int | None = None,
@@ -507,10 +509,11 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         await self._fire_escalation(
             conv_id, title, body, session_id, urgency, None, department=department
         )
-        # case_category/case_subcategory + sla_minutes as custom attributes —
-        # case_category/subcategory are List-type Chatwoot attribute
-        # definitions (see chatwoot-config/provision_case_taxonomy.py), so
-        # Chatwoot's own native sidebar enforces single-select exclusivity.
+        # case_category/case_subcategory/case_type/vehicle_model + sla_minutes as
+        # custom attributes — case_category/subcategory/case_type/vehicle_model
+        # are List-type Chatwoot attribute definitions (see
+        # chatwoot-config/provision_case_taxonomy.py), so Chatwoot's own native
+        # sidebar enforces single-select exclusivity.
         custom_attrs: dict[str, Any] = {}
         if sla_minutes is not None:
             custom_attrs["sla_minutes"] = sla_minutes
@@ -518,6 +521,10 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             custom_attrs["case_category"] = category
         if subcategory:
             custom_attrs["case_subcategory"] = subcategory
+        if case_type:
+            custom_attrs["case_type"] = case_type
+        if vehicle_model:
+            custom_attrs["vehicle_model"] = vehicle_model
         if custom_attrs:
             await self._request(
                 "POST",
@@ -728,10 +735,11 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         if team_id_to_use is None:
             team_id_to_use = self._settings.chatwoot_agent_team_id or None
         await self._assign_conversation(conv_id, fallback_team_id=team_id_to_use)
-        # case_category/case_subcategory + sla_minutes as custom attributes —
-        # case_category/subcategory are List-type Chatwoot attribute
-        # definitions (see chatwoot-config/provision_case_taxonomy.py), so
-        # Chatwoot's own native sidebar enforces single-select exclusivity.
+        # case_category/case_subcategory/case_type/vehicle_model + sla_minutes as
+        # custom attributes — case_category/subcategory/case_type/vehicle_model
+        # are List-type Chatwoot attribute definitions (see
+        # chatwoot-config/provision_case_taxonomy.py), so Chatwoot's own native
+        # sidebar enforces single-select exclusivity.
         custom_attrs: dict[str, Any] = {}
         if payload.sla_minutes is not None:
             custom_attrs["sla_minutes"] = payload.sla_minutes
@@ -739,6 +747,10 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             custom_attrs["case_category"] = payload.category
         if payload.subcategory:
             custom_attrs["case_subcategory"] = payload.subcategory
+        if payload.case_type:
+            custom_attrs["case_type"] = payload.case_type
+        if payload.vehicle_model:
+            custom_attrs["vehicle_model"] = payload.vehicle_model
         if custom_attrs:
             await self._request(
                 "POST",

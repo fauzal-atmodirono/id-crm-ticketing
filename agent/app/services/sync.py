@@ -15,6 +15,7 @@ those are logged and skipped, not treated as errors.
 """
 
 import logging
+import re
 from datetime import datetime, timezone
 
 import httpx
@@ -37,6 +38,10 @@ _ZAMMAD_PRIORITY_NAMES = {
     "normal": "2 normal",
     "high": "3 high",
 }
+
+# Dealer labels are applied manually today (an agent picks `dealer_<slug>`
+# from Chatwoot's native label picker) -- see `maybe_stamp_dealer_escalation`.
+_DEALER_LABEL = re.compile(r"^dealer_(.+)$")
 
 
 def _format_timestamp(value: object) -> str:
@@ -234,6 +239,36 @@ async def maybe_escalate(payload: dict) -> None:
         return
 
     await escalate_conversation(conversation_id)
+
+
+async def maybe_stamp_dealer_escalation(payload: dict) -> None:
+    """Handle a Chatwoot `conversation_updated` event: stamp a
+    `dealer_escalated_at` custom attribute the first time a `dealer_<slug>`
+    label appears on the conversation, so the BI turnaround-time view has a
+    real escalation timestamp to diff against `resolved_at`. Idempotent
+    (never overwrites an existing stamp) and fail-open -- a Chatwoot API
+    error here must never affect the rest of the webhook dispatch."""
+    conversation_id = payload.get("id")
+    labels = payload.get("labels") or []
+    if conversation_id is None or not any(_DEALER_LABEL.match(lbl) for lbl in labels):
+        return
+
+    try:
+        chatwoot = get_chatwoot_client()
+        conversation = await chatwoot.get_conversation(conversation_id)
+        existing = (conversation or {}).get("custom_attributes") or {}
+        if existing.get("dealer_escalated_at"):
+            return  # already stamped -- never overwrite
+
+        await chatwoot.set_custom_attributes(
+            conversation_id,
+            {"dealer_escalated_at": datetime.now(timezone.utc).isoformat()},
+        )
+    except Exception:
+        logger.exception(
+            "maybe_stamp_dealer_escalation: failed for conversation %s",
+            conversation_id,
+        )
 
 
 async def _conversation_link_by_chatwoot_id(

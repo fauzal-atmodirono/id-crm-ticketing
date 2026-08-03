@@ -132,3 +132,125 @@ def test_load_conversations_includes_dealer_field() -> None:
 
     assert json_rows, "no rows captured"
     assert json_rows[0]["dealer"] == "surabaya_utara"
+
+
+def test_load_conversations_includes_case_type_and_vehicle_model_fields() -> None:
+    """load_conversations must pass case_type/vehicle_model in every row dict."""
+    row = ConversationRow(
+        conversation_id="1",
+        channel="WhatsApp",
+        created_at=None,
+        updated_at=None,
+        status="resolved",
+        resolved_by="bot",
+        csat_score=None,
+        nps_score=None,
+        case_type="Inquiry",
+        vehicle_model="e.MAS 7",
+    )
+
+    class FakeSettings:
+        bigquery_project_id = "p"
+        bigquery_dataset = "d"
+        bigquery_conversations_table = "conversations"
+
+    with mock.patch("chatbot.features.metrics.sync.bigquery") as bq:
+        bq.Client.return_value.create_dataset.return_value = None
+        job = mock.MagicMock()
+        bq.Client.return_value.load_table_from_json.return_value = job
+        job.result.return_value = None
+        bq.LoadJobConfig.return_value = mock.MagicMock()
+        bq.SchemaField = mock.MagicMock()
+
+        load_conversations(FakeSettings(), [row])  # type: ignore[arg-type]
+        call_args = bq.Client.return_value.load_table_from_json.call_args
+        json_rows = call_args[0][0]
+
+    assert json_rows, "no rows captured"
+    assert json_rows[0]["case_type"] == "Inquiry"
+    assert json_rows[0]["vehicle_model"] == "e.MAS 7"
+
+
+def test_run_sync_augments_rows_with_working_minutes() -> None:
+    conv = {
+        "id": 99, "inbox_id": 7, "status": "resolved",
+        "created_at": 1783328400,  # 2026-07-06T09:00:00Z (Monday)
+        "last_activity_at": 1783337400,  # 2026-07-06T11:30:00Z
+        "labels": [], "custom_attributes": {},
+        "meta": {"sender": {"id": 1, "identifier": "whatsapp-+60123"}},
+        "first_reply_created_at": 1783330200,  # 2026-07-06T09:30:00Z
+    }
+    inbox_hours = {
+        "working_hours_enabled": True, "timezone": "UTC",
+        "working_hours": [{"day_of_week": 1, "open_hour": 9, "open_minutes": 0,
+                            "close_hour": 18, "close_minutes": 0,
+                            "open_all_day": False, "closed_all_day": False}],
+    }
+    loaded_rows: list[ConversationRow] = []
+    result = run_sync(
+        _settings(),
+        fetch=lambda _s: [conv],
+        fetch_inbox=lambda _s, _inbox_id: inbox_hours,
+        load=lambda _s, rows: loaded_rows.extend(rows),
+    )
+    assert result["rows"] == 1
+    assert loaded_rows[0].resolution_working_minutes == 150
+
+
+def test_run_sync_fetches_each_inbox_once_and_degrades_failed_inbox_to_calendar_time() -> None:
+    """Two conversations share inbox 7 (fetched once); inbox 8's fetch fails and
+    must degrade only that row to calendar-time minutes, never crash the sync."""
+    convs: list[dict[str, Any]] = [
+        {
+            "id": 1, "inbox_id": 7, "status": "resolved",
+            "created_at": 1783328400,  # 2026-07-06T09:00:00Z (Monday)
+            "last_activity_at": 1783337400,  # 2026-07-06T11:30:00Z (+150m)
+            "labels": [], "custom_attributes": {},
+            "meta": {"sender": {"id": 1, "identifier": "whatsapp-+60123"}},
+        },
+        {
+            "id": 2, "inbox_id": 7, "status": "resolved",
+            "created_at": 1783328400,
+            "last_activity_at": 1783337400,
+            "labels": [], "custom_attributes": {},
+            "meta": {"sender": {"id": 1, "identifier": "whatsapp-+60123"}},
+        },
+        {
+            "id": 3, "inbox_id": 8, "status": "resolved",
+            "created_at": 1783328400,
+            "last_activity_at": 1783337400,
+            "labels": [], "custom_attributes": {},
+            "meta": {"sender": {"id": 1, "identifier": "whatsapp-+60123"}},
+        },
+    ]
+    inbox_hours = {
+        "working_hours_enabled": True, "timezone": "UTC",
+        "working_hours": [{"day_of_week": 1, "open_hour": 9, "open_minutes": 0,
+                            "close_hour": 18, "close_minutes": 0,
+                            "open_all_day": False, "closed_all_day": False}],
+    }
+    fetch_calls: list[int] = []
+
+    def fetch_inbox(_s: Any, inbox_id: int) -> dict[str, Any] | None:
+        fetch_calls.append(inbox_id)
+        if inbox_id == 8:
+            raise RuntimeError("boom")
+        return inbox_hours
+
+    loaded_rows: list[ConversationRow] = []
+    result = run_sync(
+        _settings(),
+        fetch=lambda _s: convs,
+        fetch_inbox=fetch_inbox,
+        load=lambda _s, rows: loaded_rows.extend(rows),
+    )
+    assert result["rows"] == 3
+    # inbox 7 fetched exactly once despite two conversations referencing it
+    assert fetch_calls.count(7) == 1
+    assert fetch_calls.count(8) == 1
+    # both inbox-7 rows got working-hours-aware timing (150 == calendar here anyway
+    # because window falls fully within business hours)
+    assert loaded_rows[0].resolution_working_minutes == 150
+    assert loaded_rows[1].resolution_working_minutes == 150
+    # inbox-8 row must NOT crash the sync; it degrades to calendar-time minutes
+    assert loaded_rows[2].resolution_working_minutes == 150

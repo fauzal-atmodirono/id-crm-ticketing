@@ -3131,27 +3131,129 @@ git commit -m "docs: document VEHICLE_MODELS_JSON/CASE_TYPE_OPTIONS_JSON/RESOLUT
 
 ---
 
-### Task 22: Fork patch — native report tabs (Dealer Escalation, SLA Compliance, WIP/Aging, category×vehicle-model)
+### Task 24: Align illustrative `case_taxonomy_json` default with the real Proton division/concern taxonomy
+
+**Added mid-execution (2026-08-02):** the user pointed at two real Proton ops reporting decks (`docs/client-materials/Weekly Report Proton e.MAS.pptx`, `docs/client-materials/MONTHLY REPORTING FOR  Proton e.MAS.pptx`) and asked to reconcile our taxonomy defaults against them. Research (full-deck extraction + comparison against `config.py`/`labels.yaml`) found the illustrative `case_taxonomy_json` default in both `backend/apps/backend/src/chatbot/platform/config.py` and its mirror `agent/app/config.py` has three **structural** mismatches against the real division/case_type split the reports actually use (not just missing entries — the shape is wrong):
+
+1. `complaint` is a top-level *category* in the current default, but in the real reports "Complaint" is the **case_type** (orthogonal to every division: Sales complaints, Aftersales complaints, etc.) — this plan's own Task 1/2/3 just added a dedicated `case_type_options_json` (`Inquiry`/`Complaint`/`Feedback`) that now owns this dimension, so keeping `complaint` as a `case_taxonomy_json` category is redundant/conflicting with the new field.
+2. `roadside_assistance` and `general_enquiry` are top-level categories in the current default but don't correspond to any real top-level division — in the real reports, roadside-assistance concerns are a *subcategory* under **Aftersales** (there's also a fully separate, already-planned standalone RSA incident-log module from Tasks 18-20 — that's a different thing: a detailed incident log vs. how a *conversation* about RSA gets classified; both can coexist).
+3. Three real, high-volume divisions are missing entirely from the current default: **Product** (Infotainment/Telematics), **Marketing**, and **Others** (the real reports' explicit "not related to Proton e.MAS" catch-all — 32% of one month's inquiries).
+
+`case_type_options_json` (`Inquiry`/`Complaint`/`Feedback`) and `vehicle_models_json` (`e.MAS 5`/`e.MAS 7`/`e.MAS 7 PHEV`/`Not Applicable`) were verified against the same decks and are already correct — no change needed to either. `deploy/tenants/example.env`'s `CASE_TAXONOMY_JSON=` ships empty by design (real tenant values live in the gitignored per-tenant env) — this task only fixes the illustrative default shipped as a Python fallback in the two `config.py` files, so it's a genuinely representative example rather than fighting the env-var-driven design by hardcoding Proton's full ~150-entry concern list.
+
+`chatwoot-config/labels.yaml` (a separate, older `category_*`/`division_*` label system, unrelated to this JSON-driven `case_taxonomy.py` mechanism) is explicitly OUT OF SCOPE for this task — it needs its own separate investigation before touching, not bundled here.
 
 **Files:**
-- Modify (in the FE clone `/Users/yudaadipratama/Archive/chatwoot-fork-work/chatwoot`, exported as a new patch file in `deploy/chatwoot-fork/patches/`): the native Reports view directory (`app/javascript/dashboard/routes/dashboard/settings/reports/` — check its exact structure first via `ls`, following the existing `Proton{Sla,Csat,Bot,Agents}Section.vue` pattern for where sections are injected into native report views)
-- Create (in the FE clone): `components/proton/ProtonDealerEscalationSection.vue`, `components/proton/ProtonSlaComplianceSection.vue`, `components/proton/ProtonWipAgingSection.vue`, plus additions to the existing Departments & PIC tab component for the category×vehicle-model cross-tab
-- Create: `deploy/chatwoot-fork/patches/0030-reporting-extensions.patch`
+- Modify: `backend/apps/backend/src/chatbot/platform/config.py` (`case_taxonomy_json` default, lines 352-367)
+- Modify: `agent/app/config.py` (mirrored `case_taxonomy_json` default — grep for `roadside_assistance` to find it)
+- Modify: `backend/apps/backend/src/chatbot/features/chat/test_case_taxonomy.py` (`test_default_settings_produce_non_empty_taxonomy`, currently asserts `main_categories() == ["sales", "aftersales", "apps", "charging", "roadside_assistance", "general_enquiry", "complaint"]` at lines 71-86 — this MUST be updated to the new category list or it will fail)
+- Check for and update any equivalent default-taxonomy-asserting test in `agent/tests/` (grep `roadside_assistance` or `general_enquiry` across `agent/tests/` first — none was found during research, but re-verify since agent/'s test suite may have grown since)
+
+**Interfaces:** None — this only changes a `Settings` field's default string value and its two mirror-location tests. No function signatures change.
+
+- [ ] **Step 1: Confirm current defaults and dependent tests**
+
+Run `grep -rn "roadside_assistance\|general_enquiry" backend/apps/backend/src agent/app agent/tests` to confirm exactly which files reference the current default's category slugs before changing it (re-run this — do not trust the count above blindly, code may have moved since this task was written).
+
+- [ ] **Step 2: Replace the `case_taxonomy_json` default in `backend/apps/backend/src/chatbot/platform/config.py`**
+
+Replace the current default value (the `case_taxonomy_json: str = (...)` block, currently lines 352-367) with:
+
+```python
+    case_taxonomy_json: str = (
+        '{"sales":{"label":"Sales","subcategories":["Accessories","Booking",'
+        '"Insurance","New Model","Promotion","Refund","Test Drive","Trade In",'
+        '"Transfer Ownership","Vehicle Delivery","Vehicle Details",'
+        '"Customer Experience"]},'
+        '"aftersales":{"label":"Aftersales","subcategories":["Body",'
+        '"Roadside Assistance","Service / Recall Campaign","Service Operation",'
+        '"Spare Part","Warranty","User Manual","Features"]},'
+        '"apps":{"label":"Apps","subcategories":["Information","Operation",'
+        '"User ID","No QR Scanner","Notification","Profile","Remote Control"]},'
+        '"charging":{"label":"Charging","subcategories":["Home Charging",'
+        '"Public Charging"]},'
+        '"product":{"label":"Product","subcategories":["Infotainment",'
+        '"Telematics"]},'
+        '"marketing":{"label":"Marketing","subcategories":["Event / Campaign",'
+        '"Partnership / Collaboration","Proposal","Sponsorship"]},'
+        '"others":{"label":"Others","subcategories":['
+        '"Not Related to Proton e.MAS"]}}'
+    )
+```
+
+Keep the existing docstring/comment above the field (lines 346-351) — only the string value changes. Do not touch `vehicle_models_json`/`case_type_options_json` in this same block — they're confirmed correct and out of scope for this task.
+
+- [ ] **Step 3: Apply the identical replacement to `agent/app/config.py`**
+
+Find the mirrored `case_taxonomy_json` field there (grep `roadside_assistance` in `agent/app/config.py` to locate it) and apply the exact SAME new JSON string — this repo's convention (documented at both fields' original definition) is that the two services' defaults must stay byte-identical, since they're read from the SAME tenant env var in production (only the Python fallback differs per-service source file).
+
+- [ ] **Step 4: Update `test_default_settings_produce_non_empty_taxonomy`**
+
+In `backend/apps/backend/src/chatbot/features/chat/test_case_taxonomy.py`, change the `main_categories()` assertion (lines 78-86) from the old 7-slug list to:
+
+```python
+    assert tax.main_categories() == [
+        "sales",
+        "aftersales",
+        "apps",
+        "charging",
+        "product",
+        "marketing",
+        "others",
+    ]
+```
+
+- [ ] **Step 5: Update the equivalent agent/ test if one exists**
+
+If Step 1's grep found a default-taxonomy-asserting test in `agent/tests/`, update it the same way. If none exists, skip this step (agent/'s `case_taxonomy.py` mirror may not have an equivalent "assert the real shipped default end-to-end" test — don't add one if the plan's Task 2 didn't establish that pattern there).
+
+- [ ] **Step 6: Run tests to verify they pass**
+
+Run:
+```bash
+cd backend/apps/backend && .venv/bin/python -m pytest src/chatbot/features/chat/test_case_taxonomy.py src/chatbot/features/chat/test_classify_ticket_tool.py -v
+cd ../../../agent && .venv/bin/python -m pytest tests/ -k taxonomy -v
+```
+Expected: PASS. Then run each service's full suite once (`backend/apps/backend`: `.venv/bin/python -m pytest src/ -v`; `agent`: `.venv/bin/python -m pytest tests/ -v`) to confirm no other test asserts on the old category slugs (e.g. via a snapshot or a hardcoded classify_ticket_tool docstring check) — if something else breaks, read it before changing it further; the old slugs may be referenced somewhere Step 1's grep didn't catch if it used different exact search terms.
+
+- [ ] **Step 7: Commit**
+
+```bash
+cd backend/apps/backend
+git add src/chatbot/platform/config.py src/chatbot/features/chat/test_case_taxonomy.py
+git commit -m "fix(chat): align default case_taxonomy_json with real Proton division/concern taxonomy"
+cd ../../../agent
+git add app/config.py
+git commit -m "fix: mirror the real-taxonomy case_taxonomy_json default in agent/"
+```
+
+(commit each service's change separately, matching this plan's existing per-service commit convention from Tasks 1/2.)
+
+---
+
+### Task 22: Fork patch — native report tabs (Dealer Escalation, SLA Compliance, WIP/Aging, category×vehicle-model)
+
+**Plan amendment (mid-execution, 2026-08-03):** two things changed since this task was written. (1) **Patch numbering collision**: other concurrent SDD sessions in this same repo (worktrees `rbac-core`/`rbac-phase2-sla-audit`) claimed patches `0022` through `0033` in the interim — `0030`/`0031` are no longer free. This task now produces **`deploy/chatwoot-fork/patches/0034-reporting-extensions.patch`**. (2) **Network restriction**: this sandbox cannot reach `github.com`/`codeload.github.com` (confirmed by a concurrent session, `raw.githubusercontent.com` and general internet DO work) — the "clone upstream fresh" step below is not executable. (3) **FE clone superseded by a scratch worktree**: the shared clone at `/Users/yudaadipratama/Archive/chatwoot-fork-work/chatwoot` is a mutable resource other concurrent sessions actively write to — instead, work in an ISOLATED scratch worktree the controller has already prepared and verified: **`/private/tmp/claude-501/-Users-yudaadipratama-Archive-id-crm-ticketing/a6c5cd94-a8d2-4b2e-a3c7-3cf702fb5ed0/scratchpad/chatwoot-fe-work`** — a `git worktree` of the shared clone (independent working directory + index, shares the object store, safe to commit in without touching the shared clone's branches), already fast-forwarded to include patches `0023`-`0033` on top of the clone's tip (which already contained `0022`'s content), committed there as `62c6278 baseline: apply proton fork patches 0022 (already in HEAD)-0033 on top of clone tip`, with `node_modules` symlinked in from the shared clone (verified `npx eslint --version` works there). **Use this scratch worktree path for every step below instead of the original clone path** — it already IS "the FE clone on a fully-patched baseline", so Step 1's clone/apply dance is unnecessary; just `cd` there and confirm `git log --oneline -3` shows `62c6278` at the tip before starting.
+
+**Files:**
+- Modify (in the scratch worktree, exported as a new patch file in `deploy/chatwoot-fork/patches/`): the native Reports view directory (`app/javascript/dashboard/routes/dashboard/settings/reports/` — check its exact structure first via `ls`, following the existing `Proton{Sla,Csat,Bot,Agents}Section.vue` pattern for where sections are injected into native report views)
+- Create (in the scratch worktree): `components/proton/ProtonDealerEscalationSection.vue`, `components/proton/ProtonSlaComplianceSection.vue`, `components/proton/ProtonWipAgingSection.vue`, plus additions to the existing Departments & PIC tab component for the category×vehicle-model cross-tab
+- Create: `deploy/chatwoot-fork/patches/0034-reporting-extensions.patch`
 
 **Interfaces:**
 - Consumes: `GET /metrics/{dealer-escalation,sla-buckets,case-aging}` (Task 16) via the existing `protonMetrics.js` API client (check its current exports first — extend it, don't duplicate its `kbRequest`-style HTTP helper).
 
-This task is UI/FE work in the separate Chatwoot clone repo, not `backend/`/`agent/` — it has no pytest suite; verification is `npx eslint --fix` + a local `vite build` (or `docker build --target builder`) per this repo's established FE convention, not TDD steps. It is broken out from the earlier code tasks for that reason.
+This task is UI/FE work in an isolated scratch worktree of the Chatwoot fork clone, not `backend/`/`agent/` — it has no pytest suite; verification is `npx eslint --fix` + a local `vite build` per this repo's established FE convention, not TDD steps. It is broken out from the earlier code tasks for that reason.
 
-- [ ] **Step 1: Confirm the FE clone is on a fully-patched baseline**
+- [ ] **Step 1: Confirm the scratch worktree is on the expected baseline**
 
 ```bash
-cd /Users/yudaadipratama/Archive/chatwoot-fork-work/chatwoot
+cd /private/tmp/claude-501/-Users-yudaadipratama-Archive-id-crm-ticketing/a6c5cd94-a8d2-4b2e-a3c7-3cf702fb5ed0/scratchpad/chatwoot-fe-work
 git status
-git log --oneline -5
+git log --oneline -3
 ```
 
-If patches 0001-0029 aren't already applied on the current checkout (verify by grepping for a known recent addition, e.g. `grep -rl "protonHasPermission" app/javascript/dashboard/components-next/sidebar/Sidebar.vue`), start from a clean upstream v4.15.1 checkout and `git apply` `deploy/chatwoot-fork/patches/0001-*.patch` through `0029-*.patch` in order first, confirming each applies clean (same procedure used for patch 0029 in this session).
+Expect `git status` clean and the tip commit to be `62c6278 baseline: apply proton fork patches 0022 (already in HEAD)-0033 on top of clone tip` (or a later commit YOU made in this same worktree, if this is a fix round). If the tip commit or `git status` doesn't match, STOP and report NEEDS_CONTEXT rather than guessing — don't try to re-clone upstream (blocked by network) or touch the original shared clone at `/Users/yudaadipratama/Archive/chatwoot-fork-work/chatwoot`.
 
 - [ ] **Step 2: Check `protonMetrics.js`'s current shape**
 
@@ -3190,38 +3292,42 @@ Follow whichever exact injection pattern `Proton{Sla,Csat,Bot,Agents}Section.vue
 - [ ] **Step 7: Local build verification**
 
 ```bash
-cd /Users/yudaadipratama/Archive/chatwoot-fork-work/chatwoot
+cd /private/tmp/claude-501/-Users-yudaadipratama-Archive-id-crm-ticketing/a6c5cd94-a8d2-4b2e-a3c7-3cf702fb5ed0/scratchpad/chatwoot-fe-work
 npx eslint --fix app/javascript/dashboard/components-next/proton/ProtonDealerEscalationSection.vue app/javascript/dashboard/components-next/proton/ProtonSlaComplianceSection.vue app/javascript/dashboard/components-next/proton/ProtonWipAgingSection.vue
 pnpm exec vite build
 ```
-Expected: 0 errors. Also run the local builder-stage Docker compile-check (arm64 is fine for this, per the lesson from patch 0029): `docker build --target builder deploy/chatwoot-fork/` from the `id-crm-ticketing` repo root.
+Expected: 0 errors. Do NOT attempt a `docker build --target builder` compile-check or a fresh-upstream `git apply` verification for this task — both require network access this sandbox doesn't have (confirmed: `github.com`/`codeload.github.com` unreachable). `pnpm exec vite build` succeeding IS the local correctness signal here; the real end-to-end apply-chain verification happens for free at Cloud Build time (which has internet access) when the whole plan is ready to deploy — this is the same technique already used successfully for patch 0033.
 
 - [ ] **Step 8: Export the patch**
 
 ```bash
-cd /Users/yudaadipratama/Archive/chatwoot-fork-work/chatwoot
-git diff > /Users/yudaadipratama/Archive/id-crm-ticketing/deploy/chatwoot-fork/patches/0030-reporting-extensions.patch
+cd /private/tmp/claude-501/-Users-yudaadipratama-Archive-id-crm-ticketing/a6c5cd94-a8d2-4b2e-a3c7-3cf702fb5ed0/scratchpad/chatwoot-fe-work
+git diff 62c6278 > /Users/yudaadipratama/Archive/id-crm-ticketing/deploy/chatwoot-fork/patches/0034-reporting-extensions.patch
 ```
 
-Verify: on a scratch clean-upstream-v4.15.1 checkout, `git apply` `0001-*.patch` through `0030-*.patch` in sequence, all succeed with zero errors (same verification procedure used for patch 0029).
+(diff against `62c6278`, the baseline commit the scratch worktree started this task from — NOT against the original `4eed2ff` tip, since `62c6278` already contains patches 0023-0033's changes that must NOT leak into this new patch file.)
+
+Sanity-check the generated patch only touches files this task actually changed (`git diff 62c6278 --stat`) — no unrelated node_modules/build-artifact paths, no accidental revert of 0023-0033's content.
 
 - [ ] **Step 9: Commit (id-crm-ticketing repo)**
 
 ```bash
 cd /Users/yudaadipratama/Archive/id-crm-ticketing
-git add deploy/chatwoot-fork/patches/0030-reporting-extensions.patch
+git add deploy/chatwoot-fork/patches/0034-reporting-extensions.patch
 git commit -m "feat(chatwoot-fork): add Dealer Escalation, SLA Compliance, WIP/Aging report sections + category-by-vehicle-model cross-tab"
 ```
 
-Do NOT rebuild/deploy the Chatwoot image as part of this task — that's a separate Cloud Build + VM step, done once when the whole plan is ready to go live (per this repo's established deploy convention, and per the spec's rollout note that this is held pending RBAC anyway).
+Do NOT rebuild/deploy the Chatwoot image as part of this task — that's a separate Cloud Build + VM step, done once when the whole plan is ready to go live (per this repo's established deploy convention, and per the spec's rollout note that this is held pending RBAC anyway). Do NOT commit anything inside the scratch worktree back to the shared clone's branches, and do NOT push/modify the shared clone at `/Users/yudaadipratama/Archive/chatwoot-fork-work/chatwoot` in any way.
 
 ---
 
 ### Task 23: Fork patch — RSA entry/report page
 
+**Plan amendment (mid-execution, 2026-08-03):** same amendment as Task 22 applies here — this task produces **`deploy/chatwoot-fork/patches/0035-rsa-incident-log.patch`** (patch numbers `0030`/`0031` were claimed by concurrent sessions in the interim), work happens in the SAME scratch worktree Task 22 used/left in place (`/private/tmp/claude-501/-Users-yudaadipratama-Archive-id-crm-ticketing/a6c5cd94-a8d2-4b2e-a3c7-3cf702fb5ed0/scratchpad/chatwoot-fe-work` — confirm its tip commit is Task 22's final commit before starting, via `git log --oneline -3`, so this task's diff builds additively on top of Task 22's work rather than re-diffing from the shared `62c6278` baseline), and no network-dependent upstream-clone/docker-build verification is available (use `pnpm exec vite build` as the local correctness signal; real apply-chain verification happens at Cloud Build time).
+
 **Files:**
-- Create (in the FE clone): `components/proton/ProtonRsaPage.vue`, route + sidebar entry
-- Create: `deploy/chatwoot-fork/patches/0031-rsa-incident-log.patch`
+- Create (in the scratch worktree): `components/proton/ProtonRsaPage.vue`, route + sidebar entry
+- Create: `deploy/chatwoot-fork/patches/0035-rsa-incident-log.patch`
 
 **Interfaces:**
 - Consumes: `GET/POST/PATCH/DELETE /rsa/incidents*` (Task 20) via a new `protonRsa.js` API client, following `protonAdmin.js`'s existing shape (used by patches 0025-0027).
@@ -3252,28 +3358,32 @@ Add the route in `dashboard.routes.js` following patches 0025-0027's route-regis
 - [ ] **Step 4: Local build verification**
 
 ```bash
-cd /Users/yudaadipratama/Archive/chatwoot-fork-work/chatwoot
+cd /private/tmp/claude-501/-Users-yudaadipratama-Archive-id-crm-ticketing/a6c5cd94-a8d2-4b2e-a3c7-3cf702fb5ed0/scratchpad/chatwoot-fe-work
 npx eslint --fix app/javascript/dashboard/api/protonRsa.js app/javascript/dashboard/components-next/proton/ProtonRsaPage.vue
 pnpm exec vite build
 ```
-Expected: 0 errors.
+Expected: 0 errors. No docker/network-dependent verification available here either (see the plan amendment note above) — `pnpm exec vite build` succeeding is the local correctness bar.
 
 - [ ] **Step 5: Export and verify the patch**
 
 ```bash
-cd /Users/yudaadipratama/Archive/chatwoot-fork-work/chatwoot
-git diff > /Users/yudaadipratama/Archive/id-crm-ticketing/deploy/chatwoot-fork/patches/0031-rsa-incident-log.patch
+cd /private/tmp/claude-501/-Users-yudaadipratama-Archive-id-crm-ticketing/a6c5cd94-a8d2-4b2e-a3c7-3cf702fb5ed0/scratchpad/chatwoot-fe-work
+git diff 62c6278 > /Users/yudaadipratama/Archive/id-crm-ticketing/deploy/chatwoot-fork/patches/0035-rsa-incident-log.patch
 ```
 
-Verify: `0001-*.patch` through `0031-*.patch` apply in sequence on a clean upstream checkout, zero errors.
+(diff against `62c6278`, the SAME shared baseline Task 22 diffed from — since this task's changes sit on top of Task 22's commit in the same worktree, this diff naturally includes BOTH Task 22's and Task 23's changes. That's wrong for a standalone patch 0035. Instead: `git diff <Task-22's-final-commit-sha> > .../0035-rsa-incident-log.patch` — diff only from where Task 22 left off, not from the shared `62c6278` root. Determine Task 22's final commit sha via `git log --oneline` in this worktree before running this diff.)
+
+Sanity-check via `git diff <Task-22-sha> --stat` that only Task 23's files appear (`protonRsa.js`, `ProtonRsaPage.vue`, `Sidebar.vue`, `dashboard.routes.js`, `useProtonPermissions.js` or equivalent) — no Task 22 files re-appearing in this patch.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 cd /Users/yudaadipratama/Archive/id-crm-ticketing
-git add deploy/chatwoot-fork/patches/0031-rsa-incident-log.patch
+git add deploy/chatwoot-fork/patches/0035-rsa-incident-log.patch
 git commit -m "feat(chatwoot-fork): add native RSA incident-log entry/report page"
 ```
+
+Do NOT touch the shared clone at `/Users/yudaadipratama/Archive/chatwoot-fork-work/chatwoot` in any way.
 
 ---
 

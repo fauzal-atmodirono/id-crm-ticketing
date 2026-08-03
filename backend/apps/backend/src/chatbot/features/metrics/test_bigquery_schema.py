@@ -25,6 +25,11 @@ def test_schema_has_expected_fields() -> None:
         "resolved_at",
         "reopen_count",
         "dealer",  # new Phase-3 field
+        "dealer_escalated_at",  # Task 10
+        "case_type",
+        "vehicle_model",
+        "first_response_working_minutes",
+        "resolution_working_minutes",
     }
 
 
@@ -51,6 +56,14 @@ def test_view_ddls_keys_and_targets() -> None:
         "v_first_response_by_channel",
         "v_case_lifecycle",
         "v_state_trend",
+        "v_resolution_sla_buckets",
+        # Task 12: v_dealer_escalation
+        "v_dealer_escalation",
+        "v_dealer_escalation_slowest_cases",
+        "v_case_aging",
+        # Task 13: v_volume_by_type_division and v_category_by_vehicle_model
+        "v_volume_by_type_division",
+        "v_category_by_vehicle_model",
     }
     assert "`proj.ds.v_volume_by_month_channel`" in ddls["v_volume_by_month_channel"]
     assert "`proj.ds.conversations`" in ddls["v_volume_by_month_channel"]
@@ -195,3 +208,63 @@ def test_schema_dealer_field_is_nullable_string() -> None:
     assert "dealer" in by_name
     assert by_name["dealer"].field_type == "STRING"
     assert by_name["dealer"].mode in ("NULLABLE", "")
+
+
+def test_schema_has_case_type_and_vehicle_model_fields() -> None:
+    names = {f.name for f in CONVERSATIONS_SCHEMA}
+    assert "case_type" in names
+    assert "vehicle_model" in names
+
+
+def test_schema_has_working_minutes_fields() -> None:
+    names = {f.name for f in CONVERSATIONS_SCHEMA}
+    assert "first_response_working_minutes" in names
+    assert "resolution_working_minutes" in names
+
+
+def test_view_ddls_requires_sla_targets_and_creates_bucket_view() -> None:
+    targets = '{"complaint": {"buckets_wh": [24, 48, 72], "labels": ["<24wh", "24-48wh", "48-72wh", ">72wh"]}}'
+    ddls = view_ddls("proj", "ds", "conversations", targets)
+    assert "v_resolution_sla_buckets" in ddls
+    ddl = ddls["v_resolution_sla_buckets"]
+    assert "resolution_working_minutes" in ddl
+    assert "1440" in ddl  # 24wh * 60 minutes
+    assert "case_type" in ddl
+
+
+def test_view_ddls_malformed_sla_targets_yields_view_with_no_case_types() -> None:
+    ddls = view_ddls("proj", "ds", "conversations", "{not valid json")
+    assert "v_resolution_sla_buckets" in ddls  # view still created, just matches nothing
+
+
+def test_sla_bucket_case_sql_skips_case_type_with_non_numeric_bucket_edge() -> None:
+    # Valid top-level JSON, but "complaint"'s buckets_wh has a non-numeric entry
+    # (a plausible operator typo, e.g. "8hr" instead of 8). This must not raise
+    # -- the malformed case_type is simply excluded, same as a length-mismatch.
+    targets = (
+        '{"complaint": {"buckets_wh": ["not-a-number"], "labels": ["a", "b"]}, '
+        '"inquiry": {"buckets_wh": [8], "labels": ["Within 8wh", ">8wh"]}}'
+    )
+    ddls = view_ddls("proj", "ds", "conversations", targets)  # must not raise
+    ddl = ddls["v_resolution_sla_buckets"]
+    assert "complaint" not in ddl  # malformed case_type excluded entirely
+    assert "inquiry" in ddl  # sibling valid case_type still buckets normally
+    assert "480" in ddl  # 8wh * 60 minutes, from the still-valid "inquiry" entry
+
+
+def test_view_ddls_includes_dealer_escalation_and_case_aging() -> None:
+    ddls = view_ddls("proj", "ds", "conversations", "{}")
+    assert "v_dealer_escalation" in ddls
+    assert "dealer_escalated_at" in ddls["v_dealer_escalation"]
+    assert "v_dealer_escalation_slowest_cases" in ddls
+    assert "conversation_id" in ddls["v_dealer_escalation_slowest_cases"]
+    assert "v_case_aging" in ddls
+    assert "bucket_label" in ddls["v_case_aging"]
+
+
+def test_view_ddls_includes_volume_and_category_cross_tabs() -> None:
+    ddls = view_ddls("proj", "ds", "conversations", "{}")
+    assert "v_volume_by_type_division" in ddls
+    assert "case_type" in ddls["v_volume_by_type_division"]
+    assert "v_category_by_vehicle_model" in ddls
+    assert "vehicle_model" in ddls["v_category_by_vehicle_model"]

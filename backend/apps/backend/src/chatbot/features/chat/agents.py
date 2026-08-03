@@ -8,6 +8,7 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 from chatbot.features.chat.case_taxonomy import build_case_taxonomy
+from chatbot.features.chat.option_lists import build_option_list
 from chatbot.features.chat.product_cleanup import clean_description, clean_title, dedupe_cards
 from chatbot.features.chat.prompts import AGENT_INSTRUCTION, SUMMARIZER_INSTRUCTION
 
@@ -18,7 +19,7 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(__name__)
 
 
-def build_ai_agent(
+def build_ai_agent(  # noqa: PLR0915 — one builder, many tool closures
     settings: Settings,
     _ticketing_port: TicketingPort,
     knowledge_port: KnowledgePort,
@@ -33,6 +34,8 @@ def build_ai_agent(
     behaviour byte-for-byte.
     """
     case_taxonomy = build_case_taxonomy(settings)
+    case_type_options = build_option_list(settings.case_type_options_json)
+    vehicle_model_options = build_option_list(settings.vehicle_models_json)
 
     # Define tools inside a closure to inject the ports
     async def search_kb_tool(query: str) -> str:
@@ -61,6 +64,8 @@ def build_ai_agent(
         subcategory: str,
         priority: str,
         sla_minutes: int,
+        case_type: str,
+        vehicle_model: str,
     ) -> str:
         """Classify the current ticket details.
 
@@ -70,6 +75,8 @@ def build_ai_agent(
             subcategory: Precise subcategory matching the chosen category.
             priority: Priority tier (LOW, MEDIUM, HIGH, URGENT).
             sla_minutes: Targeted SLA duration in minutes.
+            case_type: Whether this is an Inquiry, Complaint, or Feedback.
+            vehicle_model: The customer's vehicle model, if mentioned.
         """
         tool_context.state["priority"] = priority
         tool_context.state["sla_minutes"] = sla_minutes
@@ -98,29 +105,86 @@ def build_ai_agent(
                 subcategory=subcategory,
             )
 
+        if case_type_options.is_empty() or case_type_options.is_valid(case_type):
+            tool_context.state["case_type"] = case_type
+            case_type_written = True
+        else:
+            case_type_written = False
+            _log.warning("classify_ticket_tool_invalid_case_type", case_type=case_type)
+
+        if vehicle_model_options.is_empty() or vehicle_model_options.is_valid(vehicle_model):
+            tool_context.state["vehicle_model"] = vehicle_model
+            vehicle_model_written = True
+        else:
+            vehicle_model_written = False
+            _log.warning("classify_ticket_tool_invalid_vehicle_model", vehicle_model=vehicle_model)
+
+        # Only echo case_type/vehicle_model in the response as recorded when they
+        # actually passed validation and were written to state — otherwise the
+        # message must say so explicitly, mirroring how category/subcategory
+        # rejection is reported below (never claim a value was recorded when it
+        # was silently dropped).
+        type_fragment = (
+            f"type={case_type}" if case_type_written else "case_type not recorded (invalid value)"
+        )
+        model_fragment = (
+            f"model={vehicle_model}"
+            if vehicle_model_written
+            else "vehicle_model not recorded (invalid value)"
+        )
+
         if written:
             return (
                 f"[internal] ticket classified as {category} -> {subcategory} "
-                f"({priority}, SLA {sla_minutes}m)."
+                f"({priority}, SLA {sla_minutes}m, {type_fragment}, {model_fragment})."
             )
         return (
             f"[internal] category '{category}' / subcategory '{subcategory}' is not a "
             f"valid taxonomy entry; not recorded ({priority}, SLA {sla_minutes}m)."
         )
 
-    if not case_taxonomy.is_empty():
+    # Each of the three dimensions (category/subcategory taxonomy, case_type,
+    # vehicle_model) is configured and validated independently, so the docstring
+    # must reflect that: it's rebuilt whenever ANY of them is non-empty, and each
+    # guidance block gates on its OWN emptiness rather than the taxonomy's.
+    if (
+        not case_taxonomy.is_empty()
+        or not case_type_options.is_empty()
+        or not vehicle_model_options.is_empty()
+    ):
+        if not case_taxonomy.is_empty():
+            category_block = (
+                f"    category: MUST be exactly one of: {', '.join(case_taxonomy.main_categories())}.\n"
+                "    subcategory: MUST match one of the subcategories for the chosen category:\n"
+                + "\n".join(
+                    f"        {slug} -> {', '.join(case_taxonomy.subcategories_for(slug))}"
+                    for slug in case_taxonomy.main_categories()
+                )
+                + "\n"
+            )
+        else:
+            category_block = (
+                "    category: General category of the problem.\n"
+                "    subcategory: Precise subcategory matching the chosen category.\n"
+            )
+
         classify_ticket_tool.__doc__ = (
             "Classify the current ticket details.\n\n"
             "Args:\n"
             "    tool_context: Context injected by the ADK runner.\n"
-            f"    category: MUST be exactly one of: {', '.join(case_taxonomy.main_categories())}.\n"
-            "    subcategory: MUST match one of the subcategories for the chosen category:\n"
-            + "\n".join(
-                f"        {slug} -> {', '.join(case_taxonomy.subcategories_for(slug))}"
-                for slug in case_taxonomy.main_categories()
-            )
-            + "\n    priority: Priority tier (LOW, MEDIUM, HIGH, URGENT).\n"
+            + category_block
+            + "    priority: Priority tier (LOW, MEDIUM, HIGH, URGENT).\n"
             "    sla_minutes: Targeted SLA duration in minutes."
+            + (
+                f"\n    case_type: MUST be exactly one of: {', '.join(case_type_options.options())}."
+                if not case_type_options.is_empty()
+                else ""
+            )
+            + (
+                f"\n    vehicle_model: MUST be exactly one of: {', '.join(vehicle_model_options.options())}."
+                if not vehicle_model_options.is_empty()
+                else ""
+            )
         )
 
     async def book_test_drive_tool(

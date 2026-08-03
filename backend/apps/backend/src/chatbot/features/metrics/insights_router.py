@@ -1,4 +1,5 @@
-"""GET /metrics/{departments,callcenter,lifecycle} — gated report reads.
+"""GET /metrics/{departments,callcenter,lifecycle,dealer-escalation,sla-buckets,
+case-aging,volume-by-type} — gated report reads.
 
 Agent/PIC-level aggregates, so x-api-key gated (unlike /metrics/dashboard)."""
 from __future__ import annotations
@@ -40,5 +41,25 @@ def build_metrics_insights_router(port: MetricsQueryPort, settings: Settings) ->
     async def lifecycle(x_api_key: str | None = Header(default=None)) -> dict[str, Any]:
         _require_key(x_api_key)
         return asdict(await port.fetch_lifecycle())
+
+    @router.get("/metrics/dealer-escalation")
+    async def dealer_escalation(x_api_key: str | None = Header(default=None)) -> dict[str, Any]:
+        _require_key(x_api_key)
+        return asdict(await port.fetch_dealer_escalation())
+
+    @router.get("/metrics/sla-buckets")
+    async def sla_buckets(x_api_key: str | None = Header(default=None)) -> dict[str, Any]:
+        _require_key(x_api_key)
+        return asdict(await port.fetch_sla_buckets())
+
+    @router.get("/metrics/case-aging")
+    async def case_aging(x_api_key: str | None = Header(default=None)) -> dict[str, Any]:
+        _require_key(x_api_key)
+        return asdict(await port.fetch_case_aging())
+
+    @router.get("/metrics/volume-by-type")
+    async def volume_by_type(x_api_key: str | None = Header(default=None)) -> dict[str, Any]:
+        _require_key(x_api_key)
+        return asdict(await port.fetch_volume_by_type_division())
 
     return router

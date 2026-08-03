@@ -453,6 +453,8 @@ class _FakeLeadRunner:
         session.state["subcategory"] = "Test Drive Booking"
         session.state["priority"] = "HIGH"
         session.state["sla_minutes"] = 120
+        session.state["case_type"] = "Inquiry"
+        session.state["vehicle_model"] = "Proton X50"
 
         yield _FakeEvent(self._reply)
 
@@ -524,6 +526,8 @@ async def test_handle_turn_triggers_escalation_with_lead_and_classification() ->
     assert "Ahmad Ali" in tkt["body"]
     assert "Glenmarie" in tkt["body"]
     assert "Category: Sales" in ticketing_port.notes[tkt_id][0]
+    assert tkt["case_type"] == "Inquiry"
+    assert tkt["vehicle_model"] == "Proton X50"
 
 
 @pytest.mark.asyncio

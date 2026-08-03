@@ -80,7 +80,7 @@ def test_default_settings_produce_non_empty_taxonomy():
         "aftersales",
         "apps",
         "charging",
-        "roadside_assistance",
-        "general_enquiry",
-        "complaint",
+        "product",
+        "marketing",
+        "others",
     ]

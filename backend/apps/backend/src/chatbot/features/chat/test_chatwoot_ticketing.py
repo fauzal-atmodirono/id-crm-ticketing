@@ -285,6 +285,37 @@ async def test_create_ticket_writes_case_category_as_custom_attribute() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_ticket_writes_case_type_and_vehicle_model_as_custom_attributes() -> None:
+    # case_type/vehicle_model are additional custom attributes (analogous to
+    # case_category/case_subcategory) written in the SAME custom_attributes call.
+    fake = _FakeClient({("POST", "/conversations"): {"id": 99}})
+    adapter = _adapter(fake)
+    await adapter.create_ticket(
+        session_id="s1",
+        title="t",
+        body="b",
+        urgency="high",
+        category="sales",
+        subcategory="Test Drive Booking",
+        division="Sales",
+        department="dept_sales",
+        sla_minutes=60,
+        case_type="Inquiry",
+        vehicle_model="e.MAS 7",
+    )
+
+    custom_attrs_calls = [pl for _m, p, pl in fake.calls if p.endswith("/custom_attributes")]
+    assert len(custom_attrs_calls) == 1  # ONE call, merged with the rest
+    body = custom_attrs_calls[0]
+    assert body is not None
+    assert body["custom_attributes"]["case_category"] == "sales"
+    assert body["custom_attributes"]["case_subcategory"] == "Test Drive Booking"
+    assert body["custom_attributes"]["case_type"] == "Inquiry"
+    assert body["custom_attributes"]["vehicle_model"] == "e.MAS 7"
+    assert body["custom_attributes"]["sla_minutes"] == 60
+
+
+@pytest.mark.asyncio
 async def test_create_ticket_non_complaint_stays_chatwoot_only() -> None:
     # Medium urgency (non-complaint) -> only the Chatwoot escalation marker; the
     # Zammad-ticketing complaint label is NOT applied.

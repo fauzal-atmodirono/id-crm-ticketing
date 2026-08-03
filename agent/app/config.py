@@ -120,21 +120,30 @@ class Settings(BaseSettings):
     # var gets sensible behavior instead of a silent no-op; override per
     # tenant once the client finalizes their scheme — no code change needed.
     case_taxonomy_json: str = (
-        '{"sales":{"label":"Sales","subcategories":["Test Drive Booking",'
-        '"Pricing Inquiry","Vehicle Availability","Trade-In","Financing"]},'
-        '"aftersales":{"label":"Aftersales","subcategories":["Service Booking",'
-        '"Warranty Claim","Spare Parts","Recall"]},'
-        '"apps":{"label":"Apps","subcategories":["Login Issue","App Crash",'
-        '"Feature Request","Account Sync"]},'
-        '"charging":{"label":"Charging","subcategories":["Charger Fault",'
-        '"Charging Station Locator","Billing"]},'
-        '"roadside_assistance":{"label":"Roadside Assistance","subcategories":'
-        '["Breakdown","Accident","Towing"]},'
-        '"general_enquiry":{"label":"General Enquiry","subcategories":'
-        '["Product Info","Dealer Locator","Other"]},'
-        '"complaint":{"label":"Complaint","subcategories":["Service Quality",'
-        '"Product Defect","Staff Conduct","Other"]}}'
+        '{"sales":{"label":"Sales","subcategories":["Accessories","Booking",'
+        '"Insurance","New Model","Promotion","Refund","Test Drive","Trade In",'
+        '"Transfer Ownership","Vehicle Delivery","Vehicle Details",'
+        '"Customer Experience"]},'
+        '"aftersales":{"label":"Aftersales","subcategories":["Body",'
+        '"Roadside Assistance","Service / Recall Campaign","Service Operation",'
+        '"Spare Part","Warranty","User Manual","Features"]},'
+        '"apps":{"label":"Apps","subcategories":["Information","Operation",'
+        '"User ID","No QR Scanner","Notification","Profile","Remote Control"]},'
+        '"charging":{"label":"Charging","subcategories":["Home Charging",'
+        '"Public Charging"]},'
+        '"product":{"label":"Product","subcategories":["Infotainment",'
+        '"Telematics"]},'
+        '"marketing":{"label":"Marketing","subcategories":["Event / Campaign",'
+        '"Partnership / Collaboration","Proposal","Sponsorship"]},'
+        '"others":{"label":"Others","subcategories":['
+        '"Not Related to Proton e.MAS"]}}'
     )
+
+    # Vehicle-model / case-type dimensions — SAME values as backend/'s
+    # VEHICLE_MODELS_JSON / CASE_TYPE_OPTIONS_JSON (each service parses
+    # independently). Used by services/categorize.py's fallback classifier.
+    vehicle_models_json: str = '{"options": ["e.MAS 5", "e.MAS 7", "e.MAS 7 PHEV", "Not Applicable"]}'
+    case_type_options_json: str = '{"options": ["Inquiry", "Complaint", "Feedback"]}'
 
     # C1: email once-per-thread auto-acknowledgement.
     email_autoack_enabled: bool = False

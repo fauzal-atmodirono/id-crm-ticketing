@@ -155,6 +155,33 @@ async def test_conversation_updated_dispatches_to_maybe_escalate(client, monkeyp
     assert received["payload"]["id"] == 42
 
 
+async def test_conversation_updated_dispatches_to_maybe_stamp_dealer_escalation(
+    client, monkeypatch
+):
+    received = {}
+
+    async def fake_maybe_escalate(payload):
+        return None
+
+    async def fake_maybe_stamp_dealer_escalation(payload):
+        received["payload"] = payload
+
+    monkeypatch.setattr(sync, "maybe_escalate", fake_maybe_escalate)
+    monkeypatch.setattr(
+        sync, "maybe_stamp_dealer_escalation", fake_maybe_stamp_dealer_escalation
+    )
+
+    body = json.dumps(
+        {"event": "conversation_updated", "id": 42, "labels": ["dealer_kl_glenmarie"]}
+    ).encode()
+    headers = _sign(body)
+    headers["Content-Type"] = "application/json"
+
+    await client.post("/webhooks/chatwoot", content=body, headers=headers)
+
+    assert received["payload"]["id"] == 42
+
+
 @pytest.mark.parametrize(
     "event", ["conversation_status_changed", "conversation_resolved"]
 )

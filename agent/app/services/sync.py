@@ -252,10 +252,42 @@ async def _maybe_notify_email_escalation(conversation_id: int, labels: list[str]
         (m.group(1) for lbl in labels if (m := _DEALER_LABEL.match(lbl))), None
     )
 
+    title = f"Escalated conversation #{conversation_id}"
+    body = f"Conversation #{conversation_id} was escalated by an agent."
+    try:
+        raw_messages = await chatwoot.get_messages(conversation_id)
+        if isinstance(raw_messages, dict):
+            message_list = raw_messages.get("payload") or []
+        else:
+            message_list = raw_messages or []
+
+        first_incoming_text: str | None = None
+        transcript_lines: list[str] = []
+        for message in message_list:
+            if message.get("private"):
+                continue
+            sender_name = (message.get("sender") or {}).get("name", "Customer")
+            text = message.get("content") or ""
+            transcript_lines.append(f"{sender_name}: {text}")
+
+            if first_incoming_text is None and message.get("message_type") == 0:
+                first_incoming_text = text
+
+        if first_incoming_text:
+            title = first_incoming_text[:100]
+        if transcript_lines:
+            body = "\n".join(transcript_lines[-10:])
+    except Exception:
+        logger.exception(
+            "maybe_escalate: failed to build email-escalation transcript for "
+            "conversation %s; falling back to generic title/body",
+            conversation_id,
+        )
+
     await proton.notify_email_escalation(
         conversation_id=conversation_id,
-        title=f"Escalated conversation #{conversation_id}",
-        body=f"Conversation #{conversation_id} was escalated by an agent.",
+        title=title,
+        body=body,
         department=department,
         dealer=dealer,
     )

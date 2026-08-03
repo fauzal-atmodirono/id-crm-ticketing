@@ -378,6 +378,9 @@ async def test_maybe_escalate_notifies_email_channel_conversation(monkeypatch):
     respx.get(f"{CHATWOOT}/api/v1/accounts/1/inboxes/5").mock(
         return_value=httpx.Response(200, json={"id": 5, "channel_type": "Channel::Email"})
     )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
     notify_route = respx.post(f"{PROTON}/escalation/notify").mock(
         return_value=httpx.Response(200, json={"status": "ok"})
     )
@@ -391,6 +394,75 @@ async def test_maybe_escalate_notifies_email_channel_conversation(monkeypatch):
     assert sent["conversation_id"] == "9"
     assert sent["department"] == "apps"
     assert sent["dealer"] == "kl_pj"
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_maybe_escalate_notify_includes_real_case_content(monkeypatch):
+    """EM-7 fix: the notify title/body must carry real case content from the
+    conversation transcript, not the generic 'was escalated by an agent'
+    placeholder."""
+    monkeypatch.setattr(get_settings(), "zammad_ticketing_enabled", False)
+    monkeypatch.setattr(get_settings(), "email_escalation_enabled", True)
+    monkeypatch.setattr(get_settings(), "proton_backend_url", "http://proton-backend:8080")
+    monkeypatch.setattr(get_settings(), "proton_backend_key", "k")
+    get_proton_config_client.cache_clear()
+
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9").mock(
+        return_value=httpx.Response(200, json={"id": 9, "inbox_id": 5})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/inboxes/5").mock(
+        return_value=httpx.Response(200, json={"id": 5, "channel_type": "Channel::Email"})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    notify_route = respx.post(f"{PROTON}/escalation/notify").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+
+    await sync.maybe_escalate({"id": 9, "labels": ["escalate"]})
+
+    assert notify_route.called
+    sent = json.loads(notify_route.calls[0].request.content)
+    assert sent["title"] == "Hi, my invoice is wrong"
+    assert "Jane Doe: Hi, my invoice is wrong" in sent["body"]
+    assert "Agent Bob: Looking into it now" in sent["body"]
+    # the private internal note must never leak into the email body
+    assert "internal note, ignore" not in sent["body"]
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_maybe_escalate_notify_falls_back_when_messages_fetch_fails(monkeypatch):
+    """If the transcript fetch fails, the notification must still fire with
+    the generic fallback title/body -- a failure to build a nice transcript
+    must never silently drop the escalation email."""
+    monkeypatch.setattr(get_settings(), "zammad_ticketing_enabled", False)
+    monkeypatch.setattr(get_settings(), "email_escalation_enabled", True)
+    monkeypatch.setattr(get_settings(), "proton_backend_url", "http://proton-backend:8080")
+    monkeypatch.setattr(get_settings(), "proton_backend_key", "k")
+    get_proton_config_client.cache_clear()
+
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9").mock(
+        return_value=httpx.Response(200, json={"id": 9, "inbox_id": 5})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/inboxes/5").mock(
+        return_value=httpx.Response(200, json={"id": 5, "channel_type": "Channel::Email"})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9/messages").mock(
+        return_value=httpx.Response(500, json={"error": "boom"})
+    )
+    notify_route = respx.post(f"{PROTON}/escalation/notify").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+
+    await sync.maybe_escalate({"id": 9, "labels": ["escalate"]})
+
+    assert notify_route.called
+    sent = json.loads(notify_route.calls[0].request.content)
+    assert sent["title"] == "Escalated conversation #9"
+    assert sent["body"] == "Conversation #9 was escalated by an agent."
     get_proton_config_client.cache_clear()
 
 

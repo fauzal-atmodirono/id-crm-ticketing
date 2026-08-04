@@ -1,0 +1,1391 @@
+diff --git a/app/javascript/dashboard/api/protonCases.js b/app/javascript/dashboard/api/protonCases.js
+index d2e5197..74acbb2 100644
+--- a/app/javascript/dashboard/api/protonCases.js
++++ b/app/javascript/dashboard/api/protonCases.js
+@@ -131,6 +131,14 @@ export function mapConversationToCaseRow(conversation) {
+     channel:
+       blankToNull(customAttributes.channel) ||
+       channelFromMeta(conversation.meta),
++    // Raw creation instant (unix epoch seconds, same field
++    // agingDaysFromCreatedAt reads) alongside the derived agingDays --
++    // added for Package E's Weekly Report (Task 4), which needs to filter
++    // this same case list down to "created within the selected week"
++    // client-side, since Chatwoot's /conversations endpoint has no
++    // server-side date-range filter. Additive field; existing consumers
++    // (ProtonCasesTable.vue) don't read it and are unaffected.
++    createdAt: blankToNull(conversation.created_at),
+   };
+ }
+ 
+diff --git a/app/javascript/dashboard/api/protonMetrics.js b/app/javascript/dashboard/api/protonMetrics.js
+index e088129..ff1983d 100644
+--- a/app/javascript/dashboard/api/protonMetrics.js
++++ b/app/javascript/dashboard/api/protonMetrics.js
+@@ -26,7 +26,31 @@ async function metricsRequest(path) {
+   return text ? JSON.parse(text) : {};
+ }
+ 
+-// GET /metrics/dashboard -> summary metrics for the overview panel
++// Builds the `?from=&to=&granularity=` suffix Task 3's insights endpoints
++// read (see backend chatbot/features/metrics/insights_router.py). Omitted
++// entirely (empty string) unless all three are present -- a partial set is
++// rejected server-side as a 400, so there is no useful partial query to send,
++// and every existing no-arg caller below keeps hitting the byte-identical
++// no-period path.
++function periodQuery(period) {
++  if (!period || !period.from || !period.to || !period.granularity) return '';
++  const params = new URLSearchParams({
++    from: period.from,
++    to: period.to,
++    granularity: period.granularity,
++  });
++  return `?${params.toString()}`;
++}
++
++// GET /metrics/dashboard -> summary metrics for the overview panel.
++// NOTE: unlike /metrics/lifecycle and /metrics/volume-by-type, this endpoint
++// (dashboard_router.py) never wires up from/to/granularity -- it always
++// calls port.fetch_dashboard() with no period, even though the underlying
++// MetricsQueryPort.fetch_dashboard() protocol method accepts one. Any period
++// argument passed here is silently ignored by the backend (FastAPI drops
++// undeclared query params), so this client deliberately does NOT accept a
++// period parameter either -- passing one would look like it does something
++// it doesn't. Callers must treat every /metrics/dashboard block as all-time.
+ export function getDashboard() {
+   return metricsRequest('/metrics/dashboard');
+ }
+@@ -36,21 +60,30 @@ export function getAnomalies() {
+   return metricsRequest('/metrics/anomalies');
+ }
+ 
+-// GET /metrics/departments -> { dept_pic: [], reopen: [] }
++// GET /metrics/departments -> { dept_pic: [], reopen: [],
++//   category_by_vehicle_model: [] } -- no period support (400 if given one).
+ export function getDepartments() {
+   return metricsRequest('/metrics/departments');
+ }
+ 
+ // GET /metrics/callcenter -> { sla: [], tasks_per_agent: [],
+ //   first_response: [], resolution_time: [], complaint_types: [],
+-//   peak_hours: [], nps_by_agent: [] }
++//   peak_hours: [], nps_by_agent: [] } -- no period support.
+ export function getCallCentre() {
+   return metricsRequest('/metrics/callcenter');
+ }
+ 
+-// GET /metrics/lifecycle -> { cases: [], state_trend: [] }
+-export function getLifecycle() {
+-  return metricsRequest('/metrics/lifecycle');
++// GET /metrics/lifecycle -> { cases: [], state_trend: [] } with no `period`,
++// or { current, previous, deltas, scopes } when `period` ({ from, to,
++// granularity }) is given.
++export function getLifecycle(period) {
++  return metricsRequest(`/metrics/lifecycle${periodQuery(period)}`);
++}
++
++// GET /metrics/volume-by-type -> { volume: [] } with no `period`, or
++// { current, previous, deltas, scopes } when `period` is given.
++export function getVolumeByType(period) {
++  return metricsRequest(`/metrics/volume-by-type${periodQuery(period)}`);
+ }
+ 
+ // GET /metrics/dealer-escalation -> { by_dealer: [], slowest_cases: [] }
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 0d5196e..248f472 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -756,6 +756,11 @@ const menuItems = computed(() => {
+       label: t('SIDEBAR.REPORTS'),
+       icon: 'i-lucide-chart-spline',
+       children: [
++        {
++          name: 'Reports Weekly',
++          label: 'Weekly Report',
++          to: accountScopedRoute('proton_weekly_report'),
++        },
+         {
+           name: 'Report Overview',
+           label: t('SIDEBAR.REPORTS_OVERVIEW'),
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue
+new file mode 100644
+index 0000000..fd211d6
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue
+@@ -0,0 +1,1108 @@
++<!-- ProtonWeeklyReport.vue — OUR file. Package E (reporting deck parity),
++     Task 4: one page, sections in the weekly deck's own order (see
++     docs/superpowers/specs/2026-08-04-pkg-e-reporting-deck-parity-design.md
++     §2 "Weekly (16 slides)"), each carrying a week picker and a
++     week-over-week delta beside its headline number.
++
++     Composition, not new chart components: the dealer-escalation, SLA-
++     compliance, and WIP-aging sections below are patch 0034's
++     ProtonDealerEscalationSection / ProtonSlaComplianceSection /
++     ProtonWipAgingSection, unmodified, embedded as-is (per the Task 4
++     brief). ProtonCallCentrePlaceholder (also 0034) is reused for the same
++     reason: it already says, honestly, that telephony metrics (AHT/AQT/
++     abandoned calls/SLA-within-20s -- gap G2 in the spec) aren't built yet.
++     ProtonCasesTable + fetchAllCases are Package D's seam (see
++     dashboard/api/protonCases.js's file-header comment), reused here for the
++     per-case detail table rather than re-implementing pagination/row
++     mapping.
++
++     Only two of the endpoints this page reads are genuinely period-capable
++     at the HTTP layer today: /metrics/lifecycle and /metrics/volume-by-type
++     (see insights_router.py). /metrics/departments, /metrics/callcenter,
++     /metrics/dealer-escalation, /metrics/sla-buckets, and /metrics/case-aging
++     all 400 if given period params -- their underlying views have no date
++     column -- so they're fetched with no period at all and labelled "All
++     time" throughout this page (reportScope.js's SCOPE_STATUS.UNFILTERED).
++     /metrics/dashboard is deliberately NOT used here even though its
++     `volume` block overlaps with volume-by-type's channel breakdown: its
++     HTTP route never wires up from/to/granularity (see protonMetrics.js's
++     getDashboard comment), and volume-by-type's rows already carry `channel`
++     alongside `case_type`/`division`, so the channel-mix and type/division
++     cuts below both come from the one genuinely week-scoped endpoint rather
++     than mixing in an endpoint that can't actually honour the picker. -->
++<script setup>
++import { ref, computed, onMounted, watch } from 'vue';
++import { useAlert } from 'dashboard/composables';
++import V4Button from 'dashboard/components-next/button/Button.vue';
++import ReportHeader from './components/ReportHeader.vue';
++import ProtonScopeBadge from './components/proton/ProtonScopeBadge.vue';
++import ProtonDealerEscalationSection from './components/proton/ProtonDealerEscalationSection.vue';
++import ProtonSlaComplianceSection from './components/proton/ProtonSlaComplianceSection.vue';
++import ProtonWipAgingSection from './components/proton/ProtonWipAgingSection.vue';
++import ProtonCallCentrePlaceholder from './components/proton/ProtonCallCentrePlaceholder.vue';
++import ProtonCasesTable from 'dashboard/components/widgets/ProtonCasesTable.vue';
++import { fetchAllCases } from 'dashboard/api/protonCases';
++import {
++  getVolumeByType,
++  getLifecycle,
++  getDepartments,
++  getCallCentre,
++} from 'dashboard/api/protonMetrics';
++import {
++  SCOPE_STATUS,
++  scopeEmptyMessage,
++  scopeHasRenderableRows,
++  formatDelta,
++} from './components/proton/reportScope';
++
++const TOP_N = 10;
++
++// ── Week picker ──────────────────────────────────────────────────────────
++// Weeks are ISO calendar weeks (Monday-Sunday), matching the backend's own
++// `bucket_key` (period.py: `date.isocalendar()`, not `strftime("%Y-%W")`,
++// specifically so a week never splits across a month boundary).
++
++function pad2(n) {
++  return String(n).padStart(2, '0');
++}
++
++function toISODate(d) {
++  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
++}
++
++function mondayOf(d) {
++  const date = new Date(d.getFullYear(), d.getMonth(), d.getDate());
++  const day = date.getDay(); // 0=Sun..6=Sat
++  const diff = day === 0 ? -6 : 1 - day;
++  date.setDate(date.getDate() + diff);
++  return date;
++}
++
++function addDays(d, n) {
++  const date = new Date(d.getFullYear(), d.getMonth(), d.getDate());
++  date.setDate(date.getDate() + n);
++  return date;
++}
++
++function fmtDisplayDate(d) {
++  return d.toLocaleDateString(undefined, {
++    day: 'numeric',
++    month: 'short',
++    year: 'numeric',
++  });
++}
++
++const weekStart = ref(mondayOf(new Date()));
++const weekEnd = computed(() => addDays(weekStart.value, 6));
++const weekLabel = computed(
++  () => `${fmtDisplayDate(weekStart.value)} – ${fmtDisplayDate(weekEnd.value)}`
++);
++
++const periodParams = computed(() => ({
++  from: toISODate(weekStart.value),
++  to: toISODate(weekEnd.value),
++  granularity: 'week',
++}));
++
++// Bound to a plain <input type="date"> — any day picked snaps to that day's
++// Monday, so the picker always represents a full ISO week rather than an
++// arbitrary 7-day window starting on whatever day was clicked.
++const weekStartInputValue = computed({
++  get: () => toISODate(weekStart.value),
++  set: val => {
++    if (!val) return;
++    const [y, m, day] = val.split('-').map(Number);
++    weekStart.value = mondayOf(new Date(y, m - 1, day));
++  },
++});
++
++function prevWeek() {
++  weekStart.value = addDays(weekStart.value, -7);
++}
++function nextWeek() {
++  weekStart.value = addDays(weekStart.value, 7);
++}
++function thisWeek() {
++  weekStart.value = mondayOf(new Date());
++}
++
++// ── Formatting helpers (same convention as ProtonDepartments.vue /
++// ProtonDealerEscalationSection.vue: Number.isNaN, never global isNaN) ────
++
++function fmtNum(n, decimals = 1) {
++  if (n == null || Number.isNaN(Number(n))) return '—';
++  const num = Number(n);
++  return decimals === 0 ? String(Math.round(num)) : num.toFixed(decimals);
++}
++
++function fmtPct(n) {
++  if (n == null || Number.isNaN(Number(n))) return '—';
++  return `${(Number(n) * 100).toFixed(1)}%`;
++}
++
++// ── Period-scoped data: /metrics/volume-by-type, /metrics/lifecycle ──────
++
++const volumeByType = ref(null);
++const lifecycleData = ref(null);
++const loadingPeriod = ref(true);
++const erroredPeriod = ref(null);
++
++async function loadPeriodScoped() {
++  loadingPeriod.value = true;
++  erroredPeriod.value = null;
++  try {
++    const [volumeResult, lifecycleResult] = await Promise.all([
++      getVolumeByType(periodParams.value),
++      getLifecycle(periodParams.value),
++    ]);
++    volumeByType.value = volumeResult;
++    lifecycleData.value = lifecycleResult;
++  } catch (e) {
++    erroredPeriod.value = e.message || 'Failed to load week-scoped data';
++    useAlert('Failed to load week-scoped report data: ' + erroredPeriod.value);
++  } finally {
++    loadingPeriod.value = false;
++  }
++}
++
++watch(weekStart, loadPeriodScoped);
++
++const volumeScopeStatus = computed(
++  () => volumeByType.value?.scopes?.volume?.current?.status ?? SCOPE_STATUS.OK
++);
++const volumeRows = computed(() => {
++  if (!scopeHasRenderableRows(volumeScopeStatus.value)) return [];
++  return volumeByType.value?.current?.volume ?? [];
++});
++const volumeDelta = computed(() =>
++  formatDelta(volumeByType.value?.deltas?.volume)
++);
++const volumeTotal = computed(() =>
++  volumeRows.value.reduce((sum, r) => sum + (r.volume ?? 0), 0)
++);
++
++const channelMix = computed(() => {
++  const byChannel = new Map();
++  volumeRows.value.forEach(row => {
++    const channel = row.channel ?? 'Unknown';
++    byChannel.set(channel, (byChannel.get(channel) ?? 0) + (row.volume ?? 0));
++  });
++  const total = volumeTotal.value;
++  return Array.from(byChannel.entries())
++    .map(([channel, volume]) => ({
++      channel,
++      volume,
++      sharePct: total > 0 ? volume / total : null,
++    }))
++    .sort((a, b) => b.volume - a.volume);
++});
++
++const volumeByTypeDivision = computed(() =>
++  [...volumeRows.value]
++    .sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))
++    .slice(0, TOP_N)
++);
++
++const stateTrendScopeStatus = computed(
++  () =>
++    lifecycleData.value?.scopes?.state_trend?.current?.status ?? SCOPE_STATUS.OK
++);
++const stateTrendRows = computed(() => {
++  if (!scopeHasRenderableRows(stateTrendScopeStatus.value)) return [];
++  return lifecycleData.value?.current?.state_trend ?? [];
++});
++const stateTrendDelta = computed(() =>
++  formatDelta(lifecycleData.value?.deltas?.state_trend)
++);
++const stateTrendTotal = computed(() =>
++  stateTrendRows.value.reduce((sum, r) => sum + (r.cases ?? 0), 0)
++);
++const sortedStateTrend = computed(() =>
++  [...stateTrendRows.value]
++    .sort((a, b) => (b.cases ?? 0) - (a.cases ?? 0))
++    .slice(0, TOP_N)
++);
++
++// ── All-time data: /metrics/departments, /metrics/callcenter ─────────────
++// Neither endpoint accepts a period (400 if given one — see
++// insights_router.py's `_reject_period`), so these load once and are
++// labelled "All time" (SCOPE_STATUS.UNFILTERED) regardless of the week
++// picker above.
++
++const departments = ref(null);
++const callCentre = ref(null);
++const loadingAllTime = ref(true);
++const erroredAllTime = ref(null);
++
++async function loadAllTime() {
++  loadingAllTime.value = true;
++  erroredAllTime.value = null;
++  try {
++    const [departmentsResult, callCentreResult] = await Promise.all([
++      getDepartments(),
++      getCallCentre(),
++    ]);
++    departments.value = departmentsResult;
++    callCentre.value = callCentreResult;
++  } catch (e) {
++    erroredAllTime.value = e.message || 'Failed to load all-time data';
++    useAlert('Failed to load all-time report data: ' + erroredAllTime.value);
++  } finally {
++    loadingAllTime.value = false;
++  }
++}
++
++const deptPicRows = computed(() =>
++  [...(departments.value?.dept_pic ?? [])].slice(0, TOP_N)
++);
++const reopenRows = computed(() =>
++  [...(departments.value?.reopen ?? [])].slice(0, TOP_N)
++);
++const categoryByVehicleModelRows = computed(() =>
++  [...(departments.value?.category_by_vehicle_model ?? [])]
++    .sort((a, b) => (b.cases ?? 0) - (a.cases ?? 0))
++    .slice(0, TOP_N)
++);
++
++const slaRows = computed(() => callCentre.value?.sla ?? []);
++const firstResponseRows = computed(
++  () => callCentre.value?.first_response ?? []
++);
++const resolutionTimeRows = computed(
++  () => callCentre.value?.resolution_time ?? []
++);
++const complaintTypeRows = computed(() =>
++  [...(callCentre.value?.complaint_types ?? [])]
++    .sort((a, b) => (b.cases ?? 0) - (a.cases ?? 0))
++    .slice(0, TOP_N)
++);
++const npsByAgentRows = computed(() => callCentre.value?.nps_by_agent ?? []);
++
++const allTimeHasAnyRows = computed(
++  () =>
++    deptPicRows.value.length > 0 ||
++    reopenRows.value.length > 0 ||
++    categoryByVehicleModelRows.value.length > 0
++);
++const callCentreHasAnyRows = computed(
++  () =>
++    slaRows.value.length > 0 ||
++    firstResponseRows.value.length > 0 ||
++    resolutionTimeRows.value.length > 0 ||
++    complaintTypeRows.value.length > 0 ||
++    npsByAgentRows.value.length > 0
++);
++
++// ── Per-case detail (this week): Package D's Cases-list seam ─────────────
++// fetchAllCases() reads existing Chatwoot conversation data directly (no
++// BigQuery, no period support server-side), so the week filter here is
++// applied client-side against each case's raw `createdAt` (unix epoch
++// seconds — see protonCases.js). This is the one section on the page whose
++// "This week" scoping is computed here rather than returned by the API.
++
++const allCases = ref([]);
++const loadingCases = ref(true);
++const erroredCases = ref(null);
++const casesTruncated = ref(false);
++const casesFetchedCount = ref(0);
++const casesTotalCount = ref(0);
++
++async function loadCases() {
++  loadingCases.value = true;
++  erroredCases.value = null;
++  try {
++    const { rows, truncated, fetchedCount, totalCount } = await fetchAllCases();
++    allCases.value = rows;
++    casesTruncated.value = truncated;
++    casesFetchedCount.value = fetchedCount;
++    casesTotalCount.value = totalCount;
++  } catch (e) {
++    erroredCases.value = e.message || 'Failed to load cases';
++    useAlert('Failed to load cases: ' + erroredCases.value);
++  } finally {
++    loadingCases.value = false;
++  }
++}
++
++const weekCases = computed(() => {
++  const startSeconds = Math.floor(weekStart.value.getTime() / 1000);
++  // End of Sunday: start of the following Monday, minus one second.
++  const endSeconds =
++    Math.floor(addDays(weekStart.value, 7).getTime() / 1000) - 1;
++  return allCases.value.filter(row => {
++    const created = Number(row.createdAt);
++    if (!row.createdAt || Number.isNaN(created)) return false;
++    return created >= startSeconds && created <= endSeconds;
++  });
++});
++
++onMounted(() => {
++  loadPeriodScoped();
++  loadAllTime();
++  loadCases();
++});
++</script>
++
++<template>
++  <ReportHeader
++    header-title="Weekly Report"
++    header-description="Every number in Proton's weekly deck, read off one screen instead of collated by hand."
++  />
++
++  <!-- Week picker ─────────────────────────────────────────────────────── -->
++  <div
++    class="flex flex-wrap items-center gap-3 mb-6 shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-4"
++  >
++    <V4Button
++      icon="i-lucide-chevron-left"
++      variant="ghost"
++      color="slate"
++      size="sm"
++      @click="prevWeek"
++    />
++    <div class="flex flex-col items-center min-w-48">
++      <span class="text-sm font-semibold text-n-slate-12">{{ weekLabel }}</span>
++      <span class="text-xs text-n-slate-10">ISO week, Monday–Sunday</span>
++    </div>
++    <V4Button
++      icon="i-lucide-chevron-right"
++      variant="ghost"
++      color="slate"
++      size="sm"
++      @click="nextWeek"
++    />
++    <button
++      type="button"
++      class="px-3 py-1.5 text-sm text-n-slate-11 hover:underline"
++      @click="thisWeek"
++    >
++      This week
++    </button>
++    <div class="flex items-center gap-2 ml-auto">
++      <label class="text-xs text-n-slate-11" for="weekly-report-date">
++        Jump to week containing
++      </label>
++      <input
++        id="weekly-report-date"
++        v-model="weekStartInputValue"
++        type="date"
++        class="px-3 py-1.5 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++      />
++    </div>
++  </div>
++
++  <!-- Definitions ─────────────────────────────────────────────────────── -->
++  <div
++    class="mb-6 shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++  >
++    <h3 class="text-sm font-semibold text-n-slate-12 mb-3">Definitions</h3>
++    <ul
++      class="flex flex-col gap-2 text-sm text-n-slate-11 list-disc list-inside"
++    >
++      <li>
++        <strong class="text-n-slate-12">A case</strong> is one CRM conversation
++        with a known creation time — one case per conversation, not per message.
++      </li>
++      <li>
++        <strong class="text-n-slate-12"
++          >The clock starts at case creation.</strong
++        >
++        First-response time and resolution time are both measured from
++        <code>created_at</code>; reopening a case does not reset its original
++        creation clock (reopen count is tracked separately).
++      </li>
++      <li>
++        <strong class="text-n-slate-12">Dealer-escalation turnaround</strong>
++        is measured from the moment a case is stamped as escalated to a dealer,
++        not from case creation — time spent unescalated does not count against a
++        dealer.
++      </li>
++      <li>
++        <strong class="text-n-slate-12">Work-in-progress / aging</strong>
++        counts only cases currently open or pending; age is calculated as of
++        now, in days since creation, bucketed 1–3 / 4–6 / 7+ days.
++      </li>
++      <li>
++        <strong class="text-n-slate-12">A week</strong> is an ISO calendar week
++        (Monday through Sunday) — the same boundary the week picker above and
++        the backend's own bucketing use.
++      </li>
++      <li>
++        <strong class="text-n-slate-12">"wh" in SLA buckets</strong> means
++        working hours, not calendar hours.
++      </li>
++      <li>
++        <strong class="text-n-slate-12">Known gaps:</strong> car plate,
++        purchased-from dealer, and delay reason are not yet captured on every
++        case (backfill is manual — see the per-case table below for which fields
++        are populated); call-centre telephony metrics (average handling time,
++        average queue time, abandoned calls, SLA-within-20- seconds) are not
++        built yet — they need call data this CRM does not ingest today.
++      </li>
++    </ul>
++  </div>
++
++  <!-- Section: Case Volume — This Week (volume-by-type) ─────────────────── -->
++  <div
++    class="mb-6 shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++  >
++    <div class="flex items-center gap-2 mb-1">
++      <h3 class="text-sm font-semibold text-n-slate-12">Case Volume</h3>
++      <ProtonScopeBadge :status="volumeScopeStatus" />
++    </div>
++    <div class="flex items-baseline gap-2 mb-4">
++      <span class="text-2xl font-semibold tabular-nums text-n-slate-12">
++        {{ fmtNum(volumeTotal, 0) }}
++      </span>
++      <span class="text-sm text-n-slate-11">total cases</span>
++      <span v-if="volumeDelta" class="text-sm font-medium text-n-slate-11">
++        {{ volumeDelta }} vs last week
++      </span>
++      <span v-else class="text-sm text-n-slate-10">
++        vs last week: not comparable
++      </span>
++    </div>
++
++    <woot-loading-state
++      v-if="loadingPeriod"
++      class="text-xs"
++      message="Loading case volume…"
++    />
++    <div v-else-if="erroredPeriod" class="text-sm text-n-slate-10">
++      {{ erroredPeriod }}
++    </div>
++    <div
++      v-else-if="!volumeRows.length"
++      class="flex items-center justify-center h-16 text-sm text-n-slate-10"
++    >
++      {{ scopeEmptyMessage(volumeScopeStatus) }}
++    </div>
++    <template v-else>
++      <h4 class="text-xs font-semibold text-n-slate-11 mb-2">Channel mix</h4>
++      <div class="overflow-x-auto mb-6">
++        <table class="w-full text-sm text-left">
++          <thead>
++            <tr class="border-b border-n-container">
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Channel
++              </th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 text-right"
++              >
++                Cases
++              </th>
++              <th class="pb-2 text-xs font-medium text-n-slate-11 text-right">
++                Share
++              </th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="row in channelMix"
++              :key="row.channel"
++              class="border-b border-n-container last:border-0"
++            >
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.channel }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.volume, 0) }}
++              </td>
++              <td class="py-2 text-n-slate-12 text-right tabular-nums">
++                {{ fmtPct(row.sharePct) }}
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++
++      <h4 class="text-xs font-semibold text-n-slate-11 mb-2">
++        By case type &amp; division (top {{ TOP_N }})
++      </h4>
++      <div class="overflow-x-auto">
++        <table class="w-full text-sm text-left">
++          <thead>
++            <tr class="border-b border-n-container">
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Case type
++              </th>
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Division
++              </th>
++              <th class="pb-2 text-xs font-medium text-n-slate-11 text-right">
++                Cases
++              </th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="(row, idx) in volumeByTypeDivision"
++              :key="`${row.case_type}-${row.division}-${idx}`"
++              class="border-b border-n-container last:border-0"
++            >
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.case_type ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.division ?? '—' }}
++              </td>
++              <td class="py-2 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.volume, 0) }}
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++    </template>
++  </div>
++
++  <!-- Section: Case Status Trend — This Week (lifecycle state_trend) ────── -->
++  <div
++    class="mb-6 shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++  >
++    <div class="flex items-center gap-2 mb-1">
++      <h3 class="text-sm font-semibold text-n-slate-12">Case Status Trend</h3>
++      <ProtonScopeBadge :status="stateTrendScopeStatus" />
++    </div>
++    <div class="flex items-baseline gap-2 mb-4">
++      <span class="text-2xl font-semibold tabular-nums text-n-slate-12">
++        {{ fmtNum(stateTrendTotal, 0) }}
++      </span>
++      <span class="text-sm text-n-slate-11">cases across all statuses</span>
++      <span v-if="stateTrendDelta" class="text-sm font-medium text-n-slate-11">
++        {{ stateTrendDelta }} vs last week
++      </span>
++      <span v-else class="text-sm text-n-slate-10">
++        vs last week: not comparable
++      </span>
++    </div>
++
++    <woot-loading-state
++      v-if="loadingPeriod"
++      class="text-xs"
++      message="Loading case status trend…"
++    />
++    <div v-else-if="erroredPeriod" class="text-sm text-n-slate-10">
++      {{ erroredPeriod }}
++    </div>
++    <div
++      v-else-if="!stateTrendRows.length"
++      class="flex items-center justify-center h-16 text-sm text-n-slate-10"
++    >
++      {{ scopeEmptyMessage(stateTrendScopeStatus) }}
++    </div>
++    <div v-else class="overflow-x-auto">
++      <table class="w-full text-sm text-left">
++        <thead>
++          <tr class="border-b border-n-container">
++            <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++              Division
++            </th>
++            <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++              Status
++            </th>
++            <th class="pb-2 text-xs font-medium text-n-slate-11 text-right">
++              Cases
++            </th>
++          </tr>
++        </thead>
++        <tbody>
++          <tr
++            v-for="(row, idx) in sortedStateTrend"
++            :key="`${row.division}-${row.status}-${idx}`"
++            class="border-b border-n-container last:border-0"
++          >
++            <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++              {{ row.division ?? '—' }}
++            </td>
++            <td class="py-2 pr-4 text-n-slate-12 capitalize whitespace-nowrap">
++              {{ row.status ?? '—' }}
++            </td>
++            <td class="py-2 text-n-slate-12 text-right tabular-nums">
++              {{ fmtNum(row.cases, 0) }}
++            </td>
++          </tr>
++        </tbody>
++      </table>
++    </div>
++  </div>
++
++  <!-- Section: Departments & PIC Detail (All Time) ──────────────────────── -->
++  <div
++    class="mb-6 shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++  >
++    <div class="flex items-center gap-2 mb-4">
++      <h3 class="text-sm font-semibold text-n-slate-12">
++        Inquiry / Complaint / Feedback Detail — Departments &amp; PIC
++      </h3>
++      <ProtonScopeBadge :status="SCOPE_STATUS.UNFILTERED" />
++    </div>
++
++    <woot-loading-state
++      v-if="loadingAllTime"
++      class="text-xs"
++      message="Loading department data…"
++    />
++    <div v-else-if="erroredAllTime" class="text-sm text-n-slate-10">
++      {{ erroredAllTime }}
++    </div>
++    <div
++      v-else-if="!allTimeHasAnyRows"
++      class="flex items-center justify-center h-16 text-sm text-n-slate-10"
++    >
++      {{ scopeEmptyMessage(SCOPE_STATUS.UNFILTERED) }}
++    </div>
++    <template v-else>
++      <h4 class="text-xs font-semibold text-n-slate-11 mb-2">
++        By department &amp; PIC (top {{ TOP_N }})
++      </h4>
++      <div v-if="deptPicRows.length" class="overflow-x-auto mb-6">
++        <table class="w-full text-sm text-left">
++          <thead>
++            <tr class="border-b border-n-container">
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Department
++              </th>
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">PIC</th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 text-right"
++              >
++                Cases
++              </th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 text-right"
++              >
++                Avg 1st Resp (min)
++              </th>
++              <th class="pb-2 text-xs font-medium text-n-slate-11 text-right">
++                Resolution Rate
++              </th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="(row, idx) in deptPicRows"
++              :key="`${row.department}-${row.pic}-${idx}`"
++              class="border-b border-n-container last:border-0"
++            >
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.department ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.pic ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.cases, 0) }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.avg_first_response_min) }}
++              </td>
++              <td class="py-2 text-n-slate-12 text-right tabular-nums">
++                {{ fmtPct(row.resolution_rate) }}
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++      <p v-else class="text-sm text-n-slate-10 mb-6">
++        {{ scopeEmptyMessage(SCOPE_STATUS.UNFILTERED) }}
++      </p>
++
++      <h4 class="text-xs font-semibold text-n-slate-11 mb-2">
++        Reopened cases by dealer (top {{ TOP_N }})
++      </h4>
++      <div v-if="reopenRows.length" class="overflow-x-auto mb-6">
++        <table class="w-full text-sm text-left">
++          <thead>
++            <tr class="border-b border-n-container">
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Dealer
++              </th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 text-right"
++              >
++                Cases
++              </th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 text-right"
++              >
++                Reopened
++              </th>
++              <th class="pb-2 text-xs font-medium text-n-slate-11 text-right">
++                Reopen Rate
++              </th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="(row, idx) in reopenRows"
++              :key="`${row.dealer}-${idx}`"
++              class="border-b border-n-container last:border-0"
++            >
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.dealer ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.cases, 0) }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.reopened, 0) }}
++              </td>
++              <td class="py-2 text-n-slate-12 text-right tabular-nums">
++                {{ fmtPct(row.reopen_rate) }}
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++      <p v-else class="text-sm text-n-slate-10 mb-6">
++        {{ scopeEmptyMessage(SCOPE_STATUS.UNFILTERED) }}
++      </p>
++
++      <h4 class="text-xs font-semibold text-n-slate-11 mb-2">
++        Category × vehicle model (top {{ TOP_N }})
++      </h4>
++      <div v-if="categoryByVehicleModelRows.length" class="overflow-x-auto">
++        <table class="w-full text-sm text-left">
++          <thead>
++            <tr class="border-b border-n-container">
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Category
++              </th>
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Vehicle Model
++              </th>
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Case Type
++              </th>
++              <th class="pb-2 text-xs font-medium text-n-slate-11 text-right">
++                Cases
++              </th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="(row, idx) in categoryByVehicleModelRows"
++              :key="`${row.category}-${row.vehicle_model}-${idx}`"
++              class="border-b border-n-container last:border-0"
++            >
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.category ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.vehicle_model ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.case_type ?? '—' }}
++              </td>
++              <td class="py-2 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.cases, 0) }}
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++      <p v-else class="text-sm text-n-slate-10">
++        {{ scopeEmptyMessage(SCOPE_STATUS.UNFILTERED) }}
++      </p>
++    </template>
++  </div>
++
++  <!-- Section: Call Centre & SLA Performance (All Time) ─────────────────── -->
++  <div
++    class="mb-6 shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++  >
++    <div class="flex items-center gap-2 mb-4">
++      <h3 class="text-sm font-semibold text-n-slate-12">
++        Call Centre &amp; SLA Performance
++      </h3>
++      <ProtonScopeBadge :status="SCOPE_STATUS.UNFILTERED" />
++    </div>
++
++    <woot-loading-state
++      v-if="loadingAllTime"
++      class="text-xs"
++      message="Loading call-centre data…"
++    />
++    <div v-else-if="erroredAllTime" class="text-sm text-n-slate-10">
++      {{ erroredAllTime }}
++    </div>
++    <div
++      v-else-if="!callCentreHasAnyRows"
++      class="flex items-center justify-center h-16 text-sm text-n-slate-10"
++    >
++      {{ scopeEmptyMessage(SCOPE_STATUS.UNFILTERED) }}
++    </div>
++    <template v-else>
++      <h4 class="text-xs font-semibold text-n-slate-11 mb-2">
++        SLA achievement
++      </h4>
++      <div v-if="slaRows.length" class="overflow-x-auto mb-6">
++        <table class="w-full text-sm text-left">
++          <thead>
++            <tr class="border-b border-n-container">
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Channel
++              </th>
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Division
++              </th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 text-right"
++              >
++                With SLA
++              </th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 text-right"
++              >
++                Met
++              </th>
++              <th class="pb-2 text-xs font-medium text-n-slate-11 text-right">
++                Achievement
++              </th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="(row, idx) in slaRows"
++              :key="`${row.channel}-${row.division}-${idx}`"
++              class="border-b border-n-container last:border-0"
++            >
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.channel ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.division ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.with_sla, 0) }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.met, 0) }}
++              </td>
++              <td class="py-2 text-n-slate-12 text-right tabular-nums">
++                {{ fmtPct(row.sla_achievement_rate) }}
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++
++      <h4 class="text-xs font-semibold text-n-slate-11 mb-2">
++        First response &amp; resolution time
++      </h4>
++      <div
++        v-if="firstResponseRows.length || resolutionTimeRows.length"
++        class="overflow-x-auto mb-6"
++      >
++        <table class="w-full text-sm text-left">
++          <thead>
++            <tr class="border-b border-n-container">
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Channel
++              </th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 text-right"
++              >
++                Avg 1st Resp (min)
++              </th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 text-right"
++              >
++                P90 1st Resp (min)
++              </th>
++              <th class="pb-2 text-xs font-medium text-n-slate-11 text-right">
++                Avg Resolution (min)
++              </th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="(row, idx) in firstResponseRows"
++              :key="`${row.channel}-${idx}`"
++              class="border-b border-n-container last:border-0"
++            >
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.channel ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.avg_first_response_min) }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.p90_first_response_min, 0) }}
++              </td>
++              <td class="py-2 text-n-slate-12 text-right tabular-nums">
++                {{
++                  fmtNum(
++                    resolutionTimeRows.find(r => r.channel === row.channel)
++                      ?.avg_min
++                  )
++                }}
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++
++      <h4 class="text-xs font-semibold text-n-slate-11 mb-2">
++        Complaint types (top {{ TOP_N }})
++      </h4>
++      <div v-if="complaintTypeRows.length" class="overflow-x-auto mb-6">
++        <table class="w-full text-sm text-left">
++          <thead>
++            <tr class="border-b border-n-container">
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Category
++              </th>
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Subcategory
++              </th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 text-right"
++              >
++                Cases
++              </th>
++              <th class="pb-2 text-xs font-medium text-n-slate-11 text-right">
++                Share
++              </th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="(row, idx) in complaintTypeRows"
++              :key="`${row.category}-${row.subcategory}-${idx}`"
++              class="border-b border-n-container last:border-0"
++            >
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.category ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.subcategory ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.cases, 0) }}
++              </td>
++              <td class="py-2 text-n-slate-12 text-right tabular-nums">
++                {{ fmtPct(row.share_pct) }}
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++
++      <h4 class="text-xs font-semibold text-n-slate-11 mb-2">Agent NPS</h4>
++      <div v-if="npsByAgentRows.length" class="overflow-x-auto">
++        <table class="w-full text-sm text-left">
++          <thead>
++            <tr class="border-b border-n-container">
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Agent
++              </th>
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Channel
++              </th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 text-right"
++              >
++                Respondents
++              </th>
++              <th class="pb-2 text-xs font-medium text-n-slate-11 text-right">
++                NPS
++              </th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="(row, idx) in npsByAgentRows"
++              :key="`${row.agent_id}-${row.channel}-${idx}`"
++              class="border-b border-n-container last:border-0"
++            >
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.agent_id ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.channel ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.respondents, 0) }}
++              </td>
++              <td class="py-2 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.nps) }}
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++    </template>
++  </div>
++
++  <!-- Telephony gap, honestly stated (reused 0034 component) -->
++  <div class="mb-6">
++    <ProtonCallCentrePlaceholder />
++  </div>
++
++  <!-- Section: Dealer Escalation Turnaround (All Time, reused 0034) ─────── -->
++  <div class="mb-6">
++    <div class="flex items-center gap-2 mb-2">
++      <ProtonScopeBadge :status="SCOPE_STATUS.UNFILTERED" />
++    </div>
++    <ProtonDealerEscalationSection />
++  </div>
++
++  <!-- Section: SLA Compliance by Bucket (All Time, reused 0034) ─────────── -->
++  <div class="mb-6">
++    <div class="flex items-center gap-2 mb-2">
++      <ProtonScopeBadge :status="SCOPE_STATUS.UNFILTERED" />
++    </div>
++    <ProtonSlaComplianceSection />
++  </div>
++
++  <!-- Section: Work-in-Progress / Case Aging (All Time, reused 0034) ────── -->
++  <div class="mb-6">
++    <div class="flex items-center gap-2 mb-2">
++      <ProtonScopeBadge :status="SCOPE_STATUS.UNFILTERED" />
++      <span class="text-xs text-n-slate-10">
++        Car plate, purchased-from dealer and delay reason are not yet columns on
++        this table — see per-case detail below for what's captured today.
++      </span>
++    </div>
++    <ProtonWipAgingSection />
++  </div>
++
++  <!-- Section: Per-Case Detail — This Week ───────────────────────────────── -->
++  <div
++    class="mb-6 shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++  >
++    <div class="flex items-center gap-2 mb-4">
++      <h3 class="text-sm font-semibold text-n-slate-12">Per-Case Detail</h3>
++      <ProtonScopeBadge
++        :status="erroredCases ? SCOPE_STATUS.UNAVAILABLE : SCOPE_STATUS.OK"
++      />
++    </div>
++
++    <woot-loading-state
++      v-if="loadingCases"
++      class="text-xs"
++      message="Loading cases…"
++    />
++    <div v-else-if="erroredCases" class="text-sm text-n-slate-10">
++      {{ scopeEmptyMessage(SCOPE_STATUS.UNAVAILABLE) }}
++    </div>
++    <template v-else>
++      <p v-if="casesTruncated" class="text-xs text-n-amber-11 mb-3">
++        The underlying case list stopped loading after
++        {{ casesFetchedCount }} of {{ casesTotalCount }} conversations, so this
++        week's figures may be incomplete if any of the
++        {{ casesTotalCount - casesFetchedCount }} not fetched fall in the
++        selected week.
++      </p>
++      <div
++        v-if="!weekCases.length"
++        class="flex items-center justify-center h-16 text-sm text-n-slate-10"
++      >
++        {{ scopeEmptyMessage(SCOPE_STATUS.OK) }}
++      </div>
++      <ProtonCasesTable v-else :cases="weekCases" />
++    </template>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonScopeBadge.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonScopeBadge.vue
+new file mode 100644
+index 0000000..d893a6a
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonScopeBadge.vue
+@@ -0,0 +1,39 @@
++<!-- ProtonScopeBadge.vue — OUR file. A small pill stating whether a Weekly
++     Report section's numbers are scoped to the selected week ("This week"),
++     all-time ("All time"), or degraded ("Temporarily unavailable" /
++     "Not available at week granularity") -- see reportScope.js for why these
++     four states exist and what each one means. Every section on the page
++     shows one of these, always, regardless of whether its rows are empty --
++     the badge answers "what period is this?", the section body separately
++     answers "is there data?". -->
++<script setup>
++import { computed } from 'vue';
++import { scopeLabel, scopeColor } from './reportScope';
++
++const props = defineProps({
++  status: {
++    type: String,
++    required: true,
++  },
++});
++
++const label = computed(() => scopeLabel(props.status));
++
++const colorClass = computed(() => {
++  const classMap = {
++    teal: 'bg-n-teal-3 text-n-teal-11',
++    amber: 'bg-n-amber-3 text-n-amber-11',
++    slate: 'bg-n-slate-3 text-n-slate-11',
++  };
++  return classMap[scopeColor(props.status)] || classMap.slate;
++});
++</script>
++
++<template>
++  <span
++    class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap"
++    :class="colorClass"
++  >
++    {{ label }}
++  </span>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/reportScope.js b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/reportScope.js
+new file mode 100644
+index 0000000..0a888a7
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/reportScope.js
+@@ -0,0 +1,93 @@
++// reportScope.js — OUR file. Shared vocabulary for Package E's Weekly Report
++// (Task 4) so every section on the page describes its own data the same way.
++//
++// The backend (Task 2/3) attaches a `BlockScope.status` to every period-aware
++// block: "ok" | "unavailable" | "unsupported_granularity" | "unfiltered" (see
++// backend chatbot/features/metrics/query_port.py's BlockScope docstring).
++// Those four states collapse what would otherwise look like the same thing
++// (an empty or non-empty rows array) into four genuinely different situations
++// a reader needs to tell apart -- a quiet week is not the same as a broken
++// query, and neither is the same as a block that was never period-scoped in
++// the first place. This module is the one place that maps each status to the
++// label (always shown) and the empty-body message (shown only when a
++// section's current rows are empty) used across the page.
++//
++// Several sections on this page are fed by endpoints that carry no
++// `BlockScope` at all -- either because the endpoint has no date dimension to
++// filter on (departments, callcenter, dealer-escalation, sla-buckets,
++// case-aging all 400 if given period params -- see insights_router.py's
++// docstring) or because the HTTP route never wires up from/to/granularity in
++// the first place (/metrics/dashboard -- see protonMetrics.js's getDashboard
++// comment). Both are reported here as the literal status "unfiltered": the
++// row data is real, it just is not scoped to the selected week, exactly the
++// same as a genuine BlockScope("unfiltered") the backend would attach to a
++// block with no date column.
++export const SCOPE_STATUS = {
++  OK: 'ok',
++  UNAVAILABLE: 'unavailable',
++  UNSUPPORTED_GRANULARITY: 'unsupported_granularity',
++  UNFILTERED: 'unfiltered',
++};
++
++const LABELS = {
++  [SCOPE_STATUS.OK]: 'This week',
++  [SCOPE_STATUS.UNAVAILABLE]: 'Temporarily unavailable',
++  [SCOPE_STATUS.UNSUPPORTED_GRANULARITY]: 'Not available at week granularity',
++  [SCOPE_STATUS.UNFILTERED]: 'All time',
++};
++
++// Badge colour tokens, matching the palette Banner.vue already uses
++// (bg-n-<color>-3 / border-n-<color>-4 / text-n-<color>-11).
++const COLORS = {
++  [SCOPE_STATUS.OK]: 'teal',
++  [SCOPE_STATUS.UNAVAILABLE]: 'amber',
++  [SCOPE_STATUS.UNSUPPORTED_GRANULARITY]: 'amber',
++  [SCOPE_STATUS.UNFILTERED]: 'slate',
++};
++
++// The message shown in a section's body when its current rows are empty.
++// "ok" with zero rows is a genuinely quiet week, never rendered as "0" or as
++// a bare blank table -- it says so explicitly.
++const EMPTY_MESSAGES = {
++  [SCOPE_STATUS.OK]: 'No data for this period.',
++  [SCOPE_STATUS.UNAVAILABLE]:
++    'Temporarily unavailable — this data could not be loaded. Try again shortly.',
++  [SCOPE_STATUS.UNSUPPORTED_GRANULARITY]:
++    'Not available at week granularity — the underlying data does not support a window this narrow.',
++  [SCOPE_STATUS.UNFILTERED]:
++    'No data available (all time — this section is not scoped to the selected week).',
++};
++
++export function scopeLabel(status) {
++  return LABELS[status] || LABELS[SCOPE_STATUS.OK];
++}
++
++export function scopeColor(status) {
++  return COLORS[status] || COLORS[SCOPE_STATUS.OK];
++}
++
++export function scopeEmptyMessage(status) {
++  return EMPTY_MESSAGES[status] || EMPTY_MESSAGES[SCOPE_STATUS.OK];
++}
++
++// A block only ever renders its rows when the backend actually ran a query
++// for it ("ok" -- rows may legitimately be an empty list -- or "unfiltered"
++// -- rows are real, just all-time). "unavailable" and
++// "unsupported_granularity" mean no query ran at all, so any rows present
++// would be stale/misleading and are not shown, only the explanatory message.
++export function scopeHasRenderableRows(status) {
++  return status === SCOPE_STATUS.OK || status === SCOPE_STATUS.UNFILTERED;
++}
++
++// `deltas` on a period-wrapped response is `null` whenever either comparison
++// leg's scope isn't "ok" (see insights_router.py's `_block_delta`). Renders
++// nothing misleading -- never falls back to "0%", which would read as "no
++// change" instead of "not comparable".
++export function formatDelta(delta) {
++  if (delta === null || delta === undefined || Number.isNaN(delta)) {
++    return null;
++  }
++  const rounded = Math.round(delta);
++  const sign = rounded > 0 ? '+' : '';
++  return `${sign}${rounded}%`;
++}
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js b/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js
+index f2d52f4..c26a174 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/reports.routes.js
+@@ -26,6 +26,7 @@ import SLAReports from './SLAReports.vue';
+ import ProtonAnomaly from './ProtonAnomaly.vue';
+ import ProtonDepartments from './ProtonDepartments.vue';
+ import ProtonCaseLifecycle from './ProtonCaseLifecycle.vue';
++import ProtonWeeklyReport from './ProtonWeeklyReport.vue';
+ 
+ const meta = {
+   featureFlag: FEATURE_FLAGS.REPORTS,
+@@ -189,6 +190,12 @@ export default {
+           meta: { permissions: ['administrator', 'report_manage'] },
+           component: ProtonCaseLifecycle,
+         },
++        {
++          path: 'proton_weekly_report',
++          name: 'proton_weekly_report',
++          meta: { permissions: ['administrator', 'report_manage'] },
++          component: ProtonWeeklyReport,
++        },
+       ],
+     },
+   ],

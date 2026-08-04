@@ -200,12 +200,15 @@ rather than guarding video alone.
 
 ### Open follow-ups (not blockers)
 
-- **Voice-channel history loses meaning.** `handle_voice_turn` sends one audio
-  part and no text, so from the next turn the model sees a placeholder instead
-  of what the caller said. Multi-turn voice coherence degrades. The fix is
-  cheap because `_transcribe_audio` already produces the text: put the
-  transcription into the stored history, or carry it in the placeholder. Worth
-  doing before the phone channel is used in anger.
+- ~~**Voice-channel history loses meaning.**~~ **Fixed 2026-08-04 (`efcf891`).**
+  `handle_voice_turn` sent one audio part and no text, so from the next turn the
+  model saw a placeholder instead of what the caller said. The transcription
+  already existed (`_transcribe_audio` computes it for the handoff check) and now
+  rides along as a text part, supplementing the audio rather than replacing it —
+  so the current turn still gets the real voice, including tone a transcript
+  cannot carry. Construction is extracted to `_voice_message` because inlining it
+  pushed `handle_voice_turn` from 50 to 51 statements and tripped `PLR0915`.
+  Covered by `test_voice_turn_keeps_the_transcription_in_history`.
 - **`whatsapp_video_max_bytes` now governs total media**, so its drop log names
   a *video* setting while explaining an *image* drop. Rename to
   `whatsapp_media_max_bytes` with a pydantic alias fallback rather than a hard

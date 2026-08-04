@@ -1,4 +1,4 @@
-From 75a8a30ff1099ae5fd4b0c677aa23f0c067ac9c3 Mon Sep 17 00:00:00 2001
+From e9512f69c4ed55922bf22d344d7232354c690562 Mon Sep 17 00:00:00 2001
 From: Yuda Adi Pratama <yudaadipratama@Yudas-MacBook-Air.local>
 Date: Wed, 5 Aug 2026 05:10:51 +0700
 Subject: [PATCH] feat(integrations): add DMS/TSP integration card + config
@@ -46,9 +46,9 @@ DMS/TSP status card, and its config form backing the Task 1-4
  .../components-next/sidebar/Sidebar.vue       |  10 +
  .../routes/dashboard/dashboard.routes.js      |  12 +
  .../dashboard/views/ProtonCustomer360Page.vue | 111 ++++-
- .../views/ProtonDmsIntegrationPage.vue        | 430 ++++++++++++++++++
- .../views/ProtonIntegrationsPage.vue          | 100 ++++
- 6 files changed, 719 insertions(+), 42 deletions(-)
+ .../views/ProtonDmsIntegrationPage.vue        | 455 ++++++++++++++++++
+ .../views/ProtonIntegrationsPage.vue          | 102 ++++
+ 6 files changed, 746 insertions(+), 42 deletions(-)
  create mode 100644 app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue
  create mode 100644 app/javascript/dashboard/views/ProtonIntegrationsPage.vue
 
@@ -426,10 +426,10 @@ index 6f489fa..a62154d 100644
  </template>
 diff --git a/app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue b/app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue
 new file mode 100644
-index 0000000..a71c6aa
+index 0000000..1be6e71
 --- /dev/null
 +++ b/app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue
-@@ -0,0 +1,430 @@
+@@ -0,0 +1,455 @@
 +<!-- ProtonDmsIntegrationPage.vue — OUR file. Config form for the DMS/TSP
 +     integration shell (Package F), backing dms_admin_router.py. Mirrors
 +     ProtonEscalationRoutingPage.vue's shell (header, n-* tokens, useAlert
@@ -457,7 +457,17 @@ index 0000000..a71c6aa
 +        credential — an operator could put a second secret there (e.g. a
 +        bearer token in a custom header) and it would round-trip readable.
 +        That's flagged inline, right under the field, so it's never mistaken
-+        for the same write-only guarantee the Credential field has. -->
++        for the same write-only guarantee the Credential field has.
++
++     No "Retries" control is rendered, deliberately. `retries` is stored and
++     round-tripped (it stays in `form`, is loaded from GET and sent back
++     unchanged on PUT, so saving this form never silently resets a stored
++     value) but NOTHING reads it: neither dms_client.py nor
++     customer360_router.py. A settings control an operator can change that
++     has no effect is a small instance of exactly the failure this package
++     exists to prevent — a shell that looks like a working integration. It
++     gets a control when something honours it, in Phase 2. -->
++
 +<script>
 +import { useAlert } from 'dashboard/composables';
 +import {
@@ -500,18 +510,27 @@ index 0000000..a71c6aa
 +  return VALID_AUTH_TYPES.has(value) ? value : EMPTY_FORM.auth_type;
 +}
 +
-+// Test-connection status -> plain-language title + tone. `unexpected_status`
-+// covers everything that isn't a clean 200 / a 401-403 / a timeout —
-+// including a 404 from a correctly-configured server whose root isn't a
-+// health endpoint, and the "nothing saved yet" / "no credential stored"
-+// pre-flight checks the backend runs before it ever makes a request. Its
-+// title and helper text deliberately do NOT say "failed" or point at the
-+// credential, so an operator can tell "wrong path" from "wrong key".
++// Test-connection status -> plain-language title + tone.
++//
++// `unexpected_status` covers everything that isn't a clean 200 / a 401-403 /
++// a timeout — including a 404 from a correctly-configured server whose root
++// isn't a health endpoint. Its title and helper text deliberately do NOT say
++// "failed" or point at the credential, so an operator can tell "wrong path"
++// from "wrong key".
++//
++// `not_configured` is a PRE-FLIGHT state and is deliberately its own entry:
++// the backend returns it when there's no saved base URL or no stored
++// credential, i.e. when it never made a request at all. It used to reuse
++// `unexpected_status`, which rendered "No credential is stored for this
++// integration." under the title "Unexpected response" with helper text about
++// the base URL not being a health endpoint — sending the operator to check
++// the one thing that wasn't the problem.
 +const TEST_STATUS_META = {
 +  reachable: { title: 'Reachable', tone: 'positive' },
 +  auth_failed: { title: 'Authentication failed', tone: 'negative' },
 +  timeout: { title: 'Timed out', tone: 'negative' },
 +  unexpected_status: { title: 'Unexpected response', tone: 'neutral' },
++  not_configured: { title: 'Not configured yet', tone: 'neutral' },
 +};
 +
 +export default {
@@ -786,7 +805,14 @@ index 0000000..a71c6aa
 +          will be visible in plain text to anyone who can open this page.
 +        </p>
 +
-+        <div>
++        <!-- max mirrors the backend's own Field(gt=0, le=30) on
++             timeout_seconds. This number becomes Customer 360's entire DMS
++             time budget on a page an operator is waiting on, so it can't be
++             left unbounded; the backend now rejects out-of-range values and
++             clamps on read besides, but the browser should say so before a
++             422 does. There is deliberately NO "Retries" control here — see
++             the note at the top of this file. -->
++        <div class="md:col-span-2">
 +          <label class="block mb-1 text-sm text-n-slate-11">
 +            Timeout (seconds)
 +          </label>
@@ -794,20 +820,14 @@ index 0000000..a71c6aa
 +            v-model.number="form.timeout_seconds"
 +            type="number"
 +            min="0.1"
++            max="30"
 +            step="0.5"
 +            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
 +          />
-+        </div>
-+
-+        <div>
-+          <label class="block mb-1 text-sm text-n-slate-11">Retries</label>
-+          <input
-+            v-model.number="form.retries"
-+            type="number"
-+            min="0"
-+            step="1"
-+            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
-+          />
++          <p class="mt-1 text-xs text-n-slate-11">
++            Between 0.1 and 30 seconds. A Customer 360 lookup waits at most
++            this long for the DMS/TSP before showing CRM data only.
++          </p>
 +        </div>
 +
 +        <div class="flex items-center gap-3 md:col-span-2">
@@ -856,16 +876,21 @@ index 0000000..a71c6aa
 +          does not necessarily mean the credential is wrong. Check the base URL
 +          and the provider's API documentation.
 +        </div>
++        <div v-if="testResult.status === 'not_configured'" class="mt-1 text-xs">
++          Nothing was sent to the DMS/TSP — there's no saved configuration to
++          test yet. Fill in the base URL, click Replace next to Credential to
++          store one, then Save before testing again.
++        </div>
 +      </div>
 +    </template>
 +  </div>
 +</template>
 diff --git a/app/javascript/dashboard/views/ProtonIntegrationsPage.vue b/app/javascript/dashboard/views/ProtonIntegrationsPage.vue
 new file mode 100644
-index 0000000..e6b5b33
+index 0000000..478f037
 --- /dev/null
 +++ b/app/javascript/dashboard/views/ProtonIntegrationsPage.vue
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,102 @@
 +<!-- ProtonIntegrationsPage.vue — OUR file. Integrations list: currently a
 +     single card for the DMS/TSP integration shell (Package F), structured
 +     so a future integration is just another card in the same grid. The
@@ -877,7 +902,9 @@ index 0000000..e6b5b33
 +     probes the remote system — only the config form's "Test connection"
 +     button does that. Showing a green "Connected" here from config fields
 +     alone would be exactly the shell-mistaken-for-a-working-integration
-+     failure (demo-feedback #26) this package exists to avoid. A failed
++     failure this package exists to avoid. (Earlier drafts cited
++     demo-feedback #26 here; #26 is actually about customer-sent video. The
++     requirement stands; only the attribution was wrong.) A failed
 +     GET also surfaces a useAlert toast, same as ProtonDmsIntegrationPage's
 +     own load() — the "Status unavailable" badge alone would otherwise be
 +     the only signal something's wrong, and it's easy to miss on a list

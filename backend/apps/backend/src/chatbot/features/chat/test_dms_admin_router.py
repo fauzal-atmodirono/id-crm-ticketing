@@ -498,7 +498,12 @@ async def test_test_connection_reports_not_configured_without_base_url(tmp_path,
         res = client.post("/admin/integrations/dms/test", headers=HEADERS)
         assert res.status_code == 200
         body = res.json()
-        assert body["status"] == "unexpected_status"
+        # A pre-flight state, NOT an HTTP-outcome classification: nothing was
+        # attempted, so there is no status code to be unexpected. Reusing
+        # `unexpected_status` here rendered this under "Unexpected response"
+        # with helper text about the base URL -- away from the real problem.
+        assert body["status"] == "not_configured"
+        assert body["status"] not in {"reachable", "auth_failed", "timeout", "unexpected_status"}
         assert "not configured" in body["message"].lower()
 
 
@@ -518,7 +523,7 @@ async def test_test_connection_reports_not_configured_without_credential(tmp_pat
         res = client.post("/admin/integrations/dms/test", headers=HEADERS)
         assert res.status_code == 200
         body = res.json()
-        assert body["status"] == "unexpected_status"
+        assert body["status"] == "not_configured"
         assert "credential" in body["message"].lower()
 
 

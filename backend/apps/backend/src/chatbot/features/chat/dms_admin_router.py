@@ -65,7 +65,14 @@ if TYPE_CHECKING:
     from chatbot.features.chat.dms_config_store import DmsConfigStore
     from chatbot.platform.config import Settings
 
-_NOT_CONFIGURED = "unexpected_status"
+# A PRE-FLIGHT state, deliberately not one of probe()'s HTTP-outcome
+# classifications. It used to reuse `unexpected_status`, which meant "No
+# credential is stored for this integration." rendered under the title
+# "Unexpected response" with helper text about the base URL not pointing at
+# a health endpoint -- pointing the operator away from the actual problem.
+# Nothing was even attempted in this state; no request was made and no status
+# code exists to be unexpected.
+_NOT_CONFIGURED = "not_configured"
 
 # This router's mount point. Used both as the APIRouter prefix and by the
 # validation-error handler below to decide whether an error came from a

@@ -360,6 +360,11 @@ class ChatRouter:
         self.router.add_api_route("/voice/phone/incoming", self.phone_incoming, methods=["POST"])
         self.router.add_api_route("/voice/phone/token", self.phone_token, methods=["POST"])
         self.router.add_api_websocket_route("/voice/phone/stream", self.phone_stream)
+        self.router.add_api_route(
+            "/webhooks/phone/recording-status",
+            self.phone_recording_status_webhook,
+            methods=["POST"],
+        )
 
     # --- CRM webhooks -------------------------------------------------------
 
@@ -1321,6 +1326,94 @@ class ChatRouter:
             pass
         except Exception as e:
             _log.error("phone_stream_failed", error=str(e))
+
+    async def phone_recording_status_webhook(self, request: Request) -> Response:
+        """Twilio's recording-status callback (Package C Task 5).
+
+        Authenticated exactly like ``/webhooks/twilio-whatsapp`` -- Twilio
+        signs the form-encoded POST with X-Twilio-Signature over the exact
+        PUBLIC url it posted to, verified against ``twilio_webhook_base_url``
+        when configured (a tunnelled dev environment sees a different local
+        url than what Twilio signed).
+
+        Twilio calls this endpoint more than once per recording with
+        DIFFERENT payload shapes by ``RecordingStatus``
+        (``in-progress`` fires as soon as recording starts, with no URL yet;
+        ``completed`` is the only status that carries a usable
+        RecordingUrl/RecordingDuration; ``failed``/``absent`` never will).
+        Only ``completed`` is acted on -- everything else is logged and
+        ignored rather than assumed to have the same shape.
+
+        The ticket is resolved via ``ensure_conversation_ticket`` keyed on
+        the SAME ``phone-<CallSid>`` session id the bridge uses everywhere
+        else -- this callback can fire well after the call (and the
+        PhoneBridge instance) is gone, so there is no live object to ask.
+        Find-or-create is safe here for the same reason it is everywhere
+        else in this package: it is idempotent per session_id. A call with
+        no resolvable ticket (missing CallSid, or the adapter's own
+        session_id-echo failure sentinel -- see PhoneBridge._create_ticket_
+        at_start's docstring for why that sentinel must never be trusted as
+        real) is logged and ignored rather than raised.
+
+        Idempotency: ``set_call_recording`` is a plain custom-attribute SET,
+        not an append (see ports.py's docstring), so a retried callback
+        delivery for the same recording overwrites the same three keys with
+        the same values -- it cannot attach the recording twice.
+        """
+        form = await request.form()
+        params = {k: str(v) for k, v in form.items()}
+        token = self.orchestrator._settings.twilio_auth_token
+        base = self.orchestrator._settings.twilio_webhook_base_url
+        verify_url = (
+            f"{base.rstrip('/')}/webhooks/phone/recording-status" if base else str(request.url)
+        )
+        signature = request.headers.get("X-Twilio-Signature")
+        if token and not verify_twilio_signature(token, verify_url, params, signature):
+            _log.warning("phone_recording_status_signature_invalid")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
+        call_sid = params.get("CallSid", "").strip()
+        status = params.get("RecordingStatus", "")
+        if not call_sid:
+            _log.warning("phone_recording_status_missing_call_sid")
+            return Response(status_code=200)
+
+        if status != "completed":
+            _log.info("phone_recording_status_ignored", call_sid=call_sid, status=status)
+            return Response(status_code=200)
+
+        session_id = f"phone-{call_sid}"
+        port = self.orchestrator._conversation_log_port
+        try:
+            ticket_id = await port.ensure_conversation_ticket(
+                session_id=session_id,
+                subject=f"[phone] Conversation {session_id}",
+                customer_name=None,
+                customer_phone=None,
+            )
+        except Exception as e:
+            _log.error(
+                "phone_recording_status_ticket_resolve_failed", call_sid=call_sid, error=str(e)
+            )
+            return Response(status_code=200)
+        if ticket_id == session_id:
+            # Same fail-open sentinel as PhoneBridge._create_ticket_at_start:
+            # a truthy-but-fake id must never be adopted as real, or this
+            # would silently try to write custom attributes to a
+            # conversation that doesn't exist.
+            _log.warning("phone_recording_status_unknown_call", call_sid=call_sid)
+            return Response(status_code=200)
+
+        try:
+            await port.set_call_recording(
+                ticket_id,
+                recording_sid=params.get("RecordingSid", ""),
+                recording_duration=params.get("RecordingDuration", ""),
+                recording_url=params.get("RecordingUrl", ""),
+            )
+        except Exception as e:
+            _log.error("phone_recording_status_write_failed", call_sid=call_sid, error=str(e))
+        return Response(status_code=200)
 
 
 def build_chat_router(

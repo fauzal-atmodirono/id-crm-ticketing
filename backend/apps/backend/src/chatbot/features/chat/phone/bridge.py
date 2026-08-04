@@ -12,6 +12,7 @@ import structlog
 
 from chatbot.features.chat.csat import record_csat_on_ticket
 from chatbot.features.chat.phone.audio_codec import mulaw8k_to_pcm16k, pcm24k_to_mulaw8k
+from chatbot.features.chat.phone.call_control import CallControl
 from chatbot.features.chat.phone.handoff_csat_tools import parse_csat_score
 from chatbot.features.chat.phone.kb_tool import dispatch_kb_search
 from chatbot.features.chat.phone.live_events import (
@@ -60,12 +61,21 @@ class PhoneBridge:
         settings: Settings,
         *,
         clock: Callable[[], float] | None = None,
+        call_control: CallControl | None = None,
     ) -> None:
         self._live = live
         self._knowledge = knowledge_port
         self._log_port = conversation_log_port
         self._send_twilio = send_twilio
         self._settings = settings
+        # Package C Task 5: injectable for tests (never construct a real
+        # Twilio client from a test -- see call_control.py's own docstring);
+        # defaults to a real CallControl otherwise. CallControl's own
+        # constructor is cheap and never raises -- it only builds the
+        # underlying twilio.rest.Client lazily, on first actual API call --
+        # so constructing one here unconditionally is safe even when
+        # phone_recording_enabled is off.
+        self._call_control = call_control if call_control is not None else CallControl(settings)
         self.stream_sid: str | None = None
         self.call_sid: str | None = None
         self.transcript: list[tuple[str, str]] = []
@@ -91,6 +101,17 @@ class PhoneBridge:
         # first bytes of caller audio. finalize() awaits this task so it
         # never races finalize()'s own decision to reuse vs. fall back.
         self._ticket_create_task: asyncio.Task[None] | None = None
+        # Package C Task 5: recording is attempted at most ONCE per call
+        # (unlike the ticket-create task above, which retries on the next
+        # "start" event if it failed). A Twilio recording is a real, billed
+        # resource, so a reconnect/duplicate "start" event must not risk
+        # kicking off a second concurrent recording on the same call.
+        self._recording_start_attempted = False
+        # Fire-and-forget, same shape as _ticket_create_task -- see
+        # _maybe_start_recording. finalize() awaits this (bounded) purely so
+        # it isn't silently destroyed mid-flight on a fast hangup; nothing
+        # downstream depends on its result.
+        self._recording_task: asyncio.Task[None] | None = None
         # True once ANY live block has been successfully posted (during
         # pump() or finalize()'s own forced flush) -- lets finalize() avoid
         # posting the whole transcript a second time when it's already in
@@ -140,6 +161,19 @@ class PhoneBridge:
                     # in-flight.
                     self._ticket_create_task = asyncio.create_task(
                         self._create_ticket_at_start(self.call_sid)
+                    )
+                if (
+                    self.call_sid
+                    and not self._recording_start_attempted
+                    and self._settings.phone_recording_enabled
+                ):
+                    # Fire-and-forget, same reasoning as the ticket-create
+                    # task just above: the Twilio REST call (via
+                    # asyncio.to_thread inside CallControl) must never delay
+                    # the greeting or the first bytes of caller audio.
+                    self._recording_start_attempted = True
+                    self._recording_task = asyncio.create_task(
+                        self._maybe_start_recording(self.call_sid)
                     )
         elif event == "media":
             media = msg.get("media")
@@ -206,6 +240,55 @@ class PhoneBridge:
                 _log.info("phone_ticket_create_skipped_chatwoot_disabled", session_id=session_id)
             return
         self.ticket_id = ticket_id
+
+    def _recording_status_callback_url(self) -> str:
+        base = self._settings.twilio_webhook_base_url
+        if not base:
+            return ""
+        return f"{base.rstrip('/')}/webhooks/phone/recording-status"
+
+    async def _maybe_start_recording(self, call_sid: str) -> None:
+        """Start Twilio call recording once, fire-and-forget from
+        handle_twilio's "start" branch -- same shape as
+        _create_ticket_at_start, for the same reason: a slow or blackholed
+        Twilio REST call must never delay the greeting or caller audio.
+
+        Fails CLOSED on exactly one thing, deliberately unlike every other
+        path in this package (see config.py's phone_recording_announcement
+        docstring): Malaysia's PDPA requires the caller hear a recorded-line
+        notice BEFORE recording starts. If phone_recording_enabled is on but
+        no announcement is configured, this refuses to start recording at
+        all (logged at WARNING) rather than silently recording without
+        notice -- a config mistake here is a legal exposure, not just a
+        degraded feature.
+
+        The announcement itself is delivered as a text-hint into the live
+        Gemini session -- the same primitive IVR-4's per-turn language
+        reminder already uses (LiveSession.send_text_hint) -- instructing
+        the model to speak it, verbatim, before continuing. There is no
+        lower-level "play this exact audio clip" hook on LiveSession, so
+        this is a best-effort instruction to the model, not a guaranteed
+        byte-exact TTS playback of the configured text.
+        """
+        announcement = self._settings.phone_recording_announcement
+        if not announcement:
+            _log.warning("phone_recording_no_announcement_configured", call_sid=call_sid)
+            return
+        try:
+            await self._live.send_text_hint(
+                "(Recorded-line notice -- before anything else, tell the caller "
+                f'now, verbatim, in English and Bahasa Melayu: "{announcement}" '
+                "Then continue the conversation normally.)"
+            )
+        except Exception as e:
+            _log.error("phone_recording_announcement_hint_failed", call_sid=call_sid, error=str(e))
+        callback = self._recording_status_callback_url()
+        sid = await self._call_control.start_recording(call_sid, callback)
+        if sid:
+            _log.info("phone_recording_started", call_sid=call_sid, recording_sid=sid)
+        # A falsy sid means CallControl.start_recording already logged the
+        # failure itself (bad credentials, Twilio API error, construction
+        # failure, ...) -- fail-open, the call simply continues unrecorded.
 
     def _poll_transcript_flush(self) -> None:
         """Check whether the sink has a block due to post, and if so queue
@@ -359,6 +442,21 @@ class PhoneBridge:
             await asyncio.wait_for(self._ticket_create_task, timeout=_FLUSH_DRAIN_TIMEOUT_SECONDS)
         except Exception as e:
             _log.error("phone_finalize_ticket_task_failed", call_sid=self.call_sid, error=str(e))
+
+    async def _settle_recording_task(self) -> None:
+        """Await any in-flight recording-start task (see
+        _maybe_start_recording) so it can't be silently destroyed mid-flight
+        by a fast hangup right after "start". Nothing downstream depends on
+        its result -- this exists purely so a slow/blackholed Twilio call
+        doesn't leak an unawaited task -- so it is bounded the same way as
+        the ticket-create settle just above, for the same reason.
+        """
+        if self._recording_task is None:
+            return
+        try:
+            await asyncio.wait_for(self._recording_task, timeout=_FLUSH_DRAIN_TIMEOUT_SECONDS)
+        except Exception as e:
+            _log.error("phone_finalize_recording_task_failed", call_sid=self.call_sid, error=str(e))
 
     async def _drain_flush_queue(self) -> None:
         """Force out whatever's left in the live-transcript sink (a partial
@@ -521,6 +619,7 @@ class PhoneBridge:
 
     async def finalize(self) -> None:
         await self._settle_ticket_create_task()
+        await self._settle_recording_task()
         await self._drain_flush_queue()
 
         if not self.transcript or not self.call_sid:

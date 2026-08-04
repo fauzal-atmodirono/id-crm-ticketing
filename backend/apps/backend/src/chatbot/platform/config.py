@@ -309,6 +309,29 @@ class Settings(BaseSettings):
     # solved" binary rule, and no classification custom attributes are
     # written.
     phone_transcript_classification_enabled: bool = False
+    # Package C Task 5: start a dual-channel Twilio recording on the live call
+    # (see PhoneBridge._maybe_start_recording) and, once
+    # /webhooks/phone/recording-status reports "completed", store the
+    # recording sid/duration/url as INTERNAL conversation custom attributes
+    # (never a customer-visible comment -- retrieval is meant to be gated
+    # behind the `call_recording.listen` permission, see features/authz/
+    # seed.py). Default off -> byte-identical to today: handle_twilio's
+    # "start" branch never calls CallControl.start_recording.
+    #
+    # PDPA (Malaysia) requires the caller be told the call is recorded BEFORE
+    # recording starts. phone_recording_announcement is that operator-
+    # configurable, bilingual (EN + Bahasa Melayu) notice text -- deliberately
+    # NOT hard-coded, matching the existing lifecycle/persona message
+    # convention. THIS ONE SETTING FAILS CLOSED, unlike everywhere else in
+    # this package: if phone_recording_enabled is True but no announcement is
+    # configured, PhoneBridge refuses to start recording at all (logged at
+    # WARNING) rather than silently recording without notice.
+    phone_recording_enabled: bool = False
+    phone_recording_announcement: str = ""
+    # Informational only today (no automated deletion job reads this yet) --
+    # recorded here so the retention POLICY is operator-visible and
+    # configurable from day one rather than bolted on later.
+    phone_recording_retention_days: int = 90
     # Browser-softphone access tokens (Twilio Voice grant)
     twilio_api_key_sid: str = ""
     twilio_api_key_secret: str = ""

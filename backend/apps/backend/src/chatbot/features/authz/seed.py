@@ -36,6 +36,15 @@ PERMISSION_REGISTRY: dict[str, str] = {
     "roles.manage": "Manage roles and permission assignments",
     "escalation.manage": "Manage PIC/dealer escalation routing",
     "customer360.view": "View the Customer 360 lookup",
+    # Package C Task 5: recordings are customer voice data. Registered here,
+    # same as escalation.manage/customer360.view above, so it is auto-granted
+    # to "administrator" (full access) but NOT to the minimal "agent" role,
+    # and is ready for whatever endpoint eventually exposes a call recording
+    # to gate on via require_permission -- see features/chat/phone/bridge.py
+    # / router.py for where recordings are captured. No such retrieval
+    # endpoint exists in this codebase yet; this entry exists so retrieval
+    # can never ship un-gated by omission.
+    "call_recording.listen": "Listen to / retrieve a call recording",
 }
 
 _AGENT_PERMISSIONS = {"knowledge.edit"}

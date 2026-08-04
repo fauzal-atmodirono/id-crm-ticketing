@@ -276,6 +276,26 @@ class ConversationLogPort(Protocol):
         name and email. Returns ("", None, None) if none/failure."""
         ...
 
+    async def set_call_recording(
+        self,
+        ticket_id: str,
+        *,
+        recording_sid: str,
+        recording_duration: str,
+        recording_url: str,
+    ) -> None:
+        """Best-effort: write a Twilio call recording's sid/duration/url as
+        INTERNAL conversation custom attributes -- never as a comment/note,
+        so a raw Twilio media URL never lands in agent-visible conversation
+        text (retrieval is meant to be gated behind a permission; see
+        features/authz/seed.py's `call_recording.listen`). Called from the
+        `/webhooks/phone/recording-status` callback, once per "completed"
+        delivery; implementations should make this a plain attribute SET
+        (not append), so a retried callback delivery is naturally
+        idempotent. Must never raise -- callers treat this as fire-and-
+        forget, same as the rest of this port's surface."""
+        ...
+
 
 class MetricsPort(Protocol):
     """Port for emitting one analytics event per conversational turn."""

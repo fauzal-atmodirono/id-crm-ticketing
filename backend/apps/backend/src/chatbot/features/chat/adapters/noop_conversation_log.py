@@ -65,3 +65,13 @@ class NoOpConversationLog(ConversationLogPort):
         ticket_id: str,  # noqa: ARG002
     ) -> tuple[str, str | None, str | None]:
         return ("", None, None)
+
+    async def set_call_recording(
+        self,
+        ticket_id: str,  # noqa: ARG002
+        *,
+        recording_sid: str,  # noqa: ARG002
+        recording_duration: str,  # noqa: ARG002
+        recording_url: str,  # noqa: ARG002
+    ) -> None:
+        return None

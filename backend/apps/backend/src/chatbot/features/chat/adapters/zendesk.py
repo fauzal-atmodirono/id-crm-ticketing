@@ -360,6 +360,20 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
         # Zendesk-side custom-field mapping nothing currently calls.
         return None
 
+    async def set_call_recording(
+        self,
+        ticket_id: str,  # noqa: ARG002
+        *,
+        recording_sid: str,  # noqa: ARG002
+        recording_duration: str,  # noqa: ARG002
+        recording_url: str,  # noqa: ARG002
+    ) -> None:
+        # Same rationale as set_ticket_classification above: Package C's
+        # phone channel is Chatwoot-only, so no Zendesk ticket ever reaches
+        # this path today. No-op keeps ZendeskAdapter a valid
+        # ConversationLogPort without inventing an unused Zendesk mapping.
+        return None
+
     async def get_latest_public_comment(self, ticket_id: str) -> tuple[str, str | None, str | None]:
         subdomain = self._settings.zendesk_subdomain
         base = f"https://{subdomain}.zendesk.com/api/v2"

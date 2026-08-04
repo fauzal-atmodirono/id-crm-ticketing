@@ -70,6 +70,7 @@ class _FakeLog:
         self.tags: list[tuple[str, str]] = []
         self.classifications: list[tuple[str, str | None, str | None, str | None]] = []
         self.classification_raises: Exception | None = None
+        self.recordings: list[tuple[str, str, str, str]] = []
 
     async def ensure_conversation_ticket(
         self,
@@ -133,6 +134,16 @@ class _FakeLog:
         self, ticket_id: str
     ) -> tuple[str, str | None, str | None]:  # unused here
         return ("", None, None)
+
+    async def set_call_recording(
+        self,
+        ticket_id: str,
+        *,
+        recording_sid: str,
+        recording_duration: str,
+        recording_url: str,
+    ) -> None:  # unused here -- exercised in test_recording.py
+        self.recordings.append((ticket_id, recording_sid, recording_duration, recording_url))
 
 
 def _bridge(

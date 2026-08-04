@@ -767,6 +767,38 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             for label in self._dimension_labels(division, None, None):
                 await self.add_ticket_tag(ticket_id, label)
 
+    async def set_call_recording(
+        self,
+        ticket_id: str,
+        *,
+        recording_sid: str,
+        recording_duration: str,
+        recording_url: str,
+    ) -> None:
+        # Package C Task 5 compliance: recordings are gated behind the
+        # call_recording.listen permission (features/authz/seed.py), so the
+        # raw Twilio URL must NEVER appear in agent-visible conversation
+        # text -- this writes custom attributes ONLY, never a comment/note
+        # (contrast set_ticket_classification, whose fields are meant to be
+        # agent-visible). `_request` already fails open (logs, returns None)
+        # on any Chatwoot error, so no extra try/except is needed here. This
+        # is the same POST /custom_attributes upsert used by
+        # set_ticket_external_id/set_ticket_classification, which makes it
+        # naturally idempotent: a retried callback delivery with the same
+        # values just overwrites the attributes with themselves rather than
+        # attaching the recording a second time.
+        await self._request(
+            "POST",
+            f"/conversations/{ticket_id}/custom_attributes",
+            {
+                "custom_attributes": {
+                    "recording_sid": recording_sid,
+                    "recording_duration": recording_duration,
+                    "recording_url": recording_url,
+                }
+            },
+        )
+
     async def get_latest_public_comment(self, ticket_id: str) -> tuple[str, str | None, str | None]:
         res = await self._request("GET", f"/conversations/{ticket_id}/messages")
         payload = res.get("payload", []) if isinstance(res, dict) else []

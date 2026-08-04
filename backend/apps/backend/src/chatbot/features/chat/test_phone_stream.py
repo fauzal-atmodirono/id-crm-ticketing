@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from chatbot.features.chat.phone.live_events import AudioOut, LiveEvent
 from chatbot.features.chat.router import build_chat_router
-from chatbot.platform.config import get_settings
+from chatbot.platform.config import Settings, get_settings
 from chatbot.platform.server import create_app
 
 
@@ -77,3 +77,50 @@ def test_stream_opens_live_with_all_three_tools_and_handoff_instruction() -> Non
     instruction = str(captured["instruction"]).lower()
     assert "human" in instruction and "rate" in instruction
     assert "do not ask for a rating if you handed off" in instruction
+
+
+def _captured_instruction(settings: Any) -> str:
+    captured: dict[str, Any] = {}
+
+    @asynccontextmanager
+    async def factory(
+        _settings: Any, system_instruction: Any, _tools: Any
+    ) -> AsyncIterator[_FakeLive]:
+        captured["instruction"] = system_instruction
+        yield _FakeLive([])
+
+    orch = _orch()
+    orch._settings = settings
+    app = create_app(get_settings())
+    app.include_router(build_chat_router(orch, live_session_factory=factory))
+    client = TestClient(app)
+    with client.websocket_connect("/voice/phone/stream") as ws:
+        ws.send_json({"event": "start", "start": {"streamSid": "S1", "callSid": "C1"}})
+    return str(captured["instruction"])
+
+
+def test_handoff_paragraph_is_the_pre_package_wording_when_transfer_is_off() -> None:
+    """Whole-branch review fix (Important 2): with phone_handoff_enabled off
+    -- every deployed tenant -- `_attempt_transfer` always returns
+    "ticket_created", so Task 6's transfer-aware wording would have the bot
+    promise "Let me try to get a specialist for you now..." and then retract
+    it on every single handoff. That is a customer-visible change with all
+    flags off, which this package certifies cannot happen. Off must be the
+    exact pre-package paragraph."""
+    instruction = _captured_instruction(Settings(_env_file=None))
+    assert (
+        "If you cannot resolve the caller's issue, they ask for a human, or it is a "
+        "complaint or sensitive matter, call request_human_handoff with a short reason "
+        "and summary, then tell the caller a specialist will follow up. "
+    ) in instruction
+    assert "Let me try to get a specialist for you now" not in instruction
+    assert "transferring" not in instruction
+
+
+def test_handoff_paragraph_promises_a_transfer_only_when_the_flag_is_on() -> None:
+    instruction = _captured_instruction(
+        Settings(_env_file=None, phone_transcript_live_enabled=True, phone_handoff_enabled=True)
+    )
+    assert "Let me try to get a specialist for you now" in instruction
+    assert '"transferring"' in instruction
+    assert '"ticket_created"' in instruction

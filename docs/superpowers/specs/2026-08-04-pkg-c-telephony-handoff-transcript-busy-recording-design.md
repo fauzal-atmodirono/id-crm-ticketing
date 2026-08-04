@@ -97,6 +97,31 @@ Contacts 360 panel (Package B) pick them up for free. Gate on a flag
 (`phone_transcript_classification_enabled`, default off). Fail-open: a
 classifier error falls back to today's binary rule exactly.
 
+**Amendment (as built): the three-value status vocabulary above collapses to
+two.** `ConversationLogPort.append_conversation_comment` only ever forwards the
+literal `"solved"`; anything else leaves the conversation where it is. So of the
+three values above, only two behaviours actually ship:
+
+- `open` — the real one. It is the single live transition the classifier can
+  cause: "keep this conversation open when the binary rule would have solved
+  it."
+- `pending` — a **silent alias for `open`**. It is not inexpressible —
+  `features/metrics/mapping.py` already treats `pending` as a first-class
+  Chatwoot status and `toggle_status` accepts it — the port simply never
+  forwards it. Nothing distinguishes a pending case from an open one in the
+  CRM today.
+- `resolved` — **dead**. The binary rule already starts at `solved` whenever
+  the classifier's status decision is reached at all (it is only consulted when
+  no handoff occurred), so a `resolved` reading has nothing left to change.
+
+This is an interim collapse, not a repudiation of the vocabulary: forwarding
+`pending` as its own state needs a port change (teach
+`append_conversation_comment` — or a sibling method — to carry a status other
+than `"solved"` through to `toggle_status`), plus a decision about what a
+`pending` phone case should mean to the Cases List and to reporting. Until that
+lands, read `open` in the data as "open or pending" and do not build a report
+that assumes the two are distinguishable.
+
 ### 4.3 The human-leg gap — be explicit about it
 
 Once the call transfers to a human (Feature 2), the Gemini Live stream ends,

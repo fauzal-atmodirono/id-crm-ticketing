@@ -46,18 +46,27 @@ task that added it) and cross-checked against `.env.example` lines
 
 | Setting (env var) | Type / default | What turning it on does |
 |---|---|---|
-| `phone_transcript_live_enabled` (`PHONE_TRANSCRIPT_LIVE_ENABLED`) | bool / `false` | **Also controls ticket-at-call-start**, not just live streaming — both are gated by this one flag (`bridge.py:186`). On: the Chatwoot conversation is created the moment the Twilio "start" event arrives, and completed transcript turns stream into it every `phone_transcript_flush_seconds`-ish. Off: the conversation is created only in `finalize()`, from the complete transcript, exactly as before this package. |
+| `phone_transcript_live_enabled` (`PHONE_TRANSCRIPT_LIVE_ENABLED`) | bool / `false` | **Also controls ticket-at-call-start**, not just live streaming — both are gated by this one flag (`bridge.py:186`). On: the Chatwoot conversation is created the moment the Twilio "start" event arrives, and completed transcript turns stream into it every `phone_transcript_flush_seconds`-ish. Off: the conversation is created only in `finalize()`, from the complete transcript, exactly as before this package. A call that ends before anyone speaks (wrong number, spam scan, your own test) self-cleans: the conversation gets a `[Call ended — no conversation]` marker, is resolved, and has its `external_id` stamped, rather than being left open and empty in the agent queue (whole-branch review, Important 3). |
 | `phone_transcript_flush_seconds` (`PHONE_TRANSCRIPT_FLUSH_SECONDS`) | float / `15.0` | Soft interval `TranscriptSink` uses to decide a block is "due" to post. Only has any effect when `phone_transcript_live_enabled=true`. It's polled, not a real timer — see §4 caveats. |
 | `phone_transcript_classification_enabled` (`PHONE_TRANSCRIPT_CLASSIFICATION_ENABLED`) | bool / `false` | On: `finalize()` runs a one-shot Gemini call on the completed transcript to derive `case_type`/`division`/`concern`/`status`, writes them as Chatwoot custom attributes + a `division_<slug>` label, and can flip the closing status from `solved` to `open` if the model reads the call as unresolved. Off: status stays the exact "open if handoff else solved" binary rule, no classification attributes written. Runs only in `finalize()`, never in the live audio path. |
-| `phone_recording_enabled` (`PHONE_RECORDING_ENABLED`) | bool / `false` | On: starts a dual-channel Twilio recording on the live call and, once Twilio's `/webhooks/phone/recording-status` reports `completed`, stores `recording_sid`/`recording_duration`/`recording_url` as **internal-only** Chatwoot custom attributes (never a customer/agent-visible comment). Requires `phone_recording_announcement` and `twilio_webhook_base_url` — see §1. |
+| `phone_recording_enabled` (`PHONE_RECORDING_ENABLED`) | bool / `false` | On: starts a dual-channel Twilio recording on the live call and, once Twilio's `/webhooks/phone/recording-status` reports `completed`, stores `recording_sid`/`recording_duration`/`recording_url` as **internal-only** Chatwoot custom attributes (never a customer/agent-visible comment). Requires `phone_recording_announcement` and `twilio_webhook_base_url` — see §1 — and **requires `phone_transcript_live_enabled`**: the backend refuses to start otherwise (see the enable order below). |
 | `phone_recording_announcement` (`PHONE_RECORDING_ANNOUNCEMENT`) | str / `""` | The PDPA (Malaysia) recorded-line notice text, operator-authored, bilingual free text. Required for recording to actually start — see §1. |
 | `phone_recording_retention_days` (`PHONE_RECORDING_RETENTION_DAYS`) | int / `90` | **Informational only.** No automated deletion job reads this setting today. Recorded so the retention *policy* is operator-visible from day one, not enforced. |
-| `phone_handoff_enabled` (`PHONE_HANDOFF_ENABLED`) | bool / `false` | On: `request_human_handoff` actually redirects the live call into a real `<Dial>` to `phone_handoff_target_number`, gated by business hours on the tenant's default Chatwoot inbox. Off (default): the tool call keeps returning `{"status": "ticket_created"}` exactly as before this package — no real transfer is ever attempted. |
+| `phone_handoff_enabled` (`PHONE_HANDOFF_ENABLED`) | bool / `false` | On: `request_human_handoff` actually redirects the live call into a real `<Dial>` to `phone_handoff_target_number`, gated by business hours on the tenant's default Chatwoot inbox (prefetched at call start, so the transfer itself costs no extra Chatwoot round trip). Off (default): the tool call keeps returning `{"status": "ticket_created"}` exactly as before this package — no real transfer is ever attempted. **Also switches the bot's spoken handoff wording**: on, it promises to try connecting the caller now; off, it keeps the pre-package "a specialist will follow up" line, which is the only honest one when no transfer can occur. **Requires `phone_transcript_live_enabled`** — the backend refuses to start otherwise. |
 | `phone_handoff_target_number` (`PHONE_HANDOFF_TARGET_NUMBER`) | str / `""` | The static hunt-group E.164 number to dial. Empty = handoff resolves to "do not attempt", identical to the flag being off. |
 | `phone_handoff_timeout_seconds` (`PHONE_HANDOFF_TIMEOUT_SECONDS`) | int / `30` | Twilio `<Dial timeout>` — how long it rings the target before posting `DialCallStatus=no-answer` to `/webhooks/phone/dial-status`. |
 | `phone_handoff_caller_id` (`PHONE_HANDOFF_CALLER_ID`) | str / `""` | **Required for handoff to dial at all.** See §1 — without it, `HandoffTargetResolver.resolve()` deliberately refuses to resolve a target rather than dial with a broken caller id. |
 
-**Enable order** (each layer only matters once the one below it works):
+**Enable order** (each layer only matters once the one below it works).
+Steps 4 and 5 are not merely advisory: `phone_recording_enabled` and
+`phone_handoff_enabled` each **require** `phone_transcript_live_enabled`,
+and the backend fails to start with a message naming the missing flag if
+you skip it. The dependency is structural: both features have a Twilio
+callback that resolves the conversation by session id and never creates
+one, so without the ticket existing from the Twilio "start" event a
+callback can fire before the conversation does — the handler answers 200,
+Twilio does not retry, and the recording attachment or the owed
+`unanswered_handoff` tag is silently lost.
 
 1. `twilio_webhook_base_url` and `twilio_auth_token` (pre-existing, not
    new to this package, but load-bearing for everything below — §1).
@@ -67,9 +76,9 @@ task that added it) and cross-checked against `.env.example` lines
    the ticket existing.
 3. `phone_transcript_classification_enabled` — §2 Scenario 3.
 4. `phone_recording_enabled` + `phone_recording_announcement` together
-   (never one without the other) — §2 Scenario 4.
+   (never one without the other) — §2 Scenario 4. Requires step 2.
 5. `phone_handoff_enabled` + `phone_handoff_target_number` +
-   `phone_handoff_caller_id` together — §2 Scenarios 5–7.
+   `phone_handoff_caller_id` together — §2 Scenarios 5–7. Requires step 2.
 
 ---
 
@@ -306,10 +315,12 @@ reports and the code's own docstrings — not bugs to file:
   minor left unfixed — operator text is free-form prose, not split into
   language segments the way the hard-coded unanswered-handoff apology
   is), so a bilingual operator announcement may not be pronounced
-  correctly in its Bahasa Melayu portion. The separate in-session text
-  hint to the Gemini model (asking it to *say* the notice) is best-effort
-  only and not guaranteed to be spoken verbatim, or at all, if the caller
-  talks over it.
+  correctly in its Bahasa Melayu portion. It is also a **disclosure, not
+  a recorded consent capture**: nothing records that the caller heard it
+  or agreed, and the caller can talk over it. The bridge no longer also
+  asks the Gemini model to read the notice — with the `<Say>` in place
+  that was a second reading, in a second voice, on every recorded call
+  (whole-branch review, Important 4).
 - **An unanswered/busy/failed handoff hangs up, it does not return the
   caller to the bot.** This is the brief's design as written (Task 6),
   flagged as worth revisiting with the client, not a defect against what
@@ -373,13 +384,25 @@ positional arg). Names below were read directly out of `bridge.py`,
 - `phone_transcript_flush_no_ticket` / `phone_transcript_flush_failed` —
   a live transcript block failed to post (no ticket, exception, or a
   non-OK `ConversationLogResult`).
-- `phone_finalize_failed` — the closing write in `finalize()` failed;
-  logged with the **full transcript body** attached so the call is
-  recoverable from logs alone even if Chatwoot never got it.
+- `phone_finalize_failed` — a closing write in `finalize()` raised.
+- `phone_finalize_ticket_create_failed` — finalize()'s own fallback
+  ticket create failed (Chatwoot's fail-open sentinel detected), so the
+  call has nowhere to be written. Split out from `phone_finalize_failed`
+  (whole-branch review minor) because event-name-keyed alerting could not
+  otherwise tell the two apart.
+- `phone_finalize_timed_out` — the closing writes as a whole exceeded
+  their 60s ceiling (whole-branch review, Important 7).
+  All three of the above attach the transcript, **truncated to a few
+  hundred characters** (Important 11 — customer voice content does not
+  belong untruncated in application logs), enough to identify and triage
+  the call.
 - `phone_finalize_ticket_task_failed` / `phone_finalize_recording_task_failed`
   / `phone_finalize_flush_drain_failed` — one of the bounded awaits in
   `finalize()` (ticket-create settle, recording-start settle, flush
-  drain) hit its timeout or raised.
+  drain) hit its timeout or raised. A flush-drain timeout also forces
+  finalize() to post the FULL transcript rather than the short
+  `[Call ended]` marker, so a stalled trailing block cannot lose the
+  caller's last turn (Important 1).
 
 **Classification (`phone/bridge.py`, `phone/transcript_classifier.py`):**
 - `phone_transcript_classify_client_init_failed` — couldn't build a
@@ -399,25 +422,34 @@ positional arg). Names below were read directly out of `bridge.py`,
 - `phone_recording_no_announcement_configured` /
   `phone_recording_no_callback_base_configured` — recording refused to
   start (fail-closed, by design — see §1).
-- `phone_recording_announcement_hint_failed` — queuing the in-session
-  text hint to Gemini failed (recording is also refused in this case).
 - `call_recording_start_failed` — the Twilio API call itself failed.
 - `phone_recording_started` (info) — recording actually started;
   carries the `recording_sid`.
 - `phone_recording_status_no_auth_token_configured` /
   `_signature_invalid` — the recording-status webhook rejected the
   callback (see §1's `twilio_auth_token` prerequisite).
-- `phone_recording_status_unknown_call` — Twilio's callback couldn't be
-  matched to any conversation (`find_conversation_ticket` found
-  nothing).
+- `phone_recording_status_unknown_call` (**ERROR**) — Twilio's callback
+  couldn't be matched to any conversation (`find_conversation_ticket`
+  found nothing). Raised from WARNING to ERROR (Important 10): the
+  handler answers 200 and Twilio does not retry, so this line is the only
+  trace that a customer's recording exists in Twilio with nothing in the
+  CRM pointing at it. The common cause (recording on, ticket-at-call-start
+  off) is now unreachable — the backend refuses that combination at
+  startup — so seeing this at all warrants investigation.
 - `phone_recording_status_write_failed` — matched the ticket, but the
   attribute write itself failed.
 
 **Handoff (`phone/bridge.py`, `phone/handoff_target.py`, `router.py`):**
 - `phone_handoff_no_caller_id_configured` — see §1/Scenario 7; the
   expected, safe outcome of a missing `phone_handoff_caller_id`.
-- `phone_handoff_hours_check_failed` — business-hours lookup failed
-  (fails open — the transfer is still attempted).
+- `phone_handoff_hours_check_failed` / `phone_handoff_hours_prefetch_failed`
+  — business-hours lookup failed (fails open — the transfer is still
+  attempted). The prefetch variant is the call-start warm-up that keeps
+  the lookup off the audio path (Important 6).
+- `phone_dial_status_unknown_call` (**ERROR**) — the dial-status callback
+  couldn't be matched to any conversation, so an owed
+  `unanswered_handoff` tag is silently dropped. Same reasoning as
+  `phone_recording_status_unknown_call` above.
 - `phone_handoff_no_action_url_configured` — `twilio_webhook_base_url`
   missing, so the `<Dial action>` callback URL couldn't be built;
   transfer refused.

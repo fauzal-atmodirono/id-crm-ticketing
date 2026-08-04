@@ -1342,6 +1342,36 @@ class ChatRouter:
            the pending task and finalises the bridge.
         """
         await websocket.accept()
+        # Whole-branch review fix (Important 2): the transfer-aware handoff
+        # paragraph is built ONLY when phone_handoff_enabled is on. Task 6
+        # rewrote it unconditionally, but with the flag off -- every
+        # deployed tenant today -- `_attempt_transfer` returns
+        # "ticket_created" 100% of the time, so the bot would promise "Let
+        # me try to get a specialist for you now..." and then immediately
+        # retract it with "a live transfer was not possible right now". That
+        # is a customer-visible behaviour change with all flags off, which
+        # this package's own runbook certifies cannot happen. Off ->
+        # byte-identical to the pre-package wording; on -> Task 6's wording,
+        # which is only honest when a transfer can actually occur.
+        if self.orchestrator._settings.phone_handoff_enabled:
+            handoff_instruction = (
+                "issue, they ask for a human, or it is a complaint or sensitive matter: a live "
+                "transfer is not always possible, so BEFORE calling request_human_handoff say "
+                "something like 'Let me try to get a specialist for you now — if I can't connect "
+                "you right away, they'll call you back soon,' THEN call request_human_handoff "
+                "with a short reason and summary — once you call it you may be transferred "
+                "immediately and unable to say anything further on this call, so say that line "
+                "before calling the tool, never after. Then check the tool's status: if it is "
+                '"transferring", say nothing further — you may already be off the line. If it is '
+                '"ticket_created", tell the caller a live transfer was not possible right now '
+                "but a specialist has the details and will call them back. "
+            )
+        else:
+            handoff_instruction = (
+                "issue, they ask for a human, or it is a complaint or sensitive matter, call "
+                "request_human_handoff with a short reason and summary, then tell the caller a "
+                "specialist will follow up. "
+            )
         system_instruction = (
             "You are Proton's friendly phone support agent. Answer spoken questions "
             "concisely and naturally. You are fully multilingual: ALWAYS reply in the SAME "
@@ -1350,16 +1380,7 @@ class ChatRouter:
             "speak a language and NEVER hand off merely because of language. "
             "Use the kb_search tool to ground answers in the "
             "Proton knowledge base before giving facts. If you cannot resolve the caller's "
-            "issue, they ask for a human, or it is a complaint or sensitive matter: a live "
-            "transfer is not always possible, so BEFORE calling request_human_handoff say "
-            "something like 'Let me try to get a specialist for you now — if I can't connect "
-            "you right away, they'll call you back soon,' THEN call request_human_handoff with "
-            "a short reason and summary — once you call it you may be transferred immediately "
-            "and unable to say anything further on this call, so say that line before calling "
-            'the tool, never after. Then check the tool\'s status: if it is "transferring", '
-            "say nothing further — you may already be off the line. If it is "
-            '"ticket_created", tell the caller a live transfer was not possible right now but '
-            "a specialist has the details and will call them back. "
+            f"{handoff_instruction}"
             "After you answer, ask if there is anything else you can "
             "help with, and keep helping across as many questions as the caller has. Do NOT ask "
             "for a rating mid-conversation. ONLY once the caller clearly signals they are finished "
@@ -1506,7 +1527,16 @@ class ChatRouter:
             )
             return Response(status_code=200)
         if ticket_id is None:
-            _log.warning("phone_recording_status_unknown_call", call_sid=call_sid)
+            # ERROR, not WARNING (whole-branch review, Important 10): this is
+            # a permanently lost recording attachment, not a notice. We
+            # answer 200 (Twilio will not retry usefully -- the conversation
+            # is not going to appear later), so this log line is the ONLY
+            # trace that a customer's recording exists in Twilio with
+            # nothing in the CRM pointing at it. The Settings validator now
+            # makes the common cause (recording on, ticket-at-call-start
+            # off) unreachable, so reaching here at all means something
+            # else went wrong and deserves an alert.
+            _log.error("phone_recording_status_unknown_call", call_sid=call_sid)
             return Response(status_code=200)
 
         try:
@@ -1593,7 +1623,11 @@ class ChatRouter:
             _log.error("phone_dial_status_ticket_resolve_failed", call_sid=call_sid, error=str(e))
             ticket_id = None
         if ticket_id is None:
-            _log.warning("phone_dial_status_unknown_call", call_sid=call_sid)
+            # ERROR, not WARNING (whole-branch review, Important 10): an
+            # owed `unanswered_handoff` tag is silently dropped here -- the
+            # caller was promised a callback and nothing in the CRM records
+            # that. Same reasoning as the recording-status callback above.
+            _log.error("phone_dial_status_unknown_call", call_sid=call_sid)
         else:
             # Review fix (Important 3): Twilio may redeliver this callback
             # (retry on a non-2xx, or a genuine duplicate). append_

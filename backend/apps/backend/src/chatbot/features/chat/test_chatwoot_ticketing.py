@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
+from chatbot.features.chat.models import HandoffOpenPayload
 from chatbot.platform.config import Settings
 
 
@@ -192,7 +193,10 @@ async def test_create_ticket_complaint_urgency_adds_ticketing_label() -> None:
     await adapter.create_ticket(
         session_id="whatsapp-+60123", title="Refund", body="help", urgency="high"
     )
-    labels_payload = next(pl for _m, p, pl in fake.calls if p.endswith("/labels"))
+    # Whole-branch review fix (Important 9): the single labels write is now
+    # preceded by a GET of the current set (merge-safe union). Filter on the
+    # POST -- the "exactly one labels POST" batching invariant is unchanged.
+    labels_payload = next(pl for m, p, pl in fake.calls if p.endswith("/labels") and m == "POST")
     assert labels_payload == {"labels": ["ai-escalation", "escalate"]}
 
 
@@ -224,7 +228,7 @@ async def test_create_ticket_writes_dimension_labels_in_single_final_call() -> N
         department="Service Center",
         sla_minutes=480,
     )
-    labels_calls = [pl for _m, p, pl in fake.calls if p.endswith("/labels")]
+    labels_calls = [pl for m, p, pl in fake.calls if p.endswith("/labels") and m == "POST"]
     assert len(labels_calls) == 1, "exactly one labels call (no duplicate-ticket trigger)"
     labels = labels_calls[0]["labels"]  # type: ignore[index]
     assert labels == [
@@ -277,7 +281,7 @@ async def test_create_ticket_writes_case_category_as_custom_attribute() -> None:
     assert body["custom_attributes"]["case_subcategory"] == "Test Drive Booking"
     assert body["custom_attributes"]["sla_minutes"] == 60
 
-    labels_calls = [pl for _m, p, pl in fake.calls if p.endswith("/labels")]
+    labels_calls = [pl for m, p, pl in fake.calls if p.endswith("/labels") and m == "POST"]
     labels = labels_calls[0]["labels"]  # type: ignore[index]
     assert not any(lbl.startswith("category_") for lbl in labels)
     assert not any(lbl.startswith("subcat_") for lbl in labels)
@@ -356,7 +360,7 @@ async def test_create_ticket_non_complaint_stays_chatwoot_only() -> None:
     await adapter.create_ticket(
         session_id="whatsapp-+60123", title="Refund", body="help", urgency="medium"
     )
-    labels_calls = [pl for _m, p, pl in fake.calls if p.endswith("/labels")]
+    labels_calls = [pl for m, p, pl in fake.calls if p.endswith("/labels") and m == "POST"]
     assert len(labels_calls) == 1
     assert labels_calls[0]["labels"] == ["ai-escalation"]  # type: ignore[index]
     assert not any(p.endswith("/custom_attributes") for _m, p, _pl in fake.calls)
@@ -460,7 +464,7 @@ async def test_create_ticket_posts_incoming_message_before_labels() -> None:
         for i, (_m, p, pl) in enumerate(calls)
         if p.endswith("/messages") and (pl or {}).get("message_type") == "incoming"
     ]
-    lbl = [i for i, (_m, p, _pl) in enumerate(calls) if p.endswith("/labels")]
+    lbl = [i for i, (m, p, _pl) in enumerate(calls) if p.endswith("/labels") and m == "POST"]
     assert inc, "expected an incoming customer message"
     assert inc[0] < lbl[0], "incoming message must precede the label (webhook trigger)"
     inc_payload = calls[inc[0]][2]
@@ -475,3 +479,104 @@ async def test_add_private_note_sets_private_true() -> None:
     assert method == "POST"
     assert "/conversations/99/messages" in path
     assert payload == {"content": "internal", "message_type": "outgoing", "private": True}
+
+
+class _StatefulLabelsClient:
+    """Chatwoot's real labels persistence: a GET reflects the last POST.
+
+    A stateless fake structurally cannot catch a bug that only appears
+    across a call sequence -- the Task 5 round-3 lesson, applied again here.
+    """
+
+    def __init__(self, seeded: list[str], conv_id: int = 99) -> None:
+        self.labels: list[str] = list(seeded)
+        self._conv_id = conv_id
+
+    async def _request(
+        self, method: str, path: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        if path.endswith("/labels"):
+            if method == "GET":
+                return {"payload": list(self.labels)}
+            if method == "POST" and payload is not None:
+                self.labels = [str(v) for v in payload.get("labels", [])]
+                return {}
+        if method == "POST" and path.endswith("/conversations"):
+            return {"id": self._conv_id}
+        return {}
+
+
+def _reusing_adapter(fake: _StatefulLabelsClient, session_id: str) -> ChatwootAdapter:
+    a = ChatwootAdapter(
+        Settings(
+            chatwoot_account_id=1,
+            chatwoot_inbox_id=7,
+            chatwoot_escalation_label="ai-escalation",
+            chatwoot_complaint_label="escalate",
+        )
+    )
+    a._request = fake._request  # type: ignore[method-assign]
+    # Pre-seed the session->conversation cache so _find_or_create_conversation
+    # REUSES conversation 99 rather than creating a fresh one -- a fresh
+    # conversation has no labels to lose, which is exactly why the earlier
+    # merge-safety test in this package did not discriminate.
+    a._conv_by_session[session_id] = "99"
+    return a
+
+
+@pytest.mark.asyncio
+async def test_create_ticket_does_not_wipe_labels_on_a_reused_conversation() -> None:
+    """Whole-branch review fix (Important 9): `create_ticket` POSTed the
+    whole labels array, so a SECOND escalation on a session whose
+    conversation is reused deleted every label already on it -- csat_*,
+    nps_*, a prior division_*/dealer_*. Fifth instance of this footgun."""
+    fake = _StatefulLabelsClient(seeded=["csat_5", "division_sales", "dealer_kl_pj"])
+    adapter = _reusing_adapter(fake, "whatsapp-+60123")
+    await adapter.create_ticket(
+        session_id="whatsapp-+60123", title="Refund", body="help", urgency="high"
+    )
+    assert {"csat_5", "division_sales", "dealer_kl_pj"} <= set(fake.labels)
+    assert {"ai-escalation", "escalate"} <= set(fake.labels)
+
+
+@pytest.mark.asyncio
+async def test_open_handoff_does_not_wipe_labels_on_a_reused_conversation() -> None:
+    """Same defect, same fix, on the other bare-assign writer."""
+    fake = _StatefulLabelsClient(seeded=["nps_9", "division_sales"])
+    adapter = _reusing_adapter(fake, "whatsapp-+60123")
+    await adapter.open_handoff(
+        HandoffOpenPayload(
+            session_id="whatsapp-+60123",
+            customer_name="Customer",
+            customer_email="c@example.test",
+            ai_summary="double charge",
+            transcript=(),
+            urgency="high",
+            reason="complaint",
+        )
+    )
+    assert {"nps_9", "division_sales"} <= set(fake.labels)
+    assert "ai-escalation" in fake.labels
+
+
+@pytest.mark.asyncio
+async def test_escalation_labels_still_land_when_the_labels_read_fails() -> None:
+    """Deliberately UNLIKE add_ticket_tag's read-failure rule: these labels
+    carry the escalation trigger, so skipping the write means the handoff
+    never fires and the customer waits forever -- strictly worse than the
+    label loss it would avoid. Falls back to today's exact behaviour."""
+
+    class _ReadFails(_StatefulLabelsClient):
+        async def _request(
+            self, method: str, path: str, payload: dict[str, Any] | None = None
+        ) -> dict[str, Any] | None:
+            if method == "GET" and path.endswith("/labels"):
+                return None
+            return await super()._request(method, path, payload)
+
+    fake = _ReadFails(seeded=[])
+    adapter = _reusing_adapter(fake, "whatsapp-+60123")
+    await adapter.create_ticket(
+        session_id="whatsapp-+60123", title="Refund", body="help", urgency="high"
+    )
+    assert {"ai-escalation", "escalate"} <= set(fake.labels)

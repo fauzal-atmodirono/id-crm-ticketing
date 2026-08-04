@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
+from structlog.testing import capture_logs
 
+import chatbot.features.chat.adapters.chatwoot as chatwoot_module
 from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
 from chatbot.features.chat.ports import ConversationLogResult
 from chatbot.platform.config import Settings
@@ -116,6 +119,132 @@ async def test_classification_label_survives_a_later_unrelated_tag() -> None:
     await adapter.set_ticket_classification("55", division="Sales")
     await adapter.add_ticket_tag("55", "csat_4")
     assert set(fake._labels) == {"division_sales", "csat_4"}
+
+
+class _SlowStatefulClient:
+    """Chatwoot with a REAL read-modify-write window.
+
+    The response is snapshotted at request time and only handed back after
+    yielding to the event loop -- which is what an in-flight HTTP GET
+    actually is. Snapshotting after the yield instead would make every read
+    see the latest state and silently serialise the writers, which is how a
+    concurrency test ends up vacuous.
+    """
+
+    def __init__(self) -> None:
+        self.attrs: dict[str, Any] = {}
+        self.labels: list[str] = []
+
+    async def _request(
+        self, method: str, path: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        if method == "GET" and path.endswith("/labels"):
+            snapshot = list(self.labels)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            return {"payload": snapshot}
+        if method == "POST" and path.endswith("/labels") and payload is not None:
+            self.labels = [str(v) for v in payload.get("labels", [])]
+            return {}
+        if method == "GET" and "/conversations/" in path:
+            snapshot_attrs = dict(self.attrs)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            return {"custom_attributes": snapshot_attrs}
+        if method == "POST" and path.endswith("/custom_attributes") and payload is not None:
+            self.attrs = dict(payload.get("custom_attributes") or {})
+            return {}
+        return {}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_custom_attribute_writers_do_not_lose_a_key() -> None:
+    """Whole-branch review fix (Important 8): merge-safe is not enough --
+    two concurrent GET->union->POST cycles on the SAME conversation both
+    read the old state and the loser's key vanishes. finalize()'s
+    external_id/case_category write and the recording-status callback's
+    recording_url write overlap at hangup, so this is a real interleaving,
+    not a theoretical one. A per-ticket lock inside the adapter serialises
+    them."""
+    fake = _SlowStatefulClient()
+    adapter = ChatwootAdapter(Settings(chatwoot_account_id=1, chatwoot_inbox_id=7))
+    adapter._request = fake._request  # type: ignore[method-assign]
+    await asyncio.gather(
+        adapter._merge_custom_attributes("55", {"external_id": "phone-CA1"}),
+        adapter._merge_custom_attributes("55", {"recording_url": "https://rec"}),
+        adapter._merge_custom_attributes("55", {"case_category": "Aftersales"}),
+    )
+    assert fake.attrs == {
+        "external_id": "phone-CA1",
+        "recording_url": "https://rec",
+        "case_category": "Aftersales",
+    }
+
+
+@pytest.mark.asyncio
+async def test_concurrent_tag_writers_do_not_lose_a_label() -> None:
+    """Same race on the labels endpoint: finalize()'s `division_<slug>` and
+    the dial-status callback's `unanswered_handoff` are concurrent."""
+    fake = _SlowStatefulClient()
+    adapter = ChatwootAdapter(Settings(chatwoot_account_id=1, chatwoot_inbox_id=7))
+    adapter._request = fake._request  # type: ignore[method-assign]
+    await asyncio.gather(
+        adapter.add_ticket_tag("55", "division_sales"),
+        adapter.add_ticket_tag("55", "unanswered_handoff"),
+        adapter.add_ticket_tag("55", "csat_4"),
+    )
+    assert set(fake.labels) == {"division_sales", "unanswered_handoff", "csat_4"}
+
+
+@pytest.mark.asyncio
+async def test_ticket_lock_map_is_bounded_and_never_evicts_a_held_lock() -> None:
+    adapter = ChatwootAdapter(Settings(chatwoot_account_id=1, chatwoot_inbox_id=7))
+    held = adapter._ticket_lock("HELD")
+    await held.acquire()
+    try:
+        for i in range(chatwoot_module._TICKET_LOCK_CAP + 50):
+            adapter._ticket_lock(f"T-{i}")
+        assert len(adapter._ticket_locks) <= chatwoot_module._TICKET_LOCK_CAP + 2
+        assert adapter._ticket_locks.get("HELD") is held
+    finally:
+        held.release()
+
+
+@pytest.mark.asyncio
+async def test_add_ticket_tag_read_failure_is_quiet_when_chatwoot_is_disabled() -> None:
+    """Whole-branch review minor: `_merge_custom_attributes` already made
+    this distinction; `add_ticket_tag` did not, so a deliberately
+    Chatwoot-less tenant got a standing ERROR on every tag write."""
+    adapter = ChatwootAdapter(
+        Settings(chatwoot_account_id=1, chatwoot_inbox_id=7, chatwoot_enabled=False)
+    )
+    fake = _FakeClient({("GET", "/labels"): None})
+    adapter._request = fake._request  # type: ignore[method-assign]
+    with capture_logs() as captured:
+        await adapter.add_ticket_tag("55", "vip")
+    events = [e["event"] for e in captured]
+    assert "chatwoot_add_ticket_tag_read_failed" not in events
+    assert "chatwoot_add_ticket_tag_skipped_disabled" in events
+
+
+@pytest.mark.asyncio
+async def test_find_conversation_ticket_does_not_grow_the_session_cache() -> None:
+    """Whole-branch review minor: every phone call has a unique
+    `phone-<CallSid>` session id, so caching here added one permanent entry
+    per call to a map nothing evicts -- and the id cached could be a
+    RESOLVED conversation, which `_find_or_create_conversation`'s
+    active-only reuse rule (sharing the same map) must not adopt."""
+    fake = _FakeClient(
+        {
+            ("GET", "/contacts/search"): {"payload": [{"id": 3, "identifier": "phone-CA1"}]},
+            ("GET", "/conversations"): {
+                "payload": [{"id": 91, "source_id": "phone-CA1", "status": "resolved"}]
+            },
+        }
+    )
+    adapter = _adapter(fake)
+    assert await adapter.find_conversation_ticket("phone-CA1") == "91"
+    assert adapter._conv_by_session == {}
 
 
 @pytest.mark.asyncio

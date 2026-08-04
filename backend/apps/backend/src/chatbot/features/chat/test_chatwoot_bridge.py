@@ -106,7 +106,7 @@ async def test_open_handoff_posts_incoming_customer_message_before_labels() -> N
         for i, (_m, p, pl) in enumerate(calls)
         if p.endswith("/messages") and (pl or {}).get("message_type") == "incoming"
     )
-    lbl = next(i for i, (_m, p, _pl) in enumerate(calls) if p.endswith("/labels"))
+    lbl = next(i for i, (m, p, _pl) in enumerate(calls) if p.endswith("/labels") and m == "POST")
     assert inc < lbl, "incoming message must precede the label (webhook trigger)"
     inc_payload = calls[inc][2]
     assert inc_payload is not None and inc_payload["content"] == "my ring broke"
@@ -131,9 +131,7 @@ async def test_open_handoff_marks_conversation_as_ai_handoff() -> None:
         transcript=(Message(role="user", text="connect me to a human"),),
     )
     await adapter.open_handoff(payload)
-    create = next(
-        pl for m, p, pl in fake.calls if m == "POST" and p.endswith("/conversations")
-    )
+    create = next(pl for m, p, pl in fake.calls if m == "POST" and p.endswith("/conversations"))
     assert create is not None
     assert create.get("additional_attributes") == {"ai_handoff": True}
 
@@ -168,7 +166,10 @@ async def test_open_handoff_writes_dimension_labels_in_single_final_call() -> No
         reason="negative_sentiment",  # complaint -> complaint label applied
     )
     await adapter.open_handoff(payload)
-    labels_calls = [pl for _m, p, pl in fake.calls if p.endswith("/labels")]
+    # Whole-branch review fix (Important 9): the single labels write is now
+    # preceded by a GET of the current set (merge-safe union). Filter on the
+    # POST -- the "exactly one labels POST" batching invariant is unchanged.
+    labels_calls = [pl for m, p, pl in fake.calls if p.endswith("/labels") and m == "POST"]
     assert len(labels_calls) == 1
     labels = labels_calls[0]["labels"]  # type: ignore[index]
     assert labels == [
@@ -254,6 +255,9 @@ async def test_open_handoff_plain_human_request_stays_chatwoot_only() -> None:
         reason="help_request",
     )
     await adapter.open_handoff(payload)
-    labels_calls = [pl for _m, p, pl in fake.calls if p.endswith("/labels")]
+    # Whole-branch review fix (Important 9): the single labels write is now
+    # preceded by a GET of the current set (merge-safe union). Filter on the
+    # POST -- the "exactly one labels POST" batching invariant is unchanged.
+    labels_calls = [pl for m, p, pl in fake.calls if p.endswith("/labels") and m == "POST"]
     assert len(labels_calls) == 1
     assert labels_calls[0]["labels"] == ["ai-escalation"]  # type: ignore[index]

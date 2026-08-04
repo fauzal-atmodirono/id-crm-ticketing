@@ -31,6 +31,12 @@ _log = structlog.get_logger(__name__)
 
 _PRIORITY_MAP = {"low": "low", "medium": "medium", "high": "high", "urgent": "urgent"}
 
+# Ceiling on ChatwootAdapter._ticket_locks (see _ticket_lock). Locks are
+# held for the duration of one GET+POST pair, so the live set is tiny --
+# this only stops the MAP from growing without bound over a long-lived
+# process, and only unlocked entries are ever evicted.
+_TICKET_LOCK_CAP = 512
+
 # additional_attributes marker stamped on conversations created by an AI
 # escalation/handoff (not a fresh customer chat). The agent sync service reads
 # this off the conversation_created webhook to skip its AI-disclaimer greeting —
@@ -107,6 +113,9 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         self._conv_by_session: dict[str, str] = {}
         self._routing_service: RoutingService | None = None
         self._channel_cache: str | None = None
+        # Whole-branch review fix (Important 8): per-conversation mutex for
+        # the read-modify-write helpers -- see _ticket_lock().
+        self._ticket_locks: dict[str, asyncio.Lock] = {}
 
     def _synth_customer_email(self, session_id: str) -> str:
         """Deterministic synthetic email for a session's Chatwoot contact.
@@ -320,6 +329,90 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             _log.error("chatwoot_request_failed", method=method, path=path, error=str(e))
             return None
 
+    def _ticket_lock(self, ticket_id: str) -> asyncio.Lock:
+        """Per-conversation mutex for the GET->union->POST helpers below.
+
+        Whole-branch review fix (Important 8): ``_merge_custom_attributes``
+        and ``add_ticket_tag`` are read-modify-write cycles against
+        endpoints that REPLACE the whole object/set. Making each one
+        merge-safe fixed the "one writer erases another key" bug, but not
+        the interleaving one: two concurrent writers on the SAME
+        conversation can both GET the old state, then both POST their own
+        union, and whichever lands second silently drops the other's key.
+        The windows genuinely overlap on the phone path -- ``finalize()``
+        writes ``external_id``/``case_category``/a ``division_<slug>``
+        label at hangup while the Twilio recording-status callback writes
+        ``recording_url`` and the dial-status callback writes an
+        ``unanswered_handoff`` tag, all within a second or two of each
+        other.
+
+        Serialising per ticket id closes that window for the deployment
+        this actually ships as: ONE backend container per tenant, so every
+        writer for a given conversation is in this process. RESIDUE, stated
+        plainly: this is a process-local lock, so it does NOT protect
+        against a second replica, a restart mid-write, or the sibling
+        ``agent/`` service writing the same conversation. A true fix needs
+        either Chatwoot-side merge semantics or an optimistic-concurrency
+        retry on a version/etag, neither of which the Application API
+        offers today.
+
+        The lock map is bounded (unlike ``_conv_by_session`` used to be):
+        once it exceeds ``_TICKET_LOCK_CAP``, currently-unlocked entries
+        are dropped. Dropping an unlocked lock is safe -- a later writer
+        simply makes a fresh one -- while a HELD lock is never evicted, so
+        mutual exclusion can't be broken by eviction.
+        """
+        lock = self._ticket_locks.get(ticket_id)
+        if lock is None:
+            # No await between the get and the set, so this is atomic with
+            # respect to other coroutines: two callers cannot end up with
+            # two different Lock objects for the same ticket.
+            lock = asyncio.Lock()
+            self._ticket_locks[ticket_id] = lock
+        if len(self._ticket_locks) > _TICKET_LOCK_CAP:
+            for key in [k for k, v in self._ticket_locks.items() if not v.locked()]:
+                if key != ticket_id:
+                    del self._ticket_locks[key]
+        return lock
+
+    async def _post_labels_union(self, conv_id: str, labels: list[str]) -> None:
+        """Apply a BATCH of labels in one POST without replacing the set.
+
+        Whole-branch review fix (Important 9): ``create_ticket`` and
+        ``open_handoff`` both POSTed ``{"labels": [...]}`` directly --
+        the fifth instance of this codebase's recurring footgun, since
+        Chatwoot's labels endpoint REPLACES the whole set. The
+        conversation they write to is one ``_find_or_create_conversation``
+        may have REUSED, so a second escalation on the same session wiped
+        `csat_*`/`nps_*`/a prior `division_*`/`dealer_*`. Not reachable
+        from the phone path, but live on the WhatsApp/web escalation path.
+
+        The batching rationale in both call sites is sound and preserved:
+        ONE labels POST, so a downstream sync acting on
+        ``conversation_updated`` fires once rather than once per label.
+        This just unions the current set into that same single POST.
+
+        DELIBERATELY UNLIKE ``add_ticket_tag``'s read-failure rule, which
+        skips the write entirely: the labels this carries are the
+        ESCALATION trigger, so skipping means the handoff never fires and
+        the customer waits forever -- strictly worse than the label loss it
+        would avoid. On a read failure this therefore posts the new labels
+        anyway (today's exact behaviour, logged), never silently doing
+        nothing. Serialised under the per-conversation lock like every
+        other read-modify-write here (see ``_ticket_lock``).
+        """
+        async with self._ticket_lock(conv_id):
+            res = await self._request("GET", f"/conversations/{conv_id}/labels")
+            current: list[str] = []
+            if res is None:
+                if self._settings.chatwoot_enabled:
+                    _log.error("chatwoot_labels_read_failed", conversation_id=conv_id)
+            else:
+                payload = res.get("payload") if isinstance(res, dict) else None
+                current = [str(x) for x in payload] if isinstance(payload, list) else []
+            union = list(dict.fromkeys([*current, *labels]))
+            await self._request("POST", f"/conversations/{conv_id}/labels", {"labels": union})
+
     async def _merge_custom_attributes(self, ticket_id: str, attributes: dict[str, Any]) -> None:
         """Merge-set conversation custom attributes without clobbering
         existing ones. Chatwoot's custom-attributes endpoint REPLACES the
@@ -353,20 +446,29 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         ERROR would fire on every single write for such a tenant and look
         like a standing outage. Mirrors ``PhoneBridge._create_ticket_at_
         start``'s identical disabled-vs-failed distinction.
+
+        Held under the per-conversation lock (see ``_ticket_lock``) so a
+        concurrent writer cannot read the same "before" state and then post
+        a union that drops this one's keys.
         """
-        res = await self._request("GET", f"/conversations/{ticket_id}")
-        if res is None:
-            if self._settings.chatwoot_enabled:
-                _log.error("chatwoot_custom_attributes_read_failed", ticket_id=ticket_id)
-            else:
-                _log.info("chatwoot_custom_attributes_write_skipped_disabled", ticket_id=ticket_id)
-            return
-        existing = res.get("custom_attributes") if isinstance(res, dict) else None
-        current = existing if isinstance(existing, dict) else {}
-        merged = {**current, **attributes}
-        await self._request(
-            "POST", f"/conversations/{ticket_id}/custom_attributes", {"custom_attributes": merged}
-        )
+        async with self._ticket_lock(ticket_id):
+            res = await self._request("GET", f"/conversations/{ticket_id}")
+            if res is None:
+                if self._settings.chatwoot_enabled:
+                    _log.error("chatwoot_custom_attributes_read_failed", ticket_id=ticket_id)
+                else:
+                    _log.info(
+                        "chatwoot_custom_attributes_write_skipped_disabled", ticket_id=ticket_id
+                    )
+                return
+            existing = res.get("custom_attributes") if isinstance(res, dict) else None
+            current = existing if isinstance(existing, dict) else {}
+            merged = {**current, **attributes}
+            await self._request(
+                "POST",
+                f"/conversations/{ticket_id}/custom_attributes",
+                {"custom_attributes": merged},
+            )
 
     async def _find_or_create_contact(
         self,
@@ -602,19 +704,20 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         # needlessly re-fire the webhook.
         dimension_labels = self._dimension_labels(division, department, sla_minutes)
         pic_lbl = await self._pic_label(department)
-        await self._request(
-            "POST",
-            f"/conversations/{conv_id}/labels",
-            {
-                "labels": list(
-                    dict.fromkeys(
-                        dimension_labels
-                        + ([pic_lbl] if pic_lbl else [])
-                        + self._escalation_labels()
-                        + self._complaint_labels(None, urgency)
-                    )
+        # Merge-safe (Important 9): _find_or_create_conversation above may
+        # have REUSED an active conversation that already carries labels
+        # (csat_*/nps_*, a prior division_*/dealer_*) -- a bare assign here
+        # deletes them. Still exactly one POST; see _post_labels_union.
+        await self._post_labels_union(
+            conv_id,
+            list(
+                dict.fromkeys(
+                    dimension_labels
+                    + ([pic_lbl] if pic_lbl else [])
+                    + self._escalation_labels()
+                    + self._complaint_labels(None, urgency)
                 )
-            },
+            ),
         )
         return conv_id
 
@@ -721,6 +824,16 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         id) when no contact or no matching conversation exists, so the
         caller can skip rather than risk attaching data to -- or worse,
         creating -- the wrong conversation.
+
+        Whole-branch review minor: this READS ``_conv_by_session`` (a hit is
+        the cheap common case on the same process that handled the call)
+        but no longer WRITES to it. Every phone call has a unique
+        ``phone-<CallSid>`` session id, so writing here added one permanent
+        entry per call to a map nothing ever evicts -- and the id written
+        could be a RESOLVED conversation, which is correct for this
+        callback but wrong for ``_find_or_create_conversation``'s
+        active-only reuse rule that shares the same map. Not caching costs
+        two GETs on a path that runs at most twice per call.
         """
         if session_id in self._conv_by_session:
             return self._conv_by_session[session_id]
@@ -740,9 +853,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             if source_id is not None and str(source_id) == session_id:
                 cid = conv.get("id")
                 if cid is not None:
-                    ticket_id = str(cid)
-                    self._conv_by_session[session_id] = ticket_id
-                    return ticket_id
+                    return str(cid)
         return None
 
     async def append_conversation_comment(
@@ -789,15 +900,32 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         Losing this one tag is recoverable (nothing here treats it as fatal);
         wiping a real conversation's labels is not. So: log and skip the
         write entirely rather than guess.
+
+        Held under the per-conversation lock (see ``_ticket_lock``, Important
+        8): ``finalize()``'s ``division_<slug>`` and the dial-status
+        callback's ``unanswered_handoff`` are two concurrent tag writes on
+        the same conversation, and interleaved GET->union->POST cycles drop
+        whichever landed second's tag.
+
+        Whole-branch review minor: the read-failure log now makes the same
+        disabled-vs-failed distinction ``_merge_custom_attributes`` does. A
+        tenant that deliberately runs with ``chatwoot_enabled=False`` was
+        otherwise emitting a standing ERROR on every single tag write.
         """
-        res = await self._request("GET", f"/conversations/{ticket_id}/labels")
-        if res is None:
-            _log.error("chatwoot_add_ticket_tag_read_failed", ticket_id=ticket_id, tag=tag)
-            return
-        payload = res.get("payload") if isinstance(res, dict) else None
-        current = [str(x) for x in payload] if isinstance(payload, list) else []
-        union = list(dict.fromkeys([*current, tag]))  # preserve order, dedup
-        await self._request("POST", f"/conversations/{ticket_id}/labels", {"labels": union})
+        async with self._ticket_lock(ticket_id):
+            res = await self._request("GET", f"/conversations/{ticket_id}/labels")
+            if res is None:
+                if self._settings.chatwoot_enabled:
+                    _log.error("chatwoot_add_ticket_tag_read_failed", ticket_id=ticket_id, tag=tag)
+                else:
+                    _log.info(
+                        "chatwoot_add_ticket_tag_skipped_disabled", ticket_id=ticket_id, tag=tag
+                    )
+                return
+            payload = res.get("payload") if isinstance(res, dict) else None
+            current = [str(x) for x in payload] if isinstance(payload, list) else []
+            union = list(dict.fromkeys([*current, tag]))  # preserve order, dedup
+            await self._request("POST", f"/conversations/{ticket_id}/labels", {"labels": union})
 
     async def has_ticket_tag(self, ticket_id: str, tag: str) -> bool:
         """Review fix (Important 3): lets a caller make a write idempotent
@@ -1002,19 +1130,18 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             payload.sla_minutes,
         )
         pic_lbl = await self._pic_label(payload.department)
-        await self._request(
-            "POST",
-            f"/conversations/{conv_id}/labels",
-            {
-                "labels": list(
-                    dict.fromkeys(
-                        dimension_labels
-                        + ([pic_lbl] if pic_lbl else [])
-                        + self._escalation_labels()
-                        + self._complaint_labels(payload.reason, payload.urgency)
-                    )
+        # Merge-safe (Important 9) -- see create_ticket's identical comment
+        # and _post_labels_union. Still exactly one labels POST.
+        await self._post_labels_union(
+            conv_id,
+            list(
+                dict.fromkeys(
+                    dimension_labels
+                    + ([pic_lbl] if pic_lbl else [])
+                    + self._escalation_labels()
+                    + self._complaint_labels(payload.reason, payload.urgency)
                 )
-            },
+            ),
         )
         return conv_id
 

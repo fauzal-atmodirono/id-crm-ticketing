@@ -1,4 +1,12 @@
-"""BigQuery table schema + view DDL for the conversations metrics table."""
+"""BigQuery table schema + view DDL for the conversations metrics table.
+
+**Time zone: every date bucket in this file is a UTC calendar day.**
+`created_at` is a TIMESTAMP (absolute time, no zone), and bare
+`DATE(created_at)` / `DATE_TRUNC(DATE(created_at), ...)` /
+`EXTRACT(... FROM created_at)` all default to UTC in BigQuery -- none of
+them takes the server's or the reader's zone into account. See the
+day-grain views below for what that means for the period-scoped pages.
+"""
 
 # ruff: noqa: S608  # DDL generation: project/dataset/table are internal config, not user input
 
@@ -179,6 +187,37 @@ def view_ddls(
             f"COUNTIF(nps_score IS NOT NULL)) * 100 AS nps "
             f"FROM {fq} WHERE channel IN ('Phone', 'WhatsApp') GROUP BY agent_id, channel"
         ),
+        # ── The three day-grain views (`v_volume_daily`,
+        # `v_state_trend_daily`, `v_volume_by_type_division_daily`) are the
+        # sources every period-scoped read filters through
+        # (`query_adapter._day_grain_block_for_period`, `WHERE day BETWEEN
+        # @start AND @end`). Their `day` column, and therefore every week
+        # and month bucket derived from it, is a **UTC calendar day**:
+        # `DATE(created_at)` on a TIMESTAMP defaults to UTC in BigQuery.
+        #
+        # The Weekly Report picker builds its window from **browser-local**
+        # dates and sends them as bare `from`/`to` date strings. For a
+        # Malaysian tenant (UTC+8) the two disagree by 8 hours at both
+        # edges: a case created 07:00 MYT on Fri 17 Jul is 23:00 UTC on
+        # Thu 16 Jul and lands in the *previous* week's bucket, while one
+        # created 23:00 MYT on Thu 23 Jul lands in the next. The visible
+        # effect is a small, systematic shift of cases between adjacent
+        # buckets -- not a total that is wrong by a fixed amount, which is
+        # why it will not show up as an obvious error at the acceptance
+        # gate; it will show up as "close but not quite" against a deck
+        # that is presumably compiled in MYT.
+        #
+        # This is documented, not silently "fixed": changing these to
+        # `DATE(created_at, 'Asia/Kuala_Lumpur')` would re-bucket every
+        # historical figure on every existing dashboard in one deploy,
+        # including the month-grain views patch 0020's live charts read.
+        # The right eventual fix is a tenant-configurable reporting time
+        # zone threaded through `view_ddls()` (a `Settings` field, defaulted
+        # to UTC so today's numbers are unchanged) -- recommended, not built
+        # here. Logged in the Package E spec's §11.4 discrepancy log so the
+        # live reconciliation attributes any edge-of-window mismatch to this
+        # rather than to a definitional difference. (Package E final fix,
+        # finding I4.)
         "v_volume_daily": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_daily` AS "
             f"SELECT DATE(created_at) AS day, channel, COUNT(*) AS volume "
@@ -287,6 +326,8 @@ def view_ddls(
         # "tidy up" this duplication into one view; the two grains exist
         # because the plan's general prefer-widening-over-parallel-views
         # rule (Task 2 Step 3) is infeasible for exactly this shape.
+        # `day` here is a UTC calendar day -- see the note above
+        # `v_volume_daily` for the tenant-timezone consequence.
         "v_state_trend_daily": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_state_trend_daily` AS "
             f"SELECT DATE(created_at) AS day, status, "
@@ -353,6 +394,8 @@ def view_ddls(
         # same SELECT * assumption every other reader in this codebase
         # uses. A separate day-grain sibling avoids ever having to find
         # out the hard way.
+        # `day` here is a UTC calendar day -- see the note above
+        # `v_volume_daily` for the tenant-timezone consequence.
         "v_volume_by_type_division_daily": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_by_type_division_daily` AS "
             f"SELECT DATE(created_at) AS day, channel, "

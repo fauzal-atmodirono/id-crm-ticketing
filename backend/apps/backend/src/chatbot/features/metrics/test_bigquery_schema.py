@@ -1,3 +1,4 @@
+from chatbot.features.metrics import bigquery_schema
 from chatbot.features.metrics.bigquery_schema import CONVERSATIONS_SCHEMA, view_ddls
 
 
@@ -200,9 +201,12 @@ def test_v_state_trend_ddl() -> None:
     assert "status" in sql
     assert "FORMAT_DATE" in sql
     assert "COUNT(*)" in sql
-    # Task 2 (Package E): query_adapter.py hardcodes date_column="month_start"
-    # for this view -- pin the column's existence so a drifted DDL fails the
-    # suite instead of silently returning [] with green tests.
+    # Task 2 (Package E): `month_start` is no longer *filtered* on -- the
+    # period path routes through v_state_trend_daily and `_query_block`'s
+    # date_column kwarg was deleted (final fix, finding M1). The column
+    # stays, and stays pinned here, because StateTrendRow declares it and
+    # export.py emits it: a drifted DDL that dropped it would silently
+    # blank an exported column with green tests.
     assert "AS month_start" in sql
     assert "GROUP BY month, month_start, status, division" in sql
 
@@ -279,10 +283,28 @@ def test_view_ddls_includes_volume_and_category_cross_tabs() -> None:
     assert "case_type" in ddls["v_volume_by_type_division"]
     assert "v_category_by_vehicle_model" in ddls
     assert "vehicle_model" in ddls["v_category_by_vehicle_model"]
-    # Task 2 (Package E): query_adapter.py hardcodes date_column="month_start"
-    # for this view too -- same drift guard as v_state_trend above.
+    # Task 2 (Package E): same as v_state_trend above -- not filtered on
+    # any more, but declared on the row type and exported, so still pinned.
     assert "AS month_start" in ddls["v_volume_by_type_division"]
     assert (
         "GROUP BY month, month_start, channel, case_type, division"
         in ddls["v_volume_by_type_division"]
     )
+
+
+def test_day_grain_views_document_their_utc_bucketing() -> None:
+    """Package E final fix, finding I4. `DATE(created_at)` on a TIMESTAMP
+    is a UTC calendar day in BigQuery, while the Weekly Report picker
+    builds its window from browser-local dates -- an 8-hour disagreement
+    at both edges for a UTC+8 tenant. The semantics are deliberately
+    unchanged (re-bucketing every historical figure in one deploy is worse
+    than a known, documented offset); what must not happen is the
+    disagreement being rediscovered at the acceptance gate as an
+    unexplained mismatch. Pin the note so a future edit can't quietly
+    drop it."""
+    assert bigquery_schema.__doc__ is not None
+    assert "UTC calendar day" in bigquery_schema.__doc__
+    # and the views the note is about still exist to be read alongside it
+    ddls = view_ddls("proj", "ds", "conversations")
+    for view in ("v_volume_daily", "v_state_trend_daily", "v_volume_by_type_division_daily"):
+        assert "DATE(created_at) AS day" in ddls[view]

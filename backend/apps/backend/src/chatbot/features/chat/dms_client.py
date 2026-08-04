@@ -216,6 +216,17 @@ async def probe(config: DmsConfig, credential: str, client: httpx.AsyncClient) -
             status="unexpected_status",
             message=f"Could not reach {label}: connection failed.",
         )
+    except Exception:
+        # Catches anything a malformed operator-supplied base_url/header can
+        # raise that isn't an httpx.HTTPError -- e.g. httpx.InvalidURL, which
+        # (unlike httpx.UnsupportedProtocol) does NOT subclass HTTPError.
+        # A DMS outage/misconfiguration must degrade, never raise -- see the
+        # package's fail-open invariant -- so this is the deliberate last
+        # resort, not a swallowed bug.
+        result = ProbeResult(
+            status="unexpected_status",
+            message=f"Could not reach {label}: request failed.",
+        )
     else:
         if response.status_code == _HTTP_OK:
             result = ProbeResult(status="reachable", message=f"{label} is reachable (HTTP 200).")

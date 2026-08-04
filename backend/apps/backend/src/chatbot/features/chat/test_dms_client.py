@@ -167,6 +167,30 @@ async def test_probe_maps_connection_error_to_unexpected_status() -> None:
     assert result.status == "unexpected_status"
 
 
+async def test_probe_never_raises_on_a_malformed_base_url() -> None:
+    """`httpx.InvalidURL` (e.g. from an unmatched IPv6 bracket) does NOT
+    subclass `httpx.HTTPError`, unlike most httpx request errors -- a naive
+    `except httpx.HTTPError` alone would let this one propagate out of
+    probe(), breaking the "never raises" invariant. This never reaches the
+    handler at all (URL parsing fails first), so no transport is needed.
+    """
+    cfg = DmsConfig(
+        enabled=True,
+        provider_label="Proton DMS",
+        base_url="https://[::1",
+        auth_type="api_key_header",
+        extra_header_name="",
+        extra_header_value="",
+        timeout_seconds=5.0,
+        retries=0,
+    )
+    async with httpx.AsyncClient() as client:
+        result = await probe(cfg, CREDENTIAL, client)
+
+    assert result.status == "unexpected_status"
+    assert CREDENTIAL not in result.message
+
+
 # --- probe() message sanitisation ------------------------------------------
 
 

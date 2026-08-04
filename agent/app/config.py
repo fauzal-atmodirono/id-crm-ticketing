@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     # and forwarded to backend/'s /chat/turn as multimodal Parts alongside
     # the text.
     whatsapp_media_understanding_enabled: bool = False
+    # Videos above this are skipped rather than sent to Gemini: WhatsApp caps
+    # inbound video at 16 MB and Gemini inline request data at roughly 20 MB,
+    # so 16 MB fits inline and no Files API upload is needed.
+    whatsapp_video_max_bytes: int = 16 * 1024 * 1024
 
     # Conversation lifecycle & auto-close (feature is a no-op when disabled).
     # Drives the Proton process-flow SOP: idle warn/close, resolution

@@ -15,6 +15,17 @@ note below):
         --account-id 1 --inbox-id 42 --backend-url https://... --backend-key ***
 
     python3 -m seed_demo_data purge --tenant proton --batch <id> ...
+
+    python3 -m seed_demo_data backdate --manifest <path> \\
+        --database-url postgresql://... [--execute]
+
+Three subcommands, not one flag-driven command, because they have
+genuinely different consequence profiles: `seed`/`purge` talk to the
+Chatwoot Application API (Task 2's `client.py`) and need Chatwoot
+credentials; `backdate` (Part B) talks *directly* to a tenant's Postgres
+and deliberately takes its own `--database-url` with no default and no
+auto-discovery from the environment -- see `backdate.py`'s module
+docstring for why that write needs its own, separate seriousness.
 """
 
 from __future__ import annotations
@@ -26,6 +37,7 @@ import os
 import sys
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 # This package has no __init__.py on purpose (see generator.py/client.py's
 # own docstrings) so pytest can put the directory on sys.path directly. But
@@ -33,12 +45,19 @@ from datetime import datetime, timezone
 # up, where this directory is NOT on sys.path -- so client.py's `from
 # generator import ...` (and this file's own sibling imports below) would
 # fail without this. Must run before any sibling import.
-from pathlib import Path
-
 _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
+from backdate import (  # noqa: E402
+    ManifestEntry,
+    backdate_conversation,
+    backdate_messages,
+    fetch_current_rows,
+    load_manifest,
+    select_backdate_targets,
+    write_manifest,
+)
 from client import TenantConfig, aclose, configure, create_case, create_contact, create_rsa_incident, purge  # noqa: E402
 from generator import generate  # noqa: E402
 
@@ -48,8 +67,8 @@ from generator import generate  # noqa: E402
 
 def _confirm(expected: str, prompt: str) -> bool:
     """Require the operator to type `expected` back exactly. Used before
-    every write path (seed, purge) -- the one thing standing between a
-    typo'd flag and a live tenant's data."""
+    every write path (seed, purge, backdate --execute) -- the one thing
+    standing between a typo'd flag and a live tenant's data."""
     typed = input(prompt)
     return typed == expected
 
@@ -151,6 +170,7 @@ async def _run_seed(args: argparse.Namespace, parser: argparse.ArgumentParser) -
 
     case_type_counts = collections.Counter(c.case_type for c in cases)
     channel_counts = collections.Counter(c.channel for c in cases)
+    manifest_path = args.manifest_path or (Path(args.manifest_dir) / f"seed-manifest-{batch_id}.json")
 
     # Config is resolved (and shown) even on a --dry-run: the brief's dry-run
     # summary is required to include "the target tenant and base URL", and
@@ -167,6 +187,7 @@ async def _run_seed(args: argparse.Namespace, parser: argparse.ArgumentParser) -
     print(f"  by case type:    {dict(case_type_counts)}")
     print(f"  by channel:      {dict(channel_counts)}")
     print(f"RSA incidents:     {len(rsa_payloads)}")
+    print(f"Manifest will be written to: {manifest_path}")
     print(f"Chatwoot base URL: {config.chatwoot_base_url}")
     print(f"Chatwoot account:  {config.chatwoot_account_id}")
     print(f"Chatwoot inbox:    {config.chatwoot_inbox_id}")
@@ -181,7 +202,7 @@ async def _run_seed(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         return 1
 
     configure(config)
-    conversations_created = 0
+    manifest_entries: list[ManifestEntry] = []
     try:
         print(f"\nCreating {len(contacts)} contacts...")
         contact_ids: list[int] = []
@@ -191,22 +212,27 @@ async def _run_seed(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         print(f"Creating {len(cases)} cases...")
         for case_index, case in enumerate(cases):
             contact_id = contact_ids[case.contact_index]
-            await create_case(case, contact_id, batch_id, case_index)
-            conversations_created += 1
+            conversation_id = await create_case(case, contact_id, batch_id, case_index)
+            manifest_entries.append(ManifestEntry(conversation_id=conversation_id, created_at=case.created_at))
 
         print(f"Creating {len(rsa_payloads)} RSA incidents...")
         for payload in rsa_payloads:
             await create_rsa_incident(payload)
     finally:
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        write_manifest(manifest_path, batch_id=batch_id, tenant=args.tenant, entries=manifest_entries)
         await aclose()
 
     print("\n=== Seed complete ===")
     print(f"BATCH ID: {batch_id}")
-    print("(save this -- purge can only target a batch it's given this id)")
-    print(f"Conversations created: {conversations_created} / {len(cases)}")
-    if conversations_created < len(cases):
+    print("(save this -- purge and backdate can only target a batch they're given this id)")
+    print(f"Manifest: {manifest_path}")
+    print(f"Conversations created: {len(manifest_entries)} / {len(cases)}")
+    if len(manifest_entries) < len(cases):
         print("WARNING: fewer conversations were created than requested -- the run likely raised partway through.", file=sys.stderr)
         return 1
+    print("\nTo backdate this batch's conversations into the past for reporting:")
+    print(f"  python3 -m seed_demo_data backdate --manifest {manifest_path} --database-url <tenant's Chatwoot DB URL> --execute")
     print("\nTo remove everything this batch created:")
     print(f"  python3 -m seed_demo_data purge --tenant {args.tenant} --batch {batch_id} ...")
     return 0
@@ -264,6 +290,77 @@ def _cmd_purge(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
     return asyncio.run(_run_purge(args, parser))
 
 
+# --- backdate (Part B) ------------------------------------------------------
+
+
+def _cmd_backdate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    import psycopg  # local import: only backdate needs a Postgres driver
+
+    batch_id, entries = load_manifest(args.manifest)
+    print("=== Backdate: dry-run summary ===")
+    print(f"Manifest:          {args.manifest}")
+    print(f"Batch id:          {batch_id}")
+    print(f"Manifest entries:  {len(entries)}")
+
+    if not entries:
+        print("Manifest has no conversation entries -- nothing to do.")
+        return 0
+
+    with psycopg.connect(args.database_url) as conn:
+        with conn.cursor() as cur:
+            rows = fetch_current_rows(cur, [e.conversation_id for e in entries])
+        eligible = select_backdate_targets(entries, rows, batch_id)
+        eligible_ids = {e.conversation_id for e in eligible}
+        skipped = [e for e in entries if e.conversation_id not in eligible_ids]
+
+        print(f"\nEligible to backdate ({len(eligible)}):")
+        for entry in eligible:
+            print(f"  conversation {entry.conversation_id} -> created_at {entry.created_at.isoformat()}")
+        if skipped:
+            print(
+                f"\nSkipped ({len(skipped)}) -- id not found in this database, or its demo_seed "
+                f"marker no longer matches batch {batch_id!r} (possibly reused by real data after a purge):"
+            )
+            for entry in skipped:
+                print(f"  conversation {entry.conversation_id}")
+
+        if not args.execute:
+            print("\nDry run only -- no changes written. Re-run with --execute to apply.")
+            return 0
+
+        if not eligible:
+            print("\nNothing eligible -- nothing to write.")
+            return 0
+
+        if not _confirm(batch_id, f"\nType the batch id to confirm writing to this database ({batch_id}): "):
+            print("Confirmation did not match -- aborted, nothing written.", file=sys.stderr)
+            return 1
+
+        conversations_updated = 0
+        messages_updated = 0
+        skipped_at_write_time = 0
+        with conn.cursor() as cur:
+            for entry in eligible:
+                old_created_at = backdate_conversation(cur, entry.conversation_id, entry.created_at, batch_id)
+                if old_created_at is None:
+                    # The guard was re-checked at write time (see
+                    # backdate_conversation's docstring) and didn't match --
+                    # the row changed between our snapshot read and now.
+                    # Not fatal: skip and keep going.
+                    skipped_at_write_time += 1
+                    continue
+                conversations_updated += 1
+                messages_updated += backdate_messages(cur, entry.conversation_id, entry.created_at, old_created_at)
+        conn.commit()
+
+    print("\n=== Backdate complete ===")
+    print(f"Conversations backdated: {conversations_updated}")
+    print(f"Messages backdated:      {messages_updated}")
+    if skipped_at_write_time:
+        print(f"Skipped at write time (guard no longer matched): {skipped_at_write_time}")
+    return 0
+
+
 # --- argument parsing --------------------------------------------------------
 
 
@@ -285,11 +382,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     seed.add_argument("--batch-id", default=None, help="Override the auto-generated batch id.")
     seed.add_argument("--dry-run", action="store_true", help="Print the summary and exit without writing anything.")
+    seed.add_argument(
+        "--manifest-path",
+        type=Path,
+        default=None,
+        help="Exact path to write the batch's manifest to. Overrides --manifest-dir.",
+    )
+    seed.add_argument(
+        "--manifest-dir",
+        default=".",
+        help="Directory to write 'seed-manifest-<batch-id>.json' into (default: current directory).",
+    )
     _add_chatwoot_flags(seed, require_inbox=True)
     # `parser` is stashed per-subcommand (not the top-level parser) so
     # `_resolve_tenant_config`'s `parser.error()` calls print that
-    # subcommand's own usage line, not the top-level `{seed,purge}` one --
-    # argparse subparsers don't share error-reporting context.
+    # subcommand's own usage line, not the top-level `{seed,purge,backdate}`
+    # one -- argparse subparsers don't share error-reporting context.
     seed.set_defaults(func=_cmd_seed, parser=seed)
 
     purge_cmd = subparsers.add_parser("purge", help="Delete everything a batch created.")
@@ -298,6 +406,27 @@ def _build_parser() -> argparse.ArgumentParser:
     purge_cmd.add_argument("--dry-run", action="store_true", help="Print the summary and exit without deleting anything.")
     _add_chatwoot_flags(purge_cmd, require_inbox=False)
     purge_cmd.set_defaults(func=_cmd_purge, parser=purge_cmd)
+
+    backdate_cmd = subparsers.add_parser(
+        "backdate",
+        help="Shift a batch's conversations' created_at into the past (direct DB write; see backdate.py).",
+    )
+    backdate_cmd.add_argument(
+        "--database-url",
+        required=True,
+        help=(
+            "Tenant's Chatwoot Postgres connection string (e.g. "
+            "postgresql://chatwoot_<tenant>:***@host:5432/chatwoot_<tenant>). "
+            "REQUIRED -- no default, no auto-discovery from the environment."
+        ),
+    )
+    backdate_cmd.add_argument("--manifest", required=True, type=Path, help="Manifest path 'seed' printed on completion.")
+    backdate_cmd.add_argument(
+        "--execute",
+        action="store_true",
+        help="Actually write the backdate (after a typed confirmation). Without this flag: dry-run only.",
+    )
+    backdate_cmd.set_defaults(func=_cmd_backdate, parser=backdate_cmd)
 
     return parser
 

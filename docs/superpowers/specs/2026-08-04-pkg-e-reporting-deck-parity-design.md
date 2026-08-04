@@ -70,9 +70,28 @@ dealer escalation, SLA compliance, and WIP aging.
 | **G3** | **Case rows lack car plate, purchased-from dealer, and delay reason.** `CaseAgingRow` and `CaseLifecycleRow` have division/dealer/PIC but no plate. | Every WIP/outstanding table Proton actually circulates. | Add the fields to the CRM data (custom attributes) → sync → views. |
 | **G4** | **No targets, so no control-item table.** Nothing stores "AHT target = 5 min" or "resolution ≤ 4 working days". | Monthly section 12, the summary the client reads first. | Operator-editable targets, compared against actuals. |
 | **G5** | **No "Remarks" theme summaries.** The decks' remarks columns are human-written thematic summaries. | Sections 4-6. | Optional AI summarisation over each category's cases; flag-gated, clearly labelled as generated. |
+| **G6** | **No escalation-policy compliance metrics.** Added 2026-08-04 after reading `CRM Process Flow (1).xlsx`, which defines a 5-step escalation ladder with hard timers. Nothing measures adherence to it. | Not visible in the June/July decks, but it is a written client SOP with a **non-compliance clause**, so it will be asked for. | Track per-case escalation-step events and report against the SOP timers. Depends on **Package G** producing those events. |
 
 G1 and G3 are the ones that block a credible weekly report. G2 is genuinely
-blocked on Package C. G4 is small. G5 is a nice-to-have and should be last.
+blocked on Package C, and G6 on Package G. G4 is small. G5 is a nice-to-have
+and should be last.
+
+### 4.1 What G6 needs to report (from the client's escalation SOP)
+
+| Metric | SOP target |
+|---|---|
+| Case created in CRM after first contact | ≤ 10 minutes |
+| Dealer acknowledges the escalation email | ≤ 2 working hours |
+| 1st reminder issued after no response | at 4 working hours |
+| 2nd reminder issued after continued silence | at a further 4 working hours |
+| Final (telephone) escalation | at cumulative 8 working hours |
+| Dealer response after the phone call | ≤ 1 hour |
+| Agent updates the customer | ≤ 4 working hours from receipt |
+
+Per-dealer breach counts feed the **non-compliance under the Daily Complaint
+Clause** that the SOP names, which makes this reporting contractually
+significant rather than merely informative. Treat the numbers accordingly: they
+should be reconciled and defensible before anyone acts on them.
 
 ## 5. Design
 
@@ -156,7 +175,8 @@ own remark.
 3. G3 (case fields) — makes the WIP/outstanding tables real
 4. Monthly Report page + G4 (targets/control-item)
 5. G2 (telephony) — **after Package C**, wired into the call-performance section
-6. G5 (remarks) — optional
+6. G6 (escalation compliance) — **after Package G**, which emits the events
+7. G5 (remarks) — optional
 
 Each step is independently demoable. If the work stops after step 2, Proton
 still gets a usable weekly view.

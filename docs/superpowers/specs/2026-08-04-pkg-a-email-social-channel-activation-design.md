@@ -1,9 +1,18 @@
 # Package A — Live inbound email + Facebook/Instagram activation
 
-**Date:** 2026-08-04
+**Date:** 2026-08-04 · **Updated:** 2026-08-04 (email half now done and verified)
 **Covers demo-feedback items:** #4 (live inbound email), #5 (FB/IG connection)
 **Type:** configuration + runbook. **No first-party code changes.**
-**Effort:** hours, not days. Both are gated on credentials we don't hold yet.
+**Effort:** hours, not days.
+**Related:** `docs/analysis/2026-08-05-email-channel-questions-for-proton.md`
+(open questions for the client), and Package G for the escalation-policy build
+that email go-live ultimately depends on.
+
+> **Status 2026-08-04.** The **email half is DONE on `proton`** — inbound mail
+> arrives, conversations are created, webhooks reach the agent, exactly one
+> acknowledgement is sent. §3.5 records what was actually done and found. The
+> **FB/IG half is still blocked**, now on HTTPS (§4.2) rather than on Meta
+> Business Verification as previously believed.
 
 ---
 
@@ -14,8 +23,9 @@ end on the `proton` tenant:
 
 1. **Inbound email** working against `devotech29@gmail.com` as the demo
    mailbox, so a mail sent to that address becomes a Chatwoot conversation and
-   an agent reply goes back out as a real email. Proton will later swap in
-   their own address/domain, so nothing may hard-code the Gmail account.
+   an agent reply goes back out as a real email. Proton's production address is
+   **`e.mascentre@pronet.my`** (named in their `CRM Process Flow (1).xlsx`
+   Email tab), so nothing may hard-code the Gmail account.
 2. **Facebook and Instagram** inboxes connectable from Chatwoot's inbox
    settings, at least in a developer/test capacity, rather than showing as
    unavailable.
@@ -24,18 +34,21 @@ end on the `proton` tenant:
 
 `agent/` and `backend/` never touch either channel directly. Chatwoot owns both:
 
-- Email is a per-inbox **IMAP + SMTP** configuration inside Chatwoot
-  (`Settings → Inboxes → Add Inbox → Email`), fetched by a Sidekiq scheduled
-  job. Our tenant compose already passes outbound SMTP through
-  (`deploy/docker-compose.tenant.yml:32-39`, defaulting to the shared Mailpit
-  catcher), and `deploy/tenants/example.env:52-65` already documents the Gmail
-  app-password caveat. Nothing in our code needs to change.
-- Facebook/Instagram are Chatwoot channels that require Meta app credentials
-  supplied as environment variables to the Chatwoot containers, plus a Meta
-  app that owns the target Page/IG account.
+- Email is configured in **two separate places**, and conflating them is what
+  cost us time (see §3.5):
+  - **Outbound** — account-wide SMTP from tenant env
+    (`deploy/docker-compose.tenant.yml:32-39`, defaulting to the shared Mailpit
+    catcher; `deploy/tenants/example.env:52-65`).
+  - **Inbound** — **per-inbox IMAP, stored in the Chatwoot database**, not in
+    env. Chatwoot reads no IMAP environment variables at all. Set it at
+    `Settings → Inboxes → [Email inbox] → IMAP`; a Sidekiq job polls it.
+- Facebook/Instagram credentials are set at **runtime in the Chatwoot
+  super-admin console** (`/super_admin/app_config?config=facebook` and
+  `?config=instagram`), not via environment variables — verified on the running
+  v4.15.1 instance. See §4.3.
 
-So the deliverable here is a **verified runbook plus tenant env changes**, not
-a patch.
+So the deliverable here is a **verified runbook**, not a patch, and mostly not
+even an env change.
 
 ## 3. Design — inbound email
 
@@ -75,9 +88,11 @@ a patch.
 ### 3.3 What this unblocks
 
 The EM-7 two-thread escalation (feedback #17) only fires on **Email-channel**
-conversations (`agent/app/services/sync.py::maybe_escalate`). Until an email
-inbox exists on `proton`, that feature is untestable. This package is
-therefore a hard prerequisite for verifying #17.
+conversations (`agent/app/services/sync.py::maybe_escalate`), so an email inbox
+was a hard prerequisite for testing it. **That prerequisite is now met**
+(§3.5) — EM-7 is testable as soon as the PIC/dealer rows are populated. Note
+that what EM-7 does is now known to be a subset of Proton's actual escalation
+policy; see Package G.
 
 ### 3.4 Verification
 
@@ -85,9 +100,90 @@ therefore a hard prerequisite for verifying #17.
 |---|---|---|
 | 1 | Send mail from an outside address to `devotech29@gmail.com` | Within one IMAP poll cycle a new conversation appears in the Email inbox |
 | 2 | Reply from Chatwoot as an agent | The reply arrives in the sender's mailbox, threaded, `From:` = `MAILER_SENDER_EMAIL` |
-| 3 | Set `EMAIL_AUTOACK_ENABLED=true`, send a fresh mail | Exactly one auto-acknowledgement, once per thread |
-| 4 | Add the `escalate` label with `EMAIL_ESCALATION_ENABLED=true` and PIC/dealer rows populated | Two separate mails: customer ack + internal forward, **no CC/BCC** |
+| 3 | Send a fresh mail | **Exactly one** acknowledgement, once per thread — see §3.5.2, this failed the first time |
+| 4 | Add the `escalate` label with `EMAIL_ESCALATION_ENABLED=true` and PIC/dealer rows populated | Two separate mails: customer ack + internal forward. **The no-CC assumption here is now contested — see Package G** |
 | 5 | Check Mailpit is no longer catching proton mail | Mail leaves the box for real |
+
+### 3.5 What actually happened (2026-08-04) — findings worth keeping
+
+#### 3.5.1 The env file is only half the configuration
+
+Outbound SMTP was correctly set in `tenants/proton.env` and live in the
+containers, yet no mail ever arrived, because `channel_email.imap_enabled` was
+`false` with empty address/login/password. Chatwoot never polled the mailbox,
+so no conversation was created, so no `conversation_created` webhook fired, so
+no acknowledgement was sent. **The greeting complaint was the last symptom of a
+chain that broke at the first link.** Configuring IMAP on the inbox fixed it.
+
+Related red herring: the inbox showed *"Your inbox is disconnected… reauthorize"*,
+and clicking Reauthorize produced Google's `Missing required parameter:
+client_id`. That button routes to a Gmail-OAuth flow; this inbox has
+`provider = (empty)`, i.e. plain IMAP, and no Google OAuth client is configured.
+**The button does not apply to a plain IMAP inbox** and the banner was stale
+state. It cleared once IMAP authenticated.
+
+#### 3.5.2 Two acknowledgements were being sent
+
+With IMAP working, every customer received the same paragraph **twice**:
+
+| Source | Evidence | Appears as |
+|---|---|---|
+| Chatwoot's native inbox greeting | `message_type=3` (template), no sender | "Notifications from …" |
+| Our `agent` lifecycle auto-ack | `message_type=1`, sender User 1, `content_attributes: {"proton_lifecycle": true}` | "Yuda Adi from …" |
+
+This settles a previously open question: **Chatwoot does send its greeting on
+the Email channel.**
+
+**Decision: keep Chatwoot's native greeting, set `EMAIL_AUTOACK_ENABLED=false`.**
+Two reasons — the greeting is operator-editable in the UI (ours needs an env
+edit and redeploy, which contradicts the operator-configurable direction of the
+product), and an automated acknowledgement should not arrive under a real
+person's name. Applied to `proton` on 2026-08-04; `proton-agent` was
+**recreated**, not restarted, since a restart does not re-read the env file.
+
+Trade-off accepted: our auto-ack skips conversations created by an AI handoff
+(`_created_by_ai_handoff`); Chatwoot's greeting has no such awareness. Handoff
+conversations are created on the API inbox, not the email inbox, so this does
+not bite today.
+
+**Still untested:** a resolved conversation where the customer then replies to
+the same old thread. If Chatwoot opens a *new* conversation, the greeting fires
+again in the same thread, which Proton's SOP explicitly forbids ("do NOT keep
+sending it repeatedly in the same email thread"). Test before go-live.
+
+#### 3.5.3 Mailbox hygiene decides whether "every email reaches the CRM" is true
+
+From Chatwoot's fetch code on the running system:
+
+```ruby
+imap.select('INBOX')                    # INBOX folder only
+imap_client.search(['SINCE', since])    # since = today - 1 day
+MAX_MESSAGES_PER_SYNC = 500
+email_already_present?(channel, message_id)   # dedupe by message-id
+```
+
+Consequences, all verified rather than assumed:
+
+- mail filtered away from the INBOX is **never** seen — permanently;
+- there is **no historical backfill**; only mail arriving after go-live appears;
+- an outage longer than a day loses that window permanently, because the search
+  is relative to *today*, not to the last successful sync;
+- the spam folder is never read.
+
+So the production mailbox must deliver customer mail straight to the inbox with
+no server-side filing rules. On the current demo Gmail this is already visibly
+wrong: an Anthropic billing receipt became conversation 36 and was auto-replied
+to. A dedicated mailbox is the fix.
+
+#### 3.5.4 Side finding — the agent service posts as a real person
+
+The `agent` service authenticates to Chatwoot as **user 1 ("Yuda Adi")**, so
+every message it posts is attributed to that person on every channel — 59 such
+messages already exist on the WhatsApp inbox alongside 52 correctly attributed
+to the AgentBot. The fix is a dedicated bot/system user (e.g. "Proton e.MAS
+Centre") whose access token the agent uses. Small change, affects all channels,
+and it should land before Proton sees the platform. **Not scoped to this
+package** — flagged here because this is where it was found.
 
 ## 4. Design — Facebook / Instagram
 

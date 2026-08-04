@@ -671,7 +671,38 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         return ConversationLogResult.OK
 
     async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:
-        await self._request("POST", f"/conversations/{ticket_id}/labels", {"labels": [tag]})
+        """Add ONE tag without clobbering the conversation's other labels.
+
+        Chatwoot's labels endpoint REPLACES the whole set -- POSTing
+        ``{"labels": [tag]}`` (the old body here) doesn't add `tag`, it
+        DELETES every other label on the conversation (PIC, escalation,
+        dealer, category, an earlier csat/nps tag, a division_<slug> this
+        same call sequence just wrote in ``set_ticket_classification`` --
+        anything). This is the same footgun `agent/app/clients/chatwoot.py`
+        documents and works around for the sibling `custom_attributes`
+        endpoint (`set_custom_attributes`) and this same `labels` endpoint
+        (`add_labels`) -- both live in a different service, so the fix has
+        to be duplicated here rather than shared. Every caller in THIS
+        codebase (csat.py, nps.py, set_ticket_classification's division
+        label) wants additive behaviour, matching this method's own
+        Protocol docstring ("does not replace tags") -- so GET the current
+        set and POST the union.
+
+        Fail-open on the READ, not by falling back to posting just `[tag]`:
+        if the GET fails we cannot know what's already there, and posting a
+        set we can't prove is complete would silently wipe everything else.
+        Losing this one tag is recoverable (nothing here treats it as fatal);
+        wiping a real conversation's labels is not. So: log and skip the
+        write entirely rather than guess.
+        """
+        res = await self._request("GET", f"/conversations/{ticket_id}/labels")
+        if res is None:
+            _log.error("chatwoot_add_ticket_tag_read_failed", ticket_id=ticket_id, tag=tag)
+            return
+        payload = res.get("payload") if isinstance(res, dict) else None
+        current = [str(x) for x in payload] if isinstance(payload, list) else []
+        union = list(dict.fromkeys([*current, tag]))  # preserve order, dedup
+        await self._request("POST", f"/conversations/{ticket_id}/labels", {"labels": union})
 
     async def post_public_reply(self, ticket_id: str, text: str, status: str | None = None) -> None:
         await self.send_message(ticket_id, text)

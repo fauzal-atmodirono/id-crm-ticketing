@@ -10,7 +10,7 @@ from chatbot.platform.config import Settings
 
 
 class _FakeClient:
-    def __init__(self, responses: dict[tuple[str, str], dict[str, Any]]) -> None:
+    def __init__(self, responses: dict[tuple[str, str], dict[str, Any] | None]) -> None:
         self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
         self._responses = responses
 
@@ -52,8 +52,70 @@ async def test_append_comment_ok() -> None:
 async def test_add_ticket_tag_posts_label() -> None:
     fake = _FakeClient({})
     await _adapter(fake).add_ticket_tag("55", "vip")
+    assert fake.calls[0][0] == "GET" and "/labels" in fake.calls[0][1]
     method, path, payload = fake.calls[-1]
     assert method == "POST" and "/labels" in path and payload == {"labels": ["vip"]}
+
+
+@pytest.mark.asyncio
+async def test_add_ticket_tag_unions_with_existing_labels() -> None:
+    """Chatwoot's labels endpoint REPLACES the whole set -- add_ticket_tag
+    must GET the current labels first and POST the union, or every other
+    label on the conversation (PIC, escalation, dealer, category...) is
+    silently deleted the moment a second tag is ever added."""
+    fake = _FakeClient({("GET", "/labels"): {"payload": ["pic_sales", "escalate"]}})
+    await _adapter(fake).add_ticket_tag("55", "vip")
+    method, path, payload = fake.calls[-1]
+    assert method == "POST" and "/labels" in path
+    assert payload == {"labels": ["pic_sales", "escalate", "vip"]}
+
+
+@pytest.mark.asyncio
+async def test_add_ticket_tag_skips_write_when_read_fails() -> None:
+    """If the GET fails we cannot know the existing set, so adding the new
+    tag to an empty list would wipe everything else. Skip the write
+    entirely rather than post a set we can't prove is complete."""
+    fake = _FakeClient({("GET", "/labels"): None})
+    await _adapter(fake).add_ticket_tag("55", "vip")
+    assert len(fake.calls) == 1  # the GET only -- no POST followed it
+    assert fake.calls[0][0] == "GET"
+
+
+class _StatefulLabelsClient:
+    """Simulates Chatwoot's REAL persistence for the labels endpoint (a GET
+    reflects whatever the most recent POST wrote). `_FakeClient` above is
+    static/stateless and can't exercise a bug that only shows up ACROSS a
+    call sequence -- exactly the class of bug the regression test below
+    targets (a later add_ticket_tag call silently erasing an earlier one)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
+        self._labels: list[str] = []
+
+    async def _request(
+        self, method: str, path: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        self.calls.append((method, path, payload))
+        if "labels" in path:
+            if method == "GET":
+                return {"payload": list(self._labels)}
+            if method == "POST" and payload is not None:
+                self._labels = [str(v) for v in payload.get("labels", [])]
+        return {}
+
+
+@pytest.mark.asyncio
+async def test_classification_label_survives_a_later_unrelated_tag() -> None:
+    """Regression: this is the EXACT finalize() sequence that broke --
+    set_ticket_classification writes a division_<slug> label, then a later,
+    unrelated add_ticket_tag call (e.g. record_csat_on_ticket's csat_<n>
+    tag) must not erase it."""
+    fake = _StatefulLabelsClient()
+    adapter = ChatwootAdapter(Settings(chatwoot_account_id=1, chatwoot_inbox_id=7))
+    adapter._request = fake._request  # type: ignore[method-assign]
+    await adapter.set_ticket_classification("55", division="Sales")
+    await adapter.add_ticket_tag("55", "csat_4")
+    assert set(fake._labels) == {"division_sales", "csat_4"}
 
 
 @pytest.mark.asyncio
@@ -145,9 +207,42 @@ async def test_set_ticket_classification_posts_custom_attributes_and_division_la
         }
     }
     label_calls = [c for c in fake.calls if "labels" in c[1]]
-    assert len(label_calls) == 1
-    method, _path, payload = label_calls[0]
+    # add_ticket_tag is GET-then-POST now (it must not clobber other labels
+    # on the conversation), so there are two label calls, not one.
+    assert [c[0] for c in label_calls] == ["GET", "POST"]
+    method, _path, payload = label_calls[-1]
     assert method == "POST" and payload == {"labels": ["division_aftersales"]}
+
+
+@pytest.mark.asyncio
+async def test_set_call_recording_posts_custom_attributes_only() -> None:
+    """The load-bearing detail (Package C Task 5 compliance): a recording's
+    sid/duration/url must land ONLY as custom attributes, never as a
+    comment/note -- a private note is still agent-visible without the
+    call_recording.listen permission, which would defeat the whole point of
+    gating retrieval."""
+    fake = _FakeClient({})
+    await _adapter(fake).set_call_recording(
+        "55",
+        recording_sid="RE123",
+        recording_duration="42",
+        recording_url="https://api.twilio.com/2010-04-01/Accounts/AC1/Recordings/RE123",
+    )
+    assert fake.calls == [
+        (
+            "POST",
+            "/conversations/55/custom_attributes",
+            {
+                "custom_attributes": {
+                    "recording_sid": "RE123",
+                    "recording_duration": "42",
+                    "recording_url": (
+                        "https://api.twilio.com/2010-04-01/Accounts/AC1/Recordings/RE123"
+                    ),
+                }
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -161,7 +256,7 @@ async def test_set_ticket_classification_division_without_display_override_passe
     _, _, payload = custom_attr_calls[0]
     assert payload == {"custom_attributes": {"division": "Sales", "case_category": "Sales"}}
     label_calls = [c for c in fake.calls if "labels" in c[1]]
-    _, _, payload = label_calls[0]
+    _, _, payload = label_calls[-1]
     assert payload == {"labels": ["division_sales"]}
 
 

@@ -21,8 +21,8 @@ _DEFAULT_MIME_TYPE = "application/octet-stream"
 # file_type_hint fallback kicks in.
 _GENERIC_CONTENT_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
 
-# file_type ("image"/"audio", as reported by Chatwoot) -> sensible default
-# mime type, used only when Content-Type is missing/generic. "audio/ogg"
+# file_type ("audio"/"image"/"video", as reported by Chatwoot) -> sensible
+# default mime type, used only when Content-Type is missing/generic. "audio/ogg"
 # matches WhatsApp/Twilio's actual voice-note format — the same default
 # handle_voice_turn already uses for the voice channel (see
 # backend/apps/backend/src/chatbot/features/chat/service.py).

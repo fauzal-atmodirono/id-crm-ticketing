@@ -463,9 +463,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             if not isinstance(batch, list) or not batch:
                 break
             conversations.extend(
-                c
-                for c in batch
-                if isinstance(c, dict) and c.get("inbox_id") in (inbox_id, None)
+                c for c in batch if isinstance(c, dict) and c.get("inbox_id") in (inbox_id, None)
             )
         return conversations
 
@@ -511,9 +509,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         await self.add_private_note(conv_id, f"[AI escalation] {title}\n\n{body}")
         # Fire escalation side-effects (email + CC, WA alert, case_state) —
         # Chatwoot-only.
-        await self._fire_escalation(
-            conv_id, title, body, urgency, None, department=department
-        )
+        await self._fire_escalation(conv_id, title, body, urgency, None, department=department)
         # case_category/case_subcategory/case_type/vehicle_model + sla_minutes as
         # custom attributes — case_category/subcategory/case_type/vehicle_model
         # are List-type Chatwoot attribute definitions (see
@@ -677,6 +673,36 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             "POST",
             f"/conversations/{ticket_id}/custom_attributes",
             {"custom_attributes": {"external_id": external_id}},
+        )
+
+    async def set_ticket_classification(
+        self,
+        ticket_id: str,
+        *,
+        case_type: str | None = None,
+        division: str | None = None,
+        concern: str | None = None,
+    ) -> None:
+        # Package C Task 4: the field names Cases List (fork patch 0043) and
+        # the demo seeder (deploy/scripts/seed_demo_data/client.py) already
+        # write/read verbatim -- case_category/case_subcategory stay a
+        # separate, pre-existing convention (used by the WhatsApp
+        # classify_ticket_tool flow) and are left untouched here. `_request`
+        # already fails open (logs and returns None), so no try/except is
+        # needed at this layer.
+        custom_attrs: dict[str, str] = {}
+        if case_type:
+            custom_attrs["case_type"] = case_type
+        if division:
+            custom_attrs["division"] = division
+        if concern:
+            custom_attrs["concern"] = concern
+        if not custom_attrs:
+            return
+        await self._request(
+            "POST",
+            f"/conversations/{ticket_id}/custom_attributes",
+            {"custom_attributes": custom_attrs},
         )
 
     async def get_latest_public_comment(self, ticket_id: str) -> tuple[str, str | None, str | None]:

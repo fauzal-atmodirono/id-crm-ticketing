@@ -302,6 +302,13 @@ class Settings(BaseSettings):
     # a soft interval, not a guarantee (a flush only happens when something
     # polls it -- see PhoneBridge.pump()).
     phone_transcript_flush_seconds: float = 15.0
+    # Package C Task 4: derive case_type/division/concern/status from the
+    # completed call transcript via a one-shot Gemini classification, run
+    # once in finalize() (never in the live audio path). Default off ->
+    # byte-identical to today: status stays the exact "open if handoff else
+    # solved" binary rule, and no classification custom attributes are
+    # written.
+    phone_transcript_classification_enabled: bool = False
     # Browser-softphone access tokens (Twilio Voice grant)
     twilio_api_key_sid: str = ""
     twilio_api_key_secret: str = ""
@@ -394,7 +401,9 @@ class Settings(BaseSettings):
     # Same fail-open pattern as CASE_TAXONOMY_JSON. Empty -> the vehicle_model
     # custom attribute is never offered/written (byte-identical to today) —
     # tenants with no product-line concept simply leave this unset.
-    vehicle_models_json: str = '{"options": ["e.MAS 5", "e.MAS 7", "e.MAS 7 PHEV", "Not Applicable"]}'
+    vehicle_models_json: str = (
+        '{"options": ["e.MAS 5", "e.MAS 7", "e.MAS 7 PHEV", "Not Applicable"]}'
+    )
 
     # Case-type dimension (Inquiry/Complaint/Feedback) — JSON object
     # {"options": [str, ...]}. Same fail-open pattern. Ships with a working
@@ -420,8 +429,8 @@ class Settings(BaseSettings):
     # When true (default), escalation emails CC the department's configured
     # cc_emails (the "relevant personnel" beyond the To-recipient PIC).
     escalation_cc_pic: bool = True
-    escalation_level2_whatsapp: str = ""   # E.164, e.g. "+60112345678"
-    escalation_tier2_hours: float = 4.0   # hours after first breach before level-2 alert
+    escalation_level2_whatsapp: str = ""  # E.164, e.g. "+60112345678"
+    escalation_tier2_hours: float = 4.0  # hours after first breach before level-2 alert
 
     # EM-7: two-thread email escalation for natively-escalated Email-channel
     # conversations (agent applies the `escalate` label). Independent of the

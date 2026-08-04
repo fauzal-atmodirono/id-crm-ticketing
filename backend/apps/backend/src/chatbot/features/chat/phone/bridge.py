@@ -6,7 +6,7 @@ import asyncio
 import base64
 import time
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -21,6 +21,7 @@ from chatbot.features.chat.phone.live_events import (
     OutputTranscript,
     ToolCall,
 )
+from chatbot.features.chat.phone.transcript_classifier import classify
 from chatbot.features.chat.phone.transcript_sink import TranscriptSink
 from chatbot.features.chat.ports import ConversationLogResult
 
@@ -38,6 +39,15 @@ _log = structlog.get_logger(__name__)
 # Chatwoot at hangup could hold the teardown path open for 10s per queued
 # block (or ~30s for the ticket create alone) instead of bounded to this.
 _FLUSH_DRAIN_TIMEOUT_SECONDS = 10.0
+
+# Bound on the post-call transcript classification (Task 4): a one-shot
+# Gemini call in finalize(), same shape as the two bounds above -- an
+# unbounded wait here could hold the websocket teardown path open for
+# however long a slow/hanging Gemini call takes. A classifier is not a
+# source of truth, so timing out is just another failure mode: it falls
+# back to today's exact binary status rule, same as any other classify()
+# failure.
+_CLASSIFY_TIMEOUT_SECONDS = 10.0
 
 
 class PhoneBridge:
@@ -96,6 +106,10 @@ class PhoneBridge:
         # on a degraded call is a far better outcome than a silently
         # missing turn on a customer's record.
         self._live_blocks_failed = False
+        # Lazily built, cached google-genai client for post-call transcript
+        # classification (Task 4). Only ever touched from finalize() when
+        # phone_transcript_classification_enabled is on -- see _genai().
+        self._genai_client: Any | None = None
 
     async def handle_twilio(self, msg: dict[str, object]) -> None:
         event = msg.get("event")
@@ -412,6 +426,96 @@ class PhoneBridge:
         self.ticket_id = ticket_id
         return ticket_id
 
+    def _genai(self) -> Any | None:
+        """Lazily build (and cache) a google-genai client for post-call
+        transcript classification. Mirrors ``CallControl._twilio()`` and
+        ``main.py``'s ``_build_genai_client``: construction is fail-open and
+        never raises. A construction failure is deliberately not cached, so
+        a later call retries rather than repeating the failure forever."""
+        if self._genai_client is not None:
+            return self._genai_client
+        try:
+            from google.genai import Client  # noqa: PLC0415 -- lazy: fail-open without the SDK
+
+            if self._settings.google_genai_use_vertexai:
+                self._genai_client = Client(
+                    vertexai=True,
+                    project=self._settings.vertex_project_id,
+                    location=self._settings.vertex_location,
+                )
+            else:
+                self._genai_client = Client()
+        except Exception as e:
+            _log.error("phone_transcript_classify_client_init_failed", error=str(e))
+            return None
+        return self._genai_client
+
+    async def _classify_transcript(self, body: str) -> dict[str, str]:
+        """Best-effort post-call classification (Task 4). Only ever called
+        from finalize() -- never from pump() -- so it cannot delay the live
+        audio path. Bounded by _CLASSIFY_TIMEOUT_SECONDS so a slow/hanging
+        Gemini call cannot hold the websocket teardown path open
+        indefinitely either. Any failure -- no client, a timeout, a
+        malformed response -- returns {} so finalize() falls back to
+        today's exact binary status rule."""
+        client = self._genai()
+        if client is None:
+            return {}
+        try:
+            return await asyncio.wait_for(classify(body, client), timeout=_CLASSIFY_TIMEOUT_SECONDS)
+        except Exception as e:
+            _log.error(
+                "phone_transcript_classify_bounded_call_failed",
+                call_sid=self.call_sid,
+                error=str(e),
+            )
+            return {}
+
+    async def _classify_and_apply(self, ticket_id: str, body: str, status: str) -> str:
+        """Run post-call classification and apply its results: write case_
+        type/division/concern as custom attributes, and return the status
+        finalize() should actually use for the closing comment.
+
+        `status` (today's exact binary default, already computed by the
+        caller) is returned UNCHANGED whenever classification has nothing
+        useful to say -- it failed, returned {}, or returned a status this
+        function doesn't recognise -- which is exactly "fall back to
+        today's exact binary rule". An explicit human handoff outranks any
+        inference: the caller only reaches the classifier's own status
+        decision when self.handoff is None, so a handoff-derived "open"
+        can never be overwritten here.
+        """
+        classification = await self._classify_transcript(body)
+        if classification:
+            _log.info(
+                "phone_transcript_classified",
+                call_sid=self.call_sid,
+                keys=sorted(classification.keys()),
+            )
+        if self.handoff is None:
+            classified_status = classification.get("status")
+            if classified_status == "resolved":
+                status = "solved"
+            elif classified_status in ("open", "pending"):
+                status = "open"
+        if (
+            classification.get("case_type")
+            or classification.get("division")
+            or classification.get("concern")
+        ):
+            try:
+                await self._log_port.set_ticket_classification(
+                    ticket_id,
+                    case_type=classification.get("case_type"),
+                    division=classification.get("division"),
+                    concern=classification.get("concern"),
+                )
+            except Exception as e:
+                _log.error(
+                    "phone_transcript_classify_write_failed", call_sid=self.call_sid, error=str(e)
+                )
+        return status
+
     async def finalize(self) -> None:
         await self._settle_ticket_create_task()
         await self._drain_flush_queue()
@@ -425,6 +529,10 @@ class PhoneBridge:
             ticket_id = await self._resolve_finalize_ticket_id(session_id, body)
             if ticket_id is None:
                 return
+
+            if self._settings.phone_transcript_classification_enabled:
+                status = await self._classify_and_apply(ticket_id, body, status)
+
             if self.handoff is not None:
                 note = (
                     "[Handoff to human agent]\n"

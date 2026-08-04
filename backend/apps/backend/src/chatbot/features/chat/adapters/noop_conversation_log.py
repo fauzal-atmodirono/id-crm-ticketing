@@ -50,6 +50,16 @@ class NoOpConversationLog(ConversationLogPort):
     ) -> None:
         return None
 
+    async def set_ticket_classification(
+        self,
+        ticket_id: str,  # noqa: ARG002
+        *,
+        case_type: str | None = None,  # noqa: ARG002
+        division: str | None = None,  # noqa: ARG002
+        concern: str | None = None,  # noqa: ARG002
+    ) -> None:
+        return None
+
     async def get_latest_public_comment(
         self,
         ticket_id: str,  # noqa: ARG002

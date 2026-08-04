@@ -255,6 +255,22 @@ class ConversationLogPort(Protocol):
         """Set the ticket's external_id so status-change triggers can route by session."""
         ...
 
+    async def set_ticket_classification(
+        self,
+        ticket_id: str,
+        *,
+        case_type: str | None = None,
+        division: str | None = None,
+        concern: str | None = None,
+    ) -> None:
+        """Best-effort: write AI-derived case_type/division/concern as
+        conversation custom attributes, using the exact field names the
+        Cases List UI and ``features.metrics.mapping`` already read. Only
+        the provided (non-None) values are written; must never raise --
+        callers treat this as fire-and-forget, same as the rest of this
+        port's surface."""
+        ...
+
     async def get_latest_public_comment(self, ticket_id: str) -> tuple[str, str | None, str | None]:
         """Fetch the requester's most recent PUBLIC comment body plus their
         name and email. Returns ("", None, None) if none/failure."""

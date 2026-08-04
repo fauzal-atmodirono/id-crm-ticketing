@@ -345,6 +345,21 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
                 error=str(e),
             )
 
+    async def set_ticket_classification(
+        self,
+        ticket_id: str,  # noqa: ARG002
+        *,
+        case_type: str | None = None,  # noqa: ARG002
+        division: str | None = None,  # noqa: ARG002
+        concern: str | None = None,  # noqa: ARG002
+    ) -> None:
+        # Package C Task 4 targets the phone channel, which is Chatwoot-only
+        # (see CLAUDE.md: "Escalations/handoffs stay entirely in Chatwoot").
+        # No Zendesk ticket ever reaches this path today; a no-op here keeps
+        # ZendeskAdapter a valid ConversationLogPort without inventing a
+        # Zendesk-side custom-field mapping nothing currently calls.
+        return None
+
     async def get_latest_public_comment(self, ticket_id: str) -> tuple[str, str | None, str | None]:
         subdomain = self._settings.zendesk_subdomain
         base = f"https://{subdomain}.zendesk.com/api/v2"

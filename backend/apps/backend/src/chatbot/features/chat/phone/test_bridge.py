@@ -2,6 +2,7 @@ import asyncio
 import base64
 from collections.abc import AsyncIterator
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 from structlog.testing import capture_logs
 
@@ -67,6 +68,8 @@ class _FakeLog:
         self.comment_fails_for: set[str] = set()
         self.external_ids: list[tuple[str, str]] = []
         self.tags: list[tuple[str, str]] = []
+        self.classifications: list[tuple[str, str | None, str | None, str | None]] = []
+        self.classification_raises: Exception | None = None
 
     async def ensure_conversation_ticket(
         self,
@@ -108,6 +111,18 @@ class _FakeLog:
 
     async def set_ticket_external_id(self, ticket_id: str, external_id: str) -> None:
         self.external_ids.append((ticket_id, external_id))
+
+    async def set_ticket_classification(
+        self,
+        ticket_id: str,
+        *,
+        case_type: str | None = None,
+        division: str | None = None,
+        concern: str | None = None,
+    ) -> None:
+        if self.classification_raises is not None:
+            raise self.classification_raises
+        self.classifications.append((ticket_id, case_type, division, concern))
 
     async def post_public_reply(
         self, ticket_id: str, text: str, status: str | None = None
@@ -954,3 +969,192 @@ async def test_finalize_awaits_ticket_create_task_with_a_bound(monkeypatch: Any)
     await asyncio.wait_for(b.finalize(), timeout=1.0)
     assert call_count == 2  # the cancelled attempt, then finalize()'s fallback
     assert ("T-1", "USER: hi there", "solved") in log.comments
+
+
+# --- Task 4: derive case status and taxonomy from the transcript -----------
+
+
+def _fake_gemini(text: str | None = None, raises: Exception | None = None) -> MagicMock:
+    genai = MagicMock()
+    if raises is not None:
+        genai.aio.models.generate_content = AsyncMock(side_effect=raises)
+    else:
+        response = MagicMock()
+        response.text = text
+        genai.aio.models.generate_content = AsyncMock(return_value=response)
+    return genai
+
+
+async def test_classification_skipped_when_flag_off(monkeypatch: Any) -> None:
+    """Flag off must be byte-identical to today: no genai client is ever
+    constructed, no classification custom attributes are written, and the
+    status rule stays the exact original binary computation."""
+
+    class _RaisingClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise AssertionError("genai.Client must not be constructed when the flag is off")
+
+    monkeypatch.setattr("google.genai.Client", _RaisingClient)
+    log = _FakeLog()
+    b = _bridge(_FakeLive([]), [], log, settings=Settings(_env_file=None))
+    b.call_sid = "C1"
+    b.transcript = [("USER", "thanks"), ("ASSISTANT", "you're welcome")]
+    await b.finalize()
+    assert log.classifications == []
+    assert any(c[2] == "solved" for c in log.comments)
+
+
+async def test_classification_writes_custom_attributes_and_resolves_status() -> None:
+    log = _FakeLog()
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_classification_enabled=True),
+    )
+    b._genai_client = _fake_gemini(
+        text=(
+            '{"case_type": "Complaint", "division": "Aftersales", '
+            '"concern": "Service Operation", "status": "resolved"}'
+        )
+    )
+    b.call_sid = "C1"
+    b.transcript = [("USER", "my car needs service"), ("ASSISTANT", "sorted")]
+    await b.finalize()
+    assert log.classifications == [("T-1", "Complaint", "Aftersales", "Service Operation")]
+    assert any(c[2] == "solved" for c in log.comments)
+
+
+async def test_classification_open_status_keeps_conversation_open() -> None:
+    log = _FakeLog()
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_classification_enabled=True),
+    )
+    b._genai_client = _fake_gemini(text='{"status": "open"}')
+    b.call_sid = "C1"
+    b.transcript = [("USER", "still broken")]
+    await b.finalize()
+    # No handoff was requested, so absent classification the default would
+    # be "solved" -- the classifier's "open" reading must override that.
+    assert any(c[2] == "open" for c in log.comments)
+    assert not any(c[2] == "solved" for c in log.comments)
+
+
+async def test_classification_pending_status_also_keeps_conversation_open() -> None:
+    log = _FakeLog()
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_classification_enabled=True),
+    )
+    b._genai_client = _fake_gemini(text='{"status": "pending"}')
+    b.call_sid = "C1"
+    b.transcript = [("USER", "call me back tomorrow")]
+    await b.finalize()
+    assert any(c[2] == "open" for c in log.comments)
+    assert not any(c[2] == "solved" for c in log.comments)
+
+
+async def test_classification_failure_falls_back_to_binary_rule() -> None:
+    log = _FakeLog()
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_classification_enabled=True),
+    )
+    b._genai_client = _fake_gemini(raises=RuntimeError("gemini down"))
+    b.call_sid = "C1"
+    b.transcript = [("USER", "thanks"), ("ASSISTANT", "you're welcome")]
+    await b.finalize()
+    assert log.classifications == []
+    assert any(c[2] == "solved" for c in log.comments)
+
+
+async def test_handoff_status_is_never_overwritten_by_the_classifier() -> None:
+    """An explicit human handoff outranks any inference: even if the
+    classifier confidently reads the call as resolved, the conversation
+    must stay open -- a human already asked to take it."""
+    log = _FakeLog()
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_classification_enabled=True),
+    )
+    b._genai_client = _fake_gemini(text='{"status": "resolved"}')
+    b.call_sid = "C1"
+    b.transcript = [("USER", "I want a human")]
+    b.handoff = {"reason": "complaint", "summary": "angry about delay"}
+    await b.finalize()
+    assert any(c[2] == "open" for c in log.comments)
+    assert not any(c[2] == "solved" for c in log.comments)
+
+
+async def test_classification_write_failure_does_not_break_finalize() -> None:
+    """set_ticket_classification failing (e.g. Chatwoot down) must not stop
+    the rest of finalize() -- the transcript/status update still lands."""
+    log = _FakeLog()
+    log.classification_raises = RuntimeError("chatwoot down")
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_classification_enabled=True),
+    )
+    b._genai_client = _fake_gemini(text='{"division": "Sales"}')
+    b.call_sid = "C1"
+    b.transcript = [("USER", "hi")]
+    with capture_logs() as captured:
+        await b.finalize()
+    assert any(c[2] == "solved" for c in log.comments)
+    assert any(e["event"] == "phone_transcript_classify_write_failed" for e in captured)
+
+
+async def test_classification_does_not_hang_forever_when_gemini_stalls(monkeypatch: Any) -> None:
+    """A slow/hanging Gemini call must not hold finalize() (and the
+    websocket teardown path under it) open indefinitely."""
+    monkeypatch.setattr(bridge_module, "_CLASSIFY_TIMEOUT_SECONDS", 0.05)
+
+    async def hanging_generate_content(**kwargs: Any) -> Any:  # noqa: ARG001
+        await asyncio.sleep(10)
+
+    log = _FakeLog()
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_classification_enabled=True),
+    )
+    genai = MagicMock()
+    genai.aio.models.generate_content = hanging_generate_content
+    b._genai_client = genai
+    b.call_sid = "C1"
+    b.transcript = [("USER", "hi")]
+    await asyncio.wait_for(b.finalize(), timeout=1.0)
+    assert log.classifications == []
+    assert any(c[2] == "solved" for c in log.comments)
+
+
+async def test_genai_client_construction_failure_is_fail_open(monkeypatch: Any) -> None:
+    class _RaisingClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr("google.genai.Client", _RaisingClient)
+    log = _FakeLog()
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_classification_enabled=True),
+    )
+    b.call_sid = "C1"
+    b.transcript = [("USER", "hi")]
+    await b.finalize()
+    assert log.classifications == []
+    assert any(c[2] == "solved" for c in log.comments)

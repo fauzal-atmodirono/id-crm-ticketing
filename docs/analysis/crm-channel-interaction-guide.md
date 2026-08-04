@@ -242,10 +242,16 @@ now built and deployed. Same trigger as every other channel:
 mappings need to be filled in before the internal legs of this actually
 notify anyone. Until then, keep escalating a case to the PIC/dealer
 manually outside the CRM as before — the `escalate` label alone doesn't yet
-guarantee internal delivery, only the customer sees a response. A
-self-service configuration screen for these mappings (instead of an
-engineer editing raw config) is in progress — check back here once it
-ships, this section will be updated with the actual UI path.
+guarantee internal delivery, only the customer sees a response.
+
+**Update (2026-08-04):** the self-service configuration screen for these
+mappings is now live — no more editing raw config. Open the standalone
+**Escalation Routing** icon in the left sidebar (RBAC-gated; ask an admin if
+you don't see it) to add/edit PIC and dealer entries directly. The mappings
+themselves still need to actually be filled in for proton before the
+internal email legs will notify anyone — the UI existing doesn't mean the
+data is populated yet. See §10 below before relying on this in front of a
+customer or during a demo.
 
 ---
 
@@ -377,3 +383,34 @@ rating.
 See `crm-channel-ui-testing-guide.md` for the authoritative, per-step status
 table these are drawn from, and `proton-crm-gap-analysis-2026-07-27.md` for
 the full requirement-level gap analysis.
+
+---
+
+## 10. New this build (2026-08-04) — smoke-test before relying on any of it
+
+Deployed to `default` and `proton` overnight 2026-08-04, tested and reviewed
+in code but **not yet manually clicked through in a browser**. Run this
+checklist before a demo or before telling an agent/PIC it's ready:
+
+| # | Check | How | Expected |
+|---|---|---|---|
+| 1 | Escalation Routing page reachable | Left sidebar → **Escalation Routing** icon (RBAC-gated on `escalation.manage`) | Page loads, lists any existing PIC/dealer entries |
+| 2 | Can add a PIC entry | On that page, add a PIC department entry, save | Entry persists after a page refresh |
+| 3 | Customer 360 page reachable | Left sidebar → **Customer 360** icon (RBAC-gated on `customer360.view`) | Page loads with a single search box |
+| 4 | Phone-number search returns something | Search a known customer's phone number | Contact + their cross-channel conversation history shown, or an empty-but-no-error result if that number has no contact yet |
+| 5 | FAQ bulk-upload works | **Knowledge → FAQs** page → new "Bulk upload (CSV)" button → upload a small sample CSV (`question,answer,keywords,tags` columns) | A created/errors count appears, list refreshes with the new entries |
+| 6 | Zammad confirmed gone | `docker ps` on each tenant on the VM | Zero containers with `zammad` in the name, on `default`, `proton`, and `wahchan` |
+| 7 | No leftover Zammad references in code | `grep -ri zammad agent/ backend/apps/backend/src/` from the repo root | No output |
+
+**Known issue found during this deploy, not yet resolved:** `wahchan-backend`
+(the WhatsApp AI service) is currently crash-looping — its tenant config is
+missing the Vertex AI / Gemini API key setup that `default` and `proton`
+have. `wahchan-agent` and its Chatwoot instance are unaffected. This needs an
+engineering decision (share the existing service-account key or issue
+`wahchan` its own) before its AI features will work — don't rely on WhatsApp
+AI behavior on `wahchan` until this is fixed.
+
+**Not yet enabled anywhere (built, shipped disabled by default):** the
+round-robin per-agent ticket cap (`routing_max_concurrent_per_agent`). Left
+at `0` (unlimited) on every tenant — nothing to smoke-test here unless it's
+deliberately turned on for a tenant later.

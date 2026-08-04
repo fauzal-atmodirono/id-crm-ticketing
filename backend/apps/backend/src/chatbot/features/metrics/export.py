@@ -28,17 +28,29 @@ def _blocks(metrics: Any) -> list[tuple[str, list[Any]]]:
     return [(f.name, getattr(metrics, f.name)) for f in fields(metrics)]
 
 
-def _visible_field_names(rows: list[Any]) -> list[str]:
-    """Field names for `rows`, excluding any that are `None` on *every*
-    row in this block -- e.g. `VolumeRow.bucket` outside a period-scoped
-    query (Task 2 / Package E): only the adapter's period-aware volume
-    path ever populates it, so a scheduled all-time export
-    (`scheduler.py` calls `fetch_dashboard()` with no period) would
-    otherwise render a column that is blank on every single row. That's
-    presentational noise, not data, so it's dropped rather than shown
-    empty."""
-    names = [f.name for f in fields(rows[0])]
-    return [n for n in names if any(getattr(r, n) is not None for r in rows)]
+def _exportable_field_names(rows: list[Any]) -> list[str]:
+    """Field names for `rows`, excluding any declared `period_only` in its
+    dataclass field metadata -- e.g. `VolumeRow.bucket` (Task 2 / Package
+    E): it's only ever populated by a period-scoped query, and no current
+    export path (`scheduler.py`'s weekly xlsx/pdf/csv, or the
+    `/metrics/*/export` routes) ever supplies a period, so it can never be
+    populated here.
+
+    Deliberately a property of the *field*, checked once per dataclass,
+    not of the row *values* (Task 2 review, round 3): an earlier version
+    of this function dropped any column that was `None` on every row in
+    a given export, which also caught legitimately-nullable business
+    columns that merely happen to be null in a particular week's data --
+    e.g. CsatRow.avg_score/satisfied_rate, ResolutionRow.*_pct, NpsRow.nps,
+    every other SAFE_DIVIDE-derived column, all of which are null only
+    when a denominator was zero, not because they can't ever be populated.
+    That made the exported header shift week to week based on which
+    metric happened to be all-null, which is worse for anything parsing
+    the report by header or column position than a single column that's
+    always blank for a structural reason. Checking field metadata instead
+    of row values keeps every export's column set deterministic and only
+    ever drops a column that could never be anything but blank here."""
+    return [f.name for f in fields(rows[0]) if not f.metadata.get("period_only")]
 
 
 def render_xlsx(metrics: DashboardMetrics) -> bytes:
@@ -47,7 +59,7 @@ def render_xlsx(metrics: DashboardMetrics) -> bytes:
     for name, rows in _blocks(metrics):
         ws = wb.create_sheet(title=name[:31])  # Excel sheet-name limit
         if rows:
-            field_names = _visible_field_names(rows)
+            field_names = _exportable_field_names(rows)
             ws.append(field_names)
             for row in rows:
                 ws.append([getattr(cast(Any, row), n) for n in field_names])
@@ -64,7 +76,7 @@ def render_pdf(metrics: DashboardMetrics) -> bytes:
     for name, rows in _blocks(metrics):
         story.append(Paragraph(name, styles["Heading2"]))
         if rows:
-            field_names = _visible_field_names(rows)
+            field_names = _exportable_field_names(rows)
             data = [field_names] + [
                 [str(getattr(cast(Any, r), n)) for n in field_names] for r in rows
             ]
@@ -98,7 +110,7 @@ def render_csv(metrics: Any) -> bytes:
     for name, rows in _blocks(metrics):
         writer.writerow([name])
         if rows:
-            field_names = _visible_field_names(rows)
+            field_names = _exportable_field_names(rows)
             writer.writerow(field_names)
             for row in rows:
                 writer.writerow([getattr(cast(Any, row), n) for n in field_names])

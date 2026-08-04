@@ -7,11 +7,13 @@ from openpyxl import load_workbook  # type: ignore[import-untyped]
 
 from chatbot.features.metrics.export import render_csv, render_pdf, render_xlsx
 from chatbot.features.metrics.query_port import (
+    CsatRow,
     DashboardMetrics,
     DealerEscalationMetrics,
     DealerEscalationRow,
     DealerSlowCaseRow,
     MockMetricsQuery,
+    VolumeRow,
 )
 
 
@@ -63,3 +65,56 @@ def test_render_csv_empty_block_has_no_data_marker():
     metrics = DealerEscalationMetrics(by_dealer=[], slowest_cases=[])
     content = render_csv(metrics).decode("utf-8")
     assert "(no data)" in content
+
+
+def test_render_csv_drops_a_period_only_column_deterministically() -> None:
+    """VolumeRow.bucket is only ever populated by a period-scoped query
+    (see its field metadata in query_port.py) -- it must be dropped from
+    an unfiltered export regardless of the data, not because it happens
+    to be None on every row this time."""
+    metrics = DashboardMetrics(
+        volume=[
+            VolumeRow(month="2026-05", channel="web", volume=120),
+            VolumeRow(month="2026-06", channel="whatsapp", volume=95),
+        ],
+        resolution=[],
+        csat=[],
+        nps=[],
+        speed=[],
+        fallback=[],
+        bounce=[],
+        quality=[],
+    )
+    content = render_csv(metrics).decode("utf-8")
+    reader = list(csv.reader(io.StringIO(content)))
+    assert ["month", "channel", "volume"] in reader
+    for row in reader:
+        assert "bucket" not in row
+
+
+def test_render_csv_keeps_a_nullable_business_column_even_when_all_none() -> None:
+    """Task 2 review, round 3: the distinction that matters is whether a
+    field is *structurally* period-only (VolumeRow.bucket), not whether it
+    merely *happens* to be None on every row of a particular export.
+    CsatRow.avg_score/satisfied_rate are SAFE_DIVIDE columns, legitimately
+    null when their denominator is zero (see query_port.py's module
+    docstring) -- a quiet week or small tenant can plausibly have every
+    row null for one of these, and the column must still appear, or
+    anything parsing the emailed report by header/position breaks on a
+    schema that silently shifts week to week."""
+    metrics = DashboardMetrics(
+        volume=[],
+        resolution=[],
+        csat=[
+            CsatRow(channel="web", respondents=0, avg_score=None, satisfied_rate=None),
+            CsatRow(channel="whatsapp", respondents=0, avg_score=None, satisfied_rate=None),
+        ],
+        nps=[],
+        speed=[],
+        fallback=[],
+        bounce=[],
+        quality=[],
+    )
+    content = render_csv(metrics).decode("utf-8")
+    reader = list(csv.reader(io.StringIO(content)))
+    assert ["channel", "respondents", "avg_score", "satisfied_rate"] in reader

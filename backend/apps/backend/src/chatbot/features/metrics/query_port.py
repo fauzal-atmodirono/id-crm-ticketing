@@ -6,7 +6,7 @@ denominator is zero or no rows match."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Literal, Protocol
 
@@ -55,10 +55,19 @@ class VolumeRow:
     # that must never change. `bucket` is the granularity-neutral sibling
     # for period-scoped callers (Task 4) to read instead -- same value as
     # `month`, `None` only for unfiltered/mock rows where it's redundant.
+    #
+    # `metadata={"period_only": True}` marks this field as structurally
+    # unpopulatable outside a period-scoped query (see export.py's
+    # `_exportable_field_names`, Task 2 review round 3) -- it's a property
+    # of the field's *shape*, not of any particular export's data, which
+    # is what lets export.py drop it deterministically without also
+    # dropping a legitimately-nullable business column (e.g. CsatRow.
+    # avg_score) that merely happens to be null on every row of a given
+    # week's data.
     month: str
     channel: str
     volume: int
-    bucket: str | None = None
+    bucket: str | None = field(default=None, metadata={"period_only": True})
 
 
 @dataclass(frozen=True)

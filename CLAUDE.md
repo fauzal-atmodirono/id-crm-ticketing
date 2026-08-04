@@ -4,28 +4,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-A unified CRM + ticketing platform: **Chatwoot** (CRM/live chat) and **Zammad**
-(ticketing) run side by side behind a **Caddy** reverse proxy, with a small
-**FastAPI `agent` service** that keeps them in sync and layers Gemini AI on top
-(auto-drafted replies, auto-escalation). It is multi-tenant: each customer gets its own isolated Chatwoot + Zammad + agent stack, with a shared Caddy/Postgres/Mailpit, all as Docker Compose on a single GCE VM. See `README.md` for the full deploy/wiring runbook.
+A unified CRM platform built on **Chatwoot** (CRM/live chat) behind a
+**Caddy** reverse proxy, with a small **FastAPI `agent` service** that layers
+Gemini AI on top (auto-drafted replies, auto-escalation via Chatwoot human
+handoff). It is multi-tenant: each customer gets its own isolated Chatwoot +
+agent stack, with a shared Caddy/Postgres/Mailpit, all as Docker Compose on a
+single GCE VM. See `README.md` for the full deploy/wiring runbook.
 
-First-party code you edit lives in two services: **`agent/`** (sync and Gemini AI
-orchestration) and **`backend/`** (the vendored AI-assist conversational backend
-from `proton-conversational-ai`). These communicate over HTTP via
-`PROTON_BACKEND_URL` (deliberately fail-open, no shared process or DB). To run
-the backend locally: `cd backend/apps/backend && uv run uvicorn chatbot.main:app --port 8080`.
+First-party code you edit lives in two services: **`agent/`** (Chatwoot sync
+helpers and Gemini AI orchestration) and **`backend/`** (the vendored
+AI-assist conversational backend from `proton-conversational-ai`). These
+communicate over HTTP via `PROTON_BACKEND_URL` (deliberately fail-open, no
+shared process or DB). To run the backend locally:
+`cd backend/apps/backend && uv run uvicorn chatbot.main:app --port 8080`.
 
-`deploy/` is runtime config/ops scripts. Chatwoot and Zammad are upstream apps
-pulled as Docker images by `deploy/docker-compose.infra.yml` /
-`deploy/docker-compose.tenant.yml` — there is no `crm/` or `ticketing/` source
-in this checkout to modify. (The Chatwoot **SPA is forked**: patches in
+`deploy/` is runtime config/ops scripts. Chatwoot is an upstream app pulled
+as a Docker image by `deploy/docker-compose.infra.yml` /
+`deploy/docker-compose.tenant.yml` — there is no `crm/` source in this
+checkout to modify. (The Chatwoot **SPA is forked**: patches in
 `deploy/chatwoot-fork/patches/NNNN-*.patch` are `git apply`-ed onto upstream at
-image-build time — that's where the CRM's custom "Knowledge" UI lives.)
+image-build time — that's where the CRM's custom "Knowledge" UI lives, along
+with newer operator admin pages: PIC/Dealer escalation-routing (patch
+`0039`), FAQ bulk CSV upload (patch `0040`), and a Customer 360 lookup by
+phone/vehicle number (patch `0041`) — see "Operator-configurable persona &
+knowledge" below for the backend routers behind them.)
 
-**Direction (2026-07): migrating to Chatwoot-only — Zammad is being retired.**
-`agent/` gates every Zammad path behind `ZAMMAD_TICKETING_ENABLED` (default
-`true`; set `false` → escalations/handoffs stay in Chatwoot via a human handoff).
-Prefer Chatwoot capabilities for new work; don't build on Zammad.
+**Zammad has been fully removed (2026-08).** The former CRM + ticketing
+platform ran Chatwoot and Zammad side by side with the `agent` service
+mirroring data between them; that sync layer, the Zammad client/router, and
+every `zammad_*` `Settings` field (including the old `ZAMMAD_TICKETING_ENABLED`
+flag) are gone. Escalations/handoffs stay entirely in Chatwoot — via a human
+handoff, an `escalate` label, and (for email-channel conversations) a
+two-thread escalation email. Don't build on Zammad; there's nothing left to
+build on.
 
 ## Commands
 
@@ -39,7 +50,7 @@ pytest tests/test_sync_escalation.py               # one file
 pytest tests/test_orchestrator.py::test_name       # one test
 ```
 
-Tests never hit postgres, the real Chatwoot/Zammad APIs, or Gemini:
+Tests never hit postgres, the real Chatwoot API, or Gemini:
 `tests/conftest.py` sets all required env vars and points `AGENT_DATABASE_URL`
 at a throwaway sqlite file (aiosqlite); HTTP is stubbed with `respx`; Gemini
 clients are injected.
@@ -51,22 +62,23 @@ app stack per customer, provisioned with `deploy/scripts/add-tenant.sh <name>`
 
 ## Agent service architecture
 
-### The webhook pattern (all three receivers follow it)
+### The webhook pattern (both receivers follow it)
 
-Routers in `app/routers/` (`chatwoot.py`, `zammad.py`) are deliberately thin
-and identical in shape:
+`app/routers/chatwoot.py` (the only router besides `health.py`) exposes two
+endpoints, `/webhooks/chatwoot` and `/webhooks/chatwoot/bot`, deliberately
+thin and identical in shape:
 
-1. **Verify HMAC signature** (`app/security.py`) — Chatwoot uses
-   `sha256=` over `f"{timestamp}."+body` with a 300s skew window; Zammad uses
-   `sha1=` over the body. Bad signature → 401. Note the two Chatwoot receivers
-   use *different* secrets: `/webhooks/chatwoot` uses `chatwoot_webhook_secret`,
-   `/webhooks/chatwoot/bot` uses `chatwoot_bot_secret`.
+1. **Verify HMAC signature** (`app/security.py::verify_chatwoot_signature`)
+   — `sha256=` over `f"{timestamp}."+body` with a 300s skew window. Bad
+   signature → 401. Note the two receivers use *different* secrets:
+   `/webhooks/chatwoot` uses `chatwoot_webhook_secret`, `/webhooks/chatwoot/bot`
+   uses `chatwoot_bot_secret`.
 2. **Dedupe** via `app/services/dedupe.py::claim_delivery` — an insert-or-skip
-   against `processed_deliveries` keyed on the provider's delivery-id header.
-   The atomic PK insert (not check-then-insert) is what makes duplicate
-   deliveries safe under concurrency. No delivery id → can't dedupe → process.
+   against `processed_deliveries` keyed on `X-Chatwoot-Delivery`. The atomic
+   PK insert (not check-then-insert) is what makes duplicate deliveries safe
+   under concurrency. No delivery id → can't dedupe → process.
 3. **Return 200 immediately**, dispatching real work to a FastAPI
-   `BackgroundTasks`. The slow Chatwoot/Zammad/Gemini calls never run inline in
+   `BackgroundTasks`. The slow Chatwoot/Gemini calls never run inline in
    the request path.
 
 **Invariant for background tasks** (`app/services/`): they take an
@@ -77,18 +89,21 @@ background task just produces an unretrieved-exception log, so don't.
 
 ### Sync flows (`app/services/sync.py`)
 
-Bidirectional Chatwoot ⇄ Zammad mirroring, all idempotent via the mapping
-tables + their unique constraints (with a pre-check as belt-and-suspenders):
+Chatwoot-only notification helpers — there is no external ticketing backend
+to mirror to anymore:
 
-- **Chatwoot contact → Zammad user**: `upsert_contact` → `_ensure_zammad_customer`.
-- **Chatwoot conversation → Zammad ticket**: `maybe_escalate` fires when the
-  `escalate` label is present; `escalate_conversation` builds the ticket from
-  the transcript, tags it `from-chatwoot`, and records a `ConversationLink`.
-- **Zammad ticket → Chatwoot conversation**: `on_ticket_event` mirrors state
-  changes back as a private note (and auto-resolves the conversation when the
-  ticket closes, if `AUTO_RESOLVE`). Guarded against `last_synced_state`
-  no-ops. The Zammad router drops payloads authored by `zammad_integration_login`
-  to prevent the note-posting loop.
+- **`maybe_escalate`**: on `conversation_updated`, when the `escalate` label
+  is present and the conversation is on an Email-channel inbox, fires the
+  EM-7 two-thread escalation email (customer ack + PIC/dealer forward) via
+  the backend's `ProtonConfigClient.notify_email_escalation`, gated by
+  `email_escalation_enabled`. Fail-open throughout.
+- **`maybe_stamp_dealer_escalation`**: on `conversation_updated`, the first
+  time a `dealer_<slug>` label appears, stamps a `dealer_escalated_at`
+  custom attribute (idempotent, never overwrites) so BI turnaround-time
+  reporting has a real timestamp to diff against `resolved_at`.
+- **`upsert_contact`** / **`record_conversation_status`**: no-op stubs kept
+  as the router's dispatch targets for contact/status events, so the router
+  doesn't need to change if a future Chatwoot-side integration needs a hook.
 
 ### AI layer (Gemini)
 
@@ -100,9 +115,6 @@ tables + their unique constraints (with a pre-check as belt-and-suspenders):
   so side effects never end up partial. Every decision is logged to `ai_actions`
   before execution. `AGENT_MODE=suggest` (default) posts the reply as a private
   note + reopens for a human; `auto` sends it directly.
-- `app/services/responder.py` — the Zammad draft-reply flow, called from
-  `on_ticket_event`. Drafts an internal note for new *customer* articles
-  (sender == `"Customer"`), gated by `ZAMMAD_AI_DRAFTS`.
 - `app/ai/gemini.py` — wraps `google-genai`. `decide()` forces one of the three
   `app/ai/tools.py` function calls (`function_calling_config` mode `ANY`);
   anything else (plain text, errors after retry) falls back to
@@ -130,12 +142,31 @@ reaches the customer-facing bot **three ways**, all fail-open + default-preservi
 Persona resolution reuses `inbox_resolver.effective_assignment` (same path the
 copilot uses). Separately, `backend/` has a **pgvector operator-authored KB** at
 `/kb/knowledge` (default-off `KNOWLEDGE_PG_ENABLED`, its own per-tenant Postgres),
-distinct from the read-only Vertex corpus listing at `/kb/documents`.
+distinct from the read-only Vertex corpus listing at `/kb/documents`. FAQ
+entries can also be bulk-imported via `POST /kb/faq/bulk` (CSV upload), with
+a matching button on the fork's FAQs admin page (patch `0040`).
+
+Two more operator admin surfaces follow the same backend-router +
+Chatwoot-fork-page shape, both RBAC-gated (`require_permission`):
+- **Escalation routing** (`features/chat/pic_store.py`'s Firestore-backed
+  `PicStore`/`DealerStore`, `pic_admin_router.py` at `/admin/escalation`,
+  permission `escalation.manage`, fork patch `0039`) lets operators edit
+  PIC (department → contact) and dealer (slug → email) routing without
+  touching env vars. `PicRegistry.lookup()` is store-first with the old
+  `PIC_MAP_JSON`/dealer-JSON env-var parsing kept as a fallback for tenants
+  that never touch the admin UI.
+- **Customer 360** (`customer360_router.py` at `GET
+  /admin/customer360/search?q=...`, permission `customer360.view`, fork
+  patch `0041`) looks up a customer by phone number or vehicle number and
+  aggregates existing CRM data (Chatwoot contact + conversations, RSA
+  incidents). Not a DMS integration.
 
 ### Clients, config, DB
 
-- `app/clients/deps.py` — `get_chatwoot_client` / `get_zammad_client` are
-  `lru_cache` singletons (one long-lived `httpx.AsyncClient` + pool each).
+- `app/clients/deps.py` — `get_chatwoot_client` / `get_proton_config_client`
+  are `lru_cache` singletons (one long-lived `httpx.AsyncClient`/`ProtonConfigClient`
+  each; the latter returns `None` when `proton_backend_url`/`proton_backend_key`
+  are unset, so callers fail-open without branching on env vars).
   `app/main.py`'s lifespan owns closing them via `aclose_clients`. Call these
   accessors; don't construct clients ad hoc.
 - `app/config.py` — `Settings` (pydantic-settings). Field names map
@@ -146,8 +177,8 @@ distinct from the read-only Vertex corpus listing at `/kb/documents`.
 - `app/db/` — SQLAlchemy 2.0 async. `_to_async_url` upgrades bare
   `postgresql://`/`sqlite://` URLs to their async driver form, so prod
   (postgres via psycopg3) and tests (sqlite via aiosqlite) share the same
-  models. Tables: `contact_links`, `conversation_links`, `processed_deliveries`,
-  `ai_actions`. Schema is created via `Base.metadata.create_all` in `init_db`
+  models. Tables: `processed_deliveries`, `ai_actions`, `conversation_lifecycle`.
+  Schema is created via `Base.metadata.create_all` in `init_db`
   (no Alembic/migrations).
 
 ## Conventions

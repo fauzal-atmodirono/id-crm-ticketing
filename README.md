@@ -1,11 +1,11 @@
-# Unified CRM + Ticketing Platform
+# Unified CRM Platform
 
-Chatwoot (CRM/live chat) and Zammad (ticketing) running side by side behind a
-single Caddy reverse proxy, with a small FastAPI **agent** service that keeps
-contacts and conversations in sync between the two and adds a Gemini-powered
-AI layer (auto-drafted replies, auto-escalation to tickets).
+Chatwoot (CRM/live chat) running behind a single Caddy reverse proxy, with a
+small FastAPI **agent** service that adds a Gemini-powered AI layer on top
+(auto-drafted replies, auto-escalation via Chatwoot human handoff). Zammad
+(ticketing) has been fully removed (2026-08) — escalations stay in Chatwoot.
 
-Each customer gets its own isolated Chatwoot + Zammad + agent stack on its own subdomains; a shared Caddy, Postgres, and Mailpit back them all, running as Docker Compose on a single GCE VM.
+Each customer gets its own isolated Chatwoot + agent stack on its own subdomains; a shared Caddy, Postgres, and Mailpit back them all, running as Docker Compose on a single GCE VM.
 
 ## 1. Architecture
 
@@ -17,39 +17,36 @@ Each customer gets its own isolated Chatwoot + Zammad + agent stack on its own s
                               ┌───────▼────────┐
                               │      Caddy      │  reverse proxy, nip.io vhosts
                               └───────┬────────┘
-              ┌───────────────┬───────┴───────┬────────────────┐
-              │               │               │                │
-      crm.<ip>.nip.io tickets.<ip>.nip.io agent.<ip>.nip.io mail.<ip>.nip.io
-              │               │               │                │
-      ┌───────▼──────┐ ┌──────▼───────┐ ┌─────▼──────┐  ┌──────▼──────┐
-      │   Chatwoot   │ │    Zammad    │ │   agent    │  │   Mailpit   │
-      │ rails+sidekiq│ │ rails+ws+... │ │ (FastAPI)  │  │  (SMTP+UI)  │
-      └───────┬──────┘ └──────┬───────┘ └─────┬──────┘  └─────────────┘
+              ┌───────────────┬───────┴───────┐
               │               │               │
-              │   webhooks    │   webhooks    │
-              └──────────────►│◄──────────────┘
+      crm.<ip>.nip.io  agent.<ip>.nip.io mail.<ip>.nip.io
+              │               │               │
+      ┌───────▼──────┐ ┌──────▼───────┐  ┌──────▼──────┐
+      │   Chatwoot   │ │   agent      │  │   Mailpit   │
+      │ rails+sidekiq│ │ (FastAPI)    │  │  (SMTP+UI)  │
+      └───────┬──────┘ └──────┬───────┘  └─────────────┘
+              │               │
+              │   webhooks    │
+              └──────────────►│
                               │
                      ┌────────▼────────┐
-                     │ postgres (+pgvector) │  databases: chatwoot_<t>, zammad_<t>, agent_<t>
+                     │ postgres (+pgvector) │  databases: chatwoot_<t>, agent_<t>
                      │ redis, memcached     │
                      └──────────────────────┘
 ```
 
 Integration flows (implemented by the `agent` service):
 
-- **Chatwoot → agent → Zammad**: a webhook on contact/conversation events
-  lets the agent mirror contacts into Zammad and escalate conversations
-  (tagged `escalate`) into tickets.
-- **Zammad → agent → Chatwoot**: a webhook + trigger notify the agent of
-  ticket state changes, which get mirrored back as private notes/status
-  changes on the linked Chatwoot conversation.
+- **Chatwoot → agent**: a webhook on contact/conversation events lets the
+  agent send the EM-7 two-thread escalation email for Email-channel
+  conversations tagged `escalate`, and stamp a `dealer_escalated_at`
+  timestamp when a `dealer_<slug>` label is applied (for BI reporting). No
+  data is mirrored to an external ticketing system — escalation stays
+  entirely inside Chatwoot.
 - **Chatwoot agent bot → agent → Gemini**: an AI bot subscribed to new
   incoming messages asks Gemini to draft a reply, escalate, or hand off to
   a human (`AGENT_MODE=suggest` by default — nothing is sent without human
   approval).
-- **Zammad AI provider**: Zammad's own "Custom OpenAI" AI integration talks
-  directly to Gemini's OpenAI-compatible endpoint for ticket reply
-  suggestions.
 
 ## 2. Repo layout
 
@@ -70,7 +67,6 @@ deploy/                 Runtime (this is what you copy to the VM)
     backup.sh              per-tenant DB dumps + storage volume archives
 agent/                  FastAPI integration + AI service (built by compose)
 crm/                    Upstream Chatwoot clone — reference only, do not edit
-ticketing/              Upstream Zammad clone — reference only, do not edit
 docs/                   Design/planning docs
 ```
 
@@ -91,13 +87,12 @@ docker compose -p platform-infra -f docker-compose.infra.yml --env-file infra.en
 # One tenant may use the bare, un-prefixed hostnames (crm.<ip>.nip.io instead
 # of <tenant>.crm.<ip>.nip.io) via --bare; the tenant named "default" gets this
 # automatically:
-./scripts/add-tenant.sh default        # served at crm/tickets/agent/mail.<ip>.nip.io
+./scripts/add-tenant.sh default        # served at crm/agent/mail.<ip>.nip.io
 ```
 
 `add-tenant.sh` generates the tenant's secrets/DBs/Caddy route and brings its
-stack up, then prints its four `nip.io` URLs. First visit to
+stack up, then prints its three `nip.io` URLs. First visit to
 `http://proton.crm.<PUBLIC_IP>.nip.io` lands on Chatwoot's onboarding wizard;
-`http://proton.tickets.<PUBLIC_IP>.nip.io` on Zammad's setup wizard;
 `http://proton.agent.<PUBLIC_IP>.nip.io/healthz` returns `{"status":"ok"}`.
 Mailpit is shared across tenants at `http://<tenant>.mail.<PUBLIC_IP>.nip.io`
 (basic-auth from `infra.env`).
@@ -126,15 +121,15 @@ it — not stored). To provision customers at bootstrap time, pass
 `TENANTS="proton wahchan"` in the environment; otherwise add them later on the
 VM with `cd /opt/platform/deploy && ./scripts/add-tenant.sh <name>`.
 
-## 5. Phase-2 wiring: Chatwoot ⇄ Zammad sync
+## 5. Phase-2 wiring: Chatwoot webhook
 
 > **Per tenant.** Do this once per customer, using that tenant's subdomains
-> (`<tenant>.crm.<ip>.nip.io`, `<tenant>.tickets.<ip>.nip.io`,
-> `<tenant>.agent.<ip>.nip.io`) and editing that tenant's
-> `deploy/tenants/<tenant>.env`. After editing the env, re-apply just the agent:
-> `docker compose -p <tenant> -f docker-compose.tenant.yml --env-file tenants/<tenant>.env up -d agent`.
+> (`<tenant>.crm.<ip>.nip.io`, `<tenant>.agent.<ip>.nip.io`) and editing that
+> tenant's `deploy/tenants/<tenant>.env`. After editing the env, re-apply just
+> the agent: `docker compose -p <tenant> -f docker-compose.tenant.yml
+> --env-file tenants/<tenant>.env up -d agent`.
 
-Do this once both apps have completed their setup wizards.
+Do this once Chatwoot has completed its setup wizard.
 
 ### API tokens
 
@@ -144,9 +139,6 @@ Do this once both apps have completed their setup wizards.
   the AI bot in Phase-3): **Super Admin console** (`/super_admin`) →
   **Platform Apps** → create/copy the **Platform Token** into
   `CHATWOOT_PLATFORM_TOKEN`.
-- **Zammad**: log in as admin → avatar (top-right) → **Profile** → **Token
-  Access** → generate a token with the permissions you need → copy into
-  `ZAMMAD_API_TOKEN` in `tenants/<tenant>.env`.
 
 Restart the agent service after editing the tenant env:
 `docker compose -p <tenant> -f docker-compose.tenant.yml --env-file tenants/<tenant>.env up -d agent`.
@@ -172,24 +164,6 @@ curl -H "api_access_token: <CHATWOOT_API_TOKEN>" \
 Then restart the agent service to pick it up:
 `docker compose -p <tenant> -f docker-compose.tenant.yml --env-file tenants/<tenant>.env up -d agent`.
 
-### Zammad → agent webhook + trigger
-
-**Admin → Manage → Webhook** → **Add Webhook**:
-
-- Endpoint: `http://<tenant>.agent.<PUBLIC_IP>.nip.io/webhooks/zammad`
-- Set a signature token — put the same value in `ZAMMAD_WEBHOOK_SECRET` in
-  `tenants/<tenant>.env` (verified via the `X-Hub-Signature` header).
-
-**Admin → Manage → Trigger** → **Add Trigger**:
-
-- Condition: scope to tag `from-chatwoot` (tickets created by the agent
-  service from escalated Chatwoot conversations)
-- Action: **Webhook** → select the webhook created above
-
-This lets Zammad notify the agent whenever a ticket that originated from
-Chatwoot changes state, so the change can be mirrored back as a note on the
-linked conversation.
-
 ## 6. Phase-3: AI layer (Gemini)
 
 ### Register the Chatwoot AI agent bot
@@ -212,27 +186,20 @@ those into `tenants/<tenant>.env` as `CHATWOOT_BOT_TOKEN` / `CHATWOOT_BOT_SECRET
 and restart the agent:
 `docker compose -p <tenant> -f docker-compose.tenant.yml --env-file tenants/<tenant>.env up -d agent`.
 
-### Zammad AI provider (Custom OpenAI → Gemini)
-
-Zammad has a built-in "AI provider" integration compatible with the OpenAI
-API shape. Point it at Gemini's OpenAI-compatible endpoint instead of
-running a second integration:
-
-**Admin → Manage → AI Provider** (or **Integrations → AI**, depending on
-Zammad version) → provider **Custom OpenAI**:
-
-- Endpoint: `https://generativelanguage.googleapis.com/v1beta/openai`
-- API key: your `GEMINI_API_KEY` (same one used by the agent service, from
-  [Google AI Studio](https://aistudio.google.com/apikey))
-- Model: match `GEMINI_MODEL` in `tenants/<tenant>.env` (default `gemini-2.5-flash`)
-
-With this enabled, Zammad's own "suggest a reply" / ticket AI features call
-Gemini directly, independent of the agent service's own Chatwoot-side bot.
-
 `AGENT_MODE` controls the Chatwoot-side bot's behavior: `suggest` (default)
 drafts a private-note reply for a human to approve; `auto` sends replies
-directly. `AUTO_RESOLVE` controls whether the agent may resolve/close
-Chatwoot conversations on its own when the linked Zammad ticket closes.
+directly.
+
+### Escalation routing (PIC / dealer contacts)
+
+Which department contact or dealer email an escalated conversation notifies
+is configured per tenant in the backend's **Escalation Routing** admin page
+(Chatwoot fork patch `0039`, `GET/POST /admin/escalation/*` on the backend,
+permission `escalation.manage`) — no redeploy needed to add or change a PIC
+or dealer entry. The old path, setting `PIC_MAP_JSON` and
+`DEALER_EMAIL_MAP_JSON` in `tenants/<tenant>.env`, still works as a fallback
+for tenants that never touch the admin page, but the admin UI is the
+preferred way to manage routing going forward.
 
 ## 7. Switching to a real domain later
 
@@ -240,9 +207,8 @@ The nip.io setup is HTTP-only and meant to get you running fast. To move to
 a real domain with TLS:
 
 1. Point your domain's DNS (A records) at the VM's static IP — e.g.
-   `crm.example.com`, `tickets.example.com`, `agent.example.com`,
-   `mail.example.com` (or drop Mailpit's public exposure entirely once you
-   have real SMTP).
+   `crm.example.com`, `agent.example.com`, `mail.example.com` (or drop
+   Mailpit's public exposure entirely once you have real SMTP).
 2. Edit `deploy/caddy/Caddyfile`: replace the `http://*.{$PUBLIC_IP}.nip.io`
    site blocks with your real hostnames, and remove the
    `{ auto_https off }` global block so Caddy provisions Let's Encrypt certs

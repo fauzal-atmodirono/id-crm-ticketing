@@ -297,7 +297,29 @@ class StateTrendRow:
     # string, so a period filter can use a BigQuery named parameter instead of
     # string-matching `month`. Optional/trailing so old positional callers and
     # rows from the pre-widening view (missing the column) still construct.
+    #
+    # Populated ONLY on the unfiltered path (`v_state_trend` selects it);
+    # `None` on the period path, which reads the day-grain sibling and has
+    # no calendar-month concept to report. Deliberately NOT marked
+    # `period_only` -- that metadata means "structurally unpopulatable in an
+    # export" (see export.py's `_exportable_field_names`), and no export
+    # route ever supplies a period, so `month_start` is always genuinely
+    # populated wherever it is exported. It is a real column, not a blank
+    # one (Package E final fix, finding M2).
     month_start: date | None = None
+    # Granularity-neutral grouping key, mirroring `VolumeRow.bucket`
+    # (Package E final fix, finding M6). Same value as `month` on the
+    # period path -- a day/week/month bucket key from `bucket_key()`'s
+    # vocabulary -- and `None` on the unfiltered path, where `month` is
+    # always a real "YYYY-MM" and the sibling would be redundant. A
+    # period-scoped consumer must group by `bucket`, not by `month`:
+    # `month` is a month key on one path and a week key like "2026-W29" on
+    # the other, and the field cannot be renamed because
+    # `0020-reports-native-merge.patch`'s state-trend chart reads it
+    # positionally as a month. Marked `period_only` for the same reason
+    # `VolumeRow.bucket` is: no export path supplies a period, so it could
+    # never be anything but blank there.
+    bucket: str | None = field(default=None, metadata={"period_only": True})
 
 
 @dataclass(frozen=True)
@@ -311,9 +333,15 @@ class LifecycleMetrics:
     @property
     def scopes(self) -> dict[str, BlockScope]:
         """See DashboardMetrics.scopes (same not-a-field rationale).
-        `cases` is always "unfiltered" (no period support at all);
-        `state_trend` can be "ok"/"unavailable"/"unsupported_granularity"
-        once a period is supplied."""
+        `cases` is "unfiltered" on the no-period path and
+        "unsupported_granularity" with an empty row list once a period is
+        supplied -- `v_case_lifecycle` is a row-per-case view with no
+        aggregate grain a period could be honoured at, so the adapter
+        skips the query entirely rather than full-scanning it twice per
+        page load and serialising the whole all-time case list under a
+        week header (Package E final fix, finding I5). `state_trend` can
+        be "ok"/"unavailable"/"unsupported_granularity" once a period is
+        supplied."""
         return self._scopes  # type: ignore[attr-defined,no-any-return]
 
     def attach_scopes(self, scopes: dict[str, BlockScope]) -> None:
@@ -381,6 +409,9 @@ class VolumeByTypeDivisionRow:
     volume: int
     # See StateTrendRow.month_start — same widening, same reason.
     month_start: date | None = None
+    # See StateTrendRow.bucket — same granularity-neutral sibling, same
+    # reason (Package E final fix, finding M6).
+    bucket: str | None = field(default=None, metadata={"period_only": True})
 
 
 @dataclass(frozen=True)
@@ -437,17 +468,37 @@ class MetricsQueryPort(Protocol):
 
 
 _UNFILTERED_SCOPE = BlockScope(status="unfiltered", period=None, supported_granularity=None)
+_DEGRADED_SCOPE = BlockScope(status="unavailable", period=None, supported_granularity=None)
 
 
 class MockMetricsQuery:
     """Returns a representative payload so dev/tests never touch BigQuery.
 
-    Every block is reported "unfiltered" regardless of whether a `period`
-    was requested: this is also the fail-open fallback when the real
-    BigQuery client fails to init (`build_metrics_query_port`), so a period
-    request that silently downgrades to this canned all-time payload must
-    say so via `scopes`, not just via matching the Protocol's return type.
+    Two callers construct this, and they mean opposite things (Package E
+    final fix, finding I6):
+
+    - `metrics_provider != "bigquery"` -- a *deliberate* choice to run on
+      canned data (local dev, tests, a tenant with no warehouse). The rows
+      are the intended answer, and every block reports "unfiltered": they
+      are all-time figures, honestly labelled as such.
+    - `build_metrics_query_port`'s **fail-open fallback** after
+      `bigquery.Client()` init raises (`degraded=True`). Here the canned
+      rows are not an answer at all -- 682 cases dated "2026-06" is an
+      invented number that renders as a perfectly plausible all-time total
+      on a client-facing page. Those blocks report "unavailable" instead,
+      which is what a period-scoped consumer already renders as
+      "temporarily unavailable" rather than as data. The posture stays
+      fail-open -- a misconfigured warehouse must not 500 the page -- but
+      it no longer fails open *into fabricated figures*.
+
+    Neither mode ever applies a `period` to the rows themselves; the rows
+    are canned either way. `scopes` is the only channel that can say so,
+    which is why it is not enough for this class to merely satisfy the
+    Protocol's return type.
     """
+
+    def __init__(self, *, degraded: bool = False) -> None:
+        self._scope = _DEGRADED_SCOPE if degraded else _UNFILTERED_SCOPE
 
     async def fetch_anomalies(self) -> list[AnomalyRow]:
         return [
@@ -527,7 +578,7 @@ class MockMetricsQuery:
                     "bounce",
                     "quality",
                 ),
-                _UNFILTERED_SCOPE,
+                self._scope,
             )
         )
         return metrics
@@ -560,7 +611,7 @@ class MockMetricsQuery:
                 )
             ],
         )
-        metrics.attach_scopes({"cases": _UNFILTERED_SCOPE, "state_trend": _UNFILTERED_SCOPE})
+        metrics.attach_scopes({"cases": self._scope, "state_trend": self._scope})
         return metrics
 
     async def fetch_dealer_escalation(self) -> DealerEscalationMetrics:
@@ -596,5 +647,5 @@ class MockMetricsQuery:
         metrics = VolumeByTypeDivisionMetrics(
             volume=[VolumeByTypeDivisionRow("2026-06", "WhatsApp", "Inquiry", "Sales", 682)]
         )
-        metrics.attach_scopes({"volume": _UNFILTERED_SCOPE})
+        metrics.attach_scopes({"volume": self._scope})
         return metrics

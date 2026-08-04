@@ -2,6 +2,7 @@ import asyncio
 import csv
 import io
 from dataclasses import fields
+from datetime import date
 
 from openpyxl import load_workbook  # type: ignore[import-untyped]
 
@@ -13,6 +14,8 @@ from chatbot.features.metrics.query_port import (
     DealerEscalationRow,
     DealerSlowCaseRow,
     MockMetricsQuery,
+    VolumeByTypeDivisionMetrics,
+    VolumeByTypeDivisionRow,
     VolumeRow,
 )
 
@@ -118,3 +121,48 @@ def test_render_csv_keeps_a_nullable_business_column_even_when_all_none() -> Non
     content = render_csv(metrics).decode("utf-8")
     reader = list(csv.reader(io.StringIO(content)))
     assert ["channel", "respondents", "avg_score", "satisfied_rate"] in reader
+
+
+def test_export_keeps_month_start_but_drops_the_period_only_bucket() -> None:
+    """Package E final fix, finding M2 -- the decision, pinned.
+
+    `VolumeByTypeDivisionRow` gained two fields. They are exported
+    differently, on purpose:
+
+    - `bucket` is `period_only`: no export route ever supplies a period
+      (`export_router.py` calls every `fetch_*` with no arguments), so it
+      could never be anything but blank here. Dropped, same as
+      `VolumeRow.bucket`.
+    - `month_start` is NOT `period_only`: it is selected by the month-grain
+      view `v_volume_by_type_division` and is therefore genuinely populated
+      on exactly the unfiltered path exports use. Dropping it would violate
+      `_exportable_field_names`'s stated contract -- it only ever removes a
+      column that is structurally blank, never real data that merely looks
+      redundant.
+
+    So `/metrics/volume-by-type/export`'s CSV header gains `month_start`
+    (and only that) with this branch. Logged in the spec's deploy steps.
+    """
+    metrics = VolumeByTypeDivisionMetrics(
+        volume=[
+            VolumeByTypeDivisionRow(
+                month="2026-06",
+                channel="WhatsApp",
+                case_type="Inquiry",
+                division="Sales",
+                volume=682,
+                month_start=date(2026, 6, 1),
+            )
+        ]
+    )
+    reader = list(csv.reader(io.StringIO(render_csv(metrics).decode("utf-8"))))
+    assert [
+        "month",
+        "channel",
+        "case_type",
+        "division",
+        "volume",
+        "month_start",
+    ] in reader
+    for row in reader:
+        assert "bucket" not in row

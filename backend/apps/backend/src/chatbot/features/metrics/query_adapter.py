@@ -23,10 +23,11 @@ period-scoped, so a client rendering all eight dashboard blocks under one
 "17-23 July" header needs the per-block marker to avoid presenting an
 all-time CSAT or bot-resolution split as if it were that week's.
 
-All three period-aware blocks now use the same mechanism: each reads a
-day-grained sibling view (`v_volume_daily`, `v_state_trend_daily`,
-`v_volume_by_type_division_daily` -- see `_day_grain_block_for_period` and
-`_volume_block_for_period`) rather than filtering their month-grain
+All three period-aware blocks now use the same mechanism, and since the
+`bucket` field landed on all three row types (finding M6) literally the
+same method: each reads a day-grained sibling view (`v_volume_daily`,
+`v_state_trend_daily`, `v_volume_by_type_division_daily` -- see
+`_day_grain_block_for_period`) rather than filtering their month-grain
 originals (`v_volume_by_month_channel`, `v_state_trend`,
 `v_volume_by_type_division`), which stay completely untouched and keep
 serving the unfiltered path exactly as before. This was NOT the original
@@ -52,15 +53,16 @@ prefer-widening rule, not a reversion of the earlier judgment call. The
 still exported) even though nothing in this adapter filters on it anymore.
 
 `unsupported_granularity` is consequently no longer reachable for any of
-the three period-aware blocks: `_day_grain_block_for_period`/
-`_volume_block_for_period` both read day-grain sources, so every
-granularity (day/week/month) and every date range is a valid predicate --
-there's no shape a day-grain `WHERE day BETWEEN @start AND @end` can get
-structurally wrong the way `month_start BETWEEN` could. It remains part of
-`BlockScope`'s enum for any future period-aware block whose only available
-source is pre-aggregated (the same situation `state_trend`/
-`volume_by_type_division` were in before this fix), and Task 3/4's UI
-should keep a code path for it rather than assuming it can never occur.
+the three period-aware *value* blocks: `_day_grain_block_for_period` reads
+a day-grain source, so every granularity (day/week/month) and every date
+range is a valid predicate -- there's no shape a day-grain `WHERE day
+BETWEEN @start AND @end` can get structurally wrong the way `month_start
+BETWEEN` could. It is still reachable, and is the honest answer, for
+`fetch_lifecycle`'s `cases` block: `v_case_lifecycle` is row-per-case with
+no aggregate grain and no day-grain sibling to route through, so a period
+request skips it entirely rather than full-scanning it (see
+`_lifecycle_cases_block`, Package E final fix / finding I5). Task 3/4's UI
+must keep its code path for this status; it is not hypothetical.
 """
 
 from __future__ import annotations
@@ -150,38 +152,37 @@ class BigQueryMetricsQuery:
             ]
         )
 
-    def _query_block(
-        self,
-        view: str,
-        row_type: Callable[..., _T],
-        *,
-        period: PeriodRange | None = None,
-        date_column: str | None = None,
-    ) -> tuple[list[_T], bool]:
-        """SELECT a view into `row_type` rows. Returns `(rows, ok)`.
+    def _query_block(self, view: str, row_type: Callable[..., _T]) -> tuple[list[_T], bool]:
+        """SELECT a view into `row_type` rows, unfiltered. Returns `(rows, ok)`.
 
         `ok=False` only on a genuine query failure (drifted view, a column
         the live view doesn't have yet, a BigQuery outage) -- `rows == []`
         with `ok=True` is a legitimate empty result, not a failure. Callers
         that don't need the distinction use `_block`, which discards it.
 
-        `period=None` (or a view with no `date_column`) runs the exact same
-        `SELECT * FROM <view>` this adapter has always run -- byte-identical
-        SQL, so today's callers see no change at all. A period *and* a
-        `date_column` add a `WHERE <date_column> BETWEEN @start AND @end`
-        predicate using BigQuery named parameters -- the range bounds are
-        never string-formatted into the query text.
+        This emits the exact same `SELECT * FROM <view>` the adapter has
+        always run -- byte-identical SQL, so today's callers see no change
+        at all.
+
+        It takes **no** `period`/`date_column` and emits no `WHERE`
+        predicate, deliberately (Package E final fix, finding M1). It used
+        to carry both, plus a `WHERE <date_column> BETWEEN @start AND @end`
+        branch, from the abandoned month-grain filtering design. Once the
+        period path moved to the day-grain siblings
+        (`_day_grain_block_for_period`) the branch lost every caller, and
+        the `_whole_calendar_months` guard that stopped it over-counting a
+        month-grain view was deleted along with the rest of that design.
+        Left in place it was a loaded gun: pointing it at a month-grain
+        view (`v_state_trend`, `v_volume_by_type_division`) reintroduces
+        the round-2 4x over-count -- a window containing any 1st of a month
+        returns that whole month -- with no test failing. Any future
+        period-aware block reads a day-grain source through
+        `_day_grain_block_for_period`; there is no supported way to filter
+        a month-grain view by date, which is the point.
         """
         try:
-            if period is not None and date_column is not None:
-                sql = (
-                    f"SELECT * FROM `{self._prefix}.{view}` "  # noqa: S608
-                    f"WHERE {date_column} BETWEEN @start AND @end"
-                )
-                job = self._client.query(sql, job_config=self._range_job_config(period))
-            else:
-                sql = f"SELECT * FROM `{self._prefix}.{view}`"  # noqa: S608
-                job = self._client.query(sql)
+            sql = f"SELECT * FROM `{self._prefix}.{view}`"  # noqa: S608
+            job = self._client.query(sql)
             return [row_type(**dict(r)) for r in job.result()], True
         except (
             Exception
@@ -190,8 +191,7 @@ class BigQueryMetricsQuery:
             return [], False
 
     def _block(self, view: str, row_type: Callable[..., _T]) -> list[_T]:
-        """Rows only, for the blocks with no period support at all (never
-        take a `date_column`, so always the plain unfiltered SELECT *)."""
+        """Rows only, for callers that don't need the ok/failed distinction."""
         rows, _ok = self._query_block(view, row_type)
         return rows
 
@@ -205,15 +205,27 @@ class BigQueryMetricsQuery:
     ) -> tuple[list[_T], bool]:
         """Bucket a day-grain view (columns: `day`, *`group_columns`,
         `value_column`) at `period.granularity`, filtered by named
-        parameters. Same mechanism as `_volume_block_for_period`
-        (dashboard's volume block), generalised to the other two
-        day-grain siblings: `v_state_trend_daily`
+        parameters. The single mechanism behind all three period-aware
+        blocks: `v_volume_daily` (`group_columns=("channel",)`,
+        `value_column="volume"`), `v_state_trend_daily`
         (`group_columns=("status", "division")`, `value_column="cases"`)
         and `v_volume_by_type_division_daily`
         (`group_columns=("channel", "case_type", "division")`,
         `value_column="volume"`). Any period shape/granularity is safe
         here -- the source is already day-grain, so there's no whole-month
         alignment requirement the month-grain originals would need.
+
+        Every row gets `bucket` set to the same value as `month` (Package
+        E final fix, finding M6). `month` cannot be renamed -- patch
+        `0020`'s charts read it as a real "YYYY-MM" on the unfiltered path
+        -- so on this path it holds whatever `_BUCKET_FORMAT` produced,
+        which for a week period is an ISO key like "2026-W29". `bucket` is
+        the granularity-neutral sibling a period-scoped consumer groups by
+        without having to know which of those two it is looking at. It was
+        previously set only on `VolumeRow`, which is why this method and a
+        near-identical `_volume_block_for_period` existed side by side;
+        with `bucket` on all three row types the two collapse into one and
+        the three blocks are guaranteed to behave identically.
         """
         bucket_format = _BUCKET_FORMAT.get(period.granularity, "%Y-%m")
         group_sql = ", ".join(group_columns)
@@ -226,41 +238,13 @@ class BigQueryMetricsQuery:
         )
         try:
             job = self._client.query(sql, job_config=self._range_job_config(period))
-            return [row_type(**dict(r)) for r in job.result()], True
-        except Exception as e:  # same fail-open contract as _query_block
-            _log.error("metrics_view_query_failed", view=view, error=str(e))
-            return [], False
-
-    def _volume_block_for_period(self, period: PeriodRange) -> tuple[list[VolumeRow], bool]:
-        """Volume bucketed at `period.granularity`, over `v_volume_daily`
-        (day grain) -- see the module docstring for why this doesn't widen
-        `v_volume_by_month_channel`. Any period shape/granularity is safe
-        here: the source is already day-grain, so there's no whole-month
-        alignment requirement a month-grain source would need. Kept
-        separate from `_day_grain_block_for_period` because `VolumeRow`
-        also needs the `bucket` sibling field set, which
-        `StateTrendRow`/`VolumeByTypeDivisionRow` don't have.
-        """
-        bucket_format = _BUCKET_FORMAT.get(period.granularity, "%Y-%m")
-        sql = (
-            f"SELECT FORMAT_DATE('{bucket_format}', day) AS month, "  # noqa: S608
-            f"channel, SUM(volume) AS volume "
-            f"FROM `{self._prefix}.v_volume_daily` "
-            f"WHERE day BETWEEN @start AND @end "
-            f"GROUP BY month, channel"
-        )
-        try:
-            job = self._client.query(sql, job_config=self._range_job_config(period))
-            rows: list[VolumeRow] = []
+            rows: list[_T] = []
             for r in job.result():
                 row = dict(r)
-                # `bucket` is a sibling of `month` -- see VolumeRow's
-                # docstring for why `month` itself isn't renamed even
-                # though it may hold a week key like "2026-W29" here.
-                rows.append(VolumeRow(bucket=row["month"], **row))
+                rows.append(row_type(bucket=row["month"], **row))
             return rows, True
         except Exception as e:  # same fail-open contract as _query_block
-            _log.error("metrics_view_query_failed", view="v_volume_daily", error=str(e))
+            _log.error("metrics_view_query_failed", view=view, error=str(e))
             return [], False
 
     def _dashboard_volume_block(
@@ -268,7 +252,9 @@ class BigQueryMetricsQuery:
     ) -> tuple[list[VolumeRow], BlockScope]:
         if period is None:
             return self._block("v_volume_by_month_channel", VolumeRow), _UNFILTERED_SCOPE
-        rows, ok = self._volume_block_for_period(period)
+        rows, ok = self._day_grain_block_for_period(
+            "v_volume_daily", VolumeRow, period, ("channel",), "volume"
+        )
         status = "ok" if ok else "unavailable"
         # No granularity restriction here (day-grain source), so
         # supported_granularity is never the reason for a non-"ok" status.
@@ -367,13 +353,49 @@ class BigQueryMetricsQuery:
     async def fetch_callcenter(self) -> CallCentreMetrics:
         return await asyncio.to_thread(self._fetch_callcenter_sync)
 
-    def _fetch_lifecycle_sync(self, period: PeriodRange | None = None) -> LifecycleMetrics:
-        state_trend_rows, state_trend_scope = self._lifecycle_state_trend_block(period)
-        metrics = LifecycleMetrics(
-            cases=self._block("v_case_lifecycle", CaseLifecycleRow),
-            state_trend=state_trend_rows,
+    def _lifecycle_cases_block(
+        self, period: PeriodRange | None
+    ) -> tuple[list[CaseLifecycleRow], BlockScope]:
+        """`v_case_lifecycle` is a row-per-case view -- an unfiltered
+        `SELECT *` over every case the tenant has ever had, with no
+        aggregate grain and no period-filterable sibling.
+
+        With a period supplied the query is **skipped entirely** (Package
+        E final fix, finding I5): `insights_router.py`'s `/metrics/lifecycle`
+        fans out to a current and a previous leg, so every week change on
+        the Weekly Report page was triggering two full scans of this view
+        and serialising the whole all-time case list into the JSON twice
+        -- for a page that reads only `state_trend` from this endpoint and
+        gets its per-case detail from live Chatwoot via patch `0044`'s
+        `fetchAllCases`. That is exactly the cost the plan's "no
+        full-table scan per page load" constraint targets.
+
+        Skipped on **both** legs, not just `previous`: all-time case rows
+        under a "17-23 July" header are the mislabelling `BlockScope`
+        exists to prevent, and halving a cost that shouldn't be paid at
+        all is not a fix. The scope reported is
+        `"unsupported_granularity"` -- the accurate one. It is not
+        `"unavailable"` (nothing failed) and not `"unfiltered"` (that
+        would claim all-time rows are present when the list is empty);
+        it says the view cannot be period-filtered, which is the truth,
+        and it is the status Task 4's UI already has a code path for.
+
+        The no-period path is untouched: same `SELECT *`, same
+        `"unfiltered"` scope, byte-identical payload. That is the path
+        patches `0020`/`0034`'s Case Lifecycle report reads, and it is the
+        only consumer of this block anywhere in the repo.
+        """
+        if period is None:
+            return self._block("v_case_lifecycle", CaseLifecycleRow), _UNFILTERED_SCOPE
+        return [], BlockScope(
+            status="unsupported_granularity", period=period, supported_granularity=None
         )
-        metrics.attach_scopes({"cases": _UNFILTERED_SCOPE, "state_trend": state_trend_scope})
+
+    def _fetch_lifecycle_sync(self, period: PeriodRange | None = None) -> LifecycleMetrics:
+        cases_rows, cases_scope = self._lifecycle_cases_block(period)
+        state_trend_rows, state_trend_scope = self._lifecycle_state_trend_block(period)
+        metrics = LifecycleMetrics(cases=cases_rows, state_trend=state_trend_rows)
+        metrics.attach_scopes({"cases": cases_scope, "state_trend": state_trend_scope})
         return metrics
 
     async def fetch_lifecycle(self, period: PeriodRange | None = None) -> LifecycleMetrics:
@@ -415,11 +437,25 @@ class BigQueryMetricsQuery:
 
 
 def build_metrics_query_port(settings: Settings) -> MetricsQueryPort:
-    """Pick the read-side implementation from settings (reuses metrics_provider)."""
+    """Pick the read-side implementation from settings (reuses metrics_provider).
+
+    The two `MockMetricsQuery` constructions below are NOT the same thing
+    (Package E final fix, finding I6). The last line is a deliberate
+    choice of canned data -- the operator set `metrics_provider` to
+    something other than "bigquery", and all-time mock rows labelled
+    "unfiltered" are the intended answer. The `except` branch is a
+    *failure*: the tenant asked for BigQuery and the client could not be
+    built, so the same canned rows (682 cases, "2026-06") would render as
+    a plausible-looking real figure on a client-facing page. `degraded=True`
+    makes every block report `"unavailable"` instead, which a period-scoped
+    consumer renders as "temporarily unavailable" rather than as data.
+    Still fail-open -- a misconfigured warehouse must not raise or 500 the
+    page -- just no longer fail-open into invented numbers.
+    """
     if settings.metrics_provider == "bigquery":
         try:
             return BigQueryMetricsQuery(settings)
         except Exception as e:  # never let init crash the app
             _log.error("metrics_query_init_failed_falling_back_to_mock", error=str(e))
-            return MockMetricsQuery()
+            return MockMetricsQuery(degraded=True)
     return MockMetricsQuery()

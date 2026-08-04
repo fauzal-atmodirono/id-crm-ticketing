@@ -15,6 +15,16 @@ from chatbot.features.metrics.query_port import (
 
 _UNFILTERED = BlockScope(status="unfiltered", period=None, supported_granularity=None)
 
+
+def _cases_scope(period):
+    """What the real adapter reports for `lifecycle.cases` once a period is
+    supplied: the block is skipped, not filtered (`v_case_lifecycle` can't
+    be period-filtered), so the fake ports below must say the same thing
+    rather than a friendlier "unfiltered" the adapter would never emit.
+    See `query_adapter._lifecycle_cases_block` (finding I5)."""
+    return BlockScope(status="unsupported_granularity", period=period, supported_granularity=None)
+
+
 # Mirrors period.py's own delta fixture (297 vs 240 -> +24%) so the router
 # test exercises the same arithmetic the weekly deck reconciliation depends
 # on, rather than a coincidental 0%-delta from a period-blind mock.
@@ -38,7 +48,7 @@ class _PeriodAwarePort(MockMetricsQuery):
         )
         metrics.attach_scopes(
             {
-                "cases": _UNFILTERED,
+                "cases": _cases_scope(period),
                 "state_trend": BlockScope(status="ok", period=period, supported_granularity=None),
             }
         )
@@ -84,7 +94,7 @@ class _DegradedPreviousPort(MockMetricsQuery):
             )
             metrics.attach_scopes(
                 {
-                    "cases": _UNFILTERED,
+                    "cases": _cases_scope(period),
                     "state_trend": BlockScope(
                         status="ok", period=period, supported_granularity=None
                     ),
@@ -95,7 +105,7 @@ class _DegradedPreviousPort(MockMetricsQuery):
         metrics = LifecycleMetrics(cases=[], state_trend=[])
         metrics.attach_scopes(
             {
-                "cases": _UNFILTERED,
+                "cases": _cases_scope(period),
                 "state_trend": BlockScope(
                     status="unavailable", period=period, supported_granularity=None
                 ),
@@ -234,8 +244,13 @@ def test_lifecycle_with_period_returns_wrapped_shape_and_computed_delta():
     assert round(body["deltas"]["state_trend"]) == 24
     assert body["scopes"]["state_trend"]["current"]["status"] == "ok"
     assert body["scopes"]["state_trend"]["previous"]["status"] == "ok"
-    assert body["scopes"]["cases"]["current"]["status"] == "unfiltered"
-    assert body["scopes"]["cases"]["previous"]["status"] == "unfiltered"
+    # `cases` is skipped, not filtered, on both legs (finding I5) -- the
+    # empty list is labelled as a block that cannot be period-filtered,
+    # not as all-time rows and not as a failure.
+    assert body["scopes"]["cases"]["current"]["status"] == "unsupported_granularity"
+    assert body["scopes"]["cases"]["previous"]["status"] == "unsupported_granularity"
+    assert body["current"]["cases"] == []
+    assert body["previous"]["cases"] == []
 
 
 def test_volume_by_type_with_period_returns_wrapped_shape_and_computed_delta():

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 from dataclasses import asdict
 from datetime import date
 from typing import Any
@@ -20,7 +22,9 @@ from chatbot.features.metrics.query_port import (
     LifecycleMetrics,
     MockMetricsQuery,
     SlaBucketMetrics,
+    StateTrendRow,
     VolumeByTypeDivisionMetrics,
+    VolumeByTypeDivisionRow,
     VolumeRow,
 )
 from chatbot.platform.config import Settings
@@ -912,3 +916,376 @@ async def test_scopes_is_still_reachable_as_a_plain_attribute() -> None:
 
     assert metrics.scopes["volume"].status == "ok"
     assert metrics.scopes["csat"].status == "unfiltered"
+
+
+# --- Package E final fix (whole-branch review) ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_period_skips_the_case_lifecycle_full_scan_entirely() -> None:
+    """Finding I5. `v_case_lifecycle` is a row-per-case view with no
+    aggregate grain and no day-grain sibling, so `_fetch_lifecycle_sync`
+    used to run its unfiltered `SELECT *` regardless of period -- and
+    `/metrics/lifecycle` fans out to two legs, so every week change cost
+    two full scans plus serialising the whole all-time case list into a
+    payload the Weekly Report page never reads from. With a period, the
+    query must not be issued at all."""
+    period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient(
+        {
+            "v_case_lifecycle": [
+                {
+                    "conversation_id": "CONV001",
+                    "channel": "whatsapp",
+                    "division": "Sales",
+                    "department": "Aftersales",
+                    "dealer": "Dealer KL",
+                    "status": "resolved",
+                    "created_at": None,
+                    "first_response_at": None,
+                    "resolved_at": None,
+                    "first_response_minutes": 15,
+                    "resolution_minutes": 240,
+                    "reopen_count": 0,
+                }
+            ],
+            "v_state_trend_daily": [
+                {"month": "2026-W29", "status": "resolved", "division": "Sales", "cases": 12}
+            ],
+        }
+    )
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    result = await q.fetch_lifecycle(period=period)
+
+    assert not any("v_case_lifecycle" in sql for sql in client.queries)
+    assert result.cases == []
+    # ...and the empty list is labelled honestly: nothing failed
+    # ("unavailable" would be wrong) and no all-time rows are present
+    # ("unfiltered" would be wrong). The view genuinely cannot be
+    # period-filtered, which is what this status means.
+    assert result.scopes["cases"] == BlockScope(
+        status="unsupported_granularity", period=period, supported_granularity=None
+    )
+    # the block the page actually reads is unaffected
+    assert result.state_trend[0].cases == 12
+
+
+@pytest.mark.asyncio
+async def test_no_period_still_full_scans_case_lifecycle_unchanged() -> None:
+    """The other half of finding I5: the no-period path is the one patch
+    0020/0034's Case Lifecycle report reads, and it must be byte-identical
+    -- same query, same rows, same "unfiltered" scope."""
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient(
+        {
+            "v_case_lifecycle": [
+                {
+                    "conversation_id": "CONV001",
+                    "channel": "whatsapp",
+                    "division": "Sales",
+                    "department": "Aftersales",
+                    "dealer": "Dealer KL",
+                    "status": "resolved",
+                    "created_at": None,
+                    "first_response_at": None,
+                    "resolved_at": None,
+                    "first_response_minutes": 15,
+                    "resolution_minutes": 240,
+                    "reopen_count": 0,
+                }
+            ]
+        }
+    )
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    result = await q.fetch_lifecycle()
+
+    assert "SELECT * FROM `proj.ds.v_case_lifecycle`" in client.queries
+    assert len(result.cases) == 1
+    assert result.scopes["cases"] == BlockScope(
+        status="unfiltered", period=None, supported_granularity=None
+    )
+
+
+def test_query_block_no_longer_accepts_a_period_or_date_column() -> None:
+    """Finding M1. `_query_block`'s `period`/`date_column` kwargs and their
+    `WHERE <col> BETWEEN @start AND @end` branch were left behind by the
+    abandoned month-grain filtering design, with zero callers and with the
+    `_whole_calendar_months` guard that used to protect them deleted. A
+    future task pointing that branch at a month-grain view reintroduces the
+    round-2 4x over-count -- a window containing any 1st of a month returns
+    that whole month -- and nothing would fail. There must be no way to ask
+    `_query_block` for a filtered read at all."""
+    params = inspect.signature(BigQueryMetricsQuery._query_block).parameters
+    assert set(params) == {"self", "view", "row_type"}
+
+
+@pytest.mark.asyncio
+async def test_no_emitted_sql_ever_filters_a_month_grain_view_by_date() -> None:
+    """The behavioural half of finding M1: whatever the call shape, the
+    only date predicate this adapter emits is the day-grain
+    `WHERE day BETWEEN`. `month_start` must never appear in a predicate --
+    that is the over-counting shape."""
+    period = PeriodRange(date(2026, 6, 29), date(2026, 7, 5), "week")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient({})
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    await q.fetch_dashboard(period=period)
+    await q.fetch_lifecycle(period=period)
+    await q.fetch_volume_by_type_division(period=period)
+    await q.fetch_dashboard()
+    await q.fetch_lifecycle()
+    await q.fetch_volume_by_type_division()
+
+    for sql in client.queries:
+        assert "month_start" not in sql
+        if "BETWEEN" in sql:
+            assert "WHERE day BETWEEN @start AND @end" in sql
+
+
+# --- Finding M6: a granularity-neutral grouping key on all three
+# period-aware row types, not just VolumeRow. ---
+
+
+@pytest.mark.asyncio
+async def test_state_trend_period_rows_carry_a_bucket_sibling() -> None:
+    """`month` holds "2026-W29" on the period path and a real "YYYY-MM" on
+    the unfiltered path, and cannot be renamed (patch 0020 reads it as a
+    month). `bucket` is the field a period-scoped consumer groups by
+    without having to know which of the two it is looking at."""
+    period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient(
+        {
+            "v_state_trend_daily": [
+                {"month": "2026-W29", "status": "resolved", "division": "Sales", "cases": 12}
+            ]
+        }
+    )
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    result = await q.fetch_lifecycle(period=period)
+
+    assert result.state_trend == [
+        StateTrendRow(
+            month="2026-W29",
+            status="resolved",
+            division="Sales",
+            cases=12,
+            month_start=None,
+            bucket="2026-W29",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_volume_by_type_division_period_rows_carry_a_bucket_sibling() -> None:
+    period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient(
+        {
+            "v_volume_by_type_division_daily": [
+                {
+                    "month": "2026-W29",
+                    "channel": "WhatsApp",
+                    "case_type": "Inquiry",
+                    "division": "Sales",
+                    "volume": 42,
+                }
+            ]
+        }
+    )
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    result = await q.fetch_volume_by_type_division(period=period)
+
+    assert result.volume == [
+        VolumeByTypeDivisionRow(
+            month="2026-W29",
+            channel="WhatsApp",
+            case_type="Inquiry",
+            division="Sales",
+            volume=42,
+            month_start=None,
+            bucket="2026-W29",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_bucket_matches_month_at_every_granularity_on_all_three_blocks() -> None:
+    """The frontend fix aggregates by `bucket`, so it must be populated
+    identically to `month` whatever granularity was asked for -- day, week
+    or month -- on all three period-aware blocks, not just VolumeRow."""
+    for granularity, key in (
+        ("day", "2026-07-20"),
+        ("week", "2026-W29"),
+        ("month", "2026-07"),
+    ):
+        period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), granularity)
+        settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+        client = _FakeClient(
+            {
+                "v_volume_daily": [{"month": key, "channel": "web", "volume": 1}],
+                "v_state_trend_daily": [
+                    {"month": key, "status": "resolved", "division": "Sales", "cases": 2}
+                ],
+                "v_volume_by_type_division_daily": [
+                    {
+                        "month": key,
+                        "channel": "web",
+                        "case_type": "Inquiry",
+                        "division": "Sales",
+                        "volume": 3,
+                    }
+                ],
+            }
+        )
+        q = BigQueryMetricsQuery(settings, client=client)
+
+        dashboard = await q.fetch_dashboard(period=period)
+        lifecycle = await q.fetch_lifecycle(period=period)
+        by_type = await q.fetch_volume_by_type_division(period=period)
+
+        for row in (dashboard.volume[0], lifecycle.state_trend[0], by_type.volume[0]):
+            assert row.bucket == key == row.month, (granularity, row)
+
+
+# --- Finding M2: the no-period payload pinned at ROW level, not just at
+# the top-level block names. `bucket`/`month_start` are new declared
+# fields, so every no-period row's key set changed; the pre-existing
+# regression tests assert only the outer key set and could not see it. ---
+
+
+@pytest.mark.asyncio
+async def test_no_period_row_key_sets_are_pinned_exactly() -> None:
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient(
+        {
+            "v_volume_by_month_channel": [{"month": "2026-06", "channel": "web", "volume": 140}],
+            "v_case_lifecycle": [
+                {
+                    "conversation_id": "CONV001",
+                    "channel": "whatsapp",
+                    "division": "Sales",
+                    "department": "Aftersales",
+                    "dealer": "Dealer KL",
+                    "status": "resolved",
+                    "created_at": None,
+                    "first_response_at": None,
+                    "resolved_at": None,
+                    "first_response_minutes": 15,
+                    "resolution_minutes": 240,
+                    "reopen_count": 0,
+                }
+            ],
+            "v_state_trend": [
+                {
+                    "month": "2026-06",
+                    "month_start": date(2026, 6, 1),
+                    "status": "resolved",
+                    "division": "Sales",
+                    "cases": 45,
+                }
+            ],
+            "v_volume_by_type_division": [
+                {
+                    "month": "2026-06",
+                    "month_start": date(2026, 6, 1),
+                    "channel": "web",
+                    "case_type": "Complaint",
+                    "division": "Sales",
+                    "volume": 25,
+                }
+            ],
+        }
+    )
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    dashboard = asdict(await q.fetch_dashboard())
+    lifecycle = asdict(await q.fetch_lifecycle())
+    by_type = asdict(await q.fetch_volume_by_type_division())
+
+    assert set(dashboard["volume"][0]) == {"month", "channel", "volume", "bucket"}
+    assert dashboard["volume"][0]["bucket"] is None
+    assert set(lifecycle["cases"][0]) == {
+        "conversation_id",
+        "channel",
+        "division",
+        "department",
+        "dealer",
+        "status",
+        "created_at",
+        "first_response_at",
+        "resolved_at",
+        "first_response_minutes",
+        "resolution_minutes",
+        "reopen_count",
+    }
+    assert set(lifecycle["state_trend"][0]) == {
+        "month",
+        "status",
+        "division",
+        "cases",
+        "month_start",
+        "bucket",
+    }
+    # month_start is genuinely populated on this path (it is a real column
+    # on the month-grain view); bucket is the redundant sibling, null here.
+    assert lifecycle["state_trend"][0]["month_start"] == date(2026, 6, 1)
+    assert lifecycle["state_trend"][0]["bucket"] is None
+    assert set(by_type["volume"][0]) == {
+        "month",
+        "month_start",
+        "channel",
+        "case_type",
+        "division",
+        "volume",
+        "bucket",
+    }
+    assert by_type["volume"][0]["month_start"] == date(2026, 6, 1)
+    assert by_type["volume"][0]["bucket"] is None
+
+
+# --- Finding I6: a fail-open fallback after a failed BigQuery client init
+# must not be indistinguishable from a deliberate choice of mock data. ---
+
+
+def test_deliberate_mock_provider_reports_unfiltered() -> None:
+    port = build_metrics_query_port(Settings(metrics_provider="noop"))
+    assert isinstance(port, MockMetricsQuery)
+    metrics = asyncio.run(port.fetch_dashboard())
+    assert all(scope.status == "unfiltered" for scope in metrics.scopes.values())
+
+
+def test_fallback_after_failed_client_init_reports_unavailable_not_unfiltered(monkeypatch) -> None:
+    """`MockMetricsQuery`'s canned rows (682 cases, "2026-06") render as a
+    perfectly plausible all-time figure. When they are a *fallback* rather
+    than a choice, nothing in the payload could say the numbers were
+    invented -- the badge read "All time". Reporting "unavailable" is what
+    lets a client-facing page render "temporarily unavailable" instead."""
+
+    def _boom(_settings):
+        raise RuntimeError("could not create bigquery client")
+
+    monkeypatch.setattr("chatbot.features.metrics.query_adapter.BigQueryMetricsQuery", _boom)
+    port = build_metrics_query_port(Settings(metrics_provider="bigquery"))
+
+    assert isinstance(port, MockMetricsQuery)  # still fail-open, still no raise
+    dashboard = asyncio.run(port.fetch_dashboard())
+    lifecycle = asyncio.run(port.fetch_lifecycle())
+    by_type = asyncio.run(port.fetch_volume_by_type_division())
+    assert all(scope.status == "unavailable" for scope in dashboard.scopes.values())
+    assert all(scope.status == "unavailable" for scope in lifecycle.scopes.values())
+    assert all(scope.status == "unavailable" for scope in by_type.scopes.values())
+
+
+def test_fallback_still_hides_scopes_from_the_no_period_json_shape() -> None:
+    """The degraded scope must not become a new top-level key on the
+    unfiltered payload -- that would break the byte-identical guarantee on
+    exactly the deployments that are already misconfigured."""
+    payload = asdict(asyncio.run(MockMetricsQuery(degraded=True).fetch_dashboard()))
+    assert "scopes" not in payload

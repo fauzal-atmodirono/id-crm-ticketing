@@ -53,6 +53,15 @@ _CREDENTIAL_FIELD = "credential"
 # field -- there is no secret being held in memory here.
 _CONFIG_CACHE_TTL_SECONDS = 30.0
 
+# Ceiling on the operator-settable `timeout_seconds`. Lives here, next to the
+# dataclass, because it has to be enforced in TWO places that must agree:
+# `DmsConfigBody` rejects an out-of-range value on write, and
+# `customer360_router` clamps on read so a document written before the
+# constraint existed (or by anything that bypasses the admin API) still
+# can't hang an interactive lookup. 30s is generous for a health probe and
+# short enough that a stuck DMS degrades the page rather than freezing it.
+MAX_TIMEOUT_SECONDS = 30.0
+
 
 @dataclass(frozen=True)
 class DmsConfig:

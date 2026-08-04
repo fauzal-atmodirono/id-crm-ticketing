@@ -30,7 +30,7 @@ from chatbot.features.chat.dms_admin_router import (
     install_credential_safe_error_handler,
 )
 from chatbot.features.chat.dms_client import ProbeResult
-from chatbot.features.chat.dms_config_store import DmsConfigStore
+from chatbot.features.chat.dms_config_store import MAX_TIMEOUT_SECONDS, DmsConfigStore
 from chatbot.platform.config import get_settings
 
 HEADERS = {
@@ -327,6 +327,84 @@ async def test_put_rejects_non_https_base_url(tmp_path, respx_mock):
         bad_body = {**VALID_BODY, "base_url": "http://dms.example.com/health"}
         res = client.put("/admin/integrations/dms", json=bad_body, headers=HEADERS)
         assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "user_id", "timeout_seconds"),
+    [
+        ("ten_minutes", 40, 600.0),
+        ("just_over_the_ceiling", 41, MAX_TIMEOUT_SECONDS + 0.1),
+        ("zero", 42, 0.0),
+        ("negative", 43, -5.0),
+    ],
+)
+async def test_put_rejects_an_out_of_range_timeout(
+    tmp_path, respx_mock, label: str, user_id: int, timeout_seconds: float
+):
+    """`timeout_seconds` becomes Customer 360's whole DMS time budget, on a
+    path a human is waiting on. Nothing validated it before: the admin form's
+    `min` is client-side only and there was no `max` at all, so an operator
+    typing `600` made every lookup hang for ten minutes.
+    """
+    client, _store = await _authorized_client(tmp_path, f"timeout_{label}", user_id, respx_mock)
+
+    with patch(
+        "chatbot.features.chat.dms_config_store.firestore.Client", autospec=True
+    ) as MockClient:
+        MockClient.return_value = _FakeFirestoreClient()
+
+        res = client.put(
+            "/admin/integrations/dms",
+            json={**VALID_BODY, "timeout_seconds": timeout_seconds},
+            headers=HEADERS,
+        )
+
+    assert res.status_code == 422
+    assert any("timeout_seconds" in error.get("loc", []) for error in res.json()["detail"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "user_id", "timeout_seconds"),
+    [("at_the_ceiling", 44, MAX_TIMEOUT_SECONDS), ("typical", 45, 5.0)],
+)
+async def test_put_accepts_an_in_range_timeout(
+    tmp_path, respx_mock, label: str, user_id: int, timeout_seconds: float
+):
+    client, _store = await _authorized_client(tmp_path, f"timeout_ok_{label}", user_id, respx_mock)
+
+    with patch(
+        "chatbot.features.chat.dms_config_store.firestore.Client", autospec=True
+    ) as MockClient:
+        MockClient.return_value = _FakeFirestoreClient()
+
+        res = client.put(
+            "/admin/integrations/dms",
+            json={**VALID_BODY, "timeout_seconds": timeout_seconds},
+            headers=HEADERS,
+        )
+
+    assert res.status_code == 200
+    assert res.json()["timeout_seconds"] == timeout_seconds
+
+
+@pytest.mark.asyncio
+async def test_put_rejects_a_negative_retries(tmp_path, respx_mock):
+    client, _store = await _authorized_client(tmp_path, "neg_retries", 46, respx_mock)
+
+    with patch(
+        "chatbot.features.chat.dms_config_store.firestore.Client", autospec=True
+    ) as MockClient:
+        MockClient.return_value = _FakeFirestoreClient()
+
+        res = client.put(
+            "/admin/integrations/dms",
+            json={**VALID_BODY, "retries": -1},
+            headers=HEADERS,
+        )
+
+    assert res.status_code == 422
 
 
 # --- POST /test --------------------------------------------------------

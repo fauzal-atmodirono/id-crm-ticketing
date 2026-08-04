@@ -50,6 +50,7 @@ from fastapi import APIRouter, Depends, Query
 
 from chatbot.features.authz.deps import require_permission
 from chatbot.features.chat.dms_client import MockDmsClient
+from chatbot.features.chat.dms_config_store import MAX_TIMEOUT_SECONDS
 
 if TYPE_CHECKING:
     from chatbot.features.authz.identity import TokenValidator
@@ -78,6 +79,15 @@ _PHONE_RE = re.compile(r"^\+?[\d\s-]{6,}$")
 # config has a near-zero/zero timeout_seconds -- without it, a misconfigured
 # budget would make even an instant client always read as "unreachable".
 _DMS_BUDGET_FLOOR_SECONDS = 1.0
+
+# ...and the ceiling guards the opposite degenerate case. `DmsConfigBody` now
+# rejects an out-of-range timeout_seconds on write, but that constraint post-
+# dates the field: a document saved before it existed (or by anything that
+# doesn't go through the admin API) can still hold 600, and the read path is
+# where a human actually waits. Clamping here rather than trusting the write
+# validator is what makes "an operator cannot hang this page" true of the
+# data as it exists, not merely of new writes.
+_DMS_BUDGET_CEILING_SECONDS = MAX_TIMEOUT_SECONDS
 
 # Vehicles are fetched for service history concurrently (asyncio.gather), not
 # one-by-one, and capped -- a customer with many vehicles on file must not
@@ -219,7 +229,10 @@ async def _build_dms_block(
         return _unreachable_dms_block(mock=False)
 
     is_mock = isinstance(dms_client, MockDmsClient)
-    budget_seconds = max(config.timeout_seconds, _DMS_BUDGET_FLOOR_SECONDS)
+    budget_seconds = min(
+        max(config.timeout_seconds, _DMS_BUDGET_FLOOR_SECONDS),
+        _DMS_BUDGET_CEILING_SECONDS,
+    )
     try:
         customer, vehicles, service_history = await asyncio.wait_for(
             _fetch_dms_records(dms_client, phone=phone, vehicle_no=vehicle_no),

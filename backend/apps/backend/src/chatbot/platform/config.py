@@ -147,6 +147,20 @@ class Settings(BaseSettings):
     # activate. Manual staff data entry only, no dispatch-system integration.
     rsa_enabled: bool = False
     rsa_database_url: str = ""
+
+    # --- DMS/TSP integration shell (Package F) ---
+    # Wires MockDmsClient into Customer 360's optional `dms` block. Phase 1
+    # ships no real DMS adapter, so this is the ONLY thing that can put data
+    # in that block — and that data is fabricated demo records. It is the
+    # single flag between a demo fixture and a real customer's panel, so it
+    # belongs here rather than in a raw os.getenv: anyone auditing a tenant's
+    # env must be able to see it, and anyone who needs to turn it off must be
+    # able to find it. Off (default) leaves `dms_client=None`, which makes an
+    # enabled-but-unwired integration read as "unreachable" (not connected) —
+    # never as a misleadingly-empty "ok". Note the integration's own
+    # enabled/base_url/credential config is operator-edited in the CRM admin
+    # UI and stored in Firestore, NOT here.
+    dms_mock_client_enabled: bool = False
     # --- Phase 5: Agent routing & presence ---
     # Master switch: when False (default) the routing service is bypassed and
     # the static chatwoot_agent_team_id team assignment remains active.

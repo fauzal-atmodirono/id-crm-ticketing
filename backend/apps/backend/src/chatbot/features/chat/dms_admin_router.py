@@ -47,11 +47,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from chatbot.features.authz.deps import require_permission
 from chatbot.features.chat.dms_client import probe as dms_probe
-from chatbot.features.chat.dms_config_store import DmsConfig, public_dict
+from chatbot.features.chat.dms_config_store import (
+    MAX_TIMEOUT_SECONDS,
+    DmsConfig,
+    public_dict,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -146,8 +150,15 @@ class DmsConfigBody(BaseModel):
     auth_type: str = ""
     extra_header_name: str = ""
     extra_header_value: str = ""
-    timeout_seconds: float = 10.0
-    retries: int = 0
+    # Bounded because this number is consumed on an INTERACTIVE path: it
+    # becomes Customer 360's whole DMS time budget, and an operator typing
+    # `600` would make every lookup hang for ten minutes with a human waiting
+    # on the page. The admin form's `min` is client-side only and has no
+    # `max`, so nothing validated this before. `customer360_router.py` clamps
+    # to the same ceiling independently, because a document written before
+    # this constraint existed would otherwise bypass it entirely.
+    timeout_seconds: float = Field(default=10.0, gt=0, le=MAX_TIMEOUT_SECONDS)
+    retries: int = Field(default=0, ge=0)
     # Write-only: accepted here, never returned by GET. `None` (the default,
     # and what a form re-PUTting unrelated fields sends) means "keep
     # whatever credential is already stored" -- see DmsConfigStore.save().

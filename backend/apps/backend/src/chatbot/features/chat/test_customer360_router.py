@@ -15,14 +15,18 @@ from chatbot.features.authz.db import init_authz_db
 from chatbot.features.authz.identity import TokenValidator
 from chatbot.features.authz.repository import AuthzRepository
 from chatbot.features.authz.seed import seed_defaults
-from chatbot.features.chat.customer360_router import _build_dms_block, build_customer360_router
+from chatbot.features.chat.customer360_router import (
+    _DMS_BUDGET_FLOOR_SECONDS,
+    _build_dms_block,
+    build_customer360_router,
+)
 from chatbot.features.chat.dms_client import (
     DmsCustomer,
     DmsServiceRecord,
     DmsVehicle,
     MockDmsClient,
 )
-from chatbot.features.chat.dms_config_store import DmsConfig
+from chatbot.features.chat.dms_config_store import MAX_TIMEOUT_SECONDS, DmsConfig
 from chatbot.features.rsa.rsa_repository import InMemoryRsaRepository
 from chatbot.platform.config import get_settings
 
@@ -710,3 +714,58 @@ async def test_one_failing_vehicle_history_call_does_not_orphan_siblings():
     # V1 and V3 were allowed to actually finish before an answer came back --
     # not abandoned mid-flight the instant V2 raised.
     assert set(dms_client.completed) == {"V1", "V3"}
+
+
+# --- the DMS time budget has a ceiling, not just a floor --------------------
+
+
+def _budget_spy(monkeypatch) -> list[float]:
+    """Record every timeout `_build_dms_block` hands `asyncio.wait_for`.
+
+    Asserting on the budget the code actually applies beats timing the real
+    wait: a ten-minute ceiling violation can't be observed by a stopwatch in
+    a test suite, and a stopwatch assertion would be flaky besides.
+    """
+    seen: list[float] = []
+    real_wait_for = asyncio.wait_for
+
+    async def spy(awaitable, timeout):  # noqa: ASYNC109 -- mirrors wait_for's own signature
+        seen.append(timeout)
+        return await real_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr("chatbot.features.chat.customer360_router.asyncio.wait_for", spy)
+    return seen
+
+
+async def _budget_for(monkeypatch, timeout_seconds: float) -> list[float]:
+    seen = _budget_spy(monkeypatch)
+    await _build_dms_block(
+        _StubDmsConfigStore(_dms_config(enabled=True, timeout_seconds=timeout_seconds)),
+        MockDmsClient(),
+        phone="0123456789",
+        vehicle_no=None,
+    )
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_stored_timeout_is_clamped_to_the_ceiling(monkeypatch):
+    """`DmsConfigBody` now rejects an out-of-range `timeout_seconds` on
+    write, but that constraint post-dates the field: a document saved before
+    it existed (or by anything bypassing the admin API) can still hold 600,
+    and the read path is where a human waits. An operator typing 600 must not
+    be able to make every Customer 360 lookup hang for ten minutes.
+    """
+    assert await _budget_for(monkeypatch, 600.0) == [MAX_TIMEOUT_SECONDS]
+
+
+@pytest.mark.asyncio
+async def test_the_floor_still_applies_under_the_new_ceiling(monkeypatch):
+    """The ceiling must not have displaced the floor: a degenerate near-zero
+    stored timeout still gets raised to the floor, not clamped to zero."""
+    assert await _budget_for(monkeypatch, 0.0) == [_DMS_BUDGET_FLOOR_SECONDS]
+
+
+@pytest.mark.asyncio
+async def test_an_in_range_timeout_is_passed_through_untouched(monkeypatch):
+    assert await _budget_for(monkeypatch, 7.5) == [7.5]

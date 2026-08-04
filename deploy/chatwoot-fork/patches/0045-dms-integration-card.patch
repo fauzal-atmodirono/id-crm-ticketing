@@ -1,4 +1,4 @@
-From e9512f69c4ed55922bf22d344d7232354c690562 Mon Sep 17 00:00:00 2001
+From 89f17b5b534f3a019c78c37824c8b9bc1ca85539 Mon Sep 17 00:00:00 2001
 From: Yuda Adi Pratama <yudaadipratama@Yudas-MacBook-Air.local>
 Date: Wed, 5 Aug 2026 05:10:51 +0700
 Subject: [PATCH] feat(integrations): add DMS/TSP integration card + config
@@ -24,11 +24,17 @@ DMS/TSP status card, and its config form backing the Task 1-4
   secret", vs. omitting the key which preserves it).
 - extra_header_value is flagged inline as NOT secret storage, since
   (unlike credential) GET returns it in plain text.
-- Test connection surfaces all four probe statuses (reachable,
-  auth_failed, timeout, unexpected_status) with distinct plain-language
-  titles; unexpected_status's copy explicitly avoids implying a bad
+- Test connection surfaces every backend status (reachable, auth_failed,
+  timeout, unexpected_status, not_configured) with distinct plain-language
+  titles. unexpected_status's copy explicitly avoids implying a bad
   credential, since it also covers a 404 from a correctly configured
-  server.
+  server; not_configured is kept separate from it because nothing was
+  sent at all, so pointing at the base URL would be misdirection.
+- No Retries control is rendered: `retries` is stored and round-tripped
+  but read by nothing in Phase 1, and an inert settings control is the
+  same class of failure as a shell mistaken for a working integration.
+- Timeout carries max=30 and a range caption, mirroring the backend's
+  Field(gt=0, le=30).
 - ProtonCustomer360Page.vue gains an optional DMS/TSP section: a
   status: "unreachable" block renders an explicit "Not connected"
   notice, and mock: true renders a plainly-labeled "Mock data" banner

@@ -1,0 +1,597 @@
+From 239e312887e47b8f01e58ef27cb2bfb59ddba438 Mon Sep 17 00:00:00 2001
+From: Yuda Adi Pratama <yudaadipratama@Yudas-MacBook-Air.local>
+Date: Tue, 4 Aug 2026 16:54:26 +0700
+Subject: [PATCH] feat(chatwoot-fork): Cases list with the client's WIP-table
+ columns
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+One filterable table over existing Chatwoot conversation data — no new
+backend storage or endpoint, per Package D Task 5. Reads
+conversation.custom_attributes (division/concern/case_type/channel/dealer,
+written by the demo seeder; case_category/case_subcategory as a fallback
+for real conversations, per mapping.py) and the contact's custom_attributes
+(vehicle_no/purchased_from) embedded at conversation.meta.sender.
+
+Columns: Case ID, Division, Concern, Purchased From, Escalated To, Car
+Plate, Aging (days), Status. Filters: division, case type, status, channel,
+dealer. Legacy conversations lacking any of these fields render a blank
+('—') cell rather than undefined/null/NaN.
+
+- app/javascript/dashboard/api/protonCases.js — data access: paginates
+  Chatwoot's own /conversations endpoint and maps each conversation to a
+  case row. No useProtonConfig/backend dependency.
+- app/javascript/dashboard/components/widgets/ProtonCasesTable.vue — the
+  reusable table + filters, kept separate from the page so Package E's
+  reporting pages can reuse it against their own case rows.
+- app/javascript/dashboard/views/ProtonCasesPage.vue — thin page shell
+  (mirrors ProtonRsaPage.vue / ProtonCustomer360Page.vue).
+- dashboard.routes.js / Sidebar.vue — proton/cases route + nav entry,
+  gated on the existing customer360.view permission (there's no backend
+  require_permission route to match, since this reads Chatwoot directly).
+---
+ app/javascript/dashboard/api/protonCases.js   | 159 +++++++++++
+ .../components-next/sidebar/Sidebar.vue       |  15 +
+ .../components/widgets/ProtonCasesTable.vue   | 260 ++++++++++++++++++
+ .../routes/dashboard/dashboard.routes.js      |   9 +-
+ .../dashboard/views/ProtonCasesPage.vue       |  61 ++++
+ 5 files changed, 503 insertions(+), 1 deletion(-)
+ create mode 100644 app/javascript/dashboard/api/protonCases.js
+ create mode 100644 app/javascript/dashboard/components/widgets/ProtonCasesTable.vue
+ create mode 100644 app/javascript/dashboard/views/ProtonCasesPage.vue
+
+diff --git a/app/javascript/dashboard/api/protonCases.js b/app/javascript/dashboard/api/protonCases.js
+new file mode 100644
+index 0000000..21a95e0
+--- /dev/null
++++ b/app/javascript/dashboard/api/protonCases.js
+@@ -0,0 +1,159 @@
++// protonCases.js — OUR file. Data access for the Cases list (Package D,
++// Task 5): reads existing Chatwoot conversation data straight off Chatwoot's
++// own `/conversations` endpoint (dashboard/api/inbox/conversation.js).
++// Deliberately NOT routed through the Proton backend — there is no new
++// backend storage or endpoint for this feature, per the task brief, so this
++// file has no useProtonConfig/backendUrl dependency the way protonRsa.js /
++// protonAdmin.js do.
++//
++// Package E's reporting pages should reuse `fetchAllCases` /
++// `mapConversationToCaseRow` here (and `ProtonCasesTable.vue`) rather than
++// re-implementing the pagination / row-mapping logic — that's the seam this
++// task was asked to leave.
++//
++// Field provenance (see backend/apps/backend/src/chatbot/features/metrics/
++// mapping.py and deploy/scripts/seed_demo_data/client.py for what actually
++// writes these — do not invent new attribute names without checking there):
++//   - conversation.custom_attributes.division / .concern / .case_type /
++//     .channel / .dealer — written by the demo seeder (Package D Task 1/2)
++//     directly onto the conversation.
++//   - conversation.custom_attributes.case_category / .case_subcategory —
++//     written by the live AI-classification flow (agent/'s ChatwootAdapter,
++//     read back by mapping.py). Used as a fallback for real conversations
++//     that predate/skip the demo vocabulary above.
++//   - division_<slug> / dealer_<slug> labels — the convention both the demo
++//     seeder and agent/app/services/sync.py write, read back by mapping.py's
++//     _DIVISION_TAG / _DEALER_TAG. Used as a second fallback when neither
++//     custom_attributes field is present.
++//   - conversation.meta.sender.custom_attributes.vehicle_no / .purchased_from
++//     — the *contact's* custom attributes, embedded on every conversation
++//     Chatwoot returns (see client.py's comment on why these aren't
++//     duplicated onto the conversation itself — the Cases list joins
++//     through meta.sender instead).
++//
++// Most existing (legacy) conversations have none of the above. Every
++// accessor here degrades to `null` rather than throwing or producing
++// `undefined`/`NaN` — ProtonCasesTable.vue renders a null field as a blank
++// cell.
++import ConversationApi from 'dashboard/api/inbox/conversation';
++
++const RESULTS_PER_PAGE = 25;
++// Hard cap so a very large real account can't turn one page load into an
++// unbounded number of sequential requests. 40 * 25 = 1000 conversations,
++// comfortably past Package D's ~250-300 seeded demo cases.
++const MAX_PAGES = 40;
++
++function slugToLabel(slug) {
++  if (!slug) return null;
++  return slug
++    .split('_')
++    .filter(Boolean)
++    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
++    .join(' ');
++}
++
++function firstLabelValue(labels, prefix) {
++  if (!Array.isArray(labels)) return null;
++  const match = labels.find(
++    label => typeof label === 'string' && label.startsWith(prefix)
++  );
++  return match ? match.slice(prefix.length) : null;
++}
++
++function blankToNull(value) {
++  if (value === undefined || value === null) return null;
++  if (typeof value === 'string' && value.trim() === '') return null;
++  return value;
++}
++
++// conversation.meta.channel is Chatwoot's own inbox channel_type, e.g.
++// "Channel::Api" / "Channel::Whatsapp" / "Channel::Email". Every demo
++// conversation is created on one API-channel inbox regardless of the
++// "pretend" channel its narrative is demoing, so custom_attributes.channel
++// (when present) always wins; this is only the fallback for real
++// conversations that never got a channel custom attribute.
++function channelFromMeta(meta) {
++  const channelType = meta && meta.channel;
++  if (!channelType || typeof channelType !== 'string') return null;
++  const short = channelType.split('::').pop();
++  return blankToNull(short);
++}
++
++// created_at is unix epoch seconds (see the conversations jbuilder partial).
++// Missing, zero, or unparsable all degrade to a blank "Aging" cell rather
++// than a crash or a negative/NaN number.
++export function agingDaysFromCreatedAt(createdAt) {
++  const seconds = Number(createdAt);
++  if (!createdAt || Number.isNaN(seconds) || seconds <= 0) return null;
++  const days = (Date.now() - seconds * 1000) / (1000 * 60 * 60 * 24);
++  if (Number.isNaN(days)) return null;
++  return Math.max(0, Math.floor(days));
++}
++
++export function mapConversationToCaseRow(conversation) {
++  const customAttributes = conversation.custom_attributes || {};
++  const senderAttributes =
++    (conversation.meta &&
++      conversation.meta.sender &&
++      conversation.meta.sender.custom_attributes) ||
++    {};
++  const labels = conversation.labels || [];
++
++  const division =
++    blankToNull(customAttributes.division) ||
++    slugToLabel(firstLabelValue(labels, 'division_')) ||
++    blankToNull(customAttributes.case_category);
++
++  const concern =
++    blankToNull(customAttributes.concern) ||
++    blankToNull(customAttributes.case_subcategory);
++
++  const dealer =
++    blankToNull(customAttributes.dealer) ||
++    slugToLabel(firstLabelValue(labels, 'dealer_'));
++
++  return {
++    id: conversation.id,
++    caseType: blankToNull(customAttributes.case_type),
++    division,
++    concern,
++    purchasedFrom: blankToNull(senderAttributes.purchased_from),
++    // "Escalated To" and the dealer filter read the same field: in this
++    // client's model, a case escalates to a dealer. Kept as two keys so a
++    // future distinct "escalated to" target (e.g. a PIC/department) can be
++    // introduced without moving the dealer filter's data source.
++    escalatedTo: dealer,
++    dealer,
++    carPlate: blankToNull(senderAttributes.vehicle_no),
++    agingDays: agingDaysFromCreatedAt(conversation.created_at),
++    status: blankToNull(conversation.status),
++    channel:
++      blankToNull(customAttributes.channel) ||
++      channelFromMeta(conversation.meta),
++  };
++}
++
++// Fetches every conversation the current user can see (status=all, across
++// their assigned inboxes — same scoping Chatwoot's own conversation list
++// uses) and maps each to a case row. Paginates sequentially rather than in
++// parallel: page count isn't known up front, and this is a manually
++// triggered admin-page load, not a hot path.
++export async function fetchAllCases() {
++  const rows = [];
++  let page = 1;
++  let keepGoing = true;
++  while (keepGoing && page <= MAX_PAGES) {
++    // eslint-disable-next-line no-await-in-loop
++    const response = await ConversationApi.get({ status: 'all', page });
++    const body = (response && response.data && response.data.data) || {};
++    const payload = Array.isArray(body.payload) ? body.payload : [];
++    payload.forEach(conversation => {
++      rows.push(mapConversationToCaseRow(conversation));
++    });
++    const allCount = (body.meta && body.meta.all_count) || 0;
++    const fetchedSoFar = page * RESULTS_PER_PAGE;
++    keepGoing = payload.length > 0 && fetchedSoFar < allCount;
++    page += 1;
++  }
++  return rows;
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 8d1a7b7..0d5196e 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -652,6 +652,21 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
++    // Cases list — reads Chatwoot conversation data directly (see
++    // dashboard/api/protonCases.js), so there's no backend require_permission
++    // route to match the way RSA/SLA/escalation have one. Gate on
++    // `customer360.view`, the nearest fitting existing permission: both are
++    // read-only CRM case-lookup surfaces for the same operator cohort.
++    ...(protonHasPermission('customer360.view')
++      ? [
++          {
++            name: 'ProtonCases',
++            icon: 'i-lucide-list-checks',
++            label: 'Cases',
++            to: accountScopedRoute('proton_cases'),
++          },
++        ]
++      : []),
+     {
+       name: 'Contacts',
+       label: t('SIDEBAR.CONTACTS'),
+diff --git a/app/javascript/dashboard/components/widgets/ProtonCasesTable.vue b/app/javascript/dashboard/components/widgets/ProtonCasesTable.vue
+new file mode 100644
+index 0000000..84a98b2
+--- /dev/null
++++ b/app/javascript/dashboard/components/widgets/ProtonCasesTable.vue
+@@ -0,0 +1,260 @@
++<!-- ProtonCasesTable.vue — OUR file. The filterable Cases table itself,
++     deliberately separate from ProtonCasesPage.vue (which owns fetching) so
++     Package E's reporting pages can drop this component onto their own
++     already-loaded case rows instead of building a second table. Takes the
++     already-mapped rows from protonCases.js's `mapConversationToCaseRow`
++     (id, caseType, division, concern, purchasedFrom, escalatedTo, dealer,
++     carPlate, agingDays, status, channel) — it does no Chatwoot API calls of
++     its own. Columns and filters are the client's own WIP-table shape (see
++     the Package D design doc): Case ID, Division, Concern, Purchased From,
++     Escalated To, Car Plate, Aging (days), Status; filterable by division,
++     case type, status, channel, dealer.
++
++     Legacy conversations are the normal case: any of the above fields may
++     be null (see protonCases.js's field-provenance comment for why), so
++     every cell falls back to an em dash rather than rendering
++     null/undefined/NaN — the same '—' convention ProtonWipAgingSection.vue
++     and ProtonDealerEscalationSection.vue already use for this. -->
++<script>
++import { frontendURL, conversationUrl } from 'dashboard/helper/URLHelper.js';
++
++const ALL = 'all';
++
++// Builds ["all", ...sorted unique non-null values of `key` across `cases`].
++function filterOptions(cases, key) {
++  const values = new Set();
++  cases.forEach(row => {
++    if (row[key]) values.add(row[key]);
++  });
++  return [ALL, ...Array.from(values).sort((a, b) => a.localeCompare(b))];
++}
++
++export default {
++  name: 'ProtonCasesTable',
++  props: {
++    cases: {
++      type: Array,
++      default: () => [],
++    },
++  },
++  data() {
++    return {
++      divisionFilter: ALL,
++      caseTypeFilter: ALL,
++      statusFilter: ALL,
++      channelFilter: ALL,
++      dealerFilter: ALL,
++    };
++  },
++  computed: {
++    divisionOptions() {
++      return filterOptions(this.cases, 'division');
++    },
++    caseTypeOptions() {
++      return filterOptions(this.cases, 'caseType');
++    },
++    statusOptions() {
++      return filterOptions(this.cases, 'status');
++    },
++    channelOptions() {
++      return filterOptions(this.cases, 'channel');
++    },
++    dealerOptions() {
++      return filterOptions(this.cases, 'dealer');
++    },
++    filteredCases() {
++      return this.cases.filter(row => {
++        if (
++          this.divisionFilter !== ALL &&
++          row.division !== this.divisionFilter
++        ) {
++          return false;
++        }
++        if (
++          this.caseTypeFilter !== ALL &&
++          row.caseType !== this.caseTypeFilter
++        ) {
++          return false;
++        }
++        if (this.statusFilter !== ALL && row.status !== this.statusFilter) {
++          return false;
++        }
++        if (this.channelFilter !== ALL && row.channel !== this.channelFilter) {
++          return false;
++        }
++        if (this.dealerFilter !== ALL && row.dealer !== this.dealerFilter) {
++          return false;
++        }
++        return true;
++      });
++    },
++  },
++  methods: {
++    resetFilters() {
++      this.divisionFilter = ALL;
++      this.caseTypeFilter = ALL;
++      this.statusFilter = ALL;
++      this.channelFilter = ALL;
++      this.dealerFilter = ALL;
++    },
++    conversationLink(row) {
++      return frontendURL(
++        conversationUrl({
++          accountId: this.$route.params.accountId,
++          id: row.id,
++        })
++      );
++    },
++  },
++};
++</script>
++
++<template>
++  <div>
++    <!-- Filters -->
++    <div class="flex flex-wrap items-end gap-3 mb-4">
++      <div>
++        <label class="block mb-1 text-xs text-n-slate-11">Division</label>
++        <select
++          v-model="divisionFilter"
++          class="px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        >
++          <option
++            v-for="option in divisionOptions"
++            :key="option"
++            :value="option"
++          >
++            {{ option === 'all' ? 'All divisions' : option }}
++          </option>
++        </select>
++      </div>
++      <div>
++        <label class="block mb-1 text-xs text-n-slate-11">Case type</label>
++        <select
++          v-model="caseTypeFilter"
++          class="px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        >
++          <option
++            v-for="option in caseTypeOptions"
++            :key="option"
++            :value="option"
++          >
++            {{ option === 'all' ? 'All case types' : option }}
++          </option>
++        </select>
++      </div>
++      <div>
++        <label class="block mb-1 text-xs text-n-slate-11">Status</label>
++        <select
++          v-model="statusFilter"
++          class="px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        >
++          <option v-for="option in statusOptions" :key="option" :value="option">
++            {{ option === 'all' ? 'All statuses' : option }}
++          </option>
++        </select>
++      </div>
++      <div>
++        <label class="block mb-1 text-xs text-n-slate-11">Channel</label>
++        <select
++          v-model="channelFilter"
++          class="px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        >
++          <option
++            v-for="option in channelOptions"
++            :key="option"
++            :value="option"
++          >
++            {{ option === 'all' ? 'All channels' : option }}
++          </option>
++        </select>
++      </div>
++      <div>
++        <label class="block mb-1 text-xs text-n-slate-11">Dealer</label>
++        <select
++          v-model="dealerFilter"
++          class="px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        >
++          <option v-for="option in dealerOptions" :key="option" :value="option">
++            {{ option === 'all' ? 'All dealers' : option }}
++          </option>
++        </select>
++      </div>
++      <button
++        type="button"
++        class="px-3 py-2 text-sm text-n-slate-11 hover:underline"
++        @click="resetFilters"
++      >
++        Reset filters
++      </button>
++      <span class="ml-auto text-sm text-n-slate-11">
++        {{ filteredCases.length }} of {{ cases.length }} cases
++      </span>
++    </div>
++
++    <!-- Table -->
++    <p v-if="!cases.length" class="text-sm text-n-slate-11">No cases found.</p>
++    <p v-else-if="!filteredCases.length" class="text-sm text-n-slate-11">
++      No cases match the selected filters.
++    </p>
++    <div v-else class="overflow-x-auto border rounded-lg border-n-weak">
++      <table class="w-full text-sm border-collapse text-n-slate-11">
++        <thead>
++          <tr class="text-left border-b border-n-weak text-n-slate-12">
++            <th class="px-3 py-2 font-medium whitespace-nowrap">Case ID</th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">Division</th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">Concern</th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">
++              Purchased From
++            </th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">
++              Escalated To
++            </th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">Car Plate</th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap text-right">
++              Aging (days)
++            </th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">Status</th>
++          </tr>
++        </thead>
++        <tbody>
++          <tr
++            v-for="row in filteredCases"
++            :key="row.id"
++            class="border-b border-n-weak last:border-b-0"
++          >
++            <td class="px-3 py-2 whitespace-nowrap">
++              <router-link
++                :to="conversationLink(row)"
++                class="font-medium text-n-brand hover:underline"
++              >
++                #{{ row.id }}
++              </router-link>
++            </td>
++            <td class="px-3 py-2 whitespace-nowrap">
++              {{ row.division ?? '—' }}
++            </td>
++            <td class="px-3 py-2 whitespace-nowrap">
++              {{ row.concern ?? '—' }}
++            </td>
++            <td class="px-3 py-2 whitespace-nowrap">
++              {{ row.purchasedFrom ?? '—' }}
++            </td>
++            <td class="px-3 py-2 whitespace-nowrap">
++              {{ row.escalatedTo ?? '—' }}
++            </td>
++            <td class="px-3 py-2 whitespace-nowrap">
++              {{ row.carPlate ?? '—' }}
++            </td>
++            <td class="px-3 py-2 text-right whitespace-nowrap tabular-nums">
++              {{ row.agingDays ?? '—' }}
++            </td>
++            <td class="px-3 py-2 capitalize whitespace-nowrap">
++              {{ row.status ?? '—' }}
++            </td>
++          </tr>
++        </tbody>
++      </table>
++    </div>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+index 805d479..ad5533d 100644
+--- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+@@ -60,7 +60,8 @@ export default {
+         {
+           path: 'proton/escalation-routing',
+           name: 'proton_escalation_routing',
+-          component: () => import('../../views/ProtonEscalationRoutingPage.vue'),
++          component: () =>
++            import('../../views/ProtonEscalationRoutingPage.vue'),
+           meta: { permissions: ['administrator'] },
+         },
+         {
+@@ -69,6 +70,12 @@ export default {
+           component: () => import('../../views/ProtonCustomer360Page.vue'),
+           meta: { permissions: ['administrator'] },
+         },
++        {
++          path: 'proton/cases',
++          name: 'proton_cases',
++          component: () => import('../../views/ProtonCasesPage.vue'),
++          meta: { permissions: ['administrator'] },
++        },
+         ...inboxRoutes,
+         ...conversation.routes,
+         ...settings.routes,
+diff --git a/app/javascript/dashboard/views/ProtonCasesPage.vue b/app/javascript/dashboard/views/ProtonCasesPage.vue
+new file mode 100644
+index 0000000..2f612f9
+--- /dev/null
++++ b/app/javascript/dashboard/views/ProtonCasesPage.vue
+@@ -0,0 +1,61 @@
++<!-- ProtonCasesPage.vue — OUR file. The Cases list: one filterable table
++     over existing Chatwoot conversation data (Package D, Task 5). No new
++     backend storage and no new backend endpoint — protonCases.js reads what
++     Chatwoot's own /conversations endpoint already returns. This page owns
++     the data load; ProtonCasesTable.vue (components/widgets/) owns the
++     table + filters and is the piece Package E reuses. Mirrors
++     ProtonRsaPage.vue / ProtonCustomer360Page.vue's shell (header, n-*
++     tokens, useAlert toasts). -->
++<script>
++import { useAlert } from 'dashboard/composables';
++import { fetchAllCases } from 'dashboard/api/protonCases';
++import ProtonCasesTable from 'dashboard/components/widgets/ProtonCasesTable.vue';
++
++export default {
++  name: 'ProtonCasesPage',
++  components: { ProtonCasesTable },
++  data() {
++    return {
++      cases: [],
++      loading: true,
++      errored: false,
++    };
++  },
++  async mounted() {
++    await this.load();
++  },
++  methods: {
++    async load() {
++      this.loading = true;
++      this.errored = false;
++      try {
++        this.cases = await fetchAllCases();
++      } catch (err) {
++        this.errored = true;
++        useAlert('Failed to load cases: ' + (err.message || String(err)));
++      } finally {
++        this.loading = false;
++      }
++    },
++  },
++};
++</script>
++
++<template>
++  <div class="p-6">
++    <h1 class="mb-1 text-lg font-medium text-n-slate-12">Cases</h1>
++    <p class="mb-6 text-sm text-n-slate-11">
++      Every conversation as a case, filterable by division, case type, status,
++      channel, and dealer. Reads existing conversation data — there is nothing
++      to create or edit here.
++    </p>
++
++    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
++      Loading…
++    </div>
++    <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">
++      Could not load cases.
++    </div>
++    <ProtonCasesTable v-else :cases="cases" />
++  </div>
++</template>
+-- 
+2.54.0
+

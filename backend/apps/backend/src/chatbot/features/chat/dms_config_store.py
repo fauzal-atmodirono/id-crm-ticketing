@@ -103,28 +103,52 @@ class DmsConfigStore:
         # Firestore or require credentials to exist.
         self._firestore_client: firestore.Client | None = None
         # Guards both the lazy client and the config cache. Without it, two
-        # concurrent lookups on a cold store each build their own client.
+        # concurrent lookups on a cold store each build their own client --
+        # see `_ensure_client()` for how the guard actually holds across the
+        # `to_thread` build, not just around a flag flip.
         self._lock = asyncio.Lock()
         self._cached_config: DmsConfig | None = None
         self._cached_at: float | None = None
 
-    def _client(self) -> firestore.Client:
-        if self._firestore_client is None:
-            self._firestore_client = firestore.Client(
-                project=self._settings.firestore_project_id,
-                database=self._settings.firestore_database_id,
-            )
-        return self._firestore_client
+    async def _ensure_client(self) -> firestore.Client:
+        """Build (once) and return the shared `firestore.Client`.
 
-    def _doc_ref(self) -> firestore.DocumentReference:
-        return self._client().collection(_COLLECTION).document(_DOC_ID)
-
-    def _read_snapshot(self) -> Any:
-        """Runs entirely inside `asyncio.to_thread`. Client construction and
-        doc-ref construction are blocking too, so they belong in here rather
-        than on the event-loop thread ahead of the `to_thread` call.
+        `firestore.Client(...)` is the slow part -- ADC credential resolution
+        plus a fresh gRPC channel -- so it always runs via `asyncio.to_thread`,
+        never on the event-loop thread. That's also exactly what makes a plain
+        check-then-build unsafe: `to_thread` yields control back to the event
+        loop for the whole build, so two concurrent cold callers can each see
+        `self._firestore_client is None`, each kick off a build, and the
+        loser's client -- and its gRPC channel -- gets silently dropped
+        unclosed. Holding `self._lock` around the *whole* check-and-maybe-build
+        (not just the outer fast-path check) is what closes that: a second
+        caller blocks here until the first either finishes building or raises,
+        then reuses the now-cached client instead of building a second one.
+        The unlocked fast path above the `async with` is safe because nothing
+        awaits between the `is not None` check and the `return` -- no other
+        coroutine can run in between on a single-threaded event loop.
         """
-        return self._doc_ref().get()
+        if self._firestore_client is not None:
+            return self._firestore_client
+        async with self._lock:
+            if self._firestore_client is None:
+                self._firestore_client = await asyncio.to_thread(
+                    firestore.Client,
+                    project=self._settings.firestore_project_id,
+                    database=self._settings.firestore_database_id,
+                )
+            return self._firestore_client
+
+    async def _doc_ref(self) -> firestore.DocumentReference:
+        # `.collection(...).document(...)` are cheap local object
+        # constructions -- no network I/O -- so, unlike the client build
+        # above, there is no reason to push them into a thread. Every call
+        # site (`get`, `get_credential`, `save`) now goes through this same
+        # async accessor, so client construction is guarded consistently
+        # everywhere it can happen, not just on the two Customer-360 read
+        # paths.
+        client = await self._ensure_client()
+        return client.collection(_COLLECTION).document(_DOC_ID)
 
     def _invalidate_cache(self) -> None:
         self._cached_config = None
@@ -136,7 +160,8 @@ class DmsConfigStore:
             if self._cached_at is not None and now - self._cached_at < _CONFIG_CACHE_TTL_SECONDS:
                 return self._cached_config
         try:
-            snap = await asyncio.to_thread(self._read_snapshot)
+            doc_ref = await self._doc_ref()
+            snap = await asyncio.to_thread(doc_ref.get)
             config: DmsConfig | None = None
             if snap.exists:
                 data = snap.to_dict() or {}
@@ -166,7 +191,8 @@ class DmsConfigStore:
         # win, and holding the secret in a process-lifetime attribute would
         # widen its exposure for no benefit.
         try:
-            snap = await asyncio.to_thread(self._read_snapshot)
+            doc_ref = await self._doc_ref()
+            snap = await asyncio.to_thread(doc_ref.get)
             if not snap.exists:
                 return None
             data = snap.to_dict() or {}
@@ -187,7 +213,7 @@ class DmsConfigStore:
         # a re-read.
         self._invalidate_cache()
         try:
-            doc_ref = self._doc_ref()
+            doc_ref = await self._doc_ref()
             data: dict[str, Any] = {
                 "enabled": config.enabled,
                 "provider_label": config.provider_label,

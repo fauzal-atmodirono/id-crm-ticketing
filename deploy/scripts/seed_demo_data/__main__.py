@@ -53,9 +53,9 @@ from backdate import (  # noqa: E402
     ManifestEntry,
     backdate_conversation,
     backdate_messages,
+    describe_database_target,
     fetch_current_rows,
     load_manifest,
-    redact_database_url,
     select_backdate_targets,
     write_manifest,
 )
@@ -352,7 +352,7 @@ def _cmd_backdate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
     print(f"Manifest tenant:   {tenant}")
     print(f"Batch id:          {batch_id}")
     print(f"Manifest entries:  {len(entries)}")
-    print(f"Target database:   {redact_database_url(args.database_url)}")
+    print(f"Target database:   {describe_database_target(args.database_url)}")
 
     if not entries:
         print("Manifest has no conversation entries -- nothing to do.")

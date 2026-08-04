@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -153,61 +152,55 @@ def select_backdate_targets(entries: list[ManifestEntry], rows: list[dict], batc
     return eligible
 
 
-# --- pure DSN redaction (the second tested surface) --------------------------
+# --- pure-ish DSN display (the second tested surface) ------------------------
+#
+# Three rounds of trying to find-and-mask "the password" in a raw DSN string
+# each turned up a new shape a secret could hide in (URL authority, URL
+# authority with an embedded '@', a libpq key=value DSN, a URL *query
+# string* -- `?password=...`/`&password=...`, which an authority-only regex
+# never even looks at). A denylist approach is structurally always one
+# unfamiliar shape (percent-encoding, `passfile=`, a future libpq keyword)
+# away from leaking. So this doesn't denylist anything: it parses the DSN
+# with psycopg's OWN parser (the same one `psycopg.connect()` itself uses,
+# so "does this understand every shape psycopg accepts" is true by
+# construction, not by us re-deriving libpq's grammar) and then builds the
+# display string from an ALLOWLIST of keys. A password cannot appear in the
+# output no matter what shape it arrived in or what key a future libpq
+# version adds, because nothing outside the allowlist is ever read.
 
-# Recognises `scheme://[user[:password]@]host[:port][/db][?...]`. Only the
-# authority component (between `://` and the first of `/`, `?`, `#`) is
-# inspected for credentials -- everything else is passed through untouched.
-_URL_SHAPE_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*://)([^/?#]*)(.*)$", re.DOTALL)
-
-# Recognises a libpq keyword=value DSN (what `psycopg.connect()` also
-# accepts, e.g. "host=h port=5432 user=u password=SuperSecret123") *only*
-# when the ENTIRE string decomposes into `key=value` tokens -- fail-closed:
-# any leftover text that doesn't fit this shape means we don't understand
-# the string well enough to claim we found every secret in it.
-_KV_DSN_SHAPE_RE = re.compile(r"^(?:\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:'(?:\\.|[^'\\])*'|\S+)\s*)+$")
-_KV_DSN_PASSWORD_RE = re.compile(r"(\bpassword\s*=\s*)('(?:\\.|[^'\\])*'|\S+)", re.IGNORECASE)
-
-_UNREDACTABLE_PLACEHOLDER = "<unredactable DSN -- not shown>"
+_DISPLAY_ALLOWLIST = ("host", "hostaddr", "port", "dbname", "user")
+_UNPARSEABLE_PLACEHOLDER = "<could not parse --database-url -- not shown>"
 
 
-def redact_database_url(url: str) -> str:
-    """Password-redacted form of a Postgres connection string, safe to
-    print in a dry-run summary or log.
+def describe_database_target(dsn: str) -> str:
+    """A safe-to-print description of what a Postgres DSN points at --
+    which host/port/database (and user, if present), never a password,
+    regardless of whether `dsn` is a `scheme://` URL or a libpq
+    `key=value ...` string, and regardless of where within either shape a
+    password appears (authority, query string, ...).
 
-    `psycopg.connect()` accepts two shapes -- a `scheme://user:pass@host/db`
-    URL, or a libpq `key=value ...` DSN -- and an operator's real password
-    can validly appear in either. This function is deliberately
-    **fail-closed**: it recognises exactly those two shapes and positively
-    locates the password within each; a string that matches neither is
-    never echoed verbatim, because a summary that silently prints an
-    unredacted password (because some third DSN shape wasn't anticipated)
-    is strictly worse than a summary that declines to show the DSN at all
-    -- the caller's `Manifest tenant:` line right above it already answers
-    the operator's real "which tenant am I about to write to" question.
+    Parses with `psycopg.conninfo.conninfo_to_dict` -- the same parser
+    `psycopg.connect()` uses -- then reads only `_DISPLAY_ALLOWLIST` keys
+    out of the resulting dict. This is deliberately an allowlist, not a
+    denylist: a denylist has to correctly anticipate every shape a secret
+    could take (this function replaced one that didn't, three times in a
+    row); an allowlist can't leak a key it never looks at, independent of
+    how creative the input DSN's shape is.
 
-    URL form: the password is whatever sits between the userinfo's first
-    `:` and the authority's *last* `@` -- using the last `@` (not the
-    first) means a password that itself contains a literal `@` is masked
-    in full, not just up to its first character.
+    If parsing fails (`psycopg.ProgrammingError` on a malformed DSN), the
+    only fallback is a fixed placeholder that derives nothing from `dsn` --
+    never fall back to printing (a redacted version of) the raw input.
     """
-    match = _URL_SHAPE_RE.match(url)
-    if match:
-        scheme, authority, remainder = match.group(1), match.group(2), match.group(3)
-        at_index = authority.rfind("@")
-        if at_index == -1:
-            return url  # no userinfo at all -- nothing to redact
-        userinfo, host_part = authority[:at_index], authority[at_index:]
-        colon_index = userinfo.find(":")
-        if colon_index == -1:
-            return url  # userinfo present but no password -- nothing to redact
-        user = userinfo[:colon_index]
-        return f"{scheme}{user}:***{host_part}{remainder}"
-    if _KV_DSN_SHAPE_RE.match(url):
-        if _KV_DSN_PASSWORD_RE.search(url):
-            return _KV_DSN_PASSWORD_RE.sub(r"\1***", url)
-        return url  # entire string is recognised key=value pairs; no password= key present
-    return _UNREDACTABLE_PLACEHOLDER
+    import psycopg  # local import: only backdate needs a Postgres driver
+    from psycopg.conninfo import conninfo_to_dict
+
+    try:
+        parsed = conninfo_to_dict(dsn)
+    except psycopg.ProgrammingError:
+        return _UNPARSEABLE_PLACEHOLDER
+
+    parts = [f"{key}={parsed[key]}" for key in _DISPLAY_ALLOWLIST if key in parsed]
+    return " ".join(parts) if parts else "(no host/port/dbname/user found in --database-url)"
 
 
 # --- thin SQL glue (real I/O, correct by inspection) --------------------------

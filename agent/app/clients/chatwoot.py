@@ -139,11 +139,50 @@ class ChatwootClient:
     async def set_custom_attributes(
         self, conversation_id: int, attributes: dict
     ) -> Any:
-        """Merge-set conversation custom attributes (used to mirror
-        lifecycle_state into the Chatwoot right-panel for agent visibility)."""
+        """Merge-set conversation custom attributes without clobbering
+        existing ones (used to mirror lifecycle_state into the Chatwoot
+        right-panel for agent visibility, to write case_category /
+        case_subcategory / case_type / vehicle_model, and to stamp
+        dealer_escalated_at).
+
+        Chatwoot's custom-attributes endpoint REPLACES the whole object —
+        `ConversationsController#custom_attributes` does
+        `@conversation.custom_attributes = params.permit(custom_attributes:
+        {})[:custom_attributes]`, an assignment, not a merge. So we GET the
+        conversation and POST the union, exactly as `add_labels` below does
+        for the same reason on the labels endpoint. Without this, any caller
+        writing one key silently erases every other key on the conversation:
+        `lifecycle._mirror_state` writing `lifecycle_state` would drop a real
+        customer's `case_category`/`vehicle_model`, and
+        `sync.maybe_stamp_dealer_escalation` writing `dealer_escalated_at`
+        would drop everything else on the row.
+
+        `attributes` wins on conflict — the caller is asking for these values
+        now, and every caller in this codebase already checks the existing
+        value first when it wants to preserve one (see
+        `categorize.maybe_categorize` and `maybe_stamp_dealer_escalation`).
+
+        If the GET fails we fall back to posting just `attributes` (writing
+        the new keys rather than nothing), matching `add_labels`' fail-open
+        posture: these are best-effort background-task writes, and a read
+        failure must not turn into "the attribute never gets set".
+        """
+        current: dict = {}
+        try:
+            resp = await self._client.get(
+                f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}"
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            existing = data.get("custom_attributes") if isinstance(data, dict) else None
+            if isinstance(existing, dict):
+                current = existing
+        except Exception:
+            current = {}
+        merged = {**current, **attributes}
         response = await self._client.post(
             f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}/custom_attributes",
-            json={"custom_attributes": attributes},
+            json={"custom_attributes": merged},
         )
         response.raise_for_status()
         return response.json() if response.content else None

@@ -69,7 +69,11 @@ async def test_stamps_dealer_escalated_at_on_first_dealer_label():
         f"{CHATWOOT}/api/v1/accounts/1/conversations/10"
     ).mock(
         return_value=httpx.Response(
-            200, json={"id": 10, "custom_attributes": {}}
+            200,
+            json={
+                "id": 10,
+                "custom_attributes": {"demo_seed": "batch-1", "case_category": "Sales"},
+            },
         )
     )
     set_attrs = respx.post(
@@ -79,10 +83,16 @@ async def test_stamps_dealer_escalated_at_on_first_dealer_label():
     payload = {"id": 10, "labels": ["division_sales", "dealer_kl_glenmarie"]}
     await sync.maybe_stamp_dealer_escalation(payload)
 
-    assert get_conversation.call_count == 1
+    # Two GETs: this handler's own "is it already stamped?" read, plus the
+    # read `ChatwootClient.set_custom_attributes` does to merge rather than
+    # replace (Chatwoot's endpoint assigns the whole object).
+    assert get_conversation.call_count == 2
     assert set_attrs.call_count == 1
     body = json.loads(set_attrs.calls.last.request.content)
     assert "dealer_escalated_at" in body["custom_attributes"]
+    # ...and the stamp must not have erased anything already on the row.
+    assert body["custom_attributes"]["demo_seed"] == "batch-1"
+    assert body["custom_attributes"]["case_category"] == "Sales"
 
 
 @respx.mock

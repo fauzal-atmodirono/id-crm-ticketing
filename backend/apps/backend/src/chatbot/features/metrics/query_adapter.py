@@ -1,11 +1,12 @@
 """Read-side adapter: SELECTs the 8 Bot-Metrics views into DashboardMetrics.
 
-Range-aware queries (Package E / Task 2). Three methods take an optional
-`PeriodRange`: `fetch_dashboard` (its `volume` block only), `fetch_lifecycle`
-(its `state_trend` block only), and `fetch_volume_by_type_division`. Every
-other block/method has no date column to filter on at all -- there is
-nothing yet for a period to filter (see the Package E spec's G2/G3/G6 gaps)
--- so they don't take a `period` argument and are always "unfiltered".
+Range-aware queries (Package E / Task 2, reopened after Task 4's review).
+Three methods take an optional `PeriodRange`: `fetch_dashboard` (its
+`volume` block only), `fetch_lifecycle` (its `state_trend` block only), and
+`fetch_volume_by_type_division`. Every other block/method has no date
+column to filter on at all -- there is nothing yet for a period to filter
+(see the Package E spec's G2/G3/G6 gaps) -- so they don't take a `period`
+argument and are always "unfiltered".
 
 `period=None` is byte-identical to today: the exact same unfiltered
 `SELECT * FROM <view>` this adapter has always run. That's a deliberate
@@ -22,42 +23,49 @@ period-scoped, so a client rendering all eight dashboard blocks under one
 "17-23 July" header needs the per-block marker to avoid presenting an
 all-time CSAT or bot-resolution split as if it were that week's.
 
-Two different mechanisms back the three period-aware blocks, because they
-sit on views with different grain:
+All three period-aware blocks now use the same mechanism: each reads a
+day-grained sibling view (`v_volume_daily`, `v_state_trend_daily`,
+`v_volume_by_type_division_daily` -- see `_day_grain_block_for_period` and
+`_volume_block_for_period`) rather than filtering their month-grain
+originals (`v_volume_by_month_channel`, `v_state_trend`,
+`v_volume_by_type_division`), which stay completely untouched and keep
+serving the unfiltered path exactly as before. This was NOT the original
+design: Task 2's first pass additively widened the two month-grain views
+with a `month_start` DATE column and filtered `WHERE month_start BETWEEN
+@start AND @end`, gated by a "is this exactly N whole calendar months"
+check (`_whole_calendar_months`, since removed) to avoid over-counting a
+window that straddled a month boundary. That worked for month-granularity
+periods but made every week-granularity request against `state_trend`/
+`volume_by_type_division` structurally `"unsupported_granularity"` --
+which is exactly the two sections the Weekly Report page (Task 4) is
+organised around. The plan's Task 2 Step 3 instruction to "widen the
+month-keyed views... prefer widening over a parallel set of weekly views"
+turned out to be infeasible for these: they're grouped at month grain, and
+exposing week data means changing that grain, which changes the row shape
+under `0020-reports-native-merge.patch`'s live consumers (see each day-grain
+view's comment in `bigquery_schema.py` for the exact overwriting-assignment
+risk). A day-grain sibling avoids the grain change entirely, same
+precedent as `v_volume_daily` alongside `v_volume_by_month_channel` from
+the original pass -- this is the documented exception to the plan's
+prefer-widening rule, not a reversion of the earlier judgment call. The
+`month_start` column stays on the month-grain views (harmless, additive,
+still exported) even though nothing in this adapter filters on it anymore.
 
-- `fetch_dashboard`'s volume block reads the already-defined, previously
-  unused day-grained `v_volume_daily` view (see `_volume_block_for_period`)
-  rather than widening `v_volume_by_month_channel`. That view is
-  pre-aggregated to one row per (month, channel) and the fork's Overview
-  chart reads it as `idx[row.month][row.channel] = row.volume` -- an
-  *overwriting* assignment. Widening it to day grain would make `SELECT *`
-  return ~30 rows per month/channel instead of 1, and that line would
-  silently keep only the last day's count as "the month's volume". Reading
-  the day-grained sibling instead avoids touching that view at all, and
-  supports genuine week-level bucketing that a month-grain view can't (a
-  week can't be recovered from a value already collapsed to a monthly
-  total).
-- `fetch_lifecycle`'s state_trend block and `fetch_volume_by_type_division`
-  read `v_state_trend`/`v_volume_by_type_division`, both additively widened
-  in `bigquery_schema.py` with a `month_start` DATE column at their
-  existing (month, ...) grain -- same row count as before, so their own
-  existing readers are unaffected. Because `month_start` is always a
-  month's 1st, `WHERE month_start BETWEEN @start AND @end` only returns
-  correct results when the requested period is itself composed of whole
-  calendar months: a partial-month window (e.g. 17-23 July) has no row's
-  `month_start` inside it and would come back empty, but a window whose
-  *start* happens to land on a month's 1st while its *end* doesn't (e.g.
-  29 June - 5 July) would match and return that entire month's total,
-  silently over-counting by roughly 4x. `_month_grain_block` guards this by
-  checking the period is exactly N whole calendar months *before* running
-  the query at all -- an unsupported shape returns `[]` with
-  `status="unsupported_granularity"` rather than a wrong predicate.
+`unsupported_granularity` is consequently no longer reachable for any of
+the three period-aware blocks: `_day_grain_block_for_period`/
+`_volume_block_for_period` both read day-grain sources, so every
+granularity (day/week/month) and every date range is a valid predicate --
+there's no shape a day-grain `WHERE day BETWEEN @start AND @end` can get
+structurally wrong the way `month_start BETWEEN` could. It remains part of
+`BlockScope`'s enum for any future period-aware block whose only available
+source is pre-aggregated (the same situation `state_trend`/
+`volume_by_type_division` were in before this fix), and Task 3/4's UI
+should keep a code path for it rather than assuming it can never occur.
 """
 
 from __future__ import annotations
 
 import asyncio
-from calendar import monthrange
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -125,29 +133,6 @@ _BUCKET_FORMAT = {
 _UNFILTERED_SCOPE = BlockScope(status="unfiltered", period=None, supported_granularity=None)
 
 
-def _whole_calendar_months(period: PeriodRange) -> bool:
-    """True iff `period` is exactly N whole calendar months (N >= 1),
-    declared with granularity="month".
-
-    The only shape+intent a `month_start`-grain view can honour without
-    either dropping a partial month or over-counting one whose
-    `month_start` (always a 1st) happens to land inside the window. This
-    generalises `period._is_full_calendar_month` (which only recognises a
-    *single* whole month) to spans of more than one -- e.g. a 6-month
-    trend, whose start and end both land on a month boundary but which
-    isn't "one month" -- while keeping that function's same
-    shape-plus-declared-granularity gate, so a day/week-granularity
-    request that happens to span whole months isn't silently answered with
-    month-grain rows instead of the finer breakdown actually asked for.
-    """
-    if period.granularity != "month":
-        return False
-    if period.start.day != 1:
-        return False
-    last_day_of_end_month = monthrange(period.end.year, period.end.month)[1]
-    return period.end.day == last_day_of_end_month
-
-
 class BigQueryMetricsQuery:
     """Reads the 8 dashboard views. Each SELECT is wrapped in asyncio.to_thread
     so it never blocks the event loop. A missing/empty view yields an empty
@@ -210,29 +195,51 @@ class BigQueryMetricsQuery:
         rows, _ok = self._query_block(view, row_type)
         return rows
 
-    def _month_grain_block(
-        self, view: str, row_type: Callable[..., _T], date_column: str, period: PeriodRange | None
-    ) -> tuple[list[_T], BlockScope]:
-        """rows + scope for a view additively widened with a `month_start`
-        column (v_state_trend, v_volume_by_type_division) -- see the module
-        docstring for why only whole-calendar-month periods are safe here.
+    def _day_grain_block_for_period(
+        self,
+        view: str,
+        row_type: Callable[..., _T],
+        period: PeriodRange,
+        group_columns: tuple[str, ...],
+        value_column: str,
+    ) -> tuple[list[_T], bool]:
+        """Bucket a day-grain view (columns: `day`, *`group_columns`,
+        `value_column`) at `period.granularity`, filtered by named
+        parameters. Same mechanism as `_volume_block_for_period`
+        (dashboard's volume block), generalised to the other two
+        day-grain siblings: `v_state_trend_daily`
+        (`group_columns=("status", "division")`, `value_column="cases"`)
+        and `v_volume_by_type_division_daily`
+        (`group_columns=("channel", "case_type", "division")`,
+        `value_column="volume"`). Any period shape/granularity is safe
+        here -- the source is already day-grain, so there's no whole-month
+        alignment requirement the month-grain originals would need.
         """
-        if period is None:
-            return self._block(view, row_type), _UNFILTERED_SCOPE
-        if not _whole_calendar_months(period):
-            return [], BlockScope(
-                status="unsupported_granularity", period=period, supported_granularity="month"
-            )
-        rows, ok = self._query_block(view, row_type, period=period, date_column=date_column)
-        status = "ok" if ok else "unavailable"
-        return rows, BlockScope(status=status, period=period, supported_granularity="month")
+        bucket_format = _BUCKET_FORMAT.get(period.granularity, "%Y-%m")
+        group_sql = ", ".join(group_columns)
+        sql = (
+            f"SELECT FORMAT_DATE('{bucket_format}', day) AS month, "  # noqa: S608
+            f"{group_sql}, SUM({value_column}) AS {value_column} "
+            f"FROM `{self._prefix}.{view}` "
+            f"WHERE day BETWEEN @start AND @end "
+            f"GROUP BY month, {group_sql}"
+        )
+        try:
+            job = self._client.query(sql, job_config=self._range_job_config(period))
+            return [row_type(**dict(r)) for r in job.result()], True
+        except Exception as e:  # same fail-open contract as _query_block
+            _log.error("metrics_view_query_failed", view=view, error=str(e))
+            return [], False
 
     def _volume_block_for_period(self, period: PeriodRange) -> tuple[list[VolumeRow], bool]:
         """Volume bucketed at `period.granularity`, over `v_volume_daily`
         (day grain) -- see the module docstring for why this doesn't widen
-        `v_volume_by_month_channel`. Unlike `_month_grain_block`, any
-        period shape is safe here: the source is already day-grain, so
-        there's no whole-month alignment requirement.
+        `v_volume_by_month_channel`. Any period shape/granularity is safe
+        here: the source is already day-grain, so there's no whole-month
+        alignment requirement a month-grain source would need. Kept
+        separate from `_day_grain_block_for_period` because `VolumeRow`
+        also needs the `bucket` sibling field set, which
+        `StateTrendRow`/`VolumeByTypeDivisionRow` don't have.
         """
         bucket_format = _BUCKET_FORMAT.get(period.granularity, "%Y-%m")
         sql = (
@@ -265,6 +272,36 @@ class BigQueryMetricsQuery:
         status = "ok" if ok else "unavailable"
         # No granularity restriction here (day-grain source), so
         # supported_granularity is never the reason for a non-"ok" status.
+        return rows, BlockScope(status=status, period=period, supported_granularity=None)
+
+    def _lifecycle_state_trend_block(
+        self, period: PeriodRange | None
+    ) -> tuple[list[StateTrendRow], BlockScope]:
+        if period is None:
+            return self._block("v_state_trend", StateTrendRow), _UNFILTERED_SCOPE
+        rows, ok = self._day_grain_block_for_period(
+            "v_state_trend_daily", StateTrendRow, period, ("status", "division"), "cases"
+        )
+        status = "ok" if ok else "unavailable"
+        # No granularity restriction here either (day-grain source).
+        return rows, BlockScope(status=status, period=period, supported_granularity=None)
+
+    def _volume_by_type_division_block(
+        self, period: PeriodRange | None
+    ) -> tuple[list[VolumeByTypeDivisionRow], BlockScope]:
+        if period is None:
+            return (
+                self._block("v_volume_by_type_division", VolumeByTypeDivisionRow),
+                _UNFILTERED_SCOPE,
+            )
+        rows, ok = self._day_grain_block_for_period(
+            "v_volume_by_type_division_daily",
+            VolumeByTypeDivisionRow,
+            period,
+            ("channel", "case_type", "division"),
+            "volume",
+        )
+        status = "ok" if ok else "unavailable"
         return rows, BlockScope(status=status, period=period, supported_granularity=None)
 
     def _fetch_sync(self, period: PeriodRange | None = None) -> DashboardMetrics:
@@ -331,9 +368,7 @@ class BigQueryMetricsQuery:
         return await asyncio.to_thread(self._fetch_callcenter_sync)
 
     def _fetch_lifecycle_sync(self, period: PeriodRange | None = None) -> LifecycleMetrics:
-        state_trend_rows, state_trend_scope = self._month_grain_block(
-            "v_state_trend", StateTrendRow, "month_start", period
-        )
+        state_trend_rows, state_trend_scope = self._lifecycle_state_trend_block(period)
         metrics = LifecycleMetrics(
             cases=self._block("v_case_lifecycle", CaseLifecycleRow),
             state_trend=state_trend_rows,
@@ -368,9 +403,7 @@ class BigQueryMetricsQuery:
     def _fetch_volume_by_type_division_sync(
         self, period: PeriodRange | None = None
     ) -> VolumeByTypeDivisionMetrics:
-        rows, scope = self._month_grain_block(
-            "v_volume_by_type_division", VolumeByTypeDivisionRow, "month_start", period
-        )
+        rows, scope = self._volume_by_type_division_block(period)
         metrics = VolumeByTypeDivisionMetrics(volume=rows)
         metrics.attach_scopes({"volume": scope})
         return metrics

@@ -492,16 +492,20 @@ async def test_period_none_leaves_dashboard_volume_query_untouched() -> None:
 
 
 @pytest.mark.asyncio
-async def test_whole_month_period_adds_where_clause_with_named_parameters() -> None:
-    """A period that is exactly one whole calendar month -- the one shape
-    a month_start-grain view (v_state_trend) can honour -- runs the
-    filtered query with named parameters."""
-    period = PeriodRange(date(2026, 6, 1), date(2026, 6, 30), "month")
+async def test_state_trend_week_period_queries_day_grain_view_with_named_parameters() -> None:
+    """Task 2 reopened after Task 4's review: 17-23 July is the exact
+    partial-month shape the first pass's month_start-filtered query
+    structurally could never answer (see test_bigquery_schema.py /
+    query_adapter.py's module docstring for the full history) -- it's also
+    exactly what the Weekly Report page always requests. This must now
+    come back status="ok" with real rows, routed through the day-grain
+    v_state_trend_daily sibling instead of the month-grain v_state_trend."""
+    period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
     settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
     client = _FakeClient(
         {
-            "v_state_trend": [
-                {"month": "2026-06", "status": "resolved", "division": "Sales", "cases": 12}
+            "v_state_trend_daily": [
+                {"month": "2026-W29", "status": "resolved", "division": "Sales", "cases": 12}
             ]
         }
     )
@@ -509,91 +513,75 @@ async def test_whole_month_period_adds_where_clause_with_named_parameters() -> N
 
     result = await q.fetch_lifecycle(period=period)
 
-    state_trend_idx = next(i for i, sql in enumerate(client.queries) if "v_state_trend" in sql)
-    emitted_sql = client.queries[state_trend_idx]
-    job_config = client.job_configs[state_trend_idx]
+    idx = next(i for i, sql in enumerate(client.queries) if "v_state_trend_daily" in sql)
+    emitted_sql = client.queries[idx]
+    job_config = client.job_configs[idx]
 
-    assert "WHERE month_start BETWEEN @start AND @end" in emitted_sql
+    # `v_state_trend_daily` (not the month-grain `v_state_trend`) -- the
+    # closing backtick disambiguates, since the latter is otherwise a
+    # substring of the former's fully-qualified name.
+    assert "`proj.ds.v_state_trend`" not in emitted_sql
+    assert "`proj.ds.v_state_trend_daily`" in emitted_sql
+    assert "FORMAT_DATE('%G-W%V', day)" in emitted_sql
+    assert "WHERE day BETWEEN @start AND @end" in emitted_sql
     # the dates themselves must never be string-formatted into the query text
-    assert "2026-06-01" not in emitted_sql
-    assert "2026-06-30" not in emitted_sql
+    assert "2026-07-17" not in emitted_sql
+    assert "2026-07-23" not in emitted_sql
 
     params = {p.name: p.value for p in job_config.query_parameters}
-    assert params["start"] == date(2026, 6, 1)
-    assert params["end"] == date(2026, 6, 30)
+    assert params["start"] == date(2026, 7, 17)
+    assert params["end"] == date(2026, 7, 23)
     assert len(result.state_trend) == 1
     assert result.state_trend[0].cases == 12
     assert result.scopes["state_trend"] == BlockScope(
-        status="ok", period=period, supported_granularity="month"
+        status="ok", period=period, supported_granularity=None
     )
 
 
 @pytest.mark.asyncio
-async def test_whole_month_period_query_failure_degrades_to_empty_block_not_500() -> None:
-    period = PeriodRange(date(2026, 6, 1), date(2026, 6, 30), "month")
+async def test_state_trend_period_query_failure_degrades_to_empty_block_not_500() -> None:
+    """Deployment hazard: ensure_views() creates v_state_trend_daily on the
+    next sync, so on a deployment that hasn't synced since this view was
+    added, the query fails (view doesn't exist yet) -- same fail-open
+    contract as any other query failure, never a 500."""
+    period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
     settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
-    # Simulates a widened DDL whose deployed view hasn't been re-created by
-    # ensure_views() yet -- the WHERE month_start predicate fails because the
-    # live view doesn't have that column, same as any other query failure.
-    client = _FakeClient({}, fail_views=frozenset({"v_state_trend"}))
+    client = _FakeClient({}, fail_views=frozenset({"v_state_trend_daily"}))
     q = BigQueryMetricsQuery(settings, client=client)
 
     result = await q.fetch_lifecycle(period=period)  # must not raise
 
     assert result.state_trend == []
     assert result.scopes["state_trend"] == BlockScope(
-        status="unavailable", period=period, supported_granularity="month"
+        status="unavailable", period=period, supported_granularity=None
     )
 
 
 @pytest.mark.asyncio
-async def test_partial_month_period_is_unsupported_and_never_queried() -> None:
-    """Critical-2 regression guard: 17-23 July is a partial month, so no
-    row's month_start (always a 1st) can ever fall inside it. Rather than
-    silently running a WHERE that returns nothing "by luck", the adapter
-    must recognise this shape up front, skip the query entirely, and say
-    so via BlockScope -- not just return an empty list indistinguishable
-    from a genuine zero."""
-    period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
-    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
-    client = _FakeClient(
-        {
-            "v_state_trend": [
-                {"month": "2026-07", "status": "open", "division": "Sales", "cases": 99}
-            ]
-        }
-    )
-    q = BigQueryMetricsQuery(settings, client=client)
-
-    result = await q.fetch_lifecycle(period=period)
-
-    assert result.state_trend == []
-    assert not any("v_state_trend" in sql for sql in client.queries), (
-        "no query should be issued at all for an unsupported period shape"
-    )
-    assert result.scopes["state_trend"] == BlockScope(
-        status="unsupported_granularity", period=period, supported_granularity="month"
-    )
-
-
-@pytest.mark.asyncio
-async def test_month_straddling_period_is_rejected_not_overcounted() -> None:
-    """Critical-2's exact failure case: 29 June - 5 July has July's 1st
-    inside it, so a naive `month_start BETWEEN @start AND @end` would match
-    -- and return -- the *entire* July total for a 7-day ask, a ~4x silent
-    over-count. Declared granularity="week" (not "month") means this must
-    be rejected before the query runs, same as any other unsupported shape."""
+async def test_month_straddling_period_queries_day_grain_with_correct_range() -> None:
+    """The exact window that broke the first pass's month_start filter:
+    29 June - 5 July has July's 1st inside it, so `month_start BETWEEN
+    @start AND @end` would have matched and returned July's entire
+    month-grain total for a 7-day ask (~4x over-count) -- or, after fix
+    round 2, been rejected outright as "unsupported_granularity" (correct,
+    but meant this window could never be answered at all). Routed through
+    the day-grain view, the WHERE predicate itself is precise: it can only
+    ever select the 7 requested days, so there's no shape of window left
+    that can silently return more than what was asked for. (A canned-row
+    fake client can't simulate BigQuery evaluating the predicate -- like
+    every other test in this file, this pins the SQL/params construction,
+    not live aggregation.)"""
     period = PeriodRange(date(2026, 6, 29), date(2026, 7, 5), "week")
     settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
     client = _FakeClient(
         {
-            "v_volume_by_type_division": [
+            "v_volume_by_type_division_daily": [
                 {
-                    "month": "2026-07",
+                    "month": "2026-W27",
                     "channel": "web",
                     "case_type": "Inquiry",
                     "division": "Sales",
-                    "volume": 400,  # July's whole-month total -- must NOT come back
+                    "volume": 9,
                 }
             ]
         }
@@ -602,25 +590,31 @@ async def test_month_straddling_period_is_rejected_not_overcounted() -> None:
 
     result = await q.fetch_volume_by_type_division(period=period)
 
-    assert result.volume == []
-    assert not any("v_volume_by_type_division" in sql for sql in client.queries)
+    idx = next(
+        i for i, sql in enumerate(client.queries) if "v_volume_by_type_division_daily" in sql
+    )
+    emitted_sql = client.queries[idx]
+    assert "WHERE day BETWEEN @start AND @end" in emitted_sql
+    params = {p.name: p.value for p in client.job_configs[idx].query_parameters}
+    assert params["start"] == date(2026, 6, 29)
+    assert params["end"] == date(2026, 7, 5)
+    assert len(result.volume) == 1
     assert result.scopes["volume"] == BlockScope(
-        status="unsupported_granularity", period=period, supported_granularity="month"
+        status="ok", period=period, supported_granularity=None
     )
 
 
 @pytest.mark.asyncio
 async def test_multi_month_whole_range_is_supported() -> None:
-    """A 6-month trend (Jan-Jun, both whole calendar months) is a valid
-    month_start shape even though it spans more than one month -- this is
-    what a monthly-report trend chart needs, and _whole_calendar_months
-    must not narrow this to a single month the way period.py's
-    single-month check does."""
+    """A 6-month trend (Jan-Jun) -- what a monthly-report trend chart
+    needs -- is supported the same way as any other range now: the
+    day-grain view is filtered and bucketed to month granularity, not
+    routed through any month-alignment special case."""
     period = PeriodRange(date(2026, 1, 1), date(2026, 6, 30), "month")
     settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
     client = _FakeClient(
         {
-            "v_volume_by_type_division": [
+            "v_volume_by_type_division_daily": [
                 {
                     "month": "2026-03",
                     "channel": "web",
@@ -635,28 +629,28 @@ async def test_multi_month_whole_range_is_supported() -> None:
 
     result = await q.fetch_volume_by_type_division(period=period)
 
-    assert any("v_volume_by_type_division" in sql for sql in client.queries)
+    idx = next(
+        i for i, sql in enumerate(client.queries) if "v_volume_by_type_division_daily" in sql
+    )
+    assert "FORMAT_DATE('%Y-%m', day)" in client.queries[idx]
     assert len(result.volume) == 1
     assert result.scopes["volume"] == BlockScope(
-        status="ok", period=period, supported_granularity="month"
+        status="ok", period=period, supported_granularity=None
     )
 
 
 @pytest.mark.asyncio
-async def test_day_granularity_over_a_whole_month_is_still_unsupported() -> None:
-    """A day-granularity request that happens to span an entire calendar
-    month (1-30 June) must not be silently answered with one month-grain
-    row -- the caller asked for a daily breakdown, which this view can
-    never give (it only ever has one row per month). Declared intent, not
-    just date shape, gates the filter -- mirrors period.py's
-    _is_full_calendar_month, which applies the same gate for the same
-    reason."""
-    period = PeriodRange(date(2026, 6, 1), date(2026, 6, 30), "day")
+async def test_state_trend_day_granularity_uses_day_format() -> None:
+    """A day-granularity request now gets a genuine daily breakdown (one
+    row per day) via the day-grain view, rather than being rejected --
+    the finer breakdown this shape actually asks for is exactly what
+    v_state_trend_daily can give, unlike the month-grain original."""
+    period = PeriodRange(date(2026, 6, 15), date(2026, 6, 15), "day")
     settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
     client = _FakeClient(
         {
-            "v_state_trend": [
-                {"month": "2026-06", "status": "resolved", "division": "Sales", "cases": 12}
+            "v_state_trend_daily": [
+                {"month": "2026-06-15", "status": "resolved", "division": "Sales", "cases": 3}
             ]
         }
     )
@@ -664,9 +658,10 @@ async def test_day_granularity_over_a_whole_month_is_still_unsupported() -> None
 
     result = await q.fetch_lifecycle(period=period)
 
-    assert result.state_trend == []
-    assert not any("v_state_trend" in sql for sql in client.queries)
-    assert result.scopes["state_trend"].status == "unsupported_granularity"
+    idx = next(i for i, sql in enumerate(client.queries) if "v_state_trend_daily" in sql)
+    assert "FORMAT_DATE('%Y-%m-%d', day)" in client.queries[idx]
+    assert len(result.state_trend) == 1
+    assert result.scopes["state_trend"].status == "ok"
 
 
 @pytest.mark.asyncio
@@ -675,7 +670,7 @@ async def test_volume_by_type_division_period_uses_named_parameters() -> None:
     settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
     client = _FakeClient(
         {
-            "v_volume_by_type_division": [
+            "v_volume_by_type_division_daily": [
                 {
                     "month": "2026-06",
                     "channel": "web",
@@ -690,9 +685,11 @@ async def test_volume_by_type_division_period_uses_named_parameters() -> None:
 
     result = await q.fetch_volume_by_type_division(period=period)
 
-    idx = next(i for i, sql in enumerate(client.queries) if "v_volume_by_type_division" in sql)
+    idx = next(
+        i for i, sql in enumerate(client.queries) if "v_volume_by_type_division_daily" in sql
+    )
     emitted_sql = client.queries[idx]
-    assert "WHERE month_start BETWEEN @start AND @end" in emitted_sql
+    assert "WHERE day BETWEEN @start AND @end" in emitted_sql
     assert "2026-06-01" not in emitted_sql
     assert "2026-06-30" not in emitted_sql
     params = {p.name: p.value for p in client.job_configs[idx].query_parameters}
@@ -700,7 +697,7 @@ async def test_volume_by_type_division_period_uses_named_parameters() -> None:
     assert params["end"] == date(2026, 6, 30)
     assert len(result.volume) == 1
     assert result.scopes["volume"] == BlockScope(
-        status="ok", period=period, supported_granularity="month"
+        status="ok", period=period, supported_granularity=None
     )
 
 

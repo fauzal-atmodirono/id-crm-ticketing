@@ -64,6 +64,12 @@ def test_view_ddls_keys_and_targets() -> None:
         # Task 13: v_volume_by_type_division and v_category_by_vehicle_model
         "v_volume_by_type_division",
         "v_category_by_vehicle_model",
+        # Task 2 (Package E) reopened: day-grain siblings for week/day
+        # granularity -- see the comments beside v_state_trend and
+        # v_volume_by_type_division in bigquery_schema.py for why these
+        # are separate views rather than widening the month-grain ones.
+        "v_state_trend_daily",
+        "v_volume_by_type_division_daily",
     }
     assert "`proj.ds.v_volume_by_month_channel`" in ddls["v_volume_by_month_channel"]
     assert "`proj.ds.conversations`" in ddls["v_volume_by_month_channel"]

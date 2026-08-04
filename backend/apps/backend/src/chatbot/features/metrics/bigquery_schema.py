@@ -271,6 +271,30 @@ def view_ddls(
             f"GROUP BY month, month_start, status, division "
             f"ORDER BY month, status"
         ),
+        # Task 2 (Package E) reopened: `v_state_trend` is grouped at month
+        # grain, and `0020-reports-native-merge.patch`'s state-trend chart
+        # reads it as lookup[f"{r.month}__{r.status}"] = r.cases -- an
+        # *overwriting* assignment that assumes exactly one row per
+        # (month, status, division). Widening THAT view to day grain (the
+        # only way a week window's own total can be recovered -- a week
+        # can't be reconstructed from a value already collapsed to a
+        # month) would return ~30x the rows and silently corrupt that
+        # chart, exactly like `v_volume_by_month_channel` would have (see
+        # `v_volume_daily`'s comment above, and query_adapter.py's module
+        # docstring). So this is a second, deliberately separate day-grain
+        # view, not a widening of `v_state_trend` -- same precedent as
+        # `v_volume_daily` alongside `v_volume_by_month_channel`. Do not
+        # "tidy up" this duplication into one view; the two grains exist
+        # because the plan's general prefer-widening-over-parallel-views
+        # rule (Task 2 Step 3) is infeasible for exactly this shape.
+        "v_state_trend_daily": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_state_trend_daily` AS "
+            f"SELECT DATE(created_at) AS day, status, "
+            f"COALESCE(division, 'Unknown') AS division, "
+            f"COUNT(*) AS cases "
+            f"FROM {fq} WHERE created_at IS NOT NULL "
+            f"GROUP BY day, status, division"
+        ),
         "v_resolution_sla_buckets": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_resolution_sla_buckets` AS "
             f"SELECT COALESCE(case_type, 'Unknown') AS case_type, "
@@ -320,6 +344,21 @@ def view_ddls(
             f"COALESCE(case_type, 'Unknown') AS case_type, "
             f"COALESCE(division, 'Unknown') AS division, COUNT(*) AS volume "
             f"FROM {fq} GROUP BY month, month_start, channel, case_type, division"
+        ),
+        # Task 2 (Package E) reopened: same two-grains-not-one reasoning as
+        # v_state_trend_daily above -- v_volume_by_type_division is
+        # month-grain and has no known fork consumer yet (checked in the
+        # original Task 2 pass), but widening it to day grain would still
+        # be a live landmine for whoever adds one later, using the exact
+        # same SELECT * assumption every other reader in this codebase
+        # uses. A separate day-grain sibling avoids ever having to find
+        # out the hard way.
+        "v_volume_by_type_division_daily": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_by_type_division_daily` AS "
+            f"SELECT DATE(created_at) AS day, channel, "
+            f"COALESCE(case_type, 'Unknown') AS case_type, "
+            f"COALESCE(division, 'Unknown') AS division, COUNT(*) AS volume "
+            f"FROM {fq} GROUP BY day, channel, case_type, division"
         ),
         "v_category_by_vehicle_model": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_category_by_vehicle_model` AS "

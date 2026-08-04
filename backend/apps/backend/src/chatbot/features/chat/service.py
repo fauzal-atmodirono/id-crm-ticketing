@@ -19,11 +19,10 @@ from chatbot.features.chat.adapters.firestore_session_service import FirestoreSe
 from chatbot.features.chat.adapters.noop_conversation_log import NoOpConversationLog
 from chatbot.features.chat.agents import build_ai_agent, build_summarizer_agent
 from chatbot.features.chat.chat_persona import compose_chat_agent_instruction
-from chatbot.features.chat.inbox_resolver import effective_assignment
-from chatbot.features.chat.prompts import AGENT_INSTRUCTION
 from chatbot.features.chat.csat import record_csat_on_ticket
 from chatbot.features.chat.detection import should_open_ticket
 from chatbot.features.chat.handoff_bridge import HandoffBridge
+from chatbot.features.chat.inbox_resolver import effective_assignment
 from chatbot.features.chat.models import (
     HandoffOpenPayload,
     HandoffPayload,
@@ -42,6 +41,7 @@ from chatbot.features.chat.ports import (
     TextToSpeechPort,
     TicketingPort,
 )
+from chatbot.features.chat.prompts import AGENT_INSTRUCTION
 from chatbot.features.metrics.events import build_turn_event
 from chatbot.features.metrics.mapping import CATEGORY_TO_DIVISION
 
@@ -416,6 +416,8 @@ class OrchestratorService:
         audio_mime_type: str | None = None,
         image_base64: str | None = None,
         image_mime_type: str | None = None,
+        video_base64: str | None = None,
+        video_mime_type: str | None = None,
     ) -> TurnResult:
         """Process a single text-based chatbot turn."""
         _log.info("processing_chatbot_turn", session_id=session_id, text_length=len(text))
@@ -471,17 +473,30 @@ class OrchestratorService:
         if audio_base64 and audio_mime_type:
             try:
                 parts.append(
-                    types.Part.from_bytes(data=base64.b64decode(audio_base64), mime_type=audio_mime_type)
+                    types.Part.from_bytes(
+                        data=base64.b64decode(audio_base64), mime_type=audio_mime_type
+                    )
                 )
             except Exception:
                 _log.warning("handle_turn_audio_decode_failed", session_id=session_id)
         if image_base64 and image_mime_type:
             try:
                 parts.append(
-                    types.Part.from_bytes(data=base64.b64decode(image_base64), mime_type=image_mime_type)
+                    types.Part.from_bytes(
+                        data=base64.b64decode(image_base64), mime_type=image_mime_type
+                    )
                 )
             except Exception:
                 _log.warning("handle_turn_image_decode_failed", session_id=session_id)
+        if video_base64 and video_mime_type:
+            try:
+                parts.append(
+                    types.Part.from_bytes(
+                        data=base64.b64decode(video_base64), mime_type=video_mime_type
+                    )
+                )
+            except Exception:
+                _log.warning("handle_turn_video_decode_failed", session_id=session_id)
         new_message = types.Content(role="user", parts=parts)
 
         # Register the operator persona for this session (fail-open: no-op when

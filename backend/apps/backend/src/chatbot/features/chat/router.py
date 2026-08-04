@@ -62,6 +62,8 @@ class ChatTurnRequest(BaseModel):
     audio_mime_type: str | None = None
     image_base64: str | None = None
     image_mime_type: str | None = None
+    video_base64: str | None = None
+    video_mime_type: str | None = None
 
 
 class CsatRequest(BaseModel):
@@ -1076,6 +1078,8 @@ class ChatRouter:
             audio_mime_type=req.audio_mime_type,
             image_base64=req.image_base64,
             image_mime_type=req.image_mime_type,
+            video_base64=req.video_base64,
+            video_mime_type=req.video_mime_type,
         )
         return ChatTurnResponse(
             reply=result.reply,

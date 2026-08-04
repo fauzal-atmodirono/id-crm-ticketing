@@ -11,6 +11,15 @@ MODELS = {"e.MAS 5", "e.MAS 7", "e.MAS 7 PHEV", "NA"}
 DIVISIONS = {"Sales", "After Sales", "Apps", "Charging", "Product", "Marketing", "Others"}
 CHANNELS = {"whatsapp", "phone", "email", "social"}
 
+# Exact field set accepted by backend/apps/backend/src/chatbot/features/rsa/
+# rsa_router.py's incident-create request model.
+RSA_ACCEPTED_FIELDS = {
+    "incident_date", "vehicle_no", "cause", "vehicle_model", "purchased_from",
+    "breakdown_location", "arrived_location", "customer_called_in_time",
+    "towing_assigned_time", "time_arrived_breakdown_area", "time_arrived_outlet",
+    "total_km", "late_reason", "remarks", "created_by",
+}
+
 
 def test_generates_the_requested_number_of_contacts():
     contacts, _, _ = generate(count=100, batch_id="b1")
@@ -61,3 +70,17 @@ def test_rsa_incidents_reuse_real_plates():
     plates = {c.vehicle_no for c in contacts}
     assert incidents
     assert all(i["vehicle_no"] in plates for i in incidents)
+
+
+def test_rsa_incidents_carry_the_batch_marker_in_created_by_and_no_stray_keys():
+    _, _, incidents = generate(count=100, batch_id="b1")
+    assert incidents
+    for incident in incidents:
+        assert incident["created_by"] == "demo-seed:b1"
+        assert set(incident.keys()) <= RSA_ACCEPTED_FIELDS
+
+
+def test_every_division_in_the_vocabulary_appears():
+    _, cases, _ = generate(count=100, batch_id="b1")
+    divisions_seen = {c.division for c in cases}
+    assert divisions_seen == DIVISIONS

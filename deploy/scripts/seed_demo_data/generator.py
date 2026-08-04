@@ -98,20 +98,28 @@ _CHANNEL_WEIGHTS = [
     ("social", 2),
 ]
 
-# Only divisions the decks give a concern breakdown for are sampled; the
-# other DIVISIONS values (Product, Marketing, Others) are left for a future
-# generator update once the decks document concerns for them.
+# Sales/Charging/Apps/After Sales concern lists are verbatim from the decks.
+# Product/Marketing/Others aren't broken out in the decks but are genuinely
+# rare there (a few percent between them) - not zero, so they get plausible
+# concerns and a low sampling weight rather than being left permanently
+# empty (an empty report bucket reads as broken, not as a quiet month).
 _DIVISION_CONCERNS: dict[str, list[str]] = {
     "Sales": ["Accessories", "Booking", "Delivery", "Promotion", "Trade In", "Transfer Ownership"],
     "Charging": ["Home Charging"],
     "Apps": ["Information", "Profile", "Auto Logout"],
     "After Sales": ["Body", "Spare Part", "User Manual", "Service Operation", "ADAS"],
+    "Product": ["Specification", "Feature Request"],
+    "Marketing": ["Campaign", "Event"],
+    "Others": ["General"],
 }
 _DIVISION_WEIGHTS = [
-    ("Sales", 30),
-    ("After Sales", 40),
-    ("Apps", 18),
-    ("Charging", 12),
+    ("Sales", 28),
+    ("After Sales", 37),
+    ("Apps", 16),
+    ("Charging", 10),
+    ("Product", 4),
+    ("Marketing", 3),
+    ("Others", 2),
 ]
 
 _STATUS_WEIGHTS = [("resolved", 55), ("open", 30), ("pending", 15)]
@@ -147,6 +155,11 @@ _CONCERN_OPENERS = {
     "User Manual": "asking where to find the user manual for the {model}",
     "Service Operation": "asking about booking a service appointment for my {model}",
     "ADAS": "having an issue with the ADAS system on my {model}",
+    "Specification": "asking about the specifications of the {model}",
+    "Feature Request": "requesting a new feature for the app",
+    "Campaign": "asking about the latest marketing campaign",
+    "Event": "asking about an upcoming test drive event",
+    "General": "asking a general question about e.MAS",
 }
 
 _CASE_TYPE_OPENERS = {
@@ -267,6 +280,14 @@ def _random_created_at(rnd: random.Random, now: datetime) -> datetime:
 
 
 def _make_rsa_incident(rnd: random.Random, contact: DemoContact, batch_id: str, now: datetime) -> dict:
+    """Build an RSA incident payload with exactly the fields
+    `rsa_router.py::_IncidentRequest` accepts (Task 2 POSTs this dict as-is
+    to `/rsa/incidents`). The RSA table has no `custom_attributes` column to
+    stamp a purge marker on like Chatwoot objects get, so the batch marker
+    travels in `created_by` as `demo-seed:<batch_id>` instead - a value a
+    real staff-entered row (a user identity) can never collide with, so
+    Task 2's RSA purge can match on it by exact string equality.
+    """
     called_in = _random_created_at(rnd, now)
     towing_assigned = called_in + timedelta(minutes=rnd.randint(5, 20))
     arrived_breakdown = towing_assigned + timedelta(minutes=rnd.randint(15, 60))
@@ -286,8 +307,7 @@ def _make_rsa_incident(rnd: random.Random, contact: DemoContact, batch_id: str, 
         "total_km": rnd.randint(2, 80),
         "late_reason": None,
         "remarks": f"[DEMO] Seeded RSA incident for {contact.vehicle_no}.",
-        "created_by": "seed_demo_data",
-        "batch_id": batch_id,
+        "created_by": f"demo-seed:{batch_id}",
     }
 
 
@@ -300,10 +320,10 @@ def generate(count: int, batch_id: str, seed: int = 20260804) -> tuple[list[Demo
 
     Deterministic for a given (count, batch_id-independent) seed: two calls
     with the same seed produce byte-identical contacts. `batch_id` is
-    stamped on every RSA incident payload for Task 2's purge guard; contact
-    and case objects don't need it here since Task 2 stamps
-    `custom_attributes.demo_seed` when it creates the corresponding Chatwoot
-    objects.
+    encoded into every RSA incident payload's `created_by` field (see
+    `_make_rsa_incident`) for Task 2's purge guard; contact and case objects
+    don't need it here since Task 2 stamps `custom_attributes.demo_seed`
+    when it creates the corresponding Chatwoot objects.
     """
     rnd = random.Random(seed)
     now = datetime.now(timezone.utc)

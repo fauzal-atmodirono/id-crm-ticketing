@@ -37,11 +37,18 @@ _log = structlog.get_logger(__name__)
 # `PhoneBridge._transfer_dialed` False even though a `<Dial>` may actually
 # be in flight, after which a second `request_human_handoff` would no
 # longer be suppressed and could replace a live call. Set here, shorter
-# than bridge.py's `_HANDOFF_REDIRECT_TIMEOUT_SECONDS` (5.0), so a slow
-# call FAILS on the SDK side well before that bound fires -- turning an
+# than bridge.py's `_HANDOFF_REDIRECT_TIMEOUT_SECONDS`, so a slow call
+# FAILS on the SDK side well before that bound fires -- turning an
 # abandoned thread into an exceptional case, not the routine one the bound
 # alone would otherwise make it.
-_TWILIO_HTTP_TIMEOUT_SECONDS = 4.0
+#
+# Whole-branch review fix (Important 6): lowered 4.0 -> 2.5 alongside
+# dropping that bound 5.0 -> 3.0. `redirect()` is the one Twilio call made
+# INLINE in the audio pump, so its worst case is dead air the caller
+# actually hears; a real Twilio REST call from the VM is sub-second, so
+# 2.5s is still ~10x headroom, and the ordering invariant above (SDK
+# timeout strictly shorter than the asyncio bound) is preserved.
+_TWILIO_HTTP_TIMEOUT_SECONDS = 2.5
 
 
 class CallControl:

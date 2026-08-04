@@ -640,6 +640,14 @@ async def test_finalize_flushes_the_trailing_live_block_without_duplicating_it()
 
 
 async def test_finalize_posts_no_live_block_when_call_ends_before_anyone_speaks() -> None:
+    """Whole-branch review fix (Important 3): the ticket exists (created at
+    the Twilio "start" event) but nobody ever spoke. finalize() used to
+    return at its `not self.transcript` guard, leaving an open, empty,
+    unlabelled, external_id-less conversation in the agent queue forever --
+    a leak this package introduced, since before it such a call created
+    nothing at all. It must self-clean instead: a marker comment, resolved,
+    with the external_id stamped so the Twilio callbacks can still find it.
+    No transcript block is posted (there is none)."""
     log = _FakeLog()
     b = _bridge(
         _FakeLive([]),
@@ -649,9 +657,24 @@ async def test_finalize_posts_no_live_block_when_call_ends_before_anyone_speaks(
     )
     b.ticket_id = "T-1"
     b.call_sid = "C1"
-    # No transcript at all -> finalize() is a no-op past the live-flush step.
+    await b.finalize()
+    assert log.comments == [("T-1", "[Call ended — no conversation]", "solved")]
+    assert log.external_ids == [("T-1", "phone-C1")]
+
+
+async def test_finalize_leaves_nothing_behind_when_no_ticket_was_created() -> None:
+    """The flags-off half of Important 3: with
+    phone_transcript_live_enabled off, no ticket is created at call start,
+    so an abandoned call has nothing to clean up and finalize() must stay
+    byte-identical to before this package -- no comment, no external_id, no
+    ticket create."""
+    log = _FakeLog()
+    b = _bridge(_FakeLive([]), [], log, settings=Settings(_env_file=None))
+    b.call_sid = "C1"
     await b.finalize()
     assert log.comments == []
+    assert log.external_ids == []
+    assert log.ensured == []
 
 
 async def test_finalize_skips_the_duplicate_summary_when_live_blocks_already_landed() -> None:
@@ -786,6 +809,108 @@ async def test_finalize_does_not_hang_forever_if_the_flush_drain_stalls(monkeypa
     assert ("T-1", "USER: hi there\nASSISTANT: hello", "solved") in log.comments
 
 
+async def test_flush_drain_timeout_on_the_trailing_block_still_posts_the_full_body(
+    monkeypatch: Any,
+) -> None:
+    """Whole-branch review fix (Important 1, DATA LOSS).
+
+    The test above only pins the NOTHING-posted variant, which is why this
+    shipped: when some blocks HAD posted and only the trailing block's post
+    stalled, `_live_blocks_posted` was True and `_live_blocks_failed` was
+    still False, so finalize() took the short "[Call ended]" branch and the
+    caller's final turn was permanently missing from the ticket. Abandoning
+    the drain is a live-block failure and must force the full-body
+    fallback -- a duplicated transcript on a degraded call beats a missing
+    turn on a customer's record.
+    """
+    monkeypatch.setattr(bridge_module, "_FLUSH_DRAIN_TIMEOUT_SECONDS", 0.05)
+    live = _FakeLive(
+        [InputTranscript("first"), OutputTranscript("second"), InputTranscript("LAST TURN")]
+    )
+    log = _FakeLog()
+
+    async def hanging_comment(
+        ticket_id: str, text: str, status: str | None = None
+    ) -> ConversationLogResult:
+        if text == "USER: LAST TURN":
+            await asyncio.sleep(10)  # the TRAILING block is the one that stalls
+        log.comments.append((ticket_id, text, status))
+        return ConversationLogResult.OK
+
+    log.append_conversation_comment = hanging_comment  # type: ignore[method-assign]
+    b = _bridge(
+        live,
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    b.ticket_id = "T-1"
+    await b.pump()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    # Sanity: the two earlier blocks really did land live.
+    assert b._live_blocks_posted is True
+    assert ("T-1", "USER: first", None) in log.comments
+    assert ("T-1", "ASSISTANT: second", None) in log.comments
+
+    b.call_sid = "C1"
+    await asyncio.wait_for(b.finalize(), timeout=1.0)
+
+    full_body = "USER: first\nASSISTANT: second\nUSER: LAST TURN"
+    assert ("T-1", full_body, "solved") in log.comments
+    assert not any(c[1] == "[Call ended]" for c in log.comments)
+
+
+async def test_finalize_closing_writes_are_bounded_as_a_whole(monkeypatch: Any) -> None:
+    """Whole-branch review fix (Important 7): the three settle/drain awaits
+    were bounded individually, but the closing writes after them were not
+    bounded at all -- fallback create, classification merge, division label,
+    closing comment + toggle_status, external_id merge, CSAT comment +
+    union-tag, each at the adapter's own 10s timeout. Under a Chatwoot
+    brownout that is ~200s of teardown per concurrent call, pinning a
+    WebSocket handler task each. One ceiling caps it, and the transcript is
+    logged so the call is still recoverable."""
+    monkeypatch.setattr(bridge_module, "_FINALIZE_TAIL_TIMEOUT_SECONDS", 0.05)
+    log = _FakeLog()
+
+    async def hanging_comment(
+        ticket_id: str,  # noqa: ARG001 -- port signature; this fake stalls on every call
+        text: str,  # noqa: ARG001
+        status: str | None = None,  # noqa: ARG001
+    ) -> ConversationLogResult:
+        await asyncio.sleep(10)
+        return ConversationLogResult.OK
+
+    log.append_conversation_comment = hanging_comment  # type: ignore[method-assign]
+    b = _bridge(_FakeLive([]), [], log, settings=Settings(_env_file=None))
+    b.call_sid = "C1"
+    b.transcript = [("USER", "hi there")]
+    with capture_logs() as captured:
+        await asyncio.wait_for(b.finalize(), timeout=1.0)
+    timed_out = [e for e in captured if e["event"] == "phone_finalize_timed_out"]
+    assert timed_out
+    assert timed_out[0]["transcript"] == "USER: hi there"
+
+
+async def test_finalize_truncates_the_transcript_it_logs() -> None:
+    """Whole-branch review fix (Important 11): this package keeps recording
+    URLs behind a `call_recording.listen` permission; dumping the same
+    customer voice content untruncated into unguarded application logs
+    undoes that. The failure path only needs enough to identify the call."""
+    log = _FakeLog()
+    log.ensure_returns_sentinel = True
+    b = _bridge(_FakeLive([]), [], log, settings=Settings(_env_file=None))
+    b.call_sid = "C1"
+    b.transcript = [("USER", "x" * 5000)]
+    with capture_logs() as captured:
+        await b.finalize()
+    entry = next(e for e in captured if e["event"] == "phone_finalize_ticket_create_failed")
+    logged = str(entry["transcript"])
+    assert len(logged) < 600
+    assert logged.endswith("chars total]")
+
+
 # --- Re-review round 2: C1 fallback, C2 loss window, I3/I4 coverage, I5 ---
 
 
@@ -796,7 +921,13 @@ async def test_finalize_fallback_treats_sentinel_id_as_failure_and_logs_transcri
     raising. Adopting it as real would silently post every subsequent call
     (external_id, the summary comment...) against a conversation that
     doesn't exist. On that path the transcript must be logged so the call
-    is at least recoverable from logs rather than silently gone."""
+    is at least recoverable from logs rather than silently gone.
+
+    Whole-branch review minor: this failure now has its OWN event name
+    (`phone_finalize_ticket_create_failed`) so event-name-keyed alerting
+    can tell it apart from finalize()'s catch-all `phone_finalize_failed`,
+    which fires on a structurally different failure (a closing write
+    raising)."""
     log = _FakeLog()
     log.ensure_returns_sentinel = True
     b = _bridge(_FakeLive([]), [], log, settings=Settings(_env_file=None))
@@ -806,8 +937,9 @@ async def test_finalize_fallback_treats_sentinel_id_as_failure_and_logs_transcri
         await b.finalize()
     assert log.comments == []  # nothing posted against the fake ticket
     assert b.ticket_id is None  # sentinel not adopted as real
-    failed_entries = [e for e in captured if e["event"] == "phone_finalize_failed"]
+    failed_entries = [e for e in captured if e["event"] == "phone_finalize_ticket_create_failed"]
     assert any(e.get("transcript") == "USER: hi there" for e in failed_entries)
+    assert not [e for e in captured if e["event"] == "phone_finalize_failed"]
 
 
 async def test_finalize_falls_back_to_full_summary_when_call_start_ticket_creation_failed() -> None:

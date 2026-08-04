@@ -4,8 +4,10 @@ Covers (per the task brief, plus the review round's fixes):
 - recording starts on stream start only when phone_recording_enabled is on;
 - a start_recording failure does not affect the call;
 - PHONE_RECORDING_ANNOUNCEMENT fails CLOSED -- enabled with no announcement
-  configured, or the announcement hint failing to queue, or no callback
-  base configured, all refuse to start recording, logged at WARNING;
+  configured, or no callback base configured, both refuse to start
+  recording, logged at WARNING;
+- the notice is spoken exactly once, by router.py's TwiML `<Say>`: the
+  bridge queues no text hint at all (whole-branch review, Important 4);
 - the /webhooks/phone/recording-status callback persists the three
   attributes on "completed" and ignores every other status;
 - a callback for an unknown call is ignored rather than raising (pinned
@@ -237,6 +239,11 @@ _BASE_URL = "https://example.ngrok.app"
 def _enabled_settings(**overrides: Any) -> Settings:
     return Settings(
         _env_file=None,
+        # PHONE_RECORDING_ENABLED now REQUIRES PHONE_TRANSCRIPT_LIVE_ENABLED
+        # (whole-branch review, Important 10) -- the recording-status
+        # callback resolves the conversation by session id and never
+        # creates one, so it can otherwise race the ticket's existence.
+        phone_transcript_live_enabled=True,
         phone_recording_enabled=True,
         phone_recording_announcement=_ANNOUNCEMENT,
         twilio_webhook_base_url=_BASE_URL,
@@ -255,7 +262,12 @@ async def test_recording_starts_on_stream_start_when_enabled() -> None:
     assert twilio_client.recordings.recorded == [
         ("CA1", f"{_BASE_URL}/webhooks/phone/recording-status")
     ]
-    assert any(_ANNOUNCEMENT in hint for hint in live.text_hints)
+    # Whole-branch review fix (Important 4): the PDPA notice is spoken ONCE,
+    # by the TwiML <Say> that router.py emits before <Connect><Stream> (see
+    # test_phone_incoming.py). The bridge must NOT also ask the Gemini model
+    # to read it -- that was a second reading, in a second voice, seconds
+    # after the first, on every recorded call.
+    assert live.text_hints == []
 
 
 async def test_recording_not_started_when_flag_off() -> None:
@@ -275,7 +287,10 @@ async def test_recording_not_started_when_flag_off() -> None:
 async def test_recording_refuses_without_announcement_fail_closed() -> None:
     """PDPA: unlike every other flag in this package, this ONE fails closed."""
     settings = Settings(
-        _env_file=None, phone_recording_enabled=True, twilio_webhook_base_url=_BASE_URL
+        _env_file=None,
+        phone_transcript_live_enabled=True,
+        phone_recording_enabled=True,
+        twilio_webhook_base_url=_BASE_URL,
     )  # announcement left blank
     bridge, live, _log, twilio_client = _bridge(settings)
 
@@ -297,7 +312,10 @@ async def test_recording_refuses_when_no_callback_base_configured_fail_closed() 
     ever attach/find it again is the same class of harm as recording with
     no notice -- fails closed, not open, unlike the rest of this package."""
     settings = Settings(
-        _env_file=None, phone_recording_enabled=True, phone_recording_announcement=_ANNOUNCEMENT
+        _env_file=None,
+        phone_transcript_live_enabled=True,
+        phone_recording_enabled=True,
+        phone_recording_announcement=_ANNOUNCEMENT,
     )  # twilio_webhook_base_url left blank
     bridge, live, _log, twilio_client = _bridge(settings)
 
@@ -316,10 +334,15 @@ async def test_recording_refuses_when_no_callback_base_configured_fail_closed() 
     assert "phone_recording_no_callback_base_configured" in events
 
 
-async def test_recording_refuses_when_announcement_hint_fails_to_queue_fail_closed() -> None:
-    """Review fix (Important 1): a closed/broken Live session is exactly
-    when send_text_hint raises -- must not fall through to start_recording
-    on that failure, since the caller was never actually notified."""
+async def test_recording_never_asks_the_model_to_read_the_notice() -> None:
+    """Whole-branch review fix (Important 4): the disclosure is the TwiML
+    `<Say>` (deterministically sequenced before the Media Stream opens, and
+    therefore before recording can start). The bridge must never queue a
+    text hint asking the live model to speak the same notice -- with the
+    `<Say>` in place that is a duplicate reading, not reinforcement. A
+    broken Live session is consequently no longer a reason to refuse
+    recording: nothing about the disclosure depends on the Live session at
+    all."""
     settings = _enabled_settings()
     live = _FakeLive(hint_raises=RuntimeError("live session closed"))
     bridge, _live, _log, twilio_client = _bridge(settings, live=live)
@@ -331,9 +354,13 @@ async def test_recording_refuses_when_announcement_hint_fails_to_queue_fail_clos
         assert bridge._recording_task is not None
         await bridge._recording_task
 
-    assert twilio_client.recordings.recorded == []
+    assert live.text_hints == []
     events = [e["event"] for e in captured]
-    assert "phone_recording_announcement_hint_failed" in events
+    assert "phone_recording_announcement_hint_failed" not in events
+    # Recording still starts: the notice was already delivered by <Say>.
+    assert twilio_client.recordings.recorded == [
+        ("CA1", f"{_BASE_URL}/webhooks/phone/recording-status")
+    ]
 
 
 async def test_recording_start_failure_does_not_break_the_call() -> None:
@@ -386,6 +413,25 @@ def test_recording_settings_default_off() -> None:
     assert settings.phone_recording_retention_days == 90
 
 
+def test_recording_requires_ticket_at_call_start_and_fails_fast() -> None:
+    """Whole-branch review fix (Important 10): with
+    phone_transcript_live_enabled off, the conversation only exists after
+    finalize(), so Twilio's recording-status callback can resolve first,
+    find nothing, answer 200 -- and Twilio never retries. The recording is
+    then silently gone. Make the dependency structural and fail fast at
+    startup with a readable message rather than lose writes in production.
+    """
+    with pytest.raises(ValueError, match="PHONE_TRANSCRIPT_LIVE_ENABLED"):
+        Settings(_env_file=None, phone_recording_enabled=True)
+
+
+def test_recording_with_ticket_at_call_start_is_accepted() -> None:
+    settings = Settings(
+        _env_file=None, phone_transcript_live_enabled=True, phone_recording_enabled=True
+    )
+    assert settings.phone_recording_enabled is True
+
+
 # --- /webhooks/phone/recording-status --------------------------------------
 
 
@@ -410,6 +456,7 @@ def _client(
 ) -> tuple[TestClient, _FakeLog, Settings]:
     settings = settings or Settings(
         _env_file=None,
+        phone_transcript_live_enabled=True,  # required by PHONE_RECORDING_ENABLED
         phone_recording_enabled=True,
         twilio_auth_token="test_token",
         twilio_account_sid="AC1",
@@ -451,7 +498,9 @@ def test_recording_status_webhook_refuses_when_no_auth_token_configured() -> Non
     """Review fix (Important 3): refuse (401), don't silently skip
     verification, when no twilio_auth_token is configured -- otherwise any
     unauthenticated POST can write an attacker-supplied RecordingUrl."""
-    settings = Settings(_env_file=None, phone_recording_enabled=True)  # no twilio_auth_token
+    settings = Settings(
+        _env_file=None, phone_transcript_live_enabled=True, phone_recording_enabled=True
+    )  # no twilio_auth_token
     client, log, _settings = _client(_FakeLog(), settings=settings)
 
     res = client.post(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import cache
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -328,11 +329,20 @@ class Settings(BaseSettings):
     # PhoneBridge._maybe_start_recording), recording is refused entirely
     # (logged at WARNING) rather than started silently.
     #
-    # NOT A COMPLIANCE GUARANTEE: delivery is a best-effort instruction to
-    # the live Gemini model (LiveSession.send_text_hint), not a scripted,
-    # verified, or sequenced playback -- see .env.example's
-    # PHONE_RECORDING_ANNOUNCEMENT comment for the full caveat before
-    # enabling this in production.
+    # SEQUENCING IS SOLVED (Task 6): the notice is read by a scripted TwiML
+    # <Say> that /voice/phone/incoming emits in the same <Response>
+    # immediately before <Connect><Stream>. TwiML verbs run in document
+    # order, and the Media Stream's "start" event is the only trigger for
+    # recording, so the disclosure provably precedes recording -- by
+    # construction, not by hope. What is STILL true and worth an operator's
+    # attention: it is Twilio's default TTS voice reading the operator's own
+    # configured text (no language/voice attributes, so a bilingual notice
+    # may be mispronounced in its Bahasa Melayu half), and it is a
+    # DISCLOSURE, not a recorded consent capture -- nothing records that the
+    # caller heard or agreed to it.
+    #
+    # DEPENDS ON phone_transcript_live_enabled -- enforced in
+    # _phone_flag_dependencies below, which see for why.
     phone_recording_enabled: bool = False
     phone_recording_announcement: str = ""
     # Informational only today (no automated deletion job reads this yet) --
@@ -359,6 +369,12 @@ class Settings(BaseSettings):
     # per-agent resolver is a second implementation of the same interface,
     # added once the §5.2 decision in the design doc lands -- do not build
     # it speculatively here.
+    #
+    # Also gates the bot's SPOKEN handoff wording (router.py's phone_stream):
+    # off keeps the pre-Package-C "a specialist will follow up" line, since
+    # promising a transfer that structurally cannot happen would be a
+    # customer-visible change with all flags off. DEPENDS ON
+    # phone_transcript_live_enabled -- see _phone_flag_dependencies below.
     phone_handoff_enabled: bool = False
     phone_handoff_target_number: str = ""
     # <Dial timeout> in seconds: how long Twilio rings the target before it
@@ -503,6 +519,50 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def _phone_flag_dependencies(self) -> Settings:
+        """Package C whole-branch review fix (Important 10): recording and
+        handoff DEPEND on phone_transcript_live_enabled -- fail fast rather
+        than lose a callback's write.
+
+        Both features have a Twilio callback that fires after the call and
+        resolves its conversation with ``find_conversation_ticket``, which
+        never creates. With ``phone_transcript_live_enabled`` off, the
+        conversation only comes into existence inside ``PhoneBridge.
+        finalize()``. Twilio's recording-status callback, or a 30s
+        ``no-answer`` dial-status, can easily win that race -- classification
+        alone can add up to 10s to finalize() -- and when it does,
+        ``find_conversation_ticket`` returns ``None``, the handler answers
+        **200**, and Twilio never retries. A recording, or an owed
+        ``unanswered_handoff`` tag, is then silently gone with only a log
+        line.
+
+        Making the dependency structural is the only fix that cannot be
+        misconfigured: with the ticket created at the Twilio "start" event,
+        it always exists before either callback can fire. Enforced here so a
+        bad combination is a startup error with a readable message (see
+        ``create_app``/``get_settings``, both of which construct Settings
+        eagerly), never a silently-dropped write in production.
+        """
+        missing = [
+            name
+            for name, enabled in (
+                ("PHONE_RECORDING_ENABLED", self.phone_recording_enabled),
+                ("PHONE_HANDOFF_ENABLED", self.phone_handoff_enabled),
+            )
+            if enabled
+        ]
+        if missing and not self.phone_transcript_live_enabled:
+            raise ValueError(
+                f"{'/'.join(missing)} requires PHONE_TRANSCRIPT_LIVE_ENABLED=true. "
+                "Those features' Twilio callbacks resolve the conversation by session "
+                "id and never create one, so without the ticket being created at call "
+                "start they can fire before it exists and their write (recording "
+                "attachment, unanswered_handoff tag) is silently lost -- Twilio does "
+                "not retry a 200. Enable PHONE_TRANSCRIPT_LIVE_ENABLED first."
+            )
+        return self
 
 
 @cache

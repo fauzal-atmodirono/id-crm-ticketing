@@ -64,6 +64,34 @@ class HandoffTargetResolver:
     def __init__(self, settings: Settings, log_port: ConversationLogPort) -> None:
         self._settings = settings
         self._log_port = log_port
+        # Whole-branch review fix (Important 6): the business-hours answer,
+        # warmed by prefetch() off the audio path. None = cold (never
+        # prefetched, or the prefetch itself failed), in which case
+        # resolve() falls back to doing the lookup inline as before.
+        self._hours_ok: bool | None = None
+
+    async def prefetch(self) -> None:
+        """Warm the business-hours answer so ``resolve()`` needs no HTTP.
+
+        ``PhoneBridge._attempt_transfer`` runs INLINE inside ``pump()``,
+        the sole Gemini->Twilio audio forwarder. Doing the ``GET
+        /inboxes/{id}`` there meant that on every handoff, caller->Gemini
+        audio kept flowing while Gemini->Twilio audio did not, so the
+        buffered output dumped at once on resume and the call stayed
+        skewed until a barge-in. The bridge fires this as a detached task
+        at call start instead, so the answer is already in hand by the
+        time (always many seconds later) a handoff is actually requested.
+
+        Never raises: ``_within_business_hours`` already fails open, and
+        this is fire-and-forget from the live-call path. Whether the
+        answer is a minute stale is immaterial -- a call that starts
+        inside business hours is meant to be transferable for its whole
+        duration.
+        """
+        try:
+            self._hours_ok = await self._within_business_hours()
+        except Exception as e:  # pragma: no cover -- _within_business_hours never raises
+            _log.error("phone_handoff_hours_prefetch_failed", error=str(e))
 
     async def resolve(self) -> HandoffTarget | None:
         if not self._settings.phone_handoff_enabled:
@@ -81,7 +109,12 @@ class HandoffTargetResolver:
         if not self._settings.phone_handoff_caller_id.strip():
             _log.warning("phone_handoff_no_caller_id_configured")
             return None
-        if not await self._within_business_hours():
+        # Prefer the prefetched answer (see prefetch()); only pay for the
+        # Chatwoot round trip here if the cache is still cold.
+        within = self._hours_ok
+        if within is None:
+            within = await self._within_business_hours()
+        if not within:
             return None
         return HandoffTarget(kind="pstn", value=number)
 

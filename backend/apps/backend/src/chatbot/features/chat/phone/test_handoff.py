@@ -74,6 +74,10 @@ _CALLER_ID = "+60129999999"
 def _enabled_settings(**overrides: Any) -> Settings:
     return Settings(
         _env_file=None,
+        # PHONE_HANDOFF_ENABLED now REQUIRES PHONE_TRANSCRIPT_LIVE_ENABLED
+        # (whole-branch review, Important 10) -- the dial-status callback
+        # resolves the conversation by session id and never creates one.
+        phone_transcript_live_enabled=True,
         phone_handoff_enabled=True,
         phone_handoff_target_number=_TARGET_NUMBER,
         phone_handoff_caller_id=_CALLER_ID,
@@ -164,7 +168,9 @@ async def test_resolve_returns_none_when_disabled() -> None:
 
 
 async def test_resolve_returns_none_when_no_target_number_configured() -> None:
-    settings = Settings(_env_file=None, phone_handoff_enabled=True)
+    settings = Settings(
+        _env_file=None, phone_transcript_live_enabled=True, phone_handoff_enabled=True
+    )
     resolver = HandoffTargetResolver(settings, _HoursLog())
     assert await resolver.resolve() is None
 
@@ -175,7 +181,10 @@ async def test_resolve_returns_none_when_no_caller_id_configured() -> None:
     `client:` identifier Twilio rejects for a PSTN caller id (error 13214)
     -- refuse to resolve a target at all rather than dial blind."""
     settings = Settings(
-        _env_file=None, phone_handoff_enabled=True, phone_handoff_target_number=_TARGET_NUMBER
+        _env_file=None,
+        phone_transcript_live_enabled=True,
+        phone_handoff_enabled=True,
+        phone_handoff_target_number=_TARGET_NUMBER,
     )  # phone_handoff_caller_id left at its "" default
     resolver = HandoffTargetResolver(settings, _HoursLog())
     with capture_logs() as captured:
@@ -224,6 +233,43 @@ async def test_resolve_fails_open_when_hours_check_raises() -> None:
         target = await resolver.resolve()
     assert target == HandoffTarget(kind="pstn", value=_TARGET_NUMBER)
     assert any(e["event"] == "phone_handoff_hours_check_failed" for e in captured)
+
+
+async def test_prefetch_warms_the_hours_check_so_resolve_makes_no_http_call() -> None:
+    """Whole-branch review fix (Important 6): `_attempt_transfer` runs
+    INLINE in pump(), the sole Gemini->Twilio audio forwarder. The
+    business-hours `GET /inboxes/{id}` must therefore happen off that path
+    -- prefetch() at call start -- so resolve() answers from the warmed
+    value and only the redirect stays inline."""
+    settings = _enabled_settings(chatwoot_inbox_id=1)
+    log = _HoursLog(inbox=_open_all_day_inbox())
+    resolver = HandoffTargetResolver(settings, log)
+    await resolver.prefetch()
+    assert log.calls == [1]
+    target = await resolver.resolve()
+    assert target == HandoffTarget(kind="pstn", value=_TARGET_NUMBER)
+    assert log.calls == [1]  # resolve() added no second lookup
+
+
+async def test_prefetch_result_is_honoured_when_it_says_closed() -> None:
+    """The warmed value must be a real answer, not just a latency trick:
+    a prefetch that resolved to "closed" still blocks the transfer."""
+    settings = _enabled_settings(chatwoot_inbox_id=1)
+    log = _HoursLog(inbox=_closed_all_day_inbox())
+    resolver = HandoffTargetResolver(settings, log)
+    await resolver.prefetch()
+    assert await resolver.resolve() is None
+    assert log.calls == [1]
+
+
+async def test_resolve_still_checks_hours_inline_when_prefetch_never_ran() -> None:
+    """Cold cache (prefetch disabled, still in flight, or failed) must fall
+    back to the pre-fix inline lookup rather than assuming "open"."""
+    settings = _enabled_settings(chatwoot_inbox_id=1)
+    log = _HoursLog(inbox=_closed_all_day_inbox())
+    resolver = HandoffTargetResolver(settings, log)
+    assert await resolver.resolve() is None
+    assert log.calls == [1]
 
 
 def test_dial_twiml_pstn_target() -> None:
@@ -364,6 +410,7 @@ def _bridge(
     log: _FakeLog | None = None,
     twilio_client: _FakeTwilioClient | None = None,
     scripted: list[LiveEvent] | None = None,
+    handoff_resolver: HandoffTargetResolver | None = None,
 ) -> tuple[PhoneBridge, _FakeLive, _FakeLog, _FakeTwilioClient]:
     live = _FakeLive(scripted if scripted is not None else [_HANDOFF_CALL])
     log = log or _FakeLog()
@@ -374,9 +421,46 @@ def _bridge(
         return None
 
     bridge = PhoneBridge(
-        live, _FakeKnowledge(), log, send_twilio, settings, call_control=call_control
+        live,
+        _FakeKnowledge(),
+        log,
+        send_twilio,
+        settings,
+        call_control=call_control,
+        handoff_resolver=handoff_resolver,
     )
     return bridge, live, log, twilio_client
+
+
+async def test_bridge_prefetches_business_hours_at_call_start() -> None:
+    """Whole-branch review fix (Important 6): the hours lookup is fired as
+    a DETACHED task at the Twilio "start" event, off the audio path, so
+    resolve() inside pump() answers from cache."""
+    settings = _enabled_settings(chatwoot_inbox_id=1)
+    hours = _HoursLog(inbox=_open_all_day_inbox())
+    bridge, _live, _log, _twilio = _bridge(
+        settings,
+        scripted=[],
+        handoff_resolver=HandoffTargetResolver(settings, hours),
+    )
+    await bridge.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+    assert bridge._handoff_prefetch_task is not None
+    await bridge._handoff_prefetch_task
+    assert hours.calls == [1]
+
+
+async def test_bridge_does_not_prefetch_business_hours_when_handoff_is_off() -> None:
+    """Flags off -> byte-identical: no extra Chatwoot call at call start."""
+    settings = Settings(_env_file=None, chatwoot_inbox_id=1)
+    hours = _HoursLog(inbox=_open_all_day_inbox())
+    bridge, _live, _log, _twilio = _bridge(
+        settings,
+        scripted=[],
+        handoff_resolver=HandoffTargetResolver(settings, hours),
+    )
+    await bridge.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+    assert bridge._handoff_prefetch_task is None
+    assert hours.calls == []
 
 
 async def test_handoff_disabled_keeps_todays_ticket_created_status() -> None:
@@ -542,6 +626,10 @@ async def test_handoff_no_action_url_falls_back_without_attempting_redirect() ->
     the <Dial action>, so this must not dial blind."""
     settings = Settings(
         _env_file=None,
+        # PHONE_HANDOFF_ENABLED now REQUIRES PHONE_TRANSCRIPT_LIVE_ENABLED
+        # (whole-branch review, Important 10) -- the dial-status callback
+        # resolves the conversation by session id and never creates one.
+        phone_transcript_live_enabled=True,
         phone_handoff_enabled=True,
         phone_handoff_target_number=_TARGET_NUMBER,
         phone_handoff_caller_id=_CALLER_ID,
@@ -580,6 +668,15 @@ async def test_handoff_settings_default_off() -> None:
     assert settings.phone_handoff_timeout_seconds == 30
 
 
+def test_handoff_requires_ticket_at_call_start_and_fails_fast() -> None:
+    """Whole-branch review fix (Important 10): a 30s `no-answer` dial-status
+    callback can easily resolve before finalize() has created the
+    conversation, in which case the owed `unanswered_handoff` tag is
+    silently dropped (the handler answers 200; Twilio does not retry)."""
+    with pytest.raises(ValueError, match="PHONE_TRANSCRIPT_LIVE_ENABLED"):
+        Settings(_env_file=None, phone_handoff_enabled=True)
+
+
 # --- /webhooks/phone/dial-status --------------------------------------------
 
 
@@ -602,6 +699,7 @@ def _sign(token: str, url: str, params: dict[str, str]) -> str:
 def _client(log: _FakeLog, settings: Settings | None = None) -> tuple[TestClient, Settings]:
     settings = settings or Settings(
         _env_file=None,
+        phone_transcript_live_enabled=True,  # required by PHONE_HANDOFF_ENABLED
         phone_handoff_enabled=True,
         twilio_auth_token="test_token",
         twilio_account_sid="AC1",
@@ -660,7 +758,9 @@ def test_dial_status_route_not_registered_when_flag_off() -> None:
 
 
 def test_dial_status_refuses_when_no_auth_token_configured() -> None:
-    settings = Settings(_env_file=None, phone_handoff_enabled=True)  # no twilio_auth_token
+    settings = Settings(
+        _env_file=None, phone_transcript_live_enabled=True, phone_handoff_enabled=True
+    )  # no twilio_auth_token
     client, _settings = _client(_DialLog(), settings=settings)
 
     res = client.post(

@@ -51,6 +51,30 @@ _FLUSH_DRAIN_TIMEOUT_SECONDS = 10.0
 # failure.
 _CLASSIFY_TIMEOUT_SECONDS = 10.0
 
+# Whole-branch review fix (Important 7): the three awaits above are each
+# bounded, but everything finalize() does AFTER the drain was not -- the
+# fallback ticket create (3-4 sequential HTTP calls), classification write
+# (GET+POST merge) plus the division label (GET+POST), the closing comment
+# plus toggle_status, set_ticket_external_id (another merge) and CSAT
+# (comment + union-tag), all at the adapter's own 10s-per-call timeout and
+# applied PER PHASE. Worst case that is ~200s of teardown, which under a
+# Chatwoot brownout with concurrent calls pins one WebSocket handler task
+# per call. One ceiling over the whole tail caps that; on expiry the
+# transcript is logged (truncated -- see _log_transcript) so the call is
+# still recoverable. 60s is deliberately generous: it must not fire on a
+# merely-slow Chatwoot, only on a wedged one.
+_FINALIZE_TAIL_TIMEOUT_SECONDS = 60.0
+
+# Whole-branch review fix (Important 11): call transcripts are customer
+# voice content on a PDPA-scoped feature. The rest of this package keeps
+# recording URLs out of agent-visible text and behind a
+# `call_recording.listen` permission; writing the same content untruncated
+# into plain application logs would undo that. The failure paths that log a
+# transcript do so to make the call RECOVERABLE, and a few hundred
+# characters plus the true length is enough to identify and triage the
+# call without dumping the whole conversation into log storage.
+_LOG_TRANSCRIPT_MAX_CHARS = 400
+
 # Review fix (Important 1): unlike the ticket-create/recording-start tasks
 # above (both detached, precisely so a slow Chatwoot/Twilio call never
 # stalls audio), `_attempt_transfer` runs INLINE inside `pump()` -- it's
@@ -62,11 +86,39 @@ _CLASSIFY_TIMEOUT_SECONDS = 10.0
 # not free) into "the caller hears dead air indefinitely". Both are
 # shorter than ChatwootAdapter._request's own 10s timeout so THESE bounds
 # are the ones that actually fire; a real Twilio/Chatwoot API call is
-# typically sub-second, so 5s is generous, not tight. A timeout here is
+# typically sub-second, so these are generous, not tight. A timeout here is
 # just another failure mode -- same as any other resolve()/redirect()
 # failure, it falls back to today's exact "ticket_created" behaviour.
+#
+# Whole-branch review fix (Important 6): the resolve() half is no longer
+# the routine cost it was. `HandoffTargetResolver.prefetch()` is fired as
+# a detached task at call start (see handle_twilio), so by the time a
+# handoff tool call arrives -- always many seconds into a call -- the
+# business-hours answer is already cached and resolve() returns without
+# any HTTP at all. This bound now only covers the cold path (prefetch
+# disabled, still in flight, or expired), so the inline dead air on the
+# common path is just the redirect. The redirect bound is in turn dropped
+# from 5.0 to 3.0 so the worst case a caller can hear is ~3s of silence,
+# not ~10s; `call_control._TWILIO_HTTP_TIMEOUT_SECONDS` was lowered
+# alongside it to stay SHORTER than this bound, preserving Task 6's
+# invariant that a slow redirect FAILS on the SDK side (leaving
+# `_transfer_dialed` consistent) rather than being abandoned mid-flight by
+# this bound.
 _HANDOFF_RESOLVE_TIMEOUT_SECONDS = 5.0
-_HANDOFF_REDIRECT_TIMEOUT_SECONDS = 5.0
+_HANDOFF_REDIRECT_TIMEOUT_SECONDS = 3.0
+
+
+def _log_transcript(body: str) -> str:
+    """Truncate a transcript for structured logging (Important 11).
+
+    Every site that logs a transcript does so on a failure path, to keep
+    the call recoverable when Chatwoot never got it. That goal is met by a
+    prefix plus the true length; the full customer-voice body does not
+    belong in unguarded application logs on a PDPA-scoped feature.
+    """
+    if len(body) <= _LOG_TRANSCRIPT_MAX_CHARS:
+        return body
+    return f"{body[:_LOG_TRANSCRIPT_MAX_CHARS]}... [truncated, {len(body)} chars total]"
 
 
 class PhoneBridge:
@@ -150,6 +202,15 @@ class PhoneBridge:
         # it isn't silently destroyed mid-flight on a fast hangup; nothing
         # downstream depends on its result.
         self._recording_task: asyncio.Task[None] | None = None
+        # Whole-branch review fix (Important 6): warms
+        # HandoffTargetResolver's business-hours answer OFF the audio path,
+        # so `_attempt_transfer` -- which runs INLINE in pump(), the sole
+        # Gemini->Twilio forwarder -- doesn't pay a `GET /inboxes/{id}` on
+        # every handoff while caller audio keeps arriving and nothing goes
+        # back. Fire-and-forget, same shape as the two tasks above; nothing
+        # downstream depends on it (resolve() still does the check itself
+        # if the cache is cold).
+        self._handoff_prefetch_task: asyncio.Task[None] | None = None
         # True once ANY live block has been successfully posted (during
         # pump() or finalize()'s own forced flush) -- lets finalize() avoid
         # posting the whole transcript a second time when it's already in
@@ -212,6 +273,17 @@ class PhoneBridge:
                     self._recording_start_attempted = True
                     self._recording_task = asyncio.create_task(
                         self._maybe_start_recording(self.call_sid)
+                    )
+                if self._settings.phone_handoff_enabled and (
+                    self._handoff_prefetch_task is None or self._handoff_prefetch_task.done()
+                ):
+                    # Fire-and-forget, same reasoning again: the
+                    # business-hours lookup is a real Chatwoot GET, and
+                    # doing it here (once, at call setup) instead of
+                    # inline in _attempt_transfer is what keeps the
+                    # transfer path from stalling the audio pump.
+                    self._handoff_prefetch_task = asyncio.create_task(
+                        self._handoff_resolver.prefetch()
                     )
         elif event == "media":
             media = msg.get("media")
@@ -306,40 +378,33 @@ class PhoneBridge:
 
         1. Malaysia's PDPA requires the caller hear a recorded-line notice
            BEFORE recording starts. If phone_recording_enabled is on but no
-           announcement is configured -- or the announcement could not even
-           be QUEUED into the live session (a closed/broken Live session
-           raises exactly when a hint is sent) -- this refuses to start
-           recording at all (logged at WARNING), rather than silently
-           recording either without notice or with notice that never made
-           it to the caller. A config mistake, or a broken Live session,
-           must not silently become "recorded but not disclosed".
+           announcement is configured, this refuses to start recording at
+           all (logged at WARNING), rather than recording without notice.
+           The gate stays here, on the same setting `router.py`'s TwiML
+           `<Say>` is built from, so "recording on, announcement empty" can
+           never become "recorded but not disclosed" -- whichever of the
+           two paths is examined.
         2. If no status-callback URL can be built (twilio_webhook_base_url
            unset), a recording started anyway would capture the customer's
            voice with nothing that can ever attach it to a ticket or apply
-           the retention policy -- an untracked, orphaned recording. So this
-           checks the callback URL BEFORE doing anything else, including
-           before queuing the announcement: there is no point telling the
-           caller "this call is recorded" and then not recording it.
+           the retention policy -- an untracked, orphaned recording.
 
-        The announcement itself is delivered as a text-hint into the live
-        Gemini session -- the same primitive IVR-4's per-turn language
-        reminder already uses (LiveSession.send_text_hint) -- instructing
-        the model to speak it, verbatim, before continuing. There is no
-        lower-level "play this exact audio clip" hook on LiveSession, so
-        this is a best-effort instruction to the model, not a guaranteed
-        byte-exact TTS playback of the configured text, and NOT sequenced
-        before start_recording() below at the Twilio/TwiML level (queuing a
-        text hint only queues it; it does not block until spoken).
-
-        Package C Task 6: `router.py`'s `phone_incoming` now ALSO speaks
-        this same announcement via a `<Say>` in the initial TwiML, before
+        WHO ACTUALLY SPEAKS THE NOTICE: `router.py`'s `phone_incoming`
+        emits it as a `<Say>` in the same `<Response>` immediately before
         `<Connect><Stream>` (see `twiml.connect_stream_twiml`'s
-        `announcement` parameter) -- that one runs deterministically before
-        Twilio ever opens the Media Stream whose "start" event is what
-        triggers this method, so IT is the provably-sequenced disclosure.
-        This text-hint is kept, unchanged, as a secondary reinforcement
-        (e.g. in case the caller talks over the `<Say>`) -- not a
-        replacement for it.
+        `announcement` parameter). TwiML verbs run in document order, so
+        that notice provably precedes the Media Stream -- whose "start"
+        event is the only thing that triggers this method, and therefore
+        the only thing that can trigger recording. The disclosure is
+        sequenced by construction.
+
+        Whole-branch review fix (Important 4): this method used to ALSO
+        queue a text hint asking the Gemini model to speak the same notice
+        "verbatim, before anything else". Once Task 6 made the `<Say>`
+        deterministic, that hint stopped being reinforcement and became a
+        SECOND reading of the notice -- in a different voice, seconds after
+        the first, on every recorded call. It is gone; the `<Say>` is the
+        single disclosure.
         """
         announcement = self._settings.phone_recording_announcement
         if not announcement:
@@ -348,15 +413,6 @@ class PhoneBridge:
         callback = self._recording_status_callback_url()
         if not callback:
             _log.warning("phone_recording_no_callback_base_configured", call_sid=call_sid)
-            return
-        try:
-            await self._live.send_text_hint(
-                "(Recorded-line notice -- before anything else, tell the caller "
-                f'now, verbatim, in English and Bahasa Melayu: "{announcement}" '
-                "Then continue the conversation normally.)"
-            )
-        except Exception as e:
-            _log.error("phone_recording_announcement_hint_failed", call_sid=call_sid, error=str(e))
             return
         sid = await self._call_control.start_recording(call_sid, callback)
         if sid:
@@ -410,7 +466,11 @@ class PhoneBridge:
                 # once self.ticket_id is set) but drain rather than abandon:
                 # returning here would leave this and every later queued
                 # block stuck behind a worker that's already exited.
-                _log.error("phone_transcript_flush_no_ticket", call_sid=self.call_sid, block=block)
+                _log.error(
+                    "phone_transcript_flush_no_ticket",
+                    call_sid=self.call_sid,
+                    block=_log_transcript(block),
+                )
                 self._live_blocks_failed = True
                 continue
             try:
@@ -650,6 +710,18 @@ class PhoneBridge:
         HTTP call at the adapter's own 10s timeout, so an unbounded await
         here could hold the websocket teardown path open for 10s per
         queued block.
+
+        Whole-branch review fix (Important 1, DATA LOSS): the timeout below
+        CANCELS the flush worker, so whatever block it was posting -- and
+        every block still queued behind it -- never lands. If at least one
+        earlier block had already posted, `_live_blocks_posted` would be
+        True and `_live_blocks_failed` still False, and finalize() would
+        take the short "[Call ended]" branch: the caller's last turn would
+        be permanently missing from the ticket, with no full-body fallback.
+        That directly contradicts the invariant this package states three
+        times ("a duplicated transcript on a degraded call is far better
+        than a permanently missing turn"). Abandoning the drain IS a live
+        block failing, so it is recorded as one.
         """
         final_block = self._sink.take_if_due(force=True)
         if final_block is not None and self.ticket_id is not None:
@@ -663,6 +735,7 @@ class PhoneBridge:
         try:
             await asyncio.wait_for(self._flush_worker, timeout=_FLUSH_DRAIN_TIMEOUT_SECONDS)
         except Exception as e:
+            self._live_blocks_failed = True
             _log.error("phone_finalize_flush_drain_failed", call_sid=self.call_sid, error=str(e))
 
     async def _resolve_finalize_ticket_id(self, session_id: str, body: str) -> str | None:
@@ -681,6 +754,13 @@ class PhoneBridge:
         exist, discarding the whole transcript with nothing left to look
         at but a log line. When that happens, the full transcript is
         logged alongside it so the call is at least recoverable from logs.
+
+        Whole-branch review minor: this used to emit ``phone_finalize_
+        failed``, the SAME event name finalize()'s own catch-all uses for a
+        structurally different failure (an exception thrown by one of the
+        closing writes). Event-name-keyed alerting could not tell "the
+        ticket could never be created" from "a closing write blew up", so
+        they now have distinct names.
         """
         if self.ticket_id is not None:
             return self.ticket_id
@@ -692,10 +772,10 @@ class PhoneBridge:
         )
         if ticket_id == session_id:
             _log.error(
-                "phone_finalize_failed",
+                "phone_finalize_ticket_create_failed",
                 session_id=session_id,
                 error="log port returned the session_id sentinel (create failed, fail-open)",
-                transcript=body,
+                transcript=_log_transcript(body),
             )
             return None
         self.ticket_id = ticket_id
@@ -794,15 +874,76 @@ class PhoneBridge:
                 )
         return status
 
+    async def _close_abandoned_call(self, session_id: str) -> None:
+        """Whole-branch review fix (Important 3): self-clean a ticket that
+        was created at call start for a call nobody ever spoke on.
+
+        With ``phone_transcript_live_enabled`` on, the conversation is
+        created at the Twilio "start" event -- before a single word is
+        said. A caller who hangs up during the greeting (wrong numbers,
+        spam scans, our own smoke tests) used to leave finalize() at its
+        ``not self.transcript`` guard, stranding a contact plus an open,
+        empty, unlabelled, ``external_id``-less conversation in the agent
+        queue forever. Before this package such a call created nothing at
+        all, so this is a leak the package introduced.
+
+        Post a short marker comment, resolve it, and stamp the
+        ``external_id`` so the recording-status/dial-status callbacks can
+        still find it by session id. Deliberately a no-op when
+        ``self.ticket_id`` is None -- which is exactly the flags-off case
+        (nothing was created, so there is nothing to clean up), keeping
+        flags-off behaviour byte-identical.
+        """
+        ticket_id = self.ticket_id
+        if ticket_id is None:
+            return
+        await self._log_port.append_conversation_comment(
+            ticket_id, "[Call ended — no conversation]", status="solved"
+        )
+        await self._log_port.set_ticket_external_id(ticket_id, session_id)
+
     async def finalize(self) -> None:
+        """Teardown: settle the detached call-start tasks, drain whatever
+        live transcript is still queued, then do the closing CRM writes.
+
+        Whole-branch review fix (Important 7): the three awaits above are
+        individually bounded, but the closing writes were not bounded at
+        ALL -- see ``_FINALIZE_TAIL_TIMEOUT_SECONDS``. They now run under
+        one ceiling, and a timeout logs the (truncated) transcript so the
+        call stays recoverable from logs, exactly like every other
+        finalize failure path here.
+        """
         await self._settle_ticket_create_task()
         await self._settle_recording_task()
         await self._drain_flush_queue()
 
-        if not self.transcript or not self.call_sid:
+        if not self.call_sid:
             return
         session_id = f"phone-{self.call_sid}"
         body = "\n".join(f"{role}: {text}" for role, text in self.transcript)
+        try:
+            await asyncio.wait_for(
+                self._write_finalize_result(session_id, body),
+                timeout=_FINALIZE_TAIL_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            _log.error(
+                "phone_finalize_timed_out",
+                session_id=session_id,
+                error=f"closing writes exceeded {_FINALIZE_TAIL_TIMEOUT_SECONDS}s",
+                transcript=_log_transcript(body),
+            )
+
+    async def _write_finalize_result(self, session_id: str, body: str) -> None:
+        if not self.transcript:
+            # Nobody spoke. Nothing to summarise -- but a ticket may
+            # already exist from the call-start create, and an empty open
+            # conversation must not be left behind.
+            try:
+                await self._close_abandoned_call(session_id)
+            except Exception as e:
+                _log.error("phone_finalize_failed", session_id=session_id, error=str(e))
+            return
         status = "open" if self.handoff is not None else "solved"
         try:
             ticket_id = await self._resolve_finalize_ticket_id(session_id, body)
@@ -846,5 +987,8 @@ class PhoneBridge:
                 await record_csat_on_ticket(self._log_port, ticket_id, self.csat_score, "phone")
         except Exception as e:
             _log.error(
-                "phone_finalize_failed", session_id=session_id, error=str(e), transcript=body
+                "phone_finalize_failed",
+                session_id=session_id,
+                error=str(e),
+                transcript=_log_transcript(body),
             )

@@ -108,15 +108,22 @@ index 0d5196e..248f472 100644
            label: t('SIDEBAR.REPORTS_OVERVIEW'),
 diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue
 new file mode 100644
-index 0000000..a557c2a
+index 0000000..f9deb5d
 --- /dev/null
 +++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue
-@@ -0,0 +1,1139 @@
+@@ -0,0 +1,1215 @@
 +<!-- ProtonWeeklyReport.vue — OUR file. Package E (reporting deck parity),
 +     Task 4: one page, sections in the weekly deck's own order (see
 +     docs/superpowers/specs/2026-08-04-pkg-e-reporting-deck-parity-design.md
 +     §2 "Weekly (16 slides)"), each carrying a week picker and a
 +     week-over-week delta beside its headline number.
++
++     The week picker defaults to the current ISO Monday-Sunday week but the
++     window start is user-choosable to any day (Task 5 reconciliation
++     finding: Proton's own weekly deck runs Friday-Thursday — 17-23 July
++     2026 starts on a Friday — so a Monday-locked picker cannot select the
++     window the deck reports on). See the "Week picker" comment block below
++     for why this needed no backend change.
 +
 +     Composition, not new chart components: the dealer-escalation, SLA-
 +     compliance, and WIP-aging sections below are patch 0034's
@@ -172,9 +179,23 @@ index 0000000..a557c2a
 +const TOP_N = 10;
 +
 +// ── Week picker ──────────────────────────────────────────────────────────
-+// Weeks are ISO calendar weeks (Monday-Sunday), matching the backend's own
-+// `bucket_key` (period.py: `date.isocalendar()`, not `strftime("%Y-%W")`,
-+// specifically so a week never splits across a month boundary).
++// Defaults to the current ISO calendar week (Monday-Sunday), matching the
++// backend's own `bucket_key` (period.py: `date.isocalendar()`, not
++// `strftime("%Y-%W")`) — the sane default for most operators. But the window
++// start is NOT locked to Monday: Proton's own weekly deck runs Friday-
++// Thursday (17-23 July 2026 is a Friday-start week), and the reconciliation
++// this page exists for is unreachable if the picker can't express that.
++// `parse_period` imposes no alignment on `from`/`to` (see period.py) and the
++// day-grain sibling views (query_adapter.py) accept any date range at any
++// granularity, so this is purely a UI change: the date input below sets
++// `weekStart` to exactly the day picked, no snapping, and `weekEnd` /
++// `periodParams` follow whatever `weekStart` is — an operator can dial in
++// Friday 17 Jul and step week-by-week from there with the same Friday start
++// every time. `previous_period` (backend) already takes the immediately
++// preceding window of equal length for a non-full-calendar-month range —
++// exactly right for a Friday-start week — so the WoW delta compares against
++// the 7 days before the *chosen* window, not a re-aligned ISO week, with no
++// change needed here beyond not forcing ISO alignment in the first place.
 +
 +function pad2(n) {
 +  return String(n).padStart(2, '0');
@@ -198,18 +219,66 @@ index 0000000..a557c2a
 +  return date;
 +}
 +
-+function fmtDisplayDate(d) {
-+  return d.toLocaleDateString(undefined, {
-+    day: 'numeric',
-+    month: 'short',
-+    year: 'numeric',
-+  });
++const MONTH_ABBR = [
++  'Jan',
++  'Feb',
++  'Mar',
++  'Apr',
++  'May',
++  'Jun',
++  'Jul',
++  'Aug',
++  'Sep',
++  'Oct',
++  'Nov',
++  'Dec',
++];
++
++const DAY_NAMES = [
++  'Sunday',
++  'Monday',
++  'Tuesday',
++  'Wednesday',
++  'Thursday',
++  'Friday',
++  'Saturday',
++];
++
++// Fixed "D Mon YYYY" formatting rather than `toLocaleDateString(undefined, …)`
++// — a reader reconciling against the deck needs the exact same wording every
++// time regardless of the browser's locale, and "17 Jul 2026" reads
++// unambiguously as day-month-year everywhere, which a locale-dependent
++// format does not guarantee.
++function fmtDisplayDate(d, { withYear = true } = {}) {
++  const day = d.getDate();
++  const month = MONTH_ABBR[d.getMonth()];
++  return withYear ? `${day} ${month} ${d.getFullYear()}` : `${day} ${month}`;
 +}
 +
 +const weekStart = ref(mondayOf(new Date()));
 +const weekEnd = computed(() => addDays(weekStart.value, 6));
-+const weekLabel = computed(
-+  () => `${fmtDisplayDate(weekStart.value)} – ${fmtDisplayDate(weekEnd.value)}`
++
++// Full dates on both ends, e.g. "17 Jul – 23 Jul 2026" — never "week of X".
++// A reader comparing against Proton's deck needs to see the exact window
++// and confirm it matches, not infer it from a single anchor date. The start
++// date repeats its own year only when it differs from the end date's (a
++// window spanning a year boundary), to avoid "1 Jan 2026 – 1 Jan 2026"-style
++// redundancy on the common case.
++const weekLabel = computed(() => {
++  const start = weekStart.value;
++  const end = weekEnd.value;
++  const sameYear = start.getFullYear() === end.getFullYear();
++  const startLabel = fmtDisplayDate(start, { withYear: !sameYear });
++  const endLabel = fmtDisplayDate(end, { withYear: true });
++  return `${startLabel} – ${endLabel}`;
++});
++
++// States which 7 days of the week this window actually spans (e.g.
++// "Friday–Thursday"), since it's no longer always "Monday–Sunday" once the
++// start date is user-chosen.
++const windowSpanLabel = computed(
++  () =>
++    `${DAY_NAMES[weekStart.value.getDay()]}–${DAY_NAMES[weekEnd.value.getDay()]}`
 +);
 +
 +const periodParams = computed(() => ({
@@ -218,15 +287,15 @@ index 0000000..a557c2a
 +  granularity: 'week',
 +}));
 +
-+// Bound to a plain <input type="date"> — any day picked snaps to that day's
-+// Monday, so the picker always represents a full ISO week rather than an
-+// arbitrary 7-day window starting on whatever day was clicked.
++// Bound to a plain <input type="date"> — sets `weekStart` to exactly the day
++// picked (no snapping to Monday), so the window can start on any day of the
++// week. Stepping with prevWeek/nextWeek afterwards preserves that start day.
 +const weekStartInputValue = computed({
 +  get: () => toISODate(weekStart.value),
 +  set: val => {
 +    if (!val) return;
 +    const [y, m, day] = val.split('-').map(Number);
-+    weekStart.value = mondayOf(new Date(y, m - 1, day));
++    weekStart.value = new Date(y, m - 1, day);
 +  },
 +});
 +
@@ -236,6 +305,9 @@ index 0000000..a557c2a
 +function nextWeek() {
 +  weekStart.value = addDays(weekStart.value, 7);
 +}
++// Resets to the current ISO Monday-start week — the default, not the only
++// option; a user reconciling against a Friday-start deck week uses the date
++// input above instead.
 +function thisWeek() {
 +  weekStart.value = mondayOf(new Date());
 +}
@@ -494,7 +566,7 @@ index 0000000..a557c2a
 +    />
 +    <div class="flex flex-col items-center min-w-48">
 +      <span class="text-sm font-semibold text-n-slate-12">{{ weekLabel }}</span>
-+      <span class="text-xs text-n-slate-10">ISO week, Monday–Sunday</span>
++      <span class="text-xs text-n-slate-10">{{ windowSpanLabel }}, 7 days</span>
 +    </div>
 +    <V4Button
 +      icon="i-lucide-chevron-right"
@@ -508,11 +580,11 @@ index 0000000..a557c2a
 +      class="px-3 py-1.5 text-sm text-n-slate-11 hover:underline"
 +      @click="thisWeek"
 +    >
-+      This week
++      This week (Mon–Sun)
 +    </button>
 +    <div class="flex items-center gap-2 ml-auto">
 +      <label class="text-xs text-n-slate-11" for="weekly-report-date">
-+        Jump to week containing
++        Window starts
 +      </label>
 +      <input
 +        id="weekly-report-date"
@@ -520,6 +592,10 @@ index 0000000..a557c2a
 +        type="date"
 +        class="px-3 py-1.5 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
 +      />
++      <span class="text-xs text-n-slate-10">
++        (picks the exact day — not snapped to Monday; e.g. set this to a Friday
++        to match Proton's own weekly deck)
++      </span>
 +    </div>
 +  </div>
 +

@@ -1,0 +1,931 @@
+From 0adf321e5d7dd7b3978172cadedfd336ef6f7237 Mon Sep 17 00:00:00 2001
+From: Yuda Adi Pratama <yudaadipratama@Yudas-MacBook-Air.local>
+Date: Wed, 5 Aug 2026 05:10:51 +0700
+Subject: [PATCH] feat(integrations): add DMS/TSP integration card + config
+ form (Package F, Task 5)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds the "Integrations" nav page (gated on integration.manage), a
+DMS/TSP status card, and its config form backing the Task 1-4
+/admin/integrations/dms admin API:
+
+- Card status is deliberately conservative: it never claims
+  "Connected" from config fields alone (GET never probes the remote
+  system), only "Not connected" / "Enabled, not yet verified" /
+  "Status unavailable".
+- The credential field is never populated from the API (write-only,
+  not returned by GET). It renders as a masked "••••••••" display
+  with a Replace action; the PUT body only ever includes `credential`
+  when the operator is in Replace mode AND typed a non-empty value,
+  guarding against ever sending `credential: ''` (which the backend
+  treats as "wipe the stored secret", vs. omitting the key which
+  preserves it).
+- extra_header_value is flagged inline as NOT secret storage, since
+  (unlike credential) GET returns it in plain text.
+- Test connection surfaces all four probe statuses (reachable,
+  auth_failed, timeout, unexpected_status) with distinct plain-language
+  titles; unexpected_status's copy explicitly avoids implying a bad
+  credential, since it also covers a 404 from a correctly configured
+  server.
+- ProtonCustomer360Page.vue gains an optional DMS/TSP section: a
+  status: "unreachable" block renders an explicit "Not connected"
+  notice, and mock: true renders a plainly-labeled "Mock data" banner
+  independent of MockDmsClient's own "(Demo data)" field markers.
+---
+ app/javascript/dashboard/api/protonAdmin.js   |  98 +++--
+ .../components-next/sidebar/Sidebar.vue       |  10 +
+ .../routes/dashboard/dashboard.routes.js      |  12 +
+ .../dashboard/views/ProtonCustomer360Page.vue | 111 ++++-
+ .../views/ProtonDmsIntegrationPage.vue        | 407 ++++++++++++++++++
+ .../views/ProtonIntegrationsPage.vue          |  91 ++++
+ 6 files changed, 687 insertions(+), 42 deletions(-)
+ create mode 100644 app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue
+ create mode 100644 app/javascript/dashboard/views/ProtonIntegrationsPage.vue
+
+diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
+index fbbf534..4b87c9f 100644
+--- a/app/javascript/dashboard/api/protonAdmin.js
++++ b/app/javascript/dashboard/api/protonAdmin.js
+@@ -59,10 +59,13 @@ export function getSlaForInbox(inboxId) {
+ }
+ 
+ export function putSlaForInbox(inboxId, body) {
+-  return adminRequest(`/admin/sla-policy/inbox/${encodeURIComponent(inboxId)}`, {
+-    method: 'PUT',
+-    body,
+-  });
++  return adminRequest(
++    `/admin/sla-policy/inbox/${encodeURIComponent(inboxId)}`,
++    {
++      method: 'PUT',
++      body,
++    }
++  );
+ }
+ 
+ // ── My permissions (for nav/page gating) ────────────────────────────────────
+@@ -94,7 +97,10 @@ export async function listRoles() {
+ }
+ 
+ export function createRole({ id, name, description = '' }) {
+-  return adminRequest('/authz/roles', { method: 'POST', body: { id, name, description } });
++  return adminRequest('/authz/roles', {
++    method: 'POST',
++    body: { id, name, description },
++  });
+ }
+ 
+ export async function permissionRegistry() {
+@@ -103,15 +109,20 @@ export async function permissionRegistry() {
+ }
+ 
+ export async function rolePermissions(roleId) {
+-  const data = await adminRequest(`/authz/roles/${encodeURIComponent(roleId)}/permissions`);
++  const data = await adminRequest(
++    `/authz/roles/${encodeURIComponent(roleId)}/permissions`
++  );
+   return Array.isArray(data.permissions) ? data.permissions : [];
+ }
+ 
+ export function grantRolePermission(roleId, permissionKey) {
+-  return adminRequest(`/authz/roles/${encodeURIComponent(roleId)}/permissions`, {
+-    method: 'POST',
+-    body: { permission_key: permissionKey },
+-  });
++  return adminRequest(
++    `/authz/roles/${encodeURIComponent(roleId)}/permissions`,
++    {
++      method: 'POST',
++      body: { permission_key: permissionKey },
++    }
++  );
+ }
+ 
+ export function revokeRolePermission(roleId, permissionKey) {
+@@ -122,7 +133,9 @@ export function revokeRolePermission(roleId, permissionKey) {
+ }
+ 
+ export async function roleUsers(roleId) {
+-  const data = await adminRequest(`/authz/roles/${encodeURIComponent(roleId)}/users`);
++  const data = await adminRequest(
++    `/authz/roles/${encodeURIComponent(roleId)}/users`
++  );
+   return Array.isArray(data.chatwoot_user_ids) ? data.chatwoot_user_ids : [];
+ }
+ 
+@@ -150,16 +163,22 @@ export async function listPics() {
+ }
+ 
+ export function upsertPic(department, body) {
+-  return adminRequest(`/admin/escalation/pics/${encodeURIComponent(department)}`, {
+-    method: 'PUT',
+-    body,
+-  });
++  return adminRequest(
++    `/admin/escalation/pics/${encodeURIComponent(department)}`,
++    {
++      method: 'PUT',
++      body,
++    }
++  );
+ }
+ 
+ export function deletePic(department) {
+-  return adminRequest(`/admin/escalation/pics/${encodeURIComponent(department)}`, {
+-    method: 'DELETE',
+-  });
++  return adminRequest(
++    `/admin/escalation/pics/${encodeURIComponent(department)}`,
++    {
++      method: 'DELETE',
++    }
++  );
+ }
+ 
+ export async function listDealers() {
+@@ -168,16 +187,22 @@ export async function listDealers() {
+ }
+ 
+ export function upsertDealer(dealer, body) {
+-  return adminRequest(`/admin/escalation/dealers/${encodeURIComponent(dealer)}`, {
+-    method: 'PUT',
+-    body,
+-  });
++  return adminRequest(
++    `/admin/escalation/dealers/${encodeURIComponent(dealer)}`,
++    {
++      method: 'PUT',
++      body,
++    }
++  );
+ }
+ 
+ export function deleteDealer(dealer) {
+-  return adminRequest(`/admin/escalation/dealers/${encodeURIComponent(dealer)}`, {
+-    method: 'DELETE',
+-  });
++  return adminRequest(
++    `/admin/escalation/dealers/${encodeURIComponent(dealer)}`,
++    {
++      method: 'DELETE',
++    }
++  );
+ }
+ 
+ // ── Customer 360 foundational lookup ────────────────────────────────────
+@@ -190,3 +215,26 @@ export function searchCustomer360(query) {
+   const params = new URLSearchParams({ q: query });
+   return adminRequest(`/admin/customer360/search?${params.toString()}`);
+ }
++
++// ── DMS/TSP integration shell ───────────────────────────────────────────
++// Backs dms_admin_router.py. GET/PUT exchange the 8 non-secret config
++// fields; the 9th, `credential`, is write-only end to end — GET never
++// returns it (there's no key to read, not even an "is one stored" flag),
++// and PUT only replaces it when the caller explicitly includes a non-null
++// `credential` in the body. Omitting the key (not sending it at all) is how
++// a caller edits the other 8 fields while leaving whatever credential is
++// already stored untouched; sending `credential: ''` overwrites it with an
++// empty string, same as any other value — so ProtonDmsIntegrationPage.vue
++// must never include the key unless the operator actually typed a new one.
++
++export function getDmsIntegration() {
++  return adminRequest('/admin/integrations/dms');
++}
++
++export function putDmsIntegration(body) {
++  return adminRequest('/admin/integrations/dms', { method: 'PUT', body });
++}
++
++export function testDmsIntegration() {
++  return adminRequest('/admin/integrations/dms/test', { method: 'POST' });
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 248f472..38a8b3b 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -627,6 +627,16 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
++    ...(protonHasPermission('integration.manage')
++      ? [
++          {
++            name: 'Integrations',
++            icon: 'i-lucide-plug',
++            label: 'Integrations',
++            to: accountScopedRoute('proton_integrations'),
++          },
++        ]
++      : []),
+     // RSA incident log — the backend /rsa/incidents* endpoints authorize by the
+     // shared x-api-key (like /kb + /metrics), NOT the RBAC require_permission
+     // used by SLA/Audit/Roles, so there is no dedicated `rsa.manage` permission
+diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+index ad5533d..fb94551 100644
+--- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+@@ -70,6 +70,18 @@ export default {
+           component: () => import('../../views/ProtonCustomer360Page.vue'),
+           meta: { permissions: ['administrator'] },
+         },
++        {
++          path: 'proton/integrations',
++          name: 'proton_integrations',
++          component: () => import('../../views/ProtonIntegrationsPage.vue'),
++          meta: { permissions: ['administrator'] },
++        },
++        {
++          path: 'proton/integrations/dms',
++          name: 'proton_integration_dms',
++          component: () => import('../../views/ProtonDmsIntegrationPage.vue'),
++          meta: { permissions: ['administrator'] },
++        },
+         {
+           path: 'proton/cases',
+           name: 'proton_cases',
+diff --git a/app/javascript/dashboard/views/ProtonCustomer360Page.vue b/app/javascript/dashboard/views/ProtonCustomer360Page.vue
+index 6f489fa..a62154d 100644
+--- a/app/javascript/dashboard/views/ProtonCustomer360Page.vue
++++ b/app/javascript/dashboard/views/ProtonCustomer360Page.vue
+@@ -7,7 +7,20 @@
+      delete actions live here (contact editing happens in Chatwoot's own
+      contact panel; incident editing lives on ProtonRsaPage.vue). Mirrors
+      ProtonEscalationRoutingPage.vue's shell (header, n-* tokens, useAlert
+-     toasts). -->
++     toasts).
++
++     The optional `dms` block (Package F, Task 4's customer360_router.py
++     addition) is rendered as a fourth section, entirely absent from both
++     the response and this page whenever the DMS/TSP integration isn't
++     wired in — today's default, so this page's normal behavior is
++     unchanged. When present: `status: "unreachable"` always renders as an
++     explicit "Not connected" notice (never an empty-looking "nothing on
++     file", which is a different, legitimate outcome); `mock: true` always
++     renders a plainly-labeled "Mock data" banner, because MockDmsClient's
++     own "(Demo data)" string markers inside individual fields are not
++     sufficient on their own for an operator scanning the page at a
++     glance — see dms_client.py's MockDmsClient docstring, which calls for
++     exactly this second, independent label. -->
+ <script>
+ import { useAlert } from 'dashboard/composables';
+ import { searchCustomer360 } from 'dashboard/api/protonAdmin';
+@@ -21,6 +34,7 @@ export default {
+       contact: null,
+       conversations: [],
+       rsaIncidents: [],
++      dms: null,
+       loading: false,
+       errored: false,
+       searched: false,
+@@ -44,6 +58,11 @@ export default {
+         this.rsaIncidents = Array.isArray(data.rsa_incidents)
+           ? data.rsa_incidents
+           : [];
++        // Structurally absent (not null) whenever the integration isn't
++        // wired in or is disabled — see customer360_router.py's
++        // _build_dms_block. Reset on every search so a previous search's
++        // DMS block never lingers into a result that doesn't have one.
++        this.dms = data.dms || null;
+         this.searched = true;
+       } catch (err) {
+         this.errored = true;
+@@ -70,15 +89,12 @@ export default {
+   <div class="p-6">
+     <h1 class="mb-1 text-lg font-medium text-n-slate-12">Customer 360</h1>
+     <p class="mb-6 text-sm text-n-slate-11">
+-      Look up a customer by phone number or vehicle number to see their
+-      contact record, cross-channel conversations, and RSA incident
+-      history in one place.
++      Look up a customer by phone number or vehicle number to see their contact
++      record, cross-channel conversations, and RSA incident history in one
++      place.
+     </p>
+ 
+-    <form
+-      class="flex max-w-xl gap-2 mb-8"
+-      @submit.prevent="search"
+-    >
++    <form class="flex max-w-xl gap-2 mb-8" @submit.prevent="search">
+       <input
+         v-model="query"
+         type="text"
+@@ -112,16 +128,12 @@ export default {
+         class="max-w-xl px-4 py-3 mb-10 text-sm border rounded-lg border-n-weak text-n-slate-11"
+       >
+         <div class="mb-1 text-n-slate-12">{{ contact.name }}</div>
+-        <div v-if="contact.phone_number">
+-          Phone: {{ contact.phone_number }}
+-        </div>
++        <div v-if="contact.phone_number">Phone: {{ contact.phone_number }}</div>
+         <div v-if="contact.email">Email: {{ contact.email }}</div>
+       </div>
+ 
+       <!-- Conversations -->
+-      <h2 class="mb-3 text-base font-medium text-n-slate-12">
+-        Conversations
+-      </h2>
++      <h2 class="mb-3 text-base font-medium text-n-slate-12">Conversations</h2>
+       <p v-if="!conversations.length" class="mb-10 text-sm text-n-slate-11">
+         No conversations found.
+       </p>
+@@ -160,9 +172,7 @@ export default {
+       </div>
+ 
+       <!-- RSA incidents (read-only) -->
+-      <h2 class="mb-3 text-base font-medium text-n-slate-12">
+-        RSA incidents
+-      </h2>
++      <h2 class="mb-3 text-base font-medium text-n-slate-12">RSA incidents</h2>
+       <p v-if="!rsaIncidents.length" class="text-sm text-n-slate-11">
+         No RSA incidents found.
+       </p>
+@@ -254,6 +264,73 @@ export default {
+           </tbody>
+         </table>
+       </div>
++
++      <!-- DMS / TSP (optional — absent entirely unless the integration is
++           enabled and wired in; see the module docstring above). -->
++      <template v-if="dms">
++        <h2 class="mb-3 text-base font-medium text-n-slate-12">DMS / TSP</h2>
++        <div
++          v-if="dms.status !== 'ok'"
++          class="max-w-xl px-4 py-3 text-sm border rounded-lg border-n-ruby-6 bg-n-ruby-2 text-n-ruby-11"
++        >
++          Not connected — no live DMS/TSP data is available for this customer
++          right now.
++        </div>
++        <template v-else>
++          <div
++            v-if="dms.mock"
++            class="max-w-xl px-4 py-2 mb-3 text-xs font-medium border rounded-lg border-n-amber-6 bg-n-amber-2 text-n-amber-11"
++          >
++            Mock data — for demo purposes only, not from a live DMS/TSP system.
++          </div>
++          <p v-if="!dms.customer" class="text-sm text-n-slate-11">
++            No DMS/TSP record found for this customer.
++          </p>
++          <div
++            v-else
++            class="max-w-xl px-4 py-3 mb-4 text-sm border rounded-lg border-n-weak text-n-slate-11"
++          >
++            <div class="mb-1 text-n-slate-12">{{ dms.customer.name }}</div>
++            <div v-if="dms.customer.phone">Phone: {{ dms.customer.phone }}</div>
++          </div>
++
++          <template v-if="dms.customer">
++            <h3 class="mb-2 text-sm font-medium text-n-slate-12">Vehicles</h3>
++            <p v-if="!dms.vehicles.length" class="mb-4 text-sm text-n-slate-11">
++              No vehicles on file.
++            </p>
++            <ul
++              v-else
++              class="mb-4 text-sm text-n-slate-11 list-disc list-inside"
++            >
++              <li v-for="vehicle in dms.vehicles" :key="vehicle.vehicle_no">
++                {{ vehicle.vehicle_no }} — {{ vehicle.model }}
++                <template v-if="vehicle.purchased_from">
++                  (purchased from {{ vehicle.purchased_from }})
++                </template>
++              </li>
++            </ul>
++
++            <h3 class="mb-2 text-sm font-medium text-n-slate-12">
++              Service history
++            </h3>
++            <p
++              v-if="!dms.service_history.length"
++              class="text-sm text-n-slate-11"
++            >
++              No service history on file.
++            </p>
++            <ul v-else class="text-sm text-n-slate-11 list-disc list-inside">
++              <li v-for="(record, index) in dms.service_history" :key="index">
++                {{ record.date }} — {{ record.description }}
++                <template v-if="record.dealer">
++                  ({{ record.dealer }})
++                </template>
++              </li>
++            </ul>
++          </template>
++        </template>
++      </template>
+     </template>
+   </div>
+ </template>
+diff --git a/app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue b/app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue
+new file mode 100644
+index 0000000..7ab9e09
+--- /dev/null
++++ b/app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue
+@@ -0,0 +1,407 @@
++<!-- ProtonDmsIntegrationPage.vue — OUR file. Config form for the DMS/TSP
++     integration shell (Package F), backing dms_admin_router.py. Mirrors
++     ProtonEscalationRoutingPage.vue's shell (header, n-* tokens, useAlert
++     toasts) plus ProtonSlaPoliciesPage.vue's load/edit/save single-form
++     shape — there is exactly one DMS config, no list of rows.
++
++     Two things this file exists to get right (see the package's SDD specs):
++
++     1. The credential is write-only. GET never returns it — not even a
++        flag saying whether one is stored — so the field can never be
++        populated from the API. It always renders as a masked, read-only
++        "••••••••" display with a Replace action; only clicking Replace
++        reveals a real input. On submit, the `credential` key is included
++        in the PUT body ONLY when the operator is in Replace mode AND typed
++        a non-empty value — never as `''`, because the backend treats an
++        explicitly-sent empty string as "overwrite with empty", while
++        omitting the key entirely (or `null`) is the only way to say "leave
++        whatever is stored alone". If the operator clicks Replace and tries
++        to save without typing anything, submission is blocked with an
++        alert rather than silently sending nothing or accidentally wiping
++        the secret.
++     2. `extra_header_value` IS returned in plain text by GET, unlike the
++        credential — an operator could put a second secret there (e.g. a
++        bearer token in a custom header) and it would round-trip readable.
++        That's flagged inline, right under the field, so it's never mistaken
++        for the same write-only guarantee the Credential field has. -->
++<script>
++import { useAlert } from 'dashboard/composables';
++import {
++  getDmsIntegration,
++  putDmsIntegration,
++  testDmsIntegration,
++} from 'dashboard/api/protonAdmin';
++
++const EMPTY_FORM = {
++  enabled: false,
++  provider_label: '',
++  base_url: '',
++  auth_type: 'bearer_token',
++  extra_header_name: '',
++  extra_header_value: '',
++  timeout_seconds: 10,
++  retries: 0,
++};
++
++const AUTH_TYPE_OPTIONS = [
++  { value: 'bearer_token', label: 'Bearer token' },
++  { value: 'basic', label: 'Basic auth' },
++  { value: 'api_key_header', label: 'API key header (X-Api-Key)' },
++];
++
++// Test-connection status -> plain-language title + tone. `unexpected_status`
++// covers everything that isn't a clean 200 / a 401-403 / a timeout —
++// including a 404 from a correctly-configured server whose root isn't a
++// health endpoint, and the "nothing saved yet" / "no credential stored"
++// pre-flight checks the backend runs before it ever makes a request. Its
++// title and helper text deliberately do NOT say "failed" or point at the
++// credential, so an operator can tell "wrong path" from "wrong key".
++const TEST_STATUS_META = {
++  reachable: { title: 'Reachable', tone: 'positive' },
++  auth_failed: { title: 'Authentication failed', tone: 'negative' },
++  timeout: { title: 'Timed out', tone: 'negative' },
++  unexpected_status: { title: 'Unexpected response', tone: 'neutral' },
++};
++
++export default {
++  name: 'ProtonDmsIntegrationPage',
++  data() {
++    return {
++      form: { ...EMPTY_FORM },
++      credentialReplacing: false,
++      credentialInput: '',
++      authTypeOptions: AUTH_TYPE_OPTIONS,
++      loading: true,
++      errored: false,
++      saving: false,
++      testing: false,
++      testResult: null,
++    };
++  },
++  computed: {
++    notConnected() {
++      return !this.loading && (!this.form.enabled || !this.form.base_url);
++    },
++    testStatusMeta() {
++      if (!this.testResult) return null;
++      return (
++        TEST_STATUS_META[this.testResult.status] || {
++          title: 'Could not run the test',
++          tone: 'neutral',
++        }
++      );
++    },
++  },
++  async mounted() {
++    await this.load();
++  },
++  methods: {
++    async load() {
++      this.loading = true;
++      this.errored = false;
++      try {
++        const data = await getDmsIntegration();
++        this.form = { ...EMPTY_FORM, ...data };
++      } catch (err) {
++        this.errored = true;
++        useAlert(
++          'Failed to load the DMS/TSP integration: ' +
++            (err.message || String(err))
++        );
++      } finally {
++        this.loading = false;
++      }
++    },
++    startReplaceCredential() {
++      this.credentialReplacing = true;
++      this.credentialInput = '';
++    },
++    cancelReplaceCredential() {
++      this.credentialReplacing = false;
++      this.credentialInput = '';
++    },
++    async save() {
++      if (this.form.base_url && !this.form.base_url.startsWith('https://')) {
++        useAlert('Base URL must start with https://');
++        return;
++      }
++      if (this.credentialReplacing && !this.credentialInput.trim()) {
++        useAlert(
++          'Enter a new credential, or click Cancel next to it to leave the stored credential unchanged.'
++        );
++        return;
++      }
++      this.saving = true;
++      try {
++        const body = {
++          enabled: this.form.enabled,
++          provider_label: this.form.provider_label,
++          base_url: this.form.base_url,
++          auth_type: this.form.auth_type,
++          extra_header_name: this.form.extra_header_name,
++          extra_header_value: this.form.extra_header_value,
++          timeout_seconds: Number(this.form.timeout_seconds),
++          retries: Number(this.form.retries),
++        };
++        // Only ever included when the operator actually typed a new value —
++        // never as '', which the backend treats as "wipe the credential".
++        if (this.credentialReplacing && this.credentialInput.trim()) {
++          body.credential = this.credentialInput;
++        }
++        const data = await putDmsIntegration(body);
++        this.form = { ...EMPTY_FORM, ...data };
++        this.cancelReplaceCredential();
++        this.testResult = null;
++        useAlert('DMS/TSP integration saved.');
++      } catch (err) {
++        useAlert(
++          'Failed to save the DMS/TSP integration: ' +
++            (err.message || String(err))
++        );
++      } finally {
++        this.saving = false;
++      }
++    },
++    async testConnection() {
++      this.testing = true;
++      this.testResult = null;
++      try {
++        this.testResult = await testDmsIntegration();
++      } catch (err) {
++        this.testResult = {
++          status: 'error',
++          message:
++            'Failed to run the connection test: ' +
++            (err.message || String(err)),
++        };
++      } finally {
++        this.testing = false;
++      }
++    },
++  },
++};
++</script>
++
++<template>
++  <div class="p-6">
++    <h1 class="mb-1 text-lg font-medium text-n-slate-12">DMS / TSP</h1>
++    <p class="mb-6 text-sm text-n-slate-11">
++      Configure the Dealer Management / Telematics Service Provider connection
++      used to look up vehicle and service history from Customer 360.
++    </p>
++
++    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
++      Loading…
++    </div>
++    <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">
++      Could not load the DMS/TSP integration.
++    </div>
++
++    <template v-else>
++      <div
++        v-if="notConnected"
++        class="max-w-2xl px-4 py-3 mb-6 text-sm border rounded-lg border-n-ruby-6 bg-n-ruby-2 text-n-ruby-11"
++      >
++        <span class="font-medium">Not connected.</span>
++        {{
++          form.enabled
++            ? 'The integration is enabled but has no base URL configured, so it will not be used.'
++            : 'This integration is disabled — Customer 360 will not show any DMS/TSP data until it is enabled and configured.'
++        }}
++      </div>
++
++      <form
++        class="grid max-w-2xl grid-cols-1 gap-4 mb-6 md:grid-cols-2"
++        @submit.prevent="save"
++      >
++        <div class="md:col-span-2">
++          <label class="flex items-center gap-2 text-sm text-n-slate-12">
++            <input v-model="form.enabled" type="checkbox" />
++            Enabled
++          </label>
++        </div>
++
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">
++            Provider label
++          </label>
++          <input
++            v-model="form.provider_label"
++            type="text"
++            placeholder="e.g. Acme DMS"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">Auth type</label>
++          <select
++            v-model="form.auth_type"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          >
++            <option
++              v-for="option in authTypeOptions"
++              :key="option.value"
++              :value="option.value"
++            >
++              {{ option.label }}
++            </option>
++          </select>
++        </div>
++
++        <div class="md:col-span-2">
++          <label class="block mb-1 text-sm text-n-slate-11">Base URL</label>
++          <input
++            v-model="form.base_url"
++            type="text"
++            placeholder="https://dms.example.com/api"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++          <p class="mt-1 text-xs text-n-slate-11">Must start with https://</p>
++        </div>
++
++        <div class="md:col-span-2">
++          <label class="block mb-1 text-sm text-n-slate-11">Credential</label>
++          <div v-if="!credentialReplacing" class="flex items-center gap-2">
++            <input
++              type="text"
++              value="••••••••"
++              disabled
++              class="flex-1 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-11"
++            />
++            <button
++              type="button"
++              class="px-3 py-2 text-sm font-medium rounded-lg border border-n-weak text-n-slate-12 hover:bg-n-alpha-black2"
++              @click="startReplaceCredential"
++            >
++              Replace
++            </button>
++          </div>
++          <div v-else class="flex items-center gap-2">
++            <input
++              v-model="credentialInput"
++              type="password"
++              autocomplete="new-password"
++              placeholder="Enter new credential"
++              class="flex-1 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++            />
++            <button
++              type="button"
++              class="px-3 py-2 text-sm text-n-slate-11 hover:underline"
++              @click="cancelReplaceCredential"
++            >
++              Cancel
++            </button>
++          </div>
++          <p class="mt-1 text-xs text-n-slate-11">
++            Write-only — the stored value is never sent back to this page, so it
++            always shows as masked. Leaving it as-is keeps whatever credential
++            is currently stored (or none, if nothing has been saved yet); click
++            Replace to set a new one.
++          </p>
++        </div>
++
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">
++            Extra header name
++          </label>
++          <input
++            v-model="form.extra_header_name"
++            type="text"
++            placeholder="e.g. X-Tenant-Id"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">
++            Extra header value
++          </label>
++          <input
++            v-model="form.extra_header_value"
++            type="text"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <p class="text-xs md:col-span-2 -mt-3 text-n-amber-11">
++          Not secret storage: this value is saved and returned in plain text,
++          unlike Credential above (which is write-only and never sent back to
++          this page). Only put non-sensitive values here — if you need a second
++          secret (for example a bearer token in a custom header), be aware it
++          will be visible in plain text to anyone who can open this page.
++        </p>
++
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">
++            Timeout (seconds)
++          </label>
++          <input
++            v-model.number="form.timeout_seconds"
++            type="number"
++            min="0.1"
++            step="0.5"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">Retries</label>
++          <input
++            v-model.number="form.retries"
++            type="number"
++            min="0"
++            step="1"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++
++        <div class="flex items-center gap-3 md:col-span-2">
++          <button
++            type="submit"
++            :disabled="saving"
++            class="px-4 py-2 text-sm font-medium rounded-lg w-fit bg-n-brand text-white hover:opacity-90 disabled:opacity-50"
++          >
++            {{ saving ? 'Saving…' : 'Save' }}
++          </button>
++          <button
++            type="button"
++            :disabled="testing"
++            class="px-4 py-2 text-sm font-medium rounded-lg w-fit border border-n-weak text-n-slate-12 hover:bg-n-alpha-black2 disabled:opacity-50"
++            @click="testConnection"
++          >
++            {{ testing ? 'Testing…' : 'Test connection' }}
++          </button>
++        </div>
++        <p class="text-xs md:col-span-2 -mt-2 text-n-slate-11">
++          Tests the configuration as currently saved on the server — save your
++          changes first if you just edited this form.
++        </p>
++      </form>
++
++      <div
++        v-if="testResult"
++        class="max-w-2xl px-4 py-3 text-sm border rounded-lg"
++        :class="{
++          'border-n-teal-6 bg-n-teal-2 text-n-teal-11':
++            testStatusMeta.tone === 'positive',
++          'border-n-ruby-6 bg-n-ruby-2 text-n-ruby-11':
++            testStatusMeta.tone === 'negative',
++          'border-n-amber-6 bg-n-amber-2 text-n-amber-11':
++            testStatusMeta.tone === 'neutral',
++        }"
++      >
++        <div class="mb-1 font-medium">{{ testStatusMeta.title }}</div>
++        <div>{{ testResult.message }}</div>
++        <div
++          v-if="testResult.status === 'unexpected_status'"
++          class="mt-1 text-xs"
++        >
++          This can happen when the base URL doesn't point at a health endpoint
++          (for example a 404 from an otherwise correctly configured server) — it
++          does not necessarily mean the credential is wrong. Check the base URL
++          and the provider's API documentation.
++        </div>
++      </div>
++    </template>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/views/ProtonIntegrationsPage.vue b/app/javascript/dashboard/views/ProtonIntegrationsPage.vue
+new file mode 100644
+index 0000000..053d8f0
+--- /dev/null
++++ b/app/javascript/dashboard/views/ProtonIntegrationsPage.vue
+@@ -0,0 +1,91 @@
++<!-- ProtonIntegrationsPage.vue — OUR file. Integrations list: currently a
++     single card for the DMS/TSP integration shell (Package F), structured
++     so a future integration is just another card in the same grid. The
++     card's status badge is deliberately conservative — it only ever reads
++     "Not connected" (disabled/unconfigured), "Status unavailable" (the
++     config couldn't even be fetched — never claim connected when we don't
++     know), or "Enabled" with an explicit "not verified" caption. It never
++     says "Connected", because GET /admin/integrations/dms never actually
++     probes the remote system — only the config form's "Test connection"
++     button does that. Showing a green "Connected" here from config fields
++     alone would be exactly the shell-mistaken-for-a-working-integration
++     failure (demo-feedback #26) this package exists to avoid. -->
++<script>
++import { getDmsIntegration } from 'dashboard/api/protonAdmin';
++
++export default {
++  name: 'ProtonIntegrationsPage',
++  data() {
++    return {
++      dmsLoading: true,
++      dmsErrored: false,
++      dmsConfig: null,
++    };
++  },
++  computed: {
++    dmsStatus() {
++      if (this.dmsLoading)
++        return { label: 'Checking status…', tone: 'neutral' };
++      if (this.dmsErrored)
++        return { label: 'Status unavailable', tone: 'neutral' };
++      const configured =
++        !!this.dmsConfig &&
++        !!this.dmsConfig.enabled &&
++        !!this.dmsConfig.base_url;
++      return configured
++        ? { label: 'Enabled', tone: 'positive' }
++        : { label: 'Not connected', tone: 'negative' };
++    },
++  },
++  async mounted() {
++    try {
++      this.dmsConfig = await getDmsIntegration();
++    } catch (err) {
++      this.dmsErrored = true;
++    } finally {
++      this.dmsLoading = false;
++    }
++  },
++};
++</script>
++
++<template>
++  <div class="p-6">
++    <h1 class="mb-1 text-lg font-medium text-n-slate-12">Integrations</h1>
++    <p class="mb-6 text-sm text-n-slate-11">
++      Third-party systems connected to this CRM.
++    </p>
++
++    <div class="grid max-w-3xl grid-cols-1 gap-4 sm:grid-cols-2">
++      <router-link
++        :to="{ name: 'proton_integration_dms' }"
++        class="block p-4 border rounded-lg border-n-weak hover:border-n-brand"
++      >
++        <div class="flex items-start justify-between mb-2">
++          <h2 class="text-sm font-medium text-n-slate-12">DMS / TSP</h2>
++          <span
++            class="px-2 py-0.5 text-xs font-medium rounded-full whitespace-nowrap"
++            :class="{
++              'bg-n-slate-3 text-n-slate-11': dmsStatus.tone === 'neutral',
++              'bg-n-teal-3 text-n-teal-11': dmsStatus.tone === 'positive',
++              'bg-n-ruby-3 text-n-ruby-11': dmsStatus.tone === 'negative',
++            }"
++          >
++            {{ dmsStatus.label }}
++          </span>
++        </div>
++        <p class="text-xs text-n-slate-11">
++          Dealer Management / Telematics Service Provider connection, used to
++          look up vehicle and service history from Customer 360.
++        </p>
++        <p
++          v-if="dmsStatus.tone === 'positive'"
++          class="mt-2 text-xs text-n-slate-11"
++        >
++          Reachability not yet verified — use Test connection on the
++          configuration page.
++        </p>
++      </router-link>
++    </div>
++  </div>
++</template>
+-- 
+2.54.0
+

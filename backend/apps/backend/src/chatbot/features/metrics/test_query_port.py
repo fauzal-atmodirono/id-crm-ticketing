@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 
 import pytest
 
@@ -10,6 +11,7 @@ from chatbot.features.metrics.query_port import (
     DepartmentsMetrics,
     LifecycleMetrics,
     MockMetricsQuery,
+    VolumeByTypeDivisionMetrics,
 )
 
 
@@ -47,3 +49,43 @@ def test_mock_lifecycle_shape():
     assert isinstance(m, LifecycleMetrics)
     assert m.cases and m.cases[0].conversation_id
     assert m.state_trend and m.state_trend[0].status
+
+
+def test_mock_dashboard_marks_every_block_unfiltered():
+    """MockMetricsQuery is also `build_metrics_query_port`'s fail-open
+    fallback when the real BigQuery client can't init -- a period request
+    that silently downgrades to this canned payload must say so via
+    `scopes`, not just match the Protocol's return type (Task 2 review)."""
+    m = asyncio.run(MockMetricsQuery().fetch_dashboard())
+    assert set(m.scopes.keys()) == {
+        "volume",
+        "resolution",
+        "csat",
+        "nps",
+        "speed",
+        "fallback",
+        "bounce",
+        "quality",
+    }
+    assert all(scope.status == "unfiltered" for scope in m.scopes.values())
+
+
+def test_mock_dashboard_asdict_has_no_scopes_key():
+    """Same guard as the BigQuery adapter's equivalent test in
+    test_query_adapter.py: `scopes` must not appear in the JSON shape
+    dashboard_router.py actually serves, and the mock is a live fallback
+    for that exact route, not just a test double."""
+    payload = asdict(asyncio.run(MockMetricsQuery().fetch_dashboard()))
+    assert "scopes" not in payload
+
+
+def test_mock_lifecycle_asdict_has_no_scopes_key():
+    payload = asdict(asyncio.run(MockMetricsQuery().fetch_lifecycle()))
+    assert "scopes" not in payload
+
+
+def test_mock_volume_by_type_division_marks_unfiltered_and_hides_scopes_from_asdict():
+    m = asyncio.run(MockMetricsQuery().fetch_volume_by_type_division())
+    assert isinstance(m, VolumeByTypeDivisionMetrics)
+    assert m.scopes["volume"].status == "unfiltered"
+    assert "scopes" not in asdict(m)

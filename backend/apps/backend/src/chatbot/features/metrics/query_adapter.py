@@ -269,7 +269,7 @@ class BigQueryMetricsQuery:
 
     def _fetch_sync(self, period: PeriodRange | None = None) -> DashboardMetrics:
         volume_rows, volume_scope = self._dashboard_volume_block(period)
-        return DashboardMetrics(
+        metrics = DashboardMetrics(
             volume=volume_rows,
             resolution=self._block("v_resolution_split", ResolutionRow),
             csat=self._block("v_csat", CsatRow),
@@ -278,7 +278,11 @@ class BigQueryMetricsQuery:
             fallback=self._block("v_fallback_rate", FallbackRow),
             bounce=self._block("v_bounce_rate", BounceRow),
             quality=self._block("v_quality", QualityRow),
-            scopes={
+        )
+        # scopes is deliberately not a constructor kwarg -- see
+        # DashboardMetrics.scopes's docstring in query_port.py.
+        metrics.attach_scopes(
+            {
                 "volume": volume_scope,
                 "resolution": _UNFILTERED_SCOPE,
                 "csat": _UNFILTERED_SCOPE,
@@ -287,8 +291,9 @@ class BigQueryMetricsQuery:
                 "fallback": _UNFILTERED_SCOPE,
                 "bounce": _UNFILTERED_SCOPE,
                 "quality": _UNFILTERED_SCOPE,
-            },
+            }
         )
+        return metrics
 
     async def fetch_dashboard(self, period: PeriodRange | None = None) -> DashboardMetrics:
         return await asyncio.to_thread(self._fetch_sync, period)
@@ -329,11 +334,12 @@ class BigQueryMetricsQuery:
         state_trend_rows, state_trend_scope = self._month_grain_block(
             "v_state_trend", StateTrendRow, "month_start", period
         )
-        return LifecycleMetrics(
+        metrics = LifecycleMetrics(
             cases=self._block("v_case_lifecycle", CaseLifecycleRow),
             state_trend=state_trend_rows,
-            scopes={"cases": _UNFILTERED_SCOPE, "state_trend": state_trend_scope},
         )
+        metrics.attach_scopes({"cases": _UNFILTERED_SCOPE, "state_trend": state_trend_scope})
+        return metrics
 
     async def fetch_lifecycle(self, period: PeriodRange | None = None) -> LifecycleMetrics:
         return await asyncio.to_thread(self._fetch_lifecycle_sync, period)
@@ -365,7 +371,9 @@ class BigQueryMetricsQuery:
         rows, scope = self._month_grain_block(
             "v_volume_by_type_division", VolumeByTypeDivisionRow, "month_start", period
         )
-        return VolumeByTypeDivisionMetrics(volume=rows, scopes={"volume": scope})
+        metrics = VolumeByTypeDivisionMetrics(volume=rows)
+        metrics.attach_scopes({"volume": scope})
+        return metrics
 
     async def fetch_volume_by_type_division(
         self, period: PeriodRange | None = None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import date
 from typing import Any
 
@@ -842,3 +843,75 @@ async def test_dashboard_volume_period_query_failure_degrades_to_empty_block() -
     assert metrics.scopes["volume"] == BlockScope(
         status="unavailable", period=period, supported_granularity=None
     )
+
+
+# --- Task 2 review fix round 2: scopes must not leak into the no-period
+# JSON shape, at the level dashboard_router.py / insights_router.py
+# actually serialise at (a bare `asdict(await port.fetch_*())`, no
+# response-model filtering). Asserted here rather than in
+# test_dashboard_router.py / test_insights_router.py because those two
+# files can't be collected in this environment without a live
+# GEMINI_API_KEY -- a test that never runs is not a real guard.
+
+
+@pytest.mark.asyncio
+async def test_dashboard_unfiltered_asdict_has_no_scopes_key() -> None:
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient({})
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    payload = asdict(await q.fetch_dashboard())  # exactly what dashboard_router.py does
+
+    assert set(payload.keys()) == {
+        "volume",
+        "resolution",
+        "csat",
+        "nps",
+        "speed",
+        "fallback",
+        "bounce",
+        "quality",
+    }
+    assert "scopes" not in payload
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_unfiltered_asdict_has_no_scopes_key() -> None:
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient({})
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    payload = asdict(await q.fetch_lifecycle())  # exactly what insights_router.py's
+    # /metrics/lifecycle route does
+
+    assert set(payload.keys()) == {"cases", "state_trend"}
+    assert "scopes" not in payload
+
+
+@pytest.mark.asyncio
+async def test_volume_by_type_division_unfiltered_asdict_has_no_scopes_key() -> None:
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient({})
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    payload = asdict(await q.fetch_volume_by_type_division())  # exactly what
+    # insights_router.py's /metrics/volume-by-type route does
+
+    assert set(payload.keys()) == {"volume"}
+    assert "scopes" not in payload
+
+
+@pytest.mark.asyncio
+async def test_scopes_is_still_reachable_as_a_plain_attribute() -> None:
+    """Not being a dataclass field must not mean not being usable -- Task
+    3/4 (or a future export path) still needs `metrics.scopes` to work
+    like any other attribute, just invisible to asdict()/fields()."""
+    period = PeriodRange(date(2026, 6, 1), date(2026, 6, 30), "month")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient({})
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    metrics = await q.fetch_dashboard(period=period)
+
+    assert metrics.scopes["volume"].status == "ok"
+    assert metrics.scopes["csat"].status == "unfiltered"

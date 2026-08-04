@@ -6,7 +6,7 @@ denominator is zero or no rows match."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Literal, Protocol
 
@@ -139,11 +139,33 @@ class DashboardMetrics:
     fallback: list[FallbackRow]
     bounce: list[BounceRow]
     quality: list[QualityRow]
-    # Keyed by field name above. Only `volume` can ever be period-scoped
-    # (see BlockScope); every other key is always "unfiltered" -- Critical-1
-    # from the Task 2 review. Default empty so a caller that doesn't care
-    # (e.g. the unmodified `/metrics/dashboard` route) sees no change.
-    scopes: dict[str, BlockScope] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_scopes", {})
+
+    @property
+    def scopes(self) -> dict[str, BlockScope]:
+        """Per-block BlockScope, keyed by field name above. Only `volume`
+        can ever be period-scoped; every other key is always "unfiltered"
+        -- Critical-1 from the Task 2 review.
+
+        Deliberately NOT a dataclass field: `dataclasses.asdict()`/
+        `fields()` only walk *declared* fields, and every current
+        `/metrics/*` route serialises this type with a bare
+        `asdict(await port.fetch_*())` and no response-model filtering. A
+        declared `scopes` field would add a new top-level JSON key to
+        those routes' responses *today*, on the unfiltered path, before
+        Task 3 wires any period support in at all -- breaking "period=None
+        is byte-identical to today" (Task 2 review, the Important finding
+        that follows Critical 1). Populated via `attach_scopes()` after
+        construction, which is legal on a frozen dataclass because it
+        rebinds `_scopes` via `object.__setattr__` exactly once, in
+        `__post_init__` and again here -- never by mutating in place.
+        """
+        return self._scopes  # type: ignore[attr-defined,no-any-return]
+
+    def attach_scopes(self, scopes: dict[str, BlockScope]) -> None:
+        object.__setattr__(self, "_scopes", scopes)
 
 
 @dataclass(frozen=True)
@@ -273,10 +295,20 @@ class StateTrendRow:
 class LifecycleMetrics:
     cases: list[CaseLifecycleRow]
     state_trend: list[StateTrendRow]
-    # See DashboardMetrics.scopes. `cases` is always "unfiltered" (no period
-    # support at all); `state_trend` can be "ok"/"unavailable"/
-    # "unsupported_granularity" once a period is supplied.
-    scopes: dict[str, BlockScope] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_scopes", {})
+
+    @property
+    def scopes(self) -> dict[str, BlockScope]:
+        """See DashboardMetrics.scopes (same not-a-field rationale).
+        `cases` is always "unfiltered" (no period support at all);
+        `state_trend` can be "ok"/"unavailable"/"unsupported_granularity"
+        once a period is supplied."""
+        return self._scopes  # type: ignore[attr-defined,no-any-return]
+
+    def attach_scopes(self, scopes: dict[str, BlockScope]) -> None:
+        object.__setattr__(self, "_scopes", scopes)
 
 
 @dataclass(frozen=True)
@@ -345,8 +377,17 @@ class VolumeByTypeDivisionRow:
 @dataclass(frozen=True)
 class VolumeByTypeDivisionMetrics:
     volume: list[VolumeByTypeDivisionRow]
-    # See DashboardMetrics.scopes.
-    scopes: dict[str, BlockScope] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_scopes", {})
+
+    @property
+    def scopes(self) -> dict[str, BlockScope]:
+        """See DashboardMetrics.scopes (same not-a-field rationale)."""
+        return self._scopes  # type: ignore[attr-defined,no-any-return]
+
+    def attach_scopes(self, scopes: dict[str, BlockScope]) -> None:
+        object.__setattr__(self, "_scopes", scopes)
 
 
 @dataclass(frozen=True)
@@ -427,7 +468,7 @@ class MockMetricsQuery:
 
     async def fetch_dashboard(self, period: PeriodRange | None = None) -> DashboardMetrics:
         del period  # mock always returns the same canned payload
-        return DashboardMetrics(
+        metrics = DashboardMetrics(
             volume=[
                 VolumeRow(month="2026-05", channel="web", volume=120),
                 VolumeRow(month="2026-05", channel="whatsapp", volume=80),
@@ -464,7 +505,9 @@ class MockMetricsQuery:
                 QualityRow("web", 20, 88.5, 91.0),
                 QualityRow("whatsapp", 15, 84.0, 87.5),
             ],
-            scopes=dict.fromkeys(
+        )
+        metrics.attach_scopes(
+            dict.fromkeys(
                 (
                     "volume",
                     "resolution",
@@ -476,12 +519,13 @@ class MockMetricsQuery:
                     "quality",
                 ),
                 _UNFILTERED_SCOPE,
-            ),
+            )
         )
+        return metrics
 
     async def fetch_lifecycle(self, period: PeriodRange | None = None) -> LifecycleMetrics:
         del period  # mock always returns the same canned payload
-        return LifecycleMetrics(
+        metrics = LifecycleMetrics(
             cases=[
                 CaseLifecycleRow(
                     conversation_id="CONV001",
@@ -506,8 +550,9 @@ class MockMetricsQuery:
                     cases=45,
                 )
             ],
-            scopes={"cases": _UNFILTERED_SCOPE, "state_trend": _UNFILTERED_SCOPE},
         )
+        metrics.attach_scopes({"cases": _UNFILTERED_SCOPE, "state_trend": _UNFILTERED_SCOPE})
+        return metrics
 
     async def fetch_dealer_escalation(self) -> DealerEscalationMetrics:
         return DealerEscalationMetrics(
@@ -539,7 +584,8 @@ class MockMetricsQuery:
         self, period: PeriodRange | None = None
     ) -> VolumeByTypeDivisionMetrics:
         del period  # mock always returns the same canned payload
-        return VolumeByTypeDivisionMetrics(
-            volume=[VolumeByTypeDivisionRow("2026-06", "WhatsApp", "Inquiry", "Sales", 682)],
-            scopes={"volume": _UNFILTERED_SCOPE},
+        metrics = VolumeByTypeDivisionMetrics(
+            volume=[VolumeByTypeDivisionRow("2026-06", "WhatsApp", "Inquiry", "Sales", 682)]
         )
+        metrics.attach_scopes({"volume": _UNFILTERED_SCOPE})
+        return metrics

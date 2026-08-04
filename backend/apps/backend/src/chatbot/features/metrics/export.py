@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
-from dataclasses import astuple, fields
+from dataclasses import fields
 from typing import TYPE_CHECKING, Any, cast
 
 from openpyxl import Workbook  # type: ignore[import-untyped]
@@ -24,18 +24,21 @@ if TYPE_CHECKING:
 
 
 def _blocks(metrics: Any) -> list[tuple[str, list[Any]]]:
-    """Every list[<dataclass>] field on `metrics`, as (name, rows).
+    """Every list[<dataclass>] field on `metrics`, as (name, rows)."""
+    return [(f.name, getattr(metrics, f.name)) for f in fields(metrics)]
 
-    Only `list` fields -- as of Task 2 (Package E), DashboardMetrics,
-    LifecycleMetrics and VolumeByTypeDivisionMetrics also carry a `scopes:
-    dict[str, BlockScope]` field (which BlockScope per block, not a row
-    list), and this reflection must skip it rather than try to render it
-    as a sheet/table."""
-    return [
-        (f.name, getattr(metrics, f.name))
-        for f in fields(metrics)
-        if isinstance(getattr(metrics, f.name), list)
-    ]
+
+def _visible_field_names(rows: list[Any]) -> list[str]:
+    """Field names for `rows`, excluding any that are `None` on *every*
+    row in this block -- e.g. `VolumeRow.bucket` outside a period-scoped
+    query (Task 2 / Package E): only the adapter's period-aware volume
+    path ever populates it, so a scheduled all-time export
+    (`scheduler.py` calls `fetch_dashboard()` with no period) would
+    otherwise render a column that is blank on every single row. That's
+    presentational noise, not data, so it's dropped rather than shown
+    empty."""
+    names = [f.name for f in fields(rows[0])]
+    return [n for n in names if any(getattr(r, n) is not None for r in rows)]
 
 
 def render_xlsx(metrics: DashboardMetrics) -> bytes:
@@ -44,10 +47,10 @@ def render_xlsx(metrics: DashboardMetrics) -> bytes:
     for name, rows in _blocks(metrics):
         ws = wb.create_sheet(title=name[:31])  # Excel sheet-name limit
         if rows:
-            first_row = cast(Any, rows[0])
-            ws.append([f.name for f in fields(first_row)])
+            field_names = _visible_field_names(rows)
+            ws.append(field_names)
             for row in rows:
-                ws.append(list(astuple(cast(Any, row))))
+                ws.append([getattr(cast(Any, row), n) for n in field_names])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -61,9 +64,10 @@ def render_pdf(metrics: DashboardMetrics) -> bytes:
     for name, rows in _blocks(metrics):
         story.append(Paragraph(name, styles["Heading2"]))
         if rows:
-            first_row = cast(Any, rows[0])
-            header = [f.name for f in fields(first_row)]
-            data = [header] + [[str(v) for v in astuple(cast(Any, r))] for r in rows]
+            field_names = _visible_field_names(rows)
+            data = [field_names] + [
+                [str(getattr(cast(Any, r), n)) for n in field_names] for r in rows
+            ]
             table = Table(data)
             table.setStyle(
                 TableStyle(
@@ -94,10 +98,10 @@ def render_csv(metrics: Any) -> bytes:
     for name, rows in _blocks(metrics):
         writer.writerow([name])
         if rows:
-            first_row = cast(Any, rows[0])
-            writer.writerow([f.name for f in fields(first_row)])
+            field_names = _visible_field_names(rows)
+            writer.writerow(field_names)
             for row in rows:
-                writer.writerow(list(astuple(cast(Any, row))))
+                writer.writerow([getattr(cast(Any, row), n) for n in field_names])
         else:
             writer.writerow(["(no data)"])
         writer.writerow([])

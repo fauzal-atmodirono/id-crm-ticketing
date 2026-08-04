@@ -25,7 +25,7 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
-echo "This will STOP tenant '${TENANT}' and DROP its databases (chatwoot_${TENANT}, zammad_${TENANT}, agent_${TENANT})."
+echo "This will STOP tenant '${TENANT}' and DROP its databases (chatwoot_${TENANT}, agent_${TENANT}, plus any legacy zammad_${TENANT} from before Zammad retirement, if present)."
 if [[ "${PURGE}" == "--purge-volumes" ]]; then
   echo "It will ALSO delete its storage volumes (attachments etc.) — irreversible."
 fi
@@ -44,11 +44,13 @@ docker compose -p "${TENANT}" -f "${TENANT_FILE}" --env-file "${ENV_FILE}" "${do
 docker compose -p "${INFRA_PROJECT}" -f "${INFRA_FILE}" exec -T postgres \
   psql -v ON_ERROR_STOP=1 -U postgres -d postgres <<SQL
 DROP DATABASE IF EXISTS chatwoot_${TENANT};
-DROP DATABASE IF EXISTS zammad_${TENANT};
 DROP DATABASE IF EXISTS agent_${TENANT};
 DROP ROLE IF EXISTS chatwoot_${TENANT};
-DROP ROLE IF EXISTS zammad_${TENANT};
 DROP ROLE IF EXISTS agent_${TENANT};
+-- Zammad was retired; these are a no-op for tenants provisioned after
+-- retirement and just clean up residual legacy data for older tenants.
+DROP DATABASE IF EXISTS zammad_${TENANT};
+DROP ROLE IF EXISTS zammad_${TENANT};
 SQL
 
 # --- 3. Remove the Caddy route + reload -------------------------------------
@@ -61,4 +63,4 @@ rm -f "${ENV_FILE}"
 
 echo "==> Tenant '${TENANT}' removed."
 [[ "${PURGE}" != "--purge-volumes" ]] && \
-  echo "    Storage volumes kept. Delete manually with: docker volume rm ${TENANT}_chatwoot_storage ${TENANT}_zammad_storage ${TENANT}_redis_data"
+  echo "    Storage volumes kept. Delete manually with: docker volume rm ${TENANT}_chatwoot_storage ${TENANT}_redis_data (add ${TENANT}_zammad_storage too if this is a legacy tenant that still has one)"

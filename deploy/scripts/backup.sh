@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Nightly backup for the multi-tenant platform: for every tenant defined by
-# deploy/tenants/*.env, pg_dump its three databases and tar its Chatwoot/Zammad
+# deploy/tenants/*.env, pg_dump its databases and tar its Chatwoot
 # storage volumes into /backups/YYYY-MM-DD/, then prune dirs older than 7 days.
 # Cron-safe (no interactive prompts, absolute paths only).
 #
@@ -46,12 +46,12 @@ for env_file in "${tenant_envs[@]}"; do
   fi
 
   echo "==> Backing up tenant: ${tenant}"
-  for app in chatwoot zammad agent; do
+  for app in chatwoot agent; do
     echo "    dumping ${app}_${tenant}"
     pg pg_dump -U postgres -Fc "${app}_${tenant}" > "${DEST}/${tenant}-${app}.dump"
   done
 
-  for logical in chatwoot_storage zammad_storage; do
+  for logical in chatwoot_storage; do
     volume="$(resolve_volume "${tenant}_${logical}")"
     if [[ -z "${volume}" ]]; then
       echo "    WARNING: no volume for ${tenant}_${logical}, skipping" >&2

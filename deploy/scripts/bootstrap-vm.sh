@@ -189,7 +189,6 @@ Provision customers with:
 
 Each tenant is then reachable at (once its containers finish starting):
   http://<tenant>.crm.${PUBLIC_IP_DASH}.nip.io      (Chatwoot)
-  http://<tenant>.tickets.${PUBLIC_IP_DASH}.nip.io  (Zammad)
   http://<tenant>.agent.${PUBLIC_IP_DASH}.nip.io    (agent)
   http://<tenant>.mail.${PUBLIC_IP_DASH}.nip.io     (shared Mailpit)
 

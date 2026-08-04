@@ -6,10 +6,6 @@ http://crm.127-0-0-1.nip.io {
 	reverse_proxy default-chatwoot-rails:3000
 }
 
-http://tickets.127-0-0-1.nip.io {
-	reverse_proxy default-zammad-nginx:8080
-}
-
 http://agent.127-0-0-1.nip.io {
 	reverse_proxy default-agent:8000
 }
@@ -33,8 +29,4 @@ http://crm.localhost {
 
 http://agent.localhost {
 	reverse_proxy default-agent:8000
-}
-
-http://tickets.localhost {
-	reverse_proxy default-zammad-nginx:8080
 }

@@ -48,6 +48,18 @@ def parse_period(from_: str | None, to: str | None, granularity: str | None) -> 
 
 
 def _is_full_calendar_month(period: PeriodRange) -> bool:
+    """Whether `period` covers a full calendar month, by both shape and declared intent.
+
+    Date shape alone is not enough: a "day"-granularity range that happens to
+    span 1 Jun-30 Jun (e.g. a custom date-range picker set to a whole month)
+    has the same start/end as a "month"-granularity period but was not
+    declared as one, so it must not take the "prior calendar month" branch
+    below — that would silently compare against 1-31 May instead of the
+    immediately preceding 30 days the caller actually asked for. Granularity
+    is the caller's statement of intent; date shape is a coincidence.
+    """
+    if period.granularity != "month":
+        return False
     last_day = monthrange(period.start.year, period.start.month)[1]
     return (
         period.start.day == 1
@@ -60,10 +72,12 @@ def _is_full_calendar_month(period: PeriodRange) -> bool:
 def previous_period(period: PeriodRange) -> PeriodRange:
     """The comparison window a reader expects for "vs previous period".
 
-    A range that is exactly one full calendar month compares against the
-    prior full calendar month (28-31 days, whatever that month has) — "vs
-    last month" means May, not "the 30 days before June". Any other range
-    compares against the immediately preceding window of equal length.
+    A range that is exactly one full calendar month *and* declared with
+    granularity="month" compares against the prior full calendar month
+    (28-31 days, whatever that month has) — "vs last month" means May, not
+    "the 30 days before June". Any other range, including one that merely
+    happens to span a whole month under a different granularity, compares
+    against the immediately preceding window of equal length.
     """
     if _is_full_calendar_month(period):
         prev_end = period.start - timedelta(days=1)
@@ -92,13 +106,16 @@ def bucket_key(d: date, granularity: str) -> str:
 
     Week buckets use ISO calendar weeks (`date.isocalendar()`), not
     `strftime("%Y-%W")`: the naive form splits a week that spans a month
-    boundary into two different buckets.
+    boundary into two different buckets. The key is prefixed with the ISO
+    year (not `d.year`), which is what keeps bucket strings sorting
+    chronologically across a year boundary — ISO week 53 of a December can
+    belong to the following calendar year's first days.
     """
+    if granularity not in _VALID_GRANULARITIES:
+        raise ValueError(f"unknown granularity: {granularity!r}")
     if granularity == "day":
         return d.isoformat()
     if granularity == "week":
         iso_year, iso_week, _ = d.isocalendar()
         return f"{iso_year}-W{iso_week:02d}"
-    if granularity == "month":
-        return f"{d.year:04d}-{d.month:02d}"
-    raise ValueError(f"unknown granularity: {granularity!r}")
+    return f"{d.year:04d}-{d.month:02d}"

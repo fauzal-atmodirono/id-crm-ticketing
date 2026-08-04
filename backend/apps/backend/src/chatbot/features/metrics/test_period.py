@@ -64,3 +64,59 @@ def test_week_buckets_do_not_split_across_a_month_boundary():
 
 def test_month_buckets_are_year_month():
     assert bucket_key(date(2026, 6, 15), "month") == "2026-06"
+
+
+def test_previous_period_of_a_31_day_month_is_the_prior_30_day_month():
+    p = PeriodRange(date(2026, 7, 1), date(2026, 7, 31), "month")
+    assert previous_period(p) == PeriodRange(date(2026, 6, 1), date(2026, 6, 30), "month")
+
+
+def test_previous_period_of_january_is_december_of_the_prior_year():
+    p = PeriodRange(date(2027, 1, 1), date(2027, 1, 31), "month")
+    assert previous_period(p) == PeriodRange(date(2026, 12, 1), date(2026, 12, 31), "month")
+
+
+def test_previous_period_of_a_single_day_is_the_day_before():
+    p = PeriodRange(date(2026, 7, 20), date(2026, 7, 20), "day")
+    assert previous_period(p) == PeriodRange(date(2026, 7, 19), date(2026, 7, 19), "day")
+
+
+def test_previous_period_ignores_full_month_shape_when_granularity_is_not_month():
+    # A "day"-granularity range that happens to span a whole month (e.g. from
+    # a custom date-range picker) must NOT take the calendar-month branch —
+    # it should compare against the immediately preceding 30 days, not May.
+    p = PeriodRange(date(2026, 6, 1), date(2026, 6, 30), "day")
+    assert previous_period(p) == PeriodRange(date(2026, 5, 2), date(2026, 5, 31), "day")
+
+
+def test_previous_period_of_february_in_a_leap_year():
+    p = PeriodRange(date(2028, 3, 1), date(2028, 3, 31), "month")
+    assert previous_period(p) == PeriodRange(date(2028, 2, 1), date(2028, 2, 29), "month")
+
+
+def test_previous_period_of_february_in_a_non_leap_year():
+    p = PeriodRange(date(2027, 3, 1), date(2027, 3, 31), "month")
+    assert previous_period(p) == PeriodRange(date(2027, 2, 1), date(2027, 2, 28), "month")
+
+
+def test_week_53_spans_the_year_boundary_in_one_bucket():
+    dec_end = [date(2026, 12, 28), date(2026, 12, 29), date(2026, 12, 30), date(2026, 12, 31)]
+    jan_start = [date(2027, 1, 1), date(2027, 1, 2), date(2027, 1, 3)]
+    keys = {bucket_key(d, "week") for d in dec_end + jan_start}
+    assert keys == {"2026-W53"}
+    assert bucket_key(date(2027, 1, 4), "week") == "2027-W01"
+
+
+def test_parse_period_rejects_a_partial_argument_set():
+    # This ValueError is load-bearing for the /reports endpoint's uniform
+    # 400 handling: a query string with `from` but no `to`/`granularity`
+    # must reject the same way an inverted range or bad granularity does,
+    # not raise a bare TypeError from date.fromisoformat(None).
+    with pytest.raises(ValueError):
+        parse_period("2026-07-17", None, None)
+    with pytest.raises(ValueError):
+        parse_period(None, "2026-07-23", None)
+    with pytest.raises(ValueError):
+        parse_period(None, None, "week")
+    with pytest.raises(ValueError):
+        parse_period("2026-07-17", "2026-07-23", None)

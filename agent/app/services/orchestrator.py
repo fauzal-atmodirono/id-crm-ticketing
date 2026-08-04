@@ -559,6 +559,69 @@ async def _format_reply_for_channel(
     return [reply]
 
 
+# Chatwoot attachment `file_type`s the chat-agent path understands. One of
+# each per turn (YAGNI); a second attachment of the same kind is ignored.
+_MEDIA_KINDS = ("audio", "image", "video")
+
+# Order media is dropped in when a turn's combined payload blows the budget:
+# video first (biggest by far, and the least likely to be the whole message),
+# then image, then audio last — a voice note usually IS the message, so losing
+# it costs the turn more than losing an illustrating photo or clip.
+_MEDIA_DROP_ORDER = ("video", "image", "audio")
+
+
+def _encoded(fetched: tuple[bytes, str] | None) -> tuple[str | None, str | None]:
+    """(bytes, mime) -> (base64 str, mime) for the chat_turn payload."""
+    if fetched is None:
+        return None, None
+    data, mime = fetched
+    return base64.b64encode(data).decode(), mime
+
+
+def _apply_media_budget(
+    conversation_id: int, media: dict[str, tuple[bytes, str]], max_bytes: int
+) -> None:
+    """Drop media, in place, until the turn fits Gemini's inline request limit.
+
+    The cap is a budget for the WHOLE turn, not per attachment: a 14 MB video
+    plus a 5 MB photo is ~25 MB once google-genai base64-encodes it into the
+    JSON body, so guarding each attachment on its own still produces a request
+    Gemini rejects. An oversized single video is dropped first (its own
+    dedicated log line), then whole attachments are dropped in
+    `_MEDIA_DROP_ORDER` until the total fits. Never raises and never truncates
+    a payload mid-stream: the turn proceeds on whatever media survives, text
+    only if nothing does.
+    """
+    oversized_video = media.get("video")
+    if oversized_video is not None and len(oversized_video[0]) > max_bytes:
+        logger.warning(
+            "orchestrator_video_too_large: conversation %s video %d bytes "
+            "exceeds whatsapp_video_max_bytes %d; skipping video",
+            conversation_id,
+            len(oversized_video[0]),
+            max_bytes,
+        )
+        media.pop("video")
+
+    total = sum(len(data) for data, _ in media.values())
+    for kind in _MEDIA_DROP_ORDER:
+        if total <= max_bytes:
+            return
+        dropped = media.pop(kind, None)
+        if dropped is None:
+            continue
+        total -= len(dropped[0])
+        logger.warning(
+            "orchestrator_media_budget_exceeded: conversation %s dropping %s "
+            "(%d bytes) to fit whatsapp_video_max_bytes %d; %d bytes of media remain",
+            conversation_id,
+            kind,
+            len(dropped[0]),
+            max_bytes,
+            total,
+        )
+
+
 async def _process_via_chat_agent(
     conversation_id: int,
     message_list: list[dict],
@@ -585,15 +648,13 @@ async def _process_via_chat_agent(
     text = "\n".join(t for t in texts if t)
 
     settings = get_settings()
-    # Voice-note / image understanding: pull the first audio and first image
-    # attachment (YAGNI — one of each per turn, not every attachment) off the
-    # trailing incoming messages and fetch their bytes, but only when the flag
-    # is on. `has_attachment` is tracked regardless of the flag purely so an
-    # attachment-only message with no caption can be logged instead of
+    # Voice-note / image / video understanding: pull the first audio, image and
+    # video attachment (YAGNI — one of each per turn, not every attachment) off
+    # the trailing incoming messages and fetch their bytes, but only when the
+    # flag is on. `has_attachment` is tracked regardless of the flag purely so
+    # an attachment-only message with no caption can be logged instead of
     # silently vanishing (see the empty-text short-circuit below).
-    audio_base64 = audio_mime_type = None
-    image_base64 = image_mime_type = None
-    video_base64 = video_mime_type = None
+    media: dict[str, tuple[bytes, str]] = {}
     has_attachment = False
     if settings.whatsapp_media_understanding_enabled:
         for message in trailing_messages:
@@ -601,40 +662,18 @@ async def _process_via_chat_agent(
                 has_attachment = True
                 file_type = attachment.get("file_type")
                 data_url = attachment.get("data_url")
-                if not data_url:
+                if not data_url or file_type not in _MEDIA_KINDS or file_type in media:
                     continue
-                if file_type == "audio" and audio_base64 is None:
-                    fetched = await fetch_attachment_bytes(data_url, file_type_hint=file_type)
-                    if fetched is not None:
-                        data, mime = fetched
-                        audio_base64 = base64.b64encode(data).decode()
-                        audio_mime_type = mime
-                elif file_type == "image" and image_base64 is None:
-                    fetched = await fetch_attachment_bytes(data_url, file_type_hint=file_type)
-                    if fetched is not None:
-                        data, mime = fetched
-                        image_base64 = base64.b64encode(data).decode()
-                        image_mime_type = mime
-                elif file_type == "video" and video_base64 is None:
-                    fetched = await fetch_attachment_bytes(data_url, file_type_hint=file_type)
-                    if fetched is not None:
-                        data, mime = fetched
-                        # Skip oversized clips rather than sending a request
-                        # Gemini will reject: the turn still proceeds on its
-                        # text, which is better than failing the whole turn.
-                        if len(data) > settings.whatsapp_video_max_bytes:
-                            logger.warning(
-                                "orchestrator_video_too_large: conversation %s video %d bytes "
-                                "exceeds whatsapp_video_max_bytes %d; skipping video",
-                                conversation_id,
-                                len(data),
-                                settings.whatsapp_video_max_bytes,
-                            )
-                        else:
-                            video_base64 = base64.b64encode(data).decode()
-                            video_mime_type = mime
+                fetched = await fetch_attachment_bytes(data_url, file_type_hint=file_type)
+                if fetched is not None:
+                    media[file_type] = fetched
+        _apply_media_budget(conversation_id, media, settings.whatsapp_video_max_bytes)
     else:
         has_attachment = any(m.get("attachments") for m in trailing_messages)
+
+    audio_base64, audio_mime_type = _encoded(media.get("audio"))
+    image_base64, image_mime_type = _encoded(media.get("image"))
+    video_base64, video_mime_type = _encoded(media.get("video"))
 
     if not text and audio_base64 is None and image_base64 is None and video_base64 is None:
         if has_attachment:

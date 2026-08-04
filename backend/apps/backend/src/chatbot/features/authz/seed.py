@@ -45,6 +45,11 @@ PERMISSION_REGISTRY: dict[str, str] = {
     # endpoint exists in this codebase yet; this entry exists so retrieval
     # can never ship un-gated by omission.
     "call_recording.listen": "Listen to / retrieve a call recording",
+    # Package F: the DMS/TSP integration shell's admin CRUD + connection
+    # test (features/chat/dms_admin_router.py). Same shape as
+    # escalation.manage/sla.manage above -- auto-granted to "administrator",
+    # withheld from "agent".
+    "integration.manage": "Manage DMS/TSP integration settings",
 }
 
 _AGENT_PERMISSIONS = {"knowledge.edit"}

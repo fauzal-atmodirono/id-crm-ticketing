@@ -25,6 +25,7 @@ from chatbot.features.chat.adapters.tools_store import build_tools_store
 from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.adapters.vertex_search import VertexAISearchAdapter
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
+from chatbot.features.chat.dms_config_store import DmsConfigStore
 from chatbot.features.chat.escalation_notifier import EscalationNotifier, build_dealer_email_map
 from chatbot.features.chat.escalation_router import build_escalation_router
 from chatbot.features.chat.faq_admin_router import build_faq_admin_router
@@ -299,6 +300,13 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     pic_registry = build_pic_registry(settings, store=pic_store)
     email_sender = SmtpEmailSender(settings)
 
+    # Package F: DMS/TSP integration shell config store. Built unconditionally
+    # (same reasoning as pic_store/dealer_store above) so a future Customer 360
+    # DMS block can read it even when RBAC — and therefore the admin CRUD
+    # router below — is off; the store itself never touches Firestore until
+    # a caller actually invokes get()/get_credential()/save().
+    dms_config_store = DmsConfigStore(settings)
+
     if settings.crm_provider == "zendesk":
         zendesk_client = ZendeskAdapter(settings)
         chat_port = zendesk_client
@@ -559,6 +567,15 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
 
         app.include_router(
             build_pic_admin_router(pic_store, dealer_store, authz_repo, authz_validator, settings)
+        )
+
+        # Package F: DMS/TSP integration shell admin CRUD + connection test.
+        # Reuses the dms_config_store instance constructed unconditionally
+        # above, same pattern as pic_store/dealer_store.
+        from chatbot.features.chat.dms_admin_router import build_dms_admin_router
+
+        app.include_router(
+            build_dms_admin_router(dms_config_store, authz_repo, authz_validator, settings)
         )
 
         # Customer 360 foundational lookup (Track 5). Reuses the already-built

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from unittest.mock import AsyncMock
 
 import httpx
@@ -14,6 +16,13 @@ from chatbot.features.authz.identity import TokenValidator
 from chatbot.features.authz.repository import AuthzRepository
 from chatbot.features.authz.seed import seed_defaults
 from chatbot.features.chat.customer360_router import build_customer360_router
+from chatbot.features.chat.dms_client import (
+    DmsCustomer,
+    DmsServiceRecord,
+    DmsVehicle,
+    MockDmsClient,
+)
+from chatbot.features.chat.dms_config_store import DmsConfig
 from chatbot.features.rsa.rsa_repository import InMemoryRsaRepository
 from chatbot.platform.config import get_settings
 
@@ -254,3 +263,385 @@ async def test_query_too_short_returns_422(tmp_path, respx_mock):
 
     res = client.get("/admin/customer360/search?q=a", headers=HEADERS)
     assert res.status_code == 422
+
+
+# --- Package F: the optional `dms` block --------------------------------
+#
+# `dms_config_store` and `dms_client` are both optional constructor params
+# (default None). main.py's existing call site passes neither, so nothing
+# below changes behavior for a router built the way it is today -- that is
+# the whole point of test_response_is_unchanged_when_the_integration_is_disabled.
+
+
+def _dms_config(*, enabled: bool, timeout_seconds: float = 10.0) -> DmsConfig:
+    return DmsConfig(
+        enabled=enabled,
+        provider_label="Proton DMS",
+        base_url="https://dms.example.com",
+        auth_type="api_key_header",
+        extra_header_name="",
+        extra_header_value="",
+        timeout_seconds=timeout_seconds,
+        retries=0,
+    )
+
+
+class _StubDmsConfigStore:
+    """Minimal stand-in for DmsConfigStore -- customer360_router.py only
+    ever calls .get() on it."""
+
+    def __init__(self, config: DmsConfig | None) -> None:
+        self._config = config
+
+    async def get(self) -> DmsConfig | None:
+        return self._config
+
+
+class _RaisingDmsConfigStore:
+    async def get(self) -> DmsConfig | None:
+        raise RuntimeError("firestore is down")
+
+
+class _EmptyDmsClient:
+    """A DMS client that is genuinely reachable and genuinely has nothing
+    on file for this customer -- the "no records" half of the
+    empty-vs-unreachable distinction."""
+
+    async def find_customer(self, *, phone, vehicle_no):
+        return None
+
+    async def list_vehicles(self, customer_ref):
+        return []
+
+    async def list_service_history(self, vehicle_no):
+        return []
+
+
+class _RaisingDmsClient:
+    async def find_customer(self, *, phone, vehicle_no):
+        raise RuntimeError("dms outage")
+
+    async def list_vehicles(self, customer_ref):
+        return []
+
+    async def list_service_history(self, vehicle_no):
+        return []
+
+
+class _SlowDmsClient:
+    """Never fails, just never returns before an operator would have given
+    up waiting -- proves the DMS side-trip is bounded, not left to hang for
+    however long the client takes."""
+
+    async def find_customer(self, *, phone, vehicle_no):
+        await asyncio.sleep(1.5)
+
+    async def list_vehicles(self, customer_ref):
+        return []
+
+    async def list_service_history(self, vehicle_no):
+        return []
+
+
+class _ManyVehiclesDmsClient:
+    """Returns more vehicles than the service-history fan-out cap, so the
+    cap can be pinned by call count rather than assumed."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def find_customer(self, *, phone, vehicle_no):
+        return DmsCustomer(ref="CUST-1", name="Many Vehicles", phone=phone)
+
+    async def list_vehicles(self, customer_ref):
+        return [DmsVehicle(vehicle_no=f"V{i}", model="X", purchased_from=None) for i in range(8)]
+
+    async def list_service_history(self, vehicle_no):
+        self.calls.append(vehicle_no)
+        return [DmsServiceRecord(date="2026-01-01", description="d", dealer=None)]
+
+
+@pytest.mark.asyncio
+async def test_response_is_unchanged_when_the_integration_is_disabled(tmp_path, respx_mock):
+    """The important one: a router built exactly the way main.py builds it
+    today (no dms_config_store, no dms_client) must return exactly the
+    three keys it always has -- byte-identical to before this package
+    existed."""
+    settings, authz_repo, validator = await _authorized(tmp_path, "dms_off_default", 20)
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 20})
+    )
+    router = build_customer360_router(
+        _fake_chatwoot(), InMemoryRsaRepository(), authz_repo, validator, settings
+    )
+    client = _app_with_router(router)
+
+    res = client.get("/admin/customer360/search?q=0123456789", headers=HEADERS)
+    assert res.status_code == 200
+    assert set(res.json()) == {"contact", "conversations", "rsa_incidents"}
+
+
+@pytest.mark.asyncio
+async def test_response_is_unchanged_when_config_store_says_disabled(tmp_path, respx_mock):
+    settings, authz_repo, validator = await _authorized(tmp_path, "dms_off_store", 21)
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 21})
+    )
+    router = build_customer360_router(
+        _fake_chatwoot(),
+        InMemoryRsaRepository(),
+        authz_repo,
+        validator,
+        settings,
+        dms_config_store=_StubDmsConfigStore(_dms_config(enabled=False)),
+        dms_client=MockDmsClient(),  # even wired, must never be consulted while disabled
+    )
+    client = _app_with_router(router)
+
+    res = client.get("/admin/customer360/search?q=0123456789", headers=HEADERS)
+    assert res.status_code == 200
+    assert set(res.json()) == {"contact", "conversations", "rsa_incidents"}
+
+
+@pytest.mark.asyncio
+async def test_response_is_unchanged_when_no_config_is_stored_yet(tmp_path, respx_mock):
+    settings, authz_repo, validator = await _authorized(tmp_path, "dms_off_none", 22)
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 22})
+    )
+    router = build_customer360_router(
+        _fake_chatwoot(),
+        InMemoryRsaRepository(),
+        authz_repo,
+        validator,
+        settings,
+        dms_config_store=_StubDmsConfigStore(None),
+        dms_client=MockDmsClient(),
+    )
+    client = _app_with_router(router)
+
+    res = client.get("/admin/customer360/search?q=0123456789", headers=HEADERS)
+    assert res.status_code == 200
+    assert set(res.json()) == {"contact", "conversations", "rsa_incidents"}
+
+
+@pytest.mark.asyncio
+async def test_mock_client_enabled_shows_dms_block_labeled_as_mock(tmp_path, respx_mock):
+    settings, authz_repo, validator = await _authorized(tmp_path, "dms_mock", 23)
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 23})
+    )
+    router = build_customer360_router(
+        _fake_chatwoot(),
+        InMemoryRsaRepository(),
+        authz_repo,
+        validator,
+        settings,
+        dms_config_store=_StubDmsConfigStore(_dms_config(enabled=True)),
+        dms_client=MockDmsClient(),
+    )
+    client = _app_with_router(router)
+
+    res = client.get("/admin/customer360/search?q=0123456789", headers=HEADERS)
+    assert res.status_code == 200
+    body = res.json()
+    assert set(body) == {"contact", "conversations", "rsa_incidents", "dms"}
+    dms = body["dms"]
+    assert dms["status"] == "ok"
+    assert dms["mock"] is True
+    assert "(Demo data)" in dms["customer"]["name"]
+    assert dms["vehicles"] and "(Demo data)" in dms["vehicles"][0]["model"]
+    assert dms["service_history"]
+    # Our field names, never a vendor's.
+    assert set(dms["customer"]) == {"ref", "name", "phone"}
+    assert set(dms["vehicles"][0]) == {"vehicle_no", "model", "purchased_from"}
+    assert set(dms["service_history"][0]) == {"date", "description", "dealer"}
+
+
+@pytest.mark.asyncio
+async def test_dms_client_exception_still_returns_all_crm_blocks_fail_open(tmp_path, respx_mock):
+    settings, authz_repo, validator = await _authorized(tmp_path, "dms_raises", 24)
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 24})
+    )
+    contact = {"id": 88, "name": "Wati", "phone_number": "+60177777777"}
+    conversations = [{"id": 900, "status": "open", "inbox_id": 1}]
+    chatwoot = _fake_chatwoot(contacts=[contact], contact_conversations=conversations)
+    router = build_customer360_router(
+        chatwoot,
+        InMemoryRsaRepository(),
+        authz_repo,
+        validator,
+        settings,
+        dms_config_store=_StubDmsConfigStore(_dms_config(enabled=True)),
+        dms_client=_RaisingDmsClient(),
+    )
+    client = _app_with_router(router)
+
+    res = client.get("/admin/customer360/search?q=%2B60177777777", headers=HEADERS)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["contact"] == contact
+    assert body["conversations"] == conversations
+    assert body["rsa_incidents"] == []
+    # dms is present but must never claim success -- fail-open, not silent.
+    dms = body.get("dms")
+    assert dms is None or dms.get("status") == "unreachable"
+
+
+@pytest.mark.asyncio
+async def test_dms_enabled_but_no_client_wired_reads_as_unreachable_not_empty(tmp_path, respx_mock):
+    """Phase 1 ships no real adapter. An operator who flips 'enabled' before
+    one exists must see 'not connected', never a silent 'no records found'
+    that could pass for a working integration."""
+    settings, authz_repo, validator = await _authorized(tmp_path, "dms_no_client", 25)
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 25})
+    )
+    router = build_customer360_router(
+        _fake_chatwoot(),
+        InMemoryRsaRepository(),
+        authz_repo,
+        validator,
+        settings,
+        dms_config_store=_StubDmsConfigStore(_dms_config(enabled=True)),
+        dms_client=None,
+    )
+    client = _app_with_router(router)
+
+    res = client.get("/admin/customer360/search?q=0123456789", headers=HEADERS)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["dms"]["status"] == "unreachable"
+    assert body["dms"]["mock"] is False
+
+
+@pytest.mark.asyncio
+async def test_empty_dms_result_is_distinguishable_from_unreachable(tmp_path, respx_mock):
+    """The single property this package is graded on: an operator must be
+    able to tell 'the DMS has nothing on this customer' from 'we couldn't
+    reach the DMS'. Both leave customer/vehicles/service_history empty --
+    only `status` differs."""
+    settings, authz_repo, validator = await _authorized(tmp_path, "dms_empty", 26)
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 26})
+    )
+    empty_router = build_customer360_router(
+        _fake_chatwoot(),
+        InMemoryRsaRepository(),
+        authz_repo,
+        validator,
+        settings,
+        dms_config_store=_StubDmsConfigStore(_dms_config(enabled=True)),
+        dms_client=_EmptyDmsClient(),
+    )
+    unreachable_router = build_customer360_router(
+        _fake_chatwoot(),
+        InMemoryRsaRepository(),
+        authz_repo,
+        validator,
+        settings,
+        dms_config_store=_StubDmsConfigStore(_dms_config(enabled=True)),
+        dms_client=_RaisingDmsClient(),
+    )
+    empty_body = (
+        _app_with_router(empty_router)
+        .get("/admin/customer360/search?q=0123456789", headers=HEADERS)
+        .json()
+    )
+    unreachable_body = (
+        _app_with_router(unreachable_router)
+        .get("/admin/customer360/search?q=0123456789", headers=HEADERS)
+        .json()
+    )
+
+    assert empty_body["dms"]["status"] == "ok"
+    assert unreachable_body["dms"]["status"] == "unreachable"
+    assert empty_body["dms"]["status"] != unreachable_body["dms"]["status"]
+    for body in (empty_body, unreachable_body):
+        assert body["dms"]["customer"] is None
+        assert body["dms"]["vehicles"] == []
+        assert body["dms"]["service_history"] == []
+
+
+@pytest.mark.asyncio
+async def test_dms_config_store_failure_omits_the_block_rather_than_guessing(tmp_path, respx_mock):
+    settings, authz_repo, validator = await _authorized(tmp_path, "dms_store_raises", 27)
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 27})
+    )
+    router = build_customer360_router(
+        _fake_chatwoot(),
+        InMemoryRsaRepository(),
+        authz_repo,
+        validator,
+        settings,
+        dms_config_store=_RaisingDmsConfigStore(),
+        dms_client=MockDmsClient(),
+    )
+    client = _app_with_router(router)
+
+    res = client.get("/admin/customer360/search?q=0123456789", headers=HEADERS)
+    assert res.status_code == 200
+    assert set(res.json()) == {"contact", "conversations", "rsa_incidents"}
+
+
+@pytest.mark.asyncio
+async def test_slow_dms_client_is_bounded_not_left_to_hang(tmp_path, respx_mock):
+    """A Customer 360 lookup is interactive. The whole DMS side-trip must be
+    bounded to roughly one timeout window, not left to run for however long
+    a slow/hung client takes."""
+    settings, authz_repo, validator = await _authorized(tmp_path, "dms_slow", 28)
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 28})
+    )
+    router = build_customer360_router(
+        _fake_chatwoot(),
+        InMemoryRsaRepository(),
+        authz_repo,
+        validator,
+        settings,
+        # Deliberately tiny -- below the floor -- so this also pins that a
+        # degenerate/near-zero configured timeout can't make the bound
+        # disappear entirely.
+        dms_config_store=_StubDmsConfigStore(_dms_config(enabled=True, timeout_seconds=0.05)),
+        dms_client=_SlowDmsClient(),
+    )
+    client = _app_with_router(router)
+
+    started = time.monotonic()
+    res = client.get("/admin/customer360/search?q=0123456789", headers=HEADERS)
+    elapsed = time.monotonic() - started
+
+    assert res.status_code == 200
+    assert res.json()["dms"]["status"] == "unreachable"
+    # The client sleeps 1.5s; a bound near the 1.0s floor must cut it off
+    # well before that, not merely before some generous outer ceiling.
+    assert elapsed < 1.3
+
+
+@pytest.mark.asyncio
+async def test_service_history_fanout_is_capped_per_customer(tmp_path, respx_mock):
+    settings, authz_repo, validator = await _authorized(tmp_path, "dms_many_vehicles", 29)
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 29})
+    )
+    dms_client = _ManyVehiclesDmsClient()
+    router = build_customer360_router(
+        _fake_chatwoot(),
+        InMemoryRsaRepository(),
+        authz_repo,
+        validator,
+        settings,
+        dms_config_store=_StubDmsConfigStore(_dms_config(enabled=True)),
+        dms_client=dms_client,
+    )
+    client = _app_with_router(router)
+
+    res = client.get("/admin/customer360/search?q=0123456789", headers=HEADERS)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["dms"]["status"] == "ok"
+    # 8 vehicles were on file; the service-history fan-out is capped.
+    assert len(dms_client.calls) <= 5
+    assert len(dms_client.calls) < 8

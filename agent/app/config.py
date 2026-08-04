@@ -62,10 +62,18 @@ class Settings(BaseSettings):
     # and forwarded to backend/'s /chat/turn as multimodal Parts alongside
     # the text.
     whatsapp_media_understanding_enabled: bool = False
-    # Videos above this are skipped rather than sent to Gemini: WhatsApp caps
-    # inbound video at 16 MB and Gemini inline request data at roughly 20 MB,
-    # so 16 MB fits inline and no Files API upload is needed.
-    whatsapp_video_max_bytes: int = 16 * 1024 * 1024
+    # Inline-media budget for one turn, in RAW (pre-encode) bytes. Applied
+    # BOTH to a single video and to the turn's combined audio+image+video
+    # payload; anything over it is dropped (logged) and the turn proceeds on
+    # what remains. google-genai ships inline_data as base64 inside a JSON
+    # REST body, which inflates the payload by roughly 1.335x, and Gemini caps
+    # an inline request at roughly 20 MB — so 14 MB raw encodes to ~18.7 MB
+    # and still leaves headroom for the conversation history and the system
+    # instruction. (Do NOT raise this to WhatsApp's own 16 MB inbound cap:
+    # 16 MB encodes to ~21.4 MB and Gemini rejects the request, which is
+    # exactly what this guard exists to prevent. A handful of legitimate
+    # 14-16 MB clips are refused early, with a log, instead.)
+    whatsapp_video_max_bytes: int = 14 * 1024 * 1024
 
     # Conversation lifecycle & auto-close (feature is a no-op when disabled).
     # Drives the Proton process-flow SOP: idle warn/close, resolution

@@ -95,6 +95,37 @@ def _is_credential_bearing_path(path: str) -> bool:
     return path == _ROUTE_PREFIX or path.startswith(f"{_ROUTE_PREFIX}/")
 
 
+def _route_path(request: Request) -> str:
+    """The path Starlette's router actually matched against, i.e. with any
+    ASGI `root_path` prefix stripped.
+
+    `Request.url` (and therefore `request.url.path`) is built from
+    `scope["path"]` alone (`starlette.datastructures.URL.__init__`) -- it
+    never strips `root_path`. Route matching, however, goes through
+    `starlette._utils.get_route_path`, which does. Comparing the unstripped
+    `request.url.path` against `_ROUTE_PREFIX` therefore works today only
+    because nothing sets `root_path` (no `uvicorn --root-path`, no
+    `FastAPI(root_path=...)`, no `app.mount()`). The moment any of those is
+    introduced, this router's routes still match -- `root_path` doesn't
+    change routing -- but `request.url.path` gains the `root_path` prefix,
+    the equality/`startswith` check below always misses, and the array-body
+    / bare-string 422 credential leak this handler exists to close comes
+    back in full, silently. This reimplements `get_route_path`'s stripping
+    inline rather than importing the private helper.
+    """
+    path: str = request.scope["path"]
+    root_path: str = request.scope.get("root_path", "")
+    if not root_path:
+        return path
+    if not path.startswith(root_path):
+        return path
+    if path == root_path:
+        return ""
+    if path[len(root_path)] == "/":
+        return path[len(root_path) :]
+    return path
+
+
 async def _credential_safe_validation_handler(
     request: Request,
     exc: Exception,
@@ -111,7 +142,9 @@ async def _credential_safe_validation_handler(
     # submitted body -- including inside a body-level error's `input`, which
     # holds the whole body and whose `loc` is just ("body",). Nothing about
     # the error's shape can tell us it's safe, so strip unconditionally.
-    strip_all = _is_credential_bearing_path(request.url.path)
+    # Match on `_route_path(request)`, NOT `request.url.path` -- see that
+    # helper's docstring for why the two diverge under `root_path`.
+    strip_all = _is_credential_bearing_path(_route_path(request))
     sanitized_errors = []
     for raw_error in exc.errors():
         error = dict(raw_error)

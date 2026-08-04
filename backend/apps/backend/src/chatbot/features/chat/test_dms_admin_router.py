@@ -17,6 +17,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+from starlette.requests import Request as _Request
 
 from chatbot.features.authz.db import build_engine as build_authz_engine
 from chatbot.features.authz.db import build_session_maker as build_authz_session_maker
@@ -26,6 +27,7 @@ from chatbot.features.authz.repository import AuthzRepository
 from chatbot.features.authz.seed import seed_defaults
 from chatbot.features.chat.dms_admin_router import (
     _is_credential_bearing_path,
+    _route_path,
     build_dms_admin_router,
     install_credential_safe_error_handler,
 )
@@ -651,6 +653,88 @@ async def test_non_object_body_422_never_echoes_the_submitted_body(
     assert CREDENTIAL not in res.text
     # Not just "the literal string is absent" -- no error may carry an
     # "input" key at all on this route, whatever its loc shape.
+    assert all("input" not in error for error in res.json()["detail"])
+
+
+def test_route_path_strips_root_path_like_starlettes_own_route_matching():
+    """Regression test for the `root_path`-blindness bug: `request.url.path`
+    is built straight from `scope["path"]` and never strips `root_path`
+    (`starlette.datastructures.URL.__init__`), while Starlette's router
+    matches on `get_route_path(scope)`, which does. `_route_path` has to
+    reproduce that stripping, or the path this router compares against
+    `_ROUTE_PREFIX` and the path its own routes actually matched on diverge
+    the moment the app is ever served under a sub-path.
+    """
+
+    def _request(path: str, root_path: str) -> Any:
+        scope = {
+            "type": "http",
+            "path": path,
+            "root_path": root_path,
+            "headers": [],
+            "query_string": b"",
+        }
+        return _Request(scope)
+
+    # No root_path (today's deploy): passthrough, matching get_route_path.
+    assert _route_path(_request("/admin/integrations/dms", "")) == "/admin/integrations/dms"
+    # A root_path-configured app (uvicorn --root-path, FastAPI(root_path=...),
+    # or app.mount()): the prefix must be stripped, not compared against.
+    assert _route_path(_request("/sub/admin/integrations/dms", "/sub")) == "/admin/integrations/dms"
+    # Request path IS exactly the root_path (trailing-slash-free edge case
+    # get_route_path special-cases to "").
+    assert _route_path(_request("/sub", "/sub")) == ""
+    # Path that merely starts with root_path's characters but isn't rooted
+    # under it must not be treated as stripped.
+    assert _route_path(_request("/subother", "/sub")) == "/subother"
+
+
+@pytest.mark.asyncio
+async def test_credential_scrub_survives_a_root_path_configured_app(tmp_path, respx_mock):
+    """The unit-level `_route_path` test above proves the helper's math is
+    right; this proves the wiring actually uses it. Exercise a REAL
+    `root_path`-configured `TestClient` end to end -- not just the helper by
+    inspection -- so a future refactor that goes back to comparing
+    `request.url.path` fails a request-level test, not only a unit one.
+    Without the fix, this reproduces exactly the leak fix #1 in the closing
+    report describes: the array-body 422 whose `input` is the entire
+    submitted body, credential included, returns unstripped once `root_path`
+    is set, because `request.url.path` (`/sub/admin/integrations/dms`) no
+    longer equals `_ROUTE_PREFIX` (`/admin/integrations/dms`).
+    """
+    settings = get_settings().model_copy(update={"rbac_enabled": True})
+    authz_repo = await _build_authz_repo(tmp_path, "root_path_scrub")
+    await seed_defaults(authz_repo)
+    await authz_repo.assign_role(chatwoot_user_id=40, role_id="administrator")
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 40})
+    )
+    validator = TokenValidator(settings)
+    store = _build_store(settings)
+    router = build_dms_admin_router(store, authz_repo, validator, settings)
+
+    app = FastAPI()
+    app.include_router(router)
+    install_credential_safe_error_handler(app)
+    # root_path simulates the app being served under a sub-path -- e.g. a
+    # reverse proxy stripping a prefix, `uvicorn --root-path`, or
+    # `app.mount()`. base_url carries the matching prefix so the TestClient
+    # sends requests the same way a real client behind such a setup would.
+    client = TestClient(app, root_path="/sub", base_url="http://testserver/sub")
+
+    with patch(
+        "chatbot.features.chat.dms_config_store.firestore.Client", autospec=True
+    ) as MockClient:
+        MockClient.return_value = _FakeFirestoreClient()
+
+        res = client.put(
+            "/admin/integrations/dms",
+            json=[{"credential": CREDENTIAL}],
+            headers=HEADERS,
+        )
+
+    assert res.status_code == 422
+    assert CREDENTIAL not in res.text
     assert all("input" not in error for error in res.json()["detail"])
 
 

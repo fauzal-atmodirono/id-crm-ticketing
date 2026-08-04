@@ -18,14 +18,16 @@ index d2e5197..74acbb2 100644
  }
  
 diff --git a/app/javascript/dashboard/api/protonMetrics.js b/app/javascript/dashboard/api/protonMetrics.js
-index e088129..ff1983d 100644
+index e088129..0a05e95 100644
 --- a/app/javascript/dashboard/api/protonMetrics.js
 +++ b/app/javascript/dashboard/api/protonMetrics.js
-@@ -26,7 +26,31 @@ async function metricsRequest(path) {
+@@ -26,9 +26,35 @@ async function metricsRequest(path) {
    return text ? JSON.parse(text) : {};
  }
  
 -// GET /metrics/dashboard -> summary metrics for the overview panel
+-export function getDashboard() {
+-  return metricsRequest('/metrics/dashboard');
 +// Builds the `?from=&to=&granularity=` suffix Task 3's insights endpoints
 +// read (see backend chatbot/features/metrics/insights_router.py). Omitted
 +// entirely (empty string) unless all three are present -- a partial set is
@@ -42,19 +44,23 @@ index e088129..ff1983d 100644
 +  return `?${params.toString()}`;
 +}
 +
-+// GET /metrics/dashboard -> summary metrics for the overview panel.
-+// NOTE: unlike /metrics/lifecycle and /metrics/volume-by-type, this endpoint
-+// (dashboard_router.py) never wires up from/to/granularity -- it always
-+// calls port.fetch_dashboard() with no period, even though the underlying
-+// MetricsQueryPort.fetch_dashboard() protocol method accepts one. Any period
-+// argument passed here is silently ignored by the backend (FastAPI drops
-+// undeclared query params), so this client deliberately does NOT accept a
-+// period parameter either -- passing one would look like it does something
-+// it doesn't. Callers must treat every /metrics/dashboard block as all-time.
- export function getDashboard() {
-   return metricsRequest('/metrics/dashboard');
++// GET /metrics/dashboard -> summary metrics for the overview panel, with no
++// `period`, or { current, previous, deltas, scopes } when `period` is given
++// -- a later backend wave wired from/to/granularity into dashboard_router.py
++// (it used to silently ignore them; that gap is what let a caller-supplied
++// week header render all-time data with no warning, since fixed). Only
++// `volume` can ever be period-scoped there; every other block always comes
++// back "unfiltered" in `scopes`. The Weekly Report page (Task 4) doesn't
++// call this with a period even though it's now available: volume-by-type's
++// rows already carry `channel` alongside `case_type`/`division`, so that one
++// endpoint covers the same ground without also wiring up dashboard's
++// overlapping `volume` block.
++export function getDashboard(period) {
++  return metricsRequest(`/metrics/dashboard${periodQuery(period)}`);
  }
-@@ -36,21 +60,30 @@ export function getAnomalies() {
+ 
+ // GET /metrics/anomalies -> detected anomaly list
+@@ -36,21 +62,30 @@ export function getAnomalies() {
    return metricsRequest('/metrics/anomalies');
  }
  
@@ -108,10 +114,10 @@ index 0d5196e..248f472 100644
            label: t('SIDEBAR.REPORTS_OVERVIEW'),
 diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue
 new file mode 100644
-index 0000000..f9deb5d
+index 0000000..6633164
 --- /dev/null
 +++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue
-@@ -0,0 +1,1215 @@
+@@ -0,0 +1,1358 @@
 +<!-- ProtonWeeklyReport.vue — OUR file. Package E (reporting deck parity),
 +     Task 4: one page, sections in the weekly deck's own order (see
 +     docs/superpowers/specs/2026-08-04-pkg-e-reporting-deck-parity-design.md
@@ -137,20 +143,20 @@ index 0000000..f9deb5d
 +     per-case detail table rather than re-implementing pagination/row
 +     mapping.
 +
-+     Only two of the endpoints this page reads are genuinely period-capable
-+     at the HTTP layer today: /metrics/lifecycle and /metrics/volume-by-type
-+     (see insights_router.py). /metrics/departments, /metrics/callcenter,
++     Two of the endpoints this page reads are genuinely period-capable at
++     the HTTP layer: /metrics/lifecycle and /metrics/volume-by-type (see
++     insights_router.py). /metrics/departments, /metrics/callcenter,
 +     /metrics/dealer-escalation, /metrics/sla-buckets, and /metrics/case-aging
 +     all 400 if given period params -- their underlying views have no date
 +     column -- so they're fetched with no period at all and labelled "All
 +     time" throughout this page (reportScope.js's SCOPE_STATUS.UNFILTERED).
-+     /metrics/dashboard is deliberately NOT used here even though its
-+     `volume` block overlaps with volume-by-type's channel breakdown: its
-+     HTTP route never wires up from/to/granularity (see protonMetrics.js's
-+     getDashboard comment), and volume-by-type's rows already carry `channel`
-+     alongside `case_type`/`division`, so the channel-mix and type/division
-+     cuts below both come from the one genuinely week-scoped endpoint rather
-+     than mixing in an endpoint that can't actually honour the picker. -->
++     /metrics/dashboard is ALSO period-capable now (a later backend wave
++     wired from/to/granularity into dashboard_router.py -- see
++     protonMetrics.js's getDashboard comment), but this page still doesn't
++     call it: volume-by-type's rows already carry `channel` alongside
++     `case_type`/`division`, so the channel-mix and type/division cuts below
++     both come from the one endpoint rather than also wiring up dashboard's
++     overlapping `volume` block for no new information. -->
 +<script setup>
 +import { ref, computed, onMounted, watch } from 'vue';
 +import { useAlert } from 'dashboard/composables';
@@ -353,8 +359,19 @@ index 0000000..f9deb5d
 +
 +watch(weekStart, loadPeriodScoped);
 +
++// Missing `scopes.volume` (an old backend deployed ahead of Task 3/the SPA,
++// or genuinely absent for any other reason) defaults to UNAVAILABLE, not OK
++// -- fork patches and the backend deploy independently, so a response that
++// doesn't say "ok" must never be read as if it did. Defaulting to OK here
++// would show a "This week" badge over C1's since-fixed false "0 total
++// cases" for exactly that scenario.
 +const volumeScopeStatus = computed(
-+  () => volumeByType.value?.scopes?.volume?.current?.status ?? SCOPE_STATUS.OK
++  () =>
++    volumeByType.value?.scopes?.volume?.current?.status ??
++    SCOPE_STATUS.UNAVAILABLE
++);
++const volumePreviousScopeStatus = computed(
++  () => volumeByType.value?.scopes?.volume?.previous?.status ?? null
 +);
 +const volumeRows = computed(() => {
 +  if (!scopeHasRenderableRows(volumeScopeStatus.value)) return [];
@@ -363,6 +380,19 @@ index 0000000..f9deb5d
 +const volumeDelta = computed(() =>
 +  formatDelta(volumeByType.value?.deltas?.volume)
 +);
++// Null covers two different situations the API deliberately can't tell
++// apart at the number level (both legitimately serialise as `deltas.volume:
++// null` -- see insights_router.py's `_block_delta`): a genuine first period
++// on record (previous leg is "ok" but its total was zero) vs. a previous
++// leg that couldn't be loaded at all. `scopes.volume.previous.status` is
++// what distinguishes them, so read it rather than leaving both cases behind
++// one "not comparable" string.
++const volumeDeltaReason = computed(() => {
++  if (volumeDelta.value) return null;
++  return volumePreviousScopeStatus.value === SCOPE_STATUS.OK
++    ? 'vs last week: no prior data (nothing recorded the week before)'
++    : 'vs last week: unavailable (previous period could not be loaded)';
++});
 +const volumeTotal = computed(() =>
 +  volumeRows.value.reduce((sum, r) => sum + (r.volume ?? 0), 0)
 +);
@@ -383,15 +413,46 @@ index 0000000..f9deb5d
 +    .sort((a, b) => b.volume - a.volume);
 +});
 +
-+const volumeByTypeDivision = computed(() =>
-+  [...volumeRows.value]
-+    .sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))
-+    .slice(0, TOP_N)
-+);
++// `volumeRows` rows are graded at (bucket, channel, case_type, division) --
++// finer than the (case_type, division) the table below displays. A window
++// that spans more than one bucket (any non-ISO-aligned week does, e.g.
++// Proton's own Friday-start 17-23 Jul 2026 straddles ISO weeks W29 and W30)
++// or that mixes channels returns multiple rows per (case_type, division),
++// which rendered as visually-identical duplicate rows before this fix and
++// silently truncated the split under `.slice(TOP_N)`. Aggregated the same
++// way `channelMix` above already aggregates over channel: sum `volume` for
++// every row sharing a (case_type, division) pair, regardless of which
++// bucket or channel it came from. No TOP_N cap here -- (case_type, division)
++// combinations are small and bounded (a handful of case types × divisions),
++// so capping would reintroduce exactly the "table doesn't sum to the
++// headline" problem this fix exists to close.
++const volumeByTypeDivisionAggregated = computed(() => {
++  const byKey = new Map();
++  volumeRows.value.forEach(row => {
++    const caseType = row.case_type ?? 'Unknown';
++    const division = row.division ?? 'Unknown';
++    const key = `${caseType} :: ${division}`;
++    const existing = byKey.get(key);
++    if (existing) {
++      existing.volume += row.volume ?? 0;
++    } else {
++      byKey.set(key, {
++        case_type: caseType,
++        division,
++        volume: row.volume ?? 0,
++      });
++    }
++  });
++  return Array.from(byKey.values()).sort((a, b) => b.volume - a.volume);
++});
 +
 +const stateTrendScopeStatus = computed(
 +  () =>
-+    lifecycleData.value?.scopes?.state_trend?.current?.status ?? SCOPE_STATUS.OK
++    lifecycleData.value?.scopes?.state_trend?.current?.status ??
++    SCOPE_STATUS.UNAVAILABLE
++);
++const stateTrendPreviousScopeStatus = computed(
++  () => lifecycleData.value?.scopes?.state_trend?.previous?.status ?? null
 +);
 +const stateTrendRows = computed(() => {
 +  if (!scopeHasRenderableRows(stateTrendScopeStatus.value)) return [];
@@ -400,14 +461,34 @@ index 0000000..f9deb5d
 +const stateTrendDelta = computed(() =>
 +  formatDelta(lifecycleData.value?.deltas?.state_trend)
 +);
++const stateTrendDeltaReason = computed(() => {
++  if (stateTrendDelta.value) return null;
++  return stateTrendPreviousScopeStatus.value === SCOPE_STATUS.OK
++    ? 'vs last week: no prior data (nothing recorded the week before)'
++    : 'vs last week: unavailable (previous period could not be loaded)';
++});
 +const stateTrendTotal = computed(() =>
 +  stateTrendRows.value.reduce((sum, r) => sum + (r.cases ?? 0), 0)
 +);
-+const sortedStateTrend = computed(() =>
-+  [...stateTrendRows.value]
-+    .sort((a, b) => (b.cases ?? 0) - (a.cases ?? 0))
-+    .slice(0, TOP_N)
-+);
++// Same grain mismatch and fix as `volumeByTypeDivisionAggregated` above:
++// `stateTrendRows` is graded at (bucket, status, division), the table shows
++// (division, status) — aggregate across bucket before sorting, no TOP_N cap
++// for the same "must sum to the headline" reason.
++const stateTrendAggregated = computed(() => {
++  const byKey = new Map();
++  stateTrendRows.value.forEach(row => {
++    const division = row.division ?? 'Unknown';
++    const status = row.status ?? 'Unknown';
++    const key = `${division} :: ${status}`;
++    const existing = byKey.get(key);
++    if (existing) {
++      existing.cases += row.cases ?? 0;
++    } else {
++      byKey.set(key, { division, status, cases: row.cases ?? 0 });
++    }
++  });
++  return Array.from(byKey.values()).sort((a, b) => b.cases - a.cases);
++});
 +
 +// ── All-time data: /metrics/departments, /metrics/callcenter ─────────────
 +// Neither endpoint accepts a period (400 if given one — see
@@ -529,7 +610,10 @@ index 0000000..f9deb5d
 +
 +const weekCases = computed(() => {
 +  const startSeconds = Math.floor(weekStart.value.getTime() / 1000);
-+  // End of Sunday: start of the following Monday, minus one second.
++  // Exclusive upper bound: start of the day *after* the window's last day,
++  // minus one second. Not "end of Sunday" -- the window no longer always
++  // ends on a Sunday now that its start date is user-chosen (see the "Week
++  // picker" comment above).
 +  const endSeconds =
 +    Math.floor(addDays(weekStart.value, 7).getTime() / 1000) - 1;
 +  return allCases.value.filter(row => {
@@ -631,9 +715,12 @@ index 0000000..f9deb5d
 +        now, in days since creation, bucketed 1–3 / 4–6 / 7+ days.
 +      </li>
 +      <li>
-+        <strong class="text-n-slate-12">A week</strong> is an ISO calendar week
-+        (Monday through Sunday) — the same boundary the week picker above and
-+        the backend's own bucketing use.
++        <strong class="text-n-slate-12">A week</strong> is any 7-day window, not
++        necessarily Monday through Sunday. The picker above defaults to the
++        current ISO Monday–Sunday week, but its start date is user-chosen — set
++        it to match a specific reporting window (Proton's own weekly deck runs
++        Friday–Thursday). The window shown above the picker is the exact range
++        every number on this page is queried against.
 +      </li>
 +      <li>
 +        <strong class="text-n-slate-12">"wh" in SLA buckets</strong> means
@@ -658,18 +745,6 @@ index 0000000..f9deb5d
 +      <h3 class="text-sm font-semibold text-n-slate-12">Case Volume</h3>
 +      <ProtonScopeBadge :status="volumeScopeStatus" />
 +    </div>
-+    <div class="flex items-baseline gap-2 mb-4">
-+      <span class="text-2xl font-semibold tabular-nums text-n-slate-12">
-+        {{ fmtNum(volumeTotal, 0) }}
-+      </span>
-+      <span class="text-sm text-n-slate-11">total cases</span>
-+      <span v-if="volumeDelta" class="text-sm font-medium text-n-slate-11">
-+        {{ volumeDelta }} vs last week
-+      </span>
-+      <span v-else class="text-sm text-n-slate-10">
-+        vs last week: not comparable
-+      </span>
-+    </div>
 +    <p class="text-xs text-n-slate-10 mb-4">
 +      Read from the BigQuery reporting warehouse
 +      (<code>/metrics/volume-by-type</code>), not live from Chatwoot — this
@@ -677,6 +752,12 @@ index 0000000..f9deb5d
 +      below, which reads Chatwoot directly. See the note there.
 +    </p>
 +
++    <!-- The headline number and every table below live only in this v-else
++         branch — never outside the loading/error/empty chain — so a failed
++         or still-loading fetch can never render "0 total cases". See
++         volumeScopeStatus's comment: a missing/degraded scope forces
++         volumeRows to [], which lands here as the scopeEmptyMessage branch,
++         not as a headline showing zero. -->
 +    <woot-loading-state
 +      v-if="loadingPeriod"
 +      class="text-xs"
@@ -692,6 +773,19 @@ index 0000000..f9deb5d
 +      {{ scopeEmptyMessage(volumeScopeStatus) }}
 +    </div>
 +    <template v-else>
++      <div class="flex items-baseline gap-2 mb-4">
++        <span class="text-2xl font-semibold tabular-nums text-n-slate-12">
++          {{ fmtNum(volumeTotal, 0) }}
++        </span>
++        <span class="text-sm text-n-slate-11">total cases</span>
++        <span v-if="volumeDelta" class="text-sm font-medium text-n-slate-11">
++          {{ volumeDelta }} vs last week
++        </span>
++        <span v-else class="text-sm text-n-slate-10">
++          {{ volumeDeltaReason }}
++        </span>
++      </div>
++
 +      <h4 class="text-xs font-semibold text-n-slate-11 mb-2">Channel mix</h4>
 +      <div class="overflow-x-auto mb-6">
 +        <table class="w-full text-sm text-left">
@@ -731,7 +825,7 @@ index 0000000..f9deb5d
 +      </div>
 +
 +      <h4 class="text-xs font-semibold text-n-slate-11 mb-2">
-+        By case type &amp; division (top {{ TOP_N }})
++        By case type &amp; division
 +      </h4>
 +      <div class="overflow-x-auto">
 +        <table class="w-full text-sm text-left">
@@ -750,7 +844,7 @@ index 0000000..f9deb5d
 +          </thead>
 +          <tbody>
 +            <tr
-+              v-for="(row, idx) in volumeByTypeDivision"
++              v-for="(row, idx) in volumeByTypeDivisionAggregated"
 +              :key="`${row.case_type}-${row.division}-${idx}`"
 +              class="border-b border-n-container last:border-0"
 +            >
@@ -778,19 +872,9 @@ index 0000000..f9deb5d
 +      <h3 class="text-sm font-semibold text-n-slate-12">Case Status Trend</h3>
 +      <ProtonScopeBadge :status="stateTrendScopeStatus" />
 +    </div>
-+    <div class="flex items-baseline gap-2 mb-4">
-+      <span class="text-2xl font-semibold tabular-nums text-n-slate-12">
-+        {{ fmtNum(stateTrendTotal, 0) }}
-+      </span>
-+      <span class="text-sm text-n-slate-11">cases across all statuses</span>
-+      <span v-if="stateTrendDelta" class="text-sm font-medium text-n-slate-11">
-+        {{ stateTrendDelta }} vs last week
-+      </span>
-+      <span v-else class="text-sm text-n-slate-10">
-+        vs last week: not comparable
-+      </span>
-+    </div>
 +
++    <!-- Headline and table both live only in this v-else branch — see the
++         Case Volume section above's identical comment for why. -->
 +    <woot-loading-state
 +      v-if="loadingPeriod"
 +      class="text-xs"
@@ -805,40 +889,59 @@ index 0000000..f9deb5d
 +    >
 +      {{ scopeEmptyMessage(stateTrendScopeStatus) }}
 +    </div>
-+    <div v-else class="overflow-x-auto">
-+      <table class="w-full text-sm text-left">
-+        <thead>
-+          <tr class="border-b border-n-container">
-+            <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
-+              Division
-+            </th>
-+            <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
-+              Status
-+            </th>
-+            <th class="pb-2 text-xs font-medium text-n-slate-11 text-right">
-+              Cases
-+            </th>
-+          </tr>
-+        </thead>
-+        <tbody>
-+          <tr
-+            v-for="(row, idx) in sortedStateTrend"
-+            :key="`${row.division}-${row.status}-${idx}`"
-+            class="border-b border-n-container last:border-0"
-+          >
-+            <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
-+              {{ row.division ?? '—' }}
-+            </td>
-+            <td class="py-2 pr-4 text-n-slate-12 capitalize whitespace-nowrap">
-+              {{ row.status ?? '—' }}
-+            </td>
-+            <td class="py-2 text-n-slate-12 text-right tabular-nums">
-+              {{ fmtNum(row.cases, 0) }}
-+            </td>
-+          </tr>
-+        </tbody>
-+      </table>
-+    </div>
++    <template v-else>
++      <div class="flex items-baseline gap-2 mb-4">
++        <span class="text-2xl font-semibold tabular-nums text-n-slate-12">
++          {{ fmtNum(stateTrendTotal, 0) }}
++        </span>
++        <span class="text-sm text-n-slate-11">cases across all statuses</span>
++        <span
++          v-if="stateTrendDelta"
++          class="text-sm font-medium text-n-slate-11"
++        >
++          {{ stateTrendDelta }} vs last week
++        </span>
++        <span v-else class="text-sm text-n-slate-10">
++          {{ stateTrendDeltaReason }}
++        </span>
++      </div>
++      <div class="overflow-x-auto">
++        <table class="w-full text-sm text-left">
++          <thead>
++            <tr class="border-b border-n-container">
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Division
++              </th>
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Status
++              </th>
++              <th class="pb-2 text-xs font-medium text-n-slate-11 text-right">
++                Cases
++              </th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="(row, idx) in stateTrendAggregated"
++              :key="`${row.division}-${row.status}-${idx}`"
++              class="border-b border-n-container last:border-0"
++            >
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.division ?? '—' }}
++              </td>
++              <td
++                class="py-2 pr-4 text-n-slate-12 capitalize whitespace-nowrap"
++              >
++                {{ row.status ?? '—' }}
++              </td>
++              <td class="py-2 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.cases, 0) }}
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++    </template>
 +  </div>
 +
 +  <!-- Section: Departments & PIC Detail (All Time) ──────────────────────── -->
@@ -1103,12 +1206,9 @@ index 0000000..f9deb5d
 +      </div>
 +
 +      <h4 class="text-xs font-semibold text-n-slate-11 mb-2">
-+        First response &amp; resolution time
++        First response time
 +      </h4>
-+      <div
-+        v-if="firstResponseRows.length || resolutionTimeRows.length"
-+        class="overflow-x-auto mb-6"
-+      >
++      <div v-if="firstResponseRows.length" class="overflow-x-auto mb-6">
 +        <table class="w-full text-sm text-left">
 +          <thead>
 +            <tr class="border-b border-n-container">
@@ -1120,13 +1220,8 @@ index 0000000..f9deb5d
 +              >
 +                Avg 1st Resp (min)
 +              </th>
-+              <th
-+                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 text-right"
-+              >
-+                P90 1st Resp (min)
-+              </th>
 +              <th class="pb-2 text-xs font-medium text-n-slate-11 text-right">
-+                Avg Resolution (min)
++                P90 1st Resp (min)
 +              </th>
 +            </tr>
 +          </thead>
@@ -1142,16 +1237,70 @@ index 0000000..f9deb5d
 +              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
 +                {{ fmtNum(row.avg_first_response_min) }}
 +              </td>
-+              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++              <td class="py-2 text-n-slate-12 text-right tabular-nums">
 +                {{ fmtNum(row.p90_first_response_min, 0) }}
 +              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++
++      <!-- `v_resolution_time` is GROUP BY channel, division -- there is no
++           channel-grain row to read a per-channel average off, and averaging
++           these division-level averages together would be non-additive (the
++           row set carries no per-division case count to weight by). Shown
++           at its real (channel, division) grain instead of merged into the
++           first-response table above under a "resolution" column that
++           would have shown one arbitrary division's number labelled as the
++           whole channel's. -->
++      <h4 class="text-xs font-semibold text-n-slate-11 mb-2">
++        Resolution time by channel &amp; division
++      </h4>
++      <div v-if="resolutionTimeRows.length" class="overflow-x-auto mb-6">
++        <table class="w-full text-sm text-left">
++          <thead>
++            <tr class="border-b border-n-container">
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Channel
++              </th>
++              <th class="pb-2 pr-4 text-xs font-medium text-n-slate-11">
++                Division
++              </th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 text-right"
++              >
++                Avg (min)
++              </th>
++              <th
++                class="pb-2 pr-4 text-xs font-medium text-n-slate-11 text-right"
++              >
++                P50 (min)
++              </th>
++              <th class="pb-2 text-xs font-medium text-n-slate-11 text-right">
++                P90 (min)
++              </th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="(row, idx) in resolutionTimeRows"
++              :key="`${row.channel}-${row.division}-${idx}`"
++              class="border-b border-n-container last:border-0"
++            >
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.channel ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 whitespace-nowrap">
++                {{ row.division ?? '—' }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.avg_min) }}
++              </td>
++              <td class="py-2 pr-4 text-n-slate-12 text-right tabular-nums">
++                {{ fmtNum(row.p50_min, 0) }}
++              </td>
 +              <td class="py-2 text-n-slate-12 text-right tabular-nums">
-+                {{
-+                  fmtNum(
-+                    resolutionTimeRows.find(r => r.channel === row.channel)
-+                      ?.avg_min
-+                  )
-+                }}
++                {{ fmtNum(row.p90_min, 0) }}
 +              </td>
 +            </tr>
 +          </tbody>

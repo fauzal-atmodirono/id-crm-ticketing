@@ -25,6 +25,7 @@ from chatbot.features.chat.adapters.tools_store import build_tools_store
 from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.adapters.vertex_search import VertexAISearchAdapter
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
+from chatbot.features.chat.dms_client import DmsClient, MockDmsClient
 from chatbot.features.chat.dms_config_store import DmsConfigStore
 from chatbot.features.chat.escalation_notifier import EscalationNotifier, build_dealer_email_map
 from chatbot.features.chat.escalation_router import build_escalation_router
@@ -306,6 +307,29 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # router below — is off; the store itself never touches Firestore until
     # a caller actually invokes get()/get_credential()/save().
     dms_config_store = DmsConfigStore(settings)
+
+    # The client Customer 360 is allowed to call. Phase 1 ships no real DMS
+    # adapter (see the package design doc), so the only thing that can ever
+    # be wired here is a demo client — and that must be an explicit,
+    # deliberate opt-in, never the default. This is intentionally an env var
+    # read directly rather than a `platform.config.Settings` field: Settings/
+    # example.env sit outside this task's owned files, and a follow-up can
+    # promote it alongside a documented deploy/tenants/example.env entry if
+    # it needs a permanent home. Off (the default): `dms_client` stays
+    # `None`, which — combined with `customer360_router.py`'s own
+    # enabled/disabled check on `dms_config_store` — means MockDmsClient is
+    # *never* constructed anywhere in this file unless an operator sets
+    # DMS_MOCK_CLIENT_ENABLED. An operator who separately flips "enabled" in
+    # the admin UI without this still correctly reads as "unreachable" (not
+    # connected), never as a silent, misleadingly-empty "ok" — see
+    # customer360_router.py's module docstring for why that distinction
+    # matters.
+    dms_mock_client_enabled = os.getenv("DMS_MOCK_CLIENT_ENABLED", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    dms_client: DmsClient | None = MockDmsClient() if dms_mock_client_enabled else None
 
     if settings.crm_provider == "zendesk":
         zendesk_client = ZendeskAdapter(settings)
@@ -596,7 +620,13 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
 
             app.include_router(
                 build_customer360_router(
-                    chatwoot_client, rsa_repo, authz_repo, authz_validator, settings
+                    chatwoot_client,
+                    rsa_repo,
+                    authz_repo,
+                    authz_validator,
+                    settings,
+                    dms_config_store=dms_config_store,
+                    dms_client=dms_client,
                 )
             )
         else:

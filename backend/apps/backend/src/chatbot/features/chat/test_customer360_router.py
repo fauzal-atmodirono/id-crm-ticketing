@@ -15,7 +15,7 @@ from chatbot.features.authz.db import init_authz_db
 from chatbot.features.authz.identity import TokenValidator
 from chatbot.features.authz.repository import AuthzRepository
 from chatbot.features.authz.seed import seed_defaults
-from chatbot.features.chat.customer360_router import build_customer360_router
+from chatbot.features.chat.customer360_router import _build_dms_block, build_customer360_router
 from chatbot.features.chat.dms_client import (
     DmsCustomer,
     DmsServiceRecord,
@@ -361,6 +361,38 @@ class _ManyVehiclesDmsClient:
         return [DmsServiceRecord(date="2026-01-01", description="d", dealer=None)]
 
 
+class _PartiallyFailingDmsClient:
+    """One list_service_history call fails immediately; the others take a
+    beat before finishing. Pins that the fan-out waits for every sibling
+    call to actually finish -- not just for the first exception -- before
+    the block degrades to unreachable. Under the pre-fix
+    `asyncio.gather(...)` (default `return_exceptions=False`), V2's
+    exception propagates the instant it's raised, `_build_dms_block`
+    returns immediately, and V1/V3 -- still mid-`sleep` -- are abandoned
+    without ever reaching `self.completed`. Under the fix, `completed` is
+    reliably `{"V1", "V3"}` by the time the awaited call returns."""
+
+    def __init__(self) -> None:
+        self.completed: list[str] = []
+
+    async def find_customer(self, *, phone, vehicle_no):
+        return DmsCustomer(ref="CUST-1", name="Partial", phone=phone)
+
+    async def list_vehicles(self, customer_ref):
+        return [
+            DmsVehicle(vehicle_no="V1", model="X", purchased_from=None),
+            DmsVehicle(vehicle_no="V2", model="X", purchased_from=None),
+            DmsVehicle(vehicle_no="V3", model="X", purchased_from=None),
+        ]
+
+    async def list_service_history(self, vehicle_no):
+        if vehicle_no == "V2":
+            raise RuntimeError("dms outage for V2")
+        await asyncio.sleep(0.05)
+        self.completed.append(vehicle_no)
+        return [DmsServiceRecord(date="2026-01-01", description="d", dealer=None)]
+
+
 @pytest.mark.asyncio
 async def test_response_is_unchanged_when_the_integration_is_disabled(tmp_path, respx_mock):
     """The important one: a router built exactly the way main.py builds it
@@ -484,9 +516,9 @@ async def test_dms_client_exception_still_returns_all_crm_blocks_fail_open(tmp_p
     assert body["contact"] == contact
     assert body["conversations"] == conversations
     assert body["rsa_incidents"] == []
-    # dms is present but must never claim success -- fail-open, not silent.
-    dms = body.get("dms")
-    assert dms is None or dms.get("status") == "unreachable"
+    # dms_config_store says enabled and a client is wired, so the block is
+    # guaranteed present -- it must never claim success, fail-open not silent.
+    assert body["dms"]["status"] == "unreachable"
 
 
 @pytest.mark.asyncio
@@ -645,3 +677,36 @@ async def test_service_history_fanout_is_capped_per_customer(tmp_path, respx_moc
     # 8 vehicles were on file; the service-history fan-out is capped.
     assert len(dms_client.calls) <= 5
     assert len(dms_client.calls) < 8
+
+
+@pytest.mark.asyncio
+async def test_one_failing_vehicle_history_call_does_not_orphan_siblings():
+    """Regression test: asyncio.gather's default return_exceptions=False
+    propagates the first exception immediately and leaves the other
+    in-flight list_service_history calls running -- uncancelled, unawaited
+    by anything, outside the request's wait_for window, able to emit "Task
+    exception was never retrieved" noise and hold resources with no bound of
+    their own. return_exceptions=True (the fix) makes the fan-out wait for
+    every sibling call to actually finish before the block degrades to
+    unreachable.
+
+    Calls `_build_dms_block` directly rather than through the HTTP router so
+    "did the siblings actually finish" is observed with certainty at the
+    moment the awaited call returns, with no ambiguity from a test client's
+    own event-loop handling.
+    """
+    dms_client = _PartiallyFailingDmsClient()
+
+    block = await _build_dms_block(
+        _StubDmsConfigStore(_dms_config(enabled=True)),
+        dms_client,
+        phone="0123456789",
+        vehicle_no=None,
+    )
+
+    assert block is not None
+    assert block["status"] == "unreachable"
+    assert block["service_history"] == []
+    # V1 and V3 were allowed to actually finish before an answer came back --
+    # not abandoned mid-flight the instant V2 raised.
+    assert set(dms_client.completed) == {"V1", "V3"}

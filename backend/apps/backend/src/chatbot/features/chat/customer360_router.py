@@ -163,9 +163,28 @@ async def _fetch_dms_records(
     # Cap the fan-out, don't just cap what's rendered -- a customer with many
     # vehicles on file must not turn into many concurrent DMS calls.
     bounded_vehicles = vehicles[:_MAX_VEHICLES_FOR_HISTORY]
-    histories = await asyncio.gather(
-        *(client.list_service_history(vehicle.vehicle_no) for vehicle in bounded_vehicles)
+    # return_exceptions=True is deliberate: the default (False) propagates
+    # the first exception the instant it happens and leaves the OTHER
+    # in-flight list_service_history calls running, uncancelled -- outside
+    # this function's return, outside the caller's asyncio.wait_for window,
+    # free to emit "Task exception was never retrieved" noise and hold
+    # resources with no timeout of their own. return_exceptions=True makes
+    # gather wait for every call to actually finish (success or failure)
+    # before this function looks at any of them -- no orphans, whatever the
+    # outcome.
+    results: list[list[DmsServiceRecord] | BaseException] = await asyncio.gather(
+        *(client.list_service_history(vehicle.vehicle_no) for vehicle in bounded_vehicles),
+        return_exceptions=True,
     )
+    histories: list[list[DmsServiceRecord]] = []
+    for result in results:
+        if isinstance(result, BaseException):
+            # A single failed vehicle in the fan-out must not be presented
+            # as a customer's complete history -- degrade the whole block,
+            # same as any other DMS failure (caught by the caller's
+            # try/except around asyncio.wait_for).
+            raise result
+        histories.append(result)
     service_history = [record for records in histories for record in records]
     return customer, vehicles, service_history
 

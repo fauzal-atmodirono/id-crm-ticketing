@@ -7,7 +7,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from chatbot.features.chat.dms_config_store import DmsConfig, DmsConfigStore, public_dict
+from chatbot.features.chat.dms_config_store import (
+    _COLLECTION,
+    _DOC_ID,
+    DmsConfig,
+    DmsConfigStore,
+    public_dict,
+)
 from chatbot.platform.config import Settings
 
 CFG = DmsConfig(
@@ -70,12 +76,17 @@ class _FakeFirestoreClient:
 
 
 @pytest.fixture
-def store():
+def fake_client() -> _FakeFirestoreClient:
+    return _FakeFirestoreClient()
+
+
+@pytest.fixture
+def store(fake_client: _FakeFirestoreClient):
     settings = Settings(firestore_project_id="proj", firestore_database_id="db")
     with patch(
         "chatbot.features.chat.dms_config_store.firestore.Client", autospec=True
     ) as MockClient:
-        MockClient.return_value = _FakeFirestoreClient()
+        MockClient.return_value = fake_client
         yield DmsConfigStore(settings)
 
 
@@ -105,3 +116,25 @@ async def test_saving_with_none_credential_preserves_the_existing_one(store):
 
 async def test_config_absent_returns_none(store):
     assert await store.get() is None
+
+
+async def test_get_credential_returns_none_when_nothing_saved(store):
+    assert await store.get_credential() is None
+
+
+async def test_saving_with_none_credential_and_nothing_stored_omits_the_key(
+    store, fake_client: _FakeFirestoreClient
+):
+    """save(config, credential=None) on a store that has never held a
+    credential must not invent one — the accessor returns None, and the
+    underlying document must not even have a `credential` key (as opposed to
+    one holding a literal None), so a later regression that writes
+    `credential: null` instead of omitting the field is caught here rather
+    than only by the accessor's behaviour.
+    """
+    await store.save(CFG, credential=None)
+
+    assert await store.get_credential() is None
+
+    doc = fake_client._collections[_COLLECTION][_DOC_ID]
+    assert "credential" not in doc

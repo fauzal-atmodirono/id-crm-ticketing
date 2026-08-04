@@ -166,6 +166,58 @@ fetch, injected Gemini client:
 
 ---
 
+## 2.7 Build status — 2026-08-04
+
+**The video half is code-complete and merged to `dev-yuda`** (commits `7562bfc`
+… `d965f22`). Agent suite 270 passed; backend suite 1391 passed, 1 skipped.
+Both feature flags default off, so the committed code is inert until enabled.
+
+### What the final whole-feature review caught
+
+Per-task reviews all passed, but the whole-feature review found two Critical
+defects living in the seams between tasks. Both were verified by running the
+code, and both are fixed:
+
+1. **Inline media was persisted in and replayed from the ADK session.** The
+   `Runner` had no artifact service, so a video blob was appended to the
+   session and re-sent to Gemini on every later turn. On tenants using the
+   Firestore session store — which `deploy/tenants/default.env` sets — the
+   whole session is rewritten as one document, so a ~785 KB video breached
+   Firestore's 1 MiB limit and the conversation broke permanently. Latent for
+   audio and images (a voice note is ~60 KB); video made it certain. Fixed
+   with a `BlobFreeSessionService` decorator: the persisted copy carries a text
+   placeholder while the live session keeps the real media, so the current turn
+   still reaches Gemini intact. Covers all three media types.
+2. **The 16 MB cap was arithmetically wrong.** base64 inflates ~1.335×, so
+   16 MB became ~21.4 MB against Gemini's ~20 MB inline limit — videos between
+   roughly 15 and 16 MB passed the guard and were then rejected by Gemini,
+   exactly what the guard existed to prevent. Lowered to 14 MB, with the false
+   rationale corrected in `agent/app/config.py` and `deploy/tenants/example.env`
+   and a test that pins the arithmetic, not just the number.
+
+Also fixed: the per-turn media budget now spans audio + image + video together
+rather than guarding video alone.
+
+### Open follow-ups (not blockers)
+
+- **Voice-channel history loses meaning.** `handle_voice_turn` sends one audio
+  part and no text, so from the next turn the model sees a placeholder instead
+  of what the caller said. Multi-turn voice coherence degrades. The fix is
+  cheap because `_transcribe_audio` already produces the text: put the
+  transcription into the stored history, or carry it in the placeholder. Worth
+  doing before the phone channel is used in anger.
+- **`whatsapp_video_max_bytes` now governs total media**, so its drop log names
+  a *video* setting while explaining an *image* drop. Rename to
+  `whatsapp_media_max_bytes` with a pydantic alias fallback rather than a hard
+  break, which would invalidate deployed tenant env files.
+
+### Not executed — needs a different environment
+
+Tasks 6 and 7 (the Contacts/360 merge fork patch, and the Cloud Build +
+tenant deploy) were not run: this sandbox cannot reach github.com to clone
+upstream Chatwoot `v4.15.1`, and deploying is an out-of-sandbox operation.
+They need a machine with GitHub access and deploy rights.
+
 ## 3. Definition of done for Package B
 
 Contacts is the single lookup surface with a working 360 panel and no

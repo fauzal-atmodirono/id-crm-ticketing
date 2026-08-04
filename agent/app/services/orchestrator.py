@@ -593,6 +593,7 @@ async def _process_via_chat_agent(
     # silently vanishing (see the empty-text short-circuit below).
     audio_base64 = audio_mime_type = None
     image_base64 = image_mime_type = None
+    video_base64 = video_mime_type = None
     has_attachment = False
     if settings.whatsapp_media_understanding_enabled:
         for message in trailing_messages:
@@ -614,10 +615,28 @@ async def _process_via_chat_agent(
                         data, mime = fetched
                         image_base64 = base64.b64encode(data).decode()
                         image_mime_type = mime
+                elif file_type == "video" and video_base64 is None:
+                    fetched = await fetch_attachment_bytes(data_url, file_type_hint=file_type)
+                    if fetched is not None:
+                        data, mime = fetched
+                        # Skip oversized clips rather than sending a request
+                        # Gemini will reject: the turn still proceeds on its
+                        # text, which is better than failing the whole turn.
+                        if len(data) > settings.whatsapp_video_max_bytes:
+                            logger.warning(
+                                "orchestrator_video_too_large: conversation %s video %d bytes "
+                                "exceeds whatsapp_video_max_bytes %d; skipping video",
+                                conversation_id,
+                                len(data),
+                                settings.whatsapp_video_max_bytes,
+                            )
+                        else:
+                            video_base64 = base64.b64encode(data).decode()
+                            video_mime_type = mime
     else:
         has_attachment = any(m.get("attachments") for m in trailing_messages)
 
-    if not text and audio_base64 is None and image_base64 is None:
+    if not text and audio_base64 is None and image_base64 is None and video_base64 is None:
         if has_attachment:
             # Pre-existing bug: an attachment-only message (voice note/photo,
             # no caption) used to hit this short-circuit and vanish with zero
@@ -644,6 +663,8 @@ async def _process_via_chat_agent(
             audio_mime_type=audio_mime_type,
             image_base64=image_base64,
             image_mime_type=image_mime_type,
+            video_base64=video_base64,
+            video_mime_type=video_mime_type,
         )
         if proton is not None
         else None

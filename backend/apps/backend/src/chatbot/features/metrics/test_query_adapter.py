@@ -584,6 +584,40 @@ async def test_dashboard_volume_with_period_queries_volume_daily_with_parameters
 
 
 @pytest.mark.asyncio
+async def test_dashboard_period_does_not_leak_into_unfiltered_blocks() -> None:
+    """A period on fetch_dashboard only affects the volume block -- the
+    other 7 blocks have no date column at all and must stay unfiltered."""
+    period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient(
+        {
+            "v_volume_daily": [{"month": "2026-W29", "channel": "web", "volume": 5}],
+            "v_csat": [
+                {"channel": "web", "respondents": 10, "avg_score": 4.2, "satisfied_rate": 0.9}
+            ],
+        }
+    )
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    metrics = await q.fetch_dashboard(period=period)
+
+    # every non-volume block still ran the plain, unfiltered SELECT *
+    for view in (
+        "v_resolution_split",
+        "v_csat",
+        "v_nps",
+        "v_speed_of_response",
+        "v_fallback_rate",
+        "v_bounce_rate",
+        "v_quality",
+    ):
+        idx = next(i for i, sql in enumerate(client.queries) if view in sql)
+        assert client.queries[idx] == f"SELECT * FROM `proj.ds.{view}`"  # noqa: S608
+        assert client.job_configs[idx] is None
+    assert metrics.csat[0].avg_score == 4.2
+
+
+@pytest.mark.asyncio
 async def test_dashboard_volume_period_query_failure_degrades_to_empty_block() -> None:
     period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
     settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")

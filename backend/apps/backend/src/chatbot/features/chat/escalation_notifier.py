@@ -31,21 +31,21 @@ if TYPE_CHECKING:
 
 _log = structlog.get_logger(__name__)
 
-# Type alias: the ChatwootAdapter._request signature we inject.
-_CWRequest = Callable[..., Coroutine[Any, Any, dict[str, Any] | None]]
-
 # Type alias: ChatwootAdapter._merge_custom_attributes's signature (ticket_id,
 # attributes) -> None. Package C Task 5 review fix (Critical 1, round 2):
-# _write_case_state below used to call a raw `_CWRequest`-shaped callable
-# with a bare `{"custom_attributes": {...}}` POST body -- but Chatwoot's
-# custom-attributes endpoint REPLACES the whole object, so that call was
-# clobbering case_category/recording_url/external_id/etc. every time an
-# escalation fired (notify() calls _write_case_state unconditionally, before
-# create_ticket/open_handoff's own now-merge-safe custom_attrs write -- so a
-# reused conversation's prior attributes were being wiped one frame before
-# this class's own caller had a chance to preserve them). This is now
-# injected as ChatwootAdapter._merge_custom_attributes itself (GET, union,
-# POST -- see that method's docstring), not a hand-rolled reimplementation.
+# _write_case_state below used to call a raw ChatwootAdapter._request-shaped
+# callable directly, with a bare `{"custom_attributes": {...}}` POST body --
+# but Chatwoot's custom-attributes endpoint REPLACES the whole object, so
+# that call was clobbering case_category/recording_url/external_id/etc.
+# every time an escalation fired (notify() calls _write_case_state
+# unconditionally, before create_ticket/open_handoff's own now-merge-safe
+# custom_attrs write -- so a reused conversation's prior attributes were
+# being wiped one frame before this class's own caller had a chance to
+# preserve them). This is now injected as ChatwootAdapter._merge_custom_
+# attributes itself (GET, union, POST -- see that method's docstring), not
+# a hand-rolled reimplementation. The type alias below is deliberately
+# narrow (not the old raw-request shape) so a future accidental revert to
+# injecting `_request` again is a mypy error, not a silent regression.
 _CWMergeCustomAttributes = Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]
 
 

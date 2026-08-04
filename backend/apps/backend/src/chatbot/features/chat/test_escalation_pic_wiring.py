@@ -245,15 +245,31 @@ async def test_escalation_notifies_pic_in_chatwoot_only_mode() -> None:
 
 async def test_open_handoff_case_state_and_classification_both_survive() -> None:
     """Package C Task 5 review round 2, Critical 1: this is the regression
-    the missing test let through. ``open_handoff`` -> ``_fire_escalation``
+    the missing test let through -- and (round 3 review correction) it must
+    exercise a REUSED conversation to actually discriminate fixed from
+    unfixed. On a FRESH conversation there is nothing pre-existing for
+    ``_write_case_state`` to wipe, and round-1's already-merge-safe
+    ``open_handoff`` write (which runs SECOND) papers over a bare-assign
+    ``_write_case_state`` regardless -- a prior version of this test used a
+    fresh conversation and kept passing even with ``_write_case_state``
+    reverted to its pre-fix bare assign.
+
+    So: seed ``external_id`` on a conversation the adapter already has
+    CACHED (i.e. reused, not created by this call), simulating a case
+    where an earlier write already put something on the conversation
+    before this escalation runs. ``open_handoff`` -> ``_fire_escalation``
     -> ``notifier.notify()`` -> ``_write_case_state`` fires FIRST (writing
-    ``case_state``), then ``open_handoff`` writes its OWN custom attributes
-    (``case_category``/``case_type``/``vehicle_model``) SECOND -- against
-    the SAME conversation. With a bare-assign writer on either side,
-    whichever ran second would silently wipe the other. Runs the REAL
-    sequence (no mocked-out notifier, no mocked-out custom_attrs write)
-    against the stateful ``_FakeCW`` and asserts every attribute from BOTH
-    writers is present together at the end.
+    ``case_state``); ``open_handoff`` writes its OWN custom attributes
+    (``case_category``/``case_type``/``vehicle_model``) SECOND. With
+    ``_write_case_state`` bare-assigning, it wipes the seeded
+    ``external_id`` before ``open_handoff``'s own (merge-safe) write ever
+    reads it back -- so the loss is permanent regardless of what runs
+    after it. Asserts every attribute -- the seeded one, the notifier's,
+    and open_handoff's own -- is present together at the end.
+
+    Verified by actually reverting the fix (temporarily bare-assigning
+    ``_write_case_state`` again) and confirming this test fails -- see the
+    task-5-report.md fix-report entry for the command and output.
     """
     s = _settings()
     fake_cw = _FakeCW()
@@ -262,6 +278,11 @@ async def test_open_handoff_case_state_and_classification_both_survive() -> None
     registry = build_pic_registry(s)
     adapter = ChatwootAdapter(settings=s, pic_registry=registry)
     adapter._request = fake_cw._request  # type: ignore[method-assign]
+    # Simulate a REUSED conversation: already known to the adapter (cache
+    # hit -> _find_or_create_conversation returns it directly, no create),
+    # already carrying an attribute from some earlier write.
+    adapter._conv_by_session["sim-both-survive"] = "99"
+    fake_cw._custom_attrs["99"] = {"external_id": "phone-CA1"}
     notifier = EscalationNotifier(
         settings=s,
         pic_registry=registry,
@@ -287,6 +308,7 @@ async def test_open_handoff_case_state_and_classification_both_survive() -> None
     await adapter.open_handoff(payload)
 
     final = fake_cw._custom_attrs.get("99", {})
+    assert final.get("external_id") == "phone-CA1"  # seeded, pre-existing -- must survive
     assert final.get("case_state") == "WIP"  # written by the notifier, first
     assert final.get("case_category") == "sales"  # written by open_handoff, second
     assert final.get("case_type") == "Complaint"

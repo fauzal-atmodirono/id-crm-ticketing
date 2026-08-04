@@ -359,8 +359,21 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         The lock map is bounded (unlike ``_conv_by_session`` used to be):
         once it exceeds ``_TICKET_LOCK_CAP``, currently-unlocked entries
         are dropped. Dropping an unlocked lock is safe -- a later writer
-        simply makes a fresh one -- while a HELD lock is never evicted, so
-        mutual exclusion can't be broken by eviction.
+        simply makes a fresh one. What's actually guaranteed is narrower
+        than "a held lock is never evicted": ``locked()`` only reflects
+        whether a lock is CURRENTLY acquired, not whether someone is
+        queued for it -- ``asyncio.Lock.release()`` clears that flag
+        before the next waiter actually resumes, so a lock with a pending
+        waiter can briefly report ``locked() == False``. If the sweep
+        above runs in that exact window -- which needs the map to already
+        be past ``_TICKET_LOCK_CAP`` (512) live conversations -- it can
+        evict a lock a waiter is about to acquire, and the next caller for
+        that ticket then mints a fresh, different ``Lock`` object,
+        reopening the interleaving window this method exists to close.
+        Residual, not eliminated: rare (needs both the size threshold and
+        that exact scheduling window) and self-healing (the same
+        read-modify-write pattern this lock protects tolerates the loss of
+        one writer's key the same way it always did pre-lock).
         """
         lock = self._ticket_locks.get(ticket_id)
         if lock is None:

@@ -695,6 +695,32 @@ class PhoneBridge:
         except Exception as e:
             _log.error("phone_finalize_recording_task_failed", call_sid=self.call_sid, error=str(e))
 
+    async def _settle_handoff_prefetch_task(self) -> None:
+        """Await any in-flight business-hours prefetch task (see
+        ``_handoff_prefetch_task`` / ``HandoffTargetResolver.prefetch``) so
+        it isn't left detached past teardown -- the same convention this
+        file states explicitly for ``_ticket_create_task`` and
+        ``_recording_task`` just above: every task created fire-and-forget
+        at call setup gets settled here.
+
+        Benign either way -- ``prefetch()`` never raises (fails open to a
+        cold cache, which just means ``resolve()`` does the lookup inline
+        next time) and completes inside its own bounded HTTP call -- but an
+        un-awaited task is still a lingering task, so it gets the same
+        bounded settle as the other two for consistency, not because a
+        failure here has any observable effect.
+        """
+        if self._handoff_prefetch_task is None:
+            return
+        try:
+            await asyncio.wait_for(
+                self._handoff_prefetch_task, timeout=_FLUSH_DRAIN_TIMEOUT_SECONDS
+            )
+        except Exception as e:
+            _log.error(
+                "phone_finalize_handoff_prefetch_task_failed", call_sid=self.call_sid, error=str(e)
+            )
+
     async def _drain_flush_queue(self) -> None:
         """Force out whatever's left in the live-transcript sink (a partial
         turn, or something that hadn't hit the flush interval yet) BEFORE
@@ -906,7 +932,7 @@ class PhoneBridge:
         """Teardown: settle the detached call-start tasks, drain whatever
         live transcript is still queued, then do the closing CRM writes.
 
-        Whole-branch review fix (Important 7): the three awaits above are
+        Whole-branch review fix (Important 7): the four awaits above are
         individually bounded, but the closing writes were not bounded at
         ALL -- see ``_FINALIZE_TAIL_TIMEOUT_SECONDS``. They now run under
         one ceiling, and a timeout logs the (truncated) transcript so the
@@ -915,6 +941,7 @@ class PhoneBridge:
         """
         await self._settle_ticket_create_task()
         await self._settle_recording_task()
+        await self._settle_handoff_prefetch_task()
         await self._drain_flush_queue()
 
         if not self.call_sid:
@@ -935,10 +962,19 @@ class PhoneBridge:
             )
 
     async def _write_finalize_result(self, session_id: str, body: str) -> None:
-        if not self.transcript:
-            # Nobody spoke. Nothing to summarise -- but a ticket may
-            # already exist from the call-start create, and an empty open
-            # conversation must not be left behind.
+        if not self.transcript and self.handoff is None:
+            # Nobody spoke and nothing was escalated. Nothing to summarise
+            # -- but a ticket may already exist from the call-start create,
+            # and an empty open conversation must not be left behind.
+            #
+            # Closing fix: a recorded handoff must NEVER take this branch,
+            # even with an empty transcript -- e.g. a request_human_handoff
+            # tool call that arrives before the first transcript event. The
+            # abandoned-call path resolves the ticket and drops the
+            # "[Handoff to human agent]" note entirely, silently closing an
+            # escalation nobody handled. self.handoff not None routes into
+            # the normal path below instead, which posts the note and keeps
+            # status "open".
             try:
                 await self._close_abandoned_call(session_id)
             except Exception as e:

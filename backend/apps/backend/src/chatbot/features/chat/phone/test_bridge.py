@@ -662,6 +662,35 @@ async def test_finalize_posts_no_live_block_when_call_ends_before_anyone_speaks(
     assert log.external_ids == [("T-1", "phone-C1")]
 
 
+async def test_finalize_handoff_before_any_transcript_posts_note_and_stays_open() -> None:
+    """Closing fix: a ``request_human_handoff`` tool call can arrive before
+    any transcript event lands -- a ``ToolCall`` before the first
+    ``InputTranscript``/``OutputTranscript`` -- leaving ``self.transcript``
+    empty exactly like a genuinely abandoned call. Before this fix,
+    ``_write_finalize_result`` guarded only on ``not self.transcript``, so
+    this case fell into ``_close_abandoned_call``: it posted "[Call ended
+    -- no conversation]", resolved the ticket, and dropped the "[Handoff to
+    human agent]" note entirely -- silently closing an escalation nobody
+    ever handled. A recorded handoff must always take the normal path
+    instead, keeping its note and its "open" status even with nothing
+    said."""
+    log = _FakeLog()
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    b.ticket_id = "T-1"
+    b.call_sid = "C1"
+    b.handoff = {"reason": "billing", "summary": "double charge"}
+    await b.finalize()
+    assert any("[Handoff to human agent]" in c[1] for c in log.comments)
+    assert not any("[Call ended — no conversation]" in c[1] for c in log.comments)
+    assert not any(c[2] == "solved" for c in log.comments)
+    assert any(c[2] == "open" for c in log.comments)
+
+
 async def test_finalize_leaves_nothing_behind_when_no_ticket_was_created() -> None:
     """The flags-off half of Important 3: with
     phone_transcript_live_enabled off, no ticket is created at call start,
@@ -1125,6 +1154,37 @@ async def test_finalize_awaits_ticket_create_task_with_a_bound(monkeypatch: Any)
     # still-in-flight call-start create.
     await asyncio.wait_for(b.finalize(), timeout=1.0)
     assert call_count == 2  # the cancelled attempt, then finalize()'s fallback
+    assert ("T-1", "USER: hi there", "solved") in log.comments
+
+
+async def test_finalize_awaits_handoff_prefetch_task_with_a_bound(monkeypatch: Any) -> None:
+    """Closing fix: ``_handoff_prefetch_task`` (the business-hours warmup
+    fired fire-and-forget at call setup, see ``handle_twilio``'s "start"
+    branch) was never settled in finalize(), unlike ``_ticket_create_task``
+    and ``_recording_task`` -- which finalize() deliberately awaits, per
+    the convention this file states explicitly for those two. A detached
+    task left running past teardown breaks that convention even though
+    ``prefetch()`` itself never raises. This pins that finalize() now
+    awaits it too, bounded the same way: a slow/hanging prefetch cannot
+    hold the teardown path open past ``_FLUSH_DRAIN_TIMEOUT_SECONDS``, and
+    the task is actually cancelled (not just abandoned) once that bound
+    trips."""
+    monkeypatch.setattr(bridge_module, "_FLUSH_DRAIN_TIMEOUT_SECONDS", 0.05)
+    log = _FakeLog()
+    b = _bridge(_FakeLive([]), [], log, settings=Settings(_env_file=None))
+    b.call_sid = "C1"
+    b.transcript = [("USER", "hi there")]
+
+    async def hanging_prefetch() -> None:
+        await asyncio.sleep(10)  # never completes within the test's own timeout
+
+    task = asyncio.create_task(hanging_prefetch())
+    b._handoff_prefetch_task = task
+    # finalize() must return well within the bound, not hang on the
+    # still-in-flight prefetch, and must have actually cancelled it rather
+    # than merely losing track of it.
+    await asyncio.wait_for(b.finalize(), timeout=1.0)
+    assert task.cancelled()
     assert ("T-1", "USER: hi there", "solved") in log.comments
 
 

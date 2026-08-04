@@ -1380,8 +1380,8 @@ class ChatRouter:
             "speak a language and NEVER hand off merely because of language. "
             "Use the kb_search tool to ground answers in the "
             "Proton knowledge base before giving facts. If you cannot resolve the caller's "
-            f"{handoff_instruction}"
-            "After you answer, ask if there is anything else you can "
+            + handoff_instruction
+            + "After you answer, ask if there is anything else you can "
             "help with, and keep helping across as many questions as the caller has. Do NOT ask "
             "for a rating mid-conversation. ONLY once the caller clearly signals they are finished "
             "(e.g. 'no, that's all', 'nothing else', 'goodbye'), ask 'How would you rate your "

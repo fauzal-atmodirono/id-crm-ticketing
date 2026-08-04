@@ -990,6 +990,27 @@ class OrchestratorService:
         _log.info("ai_paused_short_circuiting_voice_turn", session_id=session_id)
         return b"", TurnResult(reply=None)
 
+    @staticmethod
+    def _voice_message(
+        transcription: str, audio_bytes: bytes, audio_mime_type: str
+    ) -> types.Content:
+        """The user Content for a voice turn: the transcription as text, when we
+        have one, plus the raw audio.
+
+        The audio is stripped from the persisted session (see
+        `BlobFreeSessionService`) so whole-session rewrites stay small. Without
+        the transcription riding along as text, every later turn would see
+        nothing but a placeholder and the conversation would forget what the
+        caller actually said. The text supplements the audio rather than
+        replacing it, so this turn still reaches the model with the real voice —
+        including tone a transcript cannot carry.
+        """
+        parts: list[types.Part] = []
+        if transcription:
+            parts.append(types.Part.from_text(text=transcription))
+        parts.append(types.Part.from_bytes(data=audio_bytes, mime_type=audio_mime_type))
+        return types.Content(role="user", parts=parts)
+
     async def handle_voice_turn(
         self,
         session_id: str,
@@ -1031,10 +1052,7 @@ class OrchestratorService:
             session_id, session, state_history, "user", text_for_history
         )
 
-        new_message = types.Content(
-            role="user",
-            parts=[types.Part.from_bytes(data=audio_bytes, mime_type=audio_mime_type)],
-        )
+        new_message = self._voice_message(transcription, audio_bytes, audio_mime_type)
 
         reply_text: str | None = ""
         final_event_seen = False

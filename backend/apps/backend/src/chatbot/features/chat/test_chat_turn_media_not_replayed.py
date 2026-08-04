@@ -262,3 +262,36 @@ async def test_media_is_not_retained_in_the_persisted_session(
         if getattr(part, "inline_data", None) is not None
     ]
     assert stored == []
+
+
+async def test_voice_turn_keeps_the_transcription_in_history(
+    service: OrchestratorService,
+    recording_llm: _RecordingLlm,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A voice turn carries only audio, and that audio is stripped from the
+    persisted session. Without the transcription riding along as text, every
+    later turn would see nothing but a placeholder and the conversation would
+    forget what the caller actually said."""
+
+    async def _fake_transcribe(**_kwargs: Any) -> str:
+        return "my car will not start"
+
+    monkeypatch.setattr(service, "_transcribe_audio", _fake_transcribe)
+
+    session_id = "phone-voice-history"
+    await service.handle_voice_turn(session_id=session_id, audio_bytes=b"OGGBYTES")
+
+    # Turn 1 must still send the real audio to the model — the transcription
+    # supplements the audio, it does not replace it.
+    assert b"OGGBYTES" in _inline_blobs(recording_llm.requests[0])
+
+    await service.handle_turn(session_id=session_id, text="any update?")
+
+    turn_two_text = " ".join(
+        part.text or ""
+        for content in recording_llm.requests[-1].contents or []
+        for part in content.parts or []
+    )
+    assert "my car will not start" in turn_two_text
+    assert _inline_blobs(recording_llm.requests[-1]) == []

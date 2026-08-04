@@ -1,5 +1,19 @@
 # Phone Channel — Live Smoke Test Plan
 
+> **Superseded scope note (2026-08-05):** this document predates
+> Package C (ticket-at-call-start + live transcript, post-call
+> classification, call recording, real human hand-off) and predates
+> Chatwoot becoming the default CRM (`CRM_PROVIDER` now defaults to
+> `chatwoot`, not `zendesk` — see `platform/config.py`). Scenarios A–C
+> below (greeting latency, KB grounding, barge-in) still exercise real,
+> unchanged bridge behaviour and remain useful as-is. Scenarios D–F
+> (Zendesk ticket shape, CSAT tag mechanics) are stale for a
+> Chatwoot-configured tenant. For Package C's Chatwoot-specific
+> scenarios — live transcript, classification, recording, and real
+> handoff — see
+> [`docs/testing/phone-channel-package-c-verification.md`](../../../docs/testing/phone-channel-package-c-verification.md)
+> instead.
+
 > **Goal:** verify the phone/VOIP real-time bridge end-to-end with a real Twilio
 > call and a live Gemini Live session.
 > The automated suite covers the backend logic (token minting, TwiML generation,

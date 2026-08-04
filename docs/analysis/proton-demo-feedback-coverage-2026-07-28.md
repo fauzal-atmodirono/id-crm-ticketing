@@ -69,11 +69,11 @@ decision/input from Proton, not an engineering gap
 | # | What PRO-NET said/asked (≈timestamp) | Status | Evidence |
 |---|---|---|---|
 | 22 | DTMF ("press 1") vs. conversational LLM routing — which ships? (~01:07–09) | 🔲 | Explicitly flagged as an open choice in the meeting; matches IVR-5, still unresolved as of 2026-08-04 |
-| 23 | Hand-off to a live human agent on a call (~01:11–13) | ❌ | Confirmed mocked only, not a real transfer — matches IVR-6, unchanged |
+| 23 | Hand-off to a live human agent on a call (~01:11–13) | 🧪 | **Built 2026-08-05** (Package C Task 6, commits `83160fe`…`a19eaff`): `request_human_handoff` now redirects the live call into a real Twilio `<Dial>` to `phone_handoff_target_number`, with explicit fallback TwiML for `no-answer`/`busy`/`failed` and business-hours gating. Default off (`phone_handoff_enabled=false`); requires `phone_handoff_caller_id` or it deliberately refuses to dial rather than drop the call (Twilio error 13214 on the browser-softphone path). **Nothing has been proven against a real Twilio number or a real second phone** — a full manual verification runbook exists at `docs/testing/phone-channel-package-c-verification.md` (Scenarios 5–7) but no one has executed it yet |
 | 24 | RSA (accident/road-side) after-hours routing to the 24/7 line (~01:14–15) | ✅ | Business-hours-aware transfer logic confirmed live in the orchestrator. (Separate RSA incident-log *page* is code-complete but not deployed on every tenant yet — a deploy step, not a gap in this specific ask) |
 | 25 | WhatsApp voice notes — text-only during the demo (~01:15–16) | 🧪 | `WHATSAPP_MEDIA_UNDERSTANDING_ENABLED=true` live on proton since 2026-08-03, code complete — **still unconfirmed against a real WhatsApp number**. Send a voice note to the proton number and check the bot transcribes/answers it |
 | 26 | Customer-sent videos (e.g. of the car) should be processable on website/WhatsApp (~01:16–18) | ❌ | **Discrepancy worth flagging to Proton.** Presenter said live "the functionality is there... we can process the video" — but both 2026-08-04 docs explicitly state video understanding is "genuinely unbuilt (audio/image only), out of scope by design." What was told to the client contradicts current engineering status |
-| 27 | Call recording for QA/compliance (~01:18) | ❌ | Confirmed nothing recorded in the demo build; matches IVR-8, still unimplemented |
+| 27 | Call recording for QA/compliance (~01:18) | 🧪 | **Built 2026-08-05** (Package C Task 5, commits `cdf70aa`, `14685c6`): dual-channel Twilio recording, gated behind `phone_recording_enabled` (default off), attaches `recording_sid`/`recording_duration`/`recording_url` as internal-only Chatwoot custom attributes (never a customer/agent-visible comment) retrievable only with the `call_recording.listen` permission. Requires `phone_recording_announcement` (PDPA notice text) and `twilio_webhook_base_url` or recording refuses to start. Retention (`phone_recording_retention_days`, default 90) is policy-only — no automated deletion job enforces it yet. **Never tested against a real call** — see `docs/testing/phone-channel-package-c-verification.md` (Scenario 4) |
 
 ## Reporting / RBAC
 
@@ -88,17 +88,19 @@ decision/input from Proton, not an engineering gap
 
 ## Summary
 
-| Status | At audit (2026-07-28) | Now (2026-08-04) |
+| Status | At audit (2026-07-28) | Now (2026-08-05) |
 |---|---|---|
 | ✅ Fully covered | 7 | 7 |
-| 🧪 Built, needs testing | — | 9 |
+| 🧪 Built, needs testing | — | 11 |
 | ⚠️ Partially covered | 6 | 0 |
-| ❌ Not covered | 11 | 8 |
+| ❌ Not covered | 11 | 6 |
 | 🔲 Needs Proton's input | 7 | 7 |
 | **Total** | **31** | **31** |
 
 Three items moved ❌ → 🧪 (#1 FAQ bulk CSV, #15 Customer 360, #20 round-robin
-cap) and all six ⚠️ items moved to 🧪 (#7, #14, #17, #25, #28, #30). Nothing
+cap) and all six ⚠️ items moved to 🧪 (#7, #14, #17, #25, #28, #30). Two more
+moved ❌ → 🧪 on 2026-08-05 (#23 real human hand-off, #27 call recording —
+Package C, commits `5c2659f`…`a19eaff`). Nothing
 moved to ✅ — that requires the verification below.
 
 ### 🧪 Test-before-you-demo checklist
@@ -118,6 +120,8 @@ by hand. Overlaps the "New this build" checklist in
 | 25 | WhatsApp voice note | Send a voice note to the proton WhatsApp number, confirm the bot answers its content | real device |
 | 28 | RBAC report views | Log in as a non-admin role with `Reports` unchecked, confirm Reports is actually hidden (`RBAC_ENABLED` must be on) | Settings → Roles & Permissions |
 | 7 | FAQ Assist relevance | With the KB now populated (via #1), re-run the exact query that returned "couldn't find any information" in the demo | conversation → Assist/Copilot |
+| 23 | Real human hand-off | Enable `phone_handoff_enabled`+`phone_handoff_target_number`+`phone_handoff_caller_id`, call in, trigger a handoff, confirm audio connects both ways; then repeat with the target left unanswered and confirm the bilingual apology + `unanswered_handoff` tag | real Twilio number + a second phone — full runbook: `docs/testing/phone-channel-package-c-verification.md` §2 Scenarios 5–7 |
+| 27 | Call recording | Enable `phone_recording_enabled`+`phone_recording_announcement`, call in, hang up, confirm the recording attaches to the SAME conversation and is only readable with `call_recording.listen` | real Twilio number — full runbook: `docs/testing/phone-channel-package-c-verification.md` §2 Scenario 4 |
 
 ### ❌ items still genuinely unbuilt, worth prioritizing next
 
@@ -125,18 +129,17 @@ by hand. Overlaps the "New this build" checklist in
    still only *reads* Chatwoot availability; nothing in
    `features/chat/phone/bridge.py` writes a busy status when a call starts.
    Now the most valuable remaining routing gap, since its sibling (#20) is
-   built.
-2. **Real IVR human hand-off (#23)** — currently fully mocked; customers
-   will notice immediately in a real deployment, and it also blocks call
-   recording (#27) and any real RSA hand-off value.
-3. **Video-understanding discrepancy (#26)** — needs clarifying with Proton
+   built. Blocked on the same open per-agent-numbers decision (spec §5.2)
+   that also blocks a routing-aware handoff target — see
+   `.superpowers/sdd/2026-08-04-pkg-c-telephony-handoff-transcript-recording/task-7-brief.md`.
+2. **Video-understanding discrepancy (#26)** — needs clarifying with Proton
    before it becomes a support commitment the platform can't currently
    keep, since the presenter stated live capability that current
    engineering docs contradict.
-4. **KB uploads with pictures (#2)** — `kb_ingest.py::extract_text` still
+3. **KB uploads with pictures (#2)** — `kb_ingest.py::extract_text` still
    only accepts `.pdf`/`.docx`/`.md`/`.txt`; unchanged since the audit.
-5. **DMS-API integration (#4)** — unchanged. Note Customer 360 (#15) ships
+4. **DMS-API integration (#4)** — unchanged. Note Customer 360 (#15) ships
    *without* it, so it aggregates CRM data only; if Proton expects
    DMS-sourced vehicle data behind that search box, this is the gap.
-6. Externally blocked, no engineering action available: inbound email SMTP/IMAP
+5. Externally blocked, no engineering action available: inbound email SMTP/IMAP
    credentials (#10) and Meta Business verification (#11).

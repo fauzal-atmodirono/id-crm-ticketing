@@ -14,7 +14,9 @@ default, and every record it returns carries an explicit "(Demo data)"
 marker in its own string fields -- there is no separate "is_mock" field on
 our frozen record types, so the marker has to live in the data itself, or a
 caller that renders records verbatim could mistake a demo for a live
-integration (see the package design doc's demo-feedback item #26).
+integration. (Earlier drafts cited demo-feedback item #26 for this; #26 is
+actually about customer-sent video. The requirement is real and unchanged;
+only the attribution was wrong.)
 
 `probe()` is the "Test connection" button's backend: a single GET against the
 operator-configured `base_url` -- one request, redirects explicitly NOT

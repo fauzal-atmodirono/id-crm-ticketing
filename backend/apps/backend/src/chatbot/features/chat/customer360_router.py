@@ -6,9 +6,16 @@ enabled. This is explicitly NOT a DMS integration -- see the design spec for
 why phone number is used as a provisional key pending Proton's final
 decision.
 
+Both DMS params are optional and default to `None`. `main.py` DOES pass
+them (since c85fa89): `dms_config_store` is always wired, `dms_client` only
+when `DMS_MOCK_CLIENT_ENABLED` is on. So the wired configuration -- not the
+`None` one -- is what production runs, and the store-based tests below are
+what cover it. The `None` case remains reachable by any other caller and by
+the tests that omit the params.
+
 The `dms` block is additive and fails open by construction:
-  - `dms_config_store` is `None` (how `main.py` builds this router today,
-    and every existing test that doesn't pass it) -- the block is never even
+  - `dms_config_store` is `None` (any caller that omits it, and every
+    existing test that doesn't pass it) -- the block is never even
     computed. The response is byte-identical to before this package
     existed.
   - `dms_config_store` is wired but the stored config is absent or
@@ -21,7 +28,10 @@ The `dms` block is additive and fails open by construction:
     block is present with `status: "unreachable"`. This is deliberate: an
     operator who flips "enabled" before a real adapter exists must see
     "not connected", never a silent "no records found" that could be
-    mistaken for a working integration (demo-feedback item #26).
+    mistaken for a working integration. (This was previously attributed
+    to demo-feedback item #26; that item is actually about customer-sent
+    video. The principle stands on its own -- no design decision here
+    rested on the citation -- but the attribution was wrong.)
   - Enabled, a client is wired, and the lookup raises or runs past its time
     budget -- also `status: "unreachable"`, never a 500 and never partial
     data presented as complete.

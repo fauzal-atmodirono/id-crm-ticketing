@@ -272,9 +272,13 @@ async def test_query_too_short_returns_422(tmp_path, respx_mock):
 # --- Package F: the optional `dms` block --------------------------------
 #
 # `dms_config_store` and `dms_client` are both optional constructor params
-# (default None). main.py's existing call site passes neither, so nothing
-# below changes behavior for a router built the way it is today -- that is
-# the whole point of test_response_is_unchanged_when_the_integration_is_disabled.
+# (default None). main.py passes BOTH since c85fa89 -- the store always, the
+# client only under DMS_MOCK_CLIENT_ENABLED -- so the store-based tests here
+# are what cover the configuration production actually runs. The
+# params-omitted case is still exercised (any other caller can omit them),
+# and it is what test_response_is_unchanged_when_the_integration_is_disabled
+# pins; but the disabled-config path below is the one that matters in
+# production, since main.py wires a store on every tenant, DMS or not.
 
 
 def _dms_config(*, enabled: bool, timeout_seconds: float = 10.0) -> DmsConfig:
@@ -399,10 +403,16 @@ class _PartiallyFailingDmsClient:
 
 @pytest.mark.asyncio
 async def test_response_is_unchanged_when_the_integration_is_disabled(tmp_path, respx_mock):
-    """The important one: a router built exactly the way main.py builds it
-    today (no dms_config_store, no dms_client) must return exactly the
-    three keys it always has -- byte-identical to before this package
-    existed."""
+    """A router built with neither DMS param must return exactly the three
+    keys it always has -- byte-identical to before this package existed.
+
+    Note this is NOT how main.py builds the router (it has passed both
+    params since c85fa89); the production-shaped equivalent is
+    `test_response_is_unchanged_when_config_store_says_disabled` below,
+    which wires a store and gets the same three keys. This test guards the
+    weaker, structural claim: the block cannot even be computed when the
+    caller declines to opt in.
+    """
     settings, authz_repo, validator = await _authorized(tmp_path, "dms_off_default", 20)
     respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
         return_value=httpx.Response(200, json={"id": 20})

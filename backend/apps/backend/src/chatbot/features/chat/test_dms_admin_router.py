@@ -16,6 +16,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 from chatbot.features.authz.db import build_engine as build_authz_engine
 from chatbot.features.authz.db import build_session_maker as build_authz_session_maker
@@ -24,6 +25,7 @@ from chatbot.features.authz.identity import TokenValidator
 from chatbot.features.authz.repository import AuthzRepository
 from chatbot.features.authz.seed import seed_defaults
 from chatbot.features.chat.dms_admin_router import (
+    _is_credential_bearing_path,
     build_dms_admin_router,
     install_credential_safe_error_handler,
 )
@@ -285,9 +287,7 @@ async def test_put_without_credential_keeps_the_stored_one(tmp_path, respx_mock)
 
 
 @pytest.mark.asyncio
-async def test_put_empty_string_credential_overwrites_the_stored_one(
-    tmp_path, respx_mock
-):
+async def test_put_empty_string_credential_overwrites_the_stored_one(tmp_path, respx_mock):
     """`credential=""` (submitted explicitly, not omitted) is NOT the same as
     omitting the field: DmsConfigStore.save() treats any non-`None` value as
     "replace", so this blanks out a previously stored secret. That's
@@ -368,9 +368,7 @@ async def test_test_connection_maps_each_probe_outcome(
 
 
 @pytest.mark.asyncio
-async def test_test_connection_distinguishes_wrong_path_from_wrong_key(
-    tmp_path, respx_mock
-):
+async def test_test_connection_distinguishes_wrong_path_from_wrong_key(tmp_path, respx_mock):
     """A 404 (wrong path) and a 401 (wrong key) must never collapse into the
     same status or message -- an operator debugging "test connection failed"
     needs to know which one it is.
@@ -411,9 +409,7 @@ async def test_test_connection_distinguishes_wrong_path_from_wrong_key(
 
 
 @pytest.mark.asyncio
-async def test_test_connection_reports_not_configured_without_base_url(
-    tmp_path, respx_mock
-):
+async def test_test_connection_reports_not_configured_without_base_url(tmp_path, respx_mock):
     client, _store = await _authorized_client(tmp_path, "probe_unconfigured", 17, respx_mock)
 
     with patch(
@@ -429,9 +425,7 @@ async def test_test_connection_reports_not_configured_without_base_url(
 
 
 @pytest.mark.asyncio
-async def test_test_connection_reports_not_configured_without_credential(
-    tmp_path, respx_mock
-):
+async def test_test_connection_reports_not_configured_without_credential(tmp_path, respx_mock):
     client, _store = await _authorized_client(tmp_path, "probe_no_cred", 18, respx_mock)
 
     with patch(
@@ -454,9 +448,7 @@ async def test_test_connection_reports_not_configured_without_credential(
 
 
 @pytest.mark.asyncio
-async def test_credential_appears_in_no_response_body_from_any_endpoint(
-    tmp_path, respx_mock
-):
+async def test_credential_appears_in_no_response_body_from_any_endpoint(tmp_path, respx_mock):
     client, _store = await _authorized_client(tmp_path, "no_leak", 19, respx_mock)
 
     with patch(
@@ -495,11 +487,21 @@ async def test_credential_appears_in_no_response_body_from_any_endpoint(
         assert malformed_res.status_code == 422
         assert "4111111111111111" not in malformed_res.text
 
+        # 422 paths where the body is not a JSON object at all. These carry
+        # the credential in a body-level error's "input", under
+        # loc == ("body",) -- a shape no field-name rule can see. Enumerated
+        # here alongside the endpoints so this test covers both dimensions
+        # (which endpoint, and which malformation) rather than just one.
+        for non_object_body in ([VALID_BODY], VALID_BODY["credential"], [[VALID_BODY]]):
+            non_object_res = client.put(
+                "/admin/integrations/dms", json=non_object_body, headers=HEADERS
+            )
+            assert non_object_res.status_code == 422
+            assert CREDENTIAL not in non_object_res.text
+
 
 @pytest.mark.asyncio
-async def test_malformed_credential_422_never_echoes_the_submitted_value(
-    tmp_path, respx_mock
-):
+async def test_malformed_credential_422_never_echoes_the_submitted_value(tmp_path, respx_mock):
     """A non-string credential (e.g. a frontend `v-model.number` mis-bind on
     the eventual admin form, or a bare number pasted into a raw JSON
     request) fails Pydantic's `str` validation and 422s. FastAPI's default
@@ -532,13 +534,113 @@ async def test_malformed_credential_422_never_echoes_the_submitted_value(
 
 
 @pytest.mark.asyncio
-async def test_malformed_non_credential_field_still_echoes_its_input(
-    tmp_path, respx_mock
+@pytest.mark.parametrize(
+    ("label", "user_id", "body"),
+    [
+        ("array_body", 30, [{"credential": CREDENTIAL}]),
+        ("bare_string_body", 31, CREDENTIAL),
+        ("nested_array_body", 32, [[{"credential": CREDENTIAL}]]),
+    ],
+)
+async def test_non_object_body_422_never_echoes_the_submitted_body(
+    tmp_path, respx_mock, label: str, user_id: int, body: Any
 ):
-    """Sanity check on the handler's precision: a validation error on a
-    NON-secret field (retries expects an int) must still carry its "input"
-    key as FastAPI does by default -- the handler must only scrub fields
-    named in `_SENSITIVE_LOC_FIELDS`, not blanket-strip every error.
+    """The field-name scrub is not enough on its own, and this is the case
+    that proves it. When the submitted body is not a JSON object, pydantic
+    emits ONE `model_attributes_type` error whose `loc` is just `("body",)`
+    and whose `"input"` is the entire submitted body -- credential and all.
+    No amount of `loc` inspection can catch that, because the loc never names
+    the field. Reachable by exactly the class of wrapper/serialisation client
+    bug that made the original 422 echo a Critical: an axios interceptor or a
+    form serialiser that wraps the payload in an array, or posts a
+    pre-stringified body, sends this shape.
+    """
+    client, _store = await _authorized_client(tmp_path, f"nonobject_{label}", user_id, respx_mock)
+
+    with patch(
+        "chatbot.features.chat.dms_config_store.firestore.Client", autospec=True
+    ) as MockClient:
+        MockClient.return_value = _FakeFirestoreClient()
+
+        res = client.put("/admin/integrations/dms", json=body, headers=HEADERS)
+
+    assert res.status_code == 422
+    assert CREDENTIAL not in res.text
+    # Not just "the literal string is absent" -- no error may carry an
+    # "input" key at all on this route, whatever its loc shape.
+    assert all("input" not in error for error in res.json()["detail"])
+
+
+def test_credential_bearing_path_covers_the_prefix_without_over_matching():
+    """The scrub is scoped to this router's whole path prefix, so a
+    validation error raised on any sub-route (`/test` today, anything added
+    later) is covered -- while a sibling route whose path merely starts with
+    the same characters is not.
+    """
+    assert _is_credential_bearing_path("/admin/integrations/dms")
+    assert _is_credential_bearing_path("/admin/integrations/dms/test")
+    assert _is_credential_bearing_path("/admin/integrations/dms/anything/later")
+    assert not _is_credential_bearing_path("/admin/integrations/dmsx")
+    assert not _is_credential_bearing_path("/admin/escalation/pics")
+    assert not _is_credential_bearing_path("/admin/customer360/search")
+
+
+class _OtherRouterBody(BaseModel):
+    """Stand-in for a sibling admin router's request model. Must live at
+    module scope: this file uses `from __future__ import annotations`, so a
+    function-local model class can't be resolved by FastAPI's type-hint
+    lookup and the parameter would silently degrade to a query param.
+    """
+
+    department: str = ""
+    credential: str | None = None
+
+
+def test_other_routers_keep_the_default_422_shape():
+    """Precision guard for the path scoping: on a route that is NOT this
+    router's, both a body-level error and a field-level error on a non-secret
+    field must still echo their `input`, exactly as FastAPI does by default.
+    Without this, "strip everything" would silently change every sibling
+    admin router's error contract. A `credential`-named field anywhere still
+    gets scrubbed, on any route.
+    """
+    app = FastAPI()
+
+    @app.put("/admin/escalation/pics")
+    async def _other(body: _OtherRouterBody) -> dict:  # noqa: ARG001
+        return {}
+
+    install_credential_safe_error_handler(app)
+    client = TestClient(app)
+
+    body_level = client.put("/admin/escalation/pics", json=[{"department": "sales"}])
+    assert body_level.status_code == 422
+    assert any("input" in error for error in body_level.json()["detail"])
+
+    field_level = client.put("/admin/escalation/pics", json={"department": 42})
+    assert field_level.status_code == 422, field_level.text
+    assert any(error.get("input") == 42 for error in field_level.json()["detail"]), field_level.text
+
+    secret_field = client.put(
+        "/admin/escalation/pics", json={"department": "sales", "credential": 99}
+    )
+    assert secret_field.status_code == 422
+    assert "99" not in secret_field.text
+
+
+@pytest.mark.asyncio
+async def test_malformed_non_credential_field_still_echoes_its_input(tmp_path, respx_mock):
+    """On THIS router's path, even a non-secret field's `input` is stripped.
+
+    This test previously pinned the opposite (a bad `retries` still echoed
+    "not-an-int"), which was correct while the scrub was field-name-based.
+    It is deliberately inverted now: a request to this path can carry the
+    credential in a position no `loc` inspection reaches, so the only sound
+    rule here is "strip everything on this path". The precision the old test
+    was guarding -- that this handler doesn't change OTHER routers' error
+    contract -- is now pinned by
+    `test_other_routers_keep_the_default_422_shape`, which is where it
+    actually belongs.
     """
     client, _store = await _authorized_client(tmp_path, "malformed_other", 24, respx_mock)
 
@@ -556,8 +658,10 @@ async def test_malformed_non_credential_field_still_echoes_its_input(
     assert res.status_code == 422
     body = res.json()
     retries_errors = [e for e in body["detail"] if "retries" in e.get("loc", [])]
-    assert retries_errors
-    assert retries_errors[0].get("input") == "not-an-int"
+    assert retries_errors, "the error itself must still be reported, only its input is dropped"
+    assert "input" not in retries_errors[0]
+    assert retries_errors[0]["type"]
+    assert retries_errors[0]["msg"]
 
 
 # --- RBAC-disabled fallback --------------------------------------------
@@ -575,19 +679,12 @@ async def test_rbac_disabled_falls_back_to_shared_secret(tmp_path):
     client = _app_with_router(router)
 
     assert client.get("/admin/integrations/dms").status_code == 401
-    assert (
-        client.get(
-            "/admin/integrations/dms", headers={"x-api-key": "wrong"}
-        ).status_code
-        == 401
-    )
+    assert client.get("/admin/integrations/dms", headers={"x-api-key": "wrong"}).status_code == 401
     with patch(
         "chatbot.features.chat.dms_config_store.firestore.Client", autospec=True
     ) as MockClient:
         MockClient.return_value = _FakeFirestoreClient()
         assert (
-            client.get(
-                "/admin/integrations/dms", headers={"x-api-key": "secret123"}
-            ).status_code
+            client.get("/admin/integrations/dms", headers={"x-api-key": "secret123"}).status_code
             == 200
         )

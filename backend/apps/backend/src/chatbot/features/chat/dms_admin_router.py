@@ -18,12 +18,24 @@ harmless for a department name, catastrophic for `credential` (e.g. a
 `v-model.number` mis-bound on the eventual admin form, or a key pasted
 unquoted into a raw JSON tool, sends a non-string/non-null value and the
 422 response body reflects it verbatim). `install_credential_safe_error_handler`
-strips `"input"` from any error whose `loc` names `credential`, leaving every
-other field's (and every other router's) validation-error shape untouched.
-FastAPI only allows validation-error handlers to be registered app-wide, not
-per-router, so this must be called on the app object once (`main.py` does
-this right after mounting this router; tests do it in their own app
-fixture).
+strips `"input"` from validation errors, leaving every other router's
+validation-error shape untouched. FastAPI only allows validation-error
+handlers to be registered app-wide, not per-router, so this must be called
+on the app object once (`main.py` does this right after mounting this
+router; tests do it in their own app fixture).
+
+The scrub is **path-scoped, not field-scoped**, and that distinction is the
+whole point. A field-name rule (strip `input` only where `loc` names
+`credential`) is only as good as the assumption that a credential-bearing
+value always lands under a `loc` that names it -- and it does not. When the
+submitted body is not a JSON object at all (a wrapper/serialisation client
+bug sending `[{"credential": ...}]` or a bare JSON string), pydantic raises
+a single `model_attributes_type` error whose `loc` is just `("body",)` and
+whose `input` is the ENTIRE submitted body, credential included. Same leak,
+one `loc` shape over. So on this router's own path every error loses its
+`input`, whatever its `loc`; everywhere else the field-name rule still
+applies, which keeps sibling routers' (and this router's non-secret fields
+elsewhere) 422 bodies byte-identical to FastAPI's default.
 """
 
 from __future__ import annotations
@@ -51,15 +63,29 @@ if TYPE_CHECKING:
 
 _NOT_CONFIGURED = "unexpected_status"
 
+# This router's mount point. Used both as the APIRouter prefix and by the
+# validation-error handler below to decide whether an error came from a
+# request that could have carried the credential -- keeping them the same
+# constant is what stops the two from drifting apart.
+_ROUTE_PREFIX = "/admin/integrations/dms"
+
 # Field names whose raw submitted value must never appear in a validation-error
-# response. Currently just the one secret this router accepts; kept as a set
-# (not a single constant) so a future write-only field can join it without
-# changing the handler's shape.
+# response, on ANY route. Currently just the one secret this router accepts;
+# kept as a set (not a single constant) so a future write-only field can join
+# it without changing the handler's shape.
 _SENSITIVE_LOC_FIELDS = {"credential"}
 
 
+def _is_credential_bearing_path(path: str) -> bool:
+    """True for this router's own routes, where the request body may contain
+    the credential in a position no `loc` inspection can find (see the module
+    docstring's non-object-body case).
+    """
+    return path == _ROUTE_PREFIX or path.startswith(f"{_ROUTE_PREFIX}/")
+
+
 async def _credential_safe_validation_handler(
-    request: Request,  # noqa: ARG001 -- required by FastAPI's handler signature
+    request: Request,
     exc: Exception,
 ) -> JSONResponse:
     # Starlette's add_exception_handler signature is contravariant on the
@@ -70,11 +96,16 @@ async def _credential_safe_validation_handler(
     # re-raising preserves "never silently swallow" if it's ever wrong.
     if not isinstance(exc, RequestValidationError):
         raise exc
+    # On this router's own path the credential may be anywhere in the
+    # submitted body -- including inside a body-level error's `input`, which
+    # holds the whole body and whose `loc` is just ("body",). Nothing about
+    # the error's shape can tell us it's safe, so strip unconditionally.
+    strip_all = _is_credential_bearing_path(request.url.path)
     sanitized_errors = []
     for raw_error in exc.errors():
         error = dict(raw_error)
         loc = error.get("loc", ())
-        if any(str(part) in _SENSITIVE_LOC_FIELDS for part in loc):
+        if strip_all or any(str(part) in _SENSITIVE_LOC_FIELDS for part in loc):
             error.pop("input", None)
         sanitized_errors.append(error)
     return JSONResponse(
@@ -129,7 +160,7 @@ def build_dms_admin_router(
     validator: TokenValidator,
     settings: Settings,
 ) -> APIRouter:
-    router = APIRouter(prefix="/admin/integrations/dms", tags=["dms-admin"])
+    router = APIRouter(prefix=_ROUTE_PREFIX, tags=["dms-admin"])
     manage_integration = require_permission(
         "integration.manage", repo=authz_repo, validator=validator, settings=settings
     )

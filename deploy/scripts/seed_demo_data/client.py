@@ -35,11 +35,24 @@ Endpoint shapes (headers, path prefixes, payload keys, response envelopes)
 follow `agent/app/clients/chatwoot.py` and
 `backend/apps/backend/src/chatbot/features/chat/adapters/chatwoot.py`, the
 two existing call sites for this API in this repo — read those before
-changing this file. `/conversations/{id}` and `/contacts/{id}` DELETE and
-`/contacts/search` pagination are not exercised anywhere else in this repo,
-so they are inferred from Chatwoot's own REST conventions rather than
-confirmed against a live tenant; Task 4's `default`-tenant rehearsal is what
-actually proves them.
+changing this file, including the reference's `source_id` on conversation
+create (`create_case` sends a deterministic one — see its docstring).
+`/conversations/{id}` and `/contacts/{id}` DELETE and `/contacts/search`
+pagination are not exercised anywhere else in this repo, so they are
+inferred from Chatwoot's own REST conventions rather than confirmed against
+a live tenant; Task 4's `default`-tenant rehearsal is what actually proves
+them.
+
+**Verified, not assumed, post-conditions:** the reference call sites never
+send `custom_attributes` on contact *create* (only on conversation update,
+via a dedicated `.../custom_attributes` endpoint), so whether Chatwoot's
+contact-create endpoint actually persists an unrecognised `custom_attributes`
+key was unconfirmed. `create_contact` no longer assumes it does: it reads
+the marker back off the create response and, if absent, stamps it with an
+explicit follow-up `PATCH .../contacts/{id}` call. Silently trusting the
+assumption would have failed safe (never a wrong delete) but could have left
+seeded contacts permanently unpurgeable — exactly what `purge` exists to
+prevent.
 """
 
 from __future__ import annotations
@@ -230,35 +243,60 @@ def selectable_rsa_for_purge(incidents: list[dict], batch_id: str) -> list[dict]
 
 async def create_contact(contact: DemoContact, batch_id: str) -> int:
     """Create one Chatwoot contact, stamped with the purge marker and the
-    vehicle fields Customer 360 / the Cases list read off contacts."""
+    vehicle fields Customer 360 / the Cases list read off contacts.
+
+    The `custom_attributes` sent on the create *request* are a request, not
+    a confirmed outcome — the reference call sites for this endpoint never
+    exercise that field on create, so it's unverified whether Chatwoot
+    persists an unrecognised custom-attributes key at create time rather
+    than silently dropping it. This function therefore checks the create
+    *response* for the marker and, if it's missing, stamps it with an
+    explicit follow-up call — see the module docstring's "Verified, not
+    assumed" note. That turns an assumption into a verified post-condition:
+    a contact this function returns is guaranteed marked, or the call
+    itself raised.
+    """
     config = _require_config()
+    demo_attributes = {
+        "demo_seed": batch_id,
+        "vehicle_no": contact.vehicle_no,
+        "vehicle_model": contact.vehicle_model,
+        "purchased_from": contact.purchased_from,
+    }
     payload = {
         "inbox_id": config.chatwoot_inbox_id,
         "name": contact.name,
         "email": contact.email,
         "phone_number": contact.phone,
-        "custom_attributes": {
-            "demo_seed": batch_id,
-            "vehicle_no": contact.vehicle_no,
-            "vehicle_model": contact.vehicle_model,
-            "purchased_from": contact.purchased_from,
-        },
+        "custom_attributes": demo_attributes,
     }
     response = await _chatwoot.post(_account_path("/contacts"), json=payload)
     response.raise_for_status()
     data = response.json()
-    # The account-level create returns {"payload": {"contact": {"id": ...}}};
-    # tolerate a bare {"id": ...} too (backend/.../adapters/chatwoot.py's
+    # The account-level create returns {"payload": {"contact": {...}}};
+    # tolerate a bare {...} too (backend/.../adapters/chatwoot.py's
     # _contact_id_from does the same for the same endpoint).
     contact_obj = data.get("payload", {}).get("contact") if isinstance(data.get("payload"), dict) else None
-    contact_id = (contact_obj or data).get("id")
+    contact_obj = contact_obj if isinstance(contact_obj, dict) else data
+    contact_id = contact_obj.get("id")
     if contact_id is None:
         raise RuntimeError(f"contact create returned no id: {data!r}")
+    contact_id = int(contact_id)
     await _throttle()
-    return int(contact_id)
+
+    returned_attributes = contact_obj.get("custom_attributes")
+    marker_confirmed = isinstance(returned_attributes, dict) and returned_attributes.get("demo_seed") == batch_id
+    if not marker_confirmed:
+        stamp_response = await _chatwoot.patch(
+            _account_path(f"/contacts/{contact_id}"), json={"custom_attributes": demo_attributes}
+        )
+        stamp_response.raise_for_status()
+        await _throttle()
+
+    return contact_id
 
 
-async def create_case(case: DemoCase, contact_id: int, batch_id: str) -> int:
+async def create_case(case: DemoCase, contact_id: int, batch_id: str, case_index: int) -> int:
     """Create one Chatwoot conversation for `contact_id`, post its seeded
     message thread, and stamp the purge marker + case fields.
 
@@ -267,14 +305,38 @@ async def create_case(case: DemoCase, contact_id: int, batch_id: str) -> int:
     ignores the `status` field (its default for an API-channel conversation
     is `open`), the fallback is still on the bot-ignored list, so this is
     safe either way.
+
+    `case_index` is this case's position in the full list `generate()`
+    returned (the caller should pass `enumerate(cases)`'s index) — it feeds
+    `source_id` below and nothing else, so a re-run with the same
+    `(batch_id, case_index)` always addresses the same synthetic
+    conversation identity.
+
+    Note: if this function raises partway through (e.g. after the
+    conversation create succeeds but a message post fails), the
+    conversation already exists and already carries `demo_seed` in the
+    create payload — but this function never reads that back the way
+    `create_contact` does, so a very unlucky partial failure could in
+    principle leave an unmarked orphan the same way contact-create risked
+    before its fix. Not hardened against here: low-probability, and `purge`
+    finding zero results after a failed `seed` run is exactly the kind of
+    thing Task 4's `default`-tenant rehearsal is meant to surface.
     """
     config = _require_config()
     status = _safe_status(case.status)
+    # Reference call sites (backend/.../adapters/chatwoot.py's
+    # _find_or_create_conversation) always send source_id on conversation
+    # create — Chatwoot's ConversationBuilder uses it to build the
+    # contact_inbox. Deterministic and obviously synthetic, so a re-run with
+    # the same (batch_id, case_index) is stable and never collides with a
+    # real conversation's source_id.
+    source_id = f"demo-seed:{batch_id}:case-{case_index}"
 
     create_payload = {
         "contact_id": contact_id,
         "inbox_id": config.chatwoot_inbox_id,
         "status": status,
+        "source_id": source_id,
     }
     response = await _chatwoot.post(_account_path("/conversations"), json=create_payload)
     response.raise_for_status()

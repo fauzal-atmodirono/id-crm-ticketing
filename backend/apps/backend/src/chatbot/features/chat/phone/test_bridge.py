@@ -1,3 +1,4 @@
+import asyncio
 import base64
 from collections.abc import AsyncIterator
 from typing import Any
@@ -45,6 +46,8 @@ class _FakeKnowledge:
 class _FakeLog:
     def __init__(self) -> None:
         self.ticket_calls: list[tuple[str, str]] = []
+        self.ensured: list[str] = []
+        self.ensure_raises: Exception | None = None
         self.comments: list[tuple[str, str, str | None]] = []
         self.external_ids: list[tuple[str, str]] = []
         self.tags: list[tuple[str, str]] = []
@@ -57,6 +60,9 @@ class _FakeLog:
         customer_phone: str | None,
     ) -> str:
         self.ticket_calls.append((session_id, subject))
+        self.ensured.append(session_id)
+        if self.ensure_raises is not None:
+            raise self.ensure_raises
         return "T-1"
 
     async def rotate_conversation_ticket(
@@ -97,6 +103,7 @@ def _bridge(
     sent: list[dict[str, object]],
     log: _FakeLog | None = None,
     settings: Settings | None = None,
+    clock: Any | None = None,
 ) -> PhoneBridge:
     async def send_twilio(msg: dict[str, object]) -> None:
         sent.append(msg)
@@ -107,6 +114,7 @@ def _bridge(
         log or _FakeLog(),
         send_twilio,
         settings or Settings(_env_file=None),
+        clock=clock,
     )
 
 
@@ -331,3 +339,171 @@ async def test_finalize_resolved_without_score_solves_no_csat() -> None:
     await b.finalize()
     assert any(c[2] == "solved" for c in log.comments)
     assert log.tags == []
+
+
+# --- Task 3: create the ticket at call start, stream the transcript live ---
+
+
+async def test_ticket_is_created_on_stream_start_when_enabled() -> None:
+    log = _FakeLog()
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+    assert log.ensured == ["phone-CA1"]
+    assert b.ticket_id is not None
+
+
+async def test_ticket_is_not_created_when_flag_off() -> None:
+    log = _FakeLog()
+    b = _bridge(_FakeLive([]), [], log)  # default settings: flag off
+    await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+    assert log.ensured == []
+    assert b.ticket_id is None
+
+
+async def test_ticket_creation_failure_does_not_break_the_call() -> None:
+    log = _FakeLog()
+    log.ensure_raises = RuntimeError("chatwoot down")
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+    assert b.ticket_id is None
+    # The call must keep going: a subsequent media frame must not raise.
+    payload = base64.b64encode(b"\xff" * 160).decode()
+    await b.handle_twilio({"event": "media", "media": {"payload": payload}})
+
+
+async def test_finalize_is_idempotent_after_live_creation() -> None:
+    log = _FakeLog()
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+    b.transcript = [("USER", "hi")]
+    await b.finalize()
+    # ensure_conversation_ticket must NOT be called a second time in
+    # finalize(): the ticket already created at call-start is reused.
+    assert log.ensured == ["phone-CA1"]
+
+
+async def test_ticket_not_recreated_on_a_reconnecting_start_event() -> None:
+    """Twilio Media Streams can reconnect mid-call and resend "start". That
+    must not spawn a second ensure_conversation_ticket lookup once we already
+    hold a ticket_id for this call."""
+    log = _FakeLog()
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+    await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ2", "callSid": "CA1"}})
+    assert log.ensured == ["phone-CA1"]
+
+
+async def test_pump_posts_a_completed_turn_to_the_ticket_when_live() -> None:
+    live = _FakeLive([InputTranscript("hi there"), OutputTranscript("hello")])
+    log = _FakeLog()
+    b = _bridge(
+        live,
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    b.ticket_id = "T-1"
+    await b.pump()
+    await asyncio.sleep(0)  # let the detached flush task run
+    await asyncio.sleep(0)
+    assert ("T-1", "USER: hi there", None) in log.comments
+
+
+async def test_pump_does_not_touch_the_ticket_when_flag_off() -> None:
+    live = _FakeLive([InputTranscript("hi there"), OutputTranscript("hello")])
+    log = _FakeLog()
+    b = _bridge(live, [], log)  # default settings: flag off
+    b.ticket_id = "T-1"
+    await b.pump()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert log.comments == []
+
+
+async def test_pump_flushes_a_due_block_on_a_non_transcript_tick() -> None:
+    """The sink has no clock of its own -- it only becomes "due" when
+    something calls take_if_due(). If pump() only polled it from inside the
+    InputTranscript/OutputTranscript branches, a block sitting in the sink
+    would never flush during a stretch of audio-only events (e.g. the
+    assistant's own speech). Here the flush-due condition (timer elapsed)
+    only becomes true on the SECOND poll, which happens on an AudioOut
+    event, not a transcript event -- so this fails if the per-tick poll is
+    removed or narrowed to transcript branches only."""
+    now_values = iter([0.0, 0.0, 25.0, 25.0])
+    live = _FakeLive([InputTranscript("first turn"), AudioOut(b"\x00\x00" * 240)])
+    log = _FakeLog()
+    b = _bridge(
+        live,
+        [],
+        log,
+        settings=Settings(
+            _env_file=None, phone_transcript_live_enabled=True, phone_transcript_flush_seconds=10.0
+        ),
+        clock=lambda: next(now_values),
+    )
+    b.ticket_id = "T-1"
+    b.stream_sid = "S1"
+    await b.pump()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert ("T-1", "USER: first turn", None) in log.comments
+
+
+async def test_finalize_flushes_the_trailing_live_block_without_duplicating_it() -> None:
+    """A call that ends mid-turn must not lose the trailing (still-open)
+    turn, but the sink's own take_if_due() is what guarantees it isn't
+    double-posted: it empties exactly what it returns, so calling it once
+    more in finalize() can only surface it once. The separate whole-
+    transcript summary comment (status="solved") that finalize() has always
+    posted is expected too -- it's not a duplicate of the live block, it's
+    today's end-of-call record, unchanged."""
+    live = _FakeLive([InputTranscript("hi"), InputTranscript(" there")])
+    log = _FakeLog()
+    b = _bridge(
+        live,
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    b.ticket_id = "T-1"
+    await b.pump()  # single in-progress USER turn: nothing due yet, held back
+    b.call_sid = "C1"
+    await b.finalize()
+    live_posts = [c for c in log.comments if c[2] is None]
+    assert live_posts == [("T-1", "USER: hi there", None)]
+    assert any(c[2] == "solved" for c in log.comments)
+
+
+async def test_finalize_posts_no_live_block_when_call_ends_before_anyone_speaks() -> None:
+    log = _FakeLog()
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    b.ticket_id = "T-1"
+    b.call_sid = "C1"
+    # No transcript at all -> finalize() is a no-op past the live-flush step.
+    await b.finalize()
+    assert log.comments == []

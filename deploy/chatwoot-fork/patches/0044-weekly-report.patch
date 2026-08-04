@@ -108,10 +108,10 @@ index 0d5196e..248f472 100644
            label: t('SIDEBAR.REPORTS_OVERVIEW'),
 diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue
 new file mode 100644
-index 0000000..fd211d6
+index 0000000..a557c2a
 --- /dev/null
 +++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue
-@@ -0,0 +1,1108 @@
+@@ -0,0 +1,1139 @@
 +<!-- ProtonWeeklyReport.vue — OUR file. Package E (reporting deck parity),
 +     Task 4: one page, sections in the weekly deck's own order (see
 +     docs/superpowers/specs/2026-08-04-pkg-e-reporting-deck-parity-design.md
@@ -342,27 +342,44 @@ index 0000000..fd211d6
 +// insights_router.py's `_reject_period`), so these load once and are
 +// labelled "All time" (SCOPE_STATUS.UNFILTERED) regardless of the week
 +// picker above.
++//
++// Fetched and error-handled independently (two separate loading/errored
++// pairs, two separate calls — NOT a shared Promise.all) so a failure in one
++// endpoint doesn't paint the other section's already-succeeded data with a
++// generic error. Departments & PIC Detail and Call Centre & SLA Performance
++// are unrelated sections and must reflect their own outcome only.
 +
 +const departments = ref(null);
-+const callCentre = ref(null);
-+const loadingAllTime = ref(true);
-+const erroredAllTime = ref(null);
++const loadingDepartments = ref(true);
++const erroredDepartments = ref(null);
 +
-+async function loadAllTime() {
-+  loadingAllTime.value = true;
-+  erroredAllTime.value = null;
++async function loadDepartments() {
++  loadingDepartments.value = true;
++  erroredDepartments.value = null;
 +  try {
-+    const [departmentsResult, callCentreResult] = await Promise.all([
-+      getDepartments(),
-+      getCallCentre(),
-+    ]);
-+    departments.value = departmentsResult;
-+    callCentre.value = callCentreResult;
++    departments.value = await getDepartments();
 +  } catch (e) {
-+    erroredAllTime.value = e.message || 'Failed to load all-time data';
-+    useAlert('Failed to load all-time report data: ' + erroredAllTime.value);
++    erroredDepartments.value = e.message || 'Failed to load department data';
++    useAlert('Failed to load department data: ' + erroredDepartments.value);
 +  } finally {
-+    loadingAllTime.value = false;
++    loadingDepartments.value = false;
++  }
++}
++
++const callCentre = ref(null);
++const loadingCallCentre = ref(true);
++const erroredCallCentre = ref(null);
++
++async function loadCallCentre() {
++  loadingCallCentre.value = true;
++  erroredCallCentre.value = null;
++  try {
++    callCentre.value = await getCallCentre();
++  } catch (e) {
++    erroredCallCentre.value = e.message || 'Failed to load call-centre data';
++    useAlert('Failed to load call-centre data: ' + erroredCallCentre.value);
++  } finally {
++    loadingCallCentre.value = false;
 +  }
 +}
 +
@@ -452,7 +469,8 @@ index 0000000..fd211d6
 +
 +onMounted(() => {
 +  loadPeriodScoped();
-+  loadAllTime();
++  loadDepartments();
++  loadCallCentre();
 +  loadCases();
 +});
 +</script>
@@ -576,6 +594,12 @@ index 0000000..fd211d6
 +        vs last week: not comparable
 +      </span>
 +    </div>
++    <p class="text-xs text-n-slate-10 mb-4">
++      Read from the BigQuery reporting warehouse
++      (<code>/metrics/volume-by-type</code>), not live from Chatwoot — this
++      total can legitimately differ from the case count in Per-Case Detail
++      below, which reads Chatwoot directly. See the note there.
++    </p>
 +
 +    <woot-loading-state
 +      v-if="loadingPeriod"
@@ -753,12 +777,12 @@ index 0000000..fd211d6
 +    </div>
 +
 +    <woot-loading-state
-+      v-if="loadingAllTime"
++      v-if="loadingDepartments"
 +      class="text-xs"
 +      message="Loading department data…"
 +    />
-+    <div v-else-if="erroredAllTime" class="text-sm text-n-slate-10">
-+      {{ erroredAllTime }}
++    <div v-else-if="erroredDepartments" class="text-sm text-n-slate-10">
++      {{ erroredDepartments }}
 +    </div>
 +    <div
 +      v-else-if="!allTimeHasAnyRows"
@@ -934,12 +958,12 @@ index 0000000..fd211d6
 +    </div>
 +
 +    <woot-loading-state
-+      v-if="loadingAllTime"
++      v-if="loadingCallCentre"
 +      class="text-xs"
 +      message="Loading call-centre data…"
 +    />
-+    <div v-else-if="erroredAllTime" class="text-sm text-n-slate-10">
-+      {{ erroredAllTime }}
++    <div v-else-if="erroredCallCentre" class="text-sm text-n-slate-10">
++      {{ erroredCallCentre }}
 +    </div>
 +    <div
 +      v-else-if="!callCentreHasAnyRows"
@@ -1156,31 +1180,27 @@ index 0000000..fd211d6
 +  </div>
 +
 +  <!-- Section: Dealer Escalation Turnaround (All Time, reused 0034) ─────── -->
++  <!-- scope-status renders the "All time" marker inside the component,
++       directly beside its own heading — see ProtonDealerEscalationSection's
++       scopeStatus prop comment for why this is now prop-driven rather than
++       an external wrapper badge the reader had to look away from the
++       numbers to notice. -->
 +  <div class="mb-6">
-+    <div class="flex items-center gap-2 mb-2">
-+      <ProtonScopeBadge :status="SCOPE_STATUS.UNFILTERED" />
-+    </div>
-+    <ProtonDealerEscalationSection />
++    <ProtonDealerEscalationSection :scope-status="SCOPE_STATUS.UNFILTERED" />
 +  </div>
 +
 +  <!-- Section: SLA Compliance by Bucket (All Time, reused 0034) ─────────── -->
 +  <div class="mb-6">
-+    <div class="flex items-center gap-2 mb-2">
-+      <ProtonScopeBadge :status="SCOPE_STATUS.UNFILTERED" />
-+    </div>
-+    <ProtonSlaComplianceSection />
++    <ProtonSlaComplianceSection :scope-status="SCOPE_STATUS.UNFILTERED" />
 +  </div>
 +
 +  <!-- Section: Work-in-Progress / Case Aging (All Time, reused 0034) ────── -->
 +  <div class="mb-6">
-+    <div class="flex items-center gap-2 mb-2">
-+      <ProtonScopeBadge :status="SCOPE_STATUS.UNFILTERED" />
-+      <span class="text-xs text-n-slate-10">
-+        Car plate, purchased-from dealer and delay reason are not yet columns on
-+        this table — see per-case detail below for what's captured today.
-+      </span>
-+    </div>
-+    <ProtonWipAgingSection />
++    <p class="text-xs text-n-slate-10 mb-2">
++      Car plate, purchased-from dealer and delay reason are not yet columns on
++      this table — see per-case detail below for what's captured today.
++    </p>
++    <ProtonWipAgingSection :scope-status="SCOPE_STATUS.UNFILTERED" />
 +  </div>
 +
 +  <!-- Section: Per-Case Detail — This Week ───────────────────────────────── -->
@@ -1203,6 +1223,17 @@ index 0000000..fd211d6
 +      {{ scopeEmptyMessage(SCOPE_STATUS.UNAVAILABLE) }}
 +    </div>
 +    <template v-else>
++      <p class="text-xs text-n-slate-10 mb-3">
++        This table reads {{ fmtNum(weekCases.length, 0) }} case{{
++          weekCases.length === 1 ? '' : 's'
++        }}
++        live from Chatwoot for the selected week. Case Volume above reports
++        {{ fmtNum(volumeTotal, 0) }} from the BigQuery reporting warehouse for
++        the same week — the two are different systems (sync lag, view-level
++        filtering, and differing <code>created_at</code> handling), so they can
++        legitimately disagree. Treat Case Volume as the reconciled deck figure
++        and this table as the live detail.
++      </p>
 +      <p v-if="casesTruncated" class="text-xs text-n-amber-11 mb-3">
 +        The underlying case list stopped loading after
 +        {{ casesFetchedCount }} of {{ casesTotalCount }} conversations, so this
@@ -1220,6 +1251,48 @@ index 0000000..fd211d6
 +    </template>
 +  </div>
 +</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonDealerEscalationSection.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonDealerEscalationSection.vue
+index 10b5233..36b914e 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonDealerEscalationSection.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonDealerEscalationSection.vue
+@@ -1,6 +1,21 @@
+ <script setup>
+ import { ref, computed, onMounted } from 'vue';
+ import { getDealerEscalation } from 'dashboard/api/protonMetrics';
++import ProtonScopeBadge from './ProtonScopeBadge.vue';
++
++// `scopeStatus` is optional and unused by every existing embedding of this
++// component (SLAReports.vue) — default null means "render no badge",
++// byte-identical to this component's pre-existing behaviour there. Package
++// E's Weekly Report (Task 4) passes "unfiltered" so the "All time" marker
++// sits directly beside this component's own heading (the point where its
++// numbers are read) rather than in an external wrapper the reader has to
++// look away from the table to notice.
++defineProps({
++  scopeStatus: {
++    type: String,
++    default: null,
++  },
++});
+ 
+ // ── State ──────────────────────────────────────────────────────────────────────
+ 
+@@ -39,9 +54,12 @@ function fmtDays(val) {
+   <div
+     class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
+   >
+-    <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
+-      Dealer Escalation Turnaround
+-    </h3>
++    <div class="flex items-center gap-2 mb-4">
++      <h3 class="text-sm font-semibold text-n-slate-12">
++        Dealer Escalation Turnaround
++      </h3>
++      <ProtonScopeBadge v-if="scopeStatus" :status="scopeStatus" />
++    </div>
+ 
+     <!-- Loading state -->
+     <woot-loading-state
 diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonScopeBadge.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonScopeBadge.vue
 new file mode 100644
 index 0000000..d893a6a
@@ -1265,12 +1338,92 @@ index 0000000..d893a6a
 +    {{ label }}
 +  </span>
 +</template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonSlaComplianceSection.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonSlaComplianceSection.vue
+index ec20daa..7c28ef4 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonSlaComplianceSection.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonSlaComplianceSection.vue
+@@ -2,6 +2,19 @@
+ import { ref, computed, onMounted } from 'vue';
+ import BarChart from 'shared/components/charts/BarChart.vue';
+ import { getSlaBuckets } from 'dashboard/api/protonMetrics';
++import ProtonScopeBadge from './ProtonScopeBadge.vue';
++
++// `scopeStatus` is optional and unused by every existing embedding of this
++// component (SLAReports.vue) — default null means "render no badge", so
++// existing pages keep today's behaviour. Package E's Weekly Report (Task 4)
++// passes "unfiltered" so the "All time" marker sits beside this component's
++// own heading, right above the chart it labels.
++defineProps({
++  scopeStatus: {
++    type: String,
++    default: null,
++  },
++});
+ 
+ // ── State ──────────────────────────────────────────────────────────────────────
+ 
+@@ -73,9 +86,12 @@ const barChartOptions = {
+   <div
+     class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
+   >
+-    <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
+-      SLA Compliance by Bucket
+-    </h3>
++    <div class="flex items-center gap-2 mb-4">
++      <h3 class="text-sm font-semibold text-n-slate-12">
++        SLA Compliance by Bucket
++      </h3>
++      <ProtonScopeBadge v-if="scopeStatus" :status="scopeStatus" />
++    </div>
+ 
+     <!-- Loading state -->
+     <woot-loading-state
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonWipAgingSection.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonWipAgingSection.vue
+index 1c53ba7..a7a1888 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonWipAgingSection.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonWipAgingSection.vue
+@@ -1,6 +1,19 @@
+ <script setup>
+ import { ref, onMounted } from 'vue';
+ import { getCaseAging } from 'dashboard/api/protonMetrics';
++import ProtonScopeBadge from './ProtonScopeBadge.vue';
++
++// `scopeStatus` is optional and unused by every existing embedding of this
++// component (ProtonCaseLifecycle.vue) — default null means "render no
++// badge", so that page's existing behaviour is unchanged. Package E's Weekly
++// Report (Task 4) passes "unfiltered" so the "All time" marker sits beside
++// this component's own heading, right above the table it labels.
++defineProps({
++  scopeStatus: {
++    type: String,
++    default: null,
++  },
++});
+ 
+ // ── State ──────────────────────────────────────────────────────────────────────
+ 
+@@ -33,9 +46,12 @@ function fmtDays(val) {
+   <div
+     class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
+   >
+-    <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
+-      Work-in-Progress / Case Aging
+-    </h3>
++    <div class="flex items-center gap-2 mb-4">
++      <h3 class="text-sm font-semibold text-n-slate-12">
++        Work-in-Progress / Case Aging
++      </h3>
++      <ProtonScopeBadge v-if="scopeStatus" :status="scopeStatus" />
++    </div>
+ 
+     <!-- Loading state -->
+     <woot-loading-state
 diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/reportScope.js b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/reportScope.js
 new file mode 100644
-index 0000000..0a888a7
+index 0000000..b4919e3
 --- /dev/null
 +++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/reportScope.js
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,96 @@
 +// reportScope.js — OUR file. Shared vocabulary for Package E's Weekly Report
 +// (Task 4) so every section on the page describes its own data the same way.
 +//
@@ -1360,7 +1513,10 @@ index 0000000..0a888a7
 +  if (delta === null || delta === undefined || Number.isNaN(delta)) {
 +    return null;
 +  }
-+  const rounded = Math.round(delta);
++  // `|| 0` normalises -0 (e.g. Math.round(-0.4)) to plain 0 -- -0 is falsy,
++  // so this is the standard idiom, and it keeps the sign check below
++  // unambiguous rather than silently relying on `-0 > 0 === false`.
++  const rounded = Math.round(delta) || 0;
 +  const sign = rounded > 0 ? '+' : '';
 +  return `${sign}${rounded}%`;
 +}

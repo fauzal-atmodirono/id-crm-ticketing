@@ -98,9 +98,9 @@ policy; see Package G.
 
 | # | Check | Expected |
 |---|---|---|
-| 1 | Send mail from an outside address to `devotech29@gmail.com` | Within one IMAP poll cycle a new conversation appears in the Email inbox |
-| 2 | Reply from Chatwoot as an agent | The reply arrives in the sender's mailbox, threaded, `From:` = `MAILER_SENDER_EMAIL` |
-| 3 | Send a fresh mail | **Exactly one** acknowledgement, once per thread — see §3.5.2, this failed the first time |
+| 1 | Send mail from an outside address to `devotech29@gmail.com` | ✅ **Passed 2026-08-04** — conversation appears within ~2 min (one poll cycle) |
+| 2 | Reply from Chatwoot as an agent | Not yet run. The reply should arrive threaded, `From:` = `MAILER_SENDER_EMAIL` |
+| 3 | Send a fresh mail | ✅ **Passed 2026-08-04** — exactly one acknowledgement (§3.5.2). Failed on the first attempt; two were sent |
 | 4 | Add the `escalate` label with `EMAIL_ESCALATION_ENABLED=true` and PIC/dealer rows populated | Two separate mails: customer ack + internal forward. **The no-CC assumption here is now contested — see Package G** |
 | 5 | Check Mailpit is no longer catching proton mail | Mail leaves the box for real |
 
@@ -146,10 +146,24 @@ Trade-off accepted: our auto-ack skips conversations created by an AI handoff
 conversations are created on the API inbox, not the email inbox, so this does
 not bite today.
 
-**Still untested:** a resolved conversation where the customer then replies to
-the same old thread. If Chatwoot opens a *new* conversation, the greeting fires
-again in the same thread, which Proton's SOP explicitly forbids ("do NOT keep
-sending it repeatedly in the same email thread"). Test before go-live.
+**Verified 2026-08-04 04:15 UTC.** A fresh mail from an outside address produced
+conversation 38 with exactly two messages — `type=0` incoming, `type=3` the
+native greeting — and **no `type=1`**, confirming the lifecycle auto-ack no
+longer fires. One acknowledgement, sent as "Notifications from …". A new
+subject correctly opened a new conversation for the existing contact, which is
+the SOP's "new email → auto-reply again" rule.
+
+**Two SOP rules still untested:**
+
+1. *Customer replies in the same thread* → must produce **no** additional
+   auto-reply. Expected to pass, since the reply appends to the existing
+   conversation and the greeting fires on conversation creation.
+2. *Conversation is resolved, then the customer replies to that same old
+   thread.* If Chatwoot opens a **new** conversation, the greeting fires again
+   inside one thread — which the SOP explicitly forbids ("do NOT keep sending
+   it repeatedly in the same email thread"). This is the risky one. All three
+   test conversations are still `open`, so this path has not been exercised.
+   **Test before go-live.**
 
 #### 3.5.3 Mailbox hygiene decides whether "every email reaches the CRM" is true
 

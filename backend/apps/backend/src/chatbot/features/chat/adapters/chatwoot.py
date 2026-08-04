@@ -345,10 +345,21 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         narrowed to the read-failure window. Losing this one write is
         recoverable (a later call re-establishes it); wiping a real
         conversation's attributes is not.
+
+        Deliberately excluded from the ERROR path: Chatwoot being
+        DELIBERATELY disabled (``chatwoot_enabled=False``) also makes
+        ``_request`` return ``None`` (it never issues the GET at all), but
+        that is expected, quiet behaviour, not a failure -- logging it at
+        ERROR would fire on every single write for such a tenant and look
+        like a standing outage. Mirrors ``PhoneBridge._create_ticket_at_
+        start``'s identical disabled-vs-failed distinction.
         """
         res = await self._request("GET", f"/conversations/{ticket_id}")
         if res is None:
-            _log.error("chatwoot_custom_attributes_read_failed", ticket_id=ticket_id)
+            if self._settings.chatwoot_enabled:
+                _log.error("chatwoot_custom_attributes_read_failed", ticket_id=ticket_id)
+            else:
+                _log.info("chatwoot_custom_attributes_write_skipped_disabled", ticket_id=ticket_id)
             return
         existing = res.get("custom_attributes") if isinstance(res, dict) else None
         current = existing if isinstance(existing, dict) else {}

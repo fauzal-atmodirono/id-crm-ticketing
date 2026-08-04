@@ -54,7 +54,7 @@ def _registry(pic: PicEntry | None = _APPS_PIC) -> PicRegistry:
 async def test_notify_sends_email_and_wa_when_dept_matched() -> None:
     sent_emails: list[dict[str, Any]] = []
     sent_wa: list[tuple[str, str]] = []
-    cw_calls: list[tuple[str, str, Any]] = []
+    merge_calls: list[tuple[str, dict[str, Any]]] = []
 
     class _FakeEmailSender:
         def send(
@@ -62,9 +62,8 @@ async def test_notify_sends_email_and_wa_when_dept_matched() -> None:
         ) -> None:
             sent_emails.append({"to": to, "cc": cc, "subject": subject, "body": body})
 
-    async def _fake_cw(method: str, path: str, payload: Any = None) -> dict:
-        cw_calls.append((method, path, payload))
-        return {}
+    async def _fake_merge(ticket_id: str, attributes: dict[str, Any]) -> None:
+        merge_calls.append((ticket_id, attributes))
 
     class _FakeTwilio:
         async def send_message(self, conversation_id: str, text: str) -> None:
@@ -75,7 +74,7 @@ async def test_notify_sends_email_and_wa_when_dept_matched() -> None:
         pic_registry=_registry(),
         email_sender=_FakeEmailSender(),  # type: ignore[arg-type]
         twilio_adapter=_FakeTwilio(),  # type: ignore[arg-type]
-        chatwoot_request=_fake_cw,
+        chatwoot_request=_fake_merge,
     )
 
     pic = await notifier.notify(
@@ -101,10 +100,10 @@ async def test_notify_sends_email_and_wa_when_dept_matched() -> None:
     assert "alice" in wa_to.lower() or "+60123456789" in wa_to
     assert "Battery fault" in wa_text or "42" in wa_text
 
-    # Chatwoot custom attribute "case_state" set
-    attr_calls = [(m, p, pl) for m, p, pl in cw_calls if "/custom_attributes" in p]
-    assert len(attr_calls) >= 1
-    attrs = attr_calls[0][2]["custom_attributes"]
+    # Chatwoot custom attribute "case_state" set, via the merge-safe writer
+    assert len(merge_calls) >= 1
+    ticket_id, attrs = merge_calls[0]
+    assert ticket_id == "42"
     assert "case_state" in attrs
 
 
@@ -181,7 +180,7 @@ async def test_notify_does_not_raise_when_email_sender_raises() -> None:
     The WA send and case_state write must still be attempted.
     """
     wa_calls: list[str] = []
-    cw_calls: list[str] = []
+    merge_calls: list[str] = []
 
     class _ExplodingEmailSender:
         def send(self, **_: Any) -> None:
@@ -191,16 +190,15 @@ async def test_notify_does_not_raise_when_email_sender_raises() -> None:
         async def send_message(self, conversation_id: str, text: str) -> None:
             wa_calls.append(conversation_id)  # text not inspected in this test
 
-    async def _fake_cw(_method: str, path: str, _payload: Any = None) -> dict:
-        cw_calls.append(path)
-        return {}
+    async def _fake_merge(ticket_id: str, _attributes: dict[str, Any]) -> None:
+        merge_calls.append(ticket_id)
 
     notifier = EscalationNotifier(
         settings=_settings(),
         pic_registry=_registry(),
         email_sender=_ExplodingEmailSender(),  # type: ignore[arg-type]
         twilio_adapter=_FakeTwilio(),  # type: ignore[arg-type]
-        chatwoot_request=_fake_cw,
+        chatwoot_request=_fake_merge,
     )
 
     # Must not raise
@@ -216,7 +214,7 @@ async def test_notify_does_not_raise_when_email_sender_raises() -> None:
     # WA was still attempted
     assert len(wa_calls) == 1
     # case_state write was still attempted
-    assert any("/custom_attributes" in p for p in cw_calls)
+    assert merge_calls == ["99"]
 
 
 async def test_notify_does_not_raise_when_chatwoot_request_raises() -> None:
@@ -227,7 +225,7 @@ async def test_notify_does_not_raise_when_chatwoot_request_raises() -> None:
         def send(self, to: list[str], **_: Any) -> None:
             sent_emails.append(to[0])
 
-    async def _exploding_cw(_method: str, _path: str, _payload: Any = None) -> dict:
+    async def _exploding_merge(_ticket_id: str, _attributes: dict[str, Any]) -> None:
         raise RuntimeError("Chatwoot unreachable")
 
     notifier = EscalationNotifier(
@@ -235,7 +233,7 @@ async def test_notify_does_not_raise_when_chatwoot_request_raises() -> None:
         pic_registry=_registry(),
         email_sender=_FakeEmailSender(),  # type: ignore[arg-type]
         twilio_adapter=None,
-        chatwoot_request=_exploding_cw,
+        chatwoot_request=_exploding_merge,
     )
 
     # Must not raise
@@ -351,27 +349,34 @@ def _notifier(
         def send(self, to, cc, subject, body, attachments) -> None:
             sent_emails.append({"to": to, "cc": cc, "subject": subject, "body": body})
 
-    async def _fake_cw(method: str, path: str, payload: Any = None) -> dict:
-        return {}
+    # notify_email_channel_escalation (what every caller of this helper
+    # exercises) never calls _write_case_state -- only notify() does -- so
+    # this is never actually invoked here; kept shaped like the real
+    # merge-safe callable purely so nothing here looks like it's still on
+    # the old raw-_request contract.
+    async def _fake_merge(ticket_id: str, attributes: dict[str, Any]) -> None:
+        return None
 
     notifier = EscalationNotifier(
         settings=_settings(**(settings_kw or {})),
         pic_registry=_registry(pic),
         email_sender=email_sender or _FakeEmailSender(),
         twilio_adapter=None,
-        chatwoot_request=_fake_cw,
+        chatwoot_request=_fake_merge,
         dealer_email_map=dealer_map or {},
     )
     return notifier, sent_emails
 
 
 async def test_notify_email_channel_escalation_sends_customer_ack_when_enabled() -> None:
-    notifier, sent = _notifier(
-        pic=None, settings_kw={"email_escalation_ack_enabled": True}
-    )
+    notifier, sent = _notifier(pic=None, settings_kw={"email_escalation_ack_enabled": True})
     await notifier.notify_email_channel_escalation(
-        conv_id="9", title="Late delivery", body="details",
-        department=None, dealer=None, customer_email="alex@customer.example",
+        conv_id="9",
+        title="Late delivery",
+        body="details",
+        department=None,
+        dealer=None,
+        customer_email="alex@customer.example",
     )
     assert len(sent) == 1
     assert sent[0]["to"] == ["alex@customer.example"]
@@ -379,23 +384,30 @@ async def test_notify_email_channel_escalation_sends_customer_ack_when_enabled()
 
 
 async def test_notify_email_channel_escalation_skips_ack_when_disabled() -> None:
-    notifier, sent = _notifier(
-        pic=None, settings_kw={"email_escalation_ack_enabled": False}
-    )
+    notifier, sent = _notifier(pic=None, settings_kw={"email_escalation_ack_enabled": False})
     await notifier.notify_email_channel_escalation(
-        conv_id="9", title="t", body="b",
-        department=None, dealer=None, customer_email="alex@customer.example",
+        conv_id="9",
+        title="t",
+        body="b",
+        department=None,
+        dealer=None,
+        customer_email="alex@customer.example",
     )
     assert sent == []
 
 
 async def test_notify_email_channel_escalation_sends_dealer_forward_when_mapped() -> None:
     notifier, sent = _notifier(
-        pic=None, dealer_map={"kl_pj": "kl-pj@dealer.example"},
+        pic=None,
+        dealer_map={"kl_pj": "kl-pj@dealer.example"},
     )
     await notifier.notify_email_channel_escalation(
-        conv_id="9", title="t", body="b",
-        department=None, dealer="kl_pj", customer_email=None,
+        conv_id="9",
+        title="t",
+        body="b",
+        department=None,
+        dealer="kl_pj",
+        customer_email=None,
     )
     assert len(sent) == 1
     assert sent[0]["to"] == ["kl-pj@dealer.example"]
@@ -404,8 +416,12 @@ async def test_notify_email_channel_escalation_sends_dealer_forward_when_mapped(
 async def test_notify_email_channel_escalation_skips_dealer_when_unmapped() -> None:
     notifier, sent = _notifier(pic=None, dealer_map={})
     await notifier.notify_email_channel_escalation(
-        conv_id="9", title="t", body="b",
-        department=None, dealer="unknown_slug", customer_email=None,
+        conv_id="9",
+        title="t",
+        body="b",
+        department=None,
+        dealer="unknown_slug",
+        customer_email=None,
     )
     assert sent == []
 
@@ -417,8 +433,12 @@ async def test_notify_email_channel_escalation_sends_pic_and_dealer_together() -
         settings_kw={"escalation_email_enabled": True},
     )
     await notifier.notify_email_channel_escalation(
-        conv_id="9", title="t", body="b",
-        department="dept_apps", dealer="kl_pj", customer_email=None,
+        conv_id="9",
+        title="t",
+        body="b",
+        department="dept_apps",
+        dealer="kl_pj",
+        customer_email=None,
     )
     recipients = {tuple(e["to"]) for e in sent}
     assert ("alice@proton.my",) in recipients
@@ -432,8 +452,12 @@ async def test_notify_email_channel_escalation_noop_when_everything_off() -> Non
         settings_kw={"escalation_email_enabled": False, "email_escalation_ack_enabled": False},
     )
     await notifier.notify_email_channel_escalation(
-        conv_id="9", title="t", body="b",
-        department=None, dealer=None, customer_email="alex@customer.example",
+        conv_id="9",
+        title="t",
+        body="b",
+        department=None,
+        dealer=None,
+        customer_email="alex@customer.example",
     )
     assert sent == []
 
@@ -452,8 +476,12 @@ async def test_dealer_forward_uses_store_record_when_present() -> None:
     notifier._dealer_store = dealer_store
 
     await notifier.notify_email_channel_escalation(
-        conv_id="9", title="t", body="b",
-        department=None, dealer="kl_pj", customer_email=None,
+        conv_id="9",
+        title="t",
+        body="b",
+        department=None,
+        dealer="kl_pj",
+        customer_email=None,
     )
 
     assert len(sent) == 1
@@ -469,8 +497,12 @@ async def test_dealer_forward_falls_back_to_dict_when_store_has_no_entry() -> No
     notifier._dealer_store = dealer_store
 
     await notifier.notify_email_channel_escalation(
-        conv_id="9", title="t", body="b",
-        department=None, dealer="kl_pj", customer_email=None,
+        conv_id="9",
+        title="t",
+        body="b",
+        department=None,
+        dealer="kl_pj",
+        customer_email=None,
     )
 
     assert len(sent) == 1
@@ -482,8 +514,12 @@ async def test_dealer_forward_works_without_a_store_configured() -> None:
     notifier, sent = _notifier(pic=None, dealer_map={"kl_pj": "legacy@dealer.example"})
 
     await notifier.notify_email_channel_escalation(
-        conv_id="9", title="t", body="b",
-        department=None, dealer="kl_pj", customer_email=None,
+        conv_id="9",
+        title="t",
+        body="b",
+        department=None,
+        dealer="kl_pj",
+        customer_email=None,
     )
 
     assert len(sent) == 1

@@ -34,6 +34,20 @@ _log = structlog.get_logger(__name__)
 # Type alias: the ChatwootAdapter._request signature we inject.
 _CWRequest = Callable[..., Coroutine[Any, Any, dict[str, Any] | None]]
 
+# Type alias: ChatwootAdapter._merge_custom_attributes's signature (ticket_id,
+# attributes) -> None. Package C Task 5 review fix (Critical 1, round 2):
+# _write_case_state below used to call a raw `_CWRequest`-shaped callable
+# with a bare `{"custom_attributes": {...}}` POST body -- but Chatwoot's
+# custom-attributes endpoint REPLACES the whole object, so that call was
+# clobbering case_category/recording_url/external_id/etc. every time an
+# escalation fired (notify() calls _write_case_state unconditionally, before
+# create_ticket/open_handoff's own now-merge-safe custom_attrs write -- so a
+# reused conversation's prior attributes were being wiped one frame before
+# this class's own caller had a chance to preserve them). This is now
+# injected as ChatwootAdapter._merge_custom_attributes itself (GET, union,
+# POST -- see that method's docstring), not a hand-rolled reimplementation.
+_CWMergeCustomAttributes = Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]
+
 
 def build_dealer_email_map(settings: Settings) -> dict[str, str]:
     """Parse dealer_email_map_json into a lower-cased slug -> email dict.
@@ -67,7 +81,7 @@ class EscalationNotifier:
         pic_registry: PicRegistry,
         email_sender: SmtpEmailSender,
         twilio_adapter: TwilioChannelAdapter | None,
-        chatwoot_request: _CWRequest,
+        chatwoot_request: _CWMergeCustomAttributes,
         dealer_email_map: dict[str, str] | None = None,
         dealer_store: DealerStore | None = None,
     ) -> None:
@@ -240,10 +254,6 @@ class EscalationNotifier:
 
     async def _write_case_state(self, conv_id: str) -> None:
         try:
-            await self._cw(
-                "POST",
-                f"/conversations/{conv_id}/custom_attributes",
-                {"custom_attributes": {CHATWOOT_CASE_STATE_ATTR: CaseState.WIP.value}},
-            )
+            await self._cw(conv_id, {CHATWOOT_CASE_STATE_ATTR: CaseState.WIP.value})
         except Exception as exc:
             _log.warning("escalation_case_state_write_failed", conv_id=conv_id, error=str(exc))

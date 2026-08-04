@@ -44,13 +44,33 @@ def _settings(**kw: Any) -> Settings:
 
 
 class _FakeCW:
+    """Stateful enough to matter: tracks each conversation's custom
+    attributes across calls (real Chatwoot's custom-attributes POST
+    REPLACES the whole object; GET /conversations/{id} returns whatever was
+    last POSTed) -- a stateless canned-response fake can't catch the
+    Package C Task 5 review-round-2 bug this exists to prevent (the
+    escalation notifier's case_state write silently erasing whatever
+    open_handoff's own custom_attrs write had just set, or vice versa)."""
+
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict | None]] = []
+        self._custom_attrs: dict[str, dict] = {}
 
     async def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
         self.calls.append((method, path, payload))
         if method == "POST" and path.endswith("/conversations"):
             return {"id": 99}
+        if method == "POST" and path.endswith("/custom_attributes"):
+            conv_id = path.split("/")[-2]
+            self._custom_attrs[conv_id] = dict((payload or {}).get("custom_attributes", {}))
+            return {}
+        if (
+            method == "GET"
+            and path.startswith("/conversations/")
+            and path.rsplit("/", 1)[-1].isdigit()
+        ):
+            conv_id = path.rsplit("/", 1)[-1]
+            return {"custom_attributes": dict(self._custom_attrs.get(conv_id, {}))}
         return {}
 
 
@@ -68,20 +88,22 @@ async def test_open_handoff_complaint_uses_pic_team_assignment() -> None:
     fake_twilio = _FakeTwilio()
 
     registry = build_pic_registry(s)
+    # Adapter constructed FIRST (no escalation_notifier yet) so the notifier
+    # can be injected the REAL ChatwootAdapter._merge_custom_attributes
+    # bound method -- not a hand-rolled reimplementation of its GET/union/
+    # POST logic -- exactly mirroring main.py's own post-construction
+    # wiring ("Post-construction injection is safe: escalation only fires
+    # inside async request handlers").
+    adapter = ChatwootAdapter(settings=s, pic_registry=registry)
+    adapter._request = fake_cw._request  # type: ignore[method-assign]
     notifier = EscalationNotifier(
         settings=s,
         pic_registry=registry,
         email_sender=None,  # type: ignore[arg-type]  email disabled in settings
         twilio_adapter=fake_twilio,  # type: ignore[arg-type]
-        chatwoot_request=fake_cw._request,
+        chatwoot_request=adapter._merge_custom_attributes,
     )
-
-    adapter = ChatwootAdapter(
-        settings=s,
-        pic_registry=registry,
-        escalation_notifier=notifier,
-    )
-    adapter._request = fake_cw._request  # type: ignore[method-assign]
+    adapter._escalation_notifier = notifier
 
     payload = HandoffOpenPayload(
         session_id="sim-1",
@@ -118,20 +140,16 @@ async def test_open_handoff_applies_pic_label_on_escalation() -> None:
     fake_twilio = _FakeTwilio()
 
     registry = build_pic_registry(s)
+    adapter = ChatwootAdapter(settings=s, pic_registry=registry)
+    adapter._request = fake_cw._request  # type: ignore[method-assign]
     notifier = EscalationNotifier(
         settings=s,
         pic_registry=registry,
         email_sender=None,  # type: ignore[arg-type]  email disabled in settings
         twilio_adapter=fake_twilio,
-        chatwoot_request=fake_cw._request,
+        chatwoot_request=adapter._merge_custom_attributes,
     )
-
-    adapter = ChatwootAdapter(
-        settings=s,
-        pic_registry=registry,
-        escalation_notifier=notifier,
-    )
-    adapter._request = fake_cw._request  # type: ignore[method-assign]
+    adapter._escalation_notifier = notifier
 
     payload = HandoffOpenPayload(
         session_id="sim-pic-label",
@@ -191,20 +209,16 @@ async def test_escalation_notifies_pic_in_chatwoot_only_mode() -> None:
     fake_email = _FakeEmail()
 
     registry = build_pic_registry(s)
+    adapter = ChatwootAdapter(settings=s, pic_registry=registry)
+    adapter._request = fake_cw._request  # type: ignore[method-assign]
     notifier = EscalationNotifier(
         settings=s,
         pic_registry=registry,
         email_sender=fake_email,  # type: ignore[arg-type]
         twilio_adapter=fake_twilio,  # type: ignore[arg-type]
-        chatwoot_request=fake_cw._request,
+        chatwoot_request=adapter._merge_custom_attributes,
     )
-
-    adapter = ChatwootAdapter(
-        settings=s,
-        pic_registry=registry,
-        escalation_notifier=notifier,
-    )
-    adapter._request = fake_cw._request  # type: ignore[method-assign]
+    adapter._escalation_notifier = notifier
 
     payload = HandoffOpenPayload(
         session_id="sim-cwonly",
@@ -227,3 +241,53 @@ async def test_escalation_notifies_pic_in_chatwoot_only_mode() -> None:
     # WhatsApp alert still fired to the PIC.
     assert len(fake_twilio.sent) == 1
     assert "+60123456789" in fake_twilio.sent[0][0]
+
+
+async def test_open_handoff_case_state_and_classification_both_survive() -> None:
+    """Package C Task 5 review round 2, Critical 1: this is the regression
+    the missing test let through. ``open_handoff`` -> ``_fire_escalation``
+    -> ``notifier.notify()`` -> ``_write_case_state`` fires FIRST (writing
+    ``case_state``), then ``open_handoff`` writes its OWN custom attributes
+    (``case_category``/``case_type``/``vehicle_model``) SECOND -- against
+    the SAME conversation. With a bare-assign writer on either side,
+    whichever ran second would silently wipe the other. Runs the REAL
+    sequence (no mocked-out notifier, no mocked-out custom_attrs write)
+    against the stateful ``_FakeCW`` and asserts every attribute from BOTH
+    writers is present together at the end.
+    """
+    s = _settings()
+    fake_cw = _FakeCW()
+    fake_twilio = _FakeTwilio()
+
+    registry = build_pic_registry(s)
+    adapter = ChatwootAdapter(settings=s, pic_registry=registry)
+    adapter._request = fake_cw._request  # type: ignore[method-assign]
+    notifier = EscalationNotifier(
+        settings=s,
+        pic_registry=registry,
+        email_sender=None,  # type: ignore[arg-type]  email disabled in settings
+        twilio_adapter=fake_twilio,  # type: ignore[arg-type]
+        chatwoot_request=adapter._merge_custom_attributes,
+    )
+    adapter._escalation_notifier = notifier
+
+    payload = HandoffOpenPayload(
+        session_id="sim-both-survive",
+        customer_name="Budi",
+        customer_email="",
+        ai_summary="App crashes on login",
+        transcript=(Message(role="user", text="the app crashes"),),
+        urgency="high",
+        reason="negative_sentiment",
+        department="apps",
+        category="sales",
+        case_type="Complaint",
+        vehicle_model="e.MAS 7",
+    )
+    await adapter.open_handoff(payload)
+
+    final = fake_cw._custom_attrs.get("99", {})
+    assert final.get("case_state") == "WIP"  # written by the notifier, first
+    assert final.get("case_category") == "sales"  # written by open_handoff, second
+    assert final.get("case_type") == "Complaint"
+    assert final.get("vehicle_model") == "e.MAS 7"

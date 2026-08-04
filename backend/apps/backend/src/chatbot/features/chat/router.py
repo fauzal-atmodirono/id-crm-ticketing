@@ -549,13 +549,24 @@ class ChatRouter:
 
         # Surface the case state in the Chatwoot right panel as a custom attribute.
         # This is best-effort: a failure here must not break the webhook handler.
+        #
+        # Package C Task 5 review fix (Critical 1, round 2): this fires on
+        # EVERY Chatwoot status-change webhook -- by far the most common
+        # trigger of any custom-attributes writer in this codebase. Posting
+        # a bare `{case_state: ...}` object here (the old `_request` call)
+        # would REPLACE the whole custom_attributes object on every status
+        # change, silently erasing case_category/recording_url/external_id/
+        # vehicle_model/etc. on every resolve. Routed through the adapter's
+        # merge-safe helper instead -- see ChatwootAdapter._merge_custom_
+        # attributes's docstring for why a bare POST clobbers.
+        # `hasattr(ticketing, "_merge_custom_attributes")` duck-types the
+        # SAME Chatwoot-only gate the old `hasattr(..., "_request")` check
+        # used (only ChatwootAdapter defines either method).
         try:
             ticketing = self.orchestrator._ticketing_port
-            if hasattr(ticketing, "_request"):
-                await ticketing._request(
-                    "POST",
-                    f"/conversations/{conv_id}/custom_attributes",
-                    {"custom_attributes": {CHATWOOT_CASE_STATE_ATTR: to_state.value}},
+            if hasattr(ticketing, "_merge_custom_attributes"):
+                await ticketing._merge_custom_attributes(
+                    conv_id, {CHATWOOT_CASE_STATE_ATTR: to_state.value}
                 )
         except Exception as exc:
             _log.warning("case_state_attr_write_failed", conv_id=conv_id, error=str(exc))

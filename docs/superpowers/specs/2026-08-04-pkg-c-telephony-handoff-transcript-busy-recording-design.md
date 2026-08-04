@@ -152,9 +152,11 @@ closes.
 
 Assumption if no answer arrives before build starts: **phased.** Ship the hunt
 group, design the target as a resolver interface
-(`HandoffTargetResolver.resolve() -> phone number`) with a static-number
+(`HandoffTargetResolver.resolve() -> target`) with a static-number
 implementation first and a routing-backed one second, so Feature 3 slots in
-without rework.
+without rework. The return type must be a target *descriptor* (PSTN number or
+client identifier), not a bare E.164 string — see the appendix in §12.3, where
+WhatsApp calls turn out to be unable to reach any PSTN endpoint.
 
 ### 5.3 Failure handling — the part that gets skipped and shouldn't
 
@@ -299,7 +301,83 @@ recording lands and plays, confirm the agent stops receiving WhatsApp.
 - Outbound/click-to-call.
 - Voice Intelligence / automated QA scoring on recordings.
 
-## 12. Definition of done
+## 12. Appendix — WhatsApp calling (raised 2026-08-04)
+
+The inbox grid shows a greyed **WhatsApp Call (Beta)** card. Two different
+routes exist to WhatsApp voice, and they have very different costs.
+
+### 12.1 Route 1 — Chatwoot's native WhatsApp calling. Not viable for us.
+
+Two independent blockers, both verified:
+
+- Chatwoot's docs are explicit that the inbox **must be a WhatsApp Cloud API
+  inbox**; inboxes connected through other providers cannot use calling. Ours
+  is a **Twilio-provider** WhatsApp inbox
+  (`crm-channel-interaction-guide.md:30`), so enabling it means migrating the
+  WhatsApp channel off Twilio onto Meta Cloud API.
+- Voice calling reached self-hosted in **v4.15.0 on paid plans only** — not
+  community edition, which is what we run (we have been self-building the
+  enterprise gaps into the fork: SLA policies patch `0025`, roles &
+  permissions patch `0027`).
+
+So the greyed card is not a toggle we're missing. Deprioritise.
+
+### 12.2 Route 2 — Twilio WhatsApp Business Calling into our own bridge
+
+WhatsApp Business Calling is **generally available** on Twilio Programmable
+Voice, and the relevant property is that an inbound WhatsApp call *"will
+generate a webhook to your Twilio Voice application, which will handle the call
+in the same manner as inbound calls to a Twilio phone number."* That is the
+same webhook and the same TwiML our AI bridge already answers — so in principle
+`PhoneBridge` handles a WhatsApp call **unchanged**.
+
+Unverified and worth testing before committing: Twilio's material says WhatsApp
+calling streams connect to conversational AI, IVR, bots, recording and STT, but
+does not explicitly confirm bidirectional `<Connect><Stream>` Media Streams on
+WhatsApp calls. Treat that as the first experiment, not an assumption.
+
+### 12.3 The constraint that changes §5.2
+
+Twilio's docs state: **"Calls to WhatsApp destinations cannot be connected to
+Public Switched Telephone Network (PSTN) endpoints."**
+
+This directly contradicts §5's handoff design for the WhatsApp case: `<Dial>`
+to an agent's mobile or to a careline hunt group is a PSTN endpoint and **will
+not work on a WhatsApp call**. A WhatsApp call can only be handed to a
+non-PSTN endpoint — in practice a Twilio Client browser softphone.
+
+Consequence for the §5.2 decision:
+
+| Choice | PSTN calls | WhatsApp calls |
+|---|---|---|
+| Hunt-group number | Works | **Impossible** |
+| Per-agent mobile numbers | Works, enables auto-busy | **Impossible** |
+| Browser softphone (Twilio Client) | Works | Works |
+
+So if WhatsApp calling is genuinely wanted later, the softphone route is the
+only one that serves both channels, and choosing a hunt group now closes that
+door. This does not change the recommendation to ship a phased PSTN handoff
+first — it does mean the `HandoffTargetResolver` interface in §5.2 must be able
+to return a client identifier, not only an E.164 number.
+
+### 12.4 Prerequisites, and why this isn't testable yet
+
+- A **WhatsApp-activated sender** with a messaging limit of ≥2,000
+  business-initiated conversations per 24h, which requires **Meta Business
+  Verification**. Our current WhatsApp number is a **Twilio sandbox** number
+  (`crm-channel-ui-testing-guide.md:127`), which cannot do calling at all.
+- Inbound calling is available in Malaysia; outbound is excluded in the USA,
+  Canada, Egypt, Nigeria, Turkey and Vietnam — Malaysia is unaffected.
+- Outbound is limited to 5 calls per recipient per 24h and needs renewed
+  permission after 7 days; the recipient must consent before a business can
+  call them.
+
+**Bundle the Meta ask.** Business Verification plus a real WABA number is a
+single Proton-side request that unlocks three things currently tracked as
+separate blockers: Facebook/Instagram production (feedback #11), real-number
+WhatsApp media testing (#25), and WhatsApp calling. Ask once.
+
+## 13. Definition of done
 
 A real inbound call can be transferred to a human who actually answers; the
 ticket exists before the call ends and carries the transcript and a derived

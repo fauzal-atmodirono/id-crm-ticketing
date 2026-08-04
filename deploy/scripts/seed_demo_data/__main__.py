@@ -34,6 +34,7 @@ import argparse
 import asyncio
 import collections
 import os
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -71,6 +72,32 @@ def _confirm(expected: str, prompt: str) -> bool:
     standing between a typo'd flag and a live tenant's data."""
     typed = input(prompt)
     return typed == expected
+
+
+_DB_URL_PASSWORD_RE = re.compile(r"(://[^:/@]+:)[^@]*(@)")
+
+
+def _redact_database_url(url: str) -> str:
+    """Password-redacted form of a `postgresql://user:password@host/db`
+    connection string, safe to print in a dry-run summary or log. Never
+    echo a live tenant's DB password to a terminal."""
+    return _DB_URL_PASSWORD_RE.sub(r"\1***\2", url)
+
+
+def _probe_manifest_writable(manifest_path: Path, parser: argparse.ArgumentParser) -> None:
+    """Fail here, before `configure()`/any Chatwoot write, if the manifest
+    can't actually be written. Discovering a bad `--manifest-dir` only in
+    the `finally` block after ~100 conversations already exist in a live
+    tenant would strand that whole batch permanently un-backdatable, since
+    the manifest is the only thing that can drive `backdate` (design
+    requirement 1)."""
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    probe = manifest_path.parent / f".seed_demo_data_write_probe_{os.getpid()}"
+    try:
+        probe.write_text("")
+        probe.unlink()
+    except OSError as exc:
+        parser.error(f"cannot write a manifest to {manifest_path.parent} ({exc}) -- fix --manifest-dir/--manifest-path first")
 
 
 def _add_chatwoot_flags(sub: argparse.ArgumentParser, *, require_inbox: bool) -> None:
@@ -201,26 +228,43 @@ async def _run_seed(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         print("Confirmation did not match -- aborted, nothing written.", file=sys.stderr)
         return 1
 
+    # Pre-flight: prove the manifest can actually be written BEFORE anything
+    # is created in the tenant -- see _probe_manifest_writable's docstring.
+    _probe_manifest_writable(manifest_path, parser)
+
     configure(config)
     manifest_entries: list[ManifestEntry] = []
     try:
-        print(f"\nCreating {len(contacts)} contacts...")
-        contact_ids: list[int] = []
-        for contact in contacts:
-            contact_ids.append(await create_contact(contact, batch_id))
+        try:
+            print(f"\nCreating {len(contacts)} contacts...")
+            contact_ids: list[int] = []
+            for contact in contacts:
+                contact_ids.append(await create_contact(contact, batch_id))
 
-        print(f"Creating {len(cases)} cases...")
-        for case_index, case in enumerate(cases):
-            contact_id = contact_ids[case.contact_index]
-            conversation_id = await create_case(case, contact_id, batch_id, case_index)
-            manifest_entries.append(ManifestEntry(conversation_id=conversation_id, created_at=case.created_at))
+            print(f"Creating {len(cases)} cases...")
+            for case_index, case in enumerate(cases):
+                contact_id = contact_ids[case.contact_index]
+                conversation_id = await create_case(case, contact_id, batch_id, case_index)
+                manifest_entries.append(ManifestEntry(conversation_id=conversation_id, created_at=case.created_at))
 
-        print(f"Creating {len(rsa_payloads)} RSA incidents...")
-        for payload in rsa_payloads:
-            await create_rsa_incident(payload)
+            print(f"Creating {len(rsa_payloads)} RSA incidents...")
+            for payload in rsa_payloads:
+                await create_rsa_incident(payload)
+        finally:
+            # Write whatever was actually created, no matter how the block
+            # above ended. A failure writing the manifest here must never
+            # mask an exception raised by the creation loop above (that's
+            # the more important error to surface) -- so it's caught and
+            # reported, not re-raised, with the raw ids printed as a
+            # last-resort fallback since they'd otherwise be lost.
+            try:
+                write_manifest(manifest_path, batch_id=batch_id, tenant=args.tenant, entries=manifest_entries)
+            except OSError as manifest_exc:
+                print(f"WARNING: failed to write manifest to {manifest_path}: {manifest_exc}", file=sys.stderr)
+                if manifest_entries:
+                    ids = [e.conversation_id for e in manifest_entries]
+                    print(f"Conversation ids created so far (SAVE THIS -- backdate needs it): {ids}", file=sys.stderr)
     finally:
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        write_manifest(manifest_path, batch_id=batch_id, tenant=args.tenant, entries=manifest_entries)
         await aclose()
 
     print("\n=== Seed complete ===")
@@ -231,8 +275,9 @@ async def _run_seed(args: argparse.Namespace, parser: argparse.ArgumentParser) -
     if len(manifest_entries) < len(cases):
         print("WARNING: fewer conversations were created than requested -- the run likely raised partway through.", file=sys.stderr)
         return 1
-    print("\nTo backdate this batch's conversations into the past for reporting:")
-    print(f"  python3 -m seed_demo_data backdate --manifest {manifest_path} --database-url <tenant's Chatwoot DB URL> --execute")
+    print("\nTo review what backdating this batch would touch (dry-run, the default -- nothing is written):")
+    print(f"  python3 -m seed_demo_data backdate --manifest {manifest_path} --database-url <tenant's Chatwoot DB URL>")
+    print("Add --execute only after reviewing that dry-run output, to actually apply it.")
     print("\nTo remove everything this batch created:")
     print(f"  python3 -m seed_demo_data purge --tenant {args.tenant} --batch {batch_id} ...")
     return 0
@@ -296,11 +341,13 @@ def _cmd_purge(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
 def _cmd_backdate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     import psycopg  # local import: only backdate needs a Postgres driver
 
-    batch_id, entries = load_manifest(args.manifest)
+    tenant, batch_id, entries = load_manifest(args.manifest)
     print("=== Backdate: dry-run summary ===")
     print(f"Manifest:          {args.manifest}")
+    print(f"Manifest tenant:   {tenant}")
     print(f"Batch id:          {batch_id}")
     print(f"Manifest entries:  {len(entries)}")
+    print(f"Target database:   {_redact_database_url(args.database_url)}")
 
     if not entries:
         print("Manifest has no conversation entries -- nothing to do.")
@@ -332,7 +379,12 @@ def _cmd_backdate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
             print("\nNothing eligible -- nothing to write.")
             return 0
 
-        if not _confirm(batch_id, f"\nType the batch id to confirm writing to this database ({batch_id}): "):
+        # Confirm the TENANT, not the batch id: the batch id was just
+        # printed a few lines above (a copy-paste, not a check), and this is
+        # the one command that writes SQL straight into a tenant database --
+        # typing the tenant name back is what actually makes an operator
+        # verify "am I pointed at the right one" before it happens.
+        if not _confirm(tenant, f"\nType the tenant name (from the manifest) to confirm writing to this database ({tenant}): "):
             print("Confirmation did not match -- aborted, nothing written.", file=sys.stderr)
             return 1
 

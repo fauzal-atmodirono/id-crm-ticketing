@@ -41,6 +41,7 @@ preserved, not collapsed to a single instant).
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,7 +70,15 @@ def write_manifest(path: Path, *, batch_id: str, tenant: str, entries: list[Mani
     `created_at` values are relative to wall-clock `now` at generation time,
     so re-running `generate()` with the same seed later would NOT reproduce
     the same timestamps -- the manifest, not the generator, is the source of
-    truth for what a given batch's conversations should be backdated to."""
+    truth for what a given batch's conversations should be backdated to.
+
+    Written atomically (temp file in the same directory, then `os.replace`):
+    a full disk or a Ctrl-C mid-`write_text` must never leave a truncated,
+    unparseable manifest on disk for a later `load_manifest` to trip over --
+    by requirement 1 this file is the *only* thing that can drive `backdate`,
+    so losing or corrupting it strands the batch permanently un-backdatable.
+    `os.replace` is atomic on both POSIX and Windows, unlike a plain rename.
+    """
     payload = {
         "batch_id": batch_id,
         "tenant": tenant,
@@ -78,18 +87,29 @@ def write_manifest(path: Path, *, batch_id: str, tenant: str, entries: list[Mani
             {"conversation_id": e.conversation_id, "created_at": e.created_at.isoformat()} for e in entries
         ],
     }
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    tmp_path = path.parent / f".{path.name}.tmp-{os.getpid()}"
+    tmp_path.write_text(json.dumps(payload, indent=2) + "\n")
+    os.replace(tmp_path, path)
 
 
-def load_manifest(path: Path) -> tuple[str, list[ManifestEntry]]:
-    """Read a manifest `seed` wrote. Returns `(batch_id, entries)`."""
+def load_manifest(path: Path) -> tuple[str, str, list[ManifestEntry]]:
+    """Read a manifest `seed` wrote. Returns `(tenant, batch_id, entries)`.
+
+    `tenant` is surfaced (not just parsed and discarded) because `backdate`
+    takes no `--tenant` flag of its own (see the module docstring): the
+    manifest's recorded tenant is the only way its dry-run summary can
+    answer "which tenant does this data belong to", and it's what the
+    write-mode confirmation prompt asks the operator to type back -- see
+    `__main__.py`'s `_cmd_backdate`.
+    """
     data = json.loads(Path(path).read_text())
+    tenant = data["tenant"]
     batch_id = data["batch_id"]
     entries = [
         ManifestEntry(conversation_id=int(item["conversation_id"]), created_at=datetime.fromisoformat(item["created_at"]))
         for item in data.get("conversations", [])
     ]
-    return batch_id, entries
+    return tenant, batch_id, entries
 
 
 # --- pure selector (the tested surface) --------------------------------------

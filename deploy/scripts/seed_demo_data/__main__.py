@@ -34,7 +34,6 @@ import argparse
 import asyncio
 import collections
 import os
-import re
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -56,6 +55,7 @@ from backdate import (  # noqa: E402
     backdate_messages,
     fetch_current_rows,
     load_manifest,
+    redact_database_url,
     select_backdate_targets,
     write_manifest,
 )
@@ -74,30 +74,35 @@ def _confirm(expected: str, prompt: str) -> bool:
     return typed == expected
 
 
-_DB_URL_PASSWORD_RE = re.compile(r"(://[^:/@]+:)[^@]*(@)")
-
-
-def _redact_database_url(url: str) -> str:
-    """Password-redacted form of a `postgresql://user:password@host/db`
-    connection string, safe to print in a dry-run summary or log. Never
-    echo a live tenant's DB password to a terminal."""
-    return _DB_URL_PASSWORD_RE.sub(r"\1***\2", url)
-
-
 def _probe_manifest_writable(manifest_path: Path, parser: argparse.ArgumentParser) -> None:
     """Fail here, before `configure()`/any Chatwoot write, if the manifest
     can't actually be written. Discovering a bad `--manifest-dir` only in
     the `finally` block after ~100 conversations already exist in a live
     tenant would strand that whole batch permanently un-backdatable, since
     the manifest is the only thing that can drive `backdate` (design
-    requirement 1)."""
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    requirement 1).
+
+    Both the directory creation and the write are inside the same guarded
+    block: a `mkdir` failure (e.g. an unwritable parent) must exit through
+    the same clean `parser.error()` (exit 2) path as a write failure would,
+    not escape as a raw traceback further down in `asyncio.run()`. The
+    probe file's cleanup is best-effort: if `unlink()` itself fails (e.g.
+    the directory became unwritable between the write and the unlink), that
+    must not raise a second, unrelated exception on top of whatever this
+    function is already reporting -- or mask a real problem that mkdir/
+    write_text already surfaced by succeeding cleanly when they didn't.
+    """
     probe = manifest_path.parent / f".seed_demo_data_write_probe_{os.getpid()}"
     try:
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
         probe.write_text("")
-        probe.unlink()
     except OSError as exc:
         parser.error(f"cannot write a manifest to {manifest_path.parent} ({exc}) -- fix --manifest-dir/--manifest-path first")
+    finally:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass  # best-effort cleanup only -- see docstring
 
 
 def _add_chatwoot_flags(sub: argparse.ArgumentParser, *, require_inbox: bool) -> None:
@@ -347,7 +352,7 @@ def _cmd_backdate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
     print(f"Manifest tenant:   {tenant}")
     print(f"Batch id:          {batch_id}")
     print(f"Manifest entries:  {len(entries)}")
-    print(f"Target database:   {_redact_database_url(args.database_url)}")
+    print(f"Target database:   {redact_database_url(args.database_url)}")
 
     if not entries:
         print("Manifest has no conversation entries -- nothing to do.")

@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -150,6 +151,63 @@ def select_backdate_targets(entries: list[ManifestEntry], rows: list[dict], batc
             continue
         eligible.append(entry)
     return eligible
+
+
+# --- pure DSN redaction (the second tested surface) --------------------------
+
+# Recognises `scheme://[user[:password]@]host[:port][/db][?...]`. Only the
+# authority component (between `://` and the first of `/`, `?`, `#`) is
+# inspected for credentials -- everything else is passed through untouched.
+_URL_SHAPE_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*://)([^/?#]*)(.*)$", re.DOTALL)
+
+# Recognises a libpq keyword=value DSN (what `psycopg.connect()` also
+# accepts, e.g. "host=h port=5432 user=u password=SuperSecret123") *only*
+# when the ENTIRE string decomposes into `key=value` tokens -- fail-closed:
+# any leftover text that doesn't fit this shape means we don't understand
+# the string well enough to claim we found every secret in it.
+_KV_DSN_SHAPE_RE = re.compile(r"^(?:\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:'(?:\\.|[^'\\])*'|\S+)\s*)+$")
+_KV_DSN_PASSWORD_RE = re.compile(r"(\bpassword\s*=\s*)('(?:\\.|[^'\\])*'|\S+)", re.IGNORECASE)
+
+_UNREDACTABLE_PLACEHOLDER = "<unredactable DSN -- not shown>"
+
+
+def redact_database_url(url: str) -> str:
+    """Password-redacted form of a Postgres connection string, safe to
+    print in a dry-run summary or log.
+
+    `psycopg.connect()` accepts two shapes -- a `scheme://user:pass@host/db`
+    URL, or a libpq `key=value ...` DSN -- and an operator's real password
+    can validly appear in either. This function is deliberately
+    **fail-closed**: it recognises exactly those two shapes and positively
+    locates the password within each; a string that matches neither is
+    never echoed verbatim, because a summary that silently prints an
+    unredacted password (because some third DSN shape wasn't anticipated)
+    is strictly worse than a summary that declines to show the DSN at all
+    -- the caller's `Manifest tenant:` line right above it already answers
+    the operator's real "which tenant am I about to write to" question.
+
+    URL form: the password is whatever sits between the userinfo's first
+    `:` and the authority's *last* `@` -- using the last `@` (not the
+    first) means a password that itself contains a literal `@` is masked
+    in full, not just up to its first character.
+    """
+    match = _URL_SHAPE_RE.match(url)
+    if match:
+        scheme, authority, remainder = match.group(1), match.group(2), match.group(3)
+        at_index = authority.rfind("@")
+        if at_index == -1:
+            return url  # no userinfo at all -- nothing to redact
+        userinfo, host_part = authority[:at_index], authority[at_index:]
+        colon_index = userinfo.find(":")
+        if colon_index == -1:
+            return url  # userinfo present but no password -- nothing to redact
+        user = userinfo[:colon_index]
+        return f"{scheme}{user}:***{host_part}{remainder}"
+    if _KV_DSN_SHAPE_RE.match(url):
+        if _KV_DSN_PASSWORD_RE.search(url):
+            return _KV_DSN_PASSWORD_RE.sub(r"\1***", url)
+        return url  # entire string is recognised key=value pairs; no password= key present
+    return _UNREDACTABLE_PLACEHOLDER
 
 
 # --- thin SQL glue (real I/O, correct by inspection) --------------------------

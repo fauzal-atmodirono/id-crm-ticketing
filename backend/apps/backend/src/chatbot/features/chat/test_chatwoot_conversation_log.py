@@ -179,6 +179,35 @@ async def test_set_ticket_external_id_posts_custom_attribute() -> None:
 
 
 @pytest.mark.asyncio
+async def test_set_ticket_external_id_merges_rather_than_clobbers() -> None:
+    """The Critical fix: Chatwoot's custom-attributes endpoint REPLACES the
+    whole object. Writing external_id alone, without reading what's already
+    there first, would silently erase case_category/recording_sid/anything
+    else already on the conversation."""
+    fake = _FakeClient(
+        {("GET", "/conversations/55"): {"custom_attributes": {"case_category": "Sales"}}}
+    )
+    await _adapter(fake).set_ticket_external_id("55", "whatsapp-+60123")
+    method, path, payload = fake.calls[-1]
+    assert method == "POST" and path.endswith("/custom_attributes")
+    assert payload == {
+        "custom_attributes": {"case_category": "Sales", "external_id": "whatsapp-+60123"}
+    }
+
+
+@pytest.mark.asyncio
+async def test_custom_attributes_write_skipped_entirely_when_read_fails() -> None:
+    """If the GET fails we cannot know what's already there -- posting a
+    set we can't prove is complete would silently wipe everything else.
+    Skip the write entirely, same posture as add_ticket_tag's read-failure
+    guard."""
+    fake = _FakeClient({("GET", "/conversations/55"): None})
+    await _adapter(fake).set_ticket_external_id("55", "whatsapp-+60123")
+    assert len(fake.calls) == 1  # the GET only -- no POST followed it
+    assert fake.calls[0][0] == "GET"
+
+
+@pytest.mark.asyncio
 async def test_set_ticket_classification_all_none_is_a_no_op() -> None:
     fake = _FakeClient({})
     await _adapter(fake).set_ticket_classification("55")
@@ -228,21 +257,55 @@ async def test_set_call_recording_posts_custom_attributes_only() -> None:
         recording_duration="42",
         recording_url="https://api.twilio.com/2010-04-01/Accounts/AC1/Recordings/RE123",
     )
-    assert fake.calls == [
-        (
-            "POST",
-            "/conversations/55/custom_attributes",
-            {
+    # A merge-safe write reads the conversation FIRST (see
+    # test_set_call_recording_merges_rather_than_clobbers for the union
+    # itself); what this test pins is that recording data ONLY ever reaches
+    # custom_attributes, never /messages (a comment/note).
+    assert not any(p.endswith("/messages") for _m, p, _pl in fake.calls)
+    method, path, payload = fake.calls[-1]
+    assert method == "POST" and path.endswith("/custom_attributes")
+    assert payload == {
+        "custom_attributes": {
+            "recording_sid": "RE123",
+            "recording_duration": "42",
+            "recording_url": ("https://api.twilio.com/2010-04-01/Accounts/AC1/Recordings/RE123"),
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_set_call_recording_merges_rather_than_clobbers() -> None:
+    """Critical fix (review round 1): the recording-status callback fires at
+    or after call end -- i.e. AFTER finalize() has already written
+    case_type/case_category/external_id on the same conversation. Blindly
+    assigning custom_attributes here would blank every one of them (and
+    everything Package E's reporting reads) on EVERY recorded call."""
+    fake = _FakeClient(
+        {
+            ("GET", "/conversations/55"): {
                 "custom_attributes": {
-                    "recording_sid": "RE123",
-                    "recording_duration": "42",
-                    "recording_url": (
-                        "https://api.twilio.com/2010-04-01/Accounts/AC1/Recordings/RE123"
-                    ),
+                    "case_type": "Complaint",
+                    "case_category": "Aftersales",
+                    "external_id": "phone-CA1",
                 }
-            },
-        )
-    ]
+            }
+        }
+    )
+    await _adapter(fake).set_call_recording(
+        "55", recording_sid="RE123", recording_duration="42", recording_url="https://x/RE123"
+    )
+    method, path, payload = fake.calls[-1]
+    assert method == "POST" and path.endswith("/custom_attributes")
+    assert payload == {
+        "custom_attributes": {
+            "case_type": "Complaint",
+            "case_category": "Aftersales",
+            "external_id": "phone-CA1",
+            "recording_sid": "RE123",
+            "recording_duration": "42",
+            "recording_url": "https://x/RE123",
+        }
+    }
 
 
 @pytest.mark.asyncio
@@ -264,10 +327,99 @@ async def test_set_ticket_classification_division_without_display_override_passe
 async def test_set_ticket_classification_concern_only_writes_no_division_label() -> None:
     fake = _FakeClient({})
     await _adapter(fake).set_ticket_classification("55", concern="Booking")
-    assert fake.calls == [
-        (
-            "POST",
-            "/conversations/55/custom_attributes",
-            {"custom_attributes": {"concern": "Booking"}},
-        )
-    ]
+    assert not any("labels" in p for _m, p, _pl in fake.calls)
+    method, path, payload = fake.calls[-1]
+    assert method == "POST" and path.endswith("/custom_attributes")
+    assert payload == {"custom_attributes": {"concern": "Booking"}}
+
+
+# --- find_conversation_ticket (Package C Task 5 review fix, Critical 2) ----
+#
+# The recording-status callback can fire well after the call (and often
+# after finalize() has already RESOLVED the conversation) on a process that
+# never handled the original WebSocket -- so the in-process
+# `_conv_by_session` cache cannot be relied on. These pin the real
+# ChatwootAdapter's behaviour directly (not a test-only fake sentinel, per
+# the review's explicit "that is the Task 3 trap again" note): it must
+# find a conversation in ANY status, and it must NEVER create one.
+
+
+@pytest.mark.asyncio
+async def test_find_conversation_ticket_returns_cached_without_a_request() -> None:
+    fake = _FakeClient({})
+    adapter = _adapter(fake)
+    adapter._conv_by_session["phone-CA1"] = "T-1"
+    tid = await adapter.find_conversation_ticket("phone-CA1")
+    assert tid == "T-1"
+    assert fake.calls == []  # cache hit -- no network calls at all
+
+
+@pytest.mark.asyncio
+async def test_find_conversation_ticket_returns_none_when_no_contact_matches() -> None:
+    """Never fabricates an id: no Chatwoot contact for this session at all."""
+    fake = _FakeClient({("GET", "/contacts/search"): {"payload": []}})
+    tid = await _adapter(fake).find_conversation_ticket("phone-CA404")
+    assert tid is None
+
+
+@pytest.mark.asyncio
+async def test_find_conversation_ticket_returns_none_when_contact_has_no_matching_conversation() -> (
+    None
+):
+    fake = _FakeClient(
+        {
+            ("GET", "/contacts/search"): {"payload": [{"id": 9, "identifier": "phone-CA1"}]},
+            ("GET", "/contacts/9/conversations"): {"payload": []},
+        }
+    )
+    tid = await _adapter(fake).find_conversation_ticket("phone-CA1")
+    assert tid is None
+
+
+@pytest.mark.asyncio
+async def test_find_conversation_ticket_finds_a_resolved_conversation() -> None:
+    """The Critical fix itself: unlike ensure_conversation_ticket's reuse
+    check (deliberately ACTIVE-only -- a resolved conversation is a closed
+    ticket a NEW customer message should not land back in),
+    find_conversation_ticket must find the SAME conversation this call
+    already produced even after finalize() has resolved it -- otherwise the
+    recording-status callback would create a fresh, empty conversation
+    instead of attaching to the real one."""
+    fake = _FakeClient(
+        {
+            ("GET", "/contacts/search"): {"payload": [{"id": 9, "identifier": "phone-CA1"}]},
+            ("GET", "/contacts/9/conversations"): {
+                "payload": [
+                    {"id": 55, "source_id": "phone-CA1", "status": "resolved", "inbox_id": 7}
+                ]
+            },
+        }
+    )
+    tid = await _adapter(fake).find_conversation_ticket("phone-CA1")
+    assert tid == "55"
+
+
+@pytest.mark.asyncio
+async def test_find_conversation_ticket_matches_on_source_id_not_any_conversation() -> None:
+    """A contact can have conversations from other channels/sessions --
+    only the exact source_id match is this session's own conversation."""
+    fake = _FakeClient(
+        {
+            ("GET", "/contacts/search"): {"payload": [{"id": 9, "identifier": "phone-CA1"}]},
+            ("GET", "/contacts/9/conversations"): {
+                "payload": [
+                    {"id": 10, "source_id": "web-other-session", "status": "open"},
+                    {"id": 55, "source_id": "phone-CA1", "status": "open"},
+                ]
+            },
+        }
+    )
+    tid = await _adapter(fake).find_conversation_ticket("phone-CA1")
+    assert tid == "55"
+
+
+@pytest.mark.asyncio
+async def test_find_conversation_ticket_never_issues_a_create_call() -> None:
+    fake = _FakeClient({("GET", "/contacts/search"): {"payload": []}})
+    await _adapter(fake).find_conversation_ticket("phone-CA1")
+    assert not any(m == "POST" for m, _p, _pl in fake.calls)

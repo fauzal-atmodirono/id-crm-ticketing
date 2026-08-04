@@ -324,8 +324,15 @@ class Settings(BaseSettings):
     # NOT hard-coded, matching the existing lifecycle/persona message
     # convention. THIS ONE SETTING FAILS CLOSED, unlike everywhere else in
     # this package: if phone_recording_enabled is True but no announcement is
-    # configured, PhoneBridge refuses to start recording at all (logged at
-    # WARNING) rather than silently recording without notice.
+    # configured (or no callback base can be built -- see
+    # PhoneBridge._maybe_start_recording), recording is refused entirely
+    # (logged at WARNING) rather than started silently.
+    #
+    # NOT A COMPLIANCE GUARANTEE: delivery is a best-effort instruction to
+    # the live Gemini model (LiveSession.send_text_hint), not a scripted,
+    # verified, or sequenced playback -- see .env.example's
+    # PHONE_RECORDING_ANNOUNCEMENT comment for the full caveat before
+    # enabling this in production.
     phone_recording_enabled: bool = False
     phone_recording_announcement: str = ""
     # Informational only today (no automated deletion job reads this yet) --

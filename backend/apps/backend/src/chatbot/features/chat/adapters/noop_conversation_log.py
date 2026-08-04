@@ -24,6 +24,12 @@ class NoOpConversationLog(ConversationLogPort):
     ) -> str:
         return ""
 
+    async def find_conversation_ticket(
+        self,
+        session_id: str,  # noqa: ARG002
+    ) -> str | None:
+        return None
+
     async def append_conversation_comment(
         self,
         ticket_id: str,  # noqa: ARG002

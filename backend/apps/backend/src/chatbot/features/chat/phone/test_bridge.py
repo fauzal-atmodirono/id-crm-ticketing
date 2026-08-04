@@ -97,6 +97,9 @@ class _FakeLog:
         self.ticket_calls.append((session_id, subject))
         return "T-2"
 
+    async def find_conversation_ticket(self, session_id: str) -> str | None:  # unused here
+        return None
+
     async def append_conversation_comment(
         self, ticket_id: str, text: str, status: str | None = None
     ) -> ConversationLogResult:

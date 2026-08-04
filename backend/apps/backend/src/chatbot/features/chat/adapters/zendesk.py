@@ -259,6 +259,14 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
         self._conv_tickets[session_id] = ticket_id
         return ticket_id
 
+    async def find_conversation_ticket(self, session_id: str) -> str | None:
+        # Package C's phone channel (the only current caller) is
+        # Chatwoot-only -- see set_ticket_classification's docstring. This
+        # only consults the in-memory cache (no Zendesk search API call),
+        # which is honest about what it can promise without inventing an
+        # unused query path: never risks returning a fabricated id.
+        return self._conv_tickets.get(session_id)
+
     async def append_conversation_comment(
         self, ticket_id: str, text: str, status: str | None = None
     ) -> ConversationLogResult:

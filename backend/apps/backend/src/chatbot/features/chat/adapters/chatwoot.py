@@ -320,6 +320,43 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             _log.error("chatwoot_request_failed", method=method, path=path, error=str(e))
             return None
 
+    async def _merge_custom_attributes(self, ticket_id: str, attributes: dict[str, Any]) -> None:
+        """Merge-set conversation custom attributes without clobbering
+        existing ones. Chatwoot's custom-attributes endpoint REPLACES the
+        whole object -- ``ConversationsController#custom_attributes`` does
+        ``@conversation.custom_attributes = params.permit(custom_attributes:
+        {})[:custom_attributes]``, an assignment, not a merge. Same footgun
+        this codebase has now hit three times: the labels endpoint
+        (``add_ticket_tag``, above), and ``agent/app/clients/chatwoot.py``'s
+        ``set_custom_attributes`` in the sibling service (that docstring
+        quotes the exact Rails line). GET the conversation, union its
+        current ``custom_attributes`` with the new ones (new values win on
+        conflict), POST the union. EVERY custom-attribute writer in this
+        adapter (``create_ticket``, ``open_handoff``,
+        ``set_ticket_external_id``, ``set_ticket_classification``,
+        ``set_call_recording``) goes through this one helper -- a caller
+        writing one key must never silently erase every other key already
+        on the conversation (classification, external_id, a live recording,
+        lifecycle_state stamped by the sibling service, csat/nps, ...).
+
+        Fail the write ENTIRELY if the read fails -- do NOT fall back to
+        posting just ``attributes``: posting a set we cannot prove is
+        complete is exactly the clobber this exists to prevent, merely
+        narrowed to the read-failure window. Losing this one write is
+        recoverable (a later call re-establishes it); wiping a real
+        conversation's attributes is not.
+        """
+        res = await self._request("GET", f"/conversations/{ticket_id}")
+        if res is None:
+            _log.error("chatwoot_custom_attributes_read_failed", ticket_id=ticket_id)
+            return
+        existing = res.get("custom_attributes") if isinstance(res, dict) else None
+        current = existing if isinstance(existing, dict) else {}
+        merged = {**current, **attributes}
+        await self._request(
+            "POST", f"/conversations/{ticket_id}/custom_attributes", {"custom_attributes": merged}
+        )
+
     async def _find_or_create_contact(
         self,
         session_id: str,
@@ -540,11 +577,12 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         if vehicle_model:
             custom_attrs["vehicle_model"] = vehicle_model
         if custom_attrs:
-            await self._request(
-                "POST",
-                f"/conversations/{conv_id}/custom_attributes",
-                {"custom_attributes": custom_attrs},
-            )
+            # Merge-safe (see _merge_custom_attributes): _find_or_create_
+            # conversation above can REUSE an existing active conversation
+            # (search_existing defaults True), which may already carry
+            # attributes from a prior escalation on the same session -- a
+            # plain assign here would blank those.
+            await self._merge_custom_attributes(conv_id, custom_attrs)
         # Apply the escalation labels LAST: a downstream sync may act on a
         # conversation_updated carrying the escalate label, so nothing must update
         # the conversation after this or each update re-triggers that sync.
@@ -650,6 +688,52 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             session_id, customer_name, customer_phone, search_existing=False
         )
 
+    async def find_conversation_ticket(self, session_id: str) -> str | None:
+        """Resolve an EXISTING conversation for this session WITHOUT ever
+        creating one (Package C Task 5 review fix, Critical 2). Used by the
+        recording-status callback, which can fire well after the call ends
+        -- and after the conversation may already have been resolved by
+        finalize() -- on a different process than the one that handled the
+        WebSocket, so the in-process ``_conv_by_session`` cache cannot be
+        relied on alone.
+
+        Unlike ``_existing_conversation_id`` (used by ``_find_or_create_
+        conversation``'s reuse check, which is deliberately ACTIVE-only --
+        a resolved conversation is a closed ticket that the next customer
+        message should NOT land back in), this checks every status: a
+        conversation that finalize() already resolved is exactly the one a
+        recording made during that same call belongs to.
+
+        Matches on ``source_id == session_id`` -- the exact field
+        ``_find_or_create_conversation`` sets on create, so this is a
+        precise lookup, not a heuristic. Returns None (never a fabricated
+        id) when no contact or no matching conversation exists, so the
+        caller can skip rather than risk attaching data to -- or worse,
+        creating -- the wrong conversation.
+        """
+        if session_id in self._conv_by_session:
+            return self._conv_by_session[session_id]
+        search = await self._request(
+            "GET", f"/contacts/search?q={quote(session_id, safe='')}", None
+        )
+        contact_id: int | None = None
+        for contact in (search or {}).get("payload") or []:
+            if contact.get("identifier") == session_id and contact.get("id") is not None:
+                contact_id = int(contact["id"])
+                break
+        if contact_id is None:
+            return None
+        res = await self._request("GET", f"/contacts/{contact_id}/conversations", None)
+        for conv in _conversations_from(res):
+            source_id = conv.get("source_id")
+            if source_id is not None and str(source_id) == session_id:
+                cid = conv.get("id")
+                if cid is not None:
+                    ticket_id = str(cid)
+                    self._conv_by_session[session_id] = ticket_id
+                    return ticket_id
+        return None
+
     async def append_conversation_comment(
         self, ticket_id: str, text: str, status: str | None = None
     ) -> ConversationLogResult:
@@ -712,12 +796,11 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             )
 
     async def set_ticket_external_id(self, ticket_id: str, external_id: str) -> None:
-        # Chatwoot has no external_id on conversations; store it as a custom attribute.
-        await self._request(
-            "POST",
-            f"/conversations/{ticket_id}/custom_attributes",
-            {"custom_attributes": {"external_id": external_id}},
-        )
+        # Chatwoot has no external_id on conversations; store it as a custom
+        # attribute. Merge-safe (see _merge_custom_attributes) -- this must
+        # not erase classification/recording/lifecycle attributes already
+        # written by other callers on the SAME conversation.
+        await self._merge_custom_attributes(ticket_id, {"external_id": external_id})
 
     async def set_ticket_classification(
         self,
@@ -746,9 +829,9 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         #     phone-classified division lands in the exact same warehouse
         #     bucket as everything else instead of a byte-different one.
         # case_type needs no extra write -- mapping.py already reads it
-        # straight off the `case_type` custom attribute. `_request` (and
-        # add_ticket_tag, built on it) already fail open, so no try/except is
-        # needed at this layer.
+        # straight off the `case_type` custom attribute. `_merge_custom_
+        # attributes` (and add_ticket_tag, built the same way) already fail
+        # open on a read failure, so no try/except is needed at this layer.
         custom_attrs: dict[str, str] = {}
         if case_type:
             custom_attrs["case_type"] = case_type
@@ -758,11 +841,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         if concern:
             custom_attrs["concern"] = concern
         if custom_attrs:
-            await self._request(
-                "POST",
-                f"/conversations/{ticket_id}/custom_attributes",
-                {"custom_attributes": custom_attrs},
-            )
+            await self._merge_custom_attributes(ticket_id, custom_attrs)
         if division:
             for label in self._dimension_labels(division, None, None):
                 await self.add_ticket_tag(ticket_id, label)
@@ -780,22 +859,21 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         # raw Twilio URL must NEVER appear in agent-visible conversation
         # text -- this writes custom attributes ONLY, never a comment/note
         # (contrast set_ticket_classification, whose fields are meant to be
-        # agent-visible). `_request` already fails open (logs, returns None)
-        # on any Chatwoot error, so no extra try/except is needed here. This
-        # is the same POST /custom_attributes upsert used by
-        # set_ticket_external_id/set_ticket_classification, which makes it
-        # naturally idempotent: a retried callback delivery with the same
-        # values just overwrites the attributes with themselves rather than
-        # attaching the recording a second time.
-        await self._request(
-            "POST",
-            f"/conversations/{ticket_id}/custom_attributes",
+        # agent-visible). Merge-safe (see _merge_custom_attributes): this
+        # callback typically fires well after finalize() has already
+        # written case_type/case_category/external_id on the SAME
+        # conversation, so a plain assign here would blank every one of
+        # them (and everything Package E's reporting reads) on every
+        # recorded call -- a review-caught Critical, not hypothetical.
+        # Merging is also what makes this naturally idempotent: a retried
+        # callback delivery with the same values just re-unions the same
+        # three keys rather than attaching the recording a second time.
+        await self._merge_custom_attributes(
+            ticket_id,
             {
-                "custom_attributes": {
-                    "recording_sid": recording_sid,
-                    "recording_duration": recording_duration,
-                    "recording_url": recording_url,
-                }
+                "recording_sid": recording_sid,
+                "recording_duration": recording_duration,
+                "recording_url": recording_url,
             },
         )
 
@@ -875,11 +953,9 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         if payload.vehicle_model:
             custom_attrs["vehicle_model"] = payload.vehicle_model
         if custom_attrs:
-            await self._request(
-                "POST",
-                f"/conversations/{conv_id}/custom_attributes",
-                {"custom_attributes": custom_attrs},
-            )
+            # Merge-safe (see _merge_custom_attributes) -- this conversation
+            # may be a reused active one carrying prior attributes.
+            await self._merge_custom_attributes(conv_id, custom_attrs)
         # Apply the escalation labels LAST: a downstream sync may act on a
         # conversation_updated carrying the escalate label, so nothing must update
         # the conversation after this or each update re-triggers that sync.

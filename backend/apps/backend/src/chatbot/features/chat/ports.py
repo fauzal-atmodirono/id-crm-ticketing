@@ -235,6 +235,19 @@ class ConversationLogPort(Protocol):
         and can no longer accept comments. Returns the new ticket id."""
         ...
 
+    async def find_conversation_ticket(self, session_id: str) -> str | None:
+        """Resolve an EXISTING ticket for this session, in ANY status
+        (unlike ``ensure_conversation_ticket``'s reuse check, which is
+        active-only) -- and, critically, NEVER create one. For callers that
+        must attach data to a conversation that should already exist (e.g.
+        a Twilio recording-status callback arriving after the call, and
+        after the conversation may have been resolved) rather than a
+        customer message that's allowed to open a fresh thread. Returns
+        None when nothing matches, so the caller can ignore/skip rather
+        than risk creating an empty, orphaned conversation. Must never
+        raise."""
+        ...
+
     async def append_conversation_comment(
         self, ticket_id: str, text: str, status: str | None = None
     ) -> ConversationLogResult:

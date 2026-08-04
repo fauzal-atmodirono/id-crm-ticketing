@@ -316,6 +316,30 @@ async def test_create_ticket_writes_case_type_and_vehicle_model_as_custom_attrib
 
 
 @pytest.mark.asyncio
+async def test_create_ticket_custom_attributes_merge_not_clobber_on_reused_conversation() -> None:
+    """Critical fix (Package C Task 5 review): _find_or_create_conversation
+    can REUSE an existing active conversation (e.g. a customer
+    re-escalating on the same session, search_existing defaults True) --
+    a plain custom_attributes assign there would blank whatever a prior
+    escalation already wrote, exactly the bug caught in set_call_recording/
+    set_ticket_classification/set_ticket_external_id."""
+    fake = _FakeClient(
+        {("GET", "/conversations/99"): {"custom_attributes": {"external_id": "whatsapp-+60123"}}}
+    )
+    adapter = _adapter(fake)
+    adapter._conv_by_session["s1"] = "99"  # simulate an existing, cached conversation
+    await adapter.create_ticket(
+        session_id="s1", title="t", body="b", urgency="high", case_type="Inquiry"
+    )
+    custom_attrs_calls = [pl for _m, p, pl in fake.calls if p.endswith("/custom_attributes")]
+    assert len(custom_attrs_calls) == 1
+    body = custom_attrs_calls[0]
+    assert body is not None
+    assert body["custom_attributes"]["external_id"] == "whatsapp-+60123"  # survived the write
+    assert body["custom_attributes"]["case_type"] == "Inquiry"  # new value still written
+
+
+@pytest.mark.asyncio
 async def test_create_ticket_non_complaint_stays_chatwoot_only() -> None:
     # Medium urgency (non-complaint) -> only the Chatwoot escalation marker; the
     # complaint label is NOT applied.

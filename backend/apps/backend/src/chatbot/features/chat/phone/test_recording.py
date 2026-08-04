@@ -1,14 +1,20 @@
 """Package C Task 5: call recording.
 
-Covers (per the task brief):
+Covers (per the task brief, plus the review round's fixes):
 - recording starts on stream start only when phone_recording_enabled is on;
 - a start_recording failure does not affect the call;
 - PHONE_RECORDING_ANNOUNCEMENT fails CLOSED -- enabled with no announcement
-  configured refuses to start recording, logged at WARNING;
+  configured, or the announcement hint failing to queue, or no callback
+  base configured, all refuse to start recording, logged at WARNING;
 - the /webhooks/phone/recording-status callback persists the three
   attributes on "completed" and ignores every other status;
-- a callback for an unknown call is ignored rather than raising;
+- a callback for an unknown call is ignored rather than raising (pinned
+  against a REAL ChatwootAdapter with no matching contact/conversation --
+  not a fake-only sentinel, see test_chatwoot_conversation_log.py);
 - a retried callback delivery is idempotent (no duplicate attach);
+- the webhook is gated behind phone_recording_enabled (404 when off) and
+  refuses (401) rather than skips verification when no Twilio auth token
+  is configured;
 - flags off -> zero new Twilio/CRM calls (byte-identical).
 """
 
@@ -56,8 +62,9 @@ def _fake_gemini_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class _FakeLive:
-    def __init__(self) -> None:
+    def __init__(self, *, hint_raises: Exception | None = None) -> None:
         self.text_hints: list[str] = []
+        self._hint_raises = hint_raises
 
     async def send_audio(self, pcm16k: bytes) -> None:
         return None
@@ -66,6 +73,8 @@ class _FakeLive:
         return None
 
     async def send_text_hint(self, text: str) -> None:
+        if self._hint_raises is not None:
+            raise self._hint_raises
         self.text_hints.append(text)
 
     async def events(self) -> AsyncIterator[LiveEvent]:
@@ -83,7 +92,8 @@ class _FakeLog:
 
     def __init__(self) -> None:
         self.ensured: list[str] = []
-        self.ensure_returns_sentinel = False
+        self.found: str | None = "T-1"  # find_conversation_ticket's return value
+        self.found_calls: list[str] = []
         self.recordings: list[tuple[str, str, str, str]] = []
 
     async def ensure_conversation_ticket(
@@ -94,8 +104,6 @@ class _FakeLog:
         customer_phone: str | None,
     ) -> str:
         self.ensured.append(session_id)
-        if self.ensure_returns_sentinel:
-            return session_id
         return "T-1"
 
     async def rotate_conversation_ticket(
@@ -106,6 +114,10 @@ class _FakeLog:
         customer_phone: str | None,
     ) -> str:
         return session_id
+
+    async def find_conversation_ticket(self, session_id: str) -> str | None:
+        self.found_calls.append(session_id)
+        return self.found
 
     async def append_conversation_comment(
         self, ticket_id: str, text: str, status: str | None = None
@@ -213,14 +225,21 @@ _ANNOUNCEMENT = (
     "Panggilan ini mungkin dirakam untuk tujuan kualiti dan latihan."
 )
 
+_BASE_URL = "https://example.ngrok.app"
 
-async def test_recording_starts_on_stream_start_when_enabled() -> None:
-    settings = Settings(
+
+def _enabled_settings(**overrides: Any) -> Settings:
+    return Settings(
         _env_file=None,
         phone_recording_enabled=True,
         phone_recording_announcement=_ANNOUNCEMENT,
-        twilio_webhook_base_url="https://example.ngrok.app",
+        twilio_webhook_base_url=_BASE_URL,
+        **overrides,
     )
+
+
+async def test_recording_starts_on_stream_start_when_enabled() -> None:
+    settings = _enabled_settings()
     bridge, live, _log, twilio_client = _bridge(settings)
 
     await bridge.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
@@ -228,13 +247,17 @@ async def test_recording_starts_on_stream_start_when_enabled() -> None:
     await bridge._recording_task
 
     assert twilio_client.recordings.recorded == [
-        ("CA1", "https://example.ngrok.app/webhooks/phone/recording-status")
+        ("CA1", f"{_BASE_URL}/webhooks/phone/recording-status")
     ]
     assert any(_ANNOUNCEMENT in hint for hint in live.text_hints)
 
 
 async def test_recording_not_started_when_flag_off() -> None:
-    settings = Settings(_env_file=None, phone_recording_announcement=_ANNOUNCEMENT)
+    settings = Settings(
+        _env_file=None,
+        phone_recording_announcement=_ANNOUNCEMENT,
+        twilio_webhook_base_url=_BASE_URL,
+    )
     bridge, live, _log, twilio_client = _bridge(settings)
 
     await bridge.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
@@ -245,7 +268,9 @@ async def test_recording_not_started_when_flag_off() -> None:
 
 async def test_recording_refuses_without_announcement_fail_closed() -> None:
     """PDPA: unlike every other flag in this package, this ONE fails closed."""
-    settings = Settings(_env_file=None, phone_recording_enabled=True)  # announcement left blank
+    settings = Settings(
+        _env_file=None, phone_recording_enabled=True, twilio_webhook_base_url=_BASE_URL
+    )  # announcement left blank
     bridge, live, _log, twilio_client = _bridge(settings)
 
     with capture_logs() as captured:
@@ -261,12 +286,52 @@ async def test_recording_refuses_without_announcement_fail_closed() -> None:
     assert "phone_recording_no_announcement_configured" in events
 
 
-async def test_recording_start_failure_does_not_break_the_call() -> None:
+async def test_recording_refuses_when_no_callback_base_configured_fail_closed() -> None:
+    """Review fix (Important 4): recording customer voice with no way to
+    ever attach/find it again is the same class of harm as recording with
+    no notice -- fails closed, not open, unlike the rest of this package."""
     settings = Settings(
-        _env_file=None,
-        phone_recording_enabled=True,
-        phone_recording_announcement=_ANNOUNCEMENT,
-    )
+        _env_file=None, phone_recording_enabled=True, phone_recording_announcement=_ANNOUNCEMENT
+    )  # twilio_webhook_base_url left blank
+    bridge, live, _log, twilio_client = _bridge(settings)
+
+    with capture_logs() as captured:
+        await bridge.handle_twilio(
+            {"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}}
+        )
+        assert bridge._recording_task is not None
+        await bridge._recording_task
+
+    assert twilio_client.recordings.recorded == []
+    # The disclosure must not be sent either -- there's no point telling the
+    # caller the call is recorded when it's about to refuse to record it.
+    assert live.text_hints == []
+    events = [e["event"] for e in captured]
+    assert "phone_recording_no_callback_base_configured" in events
+
+
+async def test_recording_refuses_when_announcement_hint_fails_to_queue_fail_closed() -> None:
+    """Review fix (Important 1): a closed/broken Live session is exactly
+    when send_text_hint raises -- must not fall through to start_recording
+    on that failure, since the caller was never actually notified."""
+    settings = _enabled_settings()
+    live = _FakeLive(hint_raises=RuntimeError("live session closed"))
+    bridge, _live, _log, twilio_client = _bridge(settings, live=live)
+
+    with capture_logs() as captured:
+        await bridge.handle_twilio(
+            {"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}}
+        )
+        assert bridge._recording_task is not None
+        await bridge._recording_task
+
+    assert twilio_client.recordings.recorded == []
+    events = [e["event"] for e in captured]
+    assert "phone_recording_announcement_hint_failed" in events
+
+
+async def test_recording_start_failure_does_not_break_the_call() -> None:
+    settings = _enabled_settings()
     bridge, _live, _log, _twilio_client = _bridge(
         settings, twilio_client=_FakeTwilioClient(raises=RuntimeError("twilio down"))
     )
@@ -283,11 +348,7 @@ async def test_recording_start_failure_does_not_break_the_call() -> None:
 async def test_recording_attempted_only_once_per_call() -> None:
     """A Twilio recording is a real, billed resource -- a reconnected/resent
     "start" event for the same call must not start a second one."""
-    settings = Settings(
-        _env_file=None,
-        phone_recording_enabled=True,
-        phone_recording_announcement=_ANNOUNCEMENT,
-    )
+    settings = _enabled_settings()
     bridge, _live, _log, twilio_client = _bridge(settings)
 
     await bridge.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
@@ -300,15 +361,13 @@ async def test_recording_attempted_only_once_per_call() -> None:
 
 
 async def test_finalize_settles_the_recording_task() -> None:
-    settings = Settings(
-        _env_file=None,
-        phone_recording_enabled=True,
-        phone_recording_announcement=_ANNOUNCEMENT,
-    )
+    settings = _enabled_settings()
     bridge, _live, _log, twilio_client = _bridge(settings)
     await bridge.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
     await bridge.finalize()  # must not raise, and must not leak the task
-    assert twilio_client.recordings.recorded == [("CA1", "")]
+    assert twilio_client.recordings.recorded == [
+        ("CA1", f"{_BASE_URL}/webhooks/phone/recording-status")
+    ]
 
 
 # --- settings defaults (byte-identical with flags off) --------------------
@@ -344,7 +403,10 @@ def _client(
     log: _FakeLog, settings: Settings | None = None
 ) -> tuple[TestClient, _FakeLog, Settings]:
     settings = settings or Settings(
-        _env_file=None, twilio_auth_token="test_token", twilio_account_sid="AC1"
+        _env_file=None,
+        phone_recording_enabled=True,
+        twilio_auth_token="test_token",
+        twilio_account_sid="AC1",
     )
     orchestrator = OrchestratorService(
         settings=settings,
@@ -358,6 +420,41 @@ def _client(
     app = create_app(settings)
     app.include_router(build_chat_router(orchestrator))
     return TestClient(app), log, settings
+
+
+def test_recording_status_webhook_404s_when_flag_off() -> None:
+    """Review fix (Important 3): this route is registered on every tenant,
+    so it needs its own gate -- a tenant that never turned recording on
+    must not expose a live callback endpoint at all."""
+    settings = Settings(
+        _env_file=None, twilio_auth_token="test_token", twilio_account_sid="AC1"
+    )  # phone_recording_enabled left at its False default
+    client, log, _settings = _client(_FakeLog(), settings=settings)
+
+    res = client.post(
+        "/webhooks/phone/recording-status",
+        data={"CallSid": "CA1", "RecordingStatus": "completed"},
+        headers={"X-Twilio-Signature": "irrelevant"},
+    )
+
+    assert res.status_code == 404
+    assert log.found_calls == []
+
+
+def test_recording_status_webhook_refuses_when_no_auth_token_configured() -> None:
+    """Review fix (Important 3): refuse (401), don't silently skip
+    verification, when no twilio_auth_token is configured -- otherwise any
+    unauthenticated POST can write an attacker-supplied RecordingUrl."""
+    settings = Settings(_env_file=None, phone_recording_enabled=True)  # no twilio_auth_token
+    client, log, _settings = _client(_FakeLog(), settings=settings)
+
+    res = client.post(
+        "/webhooks/phone/recording-status",
+        data={"CallSid": "CA1", "RecordingStatus": "completed"},
+    )
+
+    assert res.status_code == 401
+    assert log.found_calls == []
 
 
 def test_recording_status_webhook_rejects_bad_signature() -> None:
@@ -388,7 +485,7 @@ def test_recording_status_webhook_persists_completed_attributes() -> None:
     )
 
     assert res.status_code == 200
-    assert log.ensured == ["phone-CA1"]
+    assert log.found_calls == ["phone-CA1"]
     assert log.recordings == [
         (
             "T-1",
@@ -411,7 +508,7 @@ def test_recording_status_webhook_ignores_non_completed_status() -> None:
     )
 
     assert res.status_code == 200
-    assert log.ensured == []  # never even resolves a ticket for a non-final status
+    assert log.found_calls == []  # never even resolves a ticket for a non-final status
     assert log.recordings == []
 
 
@@ -427,15 +524,20 @@ def test_recording_status_webhook_ignores_missing_call_sid() -> None:
     )
 
     assert res.status_code == 200
-    assert log.ensured == []
+    assert log.found_calls == []
     assert log.recordings == []
 
 
 def test_recording_status_webhook_ignores_unknown_call_rather_than_raising() -> None:
-    """ChatwootAdapter's real fail-open sentinel: a call whose ticket cannot
-    be resolved must be ignored, not treated as a real ticket id."""
+    """find_conversation_ticket returning None (nothing found, NEVER
+    created) must be ignored, not treated as a real ticket id. This is
+    pinned against the fake's honest "not found" return here; the
+    equivalent behaviour against a REAL ChatwootAdapter (no matching
+    contact) is pinned separately in
+    test_chatwoot_conversation_log.py::test_find_conversation_ticket_returns_none_when_no_contact_matches,
+    per the review's "don't just pin the fake" note."""
     log = _FakeLog()
-    log.ensure_returns_sentinel = True
+    log.found = None
     client, _log, settings = _client(log)
     params = {"CallSid": "CA1", "RecordingStatus": "completed", "RecordingSid": "RE1"}
     url = "http://testserver/webhooks/phone/recording-status"

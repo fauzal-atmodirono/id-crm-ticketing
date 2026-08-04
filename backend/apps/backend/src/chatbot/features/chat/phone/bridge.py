@@ -253,14 +253,29 @@ class PhoneBridge:
         _create_ticket_at_start, for the same reason: a slow or blackholed
         Twilio REST call must never delay the greeting or caller audio.
 
-        Fails CLOSED on exactly one thing, deliberately unlike every other
-        path in this package (see config.py's phone_recording_announcement
-        docstring): Malaysia's PDPA requires the caller hear a recorded-line
-        notice BEFORE recording starts. If phone_recording_enabled is on but
-        no announcement is configured, this refuses to start recording at
-        all (logged at WARNING) rather than silently recording without
-        notice -- a config mistake here is a legal exposure, not just a
-        degraded feature.
+        Fails CLOSED on two things, deliberately unlike every other path in
+        this package (see config.py's phone_recording_announcement
+        docstring) -- both are "voice data would be captured with no
+        guarantee of notice, or no way to ever find it again", which is the
+        exact class of harm Step 4's fail-closed rule exists for, not the
+        general fail-open rule the rest of this package follows:
+
+        1. Malaysia's PDPA requires the caller hear a recorded-line notice
+           BEFORE recording starts. If phone_recording_enabled is on but no
+           announcement is configured -- or the announcement could not even
+           be QUEUED into the live session (a closed/broken Live session
+           raises exactly when a hint is sent) -- this refuses to start
+           recording at all (logged at WARNING), rather than silently
+           recording either without notice or with notice that never made
+           it to the caller. A config mistake, or a broken Live session,
+           must not silently become "recorded but not disclosed".
+        2. If no status-callback URL can be built (twilio_webhook_base_url
+           unset), a recording started anyway would capture the customer's
+           voice with nothing that can ever attach it to a ticket or apply
+           the retention policy -- an untracked, orphaned recording. So this
+           checks the callback URL BEFORE doing anything else, including
+           before queuing the announcement: there is no point telling the
+           caller "this call is recorded" and then not recording it.
 
         The announcement itself is delivered as a text-hint into the live
         Gemini session -- the same primitive IVR-4's per-turn language
@@ -268,11 +283,19 @@ class PhoneBridge:
         the model to speak it, verbatim, before continuing. There is no
         lower-level "play this exact audio clip" hook on LiveSession, so
         this is a best-effort instruction to the model, not a guaranteed
-        byte-exact TTS playback of the configured text.
+        byte-exact TTS playback of the configured text, and NOT sequenced
+        before start_recording() below at the Twilio/TwiML level (queuing a
+        text hint only queues it; it does not block until spoken). A
+        properly sequenced TwiML `<Say>`/`<Play>` before `<Connect><Stream>`
+        is tracked as follow-up work, not built here.
         """
         announcement = self._settings.phone_recording_announcement
         if not announcement:
             _log.warning("phone_recording_no_announcement_configured", call_sid=call_sid)
+            return
+        callback = self._recording_status_callback_url()
+        if not callback:
+            _log.warning("phone_recording_no_callback_base_configured", call_sid=call_sid)
             return
         try:
             await self._live.send_text_hint(
@@ -282,7 +305,7 @@ class PhoneBridge:
             )
         except Exception as e:
             _log.error("phone_recording_announcement_hint_failed", call_sid=call_sid, error=str(e))
-        callback = self._recording_status_callback_url()
+            return
         sid = await self._call_control.start_recording(call_sid, callback)
         if sid:
             _log.info("phone_recording_started", call_sid=call_sid, recording_sid=sid)
@@ -450,6 +473,17 @@ class PhoneBridge:
         its result -- this exists purely so a slow/blackholed Twilio call
         doesn't leak an unawaited task -- so it is bounded the same way as
         the ticket-create settle just above, for the same reason.
+
+        NOTE this bound is best-effort, not a hard cancel: on timeout,
+        ``wait_for`` cancels our AWAIT of the task, but ``CallControl.
+        start_recording`` runs the actual Twilio call via ``asyncio.
+        to_thread`` -- a thread already submitted to the executor keeps
+        running to completion regardless of the asyncio-level cancellation.
+        So a very slow Twilio call can still result in a recording actually
+        being created after this method has already given up waiting for
+        it; that recording is simply one this process never logged a sid
+        for (the callback, once it fires, still finds/updates the ticket
+        correctly via find_conversation_ticket).
         """
         if self._recording_task is None:
             return

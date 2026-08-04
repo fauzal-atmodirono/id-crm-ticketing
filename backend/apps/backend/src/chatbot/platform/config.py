@@ -364,6 +364,16 @@ class Settings(BaseSettings):
     # <Dial timeout> in seconds: how long Twilio rings the target before it
     # gives up and posts DialCallStatus=no-answer to /webhooks/phone/dial-status.
     phone_handoff_timeout_seconds: int = 30
+    # Review fix (Critical): <Dial> with no callerId defaults to the parent
+    # leg's From. This repo's only wired inbound path is the browser
+    # softphone (a TwiML App reached via the Voice JS SDK), where From is
+    # `client:<identity>` -- which Twilio REJECTS as a caller id for a PSTN
+    # <Number> (error 13214), a TwiML error that terminates the call
+    # mid-transfer. HandoffTargetResolver.resolve() treats "handoff enabled
+    # but no caller id configured" as resolve-to-None (same fail-safe shape
+    # as the no-action-URL guard) rather than dialling blind -- see
+    # handoff_target.py.
+    phone_handoff_caller_id: str = ""
 
     # Frontend CORS — origins of the Vue dev/prod app (comma-separated in env).
     # Defaults cover Vite's first few fallback ports (5173-5180) so a stale dev

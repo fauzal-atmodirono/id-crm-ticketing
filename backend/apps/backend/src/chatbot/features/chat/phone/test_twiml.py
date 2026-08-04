@@ -23,9 +23,26 @@ def test_connect_stream_twiml_with_announcement_says_before_connect() -> None:
 
 
 def test_fallback_twiml_says_message_then_hangs_up() -> None:
-    xml = fallback_twiml("Sorry, nobody is available.")
+    xml = fallback_twiml([("Sorry, nobody is available.", "en-US")])
     assert xml.startswith("<?xml")
-    say_idx = xml.index("<Say>")
+    say_idx = xml.index("<Say")
     hangup_idx = xml.index("<Hangup/>")
     assert say_idx < hangup_idx
     assert "Sorry, nobody is available." in xml
+    assert 'language="en-US"' in xml
+
+
+def test_fallback_twiml_multiple_segments_each_get_own_say_and_language() -> None:
+    xml = fallback_twiml(
+        [
+            ("Sorry, nobody is available.", "en-US"),
+            ("Maaf, tiada siapa tersedia.", "ms-MY"),
+        ]
+    )
+    en_idx = xml.index("Sorry, nobody is available.")
+    ms_idx = xml.index("Maaf, tiada siapa tersedia.")
+    hangup_idx = xml.index("<Hangup/>")
+    assert en_idx < ms_idx < hangup_idx
+    assert xml.count("<Say") == 2
+    assert 'language="en-US"' in xml
+    assert 'language="ms-MY"' in xml

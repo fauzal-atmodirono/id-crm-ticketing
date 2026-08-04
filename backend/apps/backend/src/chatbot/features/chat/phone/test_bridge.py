@@ -156,6 +156,9 @@ class _FakeLog:
         self.working_hours_calls.append(inbox_id)
         return self.working_hours
 
+    async def has_ticket_tag(self, ticket_id: str, tag: str) -> bool:
+        return (ticket_id, tag) in self.tags
+
 
 def _bridge(
     live: _FakeLive,

@@ -799,6 +799,20 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         union = list(dict.fromkeys([*current, tag]))  # preserve order, dedup
         await self._request("POST", f"/conversations/{ticket_id}/labels", {"labels": union})
 
+    async def has_ticket_tag(self, ticket_id: str, tag: str) -> bool:
+        """Review fix (Important 3): lets a caller make a write idempotent
+        by checking whether it already ran, without a separate dedupe
+        store. Same GET this uses internally as `add_ticket_tag`'s read
+        step. Fails to ``False`` (assume not tagged yet) on any read
+        failure -- same "can't prove the negative, so don't block on it"
+        shape as everywhere else in this file; a caller using this to
+        skip a duplicate write on retry just risks one duplicate on a
+        Chatwoot outage, never a permanently-skipped write."""
+        res = await self._request("GET", f"/conversations/{ticket_id}/labels")
+        payload = res.get("payload") if isinstance(res, dict) else None
+        current = [str(x) for x in payload] if isinstance(payload, list) else []
+        return tag in current
+
     async def post_public_reply(self, ticket_id: str, text: str, status: str | None = None) -> None:
         await self.send_message(ticket_id, text)
         if status == "solved":

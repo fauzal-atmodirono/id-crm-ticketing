@@ -159,6 +159,9 @@ class _FakeLog:
     async def get_inbox_working_hours(self, inbox_id: int) -> dict[str, Any] | None:
         return None
 
+    async def has_ticket_tag(self, ticket_id: str, tag: str) -> bool:
+        return False
+
 
 class _FakeRecordings:
     """Stands in for a Twilio ``client.calls(sid).recordings`` resource --

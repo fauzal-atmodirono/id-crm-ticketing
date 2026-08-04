@@ -259,6 +259,15 @@ class ConversationLogPort(Protocol):
         """Add a single tag to the ticket (additive; does not replace tags)."""
         ...
 
+    async def has_ticket_tag(self, ticket_id: str, tag: str) -> bool:
+        """Return whether `tag` is already on the ticket. Lets a caller
+        (e.g. `/webhooks/phone/dial-status`) make an otherwise-append-only
+        write idempotent against a redelivered webhook without a separate
+        dedupe store: skip the write when this is already True. Must
+        never raise; fails to `False` (assume not tagged) on any read
+        failure, matching this port's fail-open convention."""
+        ...
+
     async def post_public_reply(self, ticket_id: str, text: str, status: str | None = None) -> None:
         """Post a PUBLIC comment to an existing ticket (emailed to the requester
         by Zendesk), optionally setting ticket status."""

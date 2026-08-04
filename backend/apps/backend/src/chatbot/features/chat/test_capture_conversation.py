@@ -98,6 +98,25 @@ class _FakeLog(ConversationLogPort):
     async def get_latest_public_comment(self, ticket_id: str) -> tuple[str, str | None, str | None]:
         return ("", None, None)
 
+    async def find_conversation_ticket(self, session_id: str) -> str | None:  # unused here
+        return None
+
+    async def set_call_recording(
+        self,
+        ticket_id: str,
+        *,
+        recording_sid: str,
+        recording_duration: str,
+        recording_url: str,
+    ) -> None:  # unused here
+        return None
+
+    async def get_inbox_working_hours(self, inbox_id: int) -> dict[str, Any] | None:  # unused here
+        return None
+
+    async def has_ticket_tag(self, ticket_id: str, tag: str) -> bool:
+        return (ticket_id, tag) in self.tags
+
 
 def _orchestrator(
     log: ConversationLogPort, sessions: _LiveSessions | None = None

@@ -71,6 +71,16 @@ class HandoffTargetResolver:
         number = self._settings.phone_handoff_target_number.strip()
         if not number:
             return None
+        # Review fix (Critical): a PSTN <Dial> with no callerId defaults to
+        # the parent leg's From, which on this repo's browser-softphone
+        # inbound path is `client:<identity>` -- Twilio rejects that as a
+        # caller id for a <Number> (error 13214), a TwiML error that drops
+        # the call mid-transfer, AFTER the tool response already promised
+        # "transferring". Treat "no caller id configured" exactly like the
+        # no-target-configured case above -- do not dial blind.
+        if not self._settings.phone_handoff_caller_id.strip():
+            _log.warning("phone_handoff_no_caller_id_configured")
+            return None
         if not await self._within_business_hours():
             return None
         return HandoffTarget(kind="pstn", value=number)
@@ -100,19 +110,32 @@ class HandoffTargetResolver:
         return working_minutes_between(now, now + timedelta(minutes=1), inbox) > 0
 
 
-def dial_twiml(target: HandoffTarget, action_url: str, timeout: int) -> str:
+def dial_twiml(target: HandoffTarget, action_url: str, timeout: int, caller_id: str) -> str:
     """TwiML that dials `target` and posts the outcome to `action_url`
     (see `/webhooks/phone/dial-status`). `timeout` is Twilio's `<Dial>`
     ring timeout in seconds before it gives up and fires `action` with
     `DialCallStatus=no-answer`.
+
+    `caller_id` is REQUIRED, not optional: a PSTN `<Number>` `<Dial>` with
+    no `callerId` falls back to the parent leg's `From`, which on this
+    repo's browser-softphone inbound path is a `client:` identifier Twilio
+    rejects for a PSTN caller id (error 13214) -- see
+    `HandoffTargetResolver.resolve()`'s docstring, which refuses to resolve
+    a target at all when `phone_handoff_caller_id` is unconfigured, so this
+    should never actually be called with an empty string in practice. Still
+    only emitted when non-empty (rather than assumed non-empty) so this
+    pure builder degrades to Twilio's own default behaviour instead of
+    raising if a future call site ever gets this wrong.
     """
     noun = (
         f"<Client>{escape(target.value)}</Client>"
         if target.kind == "client"
         else f"<Number>{escape(target.value)}</Number>"
     )
+    caller_id_attr = f" callerId={quoteattr(caller_id)}" if caller_id else ""
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        f'<Response><Dial action={quoteattr(action_url)} timeout="{int(timeout)}">'
+        f'<Response><Dial action={quoteattr(action_url)} timeout="{int(timeout)}"'
+        f"{caller_id_attr}>"
         f"{noun}</Dial></Response>"
     )

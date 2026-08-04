@@ -319,6 +319,16 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
         except Exception as e:
             _log.error("zendesk_add_ticket_tag_failed", ticket_id=ticket_id, error=str(e))
 
+    async def has_ticket_tag(
+        self,
+        ticket_id: str,  # noqa: ARG002
+        tag: str,  # noqa: ARG002
+    ) -> bool:
+        # Package C's phone channel is Chatwoot-only (see set_call_recording
+        # above) -- no Zendesk ticket ever reaches this path today. False
+        # (assume not tagged) is the fail-open default anyway.
+        return False
+
     async def post_public_reply(self, ticket_id: str, text: str, status: str | None = None) -> None:
         subdomain = self._settings.zendesk_subdomain
         url = f"https://{subdomain}.zendesk.com/api/v2/tickets/{ticket_id}.json"

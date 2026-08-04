@@ -51,6 +51,23 @@ _FLUSH_DRAIN_TIMEOUT_SECONDS = 10.0
 # failure.
 _CLASSIFY_TIMEOUT_SECONDS = 10.0
 
+# Review fix (Important 1): unlike the ticket-create/recording-start tasks
+# above (both detached, precisely so a slow Chatwoot/Twilio call never
+# stalls audio), `_attempt_transfer` runs INLINE inside `pump()` -- it's
+# the only coroutine forwarding Gemini audio to Twilio, and there's a real
+# {"status": ...} the model needs back before it can react, so it can't
+# simply be detached the same way. Bounding both awaits keeps a
+# blackholed Chatwoot or Twilio from turning "the caller hears a couple
+# seconds of dead air during a transfer" (expected -- a live redirect is
+# not free) into "the caller hears dead air indefinitely". Both are
+# shorter than ChatwootAdapter._request's own 10s timeout so THESE bounds
+# are the ones that actually fire; a real Twilio/Chatwoot API call is
+# typically sub-second, so 5s is generous, not tight. A timeout here is
+# just another failure mode -- same as any other resolve()/redirect()
+# failure, it falls back to today's exact "ticket_created" behaviour.
+_HANDOFF_RESOLVE_TIMEOUT_SECONDS = 5.0
+_HANDOFF_REDIRECT_TIMEOUT_SECONDS = 5.0
+
 
 class PhoneBridge:
     def __init__(
@@ -87,6 +104,16 @@ class PhoneBridge:
             if handoff_resolver is not None
             else HandoffTargetResolver(settings, conversation_log_port)
         )
+        # Review fix (Important 2): once a redirect has actually been
+        # accepted by Twilio, the call is mid-<Dial> -- a SECOND
+        # request_human_handoff arriving before the websocket tears down
+        # (e.g. the model retries after a slow first response) must not
+        # issue a second calls.update(), which would replace the
+        # in-progress <Dial> and restart the ring from zero. Mirrors
+        # _recording_start_attempted's "at most once" shape, but keyed on
+        # SUCCESS (a failed attempt should still be retryable) rather than
+        # "was attempted".
+        self._transfer_dialed = False
         self.stream_sid: str | None = None
         self.call_sid: str | None = None
         self.transcript: list[tuple[str, str]] = []
@@ -437,20 +464,31 @@ class PhoneBridge:
                 event.id, event.name, {"error": f"unknown tool: {event.name}"}
             )
 
-    async def _attempt_transfer(self) -> str:
+    async def _attempt_transfer(self) -> str:  # noqa: PLR0911 -- each early return is a distinct, documented fallback reason
         """Package C Task 6: try to redirect the live call into a real
         human transfer. Returns the status the `request_human_handoff` tool
-        response should carry, which the model uses to decide what to tell
-        the caller next -- "transferring" only when Twilio has genuinely
+        response carries -- "transferring" only when Twilio has genuinely
         accepted the redirect; "ticket_created" (today's exact behaviour)
-        for every other outcome: the feature is off, unconfigured, out of
-        business hours, no callback base is configured, or the Twilio API
-        call itself failed. All of those collapse to the SAME fallback on
-        purpose -- self.handoff is already set by the caller, so
-        finalize() still opens the ticket with a handoff note regardless of
-        which branch below returns "ticket_created"; the caller is never
-        silently dropped, and this method itself never raises (a resolver
-        or CallControl failure must not break the live tool-call turn).
+        for every other outcome: already dialled once, the feature is off,
+        unconfigured, no caller id configured, out of business hours, no
+        callback base is configured, a resolve()/redirect() timeout, or the
+        Twilio API call itself failed. All of those collapse to the SAME
+        fallback on purpose -- self.handoff is already set by the caller,
+        so finalize() still opens the ticket with a handoff note regardless
+        of which branch below returns "ticket_created"; the caller is
+        never silently dropped, and this method itself never raises (a
+        resolver or CallControl failure must not break the live tool-call
+        turn).
+
+        Review fix (Important 4): this status string is best-effort
+        bookkeeping for the AI-actions log, NOT a reliable cue the model
+        can react to out loud -- `redirect()` below tears down the Media
+        Stream (hence this WebSocket) as soon as Twilio accepts it, which
+        can race the tool response actually reaching the live session, so
+        a spoken "you're being transferred" line queued AFTER this returns
+        may never reach the caller. The system prompt (see `router.py`'s
+        `phone_stream`) instead tells the model to say that line BEFORE
+        calling this tool, not after.
 
         Deliberately distinct from `/webhooks/phone/dial-status`'s
         unanswered-call fallback (apology TwiML + `open` + an
@@ -459,10 +497,22 @@ class PhoneBridge:
         here ever reaches that point unless `redirect()` below returns
         True.
         """
+        # Review fix (Important 2): a transfer already in flight must not
+        # be re-dialled by a second request_human_handoff call arriving
+        # before the websocket tears down -- see _transfer_dialed's
+        # docstring in __init__.
+        if self._transfer_dialed:
+            return "transferring"
         if self.call_sid is None:
             return "ticket_created"
+        # Review fix (Important 1): both awaits below are bounded -- see
+        # _HANDOFF_RESOLVE_TIMEOUT_SECONDS/_HANDOFF_REDIRECT_TIMEOUT_SECONDS'
+        # module-level docstring. This method runs INLINE inside pump(),
+        # unlike the detached ticket-create/recording-start tasks.
         try:
-            target = await self._handoff_resolver.resolve()
+            target = await asyncio.wait_for(
+                self._handoff_resolver.resolve(), timeout=_HANDOFF_RESOLVE_TIMEOUT_SECONDS
+            )
         except Exception as e:
             _log.error("phone_handoff_resolve_failed", call_sid=self.call_sid, error=str(e))
             return "ticket_created"
@@ -472,10 +522,23 @@ class PhoneBridge:
         if not action_url:
             _log.warning("phone_handoff_no_action_url_configured", call_sid=self.call_sid)
             return "ticket_created"
-        twiml = dial_twiml(target, action_url, self._settings.phone_handoff_timeout_seconds)
-        ok = await self._call_control.redirect(self.call_sid, twiml)
+        twiml = dial_twiml(
+            target,
+            action_url,
+            self._settings.phone_handoff_timeout_seconds,
+            self._settings.phone_handoff_caller_id,
+        )
+        try:
+            ok = await asyncio.wait_for(
+                self._call_control.redirect(self.call_sid, twiml),
+                timeout=_HANDOFF_REDIRECT_TIMEOUT_SECONDS,
+            )
+        except Exception as e:
+            _log.error("phone_handoff_redirect_failed", call_sid=self.call_sid, error=str(e))
+            return "ticket_created"
         if not ok:
             return "ticket_created"
+        self._transfer_dialed = True
         return "transferring"
 
     async def pump(self) -> None:

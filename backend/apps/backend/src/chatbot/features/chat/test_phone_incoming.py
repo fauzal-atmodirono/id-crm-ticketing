@@ -33,6 +33,7 @@ def test_incoming_says_announcement_before_connect_when_recording_enabled() -> N
     orch = MagicMock()
     s = get_settings()
     s.public_wss_base_url = "wss://tunnel.test"
+    s.twilio_webhook_base_url = "https://example.ngrok.app"
     s.phone_recording_enabled = True
     s.phone_recording_announcement = "This call is recorded."
     orch._settings = s
@@ -51,8 +52,29 @@ def test_incoming_omits_say_when_recording_enabled_without_announcement() -> Non
     orch = MagicMock()
     s = get_settings()
     s.public_wss_base_url = "wss://tunnel.test"
+    s.twilio_webhook_base_url = "https://example.ngrok.app"
     s.phone_recording_enabled = True
     s.phone_recording_announcement = ""
+    orch._settings = s
+    res = _client(orch).post("/voice/phone/incoming")
+    assert "<Say>" not in res.text
+
+
+def test_incoming_omits_say_when_no_callback_base_configured() -> None:
+    """Review minor fix: without twilio_webhook_base_url, _maybe_start_
+    recording refuses to actually start recording at all (no callback URL
+    to build) -- the caller must not be TOLD the call is recorded in that
+    case, mirroring that exact gate."""
+    orch = MagicMock()
+    s = get_settings()
+    s.public_wss_base_url = "wss://tunnel.test"
+    s.phone_recording_enabled = True
+    s.phone_recording_announcement = "This call is recorded."
+    # get_settings() is a cached singleton shared across this file's tests
+    # (see the other cases here, which all mutate it directly) -- set this
+    # explicitly rather than relying on "unset", since an earlier test in
+    # this file may have already set it on the SAME instance.
+    s.twilio_webhook_base_url = ""
     orch._settings = s
     res = _client(orch).post("/voice/phone/incoming")
     assert "<Say>" not in res.text

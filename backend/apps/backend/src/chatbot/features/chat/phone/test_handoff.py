@@ -21,9 +21,11 @@ Covers (per the task brief):
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
+import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -32,6 +34,7 @@ import pytest
 from fastapi.testclient import TestClient
 from structlog.testing import capture_logs
 
+import chatbot.features.chat.phone.bridge as bridge_module
 from chatbot.features.chat.adapters.mock import (
     InMemoryChatAdapter,
     InMemoryKnowledgeAdapter,
@@ -65,6 +68,7 @@ def _fake_gemini_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 _BASE_URL = "https://example.ngrok.app"
 _TARGET_NUMBER = "+60123456789"
+_CALLER_ID = "+60129999999"
 
 
 def _enabled_settings(**overrides: Any) -> Settings:
@@ -72,6 +76,7 @@ def _enabled_settings(**overrides: Any) -> Settings:
         _env_file=None,
         phone_handoff_enabled=True,
         phone_handoff_target_number=_TARGET_NUMBER,
+        phone_handoff_caller_id=_CALLER_ID,
         twilio_webhook_base_url=_BASE_URL,
         **overrides,
     )
@@ -113,6 +118,9 @@ class _HoursLog:
         raise NotImplementedError
 
     async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:
+        raise NotImplementedError
+
+    async def has_ticket_tag(self, ticket_id: str, tag: str) -> bool:
         raise NotImplementedError
 
     async def post_public_reply(self, ticket_id: str, text: str, status: str | None = None) -> None:
@@ -159,6 +167,21 @@ async def test_resolve_returns_none_when_no_target_number_configured() -> None:
     settings = Settings(_env_file=None, phone_handoff_enabled=True)
     resolver = HandoffTargetResolver(settings, _HoursLog())
     assert await resolver.resolve() is None
+
+
+async def test_resolve_returns_none_when_no_caller_id_configured() -> None:
+    """Review fix (Critical): a <Dial><Number> with no callerId defaults to
+    the parent leg's From, which on the browser-softphone inbound path is a
+    `client:` identifier Twilio rejects for a PSTN caller id (error 13214)
+    -- refuse to resolve a target at all rather than dial blind."""
+    settings = Settings(
+        _env_file=None, phone_handoff_enabled=True, phone_handoff_target_number=_TARGET_NUMBER
+    )  # phone_handoff_caller_id left at its "" default
+    resolver = HandoffTargetResolver(settings, _HoursLog())
+    with capture_logs() as captured:
+        target = await resolver.resolve()
+    assert target is None
+    assert any(e["event"] == "phone_handoff_no_caller_id_configured" for e in captured)
 
 
 async def test_resolve_returns_pstn_target_when_within_hours() -> None:
@@ -208,19 +231,32 @@ def test_dial_twiml_pstn_target() -> None:
         HandoffTarget(kind="pstn", value="+60123456789"),
         "https://example.test/webhooks/phone/dial-status",
         30,
+        _CALLER_ID,
     )
     assert xml.startswith("<?xml")
     assert "<Dial" in xml
     assert 'action="https://example.test/webhooks/phone/dial-status"' in xml
     assert 'timeout="30"' in xml
+    assert f'callerId="{_CALLER_ID}"' in xml
     assert "<Number>+60123456789</Number>" in xml
     assert "<Client>" not in xml
 
 
 def test_dial_twiml_client_target() -> None:
-    xml = dial_twiml(HandoffTarget(kind="client", value="proton-agent-1"), "https://x/y", 15)
+    xml = dial_twiml(
+        HandoffTarget(kind="client", value="proton-agent-1"), "https://x/y", 15, _CALLER_ID
+    )
     assert "<Client>proton-agent-1</Client>" in xml
     assert "<Number>" not in xml
+
+
+def test_dial_twiml_omits_caller_id_attr_when_empty() -> None:
+    """The pure builder degrades gracefully (Twilio's own default
+    behaviour) rather than raising if ever called with an empty caller id
+    -- HandoffTargetResolver.resolve() is what actually prevents that in
+    practice by refusing to resolve a target at all in that case."""
+    xml = dial_twiml(HandoffTarget(kind="pstn", value="+60123456789"), "https://x/y", 15, "")
+    assert "callerId" not in xml
 
 
 # --- bridge wiring: request_human_handoff -----------------------------------
@@ -255,6 +291,7 @@ class _FakeLog:
 
     def __init__(self) -> None:
         self.working_hours: dict[str, Any] | None = None
+        self.tags: list[tuple[str, str]] = []
 
     async def ensure_conversation_ticket(self, *a: Any, **k: Any) -> str:
         return "T-1"
@@ -271,7 +308,10 @@ class _FakeLog:
         return ConversationLogResult.OK
 
     async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:
-        return None
+        self.tags.append((ticket_id, tag))
+
+    async def has_ticket_tag(self, ticket_id: str, tag: str) -> bool:
+        return (ticket_id, tag) in self.tags
 
     async def post_public_reply(self, ticket_id: str, text: str, status: str | None = None) -> None:
         return None
@@ -367,6 +407,7 @@ async def test_handoff_redirects_and_responds_transferring() -> None:
     assert f"{_BASE_URL}/webhooks/phone/dial-status" in twiml
     assert f"<Number>{_TARGET_NUMBER}</Number>" in twiml
     assert 'timeout="30"' in twiml
+    assert f'callerId="{_CALLER_ID}"' in twiml
 
 
 async def test_handoff_issues_exactly_one_call_update() -> None:
@@ -377,6 +418,96 @@ async def test_handoff_issues_exactly_one_call_update() -> None:
     await bridge.pump()
 
     assert len(twilio_client.calls.updated) == 1
+
+
+async def test_handoff_second_request_does_not_redial() -> None:
+    """Review fix (Important 2): once a transfer has actually been dialled,
+    a SECOND request_human_handoff arriving before the websocket tears down
+    must not issue a second calls.update() -- that would replace the
+    in-progress <Dial> and restart the ring from zero. Scripting exactly
+    one ToolCall (as test_handoff_issues_exactly_one_call_update does)
+    cannot detect a missing guard; this scripts two."""
+    settings = _enabled_settings()
+    second_call = ToolCall(
+        id="h2", name="request_human_handoff", args={"reason": "billing", "summary": "again"}
+    )
+    bridge, live, _log, twilio_client = _bridge(settings, scripted=[_HANDOFF_CALL, second_call])
+    bridge.call_sid = "CA1"
+
+    await bridge.pump()
+
+    assert len(twilio_client.calls.updated) == 1
+    assert [r[2]["status"] for r in live.tool_responses] == ["transferring", "transferring"]
+
+
+async def test_handoff_resolve_timeout_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review fix (Important 1): _attempt_transfer runs INLINE inside
+    pump() -- the only coroutine forwarding Gemini audio to Twilio -- so a
+    slow business-hours check must not hold that loop open indefinitely.
+    Patches the bound down to something tiny and makes resolve() sleep
+    well past it, then asserts pump() actually returns quickly (bounded by
+    the patched timeout, not the sleep) and falls back cleanly."""
+    monkeypatch.setattr(bridge_module, "_HANDOFF_RESOLVE_TIMEOUT_SECONDS", 0.05)
+
+    class _SlowResolver(HandoffTargetResolver):
+        def __init__(self) -> None:  # deliberately skip super().__init__
+            pass
+
+        async def resolve(self) -> HandoffTarget | None:
+            await asyncio.sleep(0.3)
+            return HandoffTarget(kind="pstn", value=_TARGET_NUMBER)
+
+    settings = _enabled_settings()
+    live = _FakeLive([_HANDOFF_CALL])
+    log = _FakeLog()
+    twilio_client = _FakeTwilioClient()
+    call_control = CallControl(settings, client=twilio_client)
+
+    async def send_twilio(_msg: dict[str, object]) -> None:
+        return None
+
+    bridge = PhoneBridge(
+        live,
+        _FakeKnowledge(),
+        log,
+        send_twilio,
+        settings,
+        call_control=call_control,
+        handoff_resolver=_SlowResolver(),
+    )
+    bridge.call_sid = "CA1"
+
+    started = time.monotonic()
+    await bridge.pump()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.3  # bounded by the patched-down timeout, not the sleep
+    assert live.tool_responses[0][2] == {"status": "ticket_created"}
+    assert twilio_client.calls.updated == []
+
+
+async def test_handoff_redirect_timeout_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same bound, on the redirect() side: a blackholed Twilio REST call
+    must not hold the audio pump open either."""
+    monkeypatch.setattr(bridge_module, "_HANDOFF_REDIRECT_TIMEOUT_SECONDS", 0.05)
+
+    class _SlowFakeCalls(_FakeCalls):
+        def update(self, twiml: str) -> object:
+            time.sleep(0.3)
+            return super().update(twiml)
+
+    settings = _enabled_settings()
+    twilio_client = _FakeTwilioClient()
+    twilio_client.calls = _SlowFakeCalls()
+    bridge, live, _log, _twilio_client = _bridge(settings, twilio_client=twilio_client)
+    bridge.call_sid = "CA1"
+
+    started = time.monotonic()
+    await bridge.pump()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.3
+    assert live.tool_responses[0][2] == {"status": "ticket_created"}
 
 
 async def test_handoff_twilio_failure_falls_back_and_does_not_raise() -> None:
@@ -410,7 +541,10 @@ async def test_handoff_no_action_url_falls_back_without_attempting_redirect() ->
     """twilio_webhook_base_url unset -> no callback base can be built for
     the <Dial action>, so this must not dial blind."""
     settings = Settings(
-        _env_file=None, phone_handoff_enabled=True, phone_handoff_target_number=_TARGET_NUMBER
+        _env_file=None,
+        phone_handoff_enabled=True,
+        phone_handoff_target_number=_TARGET_NUMBER,
+        phone_handoff_caller_id=_CALLER_ID,
     )
     bridge, live, _log, twilio_client = _bridge(settings)
     bridge.call_sid = "CA1"
@@ -559,7 +693,7 @@ def test_dial_status_completed_hangs_up_without_crm_write() -> None:
 
     assert res.status_code == 200
     assert "<Hangup/>" in res.text
-    assert "<Say>" not in res.text
+    assert "<Say" not in res.text
     assert log.found_calls == []
     assert log.comments == []
     assert log.tags == []
@@ -578,13 +712,67 @@ def test_dial_status_unanswered_outcomes_apologise_and_tag(status: str) -> None:
     )
 
     assert res.status_code == 200
-    assert "<Say>" in res.text and "<Hangup/>" in res.text
+    assert "<Say " in res.text and "<Hangup/>" in res.text
     assert log.found_calls == ["phone-CA1"]
     assert log.comments and log.comments[0] == (
         "T-1",
         f"[Handoff unanswered -- {status}]",
         "open",
     )
+    assert log.tags == [("T-1", "unanswered_handoff")]
+
+
+def test_dial_status_unanswered_callback_redelivery_does_not_duplicate_note() -> None:
+    """Review fix (Important 3): Twilio may redeliver this callback (retry
+    on a non-2xx, or a genuine duplicate). append_conversation_comment is
+    an APPEND, so a naive retry would post a second "[Handoff unanswered]"
+    note and re-flip the status on every redelivery -- gated on
+    has_ticket_tag so the second delivery skips the comment (and the
+    status flip riding along with it). This fake's add_ticket_tag doesn't
+    itself dedupe (that idempotency is proven against the REAL adapter's
+    GET-then-union in test_chatwoot_ticketing.py) -- only the comment-skip
+    behaviour under test here.
+    """
+    log = _DialLog()
+    client, settings = _client(log)
+    params = {"CallSid": "CA1", "DialCallStatus": "no-answer"}
+    url = "http://testserver/webhooks/phone/dial-status"
+    sig = _sign(settings.twilio_auth_token, url, params)
+
+    res1 = client.post(
+        "/webhooks/phone/dial-status", data=params, headers={"X-Twilio-Signature": sig}
+    )
+    res2 = client.post(
+        "/webhooks/phone/dial-status", data=params, headers={"X-Twilio-Signature": sig}
+    )
+
+    assert res1.status_code == 200
+    assert res2.status_code == 200
+    assert len(log.comments) == 1
+    assert log.comments[0] == ("T-1", "[Handoff unanswered -- no-answer]", "open")
+
+
+class _TagCheckRaisesLog(_DialLog):
+    async def has_ticket_tag(self, ticket_id: str, tag: str) -> bool:
+        raise RuntimeError("chatwoot down")
+
+
+def test_dial_status_tag_check_failure_fails_open_and_still_posts() -> None:
+    """A has_ticket_tag failure fails to False (assume not yet handled) --
+    worst case a Chatwoot outage duplicates the note on a genuine
+    redelivery; it must never silently drop the very first delivery."""
+    log = _TagCheckRaisesLog()
+    client, settings = _client(log)
+    params = {"CallSid": "CA1", "DialCallStatus": "busy"}
+    url = "http://testserver/webhooks/phone/dial-status"
+    sig = _sign(settings.twilio_auth_token, url, params)
+
+    res = client.post(
+        "/webhooks/phone/dial-status", data=params, headers={"X-Twilio-Signature": sig}
+    )
+
+    assert res.status_code == 200
+    assert log.comments and log.comments[0] == ("T-1", "[Handoff unanswered -- busy]", "open")
     assert log.tags == [("T-1", "unanswered_handoff")]
 
 
@@ -618,6 +806,6 @@ def test_dial_status_unknown_call_is_ignored_rather_than_raising() -> None:
     )
 
     assert res.status_code == 200  # ignored, not raised -- still valid TwiML
-    assert "<Say>" in res.text
+    assert "<Say " in res.text
     assert log.comments == []
     assert log.tags == []

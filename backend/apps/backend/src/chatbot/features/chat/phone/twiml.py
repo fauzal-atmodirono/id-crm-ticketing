@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from xml.sax.saxutils import escape, quoteattr
 
 
@@ -24,6 +25,18 @@ def connect_stream_twiml(wss_url: str, announcement: str | None = None) -> str:
 
     `announcement=None` (the default) is BYTE-IDENTICAL to this
     function's shape before this parameter existed.
+
+    Review minor: this `<Say>` carries no `language` attribute, so a
+    bilingual (EN + Bahasa Melayu) operator-authored announcement is read
+    entirely in Twilio's default English TTS voice -- mispronouncing the
+    Bahasa Melayu portion. Left as a single free-text field (not split
+    into per-language segments like `fallback_twiml` below) because
+    `phone_recording_announcement` is operator-authored prose of unknown
+    internal structure; there is no reliable way to split arbitrary
+    operator text into language segments here without a config shape
+    change this fix did not attempt. Tracked as a known limitation, not
+    silently accepted -- see `.env.example`'s `PHONE_RECORDING_ANNOUNCEMENT`
+    comment.
     """
     say = f"<Say>{escape(announcement)}</Say>" if announcement else ""
     return (
@@ -34,12 +47,20 @@ def connect_stream_twiml(wss_url: str, announcement: str | None = None) -> str:
     )
 
 
-def fallback_twiml(message: str) -> str:
+def fallback_twiml(segments: Sequence[tuple[str, str]]) -> str:
     """TwiML spoken on a live call after a transfer attempt could not be
     completed (no answer / busy / failed -- see
-    `/webhooks/phone/dial-status`): say `message`, then hang up.
+    `/webhooks/phone/dial-status`): say each `(text, language)` pair as
+    its own `<Say language=...>` verb, in order, then hang up.
+
+    Review minor fix: unlike `connect_stream_twiml`'s operator-authored
+    free text, callers of this function control their own text (today,
+    just the hard-coded bilingual unanswered-handoff apology in
+    `router.py`), so it CAN split -- and does -- each language into its
+    own correctly-pronounced `<Say>` rather than reading a mixed-language
+    blob in one voice.
     """
-    return (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        f"<Response><Say>{escape(message)}</Say><Hangup/></Response>"
+    says = "".join(
+        f"<Say language={quoteattr(lang)}>{escape(text)}</Say>" for text, lang in segments
     )
+    return f'<?xml version="1.0" encoding="UTF-8"?><Response>{says}<Hangup/></Response>'

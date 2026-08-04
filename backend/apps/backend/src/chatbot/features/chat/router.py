@@ -297,10 +297,15 @@ _DIAL_HANGUP_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/><
 # specifically requires it to be reviewable/editable text; this is an
 # ordinary UX apology with no such requirement, and every other phone-side
 # spoken line (the bot's system_instruction below) is already hard-coded the
-# same way.
-_UNANSWERED_HANDOFF_APOLOGY = (
+# same way. Kept as two separate per-language strings (review minor fix)
+# rather than one bilingual blob, so fallback_twiml can emit a correctly
+# pronounced <Say language=...> for each instead of reading both in
+# Twilio's default English voice.
+_UNANSWERED_HANDOFF_APOLOGY_EN = (
     "We're sorry, none of our agents are available to take your call right now. "
-    "We've noted your call and someone will call you back soon. Goodbye. "
+    "We've noted your call and someone will call you back soon. Goodbye."
+)
+_UNANSWERED_HANDOFF_APOLOGY_MS = (
     "Maaf, tiada ejen kami tersedia untuk menjawab panggilan anda sekarang. "
     "Kami telah mencatatkan panggilan anda dan seseorang akan menghubungi anda semula. "
     "Selamat tinggal."
@@ -1267,11 +1272,22 @@ class ChatRouter:
         off, or on with no announcement configured -- which
         `_maybe_start_recording` already refuses to record without) passes
         `announcement=None`, which is byte-identical to before this existed.
+
+        Review minor fix: also requires `twilio_webhook_base_url` to be
+        set, mirroring `_maybe_start_recording`'s OWN gate exactly (no
+        callback base -> it refuses to actually start recording at all).
+        Without this, a tenant with recording enabled + an announcement
+        configured but no callback base would have the caller TOLD the
+        call is recorded while it is never actually recorded.
         """
         settings = self.orchestrator._settings
-        announcement = (
-            settings.phone_recording_announcement if settings.phone_recording_enabled else None
-        ) or None
+        announcement = None
+        if (
+            settings.phone_recording_enabled
+            and settings.phone_recording_announcement
+            and settings.twilio_webhook_base_url
+        ):
+            announcement = settings.phone_recording_announcement
         xml = connect_stream_twiml(self._phone_wss_url(), announcement)
         return Response(content=xml, media_type="application/xml")
 
@@ -1329,9 +1345,12 @@ class ChatRouter:
             "speak a language and NEVER hand off merely because of language. "
             "Use the kb_search tool to ground answers in the "
             "Proton knowledge base before giving facts. If you cannot resolve the caller's "
-            "issue, they ask for a human, or it is a complaint or sensitive matter, call "
-            "request_human_handoff with a short reason and summary, then tell the caller a "
-            "specialist will follow up. After you answer, ask if there is anything else you can "
+            "issue, they ask for a human, or it is a complaint or sensitive matter: FIRST say a "
+            "short line telling the caller you are connecting them to a specialist now, THEN "
+            "call request_human_handoff with a short reason and summary — once you call it you "
+            "may be transferred immediately and unable to say anything further on this call, so "
+            "say the line before calling the tool, never after. "
+            "After you answer, ask if there is anything else you can "
             "help with, and keep helping across as many questions as the caller has. Do NOT ask "
             "for a rating mid-conversation. ONLY once the caller clearly signals they are finished "
             "(e.g. 'no, that's all', 'nothing else', 'goodbye'), ask 'How would you rate your "
@@ -1523,6 +1542,12 @@ class ChatRouter:
         is configured. Unlike that endpoint, THIS route is only registered
         at all when ``phone_handoff_enabled`` is on (see ``__init__``) --
         there is no in-handler 404 gate to duplicate.
+
+        Idempotency: a redelivered callback for the same outcome must not
+        post a second unanswered-handoff note or re-flip the status --
+        gated on ``has_ticket_tag``, since ``add_ticket_tag`` (GET-then-
+        union) is already idempotent and doubles as the "already handled"
+        marker; see the comment at the write site below.
         """
         settings = self.orchestrator._settings
         token = settings.twilio_auth_token
@@ -1560,10 +1585,29 @@ class ChatRouter:
         if ticket_id is None:
             _log.warning("phone_dial_status_unknown_call", call_sid=call_sid)
         else:
+            # Review fix (Important 3): Twilio may redeliver this callback
+            # (retry on a non-2xx, or a genuine duplicate). append_
+            # conversation_comment is an APPEND, not the merge-set shape
+            # the sibling recording-status callback relies on for its own
+            # idempotency -- a naive retry would post a second "[Handoff
+            # unanswered]" note and re-flip the status on every redelivery.
+            # add_ticket_tag itself is already idempotent (GET-then-union),
+            # so it doubles as the "have we already recorded this outcome"
+            # marker: skip the comment (and the status flip that rides
+            # along with it) once the tag is already present. A read
+            # failure here fails to False (assume not yet handled), so at
+            # worst a redelivery during a Chatwoot outage duplicates the
+            # note -- never silently drops the very first delivery.
             try:
-                await port.append_conversation_comment(
-                    ticket_id, f"[Handoff unanswered -- {status or 'unknown'}]", status="open"
-                )
+                already_handled = await port.has_ticket_tag(ticket_id, "unanswered_handoff")
+            except Exception as e:
+                _log.error("phone_dial_status_tag_check_failed", call_sid=call_sid, error=str(e))
+                already_handled = False
+            try:
+                if not already_handled:
+                    await port.append_conversation_comment(
+                        ticket_id, f"[Handoff unanswered -- {status or 'unknown'}]", status="open"
+                    )
                 await port.add_ticket_tag(ticket_id, "unanswered_handoff")
             except Exception as e:
                 _log.error(
@@ -1571,7 +1615,13 @@ class ChatRouter:
                 )
 
         return Response(
-            content=fallback_twiml(_UNANSWERED_HANDOFF_APOLOGY), media_type="application/xml"
+            content=fallback_twiml(
+                [
+                    (_UNANSWERED_HANDOFF_APOLOGY_EN, "en-US"),
+                    (_UNANSWERED_HANDOFF_APOLOGY_MS, "ms-MY"),
+                ]
+            ),
+            media_type="application/xml",
         )
 
 

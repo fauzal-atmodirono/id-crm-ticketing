@@ -43,6 +43,13 @@ class NoOpConversationLog(ConversationLogPort):
     async def add_ticket_tag(self, ticket_id: str, tag: str) -> None:  # noqa: ARG002
         return None
 
+    async def has_ticket_tag(
+        self,
+        ticket_id: str,  # noqa: ARG002
+        tag: str,  # noqa: ARG002
+    ) -> bool:
+        return False
+
     async def post_public_reply(
         self,
         ticket_id: str,  # noqa: ARG002

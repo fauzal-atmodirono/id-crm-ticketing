@@ -65,6 +65,45 @@ class _PeriodAwarePort(MockMetricsQuery):
         return metrics
 
 
+class _DegradedPreviousPort(MockMetricsQuery):
+    """Current leg succeeds ("ok"); previous leg degrades to "unavailable"
+    (e.g. a transient BigQuery failure on just the comparison-window query).
+    Exercises Important-1: the payload must distinguish the two legs' scope
+    rather than reflecting only current's, and must suppress the delta
+    rather than compute it against the degraded (empty) previous rows."""
+
+    async def fetch_lifecycle(self, period=None):
+        if period is None:
+            return await super().fetch_lifecycle()
+        if period.start == _CURRENT_WEEK_START:
+            metrics = LifecycleMetrics(
+                cases=[],
+                state_trend=[
+                    StateTrendRow(month="2026-07", status="resolved", division="Sales", cases=297)
+                ],
+            )
+            metrics.attach_scopes(
+                {
+                    "cases": _UNFILTERED,
+                    "state_trend": BlockScope(
+                        status="ok", period=period, supported_granularity=None
+                    ),
+                }
+            )
+            return metrics
+        # previous window: query failed, degrades to an empty block
+        metrics = LifecycleMetrics(cases=[], state_trend=[])
+        metrics.attach_scopes(
+            {
+                "cases": _UNFILTERED,
+                "state_trend": BlockScope(
+                    status="unavailable", period=period, supported_granularity=None
+                ),
+            }
+        )
+        return metrics
+
+
 def _client(key="secret", port=None):
     class S:
         metrics_api_key = key
@@ -122,14 +161,16 @@ def test_volume_by_type_returns_mock_data():
     assert "volume" in r.json()
 
 
-# --- Requirement 2: no-period shape is byte-identical, exact key set ---
+# --- Requirement 2: no-period shape is byte-identical, exact key set,
+# for all seven endpoints (not just the two period-capable ones) -- "the
+# code path is unchanged" is exactly the reasoning that let the earlier
+# `scopes` leak through Task 2, so it isn't trusted here either. ---
 
 
 def test_lifecycle_no_period_shape_is_unchanged_key_set():
     r = _client().get("/metrics/lifecycle", headers={"x-api-key": "secret"})
     assert r.status_code == 200
-    body = r.json()
-    assert set(body.keys()) == {"cases", "state_trend"}
+    assert set(r.json().keys()) == {"cases", "state_trend"}
 
 
 def test_volume_by_type_no_period_shape_is_unchanged_key_set():
@@ -142,6 +183,38 @@ def test_departments_no_period_shape_is_unchanged_key_set():
     r = _client().get("/metrics/departments", headers={"x-api-key": "secret"})
     assert r.status_code == 200
     assert set(r.json().keys()) == {"dept_pic", "reopen", "category_by_vehicle_model"}
+
+
+def test_callcenter_no_period_shape_is_unchanged_key_set():
+    r = _client().get("/metrics/callcenter", headers={"x-api-key": "secret"})
+    assert r.status_code == 200
+    assert set(r.json().keys()) == {
+        "sla",
+        "tasks_per_agent",
+        "first_response",
+        "resolution_time",
+        "complaint_types",
+        "peak_hours",
+        "nps_by_agent",
+    }
+
+
+def test_dealer_escalation_no_period_shape_is_unchanged_key_set():
+    r = _client().get("/metrics/dealer-escalation", headers={"x-api-key": "secret"})
+    assert r.status_code == 200
+    assert set(r.json().keys()) == {"by_dealer", "slowest_cases"}
+
+
+def test_sla_buckets_no_period_shape_is_unchanged_key_set():
+    r = _client().get("/metrics/sla-buckets", headers={"x-api-key": "secret"})
+    assert r.status_code == 200
+    assert set(r.json().keys()) == {"buckets"}
+
+
+def test_case_aging_no_period_shape_is_unchanged_key_set():
+    r = _client().get("/metrics/case-aging", headers={"x-api-key": "secret"})
+    assert r.status_code == 200
+    assert set(r.json().keys()) == {"cases"}
 
 
 # --- Requirement 3: period supplied -> {current, previous, deltas} + scopes ---
@@ -159,8 +232,10 @@ def test_lifecycle_with_period_returns_wrapped_shape_and_computed_delta():
     assert body["previous"]["state_trend"][0]["cases"] == 240
     # deltas computed in the API layer, not by the caller
     assert round(body["deltas"]["state_trend"]) == 24
-    assert body["scopes"]["state_trend"]["status"] == "ok"
-    assert body["scopes"]["cases"]["status"] == "unfiltered"
+    assert body["scopes"]["state_trend"]["current"]["status"] == "ok"
+    assert body["scopes"]["state_trend"]["previous"]["status"] == "ok"
+    assert body["scopes"]["cases"]["current"]["status"] == "unfiltered"
+    assert body["scopes"]["cases"]["previous"]["status"] == "unfiltered"
 
 
 def test_volume_by_type_with_period_returns_wrapped_shape_and_computed_delta():
@@ -174,7 +249,31 @@ def test_volume_by_type_with_period_returns_wrapped_shape_and_computed_delta():
     assert body["current"]["volume"][0]["volume"] == 100
     assert body["previous"]["volume"][0]["volume"] == 50
     assert round(body["deltas"]["volume"]) == 100  # 100 vs 50 -> +100%
-    assert body["scopes"]["volume"]["status"] == "ok"
+    assert body["scopes"]["volume"]["current"]["status"] == "ok"
+    assert body["scopes"]["volume"]["previous"]["status"] == "ok"
+
+
+# --- Important 1 (review round 1): previous leg's scope must be surfaced
+# distinctly from current's, and a delta against a degraded leg must be
+# suppressed to null rather than computed against silently-empty rows. ---
+
+
+def test_lifecycle_distinguishes_degraded_previous_scope_and_suppresses_delta():
+    port = _DegradedPreviousPort()
+    r = _client(port=port).get(
+        "/metrics/lifecycle", params=_week_params(), headers={"x-api-key": "secret"}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    # current succeeded, previous degraded -- the payload must say so per-leg
+    assert body["scopes"]["state_trend"]["current"]["status"] == "ok"
+    assert body["scopes"]["state_trend"]["previous"]["status"] == "unavailable"
+    # a percentage computed against a degraded leg is worse than none at all
+    assert body["deltas"]["state_trend"] is None
+    # the raw current/previous rows are still both present for the page to
+    # render current data even though the comparison can't be trusted
+    assert body["current"]["state_trend"][0]["cases"] == 297
+    assert body["previous"]["state_trend"] == []
 
 
 # --- Requirement 4: 400 on any invalid range, never a 500 or silent fallback ---
@@ -218,7 +317,8 @@ def test_volume_by_type_rejects_invalid_range():
     assert r.status_code == 400
 
 
-# --- Requirement 6: endpoints whose method takes no period must not ignore one ---
+# --- Requirement 6: endpoints whose method takes no period must not ignore
+# one -- all four assert both the status and the message, consistently. ---
 
 
 def test_departments_rejects_period_params_rather_than_ignoring_them():
@@ -232,6 +332,7 @@ def test_departments_rejects_period_params_rather_than_ignoring_them():
 def test_callcenter_rejects_period_params():
     r = _client().get("/metrics/callcenter", params=_week_params(), headers={"x-api-key": "secret"})
     assert r.status_code == 400
+    assert "period" in r.json()["detail"].lower()
 
 
 def test_dealer_escalation_rejects_period_params():
@@ -239,6 +340,7 @@ def test_dealer_escalation_rejects_period_params():
         "/metrics/dealer-escalation", params=_week_params(), headers={"x-api-key": "secret"}
     )
     assert r.status_code == 400
+    assert "period" in r.json()["detail"].lower()
 
 
 def test_sla_buckets_rejects_period_params():
@@ -246,11 +348,13 @@ def test_sla_buckets_rejects_period_params():
         "/metrics/sla-buckets", params=_week_params(), headers={"x-api-key": "secret"}
     )
     assert r.status_code == 400
+    assert "period" in r.json()["detail"].lower()
 
 
 def test_case_aging_rejects_period_params():
     r = _client().get("/metrics/case-aging", params=_week_params(), headers={"x-api-key": "secret"})
     assert r.status_code == 400
+    assert "period" in r.json()["detail"].lower()
 
 
 def test_period_incapable_endpoint_400_takes_priority_over_missing_key():

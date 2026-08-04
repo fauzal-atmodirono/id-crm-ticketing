@@ -122,7 +122,6 @@ def _wire_assist(
     # backend's .env, and they are merged into allow_origins at startup:
     if settings.assist_cors_origins:
         import structlog as _sl
-
         _sl.get_logger(__name__).info(
             "assist_cors_origins_added", count=len(settings.assist_cors_origins)
         )
@@ -130,7 +129,6 @@ def _wire_assist(
         # Re-registering with a merged list is the simplest approach; FastAPI
         # evaluates middlewares in stack order and the first matching one wins.
         from fastapi.middleware.cors import CORSMiddleware as _CORS
-
         app.add_middleware(
             _CORS,
             allow_origins=settings.assist_cors_origins,
@@ -468,13 +466,11 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # Merge CRM-authored live-FAQ into the KB that /assist + Copilot ground on,
     # so an authored entry surfaces in their answers immediately.
     from chatbot.features.chat.adapters.merged_knowledge import MergedKnowledgeAdapter
-
     _assist_genai = _build_genai_client(settings)
     _assist_live_store = build_live_faq_store(settings, _assist_genai)  # type: ignore[arg-type]
     _assist_embedder = (
         VertexEmbedder(_assist_genai, settings.embedding_model)
-        if _assist_genai is not None
-        else None
+        if _assist_genai is not None else None
     )
     assist_knowledge_port = MergedKnowledgeAdapter(
         knowledge_port, _assist_live_store, _assist_embedder
@@ -493,8 +489,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         kb_repo = PgKbRepository(kb_session_maker)
         kb_embedder = (
             VertexEmbedder(_assist_genai, settings.embedding_model)
-            if _assist_genai is not None
-            else None
+            if _assist_genai is not None else None
         )
         if kb_embedder is not None:
             kb_pg_adapter = PgVectorKnowledgeAdapter(kb_repo, kb_embedder, settings.kb_score_floor)
@@ -504,7 +499,6 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             # Enabled but embeddings unavailable → skip mounting so uploads 404
             # rather than every doc silently failing to embed. Log for visibility.
             import structlog as _sl
-
             _sl.get_logger(__name__).warning(
                 "knowledge_pg_enabled but no embedder (genai unavailable); /kb/knowledge not mounted"
             )
@@ -519,7 +513,6 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         engine = getattr(app.state, "kb_engine", None)
         if engine is not None:
             from chatbot.features.chat.kb_db import init_kb_db
-
             await init_kb_db(engine)
 
     # --- RSA (roadside assistance) incident log (default-off) ---
@@ -544,7 +537,6 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         engine = getattr(app.state, "rsa_engine", None)
         if engine is not None:
             from chatbot.features.rsa.rsa_db import init_rsa_db
-
             await init_rsa_db(engine)
 
     # --- RBAC (roles/permissions; default-off) ---
@@ -569,9 +561,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         authz_repo = AuthzRepository(authz_session_maker)
         authz_validator = TokenValidator(settings)
         authz_mirror = ChatwootRoleMirror(settings)
-        app.include_router(
-            build_authz_router(authz_repo, authz_validator, settings, mirror=authz_mirror)
-        )
+        app.include_router(build_authz_router(authz_repo, authz_validator, settings, mirror=authz_mirror))
         app.state.authz_engine = authz_engine
         app.state.authz_repo = authz_repo
 
@@ -632,7 +622,6 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             )
         else:
             import structlog as _sl
-
             _sl.get_logger(__name__).warning(
                 "customer360_prerequisites_missing",
                 detail=(
@@ -644,7 +633,6 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             )
     elif settings.rbac_enabled:
         import structlog as _sl
-
         _sl.get_logger(__name__).warning(
             "rbac_enabled_but_no_database_url",
             detail="RBAC_ENABLED is true but RBAC_DATABASE_URL is empty; /authz not mounted",

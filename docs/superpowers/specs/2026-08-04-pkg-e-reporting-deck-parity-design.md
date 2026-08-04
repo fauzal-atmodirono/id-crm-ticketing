@@ -235,6 +235,11 @@ against the two supplied decks. This checkout has no BigQuery credentials for
 any tenant and `MetricsQueryPort`'s mock fallback (`MockMetricsQuery`) ignores
 period filtering entirely — every period-scoped request against it returns
 the same canned all-time payload — so that comparison cannot happen here.
+(It now at least *says* so when it is a fallback rather than a choice: a
+`MockMetricsQuery` reached because `bigquery.Client()` failed to init reports
+every block `unavailable`, so a misconfigured tenant renders "temporarily
+unavailable" instead of 682 invented cases under a week header. Still
+fail-open, just no longer silently plausible.)
 Task 5 instead builds the piece that *can* be done offline and is a
 prerequisite for the live check meaning anything: proof that the arithmetic
 chain (BigQuery row → adapter dataclass → router delta/scope → what the page
@@ -364,27 +369,46 @@ available for a real (or realistic-enough) dataset:
    the view exists (e.g. a manual `SELECT COUNT(*) FROM
    \`<project>.<dataset>.v_volume_by_type_division_daily\` LIMIT 1`) before
    concluding the *data* is what's wrong.
-2. **The week picker cannot select 17-23 July exactly.** The deck's own
-   window is Friday 17 July - Thursday 23 July, not a Monday-Sunday span.
-   `ProtonWeeklyReport.vue`'s week picker always snaps any picked date to
-   that week's Monday and sets the end to Monday+6 — it structurally cannot
-   produce this window. The closest achievable weeks in the UI are 13-19
-   July and 20-26 July, both of which include/exclude different days than
-   the deck. Two options, in order of preference:
-   - Call `GET /metrics/volume-by-type?from=2026-07-17&to=2026-07-23&granularity=week`
-     and `GET /metrics/lifecycle?from=2026-07-17&to=2026-07-23&granularity=week`
-     directly (with the `x-api-key` header) to reproduce the deck's exact
-     window, bypassing the picker's Monday-snap, and compare those payloads
-     by hand against the deck.
-   - Or use the picker's nearest week and explicitly note the day-count
-     offset (up to 3 days) when explaining any mismatch — a discrepancy that
-     traces to this offset is a UI limitation, not a data or definitional
-     difference, and should be logged as such below rather than conflated
-     with either.
-3. **Set the picker (or the API call) to the period, and read the figures**
-   listed in §11.1 above off the page/response. For the monthly deck, June
-   2026 is a full calendar month, so the picker's month mode is exact — no
-   equivalent workaround is needed there.
+
+   Two payload changes ship with the same branch and land on the next
+   deploy, both additive and both worth knowing before they surprise
+   anyone mid-reconciliation:
+   - `/metrics/volume-by-type/export`'s CSV **header gains a `month_start`
+     column** (last position, after `volume`). It is the calendar month's
+     first day as a real DATE, populated from the month-grain view — the
+     same value `month` already carries as a string, in a machine-sortable
+     form. It is *not* suppressed the way `bucket` is, because it is
+     genuinely populated on the unfiltered path every export route uses,
+     and `export.py` only ever drops a column that is structurally always
+     blank. The scheduled weekly xlsx/pdf email is **unaffected** — it
+     renders `DashboardMetrics`, which has no `month_start` field.
+   - Period-scoped `state_trend` and `volume_by_type` rows gain a `bucket`
+     field carrying the same granularity-neutral key as `month` (e.g.
+     `"2026-W29"`). Unfiltered rows carry `"bucket": null` and exports drop
+     it entirely.
+2. **Set the window start to Fri 17 Jul 2026.** The deck's own window is
+   Friday 17 July - Thursday 23 July, and the picker now takes it directly:
+   commit `f80f003` removed the Monday snap, so the window start is the
+   exact day picked, prev/next preserve the chosen start day, and ISO
+   Monday remains only the *default*. The page label shows full dates at
+   both ends (`17 Jul – 23 Jul 2026`) with a `Friday–Thursday, 7 days`
+   subtitle, so confirm on screen that both ends match the deck before
+   reading any figure off it. No `curl` workaround is needed — the earlier
+   revision of this runbook instructed one because it was written before
+   the picker fix landed, and reconciling through the API instead of the
+   UI would leave the page itself unverified at the acceptance gate.
+   Hitting `GET /metrics/{volume-by-type,lifecycle}?from=2026-07-17&to=2026-07-23&granularity=week`
+   with the `x-api-key` header is still useful as a *cross-check* if a
+   number on the page looks wrong, to tell a rendering bug from a data one.
+   For the monthly deck, June 2026 is a full calendar month, so the
+   picker's month mode is exact.
+3. **Read the figures listed in §11.1 above off the page.** Check each
+   section's scope badge as you go: a section reading "All time" is not a
+   week figure and must not be reconciled against a week slide (that is
+   what the badge exists to say), and one reading "temporarily
+   unavailable" means the backend fell back off BigQuery — fix the
+   deployment before recording anything, because a fallback no longer
+   renders plausible-looking canned numbers.
 4. **Compare against the deck, slide by slide**, for every figure in the
    Task 5 brief (weekly: total, WoW%, channel mix, division split; monthly:
    total cases, inquiries, complaints, feedback, escalated-to-dealers,
@@ -414,7 +438,8 @@ confirm, refute, or extend:
 |---|---|---|---|---|---|
 | 2026-08-04 | Weekly division split total vs. weekly headline total | 297 (total) vs. 264 (Sales+Aftersales+Apps+Charging+Product+Marketing+Others) | n/a — offline arithmetic check only, no live data yet | **Open** | The deck's own two slides don't sum to each other (33-case gap). Leading hypotheses: the division-split slide filters to a specific `case_type` (e.g. Inquiry only) while the headline counts every case_type; or a rounding/manual-collation artefact in how Proton compiled the original deck. Neither confirmable without the live tenant data — check whether restricting `v_volume_by_type_division_daily` to `case_type = 'Inquiry'` closes the gap. |
 | 2026-08-04 | Weekly channel mix — "Social" channel | 2% of weekly volume | n/a — offline check only | **Open, likely gap** | `mapping.py::channel_from_external_id` has no "Social" output; it only produces WhatsApp/Email/Phone/Web/Other from the Chatwoot `source_id` prefix. If Proton's real inboxes include a native Instagram/Facebook channel, that traffic is currently indistinguishable from "Other" in `channel`, or possibly not synced as a distinct value at all. Confirm during the live check whether "Social" cases exist in the tenant's `channel` column as-is, or whether this needs a mapping addition (a G3-adjacent gap, not previously listed). |
-| 2026-08-04 | Week picker cannot select 17-23 July | Deck window: Fri 17 - Thu 23 Jul | Picker only offers Monday-Sunday weeks | **Confirmed gap (UI)** | See §11.3 step 2. Not a data or definitional issue — the picker's `mondayOf()` snap is a hard constraint. Direct API calls with `from`/`to` bypass it; the picker itself would need a "custom range" mode to fix properly (out of scope for Task 5). |
+| 2026-08-04 | Week picker cannot select 17-23 July | Deck window: Fri 17 - Thu 23 Jul | Picker now offers any 7-day window starting on the day picked | **Resolved (f80f003)** | Recorded as a confirmed UI gap when this section was first written, against the then-current `mondayOf()` snap. `f80f003` removed the snap: the window start is the exact day picked, prev/next preserve the chosen start day, ISO Monday stays the default, and the label shows full dates at both ends. The deck's own Fri-Thu window is directly selectable, so §11.3 step 2 no longer routes around the UI and the acceptance gate exercises the page a human will actually use. No day-count offset is left to explain. |
+| 2026-08-04 | Every date bucket is a **UTC** calendar day; the picker's window is browser-local | Deck presumably compiled in MYT (UTC+8) | `DATE(created_at)` / `DATE_TRUNC(DATE(created_at), …)` in `bigquery_schema.py` default to UTC | **Confirmed gap (definitional), open** | Known before the live pass rather than discovered during it. `created_at` is a TIMESTAMP and BigQuery's bare `DATE()` is UTC, so for a UTC+8 tenant the warehouse week and the on-screen week disagree by 8 hours at both edges: a case created 07:00 MYT Fri 17 Jul falls in the *previous* week's bucket, one created 23:00 MYT Thu 23 Jul in the next. The effect is a small systematic shift of cases between adjacent buckets, not a fixed offset in the total — i.e. it presents as "close but not quite", exactly the shape that gets misattributed to a definitional difference in the case model. Semantics deliberately left unchanged (switching to `DATE(created_at, 'Asia/Kuala_Lumpur')` would re-bucket every historical figure on every existing dashboard in one deploy, including the month-grain views patch `0020`'s live charts read). **Recommendation, not built:** a tenant-configurable reporting time zone threaded through `view_ddls()` as a `Settings` field defaulted to UTC, so today's numbers are unchanged until a tenant opts in. Documented in `bigquery_schema.py`'s module docstring and beside the three day-grain views. Quantify the residual against live data during the pass before deciding whether it is worth building. |
 | 2026-08-04 | "Escalated to dealers" scoped to June | 353 | Only reachable all-time (no date column on `v_dealer_escalation`) | **Confirmed gap (G1, unextended)** | See §11.2. Needs the same day-grain-view treatment G1/Task 2 gave `v_volume_by_type_division`/`v_state_trend` before a monthly figure can be pinned or reconciled at all. |
 | 2026-08-04 | "Escalated to HQ" | 245 | No code path — concept absent from schema | **Confirmed gap (new: G7)** | See §11.2. Needs product/client input (what distinguishes an HQ escalation from a dealer escalation in the workflow) before it can be designed, let alone built. |
 

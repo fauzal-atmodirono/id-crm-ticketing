@@ -173,6 +173,14 @@ class Settings(BaseSettings):
     metrics_sync_enabled: bool = False
     metrics_sync_interval_hours: int = 6
 
+    # Package D risk mitigation: demo-seeded conversations (deploy/scripts/
+    # seed_demo_data/ stamps custom_attributes.demo_seed = <batch_id> on every
+    # contact/conversation it creates) otherwise flow into the warehouse and
+    # inflate every report. Default False (today's behavior, byte-identical)
+    # so Package E's reporting pages have data to show during a demo window;
+    # flip True before any real reporting to keep marked conversations out.
+    metrics_exclude_demo_seed: bool = False
+
     # Bot-metrics Phase 4 (manual QA accuracy/quality entry)
     qa_provider: Literal["noop", "bigquery"] = "noop"
     bigquery_qa_labels_table: str = "qa_labels"

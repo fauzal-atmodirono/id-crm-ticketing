@@ -147,8 +147,22 @@ goes wrong.
   that's unacceptable for a client-facing tenant, fall back to a dedicated demo
   tenant.
 - **Reporting contamination.** Package E's BigQuery sync will ingest these
-  rows. Either accept it for the demo window and purge before any real
-  reporting, or exclude `demo_seed` rows in the sync — decide before seeding.
+  rows. **Decided (2026-08-04): flag-controlled exclusion, default off.**
+  `METRICS_EXCLUDE_DEMO_SEED` (backend `Settings`, `deploy/tenants/*.env`)
+  defaults to `false`: behaviour stays byte-identical to today, so
+  demo-seeded conversations flow into the warehouse and Package E's
+  reporting pages have data to show during the demo window. Excluding them
+  unconditionally was rejected — on `proton`, real volume is sparse enough
+  that the pages would sit near-empty with nothing to reconcile against the
+  client's decks. Accepting the inflation permanently was also rejected —
+  that relies on remembering to purge, and a forgotten purge is exactly how
+  demo data ends up mistaken for real data (the risk above). The flag gets
+  both: `run_sync` (`backend/apps/backend/src/chatbot/features/metrics/sync.py`)
+  drops any conversation whose `custom_attributes.demo_seed` marker is set
+  before it reaches BigQuery once the flag is true. **The operator must set
+  `METRICS_EXCLUDE_DEMO_SEED=true` on `proton` before any real reporting
+  run** — this is not automatic, and forgetting it silently keeps seeded
+  rows flowing.
 - **Purge misses something** and demo records linger. Hence the batch id and the
   dry-run summary.
 

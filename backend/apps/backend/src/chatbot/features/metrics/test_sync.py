@@ -7,7 +7,7 @@ from chatbot.features.metrics.sync import fetch_conversations, load_conversation
 from chatbot.platform.config import Settings
 
 
-def _settings() -> Settings:
+def _settings(*, metrics_exclude_demo_seed: bool = False) -> Settings:
     return cast(
         Settings,
         SimpleNamespace(
@@ -18,6 +18,7 @@ def _settings() -> Settings:
             bigquery_project_id="proj",
             bigquery_dataset="ds",
             bigquery_conversations_table="conversations",
+            metrics_exclude_demo_seed=metrics_exclude_demo_seed,
         ),
     )
 
@@ -97,6 +98,45 @@ def test_run_sync_maps_and_loads() -> None:
     assert loaded[0].channel == "WhatsApp" and loaded[0].csat_score == 5
     # category comes from custom_attributes (not labels); division is derived from it
     assert loaded[0].category == "aftersales" and loaded[0].division == "Aftersales"
+
+
+def test_run_sync_excludes_demo_seed_conversations_when_flag_enabled() -> None:
+    """Package D risk mitigation: a conversation carrying custom_attributes.
+    demo_seed must never reach the warehouse once METRICS_EXCLUDE_DEMO_SEED
+    is on."""
+    convs: list[dict[str, Any]] = [
+        _conv(id=1, custom_attributes={"demo_seed": "batch-2026-08-04"}),
+        _conv(id=2, custom_attributes={}),
+    ]
+    loaded: list[ConversationRow] = []
+
+    result = run_sync(
+        _settings(metrics_exclude_demo_seed=True),
+        fetch=lambda _s: convs,
+        load=lambda _s, rows: loaded.extend(rows),
+    )
+
+    assert [r.conversation_id for r in loaded] == ["2"]
+    assert result == {"conversations": 1, "rows": 1}
+
+
+def test_run_sync_includes_demo_seed_conversations_when_flag_disabled() -> None:
+    """Default-off must be byte-identical to today: a demo_seed-marked
+    conversation still syncs when METRICS_EXCLUDE_DEMO_SEED is unset/false."""
+    convs: list[dict[str, Any]] = [
+        _conv(id=1, custom_attributes={"demo_seed": "batch-2026-08-04"}),
+        _conv(id=2, custom_attributes={}),
+    ]
+    loaded: list[ConversationRow] = []
+
+    result = run_sync(
+        _settings(metrics_exclude_demo_seed=False),
+        fetch=lambda _s: convs,
+        load=lambda _s, rows: loaded.extend(rows),
+    )
+
+    assert sorted(r.conversation_id for r in loaded) == ["1", "2"]
+    assert result == {"conversations": 2, "rows": 2}
 
 
 def test_load_conversations_includes_dealer_field() -> None:

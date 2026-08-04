@@ -118,6 +118,18 @@ def fetch_inbox_hours(
         return None
 
 
+def _is_demo_seed(conv: dict[str, Any]) -> bool:
+    """True when this conversation carries the demo-seed marker written by
+    ``deploy/scripts/seed_demo_data/`` onto every contact/conversation it
+    creates (``custom_attributes.demo_seed = <batch_id>``). Chatwoot's
+    conversations list already returns ``custom_attributes`` on each item —
+    ``map_chatwoot_conversation_to_row`` already reads production fields
+    (``case_category``, ``dealer_escalated_at``, ``case_type``,
+    ``vehicle_model``) off it, so the field is confirmed present here."""
+    custom_attrs = conv.get("custom_attributes")
+    return isinstance(custom_attrs, dict) and bool(custom_attrs.get("demo_seed"))
+
+
 def load_conversations(settings: Settings, rows: list[ConversationRow]) -> None:
     """WRITE_TRUNCATE-load the conversation rows into BigQuery (live)."""
     client = bigquery.Client(project=settings.bigquery_project_id)
@@ -188,6 +200,12 @@ def run_sync(
     """Fetch conversations, map to rows, augment with business-hours timing,
     load. Returns counts. Injectable for tests.
 
+    When ``settings.metrics_exclude_demo_seed`` is True, conversations
+    carrying the ``demo_seed`` custom-attribute marker (stamped by
+    ``deploy/scripts/seed_demo_data/``) are dropped before mapping, so they
+    never reach BigQuery and never count in the returned totals. Default
+    False keeps today's behavior byte-identical.
+
     Each unique inbox_id's business-hours config is fetched at most once per
     sync run (cached in ``inbox_cache``). A per-inbox fetch failure — whether
     ``fetch_inbox_fn`` returns None (the documented contract) or raises
@@ -196,6 +214,8 @@ def run_sync(
     ``apply_working_hours(row, None)``; it never aborts the whole sync.
     """
     conversations = (fetch or fetch_conversations)(settings)
+    if settings.metrics_exclude_demo_seed:
+        conversations = [c for c in conversations if not _is_demo_seed(c)]
     fetch_inbox_fn = fetch_inbox or fetch_inbox_hours
     inbox_cache: dict[int, dict[str, Any] | None] = {}
 

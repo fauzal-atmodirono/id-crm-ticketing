@@ -338,6 +338,8 @@ class ProtonConfigClient:
         audio_mime_type: str | None = None,
         image_base64: str | None = None,
         image_mime_type: str | None = None,
+        video_base64: str | None = None,
+        video_mime_type: str | None = None,
     ) -> dict | None:
         """Full conversational turn via the backend ADK agent (POST /chat/turn).
 
@@ -365,6 +367,10 @@ class ProtonConfigClient:
                 payload["image_base64"] = image_base64
             if image_mime_type is not None:
                 payload["image_mime_type"] = image_mime_type
+            if video_base64 is not None:
+                payload["video_base64"] = video_base64
+            if video_mime_type is not None:
+                payload["video_mime_type"] = video_mime_type
             response = await self._client.post(
                 "/chat/turn",
                 json=payload,

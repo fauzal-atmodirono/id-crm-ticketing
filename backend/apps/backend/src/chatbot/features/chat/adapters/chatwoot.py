@@ -43,6 +43,19 @@ _AI_HANDOFF_ATTRS = {"ai_handoff": True}
 # closed ticket, so the next contact opens a fresh one instead.
 _ACTIVE_STATUSES = frozenset({"open", "pending", "snoozed"})
 
+# Package C Task 4 review fix: features.metrics.mapping.CATEGORY_TO_DIVISION's
+# canonical values ("Aftersales") are what transcript_classifier.classify()
+# validates/returns, and what set_ticket_classification below writes into
+# `case_category` and the `division_<slug>` label. But the Cases List UI's
+# `division` custom attribute (fork patch 0043) is populated everywhere else
+# by the demo seeder (deploy/scripts/seed_demo_data) in the deck's DISPLAY
+# vocabulary, which differs from canonical in exactly this one case
+# ("After Sales" vs "Aftersales") — every other division's display and
+# canonical spelling are identical. Left untranslated, a phone-classified
+# Aftersales conversation would show as a second, separate "Aftersales"
+# filter option next to the seeder's "After Sales" in the same dropdown.
+_DIVISION_DISPLAY = {"Aftersales": "After Sales"}
+
 
 def _conversations_from(res: Any) -> list[dict[str, Any]]:
     """Normalize a Chatwoot conversation-list response to a list of dicts.
@@ -683,27 +696,45 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         division: str | None = None,
         concern: str | None = None,
     ) -> None:
-        # Package C Task 4: the field names Cases List (fork patch 0043) and
-        # the demo seeder (deploy/scripts/seed_demo_data/client.py) already
-        # write/read verbatim -- case_category/case_subcategory stay a
-        # separate, pre-existing convention (used by the WhatsApp
-        # classify_ticket_tool flow) and are left untouched here. `_request`
-        # already fails open (logs and returns None), so no try/except is
+        # Package C Task 4 (review fix): `division` alone is NOT enough for
+        # Package E's reporting to pick this conversation up --
+        # features.metrics.mapping.map_chatwoot_conversation_to_row reads
+        # either a `division_<slug>` LABEL or the `case_category` custom
+        # attribute, never the `division` attribute (that one is the Cases
+        # List UI's own field, fork patch 0043). So this writes THREE things,
+        # each in the spelling its one reader expects:
+        #   - `division` custom attribute: DISPLAY spelling (_DIVISION_DISPLAY),
+        #     matching what the demo seeder already writes there, so the Cases
+        #     List UI's division filter doesn't grow a duplicate entry.
+        #   - `case_category` custom attribute: CANONICAL spelling (division,
+        #     verbatim -- classify() already validated it against
+        #     mapping.CATEGORY_TO_DIVISION's own vocabulary), which mapping.py
+        #     reads directly.
+        #   - `division_<slug>` label, via the SAME `_dimension_labels`
+        #     convention real-traffic AI classification already uses, so a
+        #     phone-classified division lands in the exact same warehouse
+        #     bucket as everything else instead of a byte-different one.
+        # case_type needs no extra write -- mapping.py already reads it
+        # straight off the `case_type` custom attribute. `_request` (and
+        # add_ticket_tag, built on it) already fail open, so no try/except is
         # needed at this layer.
         custom_attrs: dict[str, str] = {}
         if case_type:
             custom_attrs["case_type"] = case_type
         if division:
-            custom_attrs["division"] = division
+            custom_attrs["division"] = _DIVISION_DISPLAY.get(division, division)
+            custom_attrs["case_category"] = division
         if concern:
             custom_attrs["concern"] = concern
-        if not custom_attrs:
-            return
-        await self._request(
-            "POST",
-            f"/conversations/{ticket_id}/custom_attributes",
-            {"custom_attributes": custom_attrs},
-        )
+        if custom_attrs:
+            await self._request(
+                "POST",
+                f"/conversations/{ticket_id}/custom_attributes",
+                {"custom_attributes": custom_attrs},
+            )
+        if division:
+            for label in self._dimension_labels(division, None, None):
+                await self.add_ticket_tag(ticket_id, label)
 
     async def get_latest_public_comment(self, ticket_id: str) -> tuple[str, str | None, str | None]:
         res = await self._request("GET", f"/conversations/{ticket_id}/messages")

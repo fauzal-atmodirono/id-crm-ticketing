@@ -492,12 +492,15 @@ class PhoneBridge:
                 call_sid=self.call_sid,
                 keys=sorted(classification.keys()),
             )
-        if self.handoff is None:
-            classified_status = classification.get("status")
-            if classified_status == "resolved":
-                status = "solved"
-            elif classified_status in ("open", "pending"):
-                status = "open"
+        # `status` above is already "solved" whenever we reach here (handoff
+        # is None) -- so a classified "resolved" reading has nothing to
+        # change TO, that's already where it starts. Only a classifier
+        # reading the call as still needing action ("open"/"pending") has
+        # any actual effect: it flips the default back to "open". There is
+        # deliberately no branch for "resolved" -- one live transition, not
+        # three.
+        if self.handoff is None and classification.get("status") in ("open", "pending"):
+            status = "open"
         if (
             classification.get("case_type")
             or classification.get("division")

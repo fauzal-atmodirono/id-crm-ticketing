@@ -1041,6 +1041,10 @@ async def test_classification_open_status_keeps_conversation_open() -> None:
     # be "solved" -- the classifier's "open" reading must override that.
     assert any(c[2] == "open" for c in log.comments)
     assert not any(c[2] == "solved" for c in log.comments)
+    # A bare status-only response has no case_type/division/concern, so the
+    # write-suppression guard (classification.get(...) or ...) must skip
+    # set_ticket_classification entirely -- pin that it actually does.
+    assert log.classifications == []
 
 
 async def test_classification_pending_status_also_keeps_conversation_open() -> None:

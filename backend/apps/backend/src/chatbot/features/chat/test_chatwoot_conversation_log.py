@@ -114,3 +114,65 @@ async def test_set_ticket_external_id_posts_custom_attribute() -> None:
     method, path, payload = fake.calls[-1]
     assert method == "POST" and "custom_attributes" in path
     assert payload == {"custom_attributes": {"external_id": "whatsapp-+60123"}}
+
+
+@pytest.mark.asyncio
+async def test_set_ticket_classification_all_none_is_a_no_op() -> None:
+    fake = _FakeClient({})
+    await _adapter(fake).set_ticket_classification("55")
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_set_ticket_classification_posts_custom_attributes_and_division_label() -> None:
+    """The load-bearing detail: mapping.py's Package E reporting reads
+    `case_category` (canonical spelling) or a `division_<slug>` label --
+    NEVER the `division` custom attribute, which is the Cases List UI's own
+    field and wants the deck's DISPLAY spelling instead."""
+    fake = _FakeClient({})
+    await _adapter(fake).set_ticket_classification(
+        "55", case_type="Complaint", division="Aftersales", concern="Service Operation"
+    )
+    custom_attr_calls = [c for c in fake.calls if "custom_attributes" in c[1]]
+    assert len(custom_attr_calls) == 1
+    method, _path, payload = custom_attr_calls[0]
+    assert method == "POST" and payload == {
+        "custom_attributes": {
+            "case_type": "Complaint",
+            "division": "After Sales",
+            "case_category": "Aftersales",
+            "concern": "Service Operation",
+        }
+    }
+    label_calls = [c for c in fake.calls if "labels" in c[1]]
+    assert len(label_calls) == 1
+    method, _path, payload = label_calls[0]
+    assert method == "POST" and payload == {"labels": ["division_aftersales"]}
+
+
+@pytest.mark.asyncio
+async def test_set_ticket_classification_division_without_display_override_passes_through() -> None:
+    """Every division except Aftersales/"After Sales" has an identical
+    display and canonical spelling -- pin that the untranslated path really
+    is the identity, not a hardcoded special case that happens to work once."""
+    fake = _FakeClient({})
+    await _adapter(fake).set_ticket_classification("55", division="Sales")
+    custom_attr_calls = [c for c in fake.calls if "custom_attributes" in c[1]]
+    _, _, payload = custom_attr_calls[0]
+    assert payload == {"custom_attributes": {"division": "Sales", "case_category": "Sales"}}
+    label_calls = [c for c in fake.calls if "labels" in c[1]]
+    _, _, payload = label_calls[0]
+    assert payload == {"labels": ["division_sales"]}
+
+
+@pytest.mark.asyncio
+async def test_set_ticket_classification_concern_only_writes_no_division_label() -> None:
+    fake = _FakeClient({})
+    await _adapter(fake).set_ticket_classification("55", concern="Booking")
+    assert fake.calls == [
+        (
+            "POST",
+            "/conversations/55/custom_attributes",
+            {"custom_attributes": {"concern": "Booking"}},
+        )
+    ]

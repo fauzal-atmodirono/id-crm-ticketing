@@ -121,8 +121,12 @@ Blocked pending, and worth sending as an explicit list:
 2. A sandbox environment plus test credentials.
 3. The identifier decision from feedback item #16 — which key joins a CRM
    contact to a DMS customer (CIF-style id, phone, or vehicle number). **This
-   is still unanswered and is the single biggest open question**; the integration
-   cannot resolve identities without it.
+   is still unanswered and is the single biggest open question: it blocks
+   entity resolution entirely.** `DmsClient.find_customer` takes `phone` and
+   `vehicle_no` because those are the only identifiers Customer 360 has today,
+   not because they are confirmed to be what the DMS actually supports — no
+   adapter can be written, and no customer can be matched, until Proton names
+   the real key.
 4. Data-protection position: what customer data may leave the DMS, whether we
    may cache it, and for how long.
 5. Whether the integration is read-only (assumed) or must write back.

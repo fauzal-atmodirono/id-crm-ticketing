@@ -10,6 +10,7 @@ from collections.abc import Callable
 
 import httpx
 import pytest
+from structlog.testing import capture_logs
 
 from chatbot.features.chat.dms_client import (
     DmsClient,
@@ -191,6 +192,43 @@ async def test_probe_never_raises_on_a_malformed_base_url() -> None:
     assert CREDENTIAL not in result.message
 
 
+async def test_probe_maps_unsupported_protocol_to_unexpected_status() -> None:
+    """Structurally covered by the `httpx.HTTPError` branch already
+    (`httpx.UnsupportedProtocol` subclasses it), but pinned explicitly so a
+    future refactor of that branch can't silently drop this case.
+    """
+    cfg = DmsConfig(
+        enabled=True,
+        provider_label="Proton DMS",
+        base_url="dms.example.com/health",  # no scheme -> UnsupportedProtocol
+        auth_type="api_key_header",
+        extra_header_name="",
+        extra_header_value="",
+        timeout_seconds=5.0,
+        retries=0,
+    )
+    async with httpx.AsyncClient() as client:
+        result = await probe(cfg, CREDENTIAL, client)
+
+    assert result.status == "unexpected_status"
+    assert CREDENTIAL not in result.message
+
+
+async def test_probe_maps_too_many_redirects_to_unexpected_status() -> None:
+    """Same pinning as above for `httpx.TooManyRedirects`."""
+
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        return httpx.Response(302, headers={"Location": "https://dms.example.com/health"})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), follow_redirects=True, max_redirects=1
+    ) as client:
+        result = await probe(CFG, CREDENTIAL, client)
+
+    assert result.status == "unexpected_status"
+    assert CREDENTIAL not in result.message
+
+
 # --- probe() message sanitisation ------------------------------------------
 
 
@@ -221,6 +259,47 @@ async def test_probe_extra_header_value_never_leaks_into_the_message() -> None:
         return httpx.Response(500)
 
     result = await probe(CFG, CREDENTIAL, _client(handler))
+    assert CFG.extra_header_value not in result.message
+
+
+async def test_probe_never_logs_the_credential() -> None:
+    """The brief's constraint is "any log", a stronger requirement than just
+    ProbeResult.message -- a future edit adding `credential=credential` to
+    the `_log.info("dms_probe_result", ...)` call would pass every other
+    test here. Assert directly against captured structlog records.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        return httpx.Response(200)
+
+    with capture_logs() as captured:
+        await probe(CFG, CREDENTIAL, _client(handler))
+
+    assert captured
+    for record in captured:
+        assert CREDENTIAL not in repr(record)
+
+
+async def test_probe_message_has_no_credential_even_with_redirects_enabled() -> None:
+    """The injected `httpx.AsyncClient` is constructed outside this module
+    (Task 3 owns the real one); our sanitisation must not silently depend on
+    it being built with `follow_redirects=False`. Simulate a 302 to a
+    different host and confirm the message still never contains the
+    credential or extra_header_value, regardless of what httpx itself does
+    with the auth header across that redirect.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "dms.example.com":
+            return httpx.Response(302, headers={"Location": "https://attacker.example.com/steal"})
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), follow_redirects=True
+    ) as client:
+        result = await probe(CFG, CREDENTIAL, client)
+
+    assert CREDENTIAL not in result.message
     assert CFG.extra_header_value not in result.message
 
 
@@ -309,3 +388,32 @@ async def test_probe_sends_the_extra_header_pair_when_set() -> None:
 
     await probe(CFG, CREDENTIAL, _client(handler))
     assert captured["x-tenant"] == "proton"
+
+
+async def test_extra_header_matching_the_auth_header_name_does_not_overwrite_the_credential() -> (
+    None
+):
+    """If an operator sets extra_header_name to the same header carrying the
+    credential (here, case-differently as "Authorization" vs "authorization"),
+    the extra pair must not silently replace the credential's header value --
+    that would send an unauthenticated request while looking, to the
+    operator, like nothing changed.
+    """
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(request.headers)
+        return httpx.Response(200)
+
+    cfg = DmsConfig(
+        enabled=True,
+        provider_label="Proton DMS",
+        base_url="https://dms.example.com/health",
+        auth_type="bearer_token",
+        extra_header_name="Authorization",
+        extra_header_value="not-the-credential",
+        timeout_seconds=5.0,
+        retries=0,
+    )
+    await probe(cfg, CREDENTIAL, _client(handler))
+    assert captured["authorization"] == f"Bearer {CREDENTIAL}"

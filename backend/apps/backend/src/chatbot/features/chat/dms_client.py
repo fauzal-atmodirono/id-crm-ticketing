@@ -176,6 +176,13 @@ def _auth_headers(config: DmsConfig, credential: str) -> dict[str, str]:
       - "api_key_header", or anything else -> ``X-Api-Key: <credential>``,
         since `DmsConfig` has no field naming a custom API-key header (see
         this package's report for the design finding on this gap).
+
+    If an operator sets `extra_header_name` to the same header name already
+    carrying the credential (case-insensitive -- HTTP header names are), the
+    extra pair is dropped rather than applied: silently overwriting the
+    credential's header with `extra_header_value` would send an unauthenticated
+    request while looking, to the operator, like nothing changed -- turning a
+    real auth failure into a confusing unrelated symptom.
     """
     headers: dict[str, str] = {}
     if config.auth_type == "bearer_token":
@@ -186,7 +193,11 @@ def _auth_headers(config: DmsConfig, credential: str) -> dict[str, str]:
     else:
         headers["X-Api-Key"] = credential
 
-    if config.extra_header_name and config.extra_header_value:
+    if (
+        config.extra_header_name
+        and config.extra_header_value
+        and config.extra_header_name.lower() not in {h.lower() for h in headers}
+    ):
         headers[config.extra_header_name] = config.extra_header_value
 
     return headers
@@ -199,10 +210,16 @@ async def probe(config: DmsConfig, credential: str, client: httpx.AsyncClient) -
     never interpolated into the returned message, logged, or allowed to
     surface via a propagated exception.
     """
-    headers = _auth_headers(config, credential)
-    label = config.provider_label or config.base_url
+    # Trivial, non-raising fallback for the except branches below, in case
+    # anything above the `response = await client.get(...)` line inside the
+    # try raises before `label` is reassigned there -- the never-raises
+    # guarantee must hold from the `try` scope itself, not from
+    # `_auth_headers`/the label expression staying pure.
+    label = config.base_url
 
     try:
+        label = config.provider_label or config.base_url
+        headers = _auth_headers(config, credential)
         response = await client.get(
             config.base_url, headers=headers, timeout=config.timeout_seconds
         )

@@ -15,6 +15,7 @@ from google.adk.sessions import BaseSessionService, InMemorySessionService, Sess
 from google.genai import Client, types
 
 from chatbot.features.chat.adapters.bigquery_metrics import NoOpMetrics
+from chatbot.features.chat.adapters.blob_free_session_service import BlobFreeSessionService
 from chatbot.features.chat.adapters.firestore_session_service import FirestoreSessionService
 from chatbot.features.chat.adapters.noop_conversation_log import NoOpConversationLog
 from chatbot.features.chat.agents import build_ai_agent, build_summarizer_agent
@@ -179,10 +180,16 @@ class OrchestratorService:
         self._user_turn_counts: dict[str, int] = {}
 
     def _default_runner_factory(self, agent: Any) -> Runner:
+        # The runner gets the session store wrapped so inline audio/image/video
+        # blobs reach Gemini on the turn that carried them but are never
+        # written to (nor replayed from) the stored session — see
+        # adapters/blob_free_session_service.py. A fresh wrapper per run keeps
+        # the full-event map bounded to one invocation. Everything else in this
+        # class keeps talking to self._adk_sessions directly.
         return Runner(
             agent=agent,
             app_name="chatbot",
-            session_service=self._adk_sessions,
+            session_service=BlobFreeSessionService(self._adk_sessions),
         )
 
     def _chat_instruction_provider(self, ctx: Any) -> str:

@@ -24,12 +24,43 @@ Here, an HTTP failure should stop the run loudly (`raise_for_status()`) so
 an operator sees it immediately, rather than silently skipping a write
 against a tenant a client will see.
 
-**Bot-safety invariant:** seeded conversations are created `open` or
-`resolved` — NEVER `pending`. `agent/app/services/orchestrator.py`'s
-agent-bot only acts on an incoming customer message on a `pending`
-conversation; a seeded `pending` conversation on a bot-enabled inbox could
-fire up to ~100 AI replies and escalation emails against a live tenant. See
-`_safe_status`.
+**Bot-safety invariant:** seeded conversations must never end up `pending`.
+`agent/app/services/orchestrator.py`'s agent-bot only acts on an incoming
+customer message on a `pending` conversation; a seeded `pending`
+conversation on a bot-enabled inbox would fire an AI reply (and possibly an
+escalation email) per seeded case against a live tenant. Sending a
+non-`pending` `status` on create is NOT sufficient on its own: Chatwoot's
+`Conversation` has `before_create :determine_conversation_status`, whose
+body is `self.status = :pending if inbox.active_bot?` — it silently
+overrides whatever the API caller asked for on any inbox with an agent bot
+attached. Three layers therefore enforce the invariant:
+
+1. `_safe_status` maps the generator's status onto the bot-ignored set, so
+   the request never *asks* for `pending`;
+2. `assert_inbox_is_safe_to_seed` refuses, before any write, an inbox that
+   has an agent bot or that isn't an API channel (`__main__.py` calls it
+   ahead of the confirmation prompt);
+3. `create_case` reads the created conversation's `status` back off the
+   create response and raises immediately if Chatwoot returned `pending`
+   anyway — so a bot-enabled inbox that slipped past (2) costs one
+   conversation, not the whole batch.
+
+**Webhook-safety invariant:** the conversation `custom_attributes` endpoint
+REPLACES the whole object (`ConversationsController#custom_attributes` does
+`@conversation.custom_attributes = params[...]`), and posting `labels`
+fires `conversation_updated`, which reaches
+`agent/app/services/sync.py::maybe_stamp_dealer_escalation`. That handler
+writes `dealer_escalated_at` via the same replacing endpoint, which used to
+wipe `demo_seed` (and everything else) off every seeded conversation the
+instant its labels were posted — defeating purge, backdate, the metrics
+exclusion flag and the Cases list at once. `create_case` therefore writes
+`dealer_escalated_at` itself, in its own `custom_attributes` POST, on every
+conversation that gets a `dealer_<slug>` label: the handler short-circuits
+on `if existing.get("dealer_escalated_at"): return` before it ever writes.
+(The agent-side root cause — `set_custom_attributes` documenting itself as
+"Merge-set" while replacing — is fixed separately in
+`agent/app/clients/chatwoot.py`; this file does not depend on that fix
+having been deployed.)
 
 Endpoint shapes (headers, path prefixes, payload keys, response envelopes)
 follow `agent/app/clients/chatwoot.py` and
@@ -41,7 +72,11 @@ create (`create_case` sends a deterministic one — see its docstring).
 pagination are not exercised anywhere else in this repo, so they are
 inferred from Chatwoot's own REST conventions rather than confirmed against
 a live tenant; Task 4's `default`-tenant rehearsal is what actually proves
-them.
+them. `GET /inboxes/{id}` mirrors `agent/app/clients/chatwoot.py::get_inbox`;
+`GET /inboxes/{id}/agent_bot` is read straight off Chatwoot's own
+`config/routes.rb` (`get :agent_bot, on: :member`) and its
+`inboxes/agent_bot.json.jbuilder`, which renders `{"agent_bot": {}}` when no
+bot is attached.
 
 **Verified, not assumed, post-conditions:** the reference call sites never
 send `custom_attributes` on contact *create* (only on conversation update,
@@ -60,11 +95,12 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
-from generator import DemoCase, DemoContact
+from generator import DemoCase, DemoContact, canonical_division
 
 # Delay between API calls. A burst of ~1,500 requests at a tenant's Rails
 # app in one go is a self-inflicted outage (plan's Global Constraints).
@@ -196,13 +232,113 @@ def _slugify(value: str) -> str:
 
 
 def _safe_status(status: str) -> str:
-    """Map a DemoCase's status to one the agent-bot ignores. See the
-    module's bot-safety invariant docstring — this is the single point
-    seeded conversations are guaranteed never to end up `pending`."""
+    """Map a DemoCase's status to one the agent-bot ignores. Layer 1 of the
+    module's bot-safety invariant — the request never *asks* for `pending`.
+    Not sufficient alone; see the docstring for layers 2 and 3."""
     return status if status in _BOT_SAFE_STATUSES else "open"
 
 
 # --- pure selectors (the tested surface) ------------------------------------
+
+
+def conversation_source_id(channel: str, batch_id: str, case_index: int) -> str:
+    """The deterministic, obviously-synthetic `source_id` a seeded
+    conversation is created with.
+
+    The channel token comes FIRST because that is the only place the
+    warehouse can learn a conversation's channel from:
+    `backend/.../metrics/mapping.py::channel_from_external_id` takes
+    `external_id.split("-", 1)[0]` and looks it up in a fixed prefix table
+    ({whatsapp, email, phone, sim, zendesk, chatwoot}). A `source_id` of
+    `demo-seed:...` prefix-matches as `demo`, i.e. "Other" for 100% of rows,
+    which flattens the deck-derived 73/16/9/2 channel split into a single
+    bar. Prefixing costs nothing: `purge` keys on the `demo_seed` custom
+    attribute, never on `source_id`.
+
+    `whatsapp`/`email`/`phone` land in their real buckets; `social` isn't in
+    the prefix table and correctly reports as "Other" (~2% of cases), which
+    is what the warehouse would do with a real social conversation too.
+
+    Deterministic in `(batch_id, case_index)` so a re-run with the same pair
+    addresses the same synthetic conversation identity, and unmistakably
+    non-real so it can never collide with a genuine conversation's
+    `source_id`.
+    """
+    return f"{channel}-demo-seed:{batch_id}:case-{case_index}"
+
+
+# --- pre-flight (real network I/O) ------------------------------------------
+
+
+class UnsafeInboxError(RuntimeError):
+    """The target inbox is not safe to seed into. Raised *before* any write.
+
+    Deliberately its own type so `__main__.py` can report it as an operator
+    error (a wrong `--inbox-id`) rather than as a crash.
+    """
+
+
+async def assert_inbox_is_safe_to_seed(inbox_id: int) -> dict:
+    """Layer 2 of the bot-safety invariant: refuse an inbox that would turn a
+    seed run into a live AI conversation.
+
+    Two independent reasons to refuse, both fatal:
+
+    - **An agent bot is attached.** Chatwoot's `before_create
+      :determine_conversation_status` forces `status = :pending` when
+      `inbox.active_bot?`, discarding the `status` `create_case` sends. A
+      `pending` conversation carrying an incoming customer message is exactly
+      what `agent/app/services/orchestrator.py` acts on, so a 100-contact
+      seed would be ~140 Gemini calls and ~140 AI replies posted into a
+      tenant a client can see.
+    - **The channel isn't `Channel::Api`.** Every other channel type is wired
+      to a real transport (WhatsApp, email, a website widget). Creating
+      conversations and posting `outgoing` messages there risks actually
+      *delivering* demo content to whatever that inbox is connected to.
+
+    The agent-bot check reads `GET /inboxes/{id}/agent_bot`, which renders
+    `{"agent_bot": {...}}` when one is attached and `{"agent_bot": {}}` when
+    not (`app/views/api/v1/accounts/inboxes/agent_bot.json.jbuilder`). Note
+    `Inbox#active_bot?` is broader than this endpoint (it also counts an
+    enabled `dialogflow` hook), so this check is necessary, not sufficient —
+    which is why `create_case` still verifies the status it got back.
+
+    Returns the inbox payload so the caller can show the operator which inbox
+    it just validated. Raises `UnsafeInboxError` if either check fails; HTTP
+    failures propagate (an inbox we cannot read is an inbox we cannot clear).
+    """
+    _require_config()
+    response = await _chatwoot.get(_account_path(f"/inboxes/{inbox_id}"))
+    response.raise_for_status()
+    inbox = response.json()
+    inbox = inbox if isinstance(inbox, dict) else {}
+    await _throttle()
+
+    channel_type = inbox.get("channel_type")
+    if channel_type != "Channel::Api":
+        raise UnsafeInboxError(
+            f"inbox {inbox_id} has channel_type {channel_type!r}, not 'Channel::Api'. "
+            "Seeding is only allowed into a dedicated API-channel inbox -- any other "
+            "channel is wired to a real transport and could deliver demo content to "
+            "real recipients. Create an API inbox for demo data and pass its id."
+        )
+
+    bot_response = await _chatwoot.get(_account_path(f"/inboxes/{inbox_id}/agent_bot"))
+    bot_response.raise_for_status()
+    bot_data = bot_response.json()
+    agent_bot = bot_data.get("agent_bot") if isinstance(bot_data, dict) else None
+    await _throttle()
+    if isinstance(agent_bot, dict) and agent_bot.get("id") is not None:
+        raise UnsafeInboxError(
+            f"inbox {inbox_id} has agent bot {agent_bot.get('id')} "
+            f"({agent_bot.get('name')!r}) attached. Chatwoot forces every conversation "
+            "on a bot-enabled inbox to status 'pending' (Conversation's "
+            "before_create :determine_conversation_status), which is exactly what the "
+            "agent-bot orchestrator acts on -- seeding here would fire an AI reply per "
+            "case against a live tenant. Use an inbox with no agent bot."
+        )
+
+    return inbox
 
 
 def selectable_for_purge(objects: list[dict], batch_id: str) -> list[dict]:
@@ -271,6 +407,22 @@ async def create_contact(contact: DemoContact, batch_id: str) -> int:
         "custom_attributes": demo_attributes,
     }
     response = await _chatwoot.post(_account_path("/contacts"), json=payload)
+    if response.status_code == 422:
+        # Chatwoot enforces phone/email uniqueness per ACCOUNT, not per batch.
+        # `generate()` mixes batch_id into its RNG seed precisely so two
+        # batches don't collide -- but a re-run with an explicit `--batch-id`
+        # that was already seeded, or a genuine collision with a real contact,
+        # still lands here. Raw HTTP 422 text ("Phone number has already been
+        # taken") tells an operator nothing about which knob fixes it.
+        raise RuntimeError(
+            f"Chatwoot rejected demo contact {contact.name!r} (phone {contact.phone}, "
+            f"email {contact.email}) with HTTP 422: {response.text.strip()[:300]}. "
+            "This is almost always a uniqueness collision -- a contact with that phone "
+            "or email already exists in this account, i.e. this batch's generated "
+            "identities have been seeded here before. Purge the earlier batch, or "
+            "re-run with a different --rng-seed (or a different --batch-id, which is "
+            "also mixed into the generator's seed) to generate fresh identities."
+        )
     response.raise_for_status()
     data = response.json()
     # The account-level create returns {"payload": {"contact": {...}}};
@@ -296,41 +448,133 @@ async def create_contact(contact: DemoContact, batch_id: str) -> int:
     return contact_id
 
 
-async def create_case(case: DemoCase, contact_id: int, batch_id: str, case_index: int) -> int:
-    """Create one Chatwoot conversation for `contact_id`, post its seeded
-    message thread, and stamp the purge marker + case fields.
+def build_case_custom_attributes(case: DemoCase, contact: DemoContact, batch_id: str, now: datetime) -> dict:
+    """The full `custom_attributes` object one seeded conversation carries.
 
-    Status is forced through `_safe_status` — see the module's bot-safety
-    invariant. Even if Chatwoot's conversation-create endpoint silently
-    ignores the `status` field (its default for an API-channel conversation
-    is `open`), the fallback is still on the bot-ignored list, so this is
-    safe either way.
+    Pure, and separated out because getting this object wrong is what broke
+    the package end to end: it is simultaneously the purge marker, the
+    backdate guard, the metrics-exclusion key, the Cases list's data source
+    and the warehouse's category/vehicle dimensions — and the endpoint that
+    writes it REPLACES rather than merges, so there is exactly one chance to
+    get every key in.
+
+    Keys, and who reads them:
+
+    - `demo_seed` — `selectable_for_purge`, `select_backdate_targets`,
+      `backdate_conversation`'s SQL guard, and the metrics sync's
+      `METRICS_EXCLUDE_DEMO_SEED` pre-filter.
+    - `dealer_escalated_at` — the warehouse's dealer-TAT view, AND (the
+      reason it is written here at all) the short-circuit that stops
+      `agent/app/services/sync.py::maybe_stamp_dealer_escalation` from
+      REPLACING this whole object with `{"dealer_escalated_at": ...}` when
+      the `dealer_<slug>` label POST fires `conversation_updated`. Written
+      only when the case actually has a dealer — a case with no dealer gets
+      no dealer label, so the handler never fires for it, and inventing a
+      timestamp would put a dealer-less case into the dealer-TAT view.
+      Its value is wall-clock *now* (not `case.created_at`) because
+      `backdate` shifts it by the same delta it shifts the row's `created_at`
+      by; anchoring it to seed-time is what makes it land beside the
+      backdated `created_at` instead of weeks after it.
+    - `case_category` / `case_subcategory` —
+      `backend/.../metrics/mapping.py` reads exactly these two keys; without
+      them every demo row's category and subcategory are NULL. `case_category`
+      is the *canonical* division so `CATEGORY_TO_DIVISION` resolves it, and
+      `case_subcategory` uses the flattened `"<Label>: <Subcategory>"` shape
+      `agent/app/services/categorize.py` writes for real conversations.
+    - `vehicle_model` — also read by `mapping.py` off the CONVERSATION, which
+      has no `meta.sender` to join through.
+    - `vehicle_no` — spec §3 puts it on both the contact and its
+      conversations. The Cases list can join through `meta.sender`, but the
+      warehouse cannot, so the conversation-level copy is not redundant.
+    - `case_type`, `division`, `concern`, `channel`, `dealer` — the Cases
+      list's own columns, in the deck's display vocabulary.
+    """
+    attributes = {
+        "demo_seed": batch_id,
+        "case_type": case.case_type,
+        "division": case.division,
+        "concern": case.concern,
+        "channel": case.channel,
+        "case_category": canonical_division(case.division),
+        "case_subcategory": f"{canonical_division(case.division)}: {case.concern}",
+        "vehicle_no": contact.vehicle_no,
+        "vehicle_model": contact.vehicle_model,
+    }
+    if case.dealer:
+        attributes["dealer"] = case.dealer
+        attributes["dealer_escalated_at"] = now.isoformat()
+    return attributes
+
+
+def build_case_labels(case: DemoCase) -> list[str]:
+    """The `division_<slug>` / `dealer_<slug>` labels one seeded conversation
+    gets. Pure, so the exact slug is pinned by a test rather than by a live
+    tenant's report looking wrong.
+
+    The division slug is built from the CANONICAL division (see
+    `generator.canonical_division`), matching byte-for-byte what the live
+    writer `backend/.../adapters/chatwoot.py::_classification_labels` emits
+    for real traffic — `mapping.py` reads this suffix back raw, so
+    `division_after_sales` would sit in its own bucket next to real traffic's
+    `division_aftersales`.
+
+    The dealer label is present only for the minority of cases that actually
+    have a dealer; posting one is what makes the conversation appear in the
+    dealer-TAT view, and (via `conversation_updated`) what wakes
+    `maybe_stamp_dealer_escalation`.
+    """
+    labels = [f"division_{_slugify(canonical_division(case.division))}"]
+    if case.dealer:
+        labels.append(f"dealer_{_slugify(case.dealer)}")
+    return labels
+
+
+async def create_case(case: DemoCase, contact: DemoContact, contact_id: int, batch_id: str, case_index: int) -> int:
+    """Create one Chatwoot conversation for `contact_id`, stamp its
+    `custom_attributes`, post its seeded message thread, and label it.
+    Returns the conversation's **display id** (what `POST /conversations`
+    renders as `id` — see below).
+
+    Order matters and is not the obvious one. The `custom_attributes` POST
+    happens IMMEDIATELY after create, before any message: `create_payload`
+    carries only `contact_id`/`inbox_id`/`status`/`source_id`, so between the
+    create and that POST the conversation exists with NO `demo_seed` marker
+    and is invisible to `purge`. Doing the messages first would stretch that
+    unmarked-orphan window across every message POST in the thread; doing it
+    first shrinks it to a single request.
+
+    **Status.** Forced through `_safe_status` (layer 1), then verified
+    against what Chatwoot actually created (layer 3). Chatwoot's
+    `before_create :determine_conversation_status` overrides the requested
+    status with `pending` on any inbox with an active bot, so "we asked for
+    `open`" proves nothing — this reads `status` off the create response
+    (`_conversation.json.jbuilder` renders it) and raises before posting a
+    single message if it came back `pending`. Raising here is the point: one
+    orphaned empty conversation is cheap, a batch of AI-answered ones is not.
+    `assert_inbox_is_safe_to_seed` (layer 2) should already have made this
+    unreachable; it stays because `Inbox#active_bot?` is broader than the
+    `agent_bot` endpoint that check can see (it also counts an enabled
+    dialogflow hook).
+
+    **The returned id is a display id, not a primary key.** `POST
+    /conversations` renders `json.id conversation.display_id`. That is the
+    right id for every other Application API call here (`/conversations/{id}`
+    routes resolve by `display_id`), but it is NOT `conversations.id` — which
+    is why the manifest records `account_id` alongside it and `backdate.py`
+    resolves `(account_id, display_id)` to a real primary key in SQL rather
+    than assuming the two coincide.
 
     `case_index` is this case's position in the full list `generate()`
     returned (the caller should pass `enumerate(cases)`'s index) — it feeds
-    `source_id` below and nothing else, so a re-run with the same
-    `(batch_id, case_index)` always addresses the same synthetic
-    conversation identity.
-
-    Note: if this function raises partway through (e.g. after the
-    conversation create succeeds but a message post fails), the
-    conversation already exists and already carries `demo_seed` in the
-    create payload — but this function never reads that back the way
-    `create_contact` does, so a very unlucky partial failure could in
-    principle leave an unmarked orphan the same way contact-create risked
-    before its fix. Not hardened against here: low-probability, and `purge`
-    finding zero results after a failed `seed` run is exactly the kind of
-    thing Task 4's `default`-tenant rehearsal is meant to surface.
+    `conversation_source_id` and nothing else.
     """
     config = _require_config()
     status = _safe_status(case.status)
     # Reference call sites (backend/.../adapters/chatwoot.py's
     # _find_or_create_conversation) always send source_id on conversation
     # create — Chatwoot's ConversationBuilder uses it to build the
-    # contact_inbox. Deterministic and obviously synthetic, so a re-run with
-    # the same (batch_id, case_index) is stable and never collides with a
-    # real conversation's source_id.
-    source_id = f"demo-seed:{batch_id}:case-{case_index}"
+    # contact_inbox.
+    source_id = conversation_source_id(case.channel, batch_id, case_index)
 
     create_payload = {
         "contact_id": contact_id,
@@ -341,10 +585,42 @@ async def create_case(case: DemoCase, contact_id: int, batch_id: str, case_index
     response = await _chatwoot.post(_account_path("/conversations"), json=create_payload)
     response.raise_for_status()
     data = response.json()
-    conversation_id = data.get("id")
-    if conversation_id is None:
+    display_id = data.get("id")
+    if display_id is None:
         raise RuntimeError(f"conversation create returned no id: {data!r}")
-    conversation_id = int(conversation_id)
+    display_id = int(display_id)
+    await _throttle()
+
+    created_status = data.get("status")
+    if created_status is None:
+        # This Chatwoot renders no `status` on create (v4.15.1 does), so the
+        # third safety layer cannot run. Fail closed rather than seeding ~140
+        # conversations whose status we never verified.
+        raise RuntimeError(
+            f"conversation {display_id} create response carried no 'status' field, so "
+            "the bot-safety readback cannot be performed. Refusing to continue -- "
+            "verify manually that this Chatwoot renders conversation status on create."
+        )
+    if created_status not in _BOT_SAFE_STATUSES:
+        raise RuntimeError(
+            f"conversation {display_id} came back with status {created_status!r} after "
+            f"requesting {status!r}. Chatwoot forces 'pending' on an inbox with an "
+            "active bot (Conversation's before_create :determine_conversation_status), "
+            "and a 'pending' conversation with an incoming customer message is exactly "
+            "what the agent-bot orchestrator answers. Aborting before any message is "
+            "posted. Use an inbox with no agent bot and no enabled dialogflow hook."
+        )
+
+    # Stamp the marker FIRST -- see the docstring's ordering note. Everything
+    # that can find, guard, exclude or display this conversation reads this
+    # object, and the endpoint replaces rather than merges, so it is written
+    # once, complete.
+    custom_attributes = build_case_custom_attributes(case, contact, batch_id, datetime.now(timezone.utc))
+    attrs_response = await _chatwoot.post(
+        _account_path(f"/conversations/{display_id}/custom_attributes"),
+        json={"custom_attributes": custom_attributes},
+    )
+    attrs_response.raise_for_status()
     await _throttle()
 
     for sender_role, body in case.messages:
@@ -354,43 +630,25 @@ async def create_case(case: DemoCase, contact_id: int, batch_id: str, case_index
             else {"content": body, "message_type": "outgoing", "private": False}
         )
         message_response = await _chatwoot.post(
-            _account_path(f"/conversations/{conversation_id}/messages"), json=message_payload
+            _account_path(f"/conversations/{display_id}/messages"), json=message_payload
         )
         message_response.raise_for_status()
         await _throttle()
 
-    # vehicle_no/purchased_from are NOT duplicated here: DemoCase carries no
-    # vehicle fields (those live on DemoContact), and Chatwoot's
-    # conversation-list response already embeds the contact's own
-    # custom_attributes at `meta.sender.custom_attributes` — the Cases list
-    # (Task 5) should join through that rather than this module stamping a
-    # second, driftable copy onto every conversation.
-    custom_attributes = {
-        "demo_seed": batch_id,
-        "case_type": case.case_type,
-        "division": case.division,
-        "concern": case.concern,
-        "channel": case.channel,
-        "dealer": case.dealer,
-    }
-    attrs_response = await _chatwoot.post(
-        _account_path(f"/conversations/{conversation_id}/custom_attributes"),
-        json={"custom_attributes": custom_attributes},
-    )
-    attrs_response.raise_for_status()
-    await _throttle()
-
     # division_<slug> / dealer_<slug> labels — the convention
     # agent/app/services/sync.py and backend/.../metrics/mapping.py already
-    # read back for division derivation and dealer TAT reporting.
+    # read back for division derivation and dealer TAT reporting. This POST
+    # fires conversation_updated; the custom_attributes above already carry
+    # dealer_escalated_at, so maybe_stamp_dealer_escalation short-circuits
+    # instead of replacing them (see the module's webhook-safety invariant).
     labels_response = await _chatwoot.post(
-        _account_path(f"/conversations/{conversation_id}/labels"),
-        json={"labels": [f"division_{_slugify(case.division)}", f"dealer_{_slugify(case.dealer)}"]},
+        _account_path(f"/conversations/{display_id}/labels"),
+        json={"labels": build_case_labels(case)},
     )
     labels_response.raise_for_status()
     await _throttle()
 
-    return conversation_id
+    return display_id
 
 
 async def create_rsa_incident(payload: dict) -> str:

@@ -16,16 +16,21 @@ note below):
 
     python3 -m seed_demo_data purge --tenant proton --batch <id> ...
 
+    export CHATWOOT_DB_URL='postgresql://...'
     python3 -m seed_demo_data backdate --manifest <path> \\
-        --database-url postgresql://... [--execute]
+        --database-url-env CHATWOOT_DB_URL [--execute]
 
 Three subcommands, not one flag-driven command, because they have
 genuinely different consequence profiles: `seed`/`purge` talk to the
 Chatwoot Application API (Task 2's `client.py`) and need Chatwoot
 credentials; `backdate` (Part B) talks *directly* to a tenant's Postgres
-and deliberately takes its own `--database-url` with no default and no
+and deliberately takes its own connection string with no default and no
 auto-discovery from the environment -- see `backdate.py`'s module
-docstring for why that write needs its own, separate seriousness.
+docstring for why that write needs its own, separate seriousness. That
+connection string is named either inline (`--database-url`) or by
+environment variable (`--database-url-env NAME`, preferred: same
+explicitness, but the password never lands in `argv`/`ps`/shell history);
+exactly one of the two is required.
 """
 
 from __future__ import annotations
@@ -59,7 +64,17 @@ from backdate import (  # noqa: E402
     select_backdate_targets,
     write_manifest,
 )
-from client import TenantConfig, aclose, configure, create_case, create_contact, create_rsa_incident, purge  # noqa: E402
+from client import (  # noqa: E402
+    TenantConfig,
+    UnsafeInboxError,
+    aclose,
+    assert_inbox_is_safe_to_seed,
+    configure,
+    create_case,
+    create_contact,
+    create_rsa_incident,
+    purge,
+)
 from generator import generate  # noqa: E402
 
 
@@ -218,6 +233,10 @@ async def _run_seed(args: argparse.Namespace, parser: argparse.ArgumentParser) -
     print(f"Cases:             {len(cases)}")
     print(f"  by case type:    {dict(case_type_counts)}")
     print(f"  by channel:      {dict(channel_counts)}")
+    # Surfaced because it is the one proportion an operator cannot see from
+    # the counts above and that a report will make obvious: dealer TAT needs
+    # a non-empty minority, not every case (spec §3).
+    print(f"  dealer-escalated:{sum(1 for c in cases if c.dealer)} of {len(cases)}")
     print(f"RSA incidents:     {len(rsa_payloads)}")
     print(f"Manifest will be written to: {manifest_path}")
     print(f"Chatwoot base URL: {config.chatwoot_base_url}")
@@ -229,17 +248,32 @@ async def _run_seed(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         print("\nDry run only -- nothing was created.")
         return 0
 
-    if not _confirm(args.tenant, f"\nType the tenant name to confirm writing to it ({args.tenant}): "):
-        print("Confirmation did not match -- aborted, nothing written.", file=sys.stderr)
-        return 1
-
-    # Pre-flight: prove the manifest can actually be written BEFORE anything
-    # is created in the tenant -- see _probe_manifest_writable's docstring.
-    _probe_manifest_writable(manifest_path, parser)
-
+    # Pre-flight the INBOX before the confirmation prompt, not after it.
+    # Chatwoot silently forces every conversation on a bot-enabled inbox to
+    # status 'pending' -- the exact trigger the agent-bot orchestrator acts
+    # on -- so a wrong --inbox-id turns a seed run into one AI reply per
+    # case against a live tenant. An operator who is about to type the
+    # tenant name to authorise writes deserves to know the target inbox
+    # already passed. This needs configured HTTP clients, so it is the one
+    # thing that runs before the prompt; it only ever reads.
     configure(config)
-    manifest_entries: list[ManifestEntry] = []
     try:
+        try:
+            inbox = await assert_inbox_is_safe_to_seed(config.chatwoot_inbox_id)
+        except UnsafeInboxError as exc:
+            print(f"\nRefusing to seed: {exc}", file=sys.stderr)
+            return 1
+        print(f"Inbox pre-flight:  OK ({inbox.get('name')!r}, channel {inbox.get('channel_type')}, no agent bot)")
+
+        if not _confirm(args.tenant, f"\nType the tenant name to confirm writing to it ({args.tenant}): "):
+            print("Confirmation did not match -- aborted, nothing written.", file=sys.stderr)
+            return 1
+
+        # Pre-flight: prove the manifest can actually be written BEFORE anything
+        # is created in the tenant -- see _probe_manifest_writable's docstring.
+        _probe_manifest_writable(manifest_path, parser)
+
+        manifest_entries: list[ManifestEntry] = []
         try:
             print(f"\nCreating {len(contacts)} contacts...")
             contact_ids: list[int] = []
@@ -249,8 +283,8 @@ async def _run_seed(args: argparse.Namespace, parser: argparse.ArgumentParser) -
             print(f"Creating {len(cases)} cases...")
             for case_index, case in enumerate(cases):
                 contact_id = contact_ids[case.contact_index]
-                conversation_id = await create_case(case, contact_id, batch_id, case_index)
-                manifest_entries.append(ManifestEntry(conversation_id=conversation_id, created_at=case.created_at))
+                display_id = await create_case(case, contacts[case.contact_index], contact_id, batch_id, case_index)
+                manifest_entries.append(ManifestEntry(display_id=display_id, created_at=case.created_at))
 
             print(f"Creating {len(rsa_payloads)} RSA incidents...")
             for payload in rsa_payloads:
@@ -263,12 +297,22 @@ async def _run_seed(args: argparse.Namespace, parser: argparse.ArgumentParser) -
             # reported, not re-raised, with the raw ids printed as a
             # last-resort fallback since they'd otherwise be lost.
             try:
-                write_manifest(manifest_path, batch_id=batch_id, tenant=args.tenant, entries=manifest_entries)
+                write_manifest(
+                    manifest_path,
+                    batch_id=batch_id,
+                    tenant=args.tenant,
+                    account_id=config.chatwoot_account_id,
+                    entries=manifest_entries,
+                )
             except OSError as manifest_exc:
                 print(f"WARNING: failed to write manifest to {manifest_path}: {manifest_exc}", file=sys.stderr)
                 if manifest_entries:
-                    ids = [e.conversation_id for e in manifest_entries]
-                    print(f"Conversation ids created so far (SAVE THIS -- backdate needs it): {ids}", file=sys.stderr)
+                    ids = [e.display_id for e in manifest_entries]
+                    print(
+                        f"Conversation DISPLAY ids created so far in account "
+                        f"{config.chatwoot_account_id} (SAVE THIS -- backdate needs both): {ids}",
+                        file=sys.stderr,
+                    )
     finally:
         await aclose()
 
@@ -281,7 +325,8 @@ async def _run_seed(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         print("WARNING: fewer conversations were created than requested -- the run likely raised partway through.", file=sys.stderr)
         return 1
     print("\nTo review what backdating this batch would touch (dry-run, the default -- nothing is written):")
-    print(f"  python3 -m seed_demo_data backdate --manifest {manifest_path} --database-url <tenant's Chatwoot DB URL>")
+    print(f"  export CHATWOOT_DB_URL='<tenant's Chatwoot DB URL>'   # keeps the password out of argv/ps/history")
+    print(f"  python3 -m seed_demo_data backdate --manifest {manifest_path} --database-url-env CHATWOOT_DB_URL")
     print("Add --execute only after reviewing that dry-run output, to actually apply it.")
     print("\nTo remove everything this batch created:")
     print(f"  python3 -m seed_demo_data purge --tenant {args.tenant} --batch {batch_id} ...")
@@ -343,38 +388,68 @@ def _cmd_purge(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
 # --- backdate (Part B) ------------------------------------------------------
 
 
+def _resolve_database_url(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str:
+    """The tenant database DSN, from exactly one of `--database-url` (value on
+    the command line) or `--database-url-env` (name of an environment
+    variable holding it).
+
+    `--database-url` puts a production database password into `argv` -- into
+    `ps` output for every user on the box, and into the operator's shell
+    history -- on the single command in this package that writes SQL into a
+    tenant's application database. `--database-url-env` removes that without
+    weakening the "no auto-discovery from the environment" constraint: the
+    operator still names the variable explicitly and there is still no
+    default, no fallback and no guess. Neither flag is required on its own;
+    exactly one of the two must be given (argparse enforces that), so there
+    is no path to an implicit target.
+    """
+    if args.database_url is not None:
+        return args.database_url
+    value = os.environ.get(args.database_url_env)
+    if not value:
+        parser.error(
+            f"--database-url-env named ${args.database_url_env}, but that environment "
+            "variable is unset or empty. Export it (e.g. "
+            f"export {args.database_url_env}='postgresql://...') and re-run."
+        )
+    return value
+
+
 def _cmd_backdate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     import psycopg  # local import: only backdate needs a Postgres driver
 
-    tenant, batch_id, entries = load_manifest(args.manifest)
+    database_url = _resolve_database_url(args, parser)
+    tenant, batch_id, account_id, entries = load_manifest(args.manifest)
     print("=== Backdate: dry-run summary ===")
     print(f"Manifest:          {args.manifest}")
     print(f"Manifest tenant:   {tenant}")
     print(f"Batch id:          {batch_id}")
+    print(f"Chatwoot account:  {account_id}")
     print(f"Manifest entries:  {len(entries)}")
-    print(f"Target database:   {describe_database_target(args.database_url)}")
+    print(f"Target database:   {describe_database_target(database_url)}")
 
     if not entries:
         print("Manifest has no conversation entries -- nothing to do.")
         return 0
 
-    with psycopg.connect(args.database_url) as conn:
+    with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
-            rows = fetch_current_rows(cur, [e.conversation_id for e in entries])
+            rows = fetch_current_rows(cur, account_id, [e.display_id for e in entries])
         eligible = select_backdate_targets(entries, rows, batch_id)
-        eligible_ids = {e.conversation_id for e in eligible}
-        skipped = [e for e in entries if e.conversation_id not in eligible_ids]
+        eligible_ids = {e.display_id for e in eligible}
+        skipped = [e for e in entries if e.display_id not in eligible_ids]
 
         print(f"\nEligible to backdate ({len(eligible)}):")
         for entry in eligible:
-            print(f"  conversation {entry.conversation_id} -> created_at {entry.created_at.isoformat()}")
+            print(f"  conversation #{entry.display_id} -> created_at {entry.created_at.isoformat()}")
         if skipped:
             print(
-                f"\nSkipped ({len(skipped)}) -- id not found in this database, or its demo_seed "
-                f"marker no longer matches batch {batch_id!r} (possibly reused by real data after a purge):"
+                f"\nSkipped ({len(skipped)}) -- display id not found in account {account_id} of this "
+                f"database, or its demo_seed marker no longer matches batch {batch_id!r} "
+                "(possibly reused by real data after a purge):"
             )
             for entry in skipped:
-                print(f"  conversation {entry.conversation_id}")
+                print(f"  conversation #{entry.display_id}")
 
         if not args.execute:
             print("\nDry run only -- no changes written. Re-run with --execute to apply.")
@@ -398,16 +473,20 @@ def _cmd_backdate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         skipped_at_write_time = 0
         with conn.cursor() as cur:
             for entry in eligible:
-                old_created_at = backdate_conversation(cur, entry.conversation_id, entry.created_at, batch_id)
-                if old_created_at is None:
+                result = backdate_conversation(cur, account_id, entry.display_id, entry.created_at, batch_id)
+                if result is None:
                     # The guard was re-checked at write time (see
                     # backdate_conversation's docstring) and didn't match --
                     # the row changed between our snapshot read and now.
                     # Not fatal: skip and keep going.
                     skipped_at_write_time += 1
                     continue
+                # The PRIMARY KEY the guarded UPDATE just matched -- not the
+                # manifest's display id. messages.conversation_id is an FK to
+                # this, and this statement has no marker of its own to check.
+                conversation_pk, old_created_at = result
                 conversations_updated += 1
-                messages_updated += backdate_messages(cur, entry.conversation_id, entry.created_at, old_created_at)
+                messages_updated += backdate_messages(cur, conversation_pk, entry.created_at, old_created_at)
         conn.commit()
 
     print("\n=== Backdate complete ===")
@@ -468,13 +547,30 @@ def _build_parser() -> argparse.ArgumentParser:
         "backdate",
         help="Shift a batch's conversations' created_at into the past (direct DB write; see backdate.py).",
     )
-    backdate_cmd.add_argument(
+    # Exactly one of the two, and no default for either: the operator always
+    # names the target explicitly, but is not forced to put a production
+    # password into argv (and therefore into `ps` and shell history) to do it.
+    db_target = backdate_cmd.add_mutually_exclusive_group(required=True)
+    db_target.add_argument(
         "--database-url",
-        required=True,
+        default=None,
         help=(
             "Tenant's Chatwoot Postgres connection string (e.g. "
             "postgresql://chatwoot_<tenant>:***@host:5432/chatwoot_<tenant>). "
-            "REQUIRED -- no default, no auto-discovery from the environment."
+            "No default, no auto-discovery. WARNING: this puts the database "
+            "password in argv, visible in `ps` and saved to shell history -- "
+            "prefer --database-url-env."
+        ),
+    )
+    db_target.add_argument(
+        "--database-url-env",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Name of an environment variable holding the connection string "
+            "(e.g. --database-url-env CHATWOOT_DB_URL). Still fully explicit -- "
+            "nothing is discovered or guessed, you name the variable -- but the "
+            "password never reaches argv."
         ),
     )
     backdate_cmd.add_argument("--manifest", required=True, type=Path, help="Manifest path 'seed' printed on completion.")

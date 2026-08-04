@@ -40,22 +40,40 @@ def test_url_form_percent_encoded_password_containing_at_sign_never_appears_in_o
     assert _SECRET not in result
 
 
-def test_url_form_password_with_a_raw_unescaped_at_sign_is_a_documented_psycopg_parsing_limit():
-    # NOT a redaction gap in this function -- a documented limit of trusting
-    # psycopg's own parser (per the design: "parse with psycopg's own
-    # parser", not a second hand-rolled one). A literal, non-percent-encoded
-    # '@' inside userinfo makes the URI itself ambiguous per RFC 3986,
-    # and psycopg's parser resolves that ambiguity by splitting on the
-    # FIRST '@', which can spill part of the password into what it reports
-    # as `host` -- a field this function trusts and allowlists, because it
-    # has no way to distinguish "psycopg misparsed this" from "the host
-    # really is called that". The fix is percent-encoding (see the test
-    # above), which is also what any correctly-behaving DSN-building tool
-    # already does. This test pins the actual (imperfect) behavior so a
-    # future psycopg version silently changing it is noticed, not assumed
-    # equally safe.
+def test_psycopg_itself_spills_a_raw_unescaped_at_sign_password_into_host():
+    # Pins the PARSER's behavior, not this function's. A literal,
+    # non-percent-encoded '@' inside userinfo makes the URI ambiguous per RFC
+    # 3986, and psycopg resolves that ambiguity by splitting on the FIRST
+    # '@' -- spilling part of the password into what it reports as `host`, a
+    # field describe_database_target allowlists. This assertion is what makes
+    # a future psycopg version silently changing that behavior visible rather
+    # than assumed. The guard below is what keeps it from reaching output.
+    from psycopg.conninfo import conninfo_to_dict
+
+    parsed = conninfo_to_dict(f"postgresql://user:p@{_SECRET}@host:5432/db")
+    assert parsed["host"] == f"{_SECRET}@host"
+
+
+def test_a_host_containing_an_at_sign_is_refused_rather_than_printed():
+    # '@' is never legal in a hostname, so a `host` that contains one is not
+    # a hostname -- it is evidence the DSN was ambiguous and the parser split
+    # it somewhere we can't trust. This is a VALIDITY CHECK on an allowlisted
+    # field, not a return to the secret-denylist strategy that failed three
+    # times: it never inspects the input for anything secret-shaped, and the
+    # only value it can reject is one that was never a host to begin with.
     result = describe_database_target(f"postgresql://user:p@{_SECRET}@host:5432/db")
-    assert result == f"host={_SECRET}@host port=5432 dbname=db user=user"
+    assert _SECRET not in result
+    assert result == (
+        "<ambiguous --database-url (unescaped '@' in the connection string) -- not shown>"
+    )
+
+
+def test_a_legitimate_host_is_still_shown_after_the_at_sign_guard():
+    # The guard must not swallow every DSN -- percent-encoding the password
+    # (what a correct DSN-building tool does) leaves host clean and printable.
+    result = describe_database_target(f"postgresql://user:{quote('p@' + _SECRET, safe='')}@host:5432/db")
+    assert result == "host=host port=5432 dbname=db user=user"
+    assert _SECRET not in result
 
 
 def test_url_form_password_containing_colon_never_appears_in_output():

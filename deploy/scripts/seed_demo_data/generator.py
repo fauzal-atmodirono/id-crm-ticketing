@@ -9,8 +9,11 @@ so Task 2 can POST a payload dict as-is).
 
 Every random draw goes through the `random.Random(seed)` instance threaded
 through this module — never the module-level `random.*` functions — so two
-calls with the same `(count, seed)` are byte-identical. That determinism is
-what lets Task 2's purge-safety guard be tested without touching a tenant.
+calls with the same `(count, batch_id, seed)` are byte-identical. That
+determinism is what lets Task 2's purge-safety guard be tested without
+touching a tenant. It is deliberately scoped to a *batch* (see `generate`):
+two different batches against the same tenant must NOT collide, because
+Chatwoot enforces phone/email uniqueness per account.
 
 Vocabulary (case-type mix, channel mix, division -> concern lists) is taken
 verbatim from Proton's own monthly/weekly reporting decks, per the plan at
@@ -49,7 +52,7 @@ class DemoCase:
     concern: str
     status: str
     created_at: datetime
-    dealer: str
+    dealer: str | None
     messages: list[tuple[str, str]]
 
 
@@ -122,6 +125,32 @@ _DIVISION_WEIGHTS = [
     ("Others", 2),
 ]
 
+# The deck's division names are display strings ("After Sales"); the warehouse
+# has its own canonical vocabulary, `CATEGORY_TO_DIVISION`'s *values* in
+# backend/apps/backend/src/chatbot/features/metrics/mapping.py. The live writer
+# (backend/.../adapters/chatwoot.py::_classification_labels) emits
+# `division_<canonical.lower().replace(" ", "_")>`, and mapping.py reads that
+# suffix back RAW -- so a seeded `division_after_sales` would land in its own
+# bucket next to real traffic's `division_aftersales`, splitting one division in
+# two on every report. Everything the seeder writes for the warehouse
+# (`case_category`, the `division_*` label) goes through this map first so demo
+# rows are byte-identical in vocabulary to real ones.
+_CANONICAL_DIVISION = {
+    "Sales": "Sales",
+    "After Sales": "Aftersales",
+    "Apps": "Apps",
+    "Charging": "Charging",
+    "Product": "Product",
+    "Marketing": "Marketing",
+    "Others": "Others",
+}
+
+# Share of cases escalated to a dealer. Spec §3 asks for "a minority of cases
+# escalated so dealer TAT reporting has rows" -- not all of them. A case with no
+# dealer gets no `dealer_<slug>` label and no `dealer_escalated_at`, so it is
+# correctly absent from the dealer-turnaround view rather than diluting it.
+DEALER_ESCALATION_RATE = 0.22
+
 _STATUS_WEIGHTS = [("resolved", 55), ("open", 30), ("pending", 15)]
 
 # How many cases a given contact ends up with; weighted so most customers
@@ -184,6 +213,20 @@ _CASE_TYPE_REPLIES = {
 
 
 # --- Helpers ------------------------------------------------------------------
+
+
+def canonical_division(division: str) -> str:
+    """The warehouse's name for one of this module's display divisions.
+
+    Pure and public because `client.py` needs the exact same value in two
+    places (the conversation's `case_category` custom attribute and its
+    `division_<slug>` label), and a test can pin it against
+    `mapping.CATEGORY_TO_DIVISION` without touching a tenant. Unknown values
+    pass through unchanged rather than raising -- a division the deck grows
+    later should degrade to "shows up under its own name", not "the seeder
+    crashes".
+    """
+    return _CANONICAL_DIVISION.get(division, division)
 
 
 def _weighted_choice(rnd: random.Random, weighted: list[tuple[T, int]]) -> T:
@@ -259,7 +302,8 @@ def _make_case(
     case_type = _weighted_choice(rnd, _CASE_TYPE_WEIGHTS)
     channel = _weighted_choice(rnd, _CHANNEL_WEIGHTS)
     status = _weighted_choice(rnd, _STATUS_WEIGHTS)
-    dealer = rnd.choice(_DEALERS)
+    # Minority, not every case -- see DEALER_ESCALATION_RATE.
+    dealer = rnd.choice(_DEALERS) if rnd.random() < DEALER_ESCALATION_RATE else None
     first_name = contact.name.removeprefix("[DEMO] ").split(" ")[0]
     messages = _make_messages(case_type, concern, contact.vehicle_model, first_name)
     return DemoCase(
@@ -326,14 +370,26 @@ def generate(count: int, batch_id: str, seed: int = 20260804) -> tuple[list[Demo
     """Generate `count` demo contacts, their cases and a handful of RSA
     incidents that reuse real plates from those contacts.
 
-    Deterministic for a given (count, batch_id-independent) seed: two calls
-    with the same seed produce byte-identical contacts. `batch_id` is
-    encoded into every RSA incident payload's `created_by` field (see
-    `_make_rsa_incident`) for Task 2's purge guard; contact and case objects
-    don't need it here since Task 2 stamps `custom_attributes.demo_seed`
-    when it creates the corresponding Chatwoot objects.
+    Deterministic **per batch**: two calls with the same `(count, batch_id,
+    seed)` produce byte-identical contacts. `batch_id` is mixed into the RNG
+    seed rather than only travelling in the RSA payloads, because phones,
+    emails and plates are unique *per Chatwoot account*: seeding the same
+    tenant twice at the default `seed` used to regenerate the identical first
+    contact, whose `create_contact` then 422'd on the duplicate phone and
+    killed the run. The runbook's own advice ("seed a small count first and
+    watch, then go to 100") is exactly that sequence, so it has to work.
+    Per-batch determinism is all the purge/backdate guards actually require --
+    they key on `batch_id`, never on "the same seed twice".
+
+    `batch_id` is additionally encoded into every RSA incident payload's
+    `created_by` field (see `_make_rsa_incident`) for Task 2's purge guard;
+    contact and case objects don't need it there since Task 2 stamps
+    `custom_attributes.demo_seed` when it creates the corresponding Chatwoot
+    objects.
     """
-    rnd = random.Random(seed)
+    # `random.Random` seeds from a str via version-2 hashing (stable across
+    # runs and interpreters, unlike `hash()`), so this stays reproducible.
+    rnd = random.Random(f"{seed}:{batch_id}")
     now = datetime.now(timezone.utc)
 
     used_phones: set[str] = set()

@@ -7,7 +7,7 @@ import collections
 import json
 import re
 
-from generator import generate
+from generator import canonical_division, generate
 
 MODELS = {"e.MAS 5", "e.MAS 7", "e.MAS 7 PHEV", "NA"}
 DIVISIONS = {"Sales", "After Sales", "Apps", "Charging", "Product", "Marketing", "Others"}
@@ -65,6 +65,54 @@ def test_generation_is_deterministic():
     a, _, _ = generate(count=30, batch_id="b1")
     b, _, _ = generate(count=30, batch_id="b1")
     assert [c.phone for c in a] == [c.phone for c in b]
+
+
+def test_two_batches_never_generate_colliding_identities():
+    # Chatwoot enforces phone/email/plate uniqueness per ACCOUNT, so seeding
+    # the same tenant twice at the default --rng-seed used to regenerate the
+    # identical first contact and 422 on create -- killing the run. The
+    # runbook's own guidance ("seed a small count first and watch, then go to
+    # 100") is exactly that sequence, so batch_id has to be part of the seed.
+    a, _, _ = generate(count=30, batch_id="b1")
+    b, _, _ = generate(count=30, batch_id="b2")
+    assert not ({c.phone for c in a} & {c.phone for c in b})
+    assert not ({c.email for c in a} & {c.email for c in b})
+    assert not ({c.vehicle_no for c in a} & {c.vehicle_no for c in b})
+
+
+def test_only_a_minority_of_cases_are_dealer_escalated():
+    # Spec §3: "a minority of cases escalated so dealer TAT reporting has
+    # rows". Every case having a dealer makes the dealer-TAT view meaningless
+    # (it is then just "all cases") -- but zero would leave it empty.
+    _, cases, _ = generate(count=100, batch_id="b1")
+    with_dealer = [c for c in cases if c.dealer]
+    assert with_dealer, "dealer TAT reporting needs at least some escalated cases"
+    assert len(with_dealer) < len(cases) / 2
+
+
+def test_canonical_division_matches_the_warehouse_vocabulary():
+    # backend/.../metrics/mapping.py's CATEGORY_TO_DIVISION values, which the
+    # live label writer (adapters/chatwoot.py::_classification_labels) feeds
+    # from. A seeded "After Sales" that stays "After Sales" would land in its
+    # own report bucket beside real traffic's "Aftersales".
+    category_to_division_values = {
+        "Apps", "Sales", "Aftersales", "Charging", "Product", "Marketing", "Others",
+    }
+    for division in DIVISIONS:
+        assert canonical_division(division) in category_to_division_values
+    assert canonical_division("After Sales") == "Aftersales"
+    # Every canonical name must also be a KEY of CATEGORY_TO_DIVISION when
+    # lowercased, because that is how mapping.py resolves case_category.
+    category_to_division_keys = {
+        "apps", "app", "sales", "lead", "aftersales", "service",
+        "charging", "charger", "product", "marketing", "others",
+    }
+    for division in DIVISIONS:
+        assert canonical_division(division).lower() in category_to_division_keys
+
+
+def test_unknown_divisions_pass_through_canonicalisation_unchanged():
+    assert canonical_division("Something New") == "Something New"
 
 
 def test_rsa_incidents_reuse_real_plates():

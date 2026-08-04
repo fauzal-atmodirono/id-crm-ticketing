@@ -1,6 +1,6 @@
-From 239e312887e47b8f01e58ef27cb2bfb59ddba438 Mon Sep 17 00:00:00 2001
+From abe70c0f8650dccbffaa92010c1e9db56d521714 Mon Sep 17 00:00:00 2001
 From: Yuda Adi Pratama <yudaadipratama@Yudas-MacBook-Air.local>
-Date: Tue, 4 Aug 2026 16:54:26 +0700
+Date: Tue, 4 Aug 2026 17:46:01 +0700
 Subject: [PATCH] feat(chatwoot-fork): Cases list with the client's WIP-table
  columns
 MIME-Version: 1.0
@@ -21,32 +21,38 @@ dealer. Legacy conversations lacking any of these fields render a blank
 
 - app/javascript/dashboard/api/protonCases.js — data access: paginates
   Chatwoot's own /conversations endpoint and maps each conversation to a
-  case row. No useProtonConfig/backend dependency.
+  case row. No useProtonConfig/backend dependency. Caps at MAX_PAGES (1,000
+  conversations); fetchAllCases() now returns { rows, truncated,
+  fetchedCount, totalCount } so callers can tell when that cap — not the
+  ordinary end of the list — is what stopped paging.
 - app/javascript/dashboard/components/widgets/ProtonCasesTable.vue — the
   reusable table + filters, kept separate from the page so Package E's
   reporting pages can reuse it against their own case rows.
 - app/javascript/dashboard/views/ProtonCasesPage.vue — thin page shell
-  (mirrors ProtonRsaPage.vue / ProtonCustomer360Page.vue).
+  (mirrors ProtonRsaPage.vue / ProtonCustomer360Page.vue). Renders the
+  core amber Banner component when fetchAllCases() reports truncated, so
+  a capped list reads as visibly partial instead of silently hiding cases
+  past the 1,000-conversation limit.
 - dashboard.routes.js / Sidebar.vue — proton/cases route + nav entry,
   gated on the existing customer360.view permission (there's no backend
   require_permission route to match, since this reads Chatwoot directly).
 ---
- app/javascript/dashboard/api/protonCases.js   | 159 +++++++++++
+ app/javascript/dashboard/api/protonCases.js   | 179 ++++++++++++
  .../components-next/sidebar/Sidebar.vue       |  15 +
  .../components/widgets/ProtonCasesTable.vue   | 260 ++++++++++++++++++
  .../routes/dashboard/dashboard.routes.js      |   9 +-
- .../dashboard/views/ProtonCasesPage.vue       |  61 ++++
- 5 files changed, 503 insertions(+), 1 deletion(-)
+ .../dashboard/views/ProtonCasesPage.vue       |  88 ++++++
+ 5 files changed, 550 insertions(+), 1 deletion(-)
  create mode 100644 app/javascript/dashboard/api/protonCases.js
  create mode 100644 app/javascript/dashboard/components/widgets/ProtonCasesTable.vue
  create mode 100644 app/javascript/dashboard/views/ProtonCasesPage.vue
 
 diff --git a/app/javascript/dashboard/api/protonCases.js b/app/javascript/dashboard/api/protonCases.js
 new file mode 100644
-index 0000000..21a95e0
+index 0000000..d2e5197
 --- /dev/null
 +++ b/app/javascript/dashboard/api/protonCases.js
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,179 @@
 +// protonCases.js — OUR file. Data access for the Cases list (Package D,
 +// Task 5): reads existing Chatwoot conversation data straight off Chatwoot's
 +// own `/conversations` endpoint (dashboard/api/inbox/conversation.js).
@@ -58,7 +64,8 @@ index 0000000..21a95e0
 +// Package E's reporting pages should reuse `fetchAllCases` /
 +// `mapConversationToCaseRow` here (and `ProtonCasesTable.vue`) rather than
 +// re-implementing the pagination / row-mapping logic — that's the seam this
-+// task was asked to leave.
++// task was asked to leave. Note `fetchAllCases` returns an object (`rows` +
++// the truncation fields below), not a bare array — read `.rows`.
 +//
 +// Field provenance (see backend/apps/backend/src/chatbot/features/metrics/
 +// mapping.py and deploy/scripts/seed_demo_data/client.py for what actually
@@ -187,11 +194,25 @@ index 0000000..21a95e0
 +// uses) and maps each to a case row. Paginates sequentially rather than in
 +// parallel: page count isn't known up front, and this is a manually
 +// triggered admin-page load, not a hot path.
++//
++// Returns { rows, truncated, fetchedCount, totalCount } rather than a bare
++// array. `truncated` is true only when paging stopped *because MAX_PAGES was
++// reached* while Chatwoot reported more conversations than we'd fetched —
++// not for the ordinary case where paging finishes on its own. A silently
++// incomplete Cases list is worse than a bounded one, so the page (not this
++// module) is expected to surface `truncated` to the user rather than just
++// showing "N of N cases" over a partial `rows`.
 +export async function fetchAllCases() {
 +  const rows = [];
 +  let page = 1;
 +  let keepGoing = true;
-+  while (keepGoing && page <= MAX_PAGES) {
++  let allCount = 0;
++  let hitPageCap = false;
++  while (keepGoing) {
++    if (page > MAX_PAGES) {
++      hitPageCap = true;
++      break;
++    }
 +    // eslint-disable-next-line no-await-in-loop
 +    const response = await ConversationApi.get({ status: 'all', page });
 +    const body = (response && response.data && response.data.data) || {};
@@ -199,12 +220,17 @@ index 0000000..21a95e0
 +    payload.forEach(conversation => {
 +      rows.push(mapConversationToCaseRow(conversation));
 +    });
-+    const allCount = (body.meta && body.meta.all_count) || 0;
++    allCount = (body.meta && body.meta.all_count) || 0;
 +    const fetchedSoFar = page * RESULTS_PER_PAGE;
 +    keepGoing = payload.length > 0 && fetchedSoFar < allCount;
 +    page += 1;
 +  }
-+  return rows;
++  return {
++    rows,
++    fetchedCount: rows.length,
++    totalCount: allCount,
++    truncated: hitPageCap && rows.length < allCount,
++  };
 +}
 diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
 index 8d1a7b7..0d5196e 100644
@@ -527,10 +553,10 @@ index 805d479..ad5533d 100644
          ...settings.routes,
 diff --git a/app/javascript/dashboard/views/ProtonCasesPage.vue b/app/javascript/dashboard/views/ProtonCasesPage.vue
 new file mode 100644
-index 0000000..2f612f9
+index 0000000..05ad61f
 --- /dev/null
 +++ b/app/javascript/dashboard/views/ProtonCasesPage.vue
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,88 @@
 +<!-- ProtonCasesPage.vue — OUR file. The Cases list: one filterable table
 +     over existing Chatwoot conversation data (Package D, Task 5). No new
 +     backend storage and no new backend endpoint — protonCases.js reads what
@@ -538,20 +564,34 @@ index 0000000..2f612f9
 +     the data load; ProtonCasesTable.vue (components/widgets/) owns the
 +     table + filters and is the piece Package E reuses. Mirrors
 +     ProtonRsaPage.vue / ProtonCustomer360Page.vue's shell (header, n-*
-+     tokens, useAlert toasts). -->
++     tokens, useAlert toasts).
++
++     `fetchAllCases` caps itself at MAX_PAGES (1,000 conversations) so one
++     page load can't turn into an unbounded number of sequential requests.
++     When that cap is what stopped paging — not the ordinary "ran out of
++     conversations" case — this page (not ProtonCasesTable, which Package E
++     reuses as-is) surfaces it via the same amber `Banner` core Chatwoot
++     already uses for other "there's more than we're showing you" cases
++     (e.g. Captain's document/response LimitBanner). A Cases list that
++     silently hides cases past the cap is worse than one that tells you
++     it's partial. -->
 +<script>
 +import { useAlert } from 'dashboard/composables';
 +import { fetchAllCases } from 'dashboard/api/protonCases';
 +import ProtonCasesTable from 'dashboard/components/widgets/ProtonCasesTable.vue';
++import Banner from 'dashboard/components-next/banner/Banner.vue';
 +
 +export default {
 +  name: 'ProtonCasesPage',
-+  components: { ProtonCasesTable },
++  components: { ProtonCasesTable, Banner },
 +  data() {
 +    return {
 +      cases: [],
 +      loading: true,
 +      errored: false,
++      truncated: false,
++      fetchedCount: 0,
++      totalCount: 0,
 +    };
 +  },
 +  async mounted() {
@@ -562,7 +602,12 @@ index 0000000..2f612f9
 +      this.loading = true;
 +      this.errored = false;
 +      try {
-+        this.cases = await fetchAllCases();
++        const { rows, truncated, fetchedCount, totalCount } =
++          await fetchAllCases();
++        this.cases = rows;
++        this.truncated = truncated;
++        this.fetchedCount = fetchedCount;
++        this.totalCount = totalCount;
 +      } catch (err) {
 +        this.errored = true;
 +        useAlert('Failed to load cases: ' + (err.message || String(err)));
@@ -589,7 +634,15 @@ index 0000000..2f612f9
 +    <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">
 +      Could not load cases.
 +    </div>
-+    <ProtonCasesTable v-else :cases="cases" />
++    <template v-else>
++      <Banner v-if="truncated" color="amber" class="mb-4">
++        Showing the first {{ fetchedCount }} of {{ totalCount }} cases. This
++        list stops loading after {{ fetchedCount }} conversations, so
++        {{ totalCount - fetchedCount }} more exist but are not shown here or
++        included in the filters below.
++      </Banner>
++      <ProtonCasesTable :cases="cases" />
++    </template>
 +  </div>
 +</template>
 -- 

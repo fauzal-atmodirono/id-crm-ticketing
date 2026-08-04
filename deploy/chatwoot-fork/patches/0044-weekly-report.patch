@@ -1645,10 +1645,10 @@ index 1c53ba7..a7a1888 100644
      <woot-loading-state
 diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/reportScope.js b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/reportScope.js
 new file mode 100644
-index 0000000..b4919e3
+index 0000000..92677e7
 --- /dev/null
 +++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/reportScope.js
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,97 @@
 +// reportScope.js — OUR file. Shared vocabulary for Package E's Weekly Report
 +// (Task 4) so every section on the page describes its own data the same way.
 +//
@@ -1667,12 +1667,13 @@ index 0000000..b4919e3
 +// `BlockScope` at all -- either because the endpoint has no date dimension to
 +// filter on (departments, callcenter, dealer-escalation, sla-buckets,
 +// case-aging all 400 if given period params -- see insights_router.py's
-+// docstring) or because the HTTP route never wires up from/to/granularity in
-+// the first place (/metrics/dashboard -- see protonMetrics.js's getDashboard
-+// comment). Both are reported here as the literal status "unfiltered": the
-+// row data is real, it just is not scoped to the selected week, exactly the
-+// same as a genuine BlockScope("unfiltered") the backend would attach to a
-+// block with no date column.
++// docstring) or because this page chooses not to call the endpoint with a
++// period even though the HTTP route now supports one (/metrics/dashboard --
++// see protonMetrics.js's getDashboard comment). Both are reported here as
++// the literal status "unfiltered": the row data is real, it just is not
++// scoped to the selected week, exactly the same as a genuine
++// BlockScope("unfiltered") the backend would attach to a block with no date
++// column.
 +export const SCOPE_STATUS = {
 +  OK: 'ok',
 +  UNAVAILABLE: 'unavailable',

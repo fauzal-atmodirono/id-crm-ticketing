@@ -1289,3 +1289,60 @@ def test_fallback_still_hides_scopes_from_the_no_period_json_shape() -> None:
     exactly the deployments that are already misconfigured."""
     payload = asdict(asyncio.run(MockMetricsQuery(degraded=True).fetch_dashboard()))
     assert "scopes" not in payload
+
+
+def test_fallback_after_failed_client_init_returns_empty_for_the_five_unscoped_methods(
+    monkeypatch,
+) -> None:
+    """`fetch_departments`/`fetch_callcenter`/`fetch_dealer_escalation`/
+    `fetch_sla_buckets`/`fetch_case_aging` have no scopes channel and can't
+    gain one without changing the response shape the deployed SPA already
+    reads. On the degraded fallback path they must return empty lists
+    instead of the canned rows -- five Weekly Report sections rendering
+    "no data" is the honest failure mode; five tables of someone else's
+    fabricated figures under an "All time" badge is not."""
+
+    def _boom(_settings):
+        raise RuntimeError("could not create bigquery client")
+
+    monkeypatch.setattr("chatbot.features.metrics.query_adapter.BigQueryMetricsQuery", _boom)
+    port = build_metrics_query_port(Settings(metrics_provider="bigquery"))
+
+    departments = asyncio.run(port.fetch_departments())
+    callcenter = asyncio.run(port.fetch_callcenter())
+    dealer_escalation = asyncio.run(port.fetch_dealer_escalation())
+    sla_buckets = asyncio.run(port.fetch_sla_buckets())
+    case_aging = asyncio.run(port.fetch_case_aging())
+
+    assert departments == DepartmentsMetrics(dept_pic=[], reopen=[], category_by_vehicle_model=[])
+    assert callcenter == CallCentreMetrics(
+        sla=[],
+        tasks_per_agent=[],
+        first_response=[],
+        resolution_time=[],
+        complaint_types=[],
+        peak_hours=[],
+        nps_by_agent=[],
+    )
+    assert dealer_escalation == DealerEscalationMetrics(by_dealer=[], slowest_cases=[])
+    assert sla_buckets == SlaBucketMetrics(buckets=[])
+    assert case_aging == CaseAgingMetrics(cases=[])
+
+
+def test_deliberate_mock_provider_still_returns_canned_rows_for_the_five_unscoped_methods() -> None:
+    """The degraded-only empty-list behaviour must not leak into the
+    deliberate-mock path (`metrics_provider != "bigquery"`) -- those rows
+    are still the intended dev/test answer, unchanged by this fix."""
+    port = build_metrics_query_port(Settings(metrics_provider="noop"))
+
+    departments = asyncio.run(port.fetch_departments())
+    callcenter = asyncio.run(port.fetch_callcenter())
+    dealer_escalation = asyncio.run(port.fetch_dealer_escalation())
+    sla_buckets = asyncio.run(port.fetch_sla_buckets())
+    case_aging = asyncio.run(port.fetch_case_aging())
+
+    assert departments.dept_pic and departments.reopen and departments.category_by_vehicle_model
+    assert callcenter.sla and callcenter.tasks_per_agent and callcenter.nps_by_agent
+    assert dealer_escalation.by_dealer and dealer_escalation.slowest_cases
+    assert sla_buckets.buckets
+    assert case_aging.cases

@@ -495,10 +495,23 @@ class MockMetricsQuery:
     are canned either way. `scopes` is the only channel that can say so,
     which is why it is not enough for this class to merely satisfy the
     Protocol's return type.
+
+    Five methods -- `fetch_departments`, `fetch_callcenter`,
+    `fetch_dealer_escalation`, `fetch_sla_buckets`, `fetch_case_aging` --
+    have no scopes channel at all (their `*Metrics` types carry no
+    `attach_scopes`/`scopes`), and giving them one would change the
+    response shape the deployed SPA already reads. So on `degraded=True`
+    they take the only honest option left: return their `*Metrics` with
+    every list empty instead of the canned rows, so a misconfigured
+    tenant's Weekly Report renders those five sections as "no data" rather
+    than as someone else's fabricated figures. `degraded=False` (the
+    deliberate-mock path) is unaffected -- those rows are still the
+    intended dev/test answer.
     """
 
     def __init__(self, *, degraded: bool = False) -> None:
         self._scope = _DEGRADED_SCOPE if degraded else _UNFILTERED_SCOPE
+        self._degraded = degraded
 
     async def fetch_anomalies(self) -> list[AnomalyRow]:
         return [
@@ -507,6 +520,8 @@ class MockMetricsQuery:
         ]
 
     async def fetch_departments(self) -> DepartmentsMetrics:
+        if self._degraded:
+            return DepartmentsMetrics(dept_pic=[], reopen=[], category_by_vehicle_model=[])
         return DepartmentsMetrics(
             dept_pic=[DeptPicRow("Aftersales", "Ali", 40, 12.0, 240.0, 0.9)],
             reopen=[ReopenRow("Dealer KL", "Aftersales", "Ali", 40, 4, 0.1)],
@@ -516,6 +531,16 @@ class MockMetricsQuery:
         )
 
     async def fetch_callcenter(self) -> CallCentreMetrics:
+        if self._degraded:
+            return CallCentreMetrics(
+                sla=[],
+                tasks_per_agent=[],
+                first_response=[],
+                resolution_time=[],
+                complaint_types=[],
+                peak_hours=[],
+                nps_by_agent=[],
+            )
         return CallCentreMetrics(
             sla=[SlaAchievementRow("Phone", "Sales", 100, 95, 0.95)],
             tasks_per_agent=[TasksPerAgentRow("ALI001", "Ali", 50, 8.5, 180.0, 48)],
@@ -615,12 +640,16 @@ class MockMetricsQuery:
         return metrics
 
     async def fetch_dealer_escalation(self) -> DealerEscalationMetrics:
+        if self._degraded:
+            return DealerEscalationMetrics(by_dealer=[], slowest_cases=[])
         return DealerEscalationMetrics(
             by_dealer=[DealerEscalationRow("Dealer KL", 12, 3.5, 3.0, 6.0)],
             slowest_cases=[DealerSlowCaseRow("CONV042", "Dealer KL", 12.0)],
         )
 
     async def fetch_sla_buckets(self) -> SlaBucketMetrics:
+        if self._degraded:
+            return SlaBucketMetrics(buckets=[])
         return SlaBucketMetrics(
             buckets=[
                 SlaBucketRow("Inquiry", "Within 8wh", 887),
@@ -631,6 +660,8 @@ class MockMetricsQuery:
         )
 
     async def fetch_case_aging(self) -> CaseAgingMetrics:
+        if self._degraded:
+            return CaseAgingMetrics(cases=[])
         return CaseAgingMetrics(
             cases=[
                 CaseAgingRow(

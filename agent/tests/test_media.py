@@ -88,3 +88,16 @@ async def test_fetch_attachment_bytes_real_content_type_wins_over_hint():
     )
     result = await fetch_attachment_bytes("https://cdn.example.com/photo.png", file_type_hint="audio")
     assert result == (b"png-bytes", "image/png")
+
+
+@respx.mock
+async def test_fetch_video_falls_back_to_mp4_when_content_type_generic():
+    respx.get("http://cw/v.bin").mock(
+        return_value=httpx.Response(
+            200, content=b"\x00\x00\x00\x18ftypmp42", headers={"content-type": "application/octet-stream"}
+        )
+    )
+    result = await fetch_attachment_bytes("http://cw/v.bin", file_type_hint="video")
+    assert result is not None
+    data, mime = result
+    assert mime == "video/mp4"

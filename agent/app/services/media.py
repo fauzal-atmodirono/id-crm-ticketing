@@ -29,6 +29,9 @@ _GENERIC_CONTENT_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
 _FILE_TYPE_MIME_DEFAULTS = {
     "audio": "audio/ogg",
     "image": "image/jpeg",
+    # WhatsApp/Twilio deliver customer videos as MP4; used only when the
+    # response Content-Type is missing or generic.
+    "video": "video/mp4",
 }
 
 

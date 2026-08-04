@@ -9,9 +9,12 @@ access token sent as the `api_access_token` header.
 used only for one-time setup (registering the agent bot).
 """
 
+import logging
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class ChatwootClient:
@@ -162,12 +165,17 @@ class ChatwootClient:
         value first when it wants to preserve one (see
         `categorize.maybe_categorize` and `maybe_stamp_dealer_escalation`).
 
-        If the GET fails we fall back to posting just `attributes` (writing
-        the new keys rather than nothing), matching `add_labels`' fail-open
-        posture: these are best-effort background-task writes, and a read
-        failure must not turn into "the attribute never gets set".
+        If the GET fails, we do NOT fall back to `add_labels`' fail-open
+        posture of posting just `attributes`. Unlike the labels endpoint,
+        this one assigns the whole object of record, so posting a partial
+        `attributes` dict on a failed read would silently wipe every other
+        key — the exact clobber this merge was written to prevent, just
+        narrowed to the read-failure window. Losing this one write is
+        recoverable (a later call re-establishes it); clearing a real
+        conversation's `demo_seed`/`case_category`/`vehicle_model` is not.
+        So: log and return without writing. The caller (a background task)
+        must still never see an exception out of this.
         """
-        current: dict = {}
         try:
             resp = await self._client.get(
                 f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}"
@@ -175,10 +183,15 @@ class ChatwootClient:
             resp.raise_for_status()
             data = resp.json()
             existing = data.get("custom_attributes") if isinstance(data, dict) else None
-            if isinstance(existing, dict):
-                current = existing
+            current = existing if isinstance(existing, dict) else {}
         except Exception:
-            current = {}
+            logger.warning(
+                "set_custom_attributes: GET failed for conversation %s, skipping write "
+                "to avoid clobbering existing custom_attributes (endpoint replaces, "
+                "not merges)",
+                conversation_id,
+            )
+            return None
         merged = {**current, **attributes}
         response = await self._client.post(
             f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}/custom_attributes",

@@ -58,6 +58,11 @@ async def test_set_custom_attributes_posts_body():
 # lifecycle._mirror_state and categorize, and it wiped the demo seeder's
 # demo_seed marker off every seeded conversation (via
 # sync.maybe_stamp_dealer_escalation) as soon as its labels were posted.
+#
+# A read failure must not be treated as "no existing attributes": posting
+# just the new keys in that case is the same clobber, narrowed to the
+# read-failure window. So a failed GET skips the write entirely -- see
+# test_set_custom_attributes_skips_the_write_entirely_when_the_read_fails.
 
 
 @respx.mock
@@ -112,9 +117,12 @@ async def test_set_custom_attributes_new_values_win_on_conflict():
 
 
 @respx.mock
-async def test_set_custom_attributes_falls_back_to_the_new_keys_when_the_read_fails():
-    # Same fail-open posture as add_labels: a read failure must not turn into
-    # "the attribute never gets set" for a best-effort background write.
+async def test_set_custom_attributes_skips_the_write_entirely_when_the_read_fails():
+    # Unlike add_labels, this endpoint REPLACES the whole object of record.
+    # Falling back to posting just `attributes` on a failed read (the old
+    # behaviour) would wipe every other key -- the exact clobber the merge
+    # exists to prevent, just narrowed to the read-failure window. So a
+    # failed GET must skip the write entirely, not post a partial object.
     respx.get(f"{BASE}/api/v1/accounts/1/conversations/9").mock(
         return_value=httpx.Response(500, json={"error": "boom"})
     )
@@ -122,10 +130,9 @@ async def test_set_custom_attributes_falls_back_to_the_new_keys_when_the_read_fa
         f"{BASE}/api/v1/accounts/1/conversations/9/custom_attributes"
     ).mock(return_value=httpx.Response(200, json={"ok": True}))
     client = _client()
-    await client.set_custom_attributes(9, {"lifecycle_state": "idle_warned"})
-    import json as _json
-    body = _json.loads(route.calls.last.request.content)
-    assert body == {"custom_attributes": {"lifecycle_state": "idle_warned"}}
+    result = await client.set_custom_attributes(9, {"lifecycle_state": "idle_warned"})
+    assert result is None
+    assert route.calls.call_count == 0
     await client.aclose()
 
 

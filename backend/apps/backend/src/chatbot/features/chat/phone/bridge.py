@@ -31,11 +31,12 @@ if TYPE_CHECKING:
 
 _log = structlog.get_logger(__name__)
 
-# Cap on waiting for the flush worker to drain in finalize(): each queued
-# block is one Chatwoot HTTP call at the adapter's own 10s timeout, and
-# finalize() runs on the websocket teardown path -- without a ceiling, a
-# blackholed Chatwoot at hangup would hold that path open for 10s per queued
-# block instead of ~10s total.
+# Cap on the two things finalize() awaits on the websocket teardown path: the
+# in-flight call-start ticket-create task, and the flush-worker drain. Both
+# are, worst case, a handful of sequential Chatwoot HTTP calls at the
+# adapter's own 10s-per-call timeout -- without a ceiling, a blackholed
+# Chatwoot at hangup could hold the teardown path open for 10s per queued
+# block (or ~30s for the ticket create alone) instead of bounded to this.
 _FLUSH_DRAIN_TIMEOUT_SECONDS = 10.0
 
 
@@ -85,6 +86,16 @@ class PhoneBridge:
         # posting the whole transcript a second time when it's already in
         # the ticket turn-by-turn.
         self._live_blocks_posted = False
+        # True once ANY live block failed to post (exception, a non-OK
+        # ConversationLogResult, or no ticket to post to). Deliberately
+        # tracked SEPARATELY from _live_blocks_posted: some blocks can
+        # succeed while another fails (e.g. a transient blip mid-call), and
+        # in that case the failed turn would be permanently missing from
+        # the ticket if finalize() trusted _live_blocks_posted alone and
+        # skipped the full-transcript fallback. One duplicated transcript
+        # on a degraded call is a far better outcome than a silently
+        # missing turn on a customer's record.
+        self._live_blocks_failed = False
 
     async def handle_twilio(self, msg: dict[str, object]) -> None:
         event = msg.get("event")
@@ -144,6 +155,20 @@ class PhoneBridge:
         repeating the failure forever. Treating that truthy-but-fake id as a
         real ticket would silently stream every live block at a conversation
         that doesn't exist, so it's treated identically to an exception.
+
+        (This sentinel check is inherently adapter-specific -- a different
+        ``ConversationLogPort`` implementation that fails open to some other
+        fixed placeholder id, rather than echoing ``session_id``, wouldn't be
+        caught by an ``== session_id`` comparison. Known and accepted for
+        now: the port protocol doesn't standardize a failure sentinel, and
+        ``ChatwootAdapter`` is the only implementation this ships against.)
+
+        Deliberately excluded from that error path: Chatwoot being
+        DELIBERATELY disabled (``chatwoot_enabled=False``, e.g. a
+        phone-only tenant with no Chatwoot integration at all) also returns
+        this sentinel, but is expected, quiet behaviour, not a failure --
+        logging it at ERROR would fire on every single call for such a
+        tenant and look like a standing outage.
         """
         session_id = f"phone-{call_sid}"
         try:
@@ -157,11 +182,14 @@ class PhoneBridge:
             _log.error("phone_ticket_create_failed", session_id=session_id, error=str(e))
             return
         if ticket_id == session_id:
-            _log.error(
-                "phone_ticket_create_failed",
-                session_id=session_id,
-                error="log port returned the session_id sentinel (create failed, fail-open)",
-            )
+            if self._settings.chatwoot_enabled:
+                _log.error(
+                    "phone_ticket_create_failed",
+                    session_id=session_id,
+                    error="log port returned the session_id sentinel (create failed, fail-open)",
+                )
+            else:
+                _log.info("phone_ticket_create_skipped_chatwoot_disabled", session_id=session_id)
             return
         self.ticket_id = ticket_id
 
@@ -211,16 +239,19 @@ class PhoneBridge:
                 # returning here would leave this and every later queued
                 # block stuck behind a worker that's already exited.
                 _log.error("phone_transcript_flush_no_ticket", call_sid=self.call_sid, block=block)
+                self._live_blocks_failed = True
                 continue
             try:
                 result = await self._log_port.append_conversation_comment(ticket_id, block)
             except Exception as e:
                 _log.error("phone_transcript_flush_failed", call_sid=self.call_sid, error=str(e))
+                self._live_blocks_failed = True
                 continue
             if result != ConversationLogResult.OK:
                 _log.error(
                     "phone_transcript_flush_failed", call_sid=self.call_sid, result=str(result)
                 )
+                self._live_blocks_failed = True
                 continue
             self._live_blocks_posted = True
 
@@ -294,29 +325,43 @@ class PhoneBridge:
             if self._settings.phone_transcript_live_enabled:
                 self._poll_transcript_flush()
 
-    async def finalize(self) -> None:
-        # Settle any in-flight call-start ticket creation FIRST (it's a
-        # detached task -- see handle_twilio) so self.ticket_id reflects its
-        # outcome before we decide whether there's anywhere to flush the
-        # trailing sink content to, and before the ticket-id fallback below
-        # runs. _create_ticket_at_start never raises out of itself, but this
-        # is still wrapped defensively -- finalize() is the last-resort path
-        # that must get to the summary/status update below no matter what.
-        if self._ticket_create_task is not None:
-            try:
-                await self._ticket_create_task
-            except Exception as e:
-                _log.error(
-                    "phone_finalize_ticket_task_failed", call_sid=self.call_sid, error=str(e)
-                )
+    async def _settle_ticket_create_task(self) -> None:
+        """Await any in-flight call-start ticket-create task (see
+        handle_twilio) so self.ticket_id reflects its outcome before
+        finalize() decides whether to reuse it or fall back to creating one
+        itself. _create_ticket_at_start never raises out of itself, but
+        this is still wrapped defensively -- finalize() is the last-resort
+        path that must reach the summary/status update below no matter
+        what. Bounded the same way as the flush-worker drain: an unbounded
+        wait here could hold the websocket teardown path (and the Gemini
+        Live session under it) open for however long a blackholed Chatwoot
+        takes on a call that hung up before its own call-start create
+        finished -- worst case the ~30s several-sequential-HTTP-call path
+        described in _create_ticket_at_start's docstring.
+        """
+        if self._ticket_create_task is None:
+            return
+        try:
+            await asyncio.wait_for(self._ticket_create_task, timeout=_FLUSH_DRAIN_TIMEOUT_SECONDS)
+        except Exception as e:
+            _log.error("phone_finalize_ticket_task_failed", call_sid=self.call_sid, error=str(e))
 
-        # Force out whatever's left in the live-transcript sink (a partial
-        # turn, or something that hadn't hit the flush interval yet) BEFORE
-        # the whole-transcript summary comment below, so streamed blocks and
-        # the final summary land in speaking order. The sink itself is
-        # idempotent -- take_if_due() empties what it returns -- so nothing
-        # posted live gets posted again here. A call that ends before anyone
-        # spoke leaves the sink empty, so this is a no-op (no blank post).
+    async def _drain_flush_queue(self) -> None:
+        """Force out whatever's left in the live-transcript sink (a partial
+        turn, or something that hadn't hit the flush interval yet) BEFORE
+        the closing comment below, so streamed blocks and the closing
+        comment land in speaking order. The sink itself is idempotent --
+        take_if_due() empties what it returns -- so nothing posted live
+        gets posted again here. A call that ends before anyone spoke leaves
+        the sink empty, so this is a no-op (no blank post).
+
+        Never let a slow drain or a worker failure skip the summary/status
+        update in finalize() -- that's the last-resort guarantee that the
+        call gets recorded at all. Bounded wait: each queued block is one
+        HTTP call at the adapter's own 10s timeout, so an unbounded await
+        here could hold the websocket teardown path open for 10s per
+        queued block.
+        """
         final_block = self._sink.take_if_due(force=True)
         if final_block is not None and self.ticket_id is not None:
             self._flush_queue.put_nowait(final_block)
@@ -324,19 +369,52 @@ class PhoneBridge:
             self._flush_worker is None or self._flush_worker.done()
         ):
             self._flush_worker = asyncio.create_task(self._run_flush_worker())
-        if self._flush_worker is not None:
-            # Never let a slow drain or a worker failure skip the summary/
-            # status update below -- that's the last-resort guarantee that
-            # the call gets recorded at all. Bounded wait: each queued block
-            # is one HTTP call at the adapter's own 10s timeout, so an
-            # unbounded await here could hold the websocket teardown path
-            # open for 10s per queued block.
-            try:
-                await asyncio.wait_for(self._flush_worker, timeout=_FLUSH_DRAIN_TIMEOUT_SECONDS)
-            except Exception as e:
-                _log.error(
-                    "phone_finalize_flush_drain_failed", call_sid=self.call_sid, error=str(e)
-                )
+        if self._flush_worker is None:
+            return
+        try:
+            await asyncio.wait_for(self._flush_worker, timeout=_FLUSH_DRAIN_TIMEOUT_SECONDS)
+        except Exception as e:
+            _log.error("phone_finalize_flush_drain_failed", call_sid=self.call_sid, error=str(e))
+
+    async def _resolve_finalize_ticket_id(self, session_id: str, body: str) -> str | None:
+        """Return the ticket id finalize() should post the closing
+        comment(s) to, or ``None`` if it should give up (already logged).
+
+        Reuses ``self.ticket_id`` when the call-start create already
+        succeeded; ``ensure_conversation_ticket`` is keyed on session_id
+        anyway, so calling it again here would be safe too -- this just
+        skips a redundant lookup on the common path. Otherwise falls back
+        to creating one now, with the SAME sentinel check as
+        ``_create_ticket_at_start`` (Critical 1): a failed create here also
+        fails open to ``session_id`` itself rather than raising, and that
+        truthy-but-fake id must not be adopted as real -- every subsequent
+        call would then silently 404 against a conversation that doesn't
+        exist, discarding the whole transcript with nothing left to look
+        at but a log line. When that happens, the full transcript is
+        logged alongside it so the call is at least recoverable from logs.
+        """
+        if self.ticket_id is not None:
+            return self.ticket_id
+        ticket_id = await self._log_port.ensure_conversation_ticket(
+            session_id=session_id,
+            subject=f"[phone] Conversation {session_id}",
+            customer_name=None,
+            customer_phone=None,
+        )
+        if ticket_id == session_id:
+            _log.error(
+                "phone_finalize_failed",
+                session_id=session_id,
+                error="log port returned the session_id sentinel (create failed, fail-open)",
+                transcript=body,
+            )
+            return None
+        self.ticket_id = ticket_id
+        return ticket_id
+
+    async def finalize(self) -> None:
+        await self._settle_ticket_create_task()
+        await self._drain_flush_queue()
 
         if not self.transcript or not self.call_sid:
             return
@@ -344,34 +422,33 @@ class PhoneBridge:
         body = "\n".join(f"{role}: {text}" for role, text in self.transcript)
         status = "open" if self.handoff is not None else "solved"
         try:
-            # Reuse the ticket created at call start (Task 3) when we have
-            # one; ensure_conversation_ticket is keyed on session_id anyway,
-            # so calling it again here would be safe too -- this just skips
-            # a redundant lookup on the common path.
-            ticket_id = self.ticket_id or await self._log_port.ensure_conversation_ticket(
-                session_id=session_id,
-                subject=f"[phone] Conversation {session_id}",
-                customer_name=None,
-                customer_phone=None,
-            )
-            self.ticket_id = ticket_id
+            ticket_id = await self._resolve_finalize_ticket_id(session_id, body)
+            if ticket_id is None:
+                return
             if self.handoff is not None:
                 note = (
                     "[Handoff to human agent]\n"
                     f"{self.handoff.get('reason', '')}\n{self.handoff.get('summary', '')}"
                 )
                 await self._log_port.append_conversation_comment(ticket_id, note, status="open")
-            # With live streaming on and at least one block already
+            # With live streaming on, at least one block already
             # successfully posted (during pump() or the forced flush just
-            # above), the ticket already holds the transcript turn-by-turn --
-            # posting the whole joined transcript again here would show the
-            # agent the call twice. Post a short closing comment that still
-            # carries the status flip instead. When nothing was successfully
-            # posted live (flag off, ticket creation failed, Chatwoot down
-            # throughout, or a very short call that never hit a flush point),
-            # fall back to today's behaviour: the whole transcript is the
-            # only record, so it must still be posted in full.
-            if self._settings.phone_transcript_live_enabled and self._live_blocks_posted:
+            # above), AND none of them failed, the ticket already holds the
+            # COMPLETE transcript turn-by-turn -- posting the whole joined
+            # transcript again here would show the agent the call twice.
+            # Post a short closing comment that still carries the status
+            # flip instead. Otherwise -- nothing posted live at all (flag
+            # off, ticket creation failed, Chatwoot down throughout, a very
+            # short call that never hit a flush point), OR some blocks
+            # posted but at least one did NOT -- fall back to today's
+            # behaviour and post the whole transcript in full. A duplicated
+            # transcript on a degraded call is a far better outcome than a
+            # permanently missing turn on the customer's record.
+            if (
+                self._settings.phone_transcript_live_enabled
+                and self._live_blocks_posted
+                and not self._live_blocks_failed
+            ):
                 await self._log_port.append_conversation_comment(
                     ticket_id, "[Call ended]", status=status
                 )

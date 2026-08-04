@@ -3,6 +3,8 @@ import base64
 from collections.abc import AsyncIterator
 from typing import Any
 
+from structlog.testing import capture_logs
+
 import chatbot.features.chat.phone.bridge as bridge_module
 from chatbot.features.chat.models import KbArticle
 from chatbot.features.chat.phone.bridge import PhoneBridge
@@ -59,6 +61,10 @@ class _FakeLog:
         # blocks while leaving a differently-worded post (e.g. the joined
         # whole-transcript summary) free to succeed.
         self.comment_raises_for: set[str] = set()
+        # Same idea, but signals failure via the port's own return value
+        # (ConversationLogResult.FAILED) instead of raising -- mirrors
+        # ChatwootAdapter._request() swallowing a 404/5xx into `None`.
+        self.comment_fails_for: set[str] = set()
         self.external_ids: list[tuple[str, str]] = []
         self.tags: list[tuple[str, str]] = []
 
@@ -92,6 +98,8 @@ class _FakeLog:
     ) -> ConversationLogResult:
         if text in self.comment_raises_for:
             raise RuntimeError("chatwoot down")
+        if text in self.comment_fails_for:
+            return ConversationLogResult.FAILED
         self.comments.append((ticket_id, text, status))
         return ConversationLogResult.OK
 
@@ -736,3 +744,213 @@ async def test_finalize_does_not_hang_forever_if_the_flush_drain_stalls(monkeypa
     # Nothing was successfully posted live (the one attempt stalled and got
     # cancelled), so the fallback whole-transcript summary must still land.
     assert ("T-1", "USER: hi there\nASSISTANT: hello", "solved") in log.comments
+
+
+# --- Re-review round 2: C1 fallback, C2 loss window, I3/I4 coverage, I5 ---
+
+
+async def test_finalize_fallback_treats_sentinel_id_as_failure_and_logs_transcript() -> None:
+    """The Critical-1 sentinel check applies to finalize()'s OWN fallback
+    ticket creation too, not just _create_ticket_at_start: a failed create
+    at hangup time ALSO fails open to the session_id sentinel rather than
+    raising. Adopting it as real would silently post every subsequent call
+    (external_id, the summary comment...) against a conversation that
+    doesn't exist. On that path the transcript must be logged so the call
+    is at least recoverable from logs rather than silently gone."""
+    log = _FakeLog()
+    log.ensure_returns_sentinel = True
+    b = _bridge(_FakeLive([]), [], log, settings=Settings(_env_file=None))
+    b.call_sid = "C1"
+    b.transcript = [("USER", "hi there")]
+    with capture_logs() as captured:
+        await b.finalize()
+    assert log.comments == []  # nothing posted against the fake ticket
+    assert b.ticket_id is None  # sentinel not adopted as real
+    failed_entries = [e for e in captured if e["event"] == "phone_finalize_failed"]
+    assert any(e.get("transcript") == "USER: hi there" for e in failed_entries)
+
+
+async def test_finalize_falls_back_to_full_summary_when_call_start_ticket_creation_failed() -> None:
+    """C3 combination 3 (previously unpinned): flag on, the call-start
+    create fails (Chatwoot down for the whole call), finalize()'s own
+    fallback create succeeds once Chatwoot recovers -- the whole transcript
+    must be posted in full, not skipped as if it had already streamed."""
+    log = _FakeLog()
+    log.ensure_raises = RuntimeError("chatwoot down")
+    live = _FakeLive([InputTranscript("hi there")])
+    b = _bridge(
+        live,
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert b.ticket_id is None  # call-start create failed
+    await b.pump()  # nothing to flush live either -- there's still no ticket
+    log.ensure_raises = None  # Chatwoot recovers by the time finalize() runs
+    await b.finalize()
+    assert ("T-1", "USER: hi there", "solved") in log.comments
+
+
+async def test_flush_worker_failed_result_is_logged_and_not_counted_as_posted() -> None:
+    """append_conversation_comment can signal failure via its return value
+    (ConversationLogResult.FAILED) instead of raising -- e.g. Chatwoot
+    returning a 404 that _request() swallows into None. The worker must
+    treat that identically to an exception: log it, not set
+    _live_blocks_posted, and mark _live_blocks_failed so finalize() doesn't
+    wrongly skip the full-body summary for a block that never landed."""
+    live = _FakeLive([InputTranscript("hi there"), OutputTranscript("hello")])
+    log = _FakeLog()
+    log.comment_fails_for = {"USER: hi there"}
+    b = _bridge(
+        live,
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    b.ticket_id = "T-1"
+    with capture_logs() as captured:
+        await b.pump()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    assert log.comments == []  # FAILED result must not be recorded as a post
+    assert b._live_blocks_posted is False
+    assert b._live_blocks_failed is True
+    events = [e["event"] for e in captured]
+    assert "phone_transcript_flush_failed" in events
+
+
+async def test_finalize_falls_back_to_full_summary_when_any_live_block_failed_even_if_others_succeeded() -> (
+    None
+):
+    """Controller decision (revised rule): block 1 posts OK, block 2 fails,
+    block 3 posts OK -> _live_blocks_posted is True, but block 2's turn
+    would be permanently missing from the ticket if finalize() trusted
+    _live_blocks_posted alone and skipped the full-transcript fallback.
+    finalize() must fall back to the full transcript whenever ANY block
+    failed, even though that duplicates the two blocks that DID land live
+    -- a duplicated transcript beats a silently missing turn."""
+    live = _FakeLive(
+        [
+            InputTranscript("one"),
+            OutputTranscript("two"),
+            InputTranscript("three"),
+            OutputTranscript("four"),
+        ]
+    )
+    log = _FakeLog()
+    log.comment_raises_for = {"ASSISTANT: two"}  # the middle block fails
+    b = _bridge(
+        live,
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    b.ticket_id = "T-1"
+    await b.pump()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    # sanity: the surrounding blocks did land live, only the middle one failed
+    assert ("T-1", "USER: one", None) in log.comments
+    assert not any(c[1] == "ASSISTANT: two" for c in log.comments)
+    b.call_sid = "C1"
+    await b.finalize()
+    full_body = "USER: one\nASSISTANT: two\nUSER: three\nASSISTANT: four"
+    assert any(c[1] == full_body for c in log.comments)
+
+
+async def test_ticket_create_sentinel_is_quiet_when_chatwoot_is_deliberately_disabled() -> None:
+    """A phone-only tenant with chatwoot_enabled=False also hits the
+    session_id sentinel on every call (Chatwoot is never actually called),
+    but that's expected, quiet behaviour -- not a failure. Logging it at
+    ERROR would fire on every single call for such a tenant and look like a
+    standing outage."""
+    log = _FakeLog()
+    log.ensure_returns_sentinel = True
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(
+            _env_file=None, phone_transcript_live_enabled=True, chatwoot_enabled=False
+        ),
+    )
+    with capture_logs() as captured:
+        await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    assert b.ticket_id is None
+    events = [
+        e for e in captured if "ticket_create" in e["event"] or "ticket_skipped" in e["event"]
+    ]
+    assert events, "expected a log event for the sentinel-on-disabled path"
+    assert all(e["log_level"] != "error" for e in events)
+    assert any(e["event"] == "phone_ticket_create_skipped_chatwoot_disabled" for e in events)
+
+
+async def test_ticket_create_sentinel_is_an_error_when_chatwoot_is_enabled_but_failing() -> None:
+    """The same sentinel, but with chatwoot_enabled=True (the default) --
+    this IS a failure (a real outage) and must be visible at ERROR."""
+    log = _FakeLog()
+    log.ensure_returns_sentinel = True
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    with capture_logs() as captured:
+        await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    assert b.ticket_id is None
+    error_events = [e for e in captured if e["log_level"] == "error"]
+    assert any(e["event"] == "phone_ticket_create_failed" for e in error_events)
+
+
+async def test_finalize_awaits_ticket_create_task_with_a_bound(monkeypatch: Any) -> None:
+    """The Critical-2 fix (backgrounding call-start ticket creation)
+    introduced a new unbounded await in finalize() -- symmetric with the
+    flush-drain bound, an unbounded wait here could hold the websocket
+    teardown path (and the Gemini Live session under it) open for however
+    long a blackholed Chatwoot takes on a call that hung up before its own
+    call-start create finished."""
+    monkeypatch.setattr(bridge_module, "_FLUSH_DRAIN_TIMEOUT_SECONDS", 0.05)
+    log = _FakeLog()
+    call_count = 0
+
+    async def hanging_ensure(
+        session_id: str,  # noqa: ARG001
+        subject: str,  # noqa: ARG001
+        customer_name: str | None,  # noqa: ARG001
+        customer_phone: str | None,  # noqa: ARG001
+    ) -> str:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # The call-start background task's attempt: hangs, then gets
+            # cancelled by finalize()'s bounded wait_for.
+            await asyncio.sleep(10)  # never completes within the test's own timeout
+        # finalize()'s OWN fallback create (the create-task attempt already
+        # failed/was cancelled, so self.ticket_id is still None): must
+        # resolve normally so this test isolates the call-start await bound
+        # specifically, not the (already separately covered) drain bound.
+        return "T-1"
+
+    log.ensure_conversation_ticket = hanging_ensure  # type: ignore[method-assign]
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+    b.call_sid = "CA1"
+    b.transcript = [("USER", "hi there")]
+    # finalize() must return well within the bound, not hang on the
+    # still-in-flight call-start create.
+    await asyncio.wait_for(b.finalize(), timeout=1.0)
+    assert call_count == 2  # the cancelled attempt, then finalize()'s fallback
+    assert ("T-1", "USER: hi there", "solved") in log.comments

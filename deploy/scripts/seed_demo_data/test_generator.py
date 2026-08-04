@@ -4,6 +4,8 @@ reports, and must be safe: unique identifiers, non-routable phone numbers."""
 from __future__ import annotations
 
 import collections
+import json
+import re
 
 from generator import generate
 
@@ -84,3 +86,28 @@ def test_every_division_in_the_vocabulary_appears():
     _, cases, _ = generate(count=100, batch_id="b1")
     divisions_seen = {c.division for c in cases}
     assert divisions_seen == DIVISIONS
+
+
+def test_emails_use_the_reserved_invalid_domain():
+    contacts, _, _ = generate(count=100, batch_id="b1")
+    for c in contacts:
+        assert c.email.endswith("@example.invalid")
+
+
+def test_phones_use_the_reserved_e164_prefix_and_are_not_valid_malaysian_numbers():
+    contacts, _, _ = generate(count=100, batch_id="b1")
+    for c in contacts:
+        assert c.phone.startswith("+999")
+        # +999 is ITU-T's permanently unassigned E.164 country code, so no
+        # phone here can also parse as a real Malaysian (+60) number.
+        assert not re.match(r"^\+60", c.phone)
+
+
+def test_rsa_incident_payloads_are_json_serializable():
+    _, _, incidents = generate(count=100, batch_id="b1")
+    assert incidents
+    # No `default=` handler: this is what json.dumps(payload) inside
+    # httpx.post(json=payload) does, so if any field is still a raw
+    # datetime this raises TypeError before the assertion below runs.
+    serialized = json.dumps(incidents)
+    assert json.loads(serialized) == incidents

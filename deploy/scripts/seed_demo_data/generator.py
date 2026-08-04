@@ -193,13 +193,16 @@ def _weighted_choice(rnd: random.Random, weighted: list[tuple[T, int]]) -> T:
 
 
 def _unique_phone(rnd: random.Random, used: set[str]) -> str:
-    # +60 1X-XXXXXXX Malaysian mobile format. Purely synthetic: this script
-    # never dials or sends to these numbers, only stores them as demo
-    # contact records.
+    # +999 is the ITU-T E.164 reserved-for-testing country code: it is
+    # permanently unassigned, so no number built on it can ever route to a
+    # real subscriber - unlike a syntactically-valid-looking +60 number,
+    # which is indistinguishable from a real Malaysian mobile number to
+    # anything downstream (click-to-call, WhatsApp send, an automation)
+    # that might act on it. Still valid E.164 (`+` + digits), so Chatwoot
+    # contact validation accepts it.
     while True:
-        prefix = rnd.choice(["10", "11", "12", "13", "14", "16", "17", "18", "19"])
-        rest = "".join(str(rnd.randrange(10)) for _ in range(7))
-        phone = f"+60{prefix}{rest}"
+        rest = "".join(str(rnd.randrange(10)) for _ in range(9))
+        phone = f"+999{rest}"
         if phone not in used:
             used.add(phone)
             return phone
@@ -221,7 +224,7 @@ def _make_contact(rnd: random.Random, index: int, used_phones: set[str], used_pl
     name = f"[DEMO] {first} {last}"
     phone = _unique_phone(rnd, used_phones)
     slug = f"{first}.{last}".lower().replace(" ", "").replace("/", "")
-    email = f"{slug}.demo{index}@example.com"
+    email = f"{slug}.demo{index}@example.invalid"
     vehicle_no = _unique_plate(rnd, used_plates)
     vehicle_model = _weighted_choice(rnd, _MODEL_WEIGHTS)
     purchased_from = rnd.choice(_DEALERS)
@@ -287,6 +290,11 @@ def _make_rsa_incident(rnd: random.Random, contact: DemoContact, batch_id: str, 
     travels in `created_by` as `demo-seed:<batch_id>` instead - a value a
     real staff-entered row (a user identity) can never collide with, so
     Task 2's RSA purge can match on it by exact string equality.
+
+    Timestamp fields are pre-serialized to ISO-8601 strings (not raw
+    `datetime` objects) so the payload is genuinely postable as-is:
+    `httpx.post(json=payload)` calls `json.dumps` with no `default=`
+    handler, which raises on a bare `datetime`.
     """
     called_in = _random_created_at(rnd, now)
     towing_assigned = called_in + timedelta(minutes=rnd.randint(5, 20))
@@ -300,10 +308,10 @@ def _make_rsa_incident(rnd: random.Random, contact: DemoContact, batch_id: str, 
         "purchased_from": contact.purchased_from,
         "breakdown_location": f"{rnd.choice(_DEALERS)} area",
         "arrived_location": rnd.choice(_DEALERS),
-        "customer_called_in_time": called_in,
-        "towing_assigned_time": towing_assigned,
-        "time_arrived_breakdown_area": arrived_breakdown,
-        "time_arrived_outlet": arrived_outlet,
+        "customer_called_in_time": called_in.isoformat(),
+        "towing_assigned_time": towing_assigned.isoformat(),
+        "time_arrived_breakdown_area": arrived_breakdown.isoformat(),
+        "time_arrived_outlet": arrived_outlet.isoformat(),
         "total_km": rnd.randint(2, 80),
         "late_reason": None,
         "remarks": f"[DEMO] Seeded RSA incident for {contact.vehicle_no}.",

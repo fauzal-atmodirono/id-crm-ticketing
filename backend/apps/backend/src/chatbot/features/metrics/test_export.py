@@ -31,8 +31,13 @@ def test_render_xlsx_is_a_zip_workbook() -> None:
 
 def test_render_xlsx_has_a_sheet_per_block() -> None:
     wb = load_workbook(io.BytesIO(render_xlsx(_sync_metrics())))
-    for block in [f.name for f in fields(DashboardMetrics)]:
+    # Excludes "scopes" (Task 2 / Package E): a dict[str, BlockScope], not a
+    # row list, so render_xlsx's _blocks() helper skips it -- there's no
+    # sheet for it, by design.
+    row_list_fields = [f.name for f in fields(DashboardMetrics) if f.name != "scopes"]
+    for block in row_list_fields:
         assert block in wb.sheetnames
+    assert "scopes" not in wb.sheetnames
 
 
 def test_render_pdf_has_pdf_header() -> None:

@@ -6,18 +6,59 @@ denominator is zero or no rows match."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
-from chatbot.features.metrics.period import PeriodRange
+if TYPE_CHECKING:
+    from chatbot.features.metrics.period import PeriodRange
+
+
+@dataclass(frozen=True)
+class BlockScope:
+    """Which period (if any) a block's rows are actually scoped to.
+
+    Rows alone collapse four different states a period-scoped page needs to
+    tell apart, all of which look identical as an empty or non-empty list:
+
+    - "ok": a period was applied and the query ran; `rows` may legitimately
+      be empty (zero matching cases that week).
+    - "unavailable": the query failed (drifted view, a widened column not
+      yet rolled out by `ensure_views()` on this deployment, a BigQuery
+      outage). `rows` is `[]`, but that's a failure, not a true zero.
+    - "unsupported_granularity": the view can't honour the requested period
+      at all (e.g. a month-grain view asked for a partial-month or
+      sub-month window) -- the query was never run, rather than risk
+      either dropping data that doesn't align to the view's grain or, worse,
+      silently returning a whole month's total for a partial-month ask.
+    - "unfiltered": no period was applied (either none was requested, or
+      -- for `fetch_dashboard`'s non-volume blocks -- the block has no
+      date column to filter on at all). `rows` are all-time, not scoped to
+      any requested period. Without this marker, mixing an unfiltered
+      block into a period-scoped page (e.g. "17-23 July") silently
+      presents all-time figures as if they belonged to that week.
+    """
+
+    status: Literal["ok", "unavailable", "unsupported_granularity", "unfiltered"]
+    period: PeriodRange | None  # the period actually applied, if any
+    supported_granularity: str | None  # set on "unsupported_granularity"; the grain that would work
 
 
 @dataclass(frozen=True)
 class VolumeRow:
+    # NOT renamed to a granularity-neutral name despite holding a week key
+    # like "2026-W29" when period-scoped at week granularity (see
+    # query_adapter.py's `_volume_block_for_period`): the fork's Overview
+    # chart (patch 0020) reads this exact field as `idx[row.month][...]`
+    # for the unfiltered dashboard, where it is always a real "YYYY-MM"
+    # month. Renaming it would break that live consumer for the one case
+    # that must never change. `bucket` is the granularity-neutral sibling
+    # for period-scoped callers (Task 4) to read instead -- same value as
+    # `month`, `None` only for unfiltered/mock rows where it's redundant.
     month: str
     channel: str
     volume: int
+    bucket: str | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +139,11 @@ class DashboardMetrics:
     fallback: list[FallbackRow]
     bounce: list[BounceRow]
     quality: list[QualityRow]
+    # Keyed by field name above. Only `volume` can ever be period-scoped
+    # (see BlockScope); every other key is always "unfiltered" -- Critical-1
+    # from the Task 2 review. Default empty so a caller that doesn't care
+    # (e.g. the unmodified `/metrics/dashboard` route) sees no change.
+    scopes: dict[str, BlockScope] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -227,6 +273,10 @@ class StateTrendRow:
 class LifecycleMetrics:
     cases: list[CaseLifecycleRow]
     state_trend: list[StateTrendRow]
+    # See DashboardMetrics.scopes. `cases` is always "unfiltered" (no period
+    # support at all); `state_trend` can be "ok"/"unavailable"/
+    # "unsupported_granularity" once a period is supplied.
+    scopes: dict[str, BlockScope] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -295,6 +345,8 @@ class VolumeByTypeDivisionRow:
 @dataclass(frozen=True)
 class VolumeByTypeDivisionMetrics:
     volume: list[VolumeByTypeDivisionRow]
+    # See DashboardMetrics.scopes.
+    scopes: dict[str, BlockScope] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -334,8 +386,18 @@ class MetricsQueryPort(Protocol):
     ) -> VolumeByTypeDivisionMetrics: ...
 
 
+_UNFILTERED_SCOPE = BlockScope(status="unfiltered", period=None, supported_granularity=None)
+
+
 class MockMetricsQuery:
-    """Returns a representative payload so dev/tests never touch BigQuery."""
+    """Returns a representative payload so dev/tests never touch BigQuery.
+
+    Every block is reported "unfiltered" regardless of whether a `period`
+    was requested: this is also the fail-open fallback when the real
+    BigQuery client fails to init (`build_metrics_query_port`), so a period
+    request that silently downgrades to this canned all-time payload must
+    say so via `scopes`, not just via matching the Protocol's return type.
+    """
 
     async def fetch_anomalies(self) -> list[AnomalyRow]:
         return [
@@ -402,6 +464,19 @@ class MockMetricsQuery:
                 QualityRow("web", 20, 88.5, 91.0),
                 QualityRow("whatsapp", 15, 84.0, 87.5),
             ],
+            scopes=dict.fromkeys(
+                (
+                    "volume",
+                    "resolution",
+                    "csat",
+                    "nps",
+                    "speed",
+                    "fallback",
+                    "bounce",
+                    "quality",
+                ),
+                _UNFILTERED_SCOPE,
+            ),
         )
 
     async def fetch_lifecycle(self, period: PeriodRange | None = None) -> LifecycleMetrics:
@@ -431,6 +506,7 @@ class MockMetricsQuery:
                     cases=45,
                 )
             ],
+            scopes={"cases": _UNFILTERED_SCOPE, "state_trend": _UNFILTERED_SCOPE},
         )
 
     async def fetch_dealer_escalation(self) -> DealerEscalationMetrics:
@@ -453,15 +529,8 @@ class MockMetricsQuery:
         return CaseAgingMetrics(
             cases=[
                 CaseAgingRow(
-                    "CONV099",
-                    "Complaint",
-                    "Sales",
-                    "Dealer KL",
-                    "Ali",
-                    "open",
-                    created_at=None,
-                    age_days=4.0,
-                    bucket_label="4-6 days",
+                    "CONV099", "Complaint", "Sales", "Dealer KL", "Ali", "open",
+                    created_at=None, age_days=4.0, bucket_label="4-6 days",
                 )
             ]
         )
@@ -471,5 +540,6 @@ class MockMetricsQuery:
     ) -> VolumeByTypeDivisionMetrics:
         del period  # mock always returns the same canned payload
         return VolumeByTypeDivisionMetrics(
-            volume=[VolumeByTypeDivisionRow("2026-06", "WhatsApp", "Inquiry", "Sales", 682)]
+            volume=[VolumeByTypeDivisionRow("2026-06", "WhatsApp", "Inquiry", "Sales", 682)],
+            scopes={"volume": _UNFILTERED_SCOPE},
         )

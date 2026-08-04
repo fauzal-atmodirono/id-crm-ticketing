@@ -194,6 +194,11 @@ def test_v_state_trend_ddl() -> None:
     assert "status" in sql
     assert "FORMAT_DATE" in sql
     assert "COUNT(*)" in sql
+    # Task 2 (Package E): query_adapter.py hardcodes date_column="month_start"
+    # for this view -- pin the column's existence so a drifted DDL fails the
+    # suite instead of silently returning [] with green tests.
+    assert "AS month_start" in sql
+    assert "GROUP BY month, month_start, status, division" in sql
 
 
 def test_v_reopen_rate_includes_dealer() -> None:
@@ -268,3 +273,10 @@ def test_view_ddls_includes_volume_and_category_cross_tabs() -> None:
     assert "case_type" in ddls["v_volume_by_type_division"]
     assert "v_category_by_vehicle_model" in ddls
     assert "vehicle_model" in ddls["v_category_by_vehicle_model"]
+    # Task 2 (Package E): query_adapter.py hardcodes date_column="month_start"
+    # for this view too -- same drift guard as v_state_trend above.
+    assert "AS month_start" in ddls["v_volume_by_type_division"]
+    assert (
+        "GROUP BY month, month_start, channel, case_type, division"
+        in ddls["v_volume_by_type_division"]
+    )

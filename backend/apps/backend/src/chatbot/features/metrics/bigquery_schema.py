@@ -30,9 +30,7 @@ CONVERSATIONS_SCHEMA: list[bigquery.SchemaField] = [
     bigquery.SchemaField("resolved_at", "TIMESTAMP"),
     bigquery.SchemaField("reopen_count", "INT64"),
     bigquery.SchemaField("dealer", "STRING"),  # Phase-3: dealer dimension for CRR grouping
-    bigquery.SchemaField(
-        "dealer_escalated_at", "TIMESTAMP"
-    ),  # Task 10: dealer escalation timestamp
+    bigquery.SchemaField("dealer_escalated_at", "TIMESTAMP"),  # Task 10: dealer escalation timestamp
     bigquery.SchemaField("case_type", "STRING"),
     bigquery.SchemaField("vehicle_model", "STRING"),
     bigquery.SchemaField("first_response_working_minutes", "INT64"),
@@ -58,11 +56,7 @@ def _sla_bucket_case_sql(sla_targets_json: str) -> str:
             continue
         edges = spec.get("buckets_wh")
         labels = spec.get("labels")
-        if (
-            not isinstance(edges, list)
-            or not isinstance(labels, list)
-            or len(labels) != len(edges) + 1
-        ):
+        if not isinstance(edges, list) or not isinstance(labels, list) or len(labels) != len(edges) + 1:
             continue
         if not all(isinstance(label, str) for label in labels):
             continue

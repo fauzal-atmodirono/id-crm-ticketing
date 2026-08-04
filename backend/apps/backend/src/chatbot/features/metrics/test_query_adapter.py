@@ -11,6 +11,7 @@ from chatbot.features.metrics.query_adapter import (
     build_metrics_query_port,
 )
 from chatbot.features.metrics.query_port import (
+    BlockScope,
     CallCentreMetrics,
     CaseAgingMetrics,
     DealerEscalationMetrics,
@@ -443,6 +444,7 @@ async def test_volume_by_type_division_reads_expected_views() -> None:
     assert any("v_volume_by_type_division" in sql for sql in client.queries)
     assert isinstance(result, VolumeByTypeDivisionMetrics)
     assert len(result.volume) == 1
+    assert result.volume[0].volume == 25
 
 
 # --- Task 2: range-aware queries -------------------------------------------
@@ -457,12 +459,18 @@ async def test_period_none_emits_byte_identical_sql_to_today() -> None:
     client = _FakeClient({"v_state_trend": []})
     q = BigQueryMetricsQuery(settings, client=client)
 
-    await q.fetch_lifecycle()  # period omitted entirely
+    result = await q.fetch_lifecycle()  # period omitted entirely
 
     state_trend_queries = [sql for sql in client.queries if "v_state_trend" in sql]
     assert state_trend_queries == ["SELECT * FROM `proj.ds.v_state_trend`"]
     # no WHERE, no job_config -- unfiltered call site is untouched
     assert client.job_configs[client.queries.index(state_trend_queries[0])] is None
+    assert result.scopes["state_trend"] == BlockScope(
+        status="unfiltered", period=None, supported_granularity=None
+    )
+    assert result.scopes["cases"] == BlockScope(
+        status="unfiltered", period=None, supported_granularity=None
+    )
 
 
 @pytest.mark.asyncio
@@ -473,20 +481,26 @@ async def test_period_none_leaves_dashboard_volume_query_untouched() -> None:
     client = _FakeClient({"v_volume_by_month_channel": []})
     q = BigQueryMetricsQuery(settings, client=client)
 
-    await q.fetch_dashboard()
+    metrics = await q.fetch_dashboard()
 
     assert any(sql == "SELECT * FROM `proj.ds.v_volume_by_month_channel`" for sql in client.queries)
     assert not any("v_volume_daily" in sql for sql in client.queries)
+    assert metrics.scopes["volume"] == BlockScope(
+        status="unfiltered", period=None, supported_granularity=None
+    )
 
 
 @pytest.mark.asyncio
-async def test_period_adds_where_clause_with_named_parameters_not_literals() -> None:
-    period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
+async def test_whole_month_period_adds_where_clause_with_named_parameters() -> None:
+    """A period that is exactly one whole calendar month -- the one shape
+    a month_start-grain view (v_state_trend) can honour -- runs the
+    filtered query with named parameters."""
+    period = PeriodRange(date(2026, 6, 1), date(2026, 6, 30), "month")
     settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
     client = _FakeClient(
         {
             "v_state_trend": [
-                {"month": "2026-07", "status": "resolved", "division": "Sales", "cases": 12}
+                {"month": "2026-06", "status": "resolved", "division": "Sales", "cases": 12}
             ]
         }
     )
@@ -500,19 +514,22 @@ async def test_period_adds_where_clause_with_named_parameters_not_literals() -> 
 
     assert "WHERE month_start BETWEEN @start AND @end" in emitted_sql
     # the dates themselves must never be string-formatted into the query text
-    assert "2026-07-17" not in emitted_sql
-    assert "2026-07-23" not in emitted_sql
+    assert "2026-06-01" not in emitted_sql
+    assert "2026-06-30" not in emitted_sql
 
     params = {p.name: p.value for p in job_config.query_parameters}
-    assert params["start"] == date(2026, 7, 17)
-    assert params["end"] == date(2026, 7, 23)
+    assert params["start"] == date(2026, 6, 1)
+    assert params["end"] == date(2026, 6, 30)
     assert len(result.state_trend) == 1
     assert result.state_trend[0].cases == 12
+    assert result.scopes["state_trend"] == BlockScope(
+        status="ok", period=period, supported_granularity="month"
+    )
 
 
 @pytest.mark.asyncio
-async def test_period_query_failure_degrades_to_empty_block_not_500() -> None:
-    period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
+async def test_whole_month_period_query_failure_degrades_to_empty_block_not_500() -> None:
+    period = PeriodRange(date(2026, 6, 1), date(2026, 6, 30), "month")
     settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
     # Simulates a widened DDL whose deployed view hasn't been re-created by
     # ensure_views() yet -- the WHERE month_start predicate fails because the
@@ -523,6 +540,132 @@ async def test_period_query_failure_degrades_to_empty_block_not_500() -> None:
     result = await q.fetch_lifecycle(period=period)  # must not raise
 
     assert result.state_trend == []
+    assert result.scopes["state_trend"] == BlockScope(
+        status="unavailable", period=period, supported_granularity="month"
+    )
+
+
+@pytest.mark.asyncio
+async def test_partial_month_period_is_unsupported_and_never_queried() -> None:
+    """Critical-2 regression guard: 17-23 July is a partial month, so no
+    row's month_start (always a 1st) can ever fall inside it. Rather than
+    silently running a WHERE that returns nothing "by luck", the adapter
+    must recognise this shape up front, skip the query entirely, and say
+    so via BlockScope -- not just return an empty list indistinguishable
+    from a genuine zero."""
+    period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient(
+        {
+            "v_state_trend": [
+                {"month": "2026-07", "status": "open", "division": "Sales", "cases": 99}
+            ]
+        }
+    )
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    result = await q.fetch_lifecycle(period=period)
+
+    assert result.state_trend == []
+    assert not any("v_state_trend" in sql for sql in client.queries), (
+        "no query should be issued at all for an unsupported period shape"
+    )
+    assert result.scopes["state_trend"] == BlockScope(
+        status="unsupported_granularity", period=period, supported_granularity="month"
+    )
+
+
+@pytest.mark.asyncio
+async def test_month_straddling_period_is_rejected_not_overcounted() -> None:
+    """Critical-2's exact failure case: 29 June - 5 July has July's 1st
+    inside it, so a naive `month_start BETWEEN @start AND @end` would match
+    -- and return -- the *entire* July total for a 7-day ask, a ~4x silent
+    over-count. Declared granularity="week" (not "month") means this must
+    be rejected before the query runs, same as any other unsupported shape."""
+    period = PeriodRange(date(2026, 6, 29), date(2026, 7, 5), "week")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient(
+        {
+            "v_volume_by_type_division": [
+                {
+                    "month": "2026-07",
+                    "channel": "web",
+                    "case_type": "Inquiry",
+                    "division": "Sales",
+                    "volume": 400,  # July's whole-month total -- must NOT come back
+                }
+            ]
+        }
+    )
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    result = await q.fetch_volume_by_type_division(period=period)
+
+    assert result.volume == []
+    assert not any("v_volume_by_type_division" in sql for sql in client.queries)
+    assert result.scopes["volume"] == BlockScope(
+        status="unsupported_granularity", period=period, supported_granularity="month"
+    )
+
+
+@pytest.mark.asyncio
+async def test_multi_month_whole_range_is_supported() -> None:
+    """A 6-month trend (Jan-Jun, both whole calendar months) is a valid
+    month_start shape even though it spans more than one month -- this is
+    what a monthly-report trend chart needs, and _whole_calendar_months
+    must not narrow this to a single month the way period.py's
+    single-month check does."""
+    period = PeriodRange(date(2026, 1, 1), date(2026, 6, 30), "month")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient(
+        {
+            "v_volume_by_type_division": [
+                {
+                    "month": "2026-03",
+                    "channel": "web",
+                    "case_type": "Inquiry",
+                    "division": "Sales",
+                    "volume": 60,
+                }
+            ]
+        }
+    )
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    result = await q.fetch_volume_by_type_division(period=period)
+
+    assert any("v_volume_by_type_division" in sql for sql in client.queries)
+    assert len(result.volume) == 1
+    assert result.scopes["volume"] == BlockScope(
+        status="ok", period=period, supported_granularity="month"
+    )
+
+
+@pytest.mark.asyncio
+async def test_day_granularity_over_a_whole_month_is_still_unsupported() -> None:
+    """A day-granularity request that happens to span an entire calendar
+    month (1-30 June) must not be silently answered with one month-grain
+    row -- the caller asked for a daily breakdown, which this view can
+    never give (it only ever has one row per month). Declared intent, not
+    just date shape, gates the filter -- mirrors period.py's
+    _is_full_calendar_month, which applies the same gate for the same
+    reason."""
+    period = PeriodRange(date(2026, 6, 1), date(2026, 6, 30), "day")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient(
+        {
+            "v_state_trend": [
+                {"month": "2026-06", "status": "resolved", "division": "Sales", "cases": 12}
+            ]
+        }
+    )
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    result = await q.fetch_lifecycle(period=period)
+
+    assert result.state_trend == []
+    assert not any("v_state_trend" in sql for sql in client.queries)
+    assert result.scopes["state_trend"].status == "unsupported_granularity"
 
 
 @pytest.mark.asyncio
@@ -555,13 +698,18 @@ async def test_volume_by_type_division_period_uses_named_parameters() -> None:
     assert params["start"] == date(2026, 6, 1)
     assert params["end"] == date(2026, 6, 30)
     assert len(result.volume) == 1
+    assert result.scopes["volume"] == BlockScope(
+        status="ok", period=period, supported_granularity="month"
+    )
 
 
 @pytest.mark.asyncio
 async def test_dashboard_volume_with_period_queries_volume_daily_with_parameters() -> None:
     """A period on fetch_dashboard buckets volume from v_volume_daily (day
     grain) instead of v_volume_by_month_channel (month grain) -- a week
-    can't be recovered from a pre-aggregated monthly total."""
+    can't be recovered from a pre-aggregated monthly total. Unlike the
+    month_start-grain views, any period shape is safe here -- a partial
+    week is exactly what a day-grain source can answer correctly."""
     period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
     settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
     client = _FakeClient(
@@ -574,19 +722,64 @@ async def test_dashboard_volume_with_period_queries_volume_daily_with_parameters
     idx = next(i for i, sql in enumerate(client.queries) if "v_volume_daily" in sql)
     emitted_sql = client.queries[idx]
     assert "v_volume_by_month_channel" not in emitted_sql
+    assert "FORMAT_DATE('%G-W%V', day)" in emitted_sql
     assert "WHERE day BETWEEN @start AND @end" in emitted_sql
     assert "2026-07-17" not in emitted_sql
     assert "2026-07-23" not in emitted_sql
     params = {p.name: p.value for p in client.job_configs[idx].query_parameters}
     assert params["start"] == date(2026, 7, 17)
     assert params["end"] == date(2026, 7, 23)
-    assert metrics.volume == [VolumeRow(month="2026-W29", channel="web", volume=42)]
+    assert metrics.volume == [
+        VolumeRow(month="2026-W29", channel="web", volume=42, bucket="2026-W29")
+    ]
+    assert metrics.scopes["volume"] == BlockScope(
+        status="ok", period=period, supported_granularity=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_dashboard_volume_period_month_granularity_uses_month_format() -> None:
+    period = PeriodRange(date(2026, 6, 1), date(2026, 6, 30), "month")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient(
+        {"v_volume_daily": [{"month": "2026-06", "channel": "web", "volume": 100}]}
+    )
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    metrics = await q.fetch_dashboard(period=period)
+
+    idx = next(i for i, sql in enumerate(client.queries) if "v_volume_daily" in sql)
+    assert "FORMAT_DATE('%Y-%m', day)" in client.queries[idx]
+    assert metrics.volume == [
+        VolumeRow(month="2026-06", channel="web", volume=100, bucket="2026-06")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_volume_period_day_granularity_uses_day_format() -> None:
+    period = PeriodRange(date(2026, 7, 20), date(2026, 7, 20), "day")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient(
+        {"v_volume_daily": [{"month": "2026-07-20", "channel": "web", "volume": 7}]}
+    )
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    metrics = await q.fetch_dashboard(period=period)
+
+    idx = next(i for i, sql in enumerate(client.queries) if "v_volume_daily" in sql)
+    assert "FORMAT_DATE('%Y-%m-%d', day)" in client.queries[idx]
+    assert metrics.volume == [
+        VolumeRow(month="2026-07-20", channel="web", volume=7, bucket="2026-07-20")
+    ]
 
 
 @pytest.mark.asyncio
 async def test_dashboard_period_does_not_leak_into_unfiltered_blocks() -> None:
-    """A period on fetch_dashboard only affects the volume block -- the
-    other 7 blocks have no date column at all and must stay unfiltered."""
+    """Critical-1 regression guard: a period on fetch_dashboard only
+    affects the volume block -- the other 7 blocks have no date column at
+    all, must stay unfiltered, and must say so via BlockScope so a client
+    rendering all 8 under one period header doesn't present all-time
+    figures as if they were that period's."""
     period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
     settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
     client = _FakeClient(
@@ -601,20 +794,39 @@ async def test_dashboard_period_does_not_leak_into_unfiltered_blocks() -> None:
 
     metrics = await q.fetch_dashboard(period=period)
 
-    # every non-volume block still ran the plain, unfiltered SELECT *
-    for view in (
-        "v_resolution_split",
-        "v_csat",
-        "v_nps",
-        "v_speed_of_response",
-        "v_fallback_rate",
-        "v_bounce_rate",
-        "v_quality",
-    ):
+    unfiltered_blocks = (
+        "resolution",
+        "csat",
+        "nps",
+        "speed",
+        "fallback",
+        "bounce",
+        "quality",
+    )
+    view_by_block = {
+        "resolution": "v_resolution_split",
+        "csat": "v_csat",
+        "nps": "v_nps",
+        "speed": "v_speed_of_response",
+        "fallback": "v_fallback_rate",
+        "bounce": "v_bounce_rate",
+        "quality": "v_quality",
+    }
+    for block in unfiltered_blocks:
+        view = view_by_block[block]
         idx = next(i for i, sql in enumerate(client.queries) if view in sql)
+        # every non-volume block still ran the plain, unfiltered SELECT *
         assert client.queries[idx] == f"SELECT * FROM `proj.ds.{view}`"  # noqa: S608
         assert client.job_configs[idx] is None
+        # ... and is explicitly marked unfiltered, not silently mixed into
+        # the period-scoped payload
+        assert metrics.scopes[block] == BlockScope(
+            status="unfiltered", period=None, supported_granularity=None
+        )
     assert metrics.csat[0].avg_score == 4.2
+    # volume, in contrast, really was scoped to the requested period
+    assert metrics.scopes["volume"].status == "ok"
+    assert metrics.scopes["volume"].period == period
 
 
 @pytest.mark.asyncio
@@ -627,3 +839,6 @@ async def test_dashboard_volume_period_query_failure_degrades_to_empty_block() -
     metrics = await q.fetch_dashboard(period=period)  # must not raise
 
     assert metrics.volume == []
+    assert metrics.scopes["volume"] == BlockScope(
+        status="unavailable", period=period, supported_granularity=None
+    )

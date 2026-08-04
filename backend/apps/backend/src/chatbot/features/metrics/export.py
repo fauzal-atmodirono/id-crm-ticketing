@@ -24,7 +24,18 @@ if TYPE_CHECKING:
 
 
 def _blocks(metrics: Any) -> list[tuple[str, list[Any]]]:
-    return [(f.name, getattr(metrics, f.name)) for f in fields(metrics)]
+    """Every list[<dataclass>] field on `metrics`, as (name, rows).
+
+    Only `list` fields -- as of Task 2 (Package E), DashboardMetrics,
+    LifecycleMetrics and VolumeByTypeDivisionMetrics also carry a `scopes:
+    dict[str, BlockScope]` field (which BlockScope per block, not a row
+    list), and this reflection must skip it rather than try to render it
+    as a sheet/table."""
+    return [
+        (f.name, getattr(metrics, f.name))
+        for f in fields(metrics)
+        if isinstance(getattr(metrics, f.name), list)
+    ]
 
 
 def render_xlsx(metrics: DashboardMetrics) -> bytes:

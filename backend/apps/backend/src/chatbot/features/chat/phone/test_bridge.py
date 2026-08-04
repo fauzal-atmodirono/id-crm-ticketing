@@ -3,6 +3,7 @@ import base64
 from collections.abc import AsyncIterator
 from typing import Any
 
+import chatbot.features.chat.phone.bridge as bridge_module
 from chatbot.features.chat.models import KbArticle
 from chatbot.features.chat.phone.bridge import PhoneBridge
 from chatbot.features.chat.phone.live_events import (
@@ -48,7 +49,16 @@ class _FakeLog:
         self.ticket_calls: list[tuple[str, str]] = []
         self.ensured: list[str] = []
         self.ensure_raises: Exception | None = None
+        # Mirrors ChatwootAdapter._find_or_create_conversation's real
+        # fail-open behaviour: on a failed create it does NOT raise, it
+        # returns session_id itself as a "no real ticket" sentinel.
+        self.ensure_returns_sentinel = False
         self.comments: list[tuple[str, str, str | None]] = []
+        # Exact text matches that raise on append_conversation_comment --
+        # a set (not a single string) so a test can fail specific live
+        # blocks while leaving a differently-worded post (e.g. the joined
+        # whole-transcript summary) free to succeed.
+        self.comment_raises_for: set[str] = set()
         self.external_ids: list[tuple[str, str]] = []
         self.tags: list[tuple[str, str]] = []
 
@@ -63,6 +73,8 @@ class _FakeLog:
         self.ensured.append(session_id)
         if self.ensure_raises is not None:
             raise self.ensure_raises
+        if self.ensure_returns_sentinel:
+            return session_id
         return "T-1"
 
     async def rotate_conversation_ticket(
@@ -78,6 +90,8 @@ class _FakeLog:
     async def append_conversation_comment(
         self, ticket_id: str, text: str, status: str | None = None
     ) -> ConversationLogResult:
+        if text in self.comment_raises_for:
+            raise RuntimeError("chatwoot down")
         self.comments.append((ticket_id, text, status))
         return ConversationLogResult.OK
 
@@ -353,6 +367,11 @@ async def test_ticket_is_created_on_stream_start_when_enabled() -> None:
         settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
     )
     await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+    # Ticket creation runs as a detached background task (never inline in
+    # handle_twilio -- see test_ticket_creation_at_start_does_not_block_call_
+    # setup below), so give the loop a tick to actually run it.
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
     assert log.ensured == ["phone-CA1"]
     assert b.ticket_id is not None
 
@@ -361,6 +380,8 @@ async def test_ticket_is_not_created_when_flag_off() -> None:
     log = _FakeLog()
     b = _bridge(_FakeLive([]), [], log)  # default settings: flag off
     await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
     assert log.ensured == []
     assert b.ticket_id is None
 
@@ -375,10 +396,76 @@ async def test_ticket_creation_failure_does_not_break_the_call() -> None:
         settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
     )
     await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
     assert b.ticket_id is None
     # The call must keep going: a subsequent media frame must not raise.
     payload = base64.b64encode(b"\xff" * 160).decode()
     await b.handle_twilio({"event": "media", "media": {"payload": payload}})
+
+
+async def test_ticket_creation_treats_sentinel_id_as_failure() -> None:
+    """ChatwootAdapter._find_or_create_conversation does NOT raise when the
+    Chatwoot create call fails -- it fail-opens by returning session_id
+    itself (a deliberately truthy sentinel, and deliberately not cached, so
+    a later call retries instead of repeating the failure forever). Naively
+    trusting any truthy return as a real ticket would silently stream every
+    live block at a conversation id that doesn't exist."""
+    log = _FakeLog()
+    log.ensure_returns_sentinel = True
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert b.ticket_id is None
+
+
+async def test_ticket_creation_at_start_does_not_block_call_setup() -> None:
+    """A blackholed Chatwoot must not delay Gemini's greeting or the first
+    bytes of caller audio -- ensure_conversation_ticket can take up to ~30s
+    (several sequential HTTP calls in the real adapter). handle_twilio()
+    must return promptly even while the ticket create is still in flight,
+    and a subsequent media event must be handled without waiting for it."""
+    log = _FakeLog()
+    gate = asyncio.Event()
+
+    async def slow_ensure(
+        session_id: str,
+        subject: str,  # noqa: ARG001
+        customer_name: str | None,  # noqa: ARG001
+        customer_phone: str | None,  # noqa: ARG001
+    ) -> str:
+        await gate.wait()
+        log.ensured.append(session_id)
+        return "T-1"
+
+    log.ensure_conversation_ticket = slow_ensure  # type: ignore[method-assign]
+    b = _bridge(
+        _FakeLive([]),
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    await asyncio.wait_for(
+        b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}}),
+        timeout=0.5,
+    )
+    # handle_twilio() already returned even though slow_ensure is still
+    # parked on `gate` -- proving the create ran detached, not inline.
+    assert b.ticket_id is None
+    payload = base64.b64encode(b"\xff" * 160).decode()
+    await asyncio.wait_for(
+        b.handle_twilio({"event": "media", "media": {"payload": payload}}), timeout=0.5
+    )
+    gate.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert b.ticket_id == "T-1"
 
 
 async def test_finalize_is_idempotent_after_live_creation() -> None:
@@ -391,6 +478,9 @@ async def test_finalize_is_idempotent_after_live_creation() -> None:
     )
     await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
     b.transcript = [("USER", "hi")]
+    # finalize() awaits the (still in-flight, since we haven't yielded yet)
+    # ticket-create task itself before deciding whether to reuse or fall
+    # back -- no explicit sleep(0) needed here.
     await b.finalize()
     # ensure_conversation_ticket must NOT be called a second time in
     # finalize(): the ticket already created at call-start is reused.
@@ -398,9 +488,10 @@ async def test_finalize_is_idempotent_after_live_creation() -> None:
 
 
 async def test_ticket_not_recreated_on_a_reconnecting_start_event() -> None:
-    """Twilio Media Streams can reconnect mid-call and resend "start". That
-    must not spawn a second ensure_conversation_ticket lookup once we already
-    hold a ticket_id for this call."""
+    """Twilio Media Streams can reconnect mid-call and resend "start" before
+    the first create even completes. That must not spawn a SECOND detached
+    ensure_conversation_ticket task racing the first one -- ticket_id alone
+    can't guard this since it stays None for the whole in-flight window."""
     log = _FakeLog()
     b = _bridge(
         _FakeLive([]),
@@ -410,6 +501,8 @@ async def test_ticket_not_recreated_on_a_reconnecting_start_event() -> None:
     )
     await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
     await b.handle_twilio({"event": "start", "start": {"streamSid": "MZ2", "callSid": "CA1"}})
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
     assert log.ensured == ["phone-CA1"]
 
 
@@ -473,10 +566,11 @@ async def test_finalize_flushes_the_trailing_live_block_without_duplicating_it()
     """A call that ends mid-turn must not lose the trailing (still-open)
     turn, but the sink's own take_if_due() is what guarantees it isn't
     double-posted: it empties exactly what it returns, so calling it once
-    more in finalize() can only surface it once. The separate whole-
-    transcript summary comment (status="solved") that finalize() has always
-    posted is expected too -- it's not a duplicate of the live block, it's
-    today's end-of-call record, unchanged."""
+    more in finalize() can only surface it once. Because that forced flush
+    is the only thing that ever got posted live for this call, finalize()'s
+    closing comment is the short "[Call ended]" marker (Critical 3: it must
+    NOT also post the joined transcript body, which here would be the exact
+    same text again)."""
     live = _FakeLive([InputTranscript("hi"), InputTranscript(" there")])
     log = _FakeLog()
     b = _bridge(
@@ -491,7 +585,10 @@ async def test_finalize_flushes_the_trailing_live_block_without_duplicating_it()
     await b.finalize()
     live_posts = [c for c in log.comments if c[2] is None]
     assert live_posts == [("T-1", "USER: hi there", None)]
-    assert any(c[2] == "solved" for c in log.comments)
+    assert log.comments == [
+        ("T-1", "USER: hi there", None),
+        ("T-1", "[Call ended]", "solved"),
+    ]
 
 
 async def test_finalize_posts_no_live_block_when_call_ends_before_anyone_speaks() -> None:
@@ -507,3 +604,135 @@ async def test_finalize_posts_no_live_block_when_call_ends_before_anyone_speaks(
     # No transcript at all -> finalize() is a no-op past the live-flush step.
     await b.finalize()
     assert log.comments == []
+
+
+async def test_finalize_skips_the_duplicate_summary_when_live_blocks_already_landed() -> None:
+    """Once live streaming has actually put transcript content in the
+    ticket during pump() itself (not just finalize()'s own forced flush),
+    finalize() must not ALSO post the whole joined transcript as a second
+    comment -- an agent would see the call twice. The closing comment still
+    carries the status flip."""
+    live = _FakeLive([InputTranscript("hi there"), OutputTranscript("hello")])
+    log = _FakeLog()
+    b = _bridge(
+        live,
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    b.ticket_id = "T-1"
+    await b.pump()  # turn-complete flush posts "USER: hi there" live
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert ("T-1", "USER: hi there", None) in log.comments  # sanity: it did post live
+    b.call_sid = "C1"
+    await b.finalize()
+    full_body = "USER: hi there\nASSISTANT: hello"
+    assert not any(c[1] == full_body for c in log.comments)
+    assert ("T-1", "[Call ended]", "solved") in log.comments
+
+
+async def test_finalize_falls_back_to_the_full_summary_when_nothing_posted_live() -> None:
+    """When the flag is on but nothing was ever successfully posted live
+    (e.g. every Chatwoot call failed throughout the call), finalize() must
+    still fall back to posting the whole transcript -- that's the
+    last-resort guarantee the call gets recorded at all."""
+    live = _FakeLive([InputTranscript("hi there"), OutputTranscript("hello")])
+    log = _FakeLog()
+    # Both individual live blocks fail (during pump() AND finalize()'s own
+    # forced final flush) -- but NOT the differently-worded joined summary
+    # text, so the fallback post at the bottom of finalize() still lands.
+    log.comment_raises_for = {"USER: hi there", "ASSISTANT: hello"}
+    b = _bridge(
+        live,
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    b.ticket_id = "T-1"
+    await b.pump()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert log.comments == []  # confirm nothing landed live
+    b.call_sid = "C1"
+    await b.finalize()
+    assert ("T-1", "USER: hi there\nASSISTANT: hello", "solved") in log.comments
+
+
+async def test_flush_worker_failure_on_one_block_does_not_wedge_the_next() -> None:
+    """A failed post for one queued block must not stop the worker from
+    posting the block queued right after it."""
+    live = _FakeLive([InputTranscript("one"), OutputTranscript("two"), InputTranscript("three")])
+    log = _FakeLog()
+    log.comment_raises_for = {"USER: one"}
+    b = _bridge(
+        live,
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    b.ticket_id = "T-1"
+    await b.pump()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert not any(c[1] == "USER: one" for c in log.comments)
+    assert ("T-1", "ASSISTANT: two", None) in log.comments
+
+
+async def test_flush_worker_posts_multiple_blocks_in_speaking_order() -> None:
+    live = _FakeLive(
+        [
+            InputTranscript("one"),
+            OutputTranscript("two"),
+            InputTranscript("three"),
+            OutputTranscript("four"),
+        ]
+    )
+    log = _FakeLog()
+    b = _bridge(
+        live,
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    b.ticket_id = "T-1"
+    await b.pump()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    posted_texts = [c[1] for c in log.comments]
+    assert posted_texts == ["USER: one", "ASSISTANT: two", "USER: three"]
+
+
+async def test_finalize_does_not_hang_forever_if_the_flush_drain_stalls(monkeypatch: Any) -> None:
+    """A stalled Chatwoot call while draining queued live blocks must not
+    hold finalize() open indefinitely: the drain wait is bounded, and once
+    it gives up, finalize() must still reach the closing summary/status
+    update below (the last-resort guarantee) instead of hanging."""
+    monkeypatch.setattr(bridge_module, "_FLUSH_DRAIN_TIMEOUT_SECONDS", 0.05)
+    live = _FakeLive([InputTranscript("hi there"), OutputTranscript("hello")])
+    log = _FakeLog()
+
+    async def hanging_comment(
+        ticket_id: str, text: str, status: str | None = None
+    ) -> ConversationLogResult:
+        if text == "USER: hi there":
+            await asyncio.sleep(10)  # never completes within the test's own timeout
+        log.comments.append((ticket_id, text, status))
+        return ConversationLogResult.OK
+
+    log.append_conversation_comment = hanging_comment  # type: ignore[method-assign]
+    b = _bridge(
+        live,
+        [],
+        log,
+        settings=Settings(_env_file=None, phone_transcript_live_enabled=True),
+    )
+    b.ticket_id = "T-1"
+    await b.pump()  # queues "USER: hi there"; its post stalls in the background
+    b.call_sid = "C1"
+    # finalize() must return well within the drain timeout + normal work,
+    # not hang waiting on the stalled block.
+    await asyncio.wait_for(b.finalize(), timeout=1.0)
+    # Nothing was successfully posted live (the one attempt stalled and got
+    # cancelled), so the fallback whole-transcript summary must still land.
+    assert ("T-1", "USER: hi there\nASSISTANT: hello", "solved") in log.comments

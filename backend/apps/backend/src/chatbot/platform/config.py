@@ -394,9 +394,7 @@ class Settings(BaseSettings):
     # Same fail-open pattern as CASE_TAXONOMY_JSON. Empty -> the vehicle_model
     # custom attribute is never offered/written (byte-identical to today) —
     # tenants with no product-line concept simply leave this unset.
-    vehicle_models_json: str = (
-        '{"options": ["e.MAS 5", "e.MAS 7", "e.MAS 7 PHEV", "Not Applicable"]}'
-    )
+    vehicle_models_json: str = '{"options": ["e.MAS 5", "e.MAS 7", "e.MAS 7 PHEV", "Not Applicable"]}'
 
     # Case-type dimension (Inquiry/Complaint/Feedback) — JSON object
     # {"options": [str, ...]}. Same fail-open pattern. Ships with a working
@@ -422,8 +420,8 @@ class Settings(BaseSettings):
     # When true (default), escalation emails CC the department's configured
     # cc_emails (the "relevant personnel" beyond the To-recipient PIC).
     escalation_cc_pic: bool = True
-    escalation_level2_whatsapp: str = ""  # E.164, e.g. "+60112345678"
-    escalation_tier2_hours: float = 4.0  # hours after first breach before level-2 alert
+    escalation_level2_whatsapp: str = ""   # E.164, e.g. "+60112345678"
+    escalation_tier2_hours: float = 4.0   # hours after first breach before level-2 alert
 
     # EM-7: two-thread email escalation for natively-escalated Email-channel
     # conversations (agent applies the `escalate` label). Independent of the

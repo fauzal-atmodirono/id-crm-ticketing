@@ -22,6 +22,7 @@ from chatbot.features.chat.phone.live_events import (
     ToolCall,
 )
 from chatbot.features.chat.phone.transcript_sink import TranscriptSink
+from chatbot.features.chat.ports import ConversationLogResult
 
 if TYPE_CHECKING:
     from chatbot.features.chat.phone.gemini_live import LiveSession
@@ -29,6 +30,13 @@ if TYPE_CHECKING:
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
+
+# Cap on waiting for the flush worker to drain in finalize(): each queued
+# block is one Chatwoot HTTP call at the adapter's own 10s timeout, and
+# finalize() runs on the websocket teardown path -- without a ceiling, a
+# blackholed Chatwoot at hangup would hold that path open for 10s per queued
+# block instead of ~10s total.
+_FLUSH_DRAIN_TIMEOUT_SECONDS = 10.0
 
 
 class PhoneBridge:
@@ -67,6 +75,16 @@ class PhoneBridge:
         # each block as its own concurrent task would race on the network).
         self._flush_queue: asyncio.Queue[str] = asyncio.Queue()
         self._flush_worker: asyncio.Task[None] | None = None
+        # Ticket creation at "start" is fire-and-forget (see handle_twilio):
+        # a blackholed Chatwoot must not hold up Gemini's greeting or the
+        # first bytes of caller audio. finalize() awaits this task so it
+        # never races finalize()'s own decision to reuse vs. fall back.
+        self._ticket_create_task: asyncio.Task[None] | None = None
+        # True once ANY live block has been successfully posted (during
+        # pump() or finalize()'s own forced flush) -- lets finalize() avoid
+        # posting the whole transcript a second time when it's already in
+        # the ticket turn-by-turn.
+        self._live_blocks_posted = False
 
     async def handle_twilio(self, msg: dict[str, object]) -> None:
         event = msg.get("event")
@@ -80,9 +98,24 @@ class PhoneBridge:
                 if (
                     self.call_sid
                     and self.ticket_id is None
+                    and (self._ticket_create_task is None or self._ticket_create_task.done())
                     and self._settings.phone_transcript_live_enabled
                 ):
-                    await self._create_ticket_at_start(self.call_sid)
+                    # Fire-and-forget: NEVER await this here. This branch also
+                    # runs mid-call if Twilio resends "start" on a reconnect,
+                    # which is inside from_twilio()'s receive loop feeding
+                    # caller audio to Gemini -- an inline await would stall
+                    # that audio, not just call setup. ensure_conversation_
+                    # ticket can take up to ~30s (several sequential HTTP
+                    # calls) on a blackholed Chatwoot; that must never show up
+                    # as dead air. The `ticket_id is None` guard alone isn't
+                    # enough to stop a second concurrent create on a rapid
+                    # reconnect (ticket_id stays None until the task actually
+                    # runs), so also check the task itself isn't still
+                    # in-flight.
+                    self._ticket_create_task = asyncio.create_task(
+                        self._create_ticket_at_start(self.call_sid)
+                    )
         elif event == "media":
             media = msg.get("media")
             if isinstance(media, dict):
@@ -95,18 +128,26 @@ class PhoneBridge:
     async def _create_ticket_at_start(self, call_sid: str) -> None:
         """Create the conversation's ticket as soon as the call starts.
 
-        Fail-open: a Chatwoot outage here must degrade to "no ticket yet,
-        no live transcript" rather than drop the call -- the caller (the
-        websocket handler) awaits this in series with nothing else running
-        yet, so a slow/failing call here delays call setup, not live audio.
+        Runs as a detached background task (see handle_twilio) so a slow or
+        blackholed Chatwoot never delays the greeting or caller audio.
         ``ensure_conversation_ticket`` is keyed on session_id (find-or-
         create), so a retried/duplicated "start" event, or finalize()'s own
         fallback create, safely resolves to the SAME ticket -- never a
         second one for the same call.
+
+        Fail-open covers more than exceptions: ``ConversationLogPort``
+        implementations are not required to raise on failure.
+        ``ChatwootAdapter`` in particular fails open by returning
+        ``session_id`` itself (its own find-or-create sentinel for "the
+        create didn't get an id back") rather than raising, and deliberately
+        does NOT cache that outcome, so a later call retries instead of
+        repeating the failure forever. Treating that truthy-but-fake id as a
+        real ticket would silently stream every live block at a conversation
+        that doesn't exist, so it's treated identically to an exception.
         """
         session_id = f"phone-{call_sid}"
         try:
-            self.ticket_id = await self._log_port.ensure_conversation_ticket(
+            ticket_id = await self._log_port.ensure_conversation_ticket(
                 session_id=session_id,
                 subject=f"[phone] Conversation {session_id}",
                 customer_name=None,
@@ -114,6 +155,15 @@ class PhoneBridge:
             )
         except Exception as e:
             _log.error("phone_ticket_create_failed", session_id=session_id, error=str(e))
+            return
+        if ticket_id == session_id:
+            _log.error(
+                "phone_ticket_create_failed",
+                session_id=session_id,
+                error="log port returned the session_id sentinel (create failed, fail-open)",
+            )
+            return
+        self.ticket_id = ticket_id
 
     def _poll_transcript_flush(self) -> None:
         """Check whether the sink has a block due to post, and if so queue
@@ -156,11 +206,23 @@ class PhoneBridge:
                 return
             ticket_id = self.ticket_id
             if ticket_id is None:
-                return  # ticket vanished (shouldn't happen); nothing to post to
+                # Not reachable via the current call sites (both only queue
+                # once self.ticket_id is set) but drain rather than abandon:
+                # returning here would leave this and every later queued
+                # block stuck behind a worker that's already exited.
+                _log.error("phone_transcript_flush_no_ticket", call_sid=self.call_sid, block=block)
+                continue
             try:
-                await self._log_port.append_conversation_comment(ticket_id, block)
+                result = await self._log_port.append_conversation_comment(ticket_id, block)
             except Exception as e:
                 _log.error("phone_transcript_flush_failed", call_sid=self.call_sid, error=str(e))
+                continue
+            if result != ConversationLogResult.OK:
+                _log.error(
+                    "phone_transcript_flush_failed", call_sid=self.call_sid, result=str(result)
+                )
+                continue
+            self._live_blocks_posted = True
 
     def _append_transcript(self, role: str, text: str) -> None:
         # Gemini Live streams transcription as incremental deltas; concatenate
@@ -233,6 +295,21 @@ class PhoneBridge:
                 self._poll_transcript_flush()
 
     async def finalize(self) -> None:
+        # Settle any in-flight call-start ticket creation FIRST (it's a
+        # detached task -- see handle_twilio) so self.ticket_id reflects its
+        # outcome before we decide whether there's anywhere to flush the
+        # trailing sink content to, and before the ticket-id fallback below
+        # runs. _create_ticket_at_start never raises out of itself, but this
+        # is still wrapped defensively -- finalize() is the last-resort path
+        # that must get to the summary/status update below no matter what.
+        if self._ticket_create_task is not None:
+            try:
+                await self._ticket_create_task
+            except Exception as e:
+                _log.error(
+                    "phone_finalize_ticket_task_failed", call_sid=self.call_sid, error=str(e)
+                )
+
         # Force out whatever's left in the live-transcript sink (a partial
         # turn, or something that hadn't hit the flush interval yet) BEFORE
         # the whole-transcript summary comment below, so streamed blocks and
@@ -248,7 +325,18 @@ class PhoneBridge:
         ):
             self._flush_worker = asyncio.create_task(self._run_flush_worker())
         if self._flush_worker is not None:
-            await self._flush_worker
+            # Never let a slow drain or a worker failure skip the summary/
+            # status update below -- that's the last-resort guarantee that
+            # the call gets recorded at all. Bounded wait: each queued block
+            # is one HTTP call at the adapter's own 10s timeout, so an
+            # unbounded await here could hold the websocket teardown path
+            # open for 10s per queued block.
+            try:
+                await asyncio.wait_for(self._flush_worker, timeout=_FLUSH_DRAIN_TIMEOUT_SECONDS)
+            except Exception as e:
+                _log.error(
+                    "phone_finalize_flush_drain_failed", call_sid=self.call_sid, error=str(e)
+                )
 
         if not self.transcript or not self.call_sid:
             return
@@ -273,7 +361,22 @@ class PhoneBridge:
                     f"{self.handoff.get('reason', '')}\n{self.handoff.get('summary', '')}"
                 )
                 await self._log_port.append_conversation_comment(ticket_id, note, status="open")
-            await self._log_port.append_conversation_comment(ticket_id, body, status=status)
+            # With live streaming on and at least one block already
+            # successfully posted (during pump() or the forced flush just
+            # above), the ticket already holds the transcript turn-by-turn --
+            # posting the whole joined transcript again here would show the
+            # agent the call twice. Post a short closing comment that still
+            # carries the status flip instead. When nothing was successfully
+            # posted live (flag off, ticket creation failed, Chatwoot down
+            # throughout, or a very short call that never hit a flush point),
+            # fall back to today's behaviour: the whole transcript is the
+            # only record, so it must still be posted in full.
+            if self._settings.phone_transcript_live_enabled and self._live_blocks_posted:
+                await self._log_port.append_conversation_comment(
+                    ticket_id, "[Call ended]", status=status
+                )
+            else:
+                await self._log_port.append_conversation_comment(ticket_id, body, status=status)
             await self._log_port.set_ticket_external_id(ticket_id, session_id)
             if self.handoff is None and self.csat_score is not None:
                 await record_csat_on_ticket(self._log_port, ticket_id, self.csat_score, "phone")

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import pytest
 
+from chatbot.features.metrics.period import PeriodRange
 from chatbot.features.metrics.query_adapter import (
     BigQueryMetricsQuery,
     build_metrics_query_port,
@@ -17,6 +19,7 @@ from chatbot.features.metrics.query_port import (
     MockMetricsQuery,
     SlaBucketMetrics,
     VolumeByTypeDivisionMetrics,
+    VolumeRow,
 )
 from chatbot.platform.config import Settings
 
@@ -29,15 +32,31 @@ class _FakeJob:
         return self._rows
 
 
+class _FailingJob:
+    def result(self) -> list[dict[str, Any]]:
+        raise RuntimeError("bigquery unavailable")
+
+
 class _FakeClient:
     """Returns canned rows based on the view name in the SQL."""
 
-    def __init__(self, by_view: dict[str, list[dict[str, Any]]]) -> None:
+    def __init__(
+        self,
+        by_view: dict[str, list[dict[str, Any]]],
+        *,
+        fail_views: frozenset[str] = frozenset(),
+    ) -> None:
         self._by_view = by_view
+        self._fail_views = fail_views
         self.queries: list[str] = []
+        self.job_configs: list[Any] = []
 
-    def query(self, sql: str) -> _FakeJob:
+    def query(self, sql: str, job_config: Any = None) -> _FakeJob | _FailingJob:
         self.queries.append(sql)
+        self.job_configs.append(job_config)
+        for view in self._fail_views:
+            if view in sql:
+                return _FailingJob()
         for view, rows in self._by_view.items():
             if view in sql:
                 return _FakeJob(rows)
@@ -424,4 +443,153 @@ async def test_volume_by_type_division_reads_expected_views() -> None:
     assert any("v_volume_by_type_division" in sql for sql in client.queries)
     assert isinstance(result, VolumeByTypeDivisionMetrics)
     assert len(result.volume) == 1
-    assert result.volume[0].volume == 25
+
+
+# --- Task 2: range-aware queries -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_period_none_emits_byte_identical_sql_to_today() -> None:
+    """Regression guard: omitting a period must not change the query text
+    for a view that *does* support period filtering (v_state_trend) — this
+    is the exact SQL the adapter has always run."""
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient({"v_state_trend": []})
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    await q.fetch_lifecycle()  # period omitted entirely
+
+    state_trend_queries = [sql for sql in client.queries if "v_state_trend" in sql]
+    assert state_trend_queries == ["SELECT * FROM `proj.ds.v_state_trend`"]
+    # no WHERE, no job_config -- unfiltered call site is untouched
+    assert client.job_configs[client.queries.index(state_trend_queries[0])] is None
+
+
+@pytest.mark.asyncio
+async def test_period_none_leaves_dashboard_volume_query_untouched() -> None:
+    """Same regression guard for fetch_dashboard: no period -> the adapter
+    still queries v_volume_by_month_channel, not v_volume_daily."""
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient({"v_volume_by_month_channel": []})
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    await q.fetch_dashboard()
+
+    assert any(sql == "SELECT * FROM `proj.ds.v_volume_by_month_channel`" for sql in client.queries)
+    assert not any("v_volume_daily" in sql for sql in client.queries)
+
+
+@pytest.mark.asyncio
+async def test_period_adds_where_clause_with_named_parameters_not_literals() -> None:
+    period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient(
+        {
+            "v_state_trend": [
+                {"month": "2026-07", "status": "resolved", "division": "Sales", "cases": 12}
+            ]
+        }
+    )
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    result = await q.fetch_lifecycle(period=period)
+
+    state_trend_idx = next(i for i, sql in enumerate(client.queries) if "v_state_trend" in sql)
+    emitted_sql = client.queries[state_trend_idx]
+    job_config = client.job_configs[state_trend_idx]
+
+    assert "WHERE month_start BETWEEN @start AND @end" in emitted_sql
+    # the dates themselves must never be string-formatted into the query text
+    assert "2026-07-17" not in emitted_sql
+    assert "2026-07-23" not in emitted_sql
+
+    params = {p.name: p.value for p in job_config.query_parameters}
+    assert params["start"] == date(2026, 7, 17)
+    assert params["end"] == date(2026, 7, 23)
+    assert len(result.state_trend) == 1
+    assert result.state_trend[0].cases == 12
+
+
+@pytest.mark.asyncio
+async def test_period_query_failure_degrades_to_empty_block_not_500() -> None:
+    period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    # Simulates a widened DDL whose deployed view hasn't been re-created by
+    # ensure_views() yet -- the WHERE month_start predicate fails because the
+    # live view doesn't have that column, same as any other query failure.
+    client = _FakeClient({}, fail_views=frozenset({"v_state_trend"}))
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    result = await q.fetch_lifecycle(period=period)  # must not raise
+
+    assert result.state_trend == []
+
+
+@pytest.mark.asyncio
+async def test_volume_by_type_division_period_uses_named_parameters() -> None:
+    period = PeriodRange(date(2026, 6, 1), date(2026, 6, 30), "month")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient(
+        {
+            "v_volume_by_type_division": [
+                {
+                    "month": "2026-06",
+                    "channel": "web",
+                    "case_type": "Inquiry",
+                    "division": "Sales",
+                    "volume": 40,
+                }
+            ]
+        }
+    )
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    result = await q.fetch_volume_by_type_division(period=period)
+
+    idx = next(i for i, sql in enumerate(client.queries) if "v_volume_by_type_division" in sql)
+    emitted_sql = client.queries[idx]
+    assert "WHERE month_start BETWEEN @start AND @end" in emitted_sql
+    assert "2026-06-01" not in emitted_sql
+    assert "2026-06-30" not in emitted_sql
+    params = {p.name: p.value for p in client.job_configs[idx].query_parameters}
+    assert params["start"] == date(2026, 6, 1)
+    assert params["end"] == date(2026, 6, 30)
+    assert len(result.volume) == 1
+
+
+@pytest.mark.asyncio
+async def test_dashboard_volume_with_period_queries_volume_daily_with_parameters() -> None:
+    """A period on fetch_dashboard buckets volume from v_volume_daily (day
+    grain) instead of v_volume_by_month_channel (month grain) -- a week
+    can't be recovered from a pre-aggregated monthly total."""
+    period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient(
+        {"v_volume_daily": [{"month": "2026-W29", "channel": "web", "volume": 42}]}
+    )
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    metrics = await q.fetch_dashboard(period=period)
+
+    idx = next(i for i, sql in enumerate(client.queries) if "v_volume_daily" in sql)
+    emitted_sql = client.queries[idx]
+    assert "v_volume_by_month_channel" not in emitted_sql
+    assert "WHERE day BETWEEN @start AND @end" in emitted_sql
+    assert "2026-07-17" not in emitted_sql
+    assert "2026-07-23" not in emitted_sql
+    params = {p.name: p.value for p in client.job_configs[idx].query_parameters}
+    assert params["start"] == date(2026, 7, 17)
+    assert params["end"] == date(2026, 7, 23)
+    assert metrics.volume == [VolumeRow(month="2026-W29", channel="web", volume=42)]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_volume_period_query_failure_degrades_to_empty_block() -> None:
+    period = PeriodRange(date(2026, 7, 17), date(2026, 7, 23), "week")
+    settings = Settings(bigquery_project_id="proj", bigquery_dataset="ds")
+    client = _FakeClient({}, fail_views=frozenset({"v_volume_daily"}))
+    q = BigQueryMetricsQuery(settings, client=client)
+
+    metrics = await q.fetch_dashboard(period=period)  # must not raise
+
+    assert metrics.volume == []

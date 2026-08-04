@@ -30,7 +30,9 @@ CONVERSATIONS_SCHEMA: list[bigquery.SchemaField] = [
     bigquery.SchemaField("resolved_at", "TIMESTAMP"),
     bigquery.SchemaField("reopen_count", "INT64"),
     bigquery.SchemaField("dealer", "STRING"),  # Phase-3: dealer dimension for CRR grouping
-    bigquery.SchemaField("dealer_escalated_at", "TIMESTAMP"),  # Task 10: dealer escalation timestamp
+    bigquery.SchemaField(
+        "dealer_escalated_at", "TIMESTAMP"
+    ),  # Task 10: dealer escalation timestamp
     bigquery.SchemaField("case_type", "STRING"),
     bigquery.SchemaField("vehicle_model", "STRING"),
     bigquery.SchemaField("first_response_working_minutes", "INT64"),
@@ -56,7 +58,11 @@ def _sla_bucket_case_sql(sla_targets_json: str) -> str:
             continue
         edges = spec.get("buckets_wh")
         labels = spec.get("labels")
-        if not isinstance(edges, list) or not isinstance(labels, list) or len(labels) != len(edges) + 1:
+        if (
+            not isinstance(edges, list)
+            or not isinstance(labels, list)
+            or len(labels) != len(edges) + 1
+        ):
             continue
         if not all(isinstance(label, str) for label in labels):
             continue
@@ -257,11 +263,18 @@ def view_ddls(
         "v_state_trend": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_state_trend` AS "
             f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, "
+            # Task 2 (Package E): month_start widens the view with a real DATE
+            # so range queries can filter with a named parameter instead of
+            # string-matching `month`. Same (month, status, division) grain as
+            # before -- one row per group, unchanged -- so this is additive:
+            # existing `SELECT *` readers keep getting identical rows plus one
+            # new column.
+            f"DATE_TRUNC(DATE(created_at), MONTH) AS month_start, "
             f"status, "
             f"COALESCE(division, 'Unknown') AS division, "
             f"COUNT(*) AS cases "
             f"FROM {fq} WHERE created_at IS NOT NULL "
-            f"GROUP BY month, status, division "
+            f"GROUP BY month, month_start, status, division "
             f"ORDER BY month, status"
         ),
         "v_resolution_sla_buckets": (
@@ -305,10 +318,14 @@ def view_ddls(
         ),
         "v_volume_by_type_division": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_by_type_division` AS "
-            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, channel, "
+            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, "
+            # Task 2 (Package E): same additive month_start widening as
+            # v_state_trend -- see that view's comment.
+            f"DATE_TRUNC(DATE(created_at), MONTH) AS month_start, "
+            f"channel, "
             f"COALESCE(case_type, 'Unknown') AS case_type, "
             f"COALESCE(division, 'Unknown') AS division, COUNT(*) AS volume "
-            f"FROM {fq} GROUP BY month, channel, case_type, division"
+            f"FROM {fq} GROUP BY month, month_start, channel, case_type, division"
         ),
         "v_category_by_vehicle_model": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_category_by_vehicle_model` AS "

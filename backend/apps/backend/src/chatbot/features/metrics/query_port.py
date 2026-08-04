@@ -7,8 +7,10 @@ denominator is zero or no rows match."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Protocol
+
+from chatbot.features.metrics.period import PeriodRange
 
 
 @dataclass(frozen=True)
@@ -213,6 +215,12 @@ class StateTrendRow:
     status: str
     division: str
     cases: int
+    # Added for range-aware queries (Package E / Task 2): the calendar month's
+    # first day as a real DATE, alongside the pre-existing formatted `month`
+    # string, so a period filter can use a BigQuery named parameter instead of
+    # string-matching `month`. Optional/trailing so old positional callers and
+    # rows from the pre-widening view (missing the column) still construct.
+    month_start: date | None = None
 
 
 @dataclass(frozen=True)
@@ -280,6 +288,8 @@ class VolumeByTypeDivisionRow:
     case_type: str
     division: str
     volume: int
+    # See StateTrendRow.month_start — same widening, same reason.
+    month_start: date | None = None
 
 
 @dataclass(frozen=True)
@@ -304,15 +314,24 @@ class DepartmentsMetrics:
 
 
 class MetricsQueryPort(Protocol):
-    async def fetch_dashboard(self) -> DashboardMetrics: ...
+    # `period=None` is "today's behaviour": unfiltered, all-time. Only the
+    # three methods below carry a real date-bearing view (volume, state
+    # trend, volume-by-type/division) so only they take `period`. The other
+    # views group by channel/agent/dealer/etc. with no date dimension at
+    # all -- there is nothing for a period to filter yet (see G2/G3/G6 in
+    # the Package E spec), so adding an always-ignored `period` param to
+    # them would be a dishonest API surface rather than a real capability.
+    async def fetch_dashboard(self, period: PeriodRange | None = None) -> DashboardMetrics: ...
     async def fetch_anomalies(self) -> list[AnomalyRow]: ...
     async def fetch_departments(self) -> DepartmentsMetrics: ...
     async def fetch_callcenter(self) -> CallCentreMetrics: ...
-    async def fetch_lifecycle(self) -> LifecycleMetrics: ...
+    async def fetch_lifecycle(self, period: PeriodRange | None = None) -> LifecycleMetrics: ...
     async def fetch_dealer_escalation(self) -> DealerEscalationMetrics: ...
     async def fetch_sla_buckets(self) -> SlaBucketMetrics: ...
     async def fetch_case_aging(self) -> CaseAgingMetrics: ...
-    async def fetch_volume_by_type_division(self) -> VolumeByTypeDivisionMetrics: ...
+    async def fetch_volume_by_type_division(
+        self, period: PeriodRange | None = None
+    ) -> VolumeByTypeDivisionMetrics: ...
 
 
 class MockMetricsQuery:
@@ -344,7 +363,8 @@ class MockMetricsQuery:
             nps_by_agent=[NpsByAgentRow("ALI001", "Phone", 30, 45.0)],
         )
 
-    async def fetch_dashboard(self) -> DashboardMetrics:
+    async def fetch_dashboard(self, period: PeriodRange | None = None) -> DashboardMetrics:
+        del period  # mock always returns the same canned payload
         return DashboardMetrics(
             volume=[
                 VolumeRow(month="2026-05", channel="web", volume=120),
@@ -384,7 +404,8 @@ class MockMetricsQuery:
             ],
         )
 
-    async def fetch_lifecycle(self) -> LifecycleMetrics:
+    async def fetch_lifecycle(self, period: PeriodRange | None = None) -> LifecycleMetrics:
+        del period  # mock always returns the same canned payload
         return LifecycleMetrics(
             cases=[
                 CaseLifecycleRow(
@@ -432,13 +453,23 @@ class MockMetricsQuery:
         return CaseAgingMetrics(
             cases=[
                 CaseAgingRow(
-                    "CONV099", "Complaint", "Sales", "Dealer KL", "Ali", "open",
-                    created_at=None, age_days=4.0, bucket_label="4-6 days",
+                    "CONV099",
+                    "Complaint",
+                    "Sales",
+                    "Dealer KL",
+                    "Ali",
+                    "open",
+                    created_at=None,
+                    age_days=4.0,
+                    bucket_label="4-6 days",
                 )
             ]
         )
 
-    async def fetch_volume_by_type_division(self) -> VolumeByTypeDivisionMetrics:
+    async def fetch_volume_by_type_division(
+        self, period: PeriodRange | None = None
+    ) -> VolumeByTypeDivisionMetrics:
+        del period  # mock always returns the same canned payload
         return VolumeByTypeDivisionMetrics(
             volume=[VolumeByTypeDivisionRow("2026-06", "WhatsApp", "Inquiry", "Sales", 682)]
         )

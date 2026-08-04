@@ -246,7 +246,7 @@ the maths itself is pinned here.
 ### 11.1 What the reconciliation tests prove, and what they don't
 
 New file: `backend/apps/backend/src/chatbot/features/metrics/test_deck_reconciliation.py`
-(7 tests, all passing). Each test wires the *real* `BigQueryMetricsQuery`
+(8 tests, all passing). Each test wires the *real* `BigQueryMetricsQuery`
 adapter (§5.2's `_day_grain_block_for_period`/`_volume_block_for_period`,
 i.e. the actual dict → dataclass row mapping and day-grain SQL construction)
 into the *real* `build_metrics_insights_router` (the actual current/previous
@@ -263,14 +263,28 @@ Proven, through that real path:
   297-vs-240 fixture (this task's numbers were not invented; they anchor to
   what Task 2/3 already pinned at the arithmetic-primitive level).
 - **Weekly channel mix: WhatsApp 73% / Phone 16% / Email 9% / Social 2%** —
-  a 217/48/27/5 split (sums to 297), share computed sum-then-divide in the
-  same operation order as `ProtonWeeklyReport.vue`'s `channelMix` computed
-  property (fork patch `0044`), not a per-row average.
+  a 217(=140+77)/48/27/5 split (sums to 297), share computed sum-then-divide
+  in the same operation order as `ProtonWeeklyReport.vue`'s `channelMix`
+  computed property (fork patch `0044`), not a per-row average. WhatsApp's
+  217 is deliberately split across two rows with different
+  `case_type`/`division` (140 + 77) rather than one row of 217 — a review
+  finding: with exactly one row per channel, sum-then-divide and
+  per-row-average are numerically identical, so a single-row fixture cannot
+  tell a correct implementation from a buggy one. A dedicated test,
+  `test_weekly_channel_mix_fixture_would_catch_a_per_row_average_bug`,
+  computes both the real (`_channel_shares`, sum-then-divide) and a
+  deliberately-buggy (per-row-average) result from the same rows and asserts
+  they diverge (73% vs. 36.5%) — proving the fixture, not just the helper,
+  has the power to catch this class of bug.
 - **Weekly division split: Sales 49 / Aftersales 47 / Apps 39 / Charging 26 /
   Product 9 / Marketing 9 / Others 85** — summed from the router's real rows,
   grouped by division. Uses its own fixture, separate from the total/
   channel-mix one — see the discrepancy log (§11.3): the division split sums
-  to 264, not 297, and that gap is in the deck itself, not in this code.
+  to 264, not 297, and that gap is in the deck itself, not in this code. This
+  fixture is still one row per division (unlike the channel-mix fixture
+  above): noted, not fixed, because no operation-order claim rides on it —
+  `_division_totals` is a flat sum, and a sum over one row per group vs. many
+  rows per group cannot diverge the way sum-vs-average can for a share.
 - **Monthly case-type totals, June 2026: Inquiry 1024 / Complaint 770 /
   Feedback 17**, summing to the deck's total cases 1811, through the same
   adapter/router path at month granularity (the day-grain view and the

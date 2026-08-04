@@ -187,13 +187,34 @@ def _weekly_client() -> TestClient:
             #    48/297 = 16.16% -> 16
             #    27/297 =  9.09% ->  9
             #     5/297 =  1.68% ->  2
+            #
+            # WhatsApp's 217 is deliberately split across two rows with
+            # different case_type/division (140 + 77), not one row of 217 --
+            # review finding (2026-08-04): with exactly one row per channel,
+            # "sum volumes per channel, then divide" and "average the
+            # per-row shares" are mathematically identical, so a single-row
+            # fixture cannot distinguish a correct sum-then-divide
+            # implementation from a buggy per-row-average one (the two
+            # differ only once a channel spans multiple rows, which is
+            # exactly the real shape of `v_volume_by_type_division_daily`
+            # data -- one row per (channel, case_type, division)). With the
+            # split, a per-row-average bug on WhatsApp would compute
+            # (140/297 + 77/297) / 2 = 36.5%, not 73%, so this fixture would
+            # actually catch it.
             ("v_volume_by_type_division_daily", "2026-07-17"): [
                 {
                     "month": "2026-W29",
                     "channel": "WhatsApp",
                     "case_type": "Inquiry",
                     "division": "Sales",
-                    "volume": 217,
+                    "volume": 140,
+                },
+                {
+                    "month": "2026-W29",
+                    "channel": "WhatsApp",
+                    "case_type": "Complaint",
+                    "division": "Aftersales",
+                    "volume": 77,
                 },
                 {
                     "month": "2026-W29",
@@ -274,6 +295,39 @@ def test_weekly_channel_mix_matches_the_deck() -> None:
     # arithmetic.
 
 
+def _per_row_average_share(rows: list[dict[str, Any]], channel: str) -> float:
+    """The buggy alternative to `_channel_shares` that the fixture above
+    must be able to rule out: average each matching row's own share of the
+    grand total, instead of summing volumes per channel first. Exists only
+    in this test, to prove the fixture has the power to catch this bug --
+    see `test_weekly_channel_mix_fixture_would_catch_a_per_row_average_bug`.
+    """
+    total = sum(row["volume"] for row in rows)
+    per_row_shares = [row["volume"] / total for row in rows if row["channel"] == channel]
+    return sum(per_row_shares) / len(per_row_shares)
+
+
+def test_weekly_channel_mix_fixture_would_catch_a_per_row_average_bug() -> None:
+    """Regression guard on the fixture itself (review finding, 2026-08-04):
+    with exactly one row per channel, "sum then divide" and "average the
+    per-row shares" are mathematically identical, so a single-row-per-channel
+    fixture cannot tell a correct implementation from a buggy one. WhatsApp's
+    217 is split into two rows (140 + 77, different case_type/division)
+    specifically so the two approaches diverge -- this test proves they
+    actually do, and that `_channel_shares` (sum-then-divide, matching
+    `ProtonWeeklyReport.vue`'s `channelMix`) lands on the deck's 73% while
+    the per-row-average alternative does not."""
+    body = _get_volume_by_type(_weekly_client(), _CURRENT_WEEK)
+    rows = body["current"]["volume"]
+
+    correct = _channel_shares(rows)["WhatsApp"]
+    buggy = _per_row_average_share(rows, "WhatsApp")
+
+    assert round(correct * 100) == 73
+    assert round(buggy * 100) != 73  # (140/297 + 77/297) / 2 = 36.5%, not 73%
+    assert correct != buggy
+
+
 # --- Weekly deck, division split --------------------------------------------
 #
 # Sales 49 / Aftersales 47 / Apps 39 / Charging 26 / Product 9 / Marketing 9
@@ -295,6 +349,15 @@ def test_weekly_channel_mix_matches_the_deck() -> None:
 # the screen. That is a genuine UI gap, recorded in the spec, not fixed
 # here (out of scope for this task: the fork's Vue page is not part of this
 # backend test suite's remit).
+#
+# NOTE (review, 2026-08-04): this fixture is one row per division, the same
+# simplification the channel-mix fixture above had before it was fixed to
+# span multiple rows per channel. Unlike channel-mix, no operation-order
+# claim rides on the division split -- `_division_totals` is a flat sum, and
+# sum-of-one-row-per-group vs. sum-of-many-rows-per-group cannot diverge for
+# a pure sum the way sum-vs-average can for a share. Left as-is; noted here
+# so a future reader auditing this file's rigour finds it stated rather than
+# having to work it out.
 
 
 def test_weekly_division_split_matches_the_deck() -> None:

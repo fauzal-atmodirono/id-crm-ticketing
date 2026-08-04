@@ -493,9 +493,22 @@ class PhoneBridge:
         Deliberately distinct from `/webhooks/phone/dial-status`'s
         unanswered-call fallback (apology TwiML + `open` + an
         `unanswered_handoff` tag): that only applies once a dial has
-        ACTUALLY been placed and Twilio reports nobody picked up. Nothing
-        here ever reaches that point unless `redirect()` below returns
-        True.
+        ACTUALLY been placed and Twilio reports nobody picked up.
+
+        Review fix (Important 3, round 2): this is true whenever `redirect()`
+        returns normally, but NOT airtight against the bounded
+        `asyncio.wait_for` above -- `CallControl.redirect`'s Twilio SDK call
+        runs in a thread (`asyncio.to_thread`); `wait_for`'s timeout cancels
+        our AWAIT of that thread, not the thread itself, so a redirect that
+        actually lands on Twilio's side just after the bound expires would
+        leave `_transfer_dialed` False (and this returning "ticket_created")
+        even though a `<Dial>` may be in flight. `CallControl`'s own
+        SDK-level HTTP timeout (see `call_control.py`) is what actually
+        prevents that in practice by making a slow call FAIL well before
+        this bound, rather than merely abandoning an in-flight one -- this
+        bound exists as the audio-pump guarantee, the SDK timeout as the
+        "don't leave state inconsistent" guarantee. The two together make
+        that race exceptional, not eliminate it outright.
         """
         # Review fix (Important 2): a transfer already in flight must not
         # be re-dialled by a second request_human_handoff call arriving

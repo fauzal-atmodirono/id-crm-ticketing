@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from chatbot.features.chat.router import build_chat_router
@@ -60,7 +61,9 @@ def test_incoming_omits_say_when_recording_enabled_without_announcement() -> Non
     assert "<Say>" not in res.text
 
 
-def test_incoming_omits_say_when_no_callback_base_configured() -> None:
+def test_incoming_omits_say_when_no_callback_base_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Review minor fix: without twilio_webhook_base_url, _maybe_start_
     recording refuses to actually start recording at all (no callback URL
     to build) -- the caller must not be TOLD the call is recorded in that
@@ -70,11 +73,16 @@ def test_incoming_omits_say_when_no_callback_base_configured() -> None:
     s.public_wss_base_url = "wss://tunnel.test"
     s.phone_recording_enabled = True
     s.phone_recording_announcement = "This call is recorded."
-    # get_settings() is a cached singleton shared across this file's tests
-    # (see the other cases here, which all mutate it directly) -- set this
-    # explicitly rather than relying on "unset", since an earlier test in
-    # this file may have already set it on the SAME instance.
-    s.twilio_webhook_base_url = ""
+    # Review fix (Minor, round 2): get_settings() is a cached singleton
+    # shared across this file's tests (and, in a full suite run, every
+    # other test that calls it). monkeypatch.setattr -- unlike the plain
+    # `s.twilio_webhook_base_url = "..."` the other cases here use --
+    # restores the ORIGINAL value automatically at teardown, so clearing
+    # it here can't leak a blanked-out base url into whatever test runs
+    # next (the order-dependent direction a plain assignment risks: the
+    # other cases only ever SET a truthy value, which is comparatively
+    # harmless since later tests overwrite it anyway).
+    monkeypatch.setattr(s, "twilio_webhook_base_url", "")
     orch._settings = s
     res = _client(orch).post("/voice/phone/incoming")
     assert "<Say>" not in res.text

@@ -713,6 +713,10 @@ def test_dial_status_unanswered_outcomes_apologise_and_tag(status: str) -> None:
 
     assert res.status_code == 200
     assert "<Say " in res.text and "<Hangup/>" in res.text
+    # Review fix (Minor, round 2): language= alone doesn't select a Malay
+    # voice -- both attributes must be present for each segment.
+    assert 'language="en-US"' in res.text and 'voice="Google.en-US-Standard-C"' in res.text
+    assert 'language="ms-MY"' in res.text and 'voice="Google.ms-MY-Standard-A"' in res.text
     assert log.found_calls == ["phone-CA1"]
     assert log.comments and log.comments[0] == (
         "T-1",

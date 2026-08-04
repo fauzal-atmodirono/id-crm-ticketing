@@ -37,7 +37,12 @@ from chatbot.features.chat.phone.handoff_csat_tools import REQUEST_HANDOFF_TOOL,
 from chatbot.features.chat.phone.kb_tool import KB_SEARCH_TOOL
 from chatbot.features.chat.phone.rate_limit import RateLimiter
 from chatbot.features.chat.phone.token import mint_voice_token
-from chatbot.features.chat.phone.twiml import connect_stream_twiml, fallback_twiml
+from chatbot.features.chat.phone.twiml import (
+    GOOGLE_VOICE_EN_US,
+    GOOGLE_VOICE_MS_MY,
+    connect_stream_twiml,
+    fallback_twiml,
+)
 from chatbot.features.chat.ports import AuditEntry, AuditLogPort, HumanAgentBridgePort
 from chatbot.features.chat.schemas import (
     ChatwootWebhookPayload,
@@ -1345,11 +1350,16 @@ class ChatRouter:
             "speak a language and NEVER hand off merely because of language. "
             "Use the kb_search tool to ground answers in the "
             "Proton knowledge base before giving facts. If you cannot resolve the caller's "
-            "issue, they ask for a human, or it is a complaint or sensitive matter: FIRST say a "
-            "short line telling the caller you are connecting them to a specialist now, THEN "
-            "call request_human_handoff with a short reason and summary — once you call it you "
-            "may be transferred immediately and unable to say anything further on this call, so "
-            "say the line before calling the tool, never after. "
+            "issue, they ask for a human, or it is a complaint or sensitive matter: a live "
+            "transfer is not always possible, so BEFORE calling request_human_handoff say "
+            "something like 'Let me try to get a specialist for you now — if I can't connect "
+            "you right away, they'll call you back soon,' THEN call request_human_handoff with "
+            "a short reason and summary — once you call it you may be transferred immediately "
+            "and unable to say anything further on this call, so say that line before calling "
+            'the tool, never after. Then check the tool\'s status: if it is "transferring", '
+            "say nothing further — you may already be off the line. If it is "
+            '"ticket_created", tell the caller a live transfer was not possible right now but '
+            "a specialist has the details and will call them back. "
             "After you answer, ask if there is anything else you can "
             "help with, and keep helping across as many questions as the caller has. Do NOT ask "
             "for a rating mid-conversation. ONLY once the caller clearly signals they are finished "
@@ -1617,8 +1627,8 @@ class ChatRouter:
         return Response(
             content=fallback_twiml(
                 [
-                    (_UNANSWERED_HANDOFF_APOLOGY_EN, "en-US"),
-                    (_UNANSWERED_HANDOFF_APOLOGY_MS, "ms-MY"),
+                    (_UNANSWERED_HANDOFF_APOLOGY_EN, "en-US", GOOGLE_VOICE_EN_US),
+                    (_UNANSWERED_HANDOFF_APOLOGY_MS, "ms-MY", GOOGLE_VOICE_MS_MY),
                 ]
             ),
             media_type="application/xml",

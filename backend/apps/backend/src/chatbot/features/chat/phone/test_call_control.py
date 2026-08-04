@@ -84,3 +84,34 @@ async def test_client_construction_failure_is_fail_open(monkeypatch, settings):
     cc = CallControl(settings)  # no injected client -> forces lazy construction
     assert await cc.redirect("CA123", "<Response/>") is False
     assert await cc.start_recording("CA123", "https://x/cb") is None
+
+
+async def test_lazily_constructed_client_gets_a_bounded_http_timeout(monkeypatch, settings):
+    """Review fix (Important 3, round 2): without an SDK-level timeout, a
+    blackholed Twilio API call hangs the underlying to_thread worker
+    indefinitely -- bridge.py's asyncio.wait_for only cancels our AWAIT of
+    that thread, not the thread itself. Pin that the lazily-constructed
+    real client is built with a TwilioHttpClient carrying a timeout."""
+    captured: dict[str, object] = {}
+
+    class _FakeHttpClient:
+        def __init__(self, *, timeout=None) -> None:
+            captured["timeout"] = timeout
+
+    class _FakeClient:
+        def __init__(self, sid, token, http_client=None) -> None:
+            captured["sid"] = sid
+            captured["token"] = token
+            captured["http_client"] = http_client
+
+    monkeypatch.setattr("twilio.http.http_client.TwilioHttpClient", _FakeHttpClient)
+    monkeypatch.setattr("twilio.rest.Client", _FakeClient)
+    cc = CallControl(settings)  # no injected client -> forces lazy construction
+
+    client = cc._twilio()
+
+    assert isinstance(client, _FakeClient)
+    assert isinstance(captured["http_client"], _FakeHttpClient)
+    timeout = captured["timeout"]
+    assert isinstance(timeout, (int, float))
+    assert timeout <= 5.0  # shorter than bridge.py's own bound

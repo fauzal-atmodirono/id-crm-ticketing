@@ -28,6 +28,21 @@ if TYPE_CHECKING:
 
 _log = structlog.get_logger(__name__)
 
+# Review fix (Important 3, Task 6 round 2): the Twilio SDK's own httpx-less
+# HTTP client has no timeout by default, so a blackholed Twilio API call
+# would previously hang the underlying thread indefinitely. bridge.py's
+# `asyncio.wait_for` bound around `redirect()` only cancels OUR await of
+# that thread (`asyncio.to_thread`), not the thread itself -- a redirect
+# that eventually lands on Twilio's side just past that bound would leave
+# `PhoneBridge._transfer_dialed` False even though a `<Dial>` may actually
+# be in flight, after which a second `request_human_handoff` would no
+# longer be suppressed and could replace a live call. Set here, shorter
+# than bridge.py's `_HANDOFF_REDIRECT_TIMEOUT_SECONDS` (5.0), so a slow
+# call FAILS on the SDK side well before that bound fires -- turning an
+# abandoned thread into an exceptional case, not the routine one the bound
+# alone would otherwise make it.
+_TWILIO_HTTP_TIMEOUT_SECONDS = 4.0
+
 
 class CallControl:
     def __init__(self, settings: Settings, client: Any | None = None) -> None:
@@ -45,9 +60,11 @@ class CallControl:
         if not sid or not token:
             return None
         try:
+            from twilio.http.http_client import TwilioHttpClient  # noqa: PLC0415
             from twilio.rest import Client  # noqa: PLC0415
 
-            self._client = Client(sid, token)
+            http_client = TwilioHttpClient(timeout=_TWILIO_HTTP_TIMEOUT_SECONDS)
+            self._client = Client(sid, token, http_client=http_client)
         except Exception as e:
             _log.error("call_control_client_init_failed", error=str(e))
             return None

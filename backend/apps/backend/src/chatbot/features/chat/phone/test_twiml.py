@@ -1,4 +1,9 @@
-from chatbot.features.chat.phone.twiml import connect_stream_twiml, fallback_twiml
+from chatbot.features.chat.phone.twiml import (
+    GOOGLE_VOICE_EN_US,
+    GOOGLE_VOICE_MS_MY,
+    connect_stream_twiml,
+    fallback_twiml,
+)
 
 
 def test_connect_stream_twiml_embeds_wss_url() -> None:
@@ -23,20 +28,21 @@ def test_connect_stream_twiml_with_announcement_says_before_connect() -> None:
 
 
 def test_fallback_twiml_says_message_then_hangs_up() -> None:
-    xml = fallback_twiml([("Sorry, nobody is available.", "en-US")])
+    xml = fallback_twiml([("Sorry, nobody is available.", "en-US", GOOGLE_VOICE_EN_US)])
     assert xml.startswith("<?xml")
     say_idx = xml.index("<Say")
     hangup_idx = xml.index("<Hangup/>")
     assert say_idx < hangup_idx
     assert "Sorry, nobody is available." in xml
     assert 'language="en-US"' in xml
+    assert f'voice="{GOOGLE_VOICE_EN_US}"' in xml
 
 
-def test_fallback_twiml_multiple_segments_each_get_own_say_and_language() -> None:
+def test_fallback_twiml_multiple_segments_each_get_own_say_language_and_voice() -> None:
     xml = fallback_twiml(
         [
-            ("Sorry, nobody is available.", "en-US"),
-            ("Maaf, tiada siapa tersedia.", "ms-MY"),
+            ("Sorry, nobody is available.", "en-US", GOOGLE_VOICE_EN_US),
+            ("Maaf, tiada siapa tersedia.", "ms-MY", GOOGLE_VOICE_MS_MY),
         ]
     )
     en_idx = xml.index("Sorry, nobody is available.")
@@ -46,3 +52,14 @@ def test_fallback_twiml_multiple_segments_each_get_own_say_and_language() -> Non
     assert xml.count("<Say") == 2
     assert 'language="en-US"' in xml
     assert 'language="ms-MY"' in xml
+    assert f'voice="{GOOGLE_VOICE_EN_US}"' in xml
+    assert f'voice="{GOOGLE_VOICE_MS_MY}"' in xml
+
+
+def test_google_voice_constants_match_deployed_ivr() -> None:
+    """Reused, not invented -- see deploy/twilio/README.md and
+    deploy/twilio/ivr-studio-flow.json, which already use these exact
+    Google TTS voice ids for the same reason (Amazon Polly has no Malay
+    voice)."""
+    assert GOOGLE_VOICE_EN_US == "Google.en-US-Standard-C"
+    assert GOOGLE_VOICE_MS_MY == "Google.ms-MY-Standard-A"

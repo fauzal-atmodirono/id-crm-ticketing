@@ -39,7 +39,7 @@ from typing import Protocol
 import httpx
 import structlog
 
-from chatbot.features.chat.dms_config_store import DmsConfig
+from chatbot.features.chat.dms_config_store import MAX_TIMEOUT_SECONDS, DmsConfig
 
 _log = structlog.get_logger(__name__)
 
@@ -220,6 +220,16 @@ async def probe(config: DmsConfig, credential: str, client: httpx.AsyncClient) -
     # guarantee must hold from the `try` scope itself, not from
     # `_auth_headers`/the label expression staying pure.
     label = config.base_url
+    # `DmsConfigBody` rejects an out-of-range `timeout_seconds` on write, but
+    # that constraint post-dates the field: a document saved before it
+    # existed (or by anything that bypasses the admin API) can still hold
+    # e.g. 600. `customer360_router.py` clamps on its own read path for
+    # exactly this reason; this is the same clamp for the OTHER path that
+    # reads `config.timeout_seconds` -- the admin "Test connection" button,
+    # which a human is directly waiting on. Without it, a stale document
+    # hangs that button for up to ten minutes instead of the intended ~30s
+    # ceiling.
+    timeout_seconds = min(config.timeout_seconds, MAX_TIMEOUT_SECONDS)
 
     try:
         label = config.provider_label or config.base_url
@@ -238,13 +248,13 @@ async def probe(config: DmsConfig, credential: str, client: httpx.AsyncClient) -
         response = await client.get(
             config.base_url,
             headers=headers,
-            timeout=config.timeout_seconds,
+            timeout=timeout_seconds,
             follow_redirects=False,
         )
     except httpx.TimeoutException:
         result = ProbeResult(
             status="timeout",
-            message=f"{label} did not respond within {config.timeout_seconds:g}s.",
+            message=f"{label} did not respond within {timeout_seconds:g}s.",
         )
     except httpx.HTTPError:
         result = ProbeResult(

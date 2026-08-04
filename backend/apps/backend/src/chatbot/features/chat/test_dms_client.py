@@ -23,7 +23,7 @@ from chatbot.features.chat.dms_client import (
     ProbeResult,
     probe,
 )
-from chatbot.features.chat.dms_config_store import DmsConfig
+from chatbot.features.chat.dms_config_store import MAX_TIMEOUT_SECONDS, DmsConfig
 
 CREDENTIAL = "super-secret-token-xyz"
 
@@ -137,6 +137,46 @@ async def test_probe_maps_timeout_to_timeout() -> None:
 
     result = await probe(CFG, CREDENTIAL, _client(handler))
     assert result.status == "timeout"
+
+
+async def test_probe_clamps_a_stored_timeout_above_the_ceiling() -> None:
+    """`DmsConfigBody` rejects an out-of-range `timeout_seconds` on write,
+    but that constraint post-dates the field: a document saved before it
+    existed (or written by anything that bypasses the admin API) can still
+    hold e.g. 600. `customer360_router.py` already clamps on its own read
+    path for this reason; `probe()` is the OTHER path that reads
+    `config.timeout_seconds` -- the admin "Test connection" button, which a
+    human is directly waiting on -- and must clamp too, or a stale document
+    hangs that button for up to ten minutes instead of ~30s.
+    """
+    seen_timeout: float | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_timeout
+        seen_timeout = request.extensions["timeout"]["read"]
+        return httpx.Response(200)
+
+    unclamped_cfg = replace(CFG, timeout_seconds=600.0)
+    await probe(unclamped_cfg, CREDENTIAL, _client(handler))
+
+    assert seen_timeout == MAX_TIMEOUT_SECONDS
+
+
+async def test_probe_timeout_message_reports_the_clamped_value() -> None:
+    """The timeout error message must describe the timeout `probe()` actually
+    used, not the raw (possibly unclamped) stored value -- otherwise a
+    document holding 600 would report "did not respond within 600s" for a
+    request that, per the clamp, could only ever have waited 30s.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.TimeoutException("timed out", request=request)
+
+    unclamped_cfg = replace(CFG, timeout_seconds=600.0)
+    result = await probe(unclamped_cfg, CREDENTIAL, _client(handler))
+
+    assert f"{MAX_TIMEOUT_SECONDS:g}s" in result.message
+    assert "600" not in result.message
 
 
 async def test_probe_maps_500_to_unexpected_status() -> None:

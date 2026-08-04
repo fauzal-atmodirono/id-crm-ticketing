@@ -278,9 +278,14 @@ class UnsafeInboxError(RuntimeError):
     """
 
 
-async def assert_inbox_is_safe_to_seed(inbox_id: int) -> dict:
-    """Layer 2 of the bot-safety invariant: refuse an inbox that would turn a
-    seed run into a live AI conversation.
+def inbox_seeding_refusal_reason(inbox_id: int, inbox: dict, agent_bot_response: dict) -> str | None:
+    """Pure decision for layer 2 of the bot-safety invariant: given an
+    inbox's own payload and its `GET /inboxes/{id}/agent_bot` response
+    (already unwrapped from a Chatwoot response, or `{}` if that call
+    failed/returned something unexpected), decide whether it is safe to seed
+    into. Returns `None` when safe, or a human-readable refusal reason
+    otherwise -- `assert_inbox_is_safe_to_seed` raises `UnsafeInboxError`
+    with it.
 
     Two independent reasons to refuse, both fatal:
 
@@ -296,12 +301,48 @@ async def assert_inbox_is_safe_to_seed(inbox_id: int) -> dict:
       conversations and posting `outgoing` messages there risks actually
       *delivering* demo content to whatever that inbox is connected to.
 
-    The agent-bot check reads `GET /inboxes/{id}/agent_bot`, which renders
-    `{"agent_bot": {...}}` when one is attached and `{"agent_bot": {}}` when
-    not (`app/views/api/v1/accounts/inboxes/agent_bot.json.jbuilder`). Note
+    The channel check runs first, matching the order the network wrapper
+    makes its two GETs in (so the operator error names the cheaper-to-fix
+    problem first when both are wrong).
+
+    `agent_bot_response` renders `{"agent_bot": {...}}` when a bot is
+    attached and `{"agent_bot": {}}` when not
+    (`app/views/api/v1/accounts/inboxes/agent_bot.json.jbuilder`). Note
     `Inbox#active_bot?` is broader than this endpoint (it also counts an
     enabled `dialogflow` hook), so this check is necessary, not sufficient —
     which is why `create_case` still verifies the status it got back.
+    """
+    channel_type = inbox.get("channel_type")
+    if channel_type != "Channel::Api":
+        return (
+            f"inbox {inbox_id} has channel_type {channel_type!r}, not 'Channel::Api'. "
+            "Seeding is only allowed into a dedicated API-channel inbox -- any other "
+            "channel is wired to a real transport and could deliver demo content to "
+            "real recipients. Create an API inbox for demo data and pass its id."
+        )
+
+    agent_bot = agent_bot_response.get("agent_bot") if isinstance(agent_bot_response, dict) else None
+    if isinstance(agent_bot, dict) and agent_bot.get("id") is not None:
+        return (
+            f"inbox {inbox_id} has agent bot {agent_bot.get('id')} "
+            f"({agent_bot.get('name')!r}) attached. Chatwoot forces every conversation "
+            "on a bot-enabled inbox to status 'pending' (Conversation's "
+            "before_create :determine_conversation_status), which is exactly what the "
+            "agent-bot orchestrator acts on -- seeding here would fire an AI reply per "
+            "case against a live tenant. Use an inbox with no agent bot."
+        )
+
+    return None
+
+
+async def assert_inbox_is_safe_to_seed(inbox_id: int) -> dict:
+    """Layer 2 of the bot-safety invariant: refuse an inbox that would turn a
+    seed run into a live AI conversation.
+
+    Thin I/O wrapper: fetches the inbox and its agent-bot attachment, then
+    defers the actual decision to `inbox_seeding_refusal_reason` (pure, and
+    the tested surface -- see this module's docstring for why the network
+    calls themselves aren't mock-harnessed).
 
     Returns the inbox payload so the caller can show the operator which inbox
     it just validated. Raises `UnsafeInboxError` if either check fails; HTTP
@@ -314,29 +355,15 @@ async def assert_inbox_is_safe_to_seed(inbox_id: int) -> dict:
     inbox = inbox if isinstance(inbox, dict) else {}
     await _throttle()
 
-    channel_type = inbox.get("channel_type")
-    if channel_type != "Channel::Api":
-        raise UnsafeInboxError(
-            f"inbox {inbox_id} has channel_type {channel_type!r}, not 'Channel::Api'. "
-            "Seeding is only allowed into a dedicated API-channel inbox -- any other "
-            "channel is wired to a real transport and could deliver demo content to "
-            "real recipients. Create an API inbox for demo data and pass its id."
-        )
-
     bot_response = await _chatwoot.get(_account_path(f"/inboxes/{inbox_id}/agent_bot"))
     bot_response.raise_for_status()
     bot_data = bot_response.json()
-    agent_bot = bot_data.get("agent_bot") if isinstance(bot_data, dict) else None
+    bot_data = bot_data if isinstance(bot_data, dict) else {}
     await _throttle()
-    if isinstance(agent_bot, dict) and agent_bot.get("id") is not None:
-        raise UnsafeInboxError(
-            f"inbox {inbox_id} has agent bot {agent_bot.get('id')} "
-            f"({agent_bot.get('name')!r}) attached. Chatwoot forces every conversation "
-            "on a bot-enabled inbox to status 'pending' (Conversation's "
-            "before_create :determine_conversation_status), which is exactly what the "
-            "agent-bot orchestrator acts on -- seeding here would fire an AI reply per "
-            "case against a live tenant. Use an inbox with no agent bot."
-        )
+
+    refusal = inbox_seeding_refusal_reason(inbox_id, inbox, bot_data)
+    if refusal is not None:
+        raise UnsafeInboxError(refusal)
 
     return inbox
 
@@ -529,6 +556,47 @@ def build_case_labels(case: DemoCase) -> list[str]:
     return labels
 
 
+def created_conversation_status_refusal_reason(
+    display_id: int, requested_status: str, created_status: str | None
+) -> str | None:
+    """Pure decision for layer 3 of the bot-safety invariant: given the
+    status `create_case` asked for and what Chatwoot's create response
+    reported back, decide whether it is safe to continue seeding this
+    conversation (its custom_attributes, message thread and labels) or must
+    be aborted first. Returns `None` when safe, or a human-readable refusal
+    reason otherwise -- `create_case` raises `RuntimeError` with it before
+    posting anything else.
+
+    Two refusal cases, both fail-closed:
+
+    - `created_status is None`: this Chatwoot renders no `status` on create
+      (v4.15.1 does), so the readback this layer depends on cannot be
+      performed at all. Refusing here, rather than assuming the requested
+      status stuck, is what makes this layer fail closed instead of silently
+      degrading to "layer 2 only".
+    - `created_status` is a status the agent-bot does NOT ignore (i.e. not in
+      `_BOT_SAFE_STATUSES`) -- in practice `"pending"`, forced by Chatwoot's
+      `before_create :determine_conversation_status` on any inbox with an
+      active bot, discarding whatever `requested_status` asked for.
+    """
+    if created_status is None:
+        return (
+            f"conversation {display_id} create response carried no 'status' field, so "
+            "the bot-safety readback cannot be performed. Refusing to continue -- "
+            "verify manually that this Chatwoot renders conversation status on create."
+        )
+    if created_status not in _BOT_SAFE_STATUSES:
+        return (
+            f"conversation {display_id} came back with status {created_status!r} after "
+            f"requesting {requested_status!r}. Chatwoot forces 'pending' on an inbox with "
+            "an active bot (Conversation's before_create :determine_conversation_status), "
+            "and a 'pending' conversation with an incoming customer message is exactly "
+            "what the agent-bot orchestrator answers. Aborting before any message is "
+            "posted. Use an inbox with no agent bot and no enabled dialogflow hook."
+        )
+    return None
+
+
 async def create_case(case: DemoCase, contact: DemoContact, contact_id: int, batch_id: str, case_index: int) -> int:
     """Create one Chatwoot conversation for `contact_id`, stamp its
     `custom_attributes`, post its seeded message thread, and label it.
@@ -592,24 +660,9 @@ async def create_case(case: DemoCase, contact: DemoContact, contact_id: int, bat
     await _throttle()
 
     created_status = data.get("status")
-    if created_status is None:
-        # This Chatwoot renders no `status` on create (v4.15.1 does), so the
-        # third safety layer cannot run. Fail closed rather than seeding ~140
-        # conversations whose status we never verified.
-        raise RuntimeError(
-            f"conversation {display_id} create response carried no 'status' field, so "
-            "the bot-safety readback cannot be performed. Refusing to continue -- "
-            "verify manually that this Chatwoot renders conversation status on create."
-        )
-    if created_status not in _BOT_SAFE_STATUSES:
-        raise RuntimeError(
-            f"conversation {display_id} came back with status {created_status!r} after "
-            f"requesting {status!r}. Chatwoot forces 'pending' on an inbox with an "
-            "active bot (Conversation's before_create :determine_conversation_status), "
-            "and a 'pending' conversation with an incoming customer message is exactly "
-            "what the agent-bot orchestrator answers. Aborting before any message is "
-            "posted. Use an inbox with no agent bot and no enabled dialogflow hook."
-        )
+    refusal = created_conversation_status_refusal_reason(display_id, status, created_status)
+    if refusal is not None:
+        raise RuntimeError(refusal)
 
     # Stamp the marker FIRST -- see the docstring's ordering note. Everything
     # that can find, guard, exclude or display this conversation reads this

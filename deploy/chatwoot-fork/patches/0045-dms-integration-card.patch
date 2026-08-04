@@ -1,4 +1,4 @@
-From 0adf321e5d7dd7b3978172cadedfd336ef6f7237 Mon Sep 17 00:00:00 2001
+From 75a8a30ff1099ae5fd4b0c677aa23f0c067ac9c3 Mon Sep 17 00:00:00 2001
 From: Yuda Adi Pratama <yudaadipratama@Yudas-MacBook-Air.local>
 Date: Wed, 5 Aug 2026 05:10:51 +0700
 Subject: [PATCH] feat(integrations): add DMS/TSP integration card + config
@@ -18,10 +18,10 @@ DMS/TSP status card, and its config form backing the Task 1-4
 - The credential field is never populated from the API (write-only,
   not returned by GET). It renders as a masked "••••••••" display
   with a Replace action; the PUT body only ever includes `credential`
-  when the operator is in Replace mode AND typed a non-empty value,
-  guarding against ever sending `credential: ''` (which the backend
-  treats as "wipe the stored secret", vs. omitting the key which
-  preserves it).
+  when the operator is in Replace mode AND typed a non-empty value
+  (trimmed before it's sent), guarding against ever sending
+  `credential: ''` (which the backend treats as "wipe the stored
+  secret", vs. omitting the key which preserves it).
 - extra_header_value is flagged inline as NOT secret storage, since
   (unlike credential) GET returns it in plain text.
 - Test connection surfaces all four probe statuses (reachable,
@@ -33,14 +33,22 @@ DMS/TSP status card, and its config form backing the Task 1-4
   status: "unreachable" block renders an explicit "Not connected"
   notice, and mock: true renders a plainly-labeled "Mock data" banner
   independent of MockDmsClient's own "(Demo data)" field markers.
+- auth_type is normalised to a real <select> option on load/after save,
+  since the backend's never-configured state returns auth_type: '' —
+  left unnormalised, a first-time save without opening the dropdown
+  would silently send an auth scheme the operator never chose, later
+  misread as a bad credential when the probe failed.
+- ProtonIntegrationsPage.vue's status GET failure now also raises a
+  useAlert toast, matching the config page's own load() failure
+  behavior.
 ---
- app/javascript/dashboard/api/protonAdmin.js   |  98 +++--
+ app/javascript/dashboard/api/protonAdmin.js   |  98 +++-
  .../components-next/sidebar/Sidebar.vue       |  10 +
  .../routes/dashboard/dashboard.routes.js      |  12 +
  .../dashboard/views/ProtonCustomer360Page.vue | 111 ++++-
- .../views/ProtonDmsIntegrationPage.vue        | 407 ++++++++++++++++++
- .../views/ProtonIntegrationsPage.vue          |  91 ++++
- 6 files changed, 687 insertions(+), 42 deletions(-)
+ .../views/ProtonDmsIntegrationPage.vue        | 430 ++++++++++++++++++
+ .../views/ProtonIntegrationsPage.vue          | 100 ++++
+ 6 files changed, 719 insertions(+), 42 deletions(-)
  create mode 100644 app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue
  create mode 100644 app/javascript/dashboard/views/ProtonIntegrationsPage.vue
 
@@ -418,10 +426,10 @@ index 6f489fa..a62154d 100644
  </template>
 diff --git a/app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue b/app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue
 new file mode 100644
-index 0000000..7ab9e09
+index 0000000..a71c6aa
 --- /dev/null
 +++ b/app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue
-@@ -0,0 +1,407 @@
+@@ -0,0 +1,430 @@
 +<!-- ProtonDmsIntegrationPage.vue — OUR file. Config form for the DMS/TSP
 +     integration shell (Package F), backing dms_admin_router.py. Mirrors
 +     ProtonEscalationRoutingPage.vue's shell (header, n-* tokens, useAlert
@@ -442,7 +450,9 @@ index 0000000..7ab9e09
 +        whatever is stored alone". If the operator clicks Replace and tries
 +        to save without typing anything, submission is blocked with an
 +        alert rather than silently sending nothing or accidentally wiping
-+        the secret.
++        the secret. The typed value is trimmed before it's sent, so a
++        pasted credential with stray leading/trailing whitespace isn't
++        stored verbatim.
 +     2. `extra_header_value` IS returned in plain text by GET, unlike the
 +        credential — an operator could put a second secret there (e.g. a
 +        bearer token in a custom header) and it would round-trip readable.
@@ -472,6 +482,23 @@ index 0000000..7ab9e09
 +  { value: 'basic', label: 'Basic auth' },
 +  { value: 'api_key_header', label: 'API key header (X-Api-Key)' },
 +];
++const VALID_AUTH_TYPES = new Set(AUTH_TYPE_OPTIONS.map(o => o.value));
++
++// The backend's never-configured state (dms_admin_router.py's
++// _empty_config()) returns auth_type: '' — not one of this form's three
++// <select> options. Left as-is, `{ ...EMPTY_FORM, ...data }` would put ''
++// into the model while the <select> visually shows nothing selected; an
++// operator who saves without ever opening the dropdown would then send
++// auth_type: '' verbatim (the store has no enum constraint), which
++// dms_client.py's _auth_headers() silently treats as the X-Api-Key
++// fallback — an auth scheme the operator never chose, misread as a bad
++// credential when the probe then fails. Normalising any value the
++// dropdown can't represent back to the same default EMPTY_FORM starts
++// with guarantees the visible selection and the value actually sent can
++// never diverge.
++function normalizeAuthType(value) {
++  return VALID_AUTH_TYPES.has(value) ? value : EMPTY_FORM.auth_type;
++}
 +
 +// Test-connection status -> plain-language title + tone. `unexpected_status`
 +// covers everything that isn't a clean 200 / a 401-403 / a timeout —
@@ -526,6 +553,7 @@ index 0000000..7ab9e09
 +      try {
 +        const data = await getDmsIntegration();
 +        this.form = { ...EMPTY_FORM, ...data };
++        this.form.auth_type = normalizeAuthType(this.form.auth_type);
 +      } catch (err) {
 +        this.errored = true;
 +        useAlert(
@@ -569,11 +597,14 @@ index 0000000..7ab9e09
 +        };
 +        // Only ever included when the operator actually typed a new value —
 +        // never as '', which the backend treats as "wipe the credential".
++        // Trimmed so a pasted credential with stray leading/trailing
++        // whitespace isn't stored verbatim.
 +        if (this.credentialReplacing && this.credentialInput.trim()) {
-+          body.credential = this.credentialInput;
++          body.credential = this.credentialInput.trim();
 +        }
 +        const data = await putDmsIntegration(body);
 +        this.form = { ...EMPTY_FORM, ...data };
++        this.form.auth_type = normalizeAuthType(this.form.auth_type);
 +        this.cancelReplaceCredential();
 +        this.testResult = null;
 +        useAlert('DMS/TSP integration saved.');
@@ -831,10 +862,10 @@ index 0000000..7ab9e09
 +</template>
 diff --git a/app/javascript/dashboard/views/ProtonIntegrationsPage.vue b/app/javascript/dashboard/views/ProtonIntegrationsPage.vue
 new file mode 100644
-index 0000000..053d8f0
+index 0000000..e6b5b33
 --- /dev/null
 +++ b/app/javascript/dashboard/views/ProtonIntegrationsPage.vue
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,100 @@
 +<!-- ProtonIntegrationsPage.vue — OUR file. Integrations list: currently a
 +     single card for the DMS/TSP integration shell (Package F), structured
 +     so a future integration is just another card in the same grid. The
@@ -846,8 +877,13 @@ index 0000000..053d8f0
 +     probes the remote system — only the config form's "Test connection"
 +     button does that. Showing a green "Connected" here from config fields
 +     alone would be exactly the shell-mistaken-for-a-working-integration
-+     failure (demo-feedback #26) this package exists to avoid. -->
++     failure (demo-feedback #26) this package exists to avoid. A failed
++     GET also surfaces a useAlert toast, same as ProtonDmsIntegrationPage's
++     own load() — the "Status unavailable" badge alone would otherwise be
++     the only signal something's wrong, and it's easy to miss on a list
++     page that isn't being actively read. -->
 +<script>
++import { useAlert } from 'dashboard/composables';
 +import { getDmsIntegration } from 'dashboard/api/protonAdmin';
 +
 +export default {
@@ -879,6 +915,10 @@ index 0000000..053d8f0
 +      this.dmsConfig = await getDmsIntegration();
 +    } catch (err) {
 +      this.dmsErrored = true;
++      useAlert(
++        'Failed to load the DMS/TSP integration status: ' +
++          (err.message || String(err))
++      );
 +    } finally {
 +      this.dmsLoading = false;
 +    }

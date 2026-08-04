@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from chatbot.features.chat.dms_config_store import (
     _COLLECTION,
@@ -138,3 +139,150 @@ async def test_saving_with_none_credential_and_nothing_stored_omits_the_key(
 
     doc = fake_client._collections[_COLLECTION][_DOC_ID]
     assert "credential" not in doc
+
+
+# --- the credential never reaches a log line, even on a Firestore failure ---
+
+
+class _RaisingDoc:
+    """A doc ref whose every operation fails with an exception whose message
+    interpolates the offending value -- exactly what google-api-core's
+    InvalidArgument/FailedPrecondition do.
+    """
+
+    def __init__(self, payload_repr: str) -> None:
+        self._payload_repr = payload_repr
+
+    def get(self) -> Any:
+        raise RuntimeError(f"400 Invalid argument for document: {self._payload_repr}")
+
+    def set(self, data: dict[str, Any]) -> None:
+        raise RuntimeError(f"400 Invalid argument writing: {data}")
+
+
+class _RaisingCollection:
+    def __init__(self, payload_repr: str) -> None:
+        self._payload_repr = payload_repr
+
+    def document(self, key: str) -> _RaisingDoc:
+        return _RaisingDoc(self._payload_repr)
+
+
+class _RaisingFirestoreClient:
+    def __init__(self, payload_repr: str = "") -> None:
+        self._payload_repr = payload_repr
+
+    def collection(self, name: str) -> _RaisingCollection:
+        return _RaisingCollection(self._payload_repr)
+
+
+@pytest.fixture
+def raising_store():
+    settings = Settings(firestore_project_id="proj", firestore_database_id="db")
+    with patch(
+        "chatbot.features.chat.dms_config_store.firestore.Client", autospec=True
+    ) as MockClient:
+        MockClient.return_value = _RaisingFirestoreClient("super-secret-key")
+        yield DmsConfigStore(settings)
+
+
+async def test_save_failure_log_never_contains_the_credential(raising_store):
+    """`save()` is the one function where the credential is a live local
+    inside the `try`. Logging `str(e)` there would put a Firestore error's
+    interpolated payload -- which includes the document being written, hence
+    the credential -- straight into the log. Assert against captured records,
+    since the credential never reaches a return value on this path.
+    """
+    with capture_logs() as captured:
+        await raising_store.save(CFG, credential="super-secret-key")
+
+    assert captured
+    for record in captured:
+        assert "super-secret-key" not in repr(record)
+    assert captured[0]["event"] == "dms_config_store_save_failed"
+    assert captured[0]["error_type"] == "RuntimeError"
+    assert "error" not in captured[0]
+
+
+async def test_get_and_get_credential_failure_logs_never_contain_the_payload(raising_store):
+    """Same guarantee for the two read paths -- these never hold the
+    credential as a local, but a Firestore error message can still echo the
+    stored document back at us.
+    """
+    with capture_logs() as captured:
+        assert await raising_store.get() is None
+        assert await raising_store.get_credential() is None
+
+    events = {record["event"] for record in captured}
+    assert events == {"dms_config_store_get_failed", "dms_config_store_get_credential_failed"}
+    for record in captured:
+        assert "super-secret-key" not in repr(record)
+        assert "error" not in record
+        assert record["error_type"] == "RuntimeError"
+
+
+# --- one Firestore client, and a short-TTL config cache ---------------------
+
+
+async def test_only_one_firestore_client_is_built_per_store(fake_client):
+    """Customer 360 reaches `get()` on every lookup. Building a
+    `firestore.Client` per call meant an ADC resolution plus a fresh gRPC
+    channel on a path a human is waiting on.
+    """
+    settings = Settings(firestore_project_id="proj", firestore_database_id="db")
+    with patch(
+        "chatbot.features.chat.dms_config_store.firestore.Client", autospec=True
+    ) as MockClient:
+        MockClient.return_value = fake_client
+        store = DmsConfigStore(settings)
+
+        # Constructing the store must not touch Firestore at all -- main.py
+        # builds it unconditionally, including on tenants with no DMS.
+        assert MockClient.call_count == 0
+
+        await store.save(CFG, credential="k")
+        await store.get()
+        await store.get_credential()
+        await store.get()
+
+        assert MockClient.call_count == 1
+
+
+async def test_get_is_cached_and_save_invalidates_it(fake_client):
+    settings = Settings(firestore_project_id="proj", firestore_database_id="db")
+    with patch(
+        "chatbot.features.chat.dms_config_store.firestore.Client", autospec=True
+    ) as MockClient:
+        MockClient.return_value = fake_client
+        store = DmsConfigStore(settings)
+
+        # "No document" is the common tenant state and must be cached too --
+        # otherwise the majority case still pays a round trip per lookup.
+        assert await store.get() is None
+        assert await store.get() is None
+
+        await store.save(CFG, credential="k")
+        # save() invalidated, so this must be a fresh read, not the cached None.
+        reloaded = await store.get()
+        assert reloaded is not None
+        assert reloaded.base_url == CFG.base_url
+
+
+async def test_a_failed_get_is_not_cached():
+    """A Firestore blip must not pin "not configured" for the whole TTL."""
+    settings = Settings(firestore_project_id="proj", firestore_database_id="db")
+    good = _FakeFirestoreClient()
+    good.collection(_COLLECTION)._store[_DOC_ID] = {"enabled": True, "base_url": "https://x"}
+
+    with patch("chatbot.features.chat.dms_config_store.firestore.Client", autospec=True) as Mock:
+        Mock.return_value = _RaisingFirestoreClient()
+        store = DmsConfigStore(settings)
+        assert await store.get() is None
+
+        # Swap the underlying client for a healthy one; a cached failure
+        # would keep returning None here.
+        store._firestore_client = good  # type: ignore[assignment]
+        recovered = await store.get()
+
+    assert recovered is not None
+    assert recovered.enabled is True

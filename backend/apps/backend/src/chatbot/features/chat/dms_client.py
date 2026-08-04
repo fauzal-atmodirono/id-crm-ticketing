@@ -17,13 +17,15 @@ caller that renders records verbatim could mistake a demo for a live
 integration (see the package design doc's demo-feedback item #26).
 
 `probe()` is the "Test connection" button's backend: a single GET against the
-operator-configured `base_url`. There is no separate health-path field on
-`DmsConfig` and no documented health endpoint to guess at, so `base_url`
-itself -- whatever the operator points it at -- is the only endpoint we have.
-It never raises: DMS reachability is advisory, never a 500, and its
-`ProbeResult.message` is sanitised -- built only from the base URL, the
-provider label, and an HTTP status code, never the credential, a header
-value, or raw exception text that could echo request internals.
+operator-configured `base_url` -- one request, redirects explicitly NOT
+followed, so the credential is only ever sent to the host the operator typed.
+There is no separate health-path field on `DmsConfig` and no documented
+health endpoint to guess at, so `base_url` itself -- whatever the operator
+points it at -- is the only endpoint we have. It never raises: DMS
+reachability is advisory, never a 500, and its `ProbeResult.message` is
+sanitised -- built only from the base URL, the provider label, and an HTTP
+status code, never the credential, a header value, or raw exception text
+that could echo request internals.
 """
 
 from __future__ import annotations
@@ -220,8 +222,22 @@ async def probe(config: DmsConfig, credential: str, client: httpx.AsyncClient) -
     try:
         label = config.provider_label or config.base_url
         headers = _auth_headers(config, credential)
+        # follow_redirects=False is a SECURITY assertion, not a default worth
+        # inheriting. httpx's `_redirect_headers` strips `Authorization` when
+        # a redirect crosses origins, but it does NOT strip custom headers --
+        # so under `auth_type: api_key_header` (or any `extra_header_*` pair)
+        # an `X-Api-Key: <credential>` would be replayed verbatim to whatever
+        # host a 302 names. `base_url` is operator-supplied and points at a
+        # third party, so that host is not ours to trust. Production happened
+        # to be safe only because `httpx.AsyncClient()` defaults this to
+        # False; stating it here means the guarantee survives a caller that
+        # passes a client configured otherwise. The request-level argument
+        # wins over the client-level one, so this holds unconditionally.
         response = await client.get(
-            config.base_url, headers=headers, timeout=config.timeout_seconds
+            config.base_url,
+            headers=headers,
+            timeout=config.timeout_seconds,
+            follow_redirects=False,
         )
     except httpx.TimeoutException:
         result = ProbeResult(

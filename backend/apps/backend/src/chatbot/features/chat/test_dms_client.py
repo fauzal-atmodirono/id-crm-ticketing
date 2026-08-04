@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Callable
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -214,10 +215,17 @@ async def test_probe_maps_unsupported_protocol_to_unexpected_status() -> None:
     assert CREDENTIAL not in result.message
 
 
-async def test_probe_maps_too_many_redirects_to_unexpected_status() -> None:
-    """Same pinning as above for `httpx.TooManyRedirects`."""
+async def test_probe_reports_a_redirect_as_an_unexpected_status() -> None:
+    """`probe()` pins `follow_redirects=False` on its own request, so a 302
+    is simply an unexpected status -- it is never chased. (This test formerly
+    pinned the `httpx.TooManyRedirects` -> `unexpected_status` mapping;
+    that exception is no longer reachable from `probe()` at all, and it was
+    only ever handled by the generic `httpx.HTTPError` branch anyway.)
+    """
+    requests: list[httpx.Request] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
         return httpx.Response(302, headers={"Location": "https://dms.example.com/health"})
 
     async with httpx.AsyncClient(
@@ -227,6 +235,7 @@ async def test_probe_maps_too_many_redirects_to_unexpected_status() -> None:
 
     assert result.status == "unexpected_status"
     assert CREDENTIAL not in result.message
+    assert len(requests) == 1
 
 
 # --- probe() message sanitisation ------------------------------------------
@@ -301,6 +310,53 @@ async def test_probe_message_has_no_credential_even_with_redirects_enabled() -> 
 
     assert CREDENTIAL not in result.message
     assert CFG.extra_header_value not in result.message
+
+
+@pytest.mark.parametrize(
+    "auth_type", ["api_key_header", "bearer_token", "basic", "", "something_unknown"]
+)
+async def test_probe_never_sends_the_credential_to_a_redirect_target(auth_type: str) -> None:
+    """The credential must never leave the host the operator configured.
+
+    The test above only proved the credential is absent from the returned
+    MESSAGE -- it never checked whether the credential was SENT to the
+    redirect target, which is the actual attack. Verified against the
+    installed httpx (0.28.1): `Client._redirect_headers` drops
+    `Authorization` when the redirect crosses origins, but leaves custom
+    headers alone -- so under `api_key_header` (the default fall-through)
+    `X-Api-Key: <credential>` and any `extra_header_*` pair WOULD be replayed
+    to the attacker's host if redirects were followed. `base_url` is
+    operator-supplied and points at a third party, so this is reachable
+    without compromising anything of ours.
+
+    Parametrized across every `auth_type` because the leak's severity
+    depends on which header the credential lands in, and the safe-looking
+    `Authorization` cases must not be what makes this pass.
+    """
+    cfg = replace(CFG, auth_type=auth_type)
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "dms.example.com":
+            return httpx.Response(302, headers={"Location": "https://attacker.example.com/steal"})
+        return httpx.Response(200)
+
+    # follow_redirects=True at the CLIENT level: probe() must override it
+    # per-request, not rely on the caller having configured it safely.
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), follow_redirects=True
+    ) as client:
+        await probe(cfg, CREDENTIAL, client)
+
+    assert [r.url.host for r in seen] == ["dms.example.com"], (
+        "probe() followed the redirect; the second host is not ours to trust"
+    )
+    for request in seen:
+        if request.url.host != "dms.example.com":
+            joined = "\n".join(f"{k}: {v}" for k, v in request.headers.items())
+            assert CREDENTIAL not in joined
+            assert cfg.extra_header_value not in joined
 
 
 async def test_probe_result_is_a_probe_result() -> None:

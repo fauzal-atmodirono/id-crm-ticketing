@@ -11,6 +11,19 @@ it straight to `DmsConfigStore.save()`; GET builds its response from
 and the connection-test response is built only from `ProbeResult` (a status
 plus `probe()`'s own sanitised message) -- never from `DmsConfigBody`, so
 nothing the operator just typed can round-trip back to them.
+
+One more leak path closed here: FastAPI's default `RequestValidationError`
+handler echoes each error's raw submitted value back in an `"input"` key --
+harmless for a department name, catastrophic for `credential` (e.g. a
+`v-model.number` mis-bound on the eventual admin form, or a key pasted
+unquoted into a raw JSON tool, sends a non-string/non-null value and the
+422 response body reflects it verbatim). `install_credential_safe_error_handler`
+strips `"input"` from any error whose `loc` names `credential`, leaving every
+other field's (and every other router's) validation-error shape untouched.
+FastAPI only allows validation-error handlers to be registered app-wide, not
+per-router, so this must be called on the app object once (`main.py` does
+this right after mounting this router; tests do it in their own app
+fixture).
 """
 
 from __future__ import annotations
@@ -18,7 +31,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from chatbot.features.authz.deps import require_permission
@@ -26,12 +42,53 @@ from chatbot.features.chat.dms_client import probe as dms_probe
 from chatbot.features.chat.dms_config_store import DmsConfig, public_dict
 
 if TYPE_CHECKING:
+    from fastapi import FastAPI
+
     from chatbot.features.authz.identity import TokenValidator
     from chatbot.features.authz.repository import AuthzRepository
     from chatbot.features.chat.dms_config_store import DmsConfigStore
     from chatbot.platform.config import Settings
 
 _NOT_CONFIGURED = "unexpected_status"
+
+# Field names whose raw submitted value must never appear in a validation-error
+# response. Currently just the one secret this router accepts; kept as a set
+# (not a single constant) so a future write-only field can join it without
+# changing the handler's shape.
+_SENSITIVE_LOC_FIELDS = {"credential"}
+
+
+async def _credential_safe_validation_handler(
+    request: Request,  # noqa: ARG001 -- required by FastAPI's handler signature
+    exc: Exception,
+) -> JSONResponse:
+    # Starlette's add_exception_handler signature is contravariant on the
+    # exception type (Callable[[Request, Exception], ...]), so the parameter
+    # is typed broadly to satisfy mypy --strict; registration below only
+    # ever binds this handler to RequestValidationError, so this branch is
+    # unreachable in practice. Not an `assert` (stripped under `-O`) --
+    # re-raising preserves "never silently swallow" if it's ever wrong.
+    if not isinstance(exc, RequestValidationError):
+        raise exc
+    sanitized_errors = []
+    for raw_error in exc.errors():
+        error = dict(raw_error)
+        loc = error.get("loc", ())
+        if any(str(part) in _SENSITIVE_LOC_FIELDS for part in loc):
+            error.pop("input", None)
+        sanitized_errors.append(error)
+    return JSONResponse(
+        status_code=422,
+        content=jsonable_encoder({"detail": sanitized_errors}),
+    )
+
+
+def install_credential_safe_error_handler(app: FastAPI) -> None:
+    """Register `_credential_safe_validation_handler` on `app`. Call once,
+    on the actual FastAPI app object -- see module docstring for why this
+    can't live on the router itself.
+    """
+    app.add_exception_handler(RequestValidationError, _credential_safe_validation_handler)
 
 
 def _empty_config() -> DmsConfig:

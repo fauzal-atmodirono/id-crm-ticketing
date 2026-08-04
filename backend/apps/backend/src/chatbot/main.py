@@ -571,12 +571,20 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
 
         # Package F: DMS/TSP integration shell admin CRUD + connection test.
         # Reuses the dms_config_store instance constructed unconditionally
-        # above, same pattern as pic_store/dealer_store.
-        from chatbot.features.chat.dms_admin_router import build_dms_admin_router
+        # above, same pattern as pic_store/dealer_store. The error handler
+        # must be installed on the app itself (FastAPI validation-error
+        # handlers can't be scoped to one router) so a malformed `credential`
+        # in a PUT body never echoes back in a 422's `input` field -- see
+        # dms_admin_router.py's module docstring.
+        from chatbot.features.chat.dms_admin_router import (
+            build_dms_admin_router,
+            install_credential_safe_error_handler,
+        )
 
         app.include_router(
             build_dms_admin_router(dms_config_store, authz_repo, authz_validator, settings)
         )
+        install_credential_safe_error_handler(app)
 
         # Customer 360 foundational lookup (Track 5). Reuses the already-built
         # chatwoot_client / rsa_repo instances above rather than constructing

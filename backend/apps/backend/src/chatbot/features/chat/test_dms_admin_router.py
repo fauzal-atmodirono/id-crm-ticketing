@@ -23,7 +23,10 @@ from chatbot.features.authz.db import init_authz_db
 from chatbot.features.authz.identity import TokenValidator
 from chatbot.features.authz.repository import AuthzRepository
 from chatbot.features.authz.seed import seed_defaults
-from chatbot.features.chat.dms_admin_router import build_dms_admin_router
+from chatbot.features.chat.dms_admin_router import (
+    build_dms_admin_router,
+    install_credential_safe_error_handler,
+)
 from chatbot.features.chat.dms_client import ProbeResult
 from chatbot.features.chat.dms_config_store import DmsConfigStore
 from chatbot.platform.config import get_settings
@@ -58,6 +61,10 @@ async def _build_authz_repo(tmp_path, name: str) -> AuthzRepository:
 def _app_with_router(router) -> TestClient:
     app = FastAPI()
     app.include_router(router)
+    # Mirrors main.py's wiring exactly: the credential-safe 422 handler is
+    # app-scoped, so it must be installed here too for these tests to
+    # exercise the same behaviour production actually has.
+    install_credential_safe_error_handler(app)
     return TestClient(app)
 
 
@@ -141,6 +148,40 @@ async def test_get_without_permission_returns_403(tmp_path, respx_mock):
     client = _app_with_router(router)
 
     res = client.get("/admin/integrations/dms", headers=HEADERS)
+    assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,path,kwargs",
+    [
+        ("get", "/admin/integrations/dms", {}),
+        ("put", "/admin/integrations/dms", {"json": VALID_BODY}),
+        ("post", "/admin/integrations/dms/test", {}),
+    ],
+)
+async def test_all_three_endpoints_require_the_permission(
+    tmp_path, respx_mock, method: str, path: str, kwargs: dict
+):
+    """GET's 403 is covered above; this locks in that PUT and POST /test
+    share the exact same `manage_integration` dependency rather than just
+    happening to behave the same today -- a future edit that drops
+    `dependencies=[...]` from one route would be caught here.
+    """
+    settings = get_settings().model_copy(update={"rbac_enabled": True})
+    authz_repo = await _build_authz_repo(tmp_path, f"denied_{method}")
+    await seed_defaults(authz_repo)
+    await authz_repo.assign_role(chatwoot_user_id=21, role_id="agent")  # lacks integration.manage
+
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 21})
+    )
+    validator = TokenValidator(settings)
+    store = _build_store(settings)
+    router = build_dms_admin_router(store, authz_repo, validator, settings)
+    client = _app_with_router(router)
+
+    res = getattr(client, method)(path, headers=HEADERS, **kwargs)
     assert res.status_code == 403
 
 
@@ -241,6 +282,37 @@ async def test_put_without_credential_keeps_the_stored_one(tmp_path, respx_mock)
 
         # Credential is untouched even though it wasn't resent.
         assert await store.get_credential() == CREDENTIAL
+
+
+@pytest.mark.asyncio
+async def test_put_empty_string_credential_overwrites_the_stored_one(
+    tmp_path, respx_mock
+):
+    """`credential=""` (submitted explicitly, not omitted) is NOT the same as
+    omitting the field: DmsConfigStore.save() treats any non-`None` value as
+    "replace", so this blanks out a previously stored secret. That's
+    consistent with the brief's contract ("None means keep"), not a bug --
+    but it means Task 5's form must NEVER send an empty string to mean
+    "leave unchanged"; only omitting the field (or sending null) does that.
+    Pinning current behaviour so a future change here is deliberate, not
+    accidental.
+    """
+    client, store = await _authorized_client(tmp_path, "put_empty_cred", 22, respx_mock)
+
+    with patch(
+        "chatbot.features.chat.dms_config_store.firestore.Client", autospec=True
+    ) as MockClient:
+        MockClient.return_value = _FakeFirestoreClient()
+
+        first = client.put("/admin/integrations/dms", json=VALID_BODY, headers=HEADERS)
+        assert first.status_code == 200
+        assert await store.get_credential() == CREDENTIAL
+
+        body_blank_cred = {**VALID_BODY, "credential": ""}
+        second = client.put("/admin/integrations/dms", json=body_blank_cred, headers=HEADERS)
+        assert second.status_code == 200
+
+        assert await store.get_credential() == ""
 
 
 @pytest.mark.asyncio
@@ -411,6 +483,81 @@ async def test_credential_appears_in_no_response_body_from_any_endpoint(
         bad_res = client.put("/admin/integrations/dms", json=bad_body, headers=HEADERS)
         assert bad_res.status_code == 400
         assert CREDENTIAL not in bad_res.text
+
+        # 422 path: a non-string credential fails Pydantic validation.
+        # FastAPI's default handler would echo the raw submitted value back
+        # in the error's "input" key -- this must not happen here.
+        malformed_res = client.put(
+            "/admin/integrations/dms",
+            json={**VALID_BODY, "credential": 4111111111111111},
+            headers=HEADERS,
+        )
+        assert malformed_res.status_code == 422
+        assert "4111111111111111" not in malformed_res.text
+
+
+@pytest.mark.asyncio
+async def test_malformed_credential_422_never_echoes_the_submitted_value(
+    tmp_path, respx_mock
+):
+    """A non-string credential (e.g. a frontend `v-model.number` mis-bind on
+    the eventual admin form, or a bare number pasted into a raw JSON
+    request) fails Pydantic's `str` validation and 422s. FastAPI's default
+    `RequestValidationError` handler echoes the raw submitted value back in
+    each error's `"input"` key -- fine for a department name, never
+    acceptable for `credential`. `install_credential_safe_error_handler`
+    (wired into the test app by `_app_with_router`) must strip it.
+    """
+    client, _store = await _authorized_client(tmp_path, "malformed_cred", 23, respx_mock)
+    malformed_credential = 4111111111111111
+
+    with patch(
+        "chatbot.features.chat.dms_config_store.firestore.Client", autospec=True
+    ) as MockClient:
+        MockClient.return_value = _FakeFirestoreClient()
+
+        res = client.put(
+            "/admin/integrations/dms",
+            json={**VALID_BODY, "credential": malformed_credential},
+            headers=HEADERS,
+        )
+
+    assert res.status_code == 422
+    assert str(malformed_credential) not in res.text
+
+    body = res.json()
+    credential_errors = [e for e in body["detail"] if "credential" in e.get("loc", [])]
+    assert credential_errors, "expected a validation error naming the credential field"
+    assert all("input" not in error for error in credential_errors)
+
+
+@pytest.mark.asyncio
+async def test_malformed_non_credential_field_still_echoes_its_input(
+    tmp_path, respx_mock
+):
+    """Sanity check on the handler's precision: a validation error on a
+    NON-secret field (retries expects an int) must still carry its "input"
+    key as FastAPI does by default -- the handler must only scrub fields
+    named in `_SENSITIVE_LOC_FIELDS`, not blanket-strip every error.
+    """
+    client, _store = await _authorized_client(tmp_path, "malformed_other", 24, respx_mock)
+
+    with patch(
+        "chatbot.features.chat.dms_config_store.firestore.Client", autospec=True
+    ) as MockClient:
+        MockClient.return_value = _FakeFirestoreClient()
+
+        res = client.put(
+            "/admin/integrations/dms",
+            json={**VALID_BODY, "retries": "not-an-int"},
+            headers=HEADERS,
+        )
+
+    assert res.status_code == 422
+    body = res.json()
+    retries_errors = [e for e in body["detail"] if "retries" in e.get("loc", [])]
+    assert retries_errors
+    assert retries_errors[0].get("input") == "not-an-int"
 
 
 # --- RBAC-disabled fallback --------------------------------------------

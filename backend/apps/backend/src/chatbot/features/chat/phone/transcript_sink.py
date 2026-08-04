@@ -15,10 +15,22 @@ without special-casing failure.
 
 ``take_if_due`` consumes what it returns: anything released is dropped from
 the buffer immediately, so calling it repeatedly on a timer (Task 3's plan)
-never re-posts the same block twice. The one exception the timer/turn checks
-don't cover is the very last in-progress turn — that only leaves the buffer
-via a caller-forced flush (``force=True``) at call end, since releasing it
-early would risk splitting one sentence across two Chatwoot messages.
+never re-posts the same block twice. The last in-progress turn is held back
+only on a plain speaker-change flush — neither ``force`` nor the flush
+interval elapsed — since releasing it mid-turn there would risk splitting
+one sentence across two Chatwoot messages. Once the flush interval *does*
+elapse, though, the in-progress turn is released along with everything else,
+even mid-sentence: a long monologue must still show up during the call, so a
+block that might continue next flush beats posting nothing at all. A forced
+flush (``force=True``) always releases everything, including "nothing" —
+call it freely on an empty buffer (e.g. at end-of-call cleanup) and it
+returns ``None``.
+
+A released fragment with no non-whitespace content (Gemini Live can emit
+blank/boundary deltas) is dropped rather than posted as a bare ``"ROLE: "``
+line — silence shouldn't show up as ticket noise. A fragment containing an
+embedded newline is posted as-is, so its continuation lines lose the
+``ROLE:`` prefix in the ticket; that's a display quirk, not a data loss.
 """
 
 from __future__ import annotations
@@ -58,6 +70,9 @@ class TranscriptSink:
         release = self._pending if (force or timer_elapsed) else self._pending[:-1]
         self._pending = [] if (force or timer_elapsed) else self._pending[-1:]
         self._last_flush = self._now()
-        if not release:
+        # Blank/boundary deltas (silence markers, etc.) shouldn't turn into a
+        # customer-visible "ROLE: " line with nothing after it.
+        non_blank = [(role, text) for role, text in release if text.strip()]
+        if not non_blank:
             return None
-        return "\n".join(f"{role}: {text}" for role, text in release)
+        return "\n".join(f"{role}: {text}" for role, text in non_blank)

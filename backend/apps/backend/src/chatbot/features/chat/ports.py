@@ -309,6 +309,20 @@ class ConversationLogPort(Protocol):
         forget, same as the rest of this port's surface."""
         ...
 
+    async def get_inbox_working_hours(self, inbox_id: int) -> dict[str, Any] | None:
+        """Return the raw Chatwoot inbox record (including its
+        ``working_hours``/``working_hours_enabled``/``timezone`` fields) for
+        the given inbox id, or ``None`` on any failure (not enabled,
+        unreachable, unknown inbox). Used by ``features.chat.phone.
+        handoff_target.HandoffTargetResolver`` to gate a live-call transfer
+        on business hours via ``features.metrics.business_hours.
+        working_minutes_between`` -- the SAME row shape and helper the
+        BigQuery ETL already uses, deliberately not a second parser. Must
+        never raise; callers fail OPEN (treat "now" as within hours) on
+        ``None``, same as that helper's own "not configured -> always open"
+        default."""
+        ...
+
 
 class MetricsPort(Protocol):
     """Port for emitting one analytics event per conversational turn."""

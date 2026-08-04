@@ -71,6 +71,10 @@ class _FakeLog:
         self.classifications: list[tuple[str, str | None, str | None, str | None]] = []
         self.classification_raises: Exception | None = None
         self.recordings: list[tuple[str, str, str, str]] = []
+        self.working_hours_calls: list[int] = []
+        # None -> HandoffTargetResolver fails open (treats "now" as within
+        # hours), matching a real ChatwootAdapter with no inbox configured.
+        self.working_hours: dict[str, Any] | None = None
 
     async def ensure_conversation_ticket(
         self,
@@ -147,6 +151,10 @@ class _FakeLog:
         recording_url: str,
     ) -> None:  # unused here -- exercised in test_recording.py
         self.recordings.append((ticket_id, recording_sid, recording_duration, recording_url))
+
+    async def get_inbox_working_hours(self, inbox_id: int) -> dict[str, Any] | None:
+        self.working_hours_calls.append(inbox_id)
+        return self.working_hours
 
 
 def _bridge(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from chatbot.features.chat.ports import ConversationLogPort, ConversationLogResult
 
 
@@ -80,4 +82,10 @@ class NoOpConversationLog(ConversationLogPort):
         recording_duration: str,  # noqa: ARG002
         recording_url: str,  # noqa: ARG002
     ) -> None:
+        return None
+
+    async def get_inbox_working_hours(
+        self,
+        inbox_id: int,  # noqa: ARG002
+    ) -> dict[str, Any] | None:
         return None

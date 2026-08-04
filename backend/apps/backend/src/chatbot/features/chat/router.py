@@ -37,7 +37,7 @@ from chatbot.features.chat.phone.handoff_csat_tools import REQUEST_HANDOFF_TOOL,
 from chatbot.features.chat.phone.kb_tool import KB_SEARCH_TOOL
 from chatbot.features.chat.phone.rate_limit import RateLimiter
 from chatbot.features.chat.phone.token import mint_voice_token
-from chatbot.features.chat.phone.twiml import connect_stream_twiml
+from chatbot.features.chat.phone.twiml import connect_stream_twiml, fallback_twiml
 from chatbot.features.chat.ports import AuditEntry, AuditLogPort, HumanAgentBridgePort
 from chatbot.features.chat.schemas import (
     ChatwootWebhookPayload,
@@ -284,6 +284,28 @@ def _products_list(turn_result: Any) -> list[dict[str, Any]]:
 
 _LiveFactory = Callable[..., AbstractAsyncContextManager[LiveSession]]
 
+# Package C Task 6: plain hang-up TwiML for /webhooks/phone/dial-status's
+# non-apology outcomes (a successful "completed" transfer, or an edge case
+# with nothing sensible to say -- e.g. a missing CallSid). This is the
+# action-URL response for a call already mid-<Dial>, so it must always be
+# valid TwiML, never an empty body.
+_DIAL_HANGUP_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
+
+# Spoken on the live call when a transfer attempt goes unanswered (no-answer
+# / busy / failed). Hard-coded rather than operator-configurable like
+# phone_recording_announcement: that one exists because PDPA compliance
+# specifically requires it to be reviewable/editable text; this is an
+# ordinary UX apology with no such requirement, and every other phone-side
+# spoken line (the bot's system_instruction below) is already hard-coded the
+# same way.
+_UNANSWERED_HANDOFF_APOLOGY = (
+    "We're sorry, none of our agents are available to take your call right now. "
+    "We've noted your call and someone will call you back soon. Goodbye. "
+    "Maaf, tiada ejen kami tersedia untuk menjawab panggilan anda sekarang. "
+    "Kami telah mencatatkan panggilan anda dan seseorang akan menghubungi anda semula. "
+    "Selamat tinggal."
+)
+
 
 class ChatRouter:
     """Class-based router for CRM webhooks plus the frontend-facing chat/voice endpoints."""
@@ -365,6 +387,20 @@ class ChatRouter:
             self.phone_recording_status_webhook,
             methods=["POST"],
         )
+        # Package C Task 6: unlike recording-status above (registered on
+        # every tenant, 404-gated inside the handler), this route is only
+        # registered when the tenant has actually turned the feature on --
+        # a tenant that never enabled phone_handoff has no live-call
+        # transfer to report an outcome for, so there is nothing for this
+        # endpoint to do; not registering it at all means an unconfigured
+        # tenant gets FastAPI's own 404 with zero handler code reachable,
+        # rather than a live endpoint that merely refuses.
+        if orchestrator._settings.phone_handoff_enabled:
+            self.router.add_api_route(
+                "/webhooks/phone/dial-status",
+                self.phone_dial_status_webhook,
+                methods=["POST"],
+            )
 
     # --- CRM webhooks -------------------------------------------------------
 
@@ -1210,8 +1246,22 @@ class ChatRouter:
         return f"{base.rstrip('/')}/voice/phone/stream"
 
     async def phone_incoming(self) -> Response:
-        """Twilio Voice webhook: bridge the call into a Media Stream."""
-        xml = connect_stream_twiml(self._phone_wss_url())
+        """Twilio Voice webhook: bridge the call into a Media Stream.
+
+        Package C Task 6 review fix (carried from Task 5): when recording
+        is enabled and an announcement is configured, speak it via `<Say>`
+        BEFORE `<Connect><Stream>` -- see `connect_stream_twiml`'s
+        docstring for why this, not the in-session text hint, is the
+        provably-sequenced disclosure. Any other combination (recording
+        off, or on with no announcement configured -- which
+        `_maybe_start_recording` already refuses to record without) passes
+        `announcement=None`, which is byte-identical to before this existed.
+        """
+        settings = self.orchestrator._settings
+        announcement = (
+            settings.phone_recording_announcement if settings.phone_recording_enabled else None
+        ) or None
+        xml = connect_stream_twiml(self._phone_wss_url(), announcement)
         return Response(content=xml, media_type="application/xml")
 
     async def phone_token(self, request: Request) -> dict[str, str]:
@@ -1429,6 +1479,89 @@ class ChatRouter:
         except Exception as e:
             _log.error("phone_recording_status_write_failed", call_sid=call_sid, error=str(e))
         return Response(status_code=200)
+
+    async def phone_dial_status_webhook(self, request: Request) -> Response:
+        """Twilio's `<Dial action>` callback (Package C Task 6): fires once
+        the transferred leg of a live call ends, however it ended. This is
+        the TwiML response Twilio runs NEXT on the same, still-live call --
+        unlike ``phone_recording_status_webhook``, the body must always be
+        valid TwiML, never a bare 200.
+
+        Every ``DialCallStatus`` outcome the design doc's §5.3 calls out is
+        handled explicitly -- silently dropping the caller is the worst
+        outcome and is exactly what an untested implementation does:
+
+        - ``"completed"``: a human genuinely took the call and it ran its
+          course. No CRM write here -- ``PhoneBridge.finalize()`` already
+          flipped the ticket to ``open`` with the handoff note the moment
+          the transfer was dialled (redirecting the call ends the Media
+          Stream, which is what drives finalize()); nothing further is
+          knowable here about how the human resolved it. TwiML: hang up.
+        - ``"no-answer"`` / ``"busy"`` / ``"failed"`` / anything else
+          (e.g. Twilio's ``"canceled"``): nobody actually took the call.
+          Resolve the ticket via ``find_conversation_ticket`` -- which,
+          same as the recording-status callback, NEVER creates one: this
+          can fire well after the websocket/PhoneBridge that handled the
+          call is gone -- post an apology comment with status ``"open"``,
+          and add an ``unanswered_handoff`` tag so the case is visibly
+          owed a callback. TwiML: apologise (bilingual), then hang up.
+
+        Authenticated exactly like ``/webhooks/phone/recording-status``:
+        Twilio's ``X-Twilio-Signature`` over the exact public URL it posted
+        to, refused (401) rather than skipped when no ``twilio_auth_token``
+        is configured. Unlike that endpoint, THIS route is only registered
+        at all when ``phone_handoff_enabled`` is on (see ``__init__``) --
+        there is no in-handler 404 gate to duplicate.
+        """
+        settings = self.orchestrator._settings
+        token = settings.twilio_auth_token
+        if not token:
+            _log.warning("phone_dial_status_no_auth_token_configured")
+            raise HTTPException(status_code=401, detail="Dial status webhook not configured")
+
+        form = await request.form()
+        params = {k: str(v) for k, v in form.items()}
+        base = settings.twilio_webhook_base_url
+        verify_url = f"{base.rstrip('/')}/webhooks/phone/dial-status" if base else str(request.url)
+        signature = request.headers.get("X-Twilio-Signature")
+        if not verify_twilio_signature(token, verify_url, params, signature):
+            _log.warning("phone_dial_status_signature_invalid")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
+        call_sid = params.get("CallSid", "").strip()
+        status = params.get("DialCallStatus", "")
+        if not call_sid:
+            _log.warning("phone_dial_status_missing_call_sid")
+            return Response(content=_DIAL_HANGUP_TWIML, media_type="application/xml")
+
+        if status == "completed":
+            _log.info("phone_dial_status_completed", call_sid=call_sid)
+            return Response(content=_DIAL_HANGUP_TWIML, media_type="application/xml")
+
+        _log.info("phone_dial_status_unanswered", call_sid=call_sid, status=status)
+        session_id = f"phone-{call_sid}"
+        port = self.orchestrator._conversation_log_port
+        try:
+            ticket_id = await port.find_conversation_ticket(session_id)
+        except Exception as e:
+            _log.error("phone_dial_status_ticket_resolve_failed", call_sid=call_sid, error=str(e))
+            ticket_id = None
+        if ticket_id is None:
+            _log.warning("phone_dial_status_unknown_call", call_sid=call_sid)
+        else:
+            try:
+                await port.append_conversation_comment(
+                    ticket_id, f"[Handoff unanswered -- {status or 'unknown'}]", status="open"
+                )
+                await port.add_ticket_tag(ticket_id, "unanswered_handoff")
+            except Exception as e:
+                _log.error(
+                    "phone_dial_status_ticket_update_failed", call_sid=call_sid, error=str(e)
+                )
+
+        return Response(
+            content=fallback_twiml(_UNANSWERED_HANDOFF_APOLOGY), media_type="application/xml"
+        )
 
 
 def build_chat_router(

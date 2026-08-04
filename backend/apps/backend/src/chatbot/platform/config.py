@@ -351,6 +351,19 @@ class Settings(BaseSettings):
     phone_token_ttl_seconds: int = 300
     phone_token_rate_limit: int = 10
     phone_token_rate_window_seconds: int = 60
+    # Package C Task 6: real hand-off of a live call to a human. Default off
+    # -> byte-identical to today: request_human_handoff never redirects the
+    # call, and keeps answering {"status": "ticket_created"} exactly as
+    # before. Phase 1 (this task) resolves a single static hunt-group
+    # number (see features/chat/phone/handoff_target.py); a routing-backed
+    # per-agent resolver is a second implementation of the same interface,
+    # added once the §5.2 decision in the design doc lands -- do not build
+    # it speculatively here.
+    phone_handoff_enabled: bool = False
+    phone_handoff_target_number: str = ""
+    # <Dial timeout> in seconds: how long Twilio rings the target before it
+    # gives up and posts DialCallStatus=no-answer to /webhooks/phone/dial-status.
+    phone_handoff_timeout_seconds: int = 30
 
     # Frontend CORS — origins of the Vue dev/prod app (comma-separated in env).
     # Defaults cover Vite's first few fallback ports (5173-5180) so a stale dev

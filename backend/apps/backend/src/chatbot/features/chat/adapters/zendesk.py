@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import urllib.parse
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import structlog
@@ -380,6 +380,12 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
         # phone channel is Chatwoot-only, so no Zendesk ticket ever reaches
         # this path today. No-op keeps ZendeskAdapter a valid
         # ConversationLogPort without inventing an unused Zendesk mapping.
+        return None
+
+    async def get_inbox_working_hours(self, inbox_id: int) -> dict[str, Any] | None:  # noqa: ARG002
+        # Same rationale as set_call_recording above: Task 6's live-call
+        # handoff gate is Chatwoot-inbox-shaped and Chatwoot-only. None ->
+        # HandoffTargetResolver fails open (treats "now" as within hours).
         return None
 
     async def get_latest_public_comment(self, ticket_id: str) -> tuple[str, str | None, str | None]:

@@ -14,6 +14,7 @@ from chatbot.features.chat.csat import record_csat_on_ticket
 from chatbot.features.chat.phone.audio_codec import mulaw8k_to_pcm16k, pcm24k_to_mulaw8k
 from chatbot.features.chat.phone.call_control import CallControl
 from chatbot.features.chat.phone.handoff_csat_tools import parse_csat_score
+from chatbot.features.chat.phone.handoff_target import HandoffTargetResolver, dial_twiml
 from chatbot.features.chat.phone.kb_tool import dispatch_kb_search
 from chatbot.features.chat.phone.live_events import (
     AudioOut,
@@ -62,6 +63,7 @@ class PhoneBridge:
         *,
         clock: Callable[[], float] | None = None,
         call_control: CallControl | None = None,
+        handoff_resolver: HandoffTargetResolver | None = None,
     ) -> None:
         self._live = live
         self._knowledge = knowledge_port
@@ -76,6 +78,15 @@ class PhoneBridge:
         # so constructing one here unconditionally is safe even when
         # phone_recording_enabled is off.
         self._call_control = call_control if call_control is not None else CallControl(settings)
+        # Package C Task 6: same injectable-for-tests shape as call_control
+        # above. Constructing one unconditionally is safe even when
+        # phone_handoff_enabled is off -- resolve() checks the flag first
+        # and never touches the log port otherwise.
+        self._handoff_resolver = (
+            handoff_resolver
+            if handoff_resolver is not None
+            else HandoffTargetResolver(settings, conversation_log_port)
+        )
         self.stream_sid: str | None = None
         self.call_sid: str | None = None
         self.transcript: list[tuple[str, str]] = []
@@ -247,6 +258,12 @@ class PhoneBridge:
             return ""
         return f"{base.rstrip('/')}/webhooks/phone/recording-status"
 
+    def _dial_status_action_url(self) -> str:
+        base = self._settings.twilio_webhook_base_url
+        if not base:
+            return ""
+        return f"{base.rstrip('/')}/webhooks/phone/dial-status"
+
     async def _maybe_start_recording(self, call_sid: str) -> None:
         """Start Twilio call recording once, fire-and-forget from
         handle_twilio's "start" branch -- same shape as
@@ -285,9 +302,17 @@ class PhoneBridge:
         this is a best-effort instruction to the model, not a guaranteed
         byte-exact TTS playback of the configured text, and NOT sequenced
         before start_recording() below at the Twilio/TwiML level (queuing a
-        text hint only queues it; it does not block until spoken). A
-        properly sequenced TwiML `<Say>`/`<Play>` before `<Connect><Stream>`
-        is tracked as follow-up work, not built here.
+        text hint only queues it; it does not block until spoken).
+
+        Package C Task 6: `router.py`'s `phone_incoming` now ALSO speaks
+        this same announcement via a `<Say>` in the initial TwiML, before
+        `<Connect><Stream>` (see `twiml.connect_stream_twiml`'s
+        `announcement` parameter) -- that one runs deterministically before
+        Twilio ever opens the Media Stream whose "start" event is what
+        triggers this method, so IT is the provably-sequenced disclosure.
+        This text-hint is kept, unchanged, as a secondary reinforcement
+        (e.g. in case the caller talks over the `<Say>`) -- not a
+        replacement for it.
         """
         announcement = self._settings.phone_recording_announcement
         if not announcement:
@@ -395,7 +420,8 @@ class PhoneBridge:
                 "reason": str(event.args.get("reason") or ""),
                 "summary": str(event.args.get("summary") or ""),
             }
-            await self._live.send_tool_response(event.id, event.name, {"status": "ticket_created"})
+            status = await self._attempt_transfer()
+            await self._live.send_tool_response(event.id, event.name, {"status": status})
         elif event.name == "submit_csat":
             score = parse_csat_score(event.args)
             if score is not None:
@@ -410,6 +436,47 @@ class PhoneBridge:
             await self._live.send_tool_response(
                 event.id, event.name, {"error": f"unknown tool: {event.name}"}
             )
+
+    async def _attempt_transfer(self) -> str:
+        """Package C Task 6: try to redirect the live call into a real
+        human transfer. Returns the status the `request_human_handoff` tool
+        response should carry, which the model uses to decide what to tell
+        the caller next -- "transferring" only when Twilio has genuinely
+        accepted the redirect; "ticket_created" (today's exact behaviour)
+        for every other outcome: the feature is off, unconfigured, out of
+        business hours, no callback base is configured, or the Twilio API
+        call itself failed. All of those collapse to the SAME fallback on
+        purpose -- self.handoff is already set by the caller, so
+        finalize() still opens the ticket with a handoff note regardless of
+        which branch below returns "ticket_created"; the caller is never
+        silently dropped, and this method itself never raises (a resolver
+        or CallControl failure must not break the live tool-call turn).
+
+        Deliberately distinct from `/webhooks/phone/dial-status`'s
+        unanswered-call fallback (apology TwiML + `open` + an
+        `unanswered_handoff` tag): that only applies once a dial has
+        ACTUALLY been placed and Twilio reports nobody picked up. Nothing
+        here ever reaches that point unless `redirect()` below returns
+        True.
+        """
+        if self.call_sid is None:
+            return "ticket_created"
+        try:
+            target = await self._handoff_resolver.resolve()
+        except Exception as e:
+            _log.error("phone_handoff_resolve_failed", call_sid=self.call_sid, error=str(e))
+            return "ticket_created"
+        if target is None:
+            return "ticket_created"
+        action_url = self._dial_status_action_url()
+        if not action_url:
+            _log.warning("phone_handoff_no_action_url_configured", call_sid=self.call_sid)
+            return "ticket_created"
+        twiml = dial_twiml(target, action_url, self._settings.phone_handoff_timeout_seconds)
+        ok = await self._call_control.redirect(self.call_sid, twiml)
+        if not ok:
+            return "ticket_created"
+        return "transferring"
 
     async def pump(self) -> None:
         async for event in self._live.events():

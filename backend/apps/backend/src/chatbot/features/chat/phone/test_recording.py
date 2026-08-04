@@ -156,6 +156,9 @@ class _FakeLog:
     ) -> None:
         self.recordings.append((ticket_id, recording_sid, recording_duration, recording_url))
 
+    async def get_inbox_working_hours(self, inbox_id: int) -> dict[str, Any] | None:
+        return None
+
 
 class _FakeRecordings:
     """Stands in for a Twilio ``client.calls(sid).recordings`` resource --

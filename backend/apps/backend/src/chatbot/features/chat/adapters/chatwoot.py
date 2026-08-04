@@ -877,6 +877,15 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             },
         )
 
+    async def get_inbox_working_hours(self, inbox_id: int) -> dict[str, Any] | None:
+        """GET one inbox's business-hours config for the Task 6 handoff
+        gate. Same ``_request`` fail-open shape as ``list_inboxes`` just
+        above (returns ``None`` on any failure, including Chatwoot being
+        disabled) -- the caller (``HandoffTargetResolver``) treats that
+        identically to "no hours configured", i.e. always open."""
+        res = await self._request("GET", f"/inboxes/{inbox_id}")
+        return res if isinstance(res, dict) else None
+
     async def get_latest_public_comment(self, ticket_id: str) -> tuple[str, str | None, str | None]:
         res = await self._request("GET", f"/conversations/{ticket_id}/messages")
         payload = res.get("payload", []) if isinstance(res, dict) else []

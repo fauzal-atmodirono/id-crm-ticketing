@@ -69,3 +69,18 @@ async def test_start_recording_returns_sid(settings):
 async def test_start_recording_returns_none_on_error(settings):
     cc = CallControl(settings, client=_FakeTwilio(raises=RuntimeError("boom")))
     assert await cc.start_recording("CA123", "https://x/cb") is None
+
+
+async def test_client_construction_failure_is_fail_open(monkeypatch, settings):
+    """If Client(sid, token) itself raises — bad creds, a broken SDK install,
+    a future constructor that validates — that must not propagate out of
+    redirect/start_recording and drop the live call."""
+
+    class _RaisingClient:
+        def __init__(self, *args, **kwargs) -> None:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr("twilio.rest.Client", _RaisingClient)
+    cc = CallControl(settings)  # no injected client -> forces lazy construction
+    assert await cc.redirect("CA123", "<Response/>") is False
+    assert await cc.start_recording("CA123", "https://x/cb") is None

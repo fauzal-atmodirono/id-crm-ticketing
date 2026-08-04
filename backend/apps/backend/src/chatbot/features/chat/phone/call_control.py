@@ -5,7 +5,15 @@ blocking the event loop here would stall the Media Stream audio pump.
 
 Every method is fail-open by design: this code sits in the path of a live
 conversation, and a Twilio API failure must degrade the feature rather than
-drop the caller.
+drop the caller. "Fail-open" covers client *construction* as well as the API
+call itself — ``_twilio()`` swallows any error building the ``twilio.rest.Client``
+(bad credentials, a missing/broken SDK install, a future constructor that adds
+validation) and returns ``None`` rather than letting the exception propagate,
+so both public methods can stay simple ``if client is None: return <falsy>``
+guards without needing their own try/except around client acquisition. Any
+future call-control method added here (Tasks 4, 6) should follow the same
+shape: acquire the client via ``self._twilio()``, treat ``None`` as "already
+handled, return falsy", and wrap only the actual SDK call in try/except.
 """
 
 from __future__ import annotations
@@ -27,15 +35,22 @@ class CallControl:
         self._client = client
 
     def _twilio(self) -> Any | None:
+        """Return a Twilio client, constructing one lazily if needed. Never
+        raises: construction failure (bad credentials, a broken SDK install,
+        anything) is fail-open, same as the API calls made with the client."""
         if self._client is not None:
             return self._client
         sid = self._settings.twilio_account_sid
         token = self._settings.twilio_auth_token
         if not sid or not token:
             return None
-        from twilio.rest import Client  # noqa: PLC0415
+        try:
+            from twilio.rest import Client  # noqa: PLC0415
 
-        self._client = Client(sid, token)
+            self._client = Client(sid, token)
+        except Exception as e:
+            _log.error("call_control_client_init_failed", error=str(e))
+            return None
         return self._client
 
     async def redirect(self, call_sid: str, twiml: str) -> bool:

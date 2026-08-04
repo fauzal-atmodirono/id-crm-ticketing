@@ -249,6 +249,13 @@ async def test_only_one_firestore_client_is_built_per_store(fake_client):
 
 
 async def test_get_is_cached_and_save_invalidates_it(fake_client):
+    """Assert on returned values AND on how many times Firestore was actually
+    read. Values alone don't pin the cache: two `get()`s legitimately return
+    `None` either because the second one hit the cache, or because caching
+    doesn't exist at all and both went to Firestore and both found nothing --
+    the values can't tell those apart. `read_count` can: it only stays flat
+    across the second `get()` if the cache actually short-circuited it.
+    """
     settings = Settings(firestore_project_id="proj", firestore_database_id="db")
     with patch(
         "chatbot.features.chat.dms_config_store.firestore.Client", autospec=True
@@ -256,23 +263,52 @@ async def test_get_is_cached_and_save_invalidates_it(fake_client):
         MockClient.return_value = fake_client
         store = DmsConfigStore(settings)
 
-        # "No document" is the common tenant state and must be cached too --
-        # otherwise the majority case still pays a round trip per lookup.
-        assert await store.get() is None
-        assert await store.get() is None
+        read_count = 0
+        real_get = _FakeDoc.get
 
-        await store.save(CFG, credential="k")
-        # save() invalidated, so this must be a fresh read, not the cached None.
-        reloaded = await store.get()
+        def _counting_get(self: _FakeDoc) -> MagicMock:
+            nonlocal read_count
+            read_count += 1
+            return real_get(self)
+
+        with patch.object(_FakeDoc, "get", _counting_get):
+            # "No document" is the common tenant state and must be cached too
+            # -- otherwise the majority case still pays a round trip per lookup.
+            assert await store.get() is None
+            assert await store.get() is None
+            assert read_count == 1, (
+                "second get() within the TTL must be served from cache, not a second Firestore read"
+            )
+
+            await store.save(CFG, credential="k")
+            # save() invalidated, so this must be a fresh read, not the cached
+            # None -- read_count must go up, not just the returned value change.
+            reloaded = await store.get()
+            assert read_count == 2, "save() must force the next get() to re-read"
+
         assert reloaded is not None
         assert reloaded.base_url == CFG.base_url
 
 
 async def test_a_failed_get_is_not_cached():
-    """A Firestore blip must not pin "not configured" for the whole TTL."""
+    """A Firestore blip must not pin "not configured" for the whole TTL --
+    and, going further than the returned value alone can prove, a *recovered*
+    read must itself start being served from cache again. If the whole cache
+    were deleted, the failure-then-recovery values here would look identical
+    (both `get()`s would just hit Firestore directly), so the assertions
+    below are on `good_read_count`, not on `recovered`/`again` alone.
+    """
     settings = Settings(firestore_project_id="proj", firestore_database_id="db")
     good = _FakeFirestoreClient()
     good.collection(_COLLECTION)._store[_DOC_ID] = {"enabled": True, "base_url": "https://x"}
+
+    good_read_count = 0
+    real_get = _FakeDoc.get
+
+    def _counting_get(self: _FakeDoc) -> MagicMock:
+        nonlocal good_read_count
+        good_read_count += 1
+        return real_get(self)
 
     with patch("chatbot.features.chat.dms_config_store.firestore.Client", autospec=True) as Mock:
         Mock.return_value = _RaisingFirestoreClient()
@@ -282,7 +318,18 @@ async def test_a_failed_get_is_not_cached():
         # Swap the underlying client for a healthy one; a cached failure
         # would keep returning None here.
         store._firestore_client = good  # type: ignore[assignment]
-        recovered = await store.get()
+        with patch.object(_FakeDoc, "get", _counting_get):
+            recovered = await store.get()
+            assert good_read_count == 1, "the failed attempt must not have poisoned this read"
+
+            # The success itself must now be cached: a second get() within the
+            # TTL must NOT hit Firestore again. This is what actually
+            # distinguishes "caching works" from "caching doesn't exist" --
+            # deleting the cache would make this assertion fail (read_count
+            # would go to 2), even though `again == recovered` either way.
+            again = await store.get()
+            assert good_read_count == 1, "a cached success must not trigger a second read"
 
     assert recovered is not None
     assert recovered.enabled is True
+    assert again is recovered

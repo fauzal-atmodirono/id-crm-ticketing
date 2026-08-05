@@ -318,8 +318,9 @@ notified without the customer ever seeing it.
 A chat panel next to the conversation where an agent can ask an AI
 assistant questions about the customer or the topic at hand, and get
 answers grounded in the knowledge base. Each answer is followed by a
-"Looked at" line naming which knowledge tools it consulted to produce
-it.
+"Looked at" line naming which knowledge tools it consulted, and — when
+sources are available — a "Sources" line with each source title, shown
+as a clickable link where one exists or as plain text otherwise.
 
 ### Where to find it
 
@@ -335,7 +336,8 @@ the conversation.
 3. Type your question in the panel's chat box and send it.
 4. Read the answer, along with the "Looked at" line noting which
    knowledge tools (for example, a knowledge-base search) it used to
-   answer.
+   answer, and the "Sources" line underneath when it has one — click a
+   source to open it, or read its title if it isn't linked.
 5. Click "Insert into reply" on any answer you'd like to drop straight
    into your draft.
 6. Reset the panel to start a fresh question thread, or close it when

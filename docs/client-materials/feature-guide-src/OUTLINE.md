@@ -54,6 +54,14 @@ Task 7 (their content is prescribed differently there):
   0029/0032 are the reason certain native Chatwoot menus (Enterprise limits
   banner, Audit Logs/Custom Roles nav under Settings pre-Proton-RBAC,
   Security settings) are absent from this guide.
+- **Mandated addition (Task 1 review): `02-conversations.md` gained a
+  `## Macros` section** that Task 1's skeleton had omitted despite the
+  design spec listing macros as a conversation-level feature. Macros are
+  native Chatwoot; there is no Proton patch for them. The split mirrors
+  Chatwoot's own UI: an agent *runs* an existing macro from the
+  conversation view (covered here, `ch02-macros`); *creating/editing* a
+  macro's steps is admin-only work, cross-referenced to the Macros section
+  of `09-administration.md` rather than duplicated.
 
 ## Chapter → section → evidence → screenshot map
 
@@ -75,6 +83,7 @@ Task 7 (their content is prescribed differently there):
 | Priorities | Native + `0024-agent-priorities.patch` (`AgentPrioritiesEditor`) | ch02-priorities |
 | Private notes | Native — `<!-- VERIFY-LIVE -->` | ch02-private-note |
 | Canned responses | Native — `<!-- VERIFY-LIVE -->` | ch02-canned-responses |
+| Macros | Native Chatwoot macros feature — `<!-- VERIFY-LIVE -->` (mandated addition, see corrections note below; running a macro is conversation-level, creating/editing one is admin work in `09-administration.md`) | ch02-macros |
 | Mentions | Native — `<!-- VERIFY-LIVE -->` | ch02-mentions |
 | Ask Copilot panel | `0005-ask-copilot-panel.patch` (panel UI), `0006-kb-sources.patch` (source citations); backend `assist/router.py` `POST /assist/ask` | ch02-copilot-panel |
 | Suggest-a-reply | `0007-suggest-sources.patch` (reply-box suggestion + sources line); backend `POST /assist/suggest` | ch02-suggest-reply |

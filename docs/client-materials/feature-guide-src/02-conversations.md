@@ -317,8 +317,9 @@ notified without the customer ever seeing it.
 
 A chat panel next to the conversation where an agent can ask an AI
 assistant questions about the customer or the topic at hand, and get
-answers grounded in the knowledge base, with sources it consulted noted
-alongside the answer.
+answers grounded in the knowledge base. Each answer is followed by a
+"Looked at" line naming which knowledge tools it consulted to produce
+it.
 
 ### Where to find it
 
@@ -332,14 +333,15 @@ the conversation.
 1. Open the conversation you need help with.
 2. Click the Copilot button above the reply box.
 3. Type your question in the panel's chat box and send it.
-4. Read the answer, along with a note of what it looked at and any
-   sources it cites.
+4. Read the answer, along with the "Looked at" line noting which
+   knowledge tools (for example, a knowledge-base search) it used to
+   answer.
 5. Click "Insert into reply" on any answer you'd like to drop straight
    into your draft.
 6. Reset the panel to start a fresh question thread, or close it when
    you're done.
 
-[[SCREENSHOT: ch02-copilot-panel | Asking the Copilot panel a question and seeing its cited sources]]
+[[SCREENSHOT: ch02-copilot-panel | Asking the Copilot panel a question and seeing its "Looked at" line]]
 
 ### Example scenario
 
@@ -410,8 +412,9 @@ A "Summarize" action above the reply box.
 1. Open the conversation you want to summarize.
 2. Click "Summarize" above the reply box.
 3. Wait a moment for the summary to be generated.
-4. The summary is posted as a private note rather than sent to the
-   customer.
+4. The summary is inserted into the reply box as a draft, switched to
+   private "Note" mode — it is not posted automatically, so review it and
+   click send yourself to add it to the conversation.
 5. Read it before handing the conversation to a teammate, or to refresh
    your own memory of a long-running case.
 
@@ -451,8 +454,9 @@ administrator. Agents simply see its effects appear inside conversations.
 2. Read the suggested draft, edit it if needed, then send it yourself as
    a normal reply. The AI never sends this for you.
 3. On an inbox running in auto mode, the AI's reply is sent to the
-   customer directly and the conversation stays open for the AI to
-   continue — check in on it if you think a human should step in.
+   customer directly and the conversation stays in **Pending** while the
+   AI keeps handling it — it only moves to **Open** once the AI hands off
+   or an agent steps in.
 4. If the AI can't confidently help, it hands the conversation off to a
    human on its own — reopening it and, if configured, posting a brief
    acknowledgement to the customer first.

@@ -149,9 +149,10 @@ Administration → Roles & Permissions.
 
 ### How to use it
 
-1. As an agent, you see Conversations, Contacts, Knowledge (read access),
-   Cases, and RSA — the day-to-day support tools.
-2. As an administrator, you additionally see Administration and any
+1. As an agent, you see Conversations, Contacts, and Knowledge (read
+   access) — the day-to-day support tools.
+2. As an administrator, you additionally see Cases, the RSA Incident Log,
+   Customer 360, Reports, and Administration together with any
    admin-only pages your permissions grant, such as Integrations,
    Escalation Routing, SLA Policies, Audit Log, and Roles & Permissions.
 3. If you believe you're missing access you should have, ask an

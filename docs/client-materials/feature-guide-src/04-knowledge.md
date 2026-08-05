@@ -414,9 +414,12 @@ In the left-hand navigation, open **Knowledge** and select **Settings**.
 1. Open **Knowledge → Settings** and pick an assistant with the
    **Assistant** selector at the top to edit its persona.
 2. Under **Basic**, set the assistant's **Name**, **Description**, **Product
-   name**, and **Language** — leave Language empty to let the assistant
-   reply in whatever language the customer writes in, or set it (for
-   example, to Bahasa Melayu) to force replies into one language.
+   name**, and **Language**. The assistant always mirrors the language the
+   customer actually writes in — this field never overrides that. It only
+   acts as a tie-breaker preference for when the customer's language is
+   unclear; leave it empty to let the assistant fall back to whatever
+   language it judges best in that case, or set it (for example, to Bahasa
+   Melayu) to tell it which language to prefer as that fallback.
 3. Under **System**, write **System instructions** describing who the
    assistant is and how it should behave — this is the core of its persona.
    Adjust **Temperature** from precise (0) to creative (1); leaving it as-is
@@ -445,12 +448,24 @@ In the left-hand navigation, open **Knowledge** and select **Settings**.
    and contact-attribute context.
 8. Click **Save assistant** to apply the persona changes.
 9. Below the persona panel, **Tenant settings** lets an administrator
-   override a small number of workspace-wide values (such as which Gemini
-   model Suggest and Copilot use, how many tool calls Copilot may make per
-   turn, and a couple of settings still being wired up end to end). Each
-   field shows whether it is currently on the platform's default
-   (**env**) or has been overridden (**override**), and can be reset back
-   to default individually. Click **Save settings** to apply changes.
+   override a fixed set of workspace-wide values, each shown with whether
+   it is currently on the platform's default (**env**) or has been
+   overridden (**override**), and a **Reset** to return it to default
+   individually:
+   - **Assist Gemini model** — which model Suggest-a-reply uses.
+   - **Copilot Gemini model** — which model the Ask Copilot panel uses.
+   - **Copilot max tool iterations** — how many tool calls Copilot may make
+     while answering a single question.
+   - **AI assist enabled**, **Copilot enabled**, **AI drafts enabled** —
+     tenant-wide toggles for Suggest-a-reply, the Ask Copilot panel, and AI
+     auto-drafted replies respectively.
+   - **Default mode** — the fallback Suggest/Auto mode used for any inbox
+     that does not have its own explicit mode set under Inboxes.
+   - **Debounce seconds** — how long the AI waits after a customer's
+     message before answering, so a quick burst of messages is answered
+     once instead of many times.
+
+   Click **Save settings** to apply changes.
 
 [[SCREENSHOT: ch04-settings | The assistant Settings page: persona, language, and lifecycle messages]]
 

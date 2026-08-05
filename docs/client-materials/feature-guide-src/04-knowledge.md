@@ -431,18 +431,19 @@ In the left-hand navigation, open **Knowledge** and select **Settings**.
    example, "always reply in short paragraphs" or "always end with a
    follow-up question").
 6. Under **Messages**, fill in the wording the assistant sends at key
-   moments of a conversation: a **Welcome message** when it starts, a
-   **Handoff message** when it hands off to a human agent, and a
-   **Resolution message** when the conversation is marked resolved — plus
-   four more lifecycle messages: an **Idle warning message** (sent after a
-   period of inactivity), an **Idle close message** (sent if the
-   conversation is then closed for inactivity), a **Resolution prompt
-   message** (asking whether the issue is resolved), and CSAT survey
-   prompts split by who handled the chat — a **Survey AI message** and a
-   **Survey agent message** — plus a **Thanks message** after a rating and
-   an **Assign agent message** when a human is assigned. Leaving any of
-   these blank keeps the platform's built-in default wording for that
-   moment.
+   moments of a conversation: a **Welcome message** when it starts and a
+   **Handoff message** when it hands off to a human agent — plus five more
+   lifecycle messages: an **Idle warning message** (sent after a period of
+   inactivity), an **Idle close message** (sent if the conversation is
+   then closed for inactivity), a **Resolution prompt message** (asking
+   whether the issue is resolved), and CSAT survey prompts split by who
+   handled the chat — a **Survey AI message** and a **Survey agent
+   message** — plus a **Thanks message** after a rating and an **Assign
+   agent message** when a human is assigned. Leaving any of these blank
+   keeps the platform's built-in default wording for that moment. A
+   **Resolution message** field is also available on this page, but it is
+   saved for future use only — nothing in the current build sends it to a
+   customer.
 7. Under **Features**, toggle whether this assistant uses knowledge-base/FAQ
    grounding, conversation memory context, source citations in its answers,
    and contact-attribute context.

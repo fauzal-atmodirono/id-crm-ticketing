@@ -119,7 +119,7 @@
 5. Figures from the page are copied into the weekly client deck; if the
    client asks for a deeper cut of the data than the page shows, the
    operations lead asks their CRM administrator to arrange a bulk export
-   (see the Integrations Overview chapter's BI/reporting exports section).
+   (see the Integration Overview chapter's BI/reporting exports section).
 
 [[SCREENSHOT: ch11-scenario5-weekly-report | Using the Weekly Report page for the weekly client meeting]]
 

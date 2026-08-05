@@ -164,7 +164,7 @@ turnaround clock starts running from that moment.
 This ties directly into the Escalation Routing directory (Administration
 chapter), which determines who actually receives the PIC/dealer email, and
 into the Dealer Escalation Turnaround figures shown in the Reports chapter.
-See also the Integrations Overview chapter's Email section.
+See also the Integration Overview chapter's Email section.
 
 ## Lifecycle messages
 
@@ -284,5 +284,5 @@ Phone/IVR conversations join the same single inbox front door described in
 the Introduction chapter, are answered from the same knowledge base
 described in the Knowledge chapter, and feed the CSAT report and, for
 roadside-assistance calls, the RSA Incident Log chapter — the same way any
-other channel does. See also the Integrations Overview chapter's Phone/IVR
+other channel does. See also the Integration Overview chapter's Phone/IVR
 section.

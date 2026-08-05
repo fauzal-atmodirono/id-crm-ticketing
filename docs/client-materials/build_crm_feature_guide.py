@@ -37,7 +37,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
-BASE = "/Users/yudaadipratama/Archive/id-crm-ticketing/docs/client-materials"
+BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, "Google Docs template - Short version.docx")
 SRC_DIR = os.path.join(BASE, "feature-guide-src")
 ASSETS_DIR = os.path.join(BASE, "feature-guide-assets")

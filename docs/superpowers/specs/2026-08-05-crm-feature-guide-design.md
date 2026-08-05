@@ -32,9 +32,11 @@ cover multi-feature journeys and integrations.
 2. **Conversations** — inbox views, All-conversations default tab,
    statuses (incl. default "All" filter), assignment, labels, priorities
    (incl. agent-priorities enhancement), private notes, canned responses,
-   macros, mentions, **AI Copilot panel** (Ask Copilot, suggested replies,
-   KB sources), **AI auto-draft / suggest-vs-auto mode** (what operators
-   see and how to accept/edit), contact side panel, **DMS integration card**
+   macros, mentions, **AI Copilot panel** (Ask Copilot Q&A), **AI reply
+   assistance** (suggest-a-reply in the reply box with KB source
+   citations), **conversation summarization** (AI summary of the thread
+   for quick catch-up/handover), **AI auto-draft / suggest-vs-auto mode**
+   (what operators see and how to accept/edit), contact side panel, **DMS integration card**
    (vehicle/service data on the conversation), conversation actions
    (resolve, snooze, transcripts).
 3. **Contacts** — contact list, profiles, conversation history, notes,

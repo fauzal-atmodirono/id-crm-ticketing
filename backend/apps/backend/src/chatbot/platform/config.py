@@ -527,6 +527,12 @@ class Settings(BaseSettings):
     # Empty (default) means no dealer email is ever sent.
     dealer_email_map_json: str = ""
 
+    # Reply-To template for escalation mail, e.g.
+    # "support+case{conv_id}@proton.example". Empty (default) means no
+    # Reply-To and no [CASE-n] subject tag -- mail is byte-identical to
+    # pre-reply-loop behavior. `{conv_id}` is the only placeholder.
+    escalation_reply_to_template: str = ""
+
     # Settings configurations
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -124,6 +124,27 @@ class EscalationNotifier:
         await self._send_wa(pic, conv_id=conv_id, title=title)
         return pic
 
+    def _reply_to_for(self, conv_id: str) -> str | None:
+        """Correlation Reply-To for this conversation, or None when the
+        template is unset (the default -- mail then goes out untagged, byte-
+        identical to pre-reply-loop behavior)."""
+        template = (self._settings.escalation_reply_to_template or "").strip()
+        if not template:
+            return None
+        try:
+            return template.format(conv_id=conv_id)
+        except (KeyError, IndexError):
+            _log.warning("escalation_reply_to_template_invalid", template=template)
+            return None
+
+    def _case_tag(self, conv_id: str) -> str:
+        """`[CASE-n] ` subject prefix, or "" when the reply loop is off.
+
+        Internal mail (PIC/dealer) only -- the customer ack never carries a
+        visible tag, so that thread stays clean for the customer.
+        """
+        return f"[CASE-{conv_id}] " if self._reply_to_for(conv_id) else ""
+
     async def _resolve_pic(self, department: str | None) -> PicEntry | None:
         if not department:
             return None
@@ -158,9 +179,10 @@ class EscalationNotifier:
             self._email_sender.send(
                 to=[pic.pic_email],
                 cc=cc,
-                subject=f"[Escalation] {title}",
+                subject=f"[Escalation] {self._case_tag(conv_id)}{title}",
                 body=email_body,
                 attachments=[],
+                reply_to=self._reply_to_for(conv_id),
             )
         except Exception as exc:
             _log.warning("escalation_email_failed", pic_email=pic.pic_email, error=str(exc))
@@ -195,7 +217,7 @@ class EscalationNotifier:
         forward. Each failure is logged and does not affect the others.
         """
         if self._settings.email_escalation_ack_enabled and customer_email:
-            self._send_customer_ack(customer_email, title=title)
+            self._send_customer_ack(customer_email, conv_id=conv_id, title=title)
 
         if self._settings.escalation_email_enabled:
             pic = await self._resolve_pic(department)
@@ -205,7 +227,9 @@ class EscalationNotifier:
         if dealer:
             await self._send_dealer_forward(dealer, conv_id=conv_id, title=title, body=body)
 
-    def _send_customer_ack(self, to_email: str, *, title: str) -> None:
+    def _send_customer_ack(self, to_email: str, *, conv_id: str, title: str) -> None:
+        # No _case_tag here, deliberately: the customer thread must stay
+        # clean -- only the invisible Reply-To carries the correlation token.
         try:
             self._email_sender.send(
                 to=[to_email],
@@ -213,6 +237,7 @@ class EscalationNotifier:
                 subject=f"Update on your case: {title}",
                 body=self._settings.email_escalation_ack_template,
                 attachments=[],
+                reply_to=self._reply_to_for(conv_id),
             )
         except Exception as exc:
             _log.warning("escalation_customer_ack_failed", to_email=to_email, error=str(exc))
@@ -245,9 +270,10 @@ class EscalationNotifier:
             self._email_sender.send(
                 to=[email],
                 cc=[],
-                subject=f"[Escalation - Dealer Forward] {title}",
+                subject=f"[Escalation - Dealer Forward] {self._case_tag(conv_id)}{title}",
                 body=email_body,
                 attachments=[],
+                reply_to=self._reply_to_for(conv_id),
             )
         except Exception as exc:
             _log.warning("escalation_dealer_forward_failed", dealer=dealer_slug, error=str(exc))

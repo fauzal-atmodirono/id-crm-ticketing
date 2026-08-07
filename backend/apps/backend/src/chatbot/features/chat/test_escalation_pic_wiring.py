@@ -180,7 +180,14 @@ class _FakeEmail:
         self.sent: list[dict[str, Any]] = []
 
     def send(
-        self, to: list[str], cc: list[str], subject: str, body: str, attachments: list
+        self,
+        to: list[str],
+        cc: list[str],
+        subject: str,
+        body: str,
+        attachments: list,
+        *,
+        reply_to: str | None = None,
     ) -> None:
         self.sent.append({"to": to, "cc": cc, "subject": subject, "body": body})
 

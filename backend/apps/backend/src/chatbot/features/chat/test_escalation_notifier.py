@@ -58,7 +58,14 @@ async def test_notify_sends_email_and_wa_when_dept_matched() -> None:
 
     class _FakeEmailSender:
         def send(
-            self, to: list[str], cc: list[str], subject: str, body: str, attachments: list
+            self,
+            to: list[str],
+            cc: list[str],
+            subject: str,
+            body: str,
+            attachments: list,
+            *,
+            reply_to: str | None = None,
         ) -> None:
             sent_emails.append({"to": to, "cc": cc, "subject": subject, "body": body})
 
@@ -267,7 +274,14 @@ async def test_notify_ccs_pic_cc_emails_when_enabled() -> None:
 
     class _FakeEmailSender:
         def send(
-            self, to: list[str], cc: list[str], subject: str, body: str, attachments: list
+            self,
+            to: list[str],
+            cc: list[str],
+            subject: str,
+            body: str,
+            attachments: list,
+            *,
+            reply_to: str | None = None,
         ) -> None:
             sent.append({"to": to, "cc": cc})
 
@@ -290,7 +304,14 @@ async def test_notify_omits_cc_when_escalation_cc_pic_disabled() -> None:
 
     class _FakeEmailSender:
         def send(
-            self, to: list[str], cc: list[str], subject: str, body: str, attachments: list
+            self,
+            to: list[str],
+            cc: list[str],
+            subject: str,
+            body: str,
+            attachments: list,
+            *,
+            reply_to: str | None = None,
         ) -> None:
             sent.append({"cc": cc})
 
@@ -314,7 +335,14 @@ async def test_email_reference_uses_chatwoot_conversation() -> None:
 
     class _FakeEmailSender:
         def send(
-            self, to: list[str], cc: list[str], subject: str, body: str, attachments: list
+            self,
+            to: list[str],
+            cc: list[str],
+            subject: str,
+            body: str,
+            attachments: list,
+            *,
+            reply_to: str | None = None,
         ) -> None:
             bodies.append(body)
 
@@ -346,7 +374,7 @@ def _notifier(
     sent_emails: list[dict[str, Any]] = []
 
     class _FakeEmailSender:
-        def send(self, to, cc, subject, body, attachments) -> None:
+        def send(self, to, cc, subject, body, attachments, *, reply_to=None) -> None:
             sent_emails.append({"to": to, "cc": cc, "subject": subject, "body": body})
 
     # notify_email_channel_escalation (what every caller of this helper

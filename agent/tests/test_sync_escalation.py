@@ -323,6 +323,170 @@ async def test_maybe_escalate_skips_notify_for_non_email_channel(monkeypatch):
     get_proton_config_client.cache_clear()
 
 
+def _stateful_email_conversation(monkeypatch, conv_id=9, attrs=None):
+    """Stand in for a real Chatwoot Email-channel conversation whose
+    `custom_attributes` actually persist across calls, so the once-per-
+    escalation guard can be exercised end to end (read → notify → stamp →
+    read again) instead of being hand-fed a pre-stamped fixture.
+    """
+    monkeypatch.setattr(get_settings(), "email_escalation_enabled", True)
+    monkeypatch.setattr(get_settings(), "proton_backend_url", "http://proton-backend:8080")
+    monkeypatch.setattr(get_settings(), "proton_backend_key", "k")
+    get_proton_config_client.cache_clear()
+
+    state = {"custom_attributes": dict(attrs or {})}
+
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/{conv_id}").mock(
+        side_effect=lambda request: httpx.Response(
+            200,
+            json={
+                "id": conv_id,
+                "inbox_id": 5,
+                "custom_attributes": dict(state["custom_attributes"]),
+            },
+        )
+    )
+
+    def _write_attrs(request):
+        state["custom_attributes"] = json.loads(request.content)["custom_attributes"]
+        return httpx.Response(200, json={})
+
+    respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/{conv_id}/custom_attributes"
+    ).mock(side_effect=_write_attrs)
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/inboxes/5").mock(
+        return_value=httpx.Response(200, json={"id": 5, "channel_type": "Channel::Email"})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/{conv_id}/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    return state
+
+
+@respx.mock
+async def test_maybe_escalate_notifies_once_per_escalation(monkeypatch):
+    """A second `conversation_updated` on a still-escalated conversation must
+    NOT re-fire the EM-7 fan-out.
+
+    Without a guard, every write the reply linker makes to the escalated
+    conversation (its `escalation_replied_at` stamp, its label, the reopen on
+    the customer branch) fires `conversation_updated` while the `escalate`
+    label is still present -- re-sending a real `Update on your case:` email
+    to the end customer plus a duplicate PIC/dealer forward, automatically,
+    on every reply.
+    """
+    state = _stateful_email_conversation(monkeypatch)
+    notify_route = respx.post(f"{PROTON}/escalation/notify").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+
+    payload = {"id": 9, "labels": ["escalate", "dept_apps"]}
+    await sync.maybe_escalate(payload)
+    await sync.maybe_escalate(payload)
+
+    assert notify_route.call_count == 1
+    assert state["custom_attributes"].get("escalation_notified_at")
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_maybe_escalate_stamps_only_after_the_notify_call(monkeypatch):
+    """Stamp-after-notify, never before: the stamp write must come after the
+    backend call in wire order, so a notify that never happens cannot leave a
+    stamp behind that permanently suppresses the escalation."""
+    _stateful_email_conversation(monkeypatch)
+    respx.post(f"{PROTON}/escalation/notify").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+
+    await sync.maybe_escalate({"id": 9, "labels": ["escalate"]})
+
+    order = [
+        (c.request.method, c.request.url.path)
+        for c in respx.calls
+        if c.request.url.path.endswith("/escalation/notify")
+        or (
+            c.request.method == "POST"
+            and c.request.url.path.endswith("/conversations/9/custom_attributes")
+        )
+    ]
+    assert [p for _, p in order] == [
+        "/escalation/notify",
+        "/api/v1/accounts/1/conversations/9/custom_attributes",
+    ]
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_maybe_escalate_does_not_stamp_when_notify_fails(monkeypatch):
+    """A failed send must leave the conversation un-stamped so the next
+    `conversation_updated` still gets a chance to escalate -- silently losing
+    a customer escalation is far worse than a duplicate email."""
+    state = _stateful_email_conversation(monkeypatch)
+    notify_route = respx.post(f"{PROTON}/escalation/notify").mock(
+        return_value=httpx.Response(503)
+    )
+
+    await sync.maybe_escalate({"id": 9, "labels": ["escalate"]})
+
+    assert notify_route.call_count == 1
+    assert "escalation_notified_at" not in state["custom_attributes"]
+
+    notify_route.mock(return_value=httpx.Response(200, json={"status": "ok"}))
+    await sync.maybe_escalate({"id": 9, "labels": ["escalate"]})
+    assert notify_route.call_count == 2
+    assert state["custom_attributes"].get("escalation_notified_at")
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_maybe_escalate_rearms_when_the_escalate_label_is_removed(monkeypatch):
+    """Removing `escalate` re-arms the guard, so a genuine later re-escalation
+    of the same case still notifies (the guard is once per escalation, not
+    once per conversation for all time)."""
+    state = _stateful_email_conversation(monkeypatch)
+    notify_route = respx.post(f"{PROTON}/escalation/notify").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+
+    await sync.maybe_escalate({"id": 9, "labels": ["escalate"]})
+    assert notify_route.call_count == 1
+    assert state["custom_attributes"].get("escalation_notified_at")
+
+    # The agent removes the label; Chatwoot echoes the conversation's current
+    # custom_attributes back in the `conversation_updated` payload, so the
+    # re-arm costs no extra read.
+    await sync.maybe_escalate(
+        {"id": 9, "labels": [], "custom_attributes": dict(state["custom_attributes"])}
+    )
+    assert not state["custom_attributes"].get("escalation_notified_at")
+
+    # ...and weeks later the case is escalated again.
+    await sync.maybe_escalate({"id": 9, "labels": ["escalate"]})
+    assert notify_route.call_count == 2
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_maybe_escalate_rearm_is_free_when_there_is_nothing_to_clear(monkeypatch):
+    """The overwhelming majority of `conversation_updated` events carry no
+    `escalate` label and no stamp. Those must make zero Chatwoot calls --
+    the re-arm reads the stamp off the webhook payload, never with a GET."""
+    monkeypatch.setattr(get_settings(), "email_escalation_enabled", True)
+    conv_route = respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9")
+    attrs_route = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/9/custom_attributes"
+    )
+
+    await sync.maybe_escalate({"id": 9, "labels": ["billing"]})
+    await sync.maybe_escalate(
+        {"id": 9, "labels": ["billing"], "custom_attributes": {"case_category": "Sales"}}
+    )
+
+    assert not conv_route.called
+    assert not attrs_route.called
+
+
 @respx.mock
 async def test_maybe_escalate_skips_notify_when_flag_off(monkeypatch):
     """`email_escalation_enabled` defaults False -- the helper must return

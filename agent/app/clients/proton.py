@@ -477,11 +477,18 @@ class ProtonConfigClient:
         body: str,
         department: str | None,
         dealer: str | None,
-    ) -> None:
+    ) -> bool:
         """Ask the backend to send the EM-7 two-thread email escalation for a
         natively-escalated Email-channel conversation (POST
-        /escalation/notify). Fire-and-forget: any error is logged and
-        swallowed, matching assign_agent's pattern."""
+        /escalation/notify). Never raises: any error is logged and swallowed,
+        matching assign_agent's pattern.
+
+        Returns True only when the backend accepted the request. The caller
+        (`sync._maybe_notify_email_escalation`) stamps its once-per-escalation
+        guard on that answer, so a send that never happened does not leave a
+        stamp behind that permanently suppresses the escalation -- which is
+        why this reports success rather than being purely fire-and-forget.
+        """
         try:
             response = await self._client.post(
                 "/escalation/notify",
@@ -494,5 +501,7 @@ class ProtonConfigClient:
                 },
             )
             response.raise_for_status()
+            return True
         except Exception:
             logger.debug("proton_config: notify_email_escalation failed", exc_info=True)
+            return False

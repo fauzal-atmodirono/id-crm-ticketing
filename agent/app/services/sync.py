@@ -32,6 +32,9 @@ _DEPT_LABEL = re.compile(r"^dept_(.+)$")
 
 _WHITESPACE_RUN = re.compile(r"\s+")
 
+# Once-per-escalation guard for the EM-7 fan-out. See `maybe_escalate`.
+_NOTIFIED_ATTR = "escalation_notified_at"
+
 
 def _single_line(text: str, limit: int = 100) -> str:
     """Collapse *text* onto one line, for use as an email Subject header.
@@ -97,6 +100,21 @@ async def _maybe_notify_email_escalation(conversation_id: int, labels: list[str]
     if (inbox or {}).get("channel_type") != "Channel::Email":
         return
 
+    # Once-per-escalation guard. The stamp is read off the conversation we
+    # just fetched for the channel check -- no extra call and, importantly,
+    # no new failure mode: if that GET had failed we would already have
+    # returned above, so a "stamp read failure" can never be what suppresses
+    # a genuine first escalation. The guard is checked after the channel
+    # check so a non-Email conversation is never stamped.
+    existing = (conversation or {}).get("custom_attributes") or {}
+    if existing.get(_NOTIFIED_ATTR):
+        logger.info(
+            "maybe_escalate: conversation %s already notified for this escalation, "
+            "skipping",
+            conversation_id,
+        )
+        return
+
     department = next(
         (m.group(1) for lbl in labels if (m := _DEPT_LABEL.match(lbl))), None
     )
@@ -136,23 +154,100 @@ async def _maybe_notify_email_escalation(conversation_id: int, labels: list[str]
             conversation_id,
         )
 
-    await proton.notify_email_escalation(
+    sent = await proton.notify_email_escalation(
         conversation_id=conversation_id,
         title=title,
         body=body,
         department=department,
         dealer=dealer,
     )
+    if not sent:
+        # Deliberately notify-then-stamp, and only on a confirmed send.
+        #
+        # The two orderings trade different failures against each other.
+        # Stamping first would suppress this escalation forever if the send
+        # then failed -- a customer complaint that silently reaches nobody,
+        # with no error surface anywhere (every leg of this path is
+        # fail-open). Stamping afterwards instead risks a duplicate mail if
+        # two `conversation_updated` events for the same conversation are
+        # ever processed concurrently and both read an unstamped row.
+        #
+        # We take the duplicate. A duplicate is visible, self-correcting and
+        # already the behaviour operators know from label re-toggling; a
+        # dropped escalation is neither. The race is also narrow in practice:
+        # identical webhook deliveries are already dropped by `claim_delivery`,
+        # so it needs two *distinct* Chatwoot events landing inside the same
+        # few hundred milliseconds.
+        return
+
+    try:
+        await get_chatwoot_client().set_custom_attributes(
+            conversation_id, {_NOTIFIED_ATTR: datetime.now(timezone.utc).isoformat()}
+        )
+    except Exception:
+        # The mail is already out; a failed stamp only costs a possible
+        # duplicate on the next update, never a lost escalation.
+        logger.exception(
+            "maybe_escalate: failed to stamp %s on conversation %s",
+            _NOTIFIED_ATTR,
+            conversation_id,
+        )
+
+
+async def _rearm_escalation_guard(conversation_id: int, payload: dict) -> None:
+    """Clear the once-per-escalation stamp once `escalate` is gone, so a
+    genuine later re-escalation of the same case notifies again.
+
+    Reads the stamp straight off the webhook payload (Chatwoot's conversation
+    event data carries `custom_attributes`), so the overwhelmingly common
+    case -- an ordinary `conversation_updated` on a conversation that was
+    never escalated -- costs zero API calls. A payload that happens not to
+    carry `custom_attributes` simply doesn't re-arm: the guard then behaves
+    as a plain once-per-conversation one, which is the safe degradation.
+
+    Writing None rather than deleting the key is deliberate: Chatwoot's
+    custom-attributes endpoint assigns the whole object and our client merges,
+    so a null is how you clear one key without a read-modify-delete race. Every
+    reader here tests truthiness, and the resulting `conversation_updated`
+    echo re-enters this function with a falsy stamp, so it converges in one
+    step rather than looping.
+    """
+    attrs = payload.get("custom_attributes")
+    if not isinstance(attrs, dict) or not attrs.get(_NOTIFIED_ATTR):
+        return
+    try:
+        await get_chatwoot_client().set_custom_attributes(
+            conversation_id, {_NOTIFIED_ATTR: None}
+        )
+    except Exception:
+        logger.exception(
+            "maybe_escalate: failed to clear %s on conversation %s",
+            _NOTIFIED_ATTR,
+            conversation_id,
+        )
 
 
 async def maybe_escalate(payload: dict) -> None:
     """Handle a Chatwoot `conversation_updated` event: fire the EM-7
     email-channel escalation notification when the `escalate` label is
     present. Escalation stays entirely inside Chatwoot / the agent-bot's
-    handoff path -- there is no external ticketing backend to sync to."""
+    handoff path -- there is no external ticketing backend to sync to.
+
+    Edge-triggered, not level-triggered: the fan-out runs once per escalation
+    and is re-armed when the `escalate` label is removed. `conversation_updated`
+    fires on every label/attribute/status write, and nothing removes `escalate`
+    on its own -- so without the guard the reply linker's own writes back onto
+    the escalated conversation (its stamp, its label, the reopen on the
+    customer branch) would re-run the whole fan-out and send the end customer
+    a second `Update on your case:` email, plus a duplicate PIC and dealer
+    forward, on every single reply.
+    """
     conversation_id = payload.get("id")
     labels = payload.get("labels") or []
-    if conversation_id is None or "escalate" not in labels:
+    if conversation_id is None:
+        return
+    if "escalate" not in labels:
+        await _rearm_escalation_guard(conversation_id, payload)
         return
 
     await _maybe_notify_email_escalation(conversation_id, labels)

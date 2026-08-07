@@ -1,5 +1,7 @@
 """Client support for the escalation reply loop."""
 
+import json
+
 import httpx
 import respx
 
@@ -35,6 +37,31 @@ async def test_get_escalation_contacts_returns_none_on_error():
 
 
 @respx.mock
+async def test_get_escalation_contacts_returns_none_on_non_dict_body():
+    # A 200 whose top-level JSON isn't a dict (list/str/number) must not
+    # raise out of the client -- every public method here returns None on
+    # any failure, never raises. See app/clients/proton.py's module docstring.
+    respx.get(f"{PROTON}/escalation/contacts").mock(
+        return_value=httpx.Response(200, json=[1, 2, 3])
+    )
+    client = ProtonConfigClient(PROTON, "k")
+    assert await client.get_escalation_contacts() is None
+    await client.aclose()
+
+
+@respx.mock
+async def test_get_escalation_contacts_returns_empty_dict_not_none_when_no_contacts():
+    # Empty-vs-None is the distinction that lets the reply linker tell
+    # "no contacts configured" apart from "could not check the allowlist".
+    respx.get(f"{PROTON}/escalation/contacts").mock(
+        return_value=httpx.Response(200, json={"contacts": []})
+    )
+    client = ProtonConfigClient(PROTON, "k")
+    assert await client.get_escalation_contacts() == {}
+    await client.aclose()
+
+
+@respx.mock
 async def test_suggest_reply_returns_draft():
     respx.post(f"{PROTON}/assist/suggest").mock(
         return_value=httpx.Response(200, json={"draft": "Dear customer, ...", "sources": []})
@@ -59,7 +86,8 @@ async def test_create_message_sends_message_type_when_given():
     )
     client = ChatwootClient(CHATWOOT, "token", 1)
     await client.create_message(42, "hi", private=False, message_type="incoming")
-    assert route.calls.last.request.read().decode().count("incoming") == 1
+    body = json.loads(route.calls.last.request.read().decode())
+    assert body["message_type"] == "incoming"
     await client.aclose()
 
 

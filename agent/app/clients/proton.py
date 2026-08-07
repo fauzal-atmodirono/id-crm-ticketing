@@ -410,20 +410,20 @@ class ProtonConfigClient:
             response = await self._client.get("/escalation/contacts")
             response.raise_for_status()
             data = response.json()
+            contacts = (data or {}).get("contacts") if isinstance(data, dict) else None
+            if not isinstance(contacts, list):
+                return None
+            out: dict[str, str] = {}
+            for entry in contacts:
+                if not isinstance(entry, dict):
+                    continue
+                email = str(entry.get("email") or "").strip().lower()
+                if email:
+                    out[email] = str(entry.get("name") or "")
+            return out
         except Exception:
             logger.debug("proton_config: get_escalation_contacts failed", exc_info=True)
             return None
-        contacts = (data or {}).get("contacts")
-        if not isinstance(contacts, list):
-            return None
-        out: dict[str, str] = {}
-        for entry in contacts:
-            if not isinstance(entry, dict):
-                continue
-            email = str(entry.get("email") or "").strip().lower()
-            if email:
-                out[email] = str(entry.get("name") or "")
-        return out
 
     async def suggest_reply(
         self, conversation_id: str, messages: list[str]

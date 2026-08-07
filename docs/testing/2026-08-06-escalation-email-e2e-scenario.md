@@ -34,6 +34,29 @@ does **not** use the `escalate` label. See §7.
 | `EMAIL_ESCALATION_ACK_TEMPLATE` | backend | unset → default: *"Your case has been escalated to a specialist team who will follow up shortly."* |
 | `PROTON_BACKEND_URL` | agent | `http://proton-backend:8080` |
 | SMTP | both | Gmail relay, sender `Support <devotech29@gmail.com>` |
+| `ESCALATION_REPLY_LINKING_ENABLED` | agent | `true` (TC-08, TC-09) |
+| `ESCALATION_REPLY_DRAFT_ENABLED` | agent | `true` (TC-08 only — TC-09's customer-thread path never posts a draft) |
+| `ESCALATION_REPLY_TO_TEMPLATE` | backend | `devotech29+case{conv_id}@gmail.com` (TC-08, TC-09 — Gmail's plus-addressing still lands in the same IMAP-polled mailbox; empty is the default and disables the reply loop entirely, dropping the `[CASE-n]` subject tag and the `Reply-To` header) |
+| `EMAIL_AUTOACK_ENABLED` | agent | `true` (TC-08, TC-09 — side effect noted in both cases below) |
+| `SLA_ENGINE_ENABLED` | backend | `true` (TC-10 only) |
+| `SLA_INBOX_IDS` | backend | `4` (the Email inbox — TC-10) |
+| `SLA_ALERT_EMAIL_ENABLED` | backend | `true` (TC-10) |
+| `SLA_ALERT_NOTE_ENABLED` | backend | `true` (TC-10) |
+
+Two more things TC-08/09/10 need that are **not** env vars:
+
+1. The Chatwoot account webhook (Settings → Integrations → Webhooks) must have
+   **`message_created`** added to its subscribed events, or the agent never
+   receives the dealer/customer reply at all — TC-08/09 fail silently
+   without it. (TC-10's SLA note is posted directly by the backend's scan
+   job, not through this webhook, so it's unaffected.)
+2. This repo has no Alembic; a deployed database needs the SLA policy
+   table's two new columns added by hand before the SLA Policies admin page
+   can save `tier2_hours` / `reminder_warning_minutes`:
+   ```sql
+   ALTER TABLE sla_policies ADD COLUMN IF NOT EXISTS tier2_hours DOUBLE PRECISION;
+   ALTER TABLE sla_policies ADD COLUMN IF NOT EXISTS reminder_warning_minutes DOUBLE PRECISION;
+   ```
 
 **Routing table** (Firestore `lv-playground-genai` / `proton-db`, editable at
 CRM → sidebar → **Escalation Routing**):
@@ -230,6 +253,130 @@ another round of real email.
 
 ---
 
+### TC-08 — Dealer reply links back onto the case
+
+**Preconditions:** `ESCALATION_REPLY_TO_TEMPLATE` set, `ESCALATION_REPLY_LINKING_ENABLED=true`,
+`ESCALATION_REPLY_DRAFT_ENABLED=true`, and `message_created` subscribed on the
+account webhook (Settings → Integrations → Webhooks) — without it the agent
+never sees the reply at all.
+
+**Steps**
+
+1. Run TC-02 to produce a dealer forward. Note the conversation number, #N.
+   With `ESCALATION_REPLY_TO_TEMPLATE` set, the dealer mail's subject now
+   carries a `[CASE-N]` tag ahead of the title, and the mail has an
+   invisible `Reply-To` on it — you don't need to see either to run this case.
+2. From the dealer mailbox (`komang.mertayasa@devoteam.com` or a colleague
+   confirming receipt), reply to that mail without editing the subject or
+   the To address your reply lands on.
+3. Wait for the IMAP poll (1–2 min).
+
+**Expected**
+
+- The reply is filed by Chatwoot as a brand-new conversation on the Email
+  inbox (call it #M) — Chatwoot has no way to thread it onto #N on its own.
+- Conversation #N gains a private note that starts with `Reply from ` and
+  ends with `<komang.mertayasa@devoteam.com>:`, followed by the dealer's
+  reply text on its own, with **no** quoted trail from the mail client
+  (no "On ... wrote:" block, no `>` lines).
+- Conversation #N gains a second private note titled exactly
+  `Suggested customer reply (draft — review before sending):`, with an
+  AI-drafted reply text beneath it.
+- Conversation #N gains the `dealer_replied` label and a `dealer_replied_at`
+  custom attribute (current UTC time).
+- Conversation #M gains the `escalation_reply` label and is resolved.
+- If `EMAIL_AUTOACK_ENABLED=true`, #M — being a brand-new Email-channel
+  conversation — also fires the tenant's normal auto-ack reply back to the
+  dealer before the linker resolves it. That auto-ack landing in the dealer's
+  mailbox alongside their own sent reply is expected, not a duplicate of the
+  linked note above.
+
+**Pass criteria:** both notes present on #N in that order, `dealer_replied`
+label and `dealer_replied_at` present on #N, #M labelled `escalation_reply`
+and resolved.
+
+> A second reply from the same dealer address after `dealer_replied_at` is
+> already stamped is silently not linked (the stamp gates the internal-reply
+> path so a second note never piles on) — worth knowing before re-running
+> this case on the same conversation.
+
+---
+
+### TC-09 — Customer reply to the acknowledgement rejoins their own case
+
+**Preconditions:** same as TC-08 — `ESCALATION_REPLY_TO_TEMPLATE` set (the
+ack email carries the correlation `Reply-To` invisibly; its subject is never
+tagged, so the customer thread stays clean) and `ESCALATION_REPLY_LINKING_ENABLED=true`.
+
+**Steps**
+
+1. Run TC-01. From your test (customer) mailbox, reply to the
+   `Update on your case: …` mail without editing the subject.
+2. Wait for the IMAP poll.
+
+**Expected**
+
+- The reply is filed by Chatwoot as a brand-new conversation on the Email
+  inbox (call it #M), same as TC-08.
+- The reply appears on conversation #N as a normal **incoming customer
+  message** (not a private note) — visible in the main thread exactly like
+  a message the customer sent to start the case.
+- #N reopens as a result (a real inbound message from the contact does this
+  natively).
+- #N gains **no** `dealer_replied_at` attribute and **no** `dealer_replied`
+  label — those are internal-reply-only.
+- #M still gains the `escalation_reply` label and is resolved, same as the
+  dealer path.
+- If `EMAIL_AUTOACK_ENABLED=true`, #M also fires the tenant's normal auto-ack
+  reply back to the customer, same caveat as TC-08.
+
+**Pass criteria:** message visible on #N as an incoming customer message,
+#N reopened, no `dealer_replied_at`/`dealer_replied` on #N, #M resolved and
+labelled `escalation_reply`.
+
+---
+
+### TC-10 — SLA breach reaches the department PIC group
+
+**Preconditions:** `SLA_ENGINE_ENABLED=true`, `SLA_ALERT_EMAIL_ENABLED=true`,
+`SLA_ALERT_NOTE_ENABLED=true`, the Email inbox id (`4`) listed in
+`SLA_INBOX_IDS`, and a short **Response SLA (hours)** set for the Email
+inbox at CRM → SLA Policies (e.g. `0.05` ≈ 3 min) so the case breaches
+during the test. (The SLA Policies page itself needs `RBAC_ENABLED=true` —
+if it isn't in the sidebar, that's why.) Requires the `sla_policies` table
+migration in §2 above to already be applied, or saving the policy 500s.
+
+**Steps**
+
+1. Send a new email to the Email inbox, first line
+   `Test escalation TC-10 — SLA breach`.
+2. Apply `dept_sales` only. Do **not** reply to it and do **not** apply
+   `escalate`.
+3. Wait past the Response SLA threshold, then wait for one SLA scan
+   interval (`SLA_SCAN_INTERVAL_MINUTES`, 15 min by default) so the scan runs.
+
+**Expected**
+
+- `yuda.adi.pratama@devoteam.com` receives an email subject
+  `[SLA] SLA_BREACH_NO_RESPONSE on case <N>`, with
+  `fauzal.atmodirono@devoteam.com` on CC (same PIC/CC pair as TC-01 — the
+  SLA alert reuses the `dept_sales` routing record), body naming the age
+  and threshold and `Reference: Chatwoot conversation #<N>`.
+- Conversation #N gains a private note starting `⚠️ SLA breach
+  (SLA_BREACH_NO_RESPONSE) on case <N>.` with the same remark text.
+- Trigger a second scan (wait another interval, or ask an operator to
+  re-run it) without replying in between: **no** second email, **no**
+  second note — the audit trail already has a `SLA_BREACH_NO_RESPONSE`
+  entry for this conversation and the scan skips it.
+
+**Pass criteria:** one email received with the right subject/CC, one
+private note on #N, no duplicates on the rescan.
+
+> Reset the inbox's Response SLA afterwards — a 3-minute threshold left in
+> place will breach every real email on this inbox.
+
+---
+
 ## 5. Log verification
 
 Run after each case; every failure mode in this path is fail-open and silent.
@@ -240,6 +387,13 @@ gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playgroun
              echo "=== backend ==="; sudo docker logs --tail 80 proton-backend 2>&1 | grep -i escal'
 ```
 
+For TC-10, `grep -i escal` on `proton-backend` will **not** catch the SLA alert's own
+log lines — they're prefixed `sla_`, not `escal`. Use:
+
+```bash
+sudo docker logs --tail 200 proton-backend 2>&1 | grep -i sla_
+```
+
 | Log line | Meaning |
 |---|---|
 | *(nothing in `proton-agent`)* | webhook did not fire, or the inbox is not Email-channel |
@@ -248,6 +402,11 @@ gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playgroun
 | `escalation_email_failed` | SMTP rejected the PIC mail (check the Gmail app password) |
 | `escalation_customer_ack_failed` | ack leg only; the PIC mail may still have gone out |
 | `escalation_dealer_forward_failed` | SMTP rejected the dealer mail |
+| `escalation_replies: sender … is not an escalation contact, skipping` (agent) | TC-08 reply came from an address not in the PIC/dealer allowlist |
+| `escalation_replies: contact allowlist unavailable` (agent) | TC-08 backend was unreachable when checking the allowlist — reply left unlinked |
+| `sla_breach_recorded` | the scan fired a new breach (TC-10) |
+| `sla_alert_email_failed` / `sla_alert_note_failed` | the email/note leg of the SLA alert failed after the breach was recorded |
+| `sla_alert_no_pic_for_dept` | TC-10's `dept_sales` label didn't resolve to a PIC — check the routing table |
 
 ---
 
@@ -262,6 +421,9 @@ gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playgroun
 | TC-05 Unmapped dept | | | ☐ Pass ☐ Fail | |
 | TC-06 No contact email | | | ☐ Pass ☐ Fail | |
 | TC-07 Re-trigger | | | ☐ Pass ☐ Fail | |
+| TC-08 Dealer reply links back | | | ☐ Pass ☐ Fail | |
+| TC-09 Customer reply rejoins case | | | ☐ Pass ☐ Fail | |
+| TC-10 SLA breach reaches PIC | | | ☐ Pass ☐ Fail | |
 
 ---
 

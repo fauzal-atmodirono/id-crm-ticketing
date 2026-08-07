@@ -1,0 +1,120 @@
+From 40572594dbc4fcca0780d1407ecb1694c81fbb90 Mon Sep 17 00:00:00 2001
+From: scratch <scratch@example.com>
+Date: Sat, 8 Aug 2026 03:22:30 +0700
+Subject: [PATCH] feat(chatwoot-fork): operator-editable email acknowledgement
+ templates
+
+Adds two textareas to the Knowledge Settings tenant-settings panel
+(Panel 2, /kb/settings GET/PUT -- patch 0013's page, whose Panel 1
+persona-messages fieldset was added by patch 0022): Email
+auto-acknowledgement (agent/'s once-per-thread inbound email ack) and
+Escalation acknowledgement (backend/'s EM-7 customer ack on
+escalation). Both follow the exact same pattern as every other Panel 2
+field -- sDraft/SETTINGS_KEYS entry, override/env source badge, and a
+per-field Reset button that PUTs {key: null} to revert to the env
+default -- so an empty textarea reverts to the deployed default rather
+than sending an empty body (mirrors debounce_seconds/default_mode's
+existing clear-to-null behavior on save).
+
+Backend companion: agent/app/clients/proton.py's
+get_email_autoack_template() and backend/'s EscalationNotifier now
+resolve these two keys from the same /kb/settings store this page
+already writes to.
+---
+ .../components/proton/KnowledgeSettings.vue   | 66 +++++++++++++++++++
+ 1 file changed, 66 insertions(+)
+
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeSettings.vue b/app/javascript/dashboard/components/proton/KnowledgeSettings.vue
+index 73978a1..2c6f349 100644
+--- a/app/javascript/dashboard/components/proton/KnowledgeSettings.vue
++++ b/app/javascript/dashboard/components/proton/KnowledgeSettings.vue
+@@ -196,6 +196,8 @@ const sDraft = ref({
+   feature_drafts: false,
+   default_mode: 'suggest',
+   debounce_seconds: '',
++  email_autoack_template: '',
++  email_escalation_ack_template: '',
+ });
+ 
+ const SETTINGS_KEYS = [
+@@ -207,6 +209,8 @@ const SETTINGS_KEYS = [
+   'feature_drafts',
+   'default_mode',
+   'debounce_seconds',
++  'email_autoack_template',
++  'email_escalation_ack_template',
+ ];
+ 
+ // Keys treated as booleans.
+@@ -830,6 +834,68 @@ onMounted(() => {
+             </div>
+           </div>
+ 
++          <!-- Email auto-acknowledgement (inbound email, sent by the agent service) -->
++          <div class="flex items-start gap-3">
++            <div class="flex-1">
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                Email auto-acknowledgement
++                <span class="ml-1 text-n-slate-10 font-normal">(sent once per email thread — leave empty to use the deployed default)</span>
++              </label>
++              <textarea
++                v-model="sDraft.email_autoack_template"
++                rows="4"
++                placeholder="env default"
++                class="w-full px-3 py-1.5 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              />
++            </div>
++            <div class="flex flex-col items-end gap-1 pt-5">
++              <span
++                class="px-1.5 py-0.5 text-xs rounded font-mono"
++                :class="sourceLabel('email_autoack_template') === 'override' ? 'bg-n-amber-3 text-n-amber-11' : 'bg-n-alpha-black2 text-n-slate-10'"
++              >
++                {{ sourceLabel('email_autoack_template') || '—' }}
++              </span>
++              <button
++                type="button"
++                class="text-xs text-n-brand hover:underline"
++                @click="resetField('email_autoack_template')"
++              >
++                Reset
++              </button>
++            </div>
++          </div>
++
++          <!-- Escalation acknowledgement (sent by the backend when a case escalates) -->
++          <div class="flex items-start gap-3">
++            <div class="flex-1">
++              <label class="block mb-1 text-xs font-medium text-n-slate-11">
++                Escalation acknowledgement
++                <span class="ml-1 text-n-slate-10 font-normal">(sent to the customer when a case is escalated — leave empty to use the deployed default)</span>
++              </label>
++              <textarea
++                v-model="sDraft.email_escalation_ack_template"
++                rows="4"
++                placeholder="env default"
++                class="w-full px-3 py-1.5 text-sm border rounded-lg border-n-weak bg-n-alpha-black1 text-n-slate-12 focus:outline-none"
++              />
++            </div>
++            <div class="flex flex-col items-end gap-1 pt-5">
++              <span
++                class="px-1.5 py-0.5 text-xs rounded font-mono"
++                :class="sourceLabel('email_escalation_ack_template') === 'override' ? 'bg-n-amber-3 text-n-amber-11' : 'bg-n-alpha-black2 text-n-slate-10'"
++              >
++                {{ sourceLabel('email_escalation_ack_template') || '—' }}
++              </span>
++              <button
++                type="button"
++                class="text-xs text-n-brand hover:underline"
++                @click="resetField('email_escalation_ack_template')"
++              >
++                Reset
++              </button>
++            </div>
++          </div>
++
+           <div class="flex justify-end pt-2">
+             <button
+               type="submit"
+-- 
+2.54.0
+

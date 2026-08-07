@@ -108,3 +108,30 @@ async def test_empty_template_leaves_mail_untagged() -> None:
 
     assert all(c["reply_to"] is None for c in sender.calls)
     assert all("[CASE-" not in c["subject"] for c in sender.calls)
+
+
+async def test_malformed_template_falls_back_to_untagged_but_still_sends() -> None:
+    """A template whose .format() call itself raises (bad format spec, not
+    just a missing/extra placeholder) must degrade to untagged mail -- never
+    drop the send entirely. Regression test for a bug where _case_tag's call
+    into _reply_to_for happened while the send()'s subject= argument was
+    still being evaluated, so the exception escaped both helpers and was
+    only caught by the broad except around send() itself, silently dropping
+    the whole email."""
+    sender = _Sender()
+    settings = _settings(escalation_reply_to_template="support+case{conv_id:d}@test")
+    notifier = _notifier(sender, settings)
+
+    await notifier.notify_email_channel_escalation(
+        conv_id="42",
+        title="t",
+        body="b",
+        department="sales",
+        dealer="komang_motor",
+        customer_email="customer@test",
+    )
+
+    by_to = {c["to"][0]: c for c in sender.calls}
+    assert set(by_to) == {"customer@test", "pic@test", "dealer@test"}
+    assert all(c["reply_to"] is None for c in sender.calls)
+    assert all("[CASE-" not in c["subject"] for c in sender.calls)

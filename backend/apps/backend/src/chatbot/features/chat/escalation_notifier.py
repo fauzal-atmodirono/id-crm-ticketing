@@ -133,7 +133,13 @@ class EscalationNotifier:
             return None
         try:
             return template.format(conv_id=conv_id)
-        except (KeyError, IndexError):
+        except Exception:
+            # Any .format() failure (bad placeholder name, bad format spec,
+            # etc.) must fall back to untagged mail here, not bubble up --
+            # this runs inline while the send()'s subject= is being built,
+            # before the broad except around the send() call even starts,
+            # so a narrower catch here would drop the whole email instead
+            # of just the tag.
             _log.warning("escalation_reply_to_template_invalid", template=template)
             return None
 

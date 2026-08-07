@@ -30,6 +30,23 @@ logger = logging.getLogger(__name__)
 _DEALER_LABEL = re.compile(r"^dealer_(.+)$")
 _DEPT_LABEL = re.compile(r"^dept_(.+)$")
 
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def _single_line(text: str, limit: int = 100) -> str:
+    """Collapse *text* onto one line, for use as an email Subject header.
+
+    The title we send to the backend ends up in `msg["Subject"]`, and
+    `EmailMessage.__setitem__` raises ValueError on any value containing CR/LF
+    ("values may not contain linefeed or carriage return characters"). An
+    Email-channel conversation's first incoming message IS the raw email body,
+    which is virtually always multi-line -- so an unsanitised title made every
+    real email escalation fail to send. Collapsing (rather than cutting at the
+    first newline) preserves the same leading content the subject always
+    carried; only the line breaks go.
+    """
+    return _WHITESPACE_RUN.sub(" ", text).strip()[:limit]
+
 
 async def upsert_contact(payload: dict) -> None:
     """Handle a Chatwoot `contact_created`/`contact_updated` event.
@@ -109,7 +126,7 @@ async def _maybe_notify_email_escalation(conversation_id: int, labels: list[str]
                 first_incoming_text = text
 
         if first_incoming_text:
-            title = first_incoming_text[:100]
+            title = _single_line(first_incoming_text)
         if transcript_lines:
             body = "\n".join(transcript_lines[-10:])
     except Exception:

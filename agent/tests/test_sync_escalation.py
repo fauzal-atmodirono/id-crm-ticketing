@@ -212,6 +212,61 @@ async def test_maybe_escalate_notify_includes_real_case_content(monkeypatch):
 
 
 @respx.mock
+async def test_maybe_escalate_notify_title_is_single_line(monkeypatch):
+    """The title becomes an email Subject header downstream, and
+    `EmailMessage.__setitem__` raises ValueError on a value containing CR/LF
+    ("values may not contain linefeed or carriage return characters").
+
+    An Email-channel conversation's first incoming message IS the raw email
+    body, which is virtually always multi-line -- so an unsanitised title made
+    every real email escalation fail to send, with the exception escaping
+    SmtpEmailSender.send() (message construction sits outside its try) and
+    surfacing only as a swallowed `escalation_email_failed` warning.
+    """
+    monkeypatch.setattr(get_settings(), "email_escalation_enabled", True)
+    monkeypatch.setattr(get_settings(), "proton_backend_url", "http://proton-backend:8080")
+    monkeypatch.setattr(get_settings(), "proton_backend_key", "k")
+    get_proton_config_client.cache_clear()
+
+    multiline = {
+        "payload": [
+            {
+                "id": 1,
+                "content": "Test escalation TC-01 - my car will not start\r\n\r\nSent from my iPhone",
+                "message_type": 0,
+                "private": False,
+                "created_at": 1_700_000_000,
+                "sender": {"id": 55, "name": "Jane Doe", "email": "jane@example.com"},
+            },
+        ]
+    }
+
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9").mock(
+        return_value=httpx.Response(200, json={"id": 9, "inbox_id": 5})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/inboxes/5").mock(
+        return_value=httpx.Response(200, json={"id": 5, "channel_type": "Channel::Email"})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9/messages").mock(
+        return_value=httpx.Response(200, json=multiline)
+    )
+    notify_route = respx.post(f"{PROTON}/escalation/notify").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+
+    await sync.maybe_escalate({"id": 9, "labels": ["escalate"]})
+
+    assert notify_route.called
+    title = json.loads(notify_route.calls[0].request.content)["title"]
+    assert "\n" not in title and "\r" not in title
+    # the leading line still identifies the case
+    assert title.startswith("Test escalation TC-01 - my car will not start")
+    # the body keeps the full multi-line text -- only the header is constrained
+    assert "Sent from my iPhone" in json.loads(notify_route.calls[0].request.content)["body"]
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
 async def test_maybe_escalate_notify_falls_back_when_messages_fetch_fails(monkeypatch):
     """If the transcript fetch fails, the notification must still fire with
     the generic fallback title/body -- a failure to build a nice transcript

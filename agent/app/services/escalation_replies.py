@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 
 from app.clients.deps import get_chatwoot_client, get_proton_config_client
 from app.config import get_settings
+from app.services import lifecycle, lifecycle_store
 
 logger = logging.getLogger(__name__)
 
@@ -265,10 +266,43 @@ async def maybe_link_escalation_reply(payload: dict) -> None:
 
         if reply_conv_id is not None:
             await chatwoot.add_labels(reply_conv_id, [_ORPHAN_LABEL])
+            await _close_reply_lifecycle(reply_conv_id)
             await chatwoot.toggle_status(reply_conv_id, "resolved")
     except Exception:
         logger.exception(
             "escalation_replies: failed to link reply to conversation %s", case_id
+        )
+
+
+async def _close_reply_lifecycle(reply_conv_id: int) -> None:
+    """End the throwaway conversation's lifecycle before it is resolved.
+
+    `on_conversation_created` seeded this conversation ACTIVE like any other
+    new Email thread. Resolving an ACTIVE conversation fires
+    `conversation_resolved` -> `lifecycle.on_human_resolved`, which (with
+    `LIFECYCLE_SURVEY_ENABLED`, on by default) posts the public
+    agent-performance survey -- ie. emails an external dealer or PIC a request
+    to rate a Proton agent 1-5. Moving the row to CLOSED first lands it in
+    that handler's existing terminal-state guard, which is the same mechanism
+    the bot's own survey-complete resolve already relies on; no new suppression
+    logic and nothing that can affect a real customer conversation.
+
+    Must run BEFORE `toggle_status`: the guard is read when the resulting
+    webhook is handled, so a close written afterwards can lose the race.
+
+    Fail-open on its own, not inside the caller's try: a DB blip here would
+    otherwise abort the resolve and leave the throwaway conversation sitting
+    open in the agent's inbox, which is a worse outcome than an unwanted
+    survey. No `lifecycle_state` mirror either -- this conversation is about
+    to be resolved and closed, and the write would only cost another Chatwoot
+    round-trip plus another `conversation_updated` echo.
+    """
+    try:
+        await lifecycle_store.transition(reply_conv_id, lifecycle.CLOSED)
+    except Exception:
+        logger.exception(
+            "escalation_replies: failed to close lifecycle for reply conversation %s",
+            reply_conv_id,
         )
 
 

@@ -72,6 +72,70 @@ def _created_by_ai_handoff(payload: dict) -> bool:
     return bool(isinstance(attrs, dict) and attrs.get("ai_handoff"))
 
 
+def _is_escalation_reply(payload: dict) -> bool:
+    """True when this brand-new conversation is really an emailed reply to an
+    escalation we sent, not a fresh customer enquiry.
+
+    A dealer's or PIC's reply comes back through the ordinary Email inbox, so
+    Chatwoot files it as a new conversation and this handler would answer it
+    with the customer-facing "Dear Customer" SOP acknowledgement (business
+    hours, the call-centre number) -- boilerplate that makes no sense in an
+    external dealer's mailbox. The escalation mail carries a correlation token
+    (`…+case<id>@…` in Reply-To, `[CASE-<id>]` in the subject) that the reply
+    quotes back, which is the only thing distinguishing the two.
+
+    Two independent signals, because neither alone is reliable here:
+
+      - the conversation's own `additional_attributes.mail_subject`, which
+        Chatwoot writes when it creates the conversation from the inbound
+        mail, so it is always populated by the time this event fires. Every
+        internal (PIC/dealer) escalation mail carries the `[CASE-n]` subject
+        tag -- see the backend EscalationNotifier._case_tag -- which is
+        exactly the mail whose reply must not be answered with customer
+        boilerplate.
+      - the payload's `messages` array, which additionally catches the
+        plus-addressed `…+case<id>@…` Reply-To. That covers the customer ack
+        (deliberately sent with no visible subject tag), but the array holds
+        the conversation's last message at *dispatch* time and an inbound
+        email's message row is written just after the conversation's, so it
+        can legitimately be empty on this event. It is a bonus signal, never
+        the only one.
+
+    Fail-open in the direction that matters: any missing/odd payload shape
+    means "no evidence this is a reply", so a genuine first-contact customer
+    email still gets its acknowledgement.
+    """
+    # Imported here, not at module scope: escalation_replies imports this
+    # module for its lifecycle constants, and a top-level import both ways
+    # would be a cycle. `extract_case_id` is a pure function, so a local
+    # import costs nothing but the lookup.
+    from app.services.escalation_replies import extract_case_id
+
+    candidates: list[dict] = []
+
+    subject = (payload.get("additional_attributes") or {}).get("mail_subject")
+    if isinstance(subject, str) and subject:
+        candidates.append({"content_attributes": {"email": {"subject": subject}}})
+
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            # Only an inbound message can carry a token someone replied to; a
+            # message with no message_type at all is treated as inbound, since
+            # a new conversation's first message always is.
+            if message.get("message_type") not in (None, 0, "incoming"):
+                continue
+            candidates.append(message)
+
+    try:
+        return any(extract_case_id(c) is not None for c in candidates)
+    except Exception:  # pragma: no cover - extract_case_id is total
+        logger.debug("lifecycle: case-token check failed", exc_info=True)
+        return False
+
+
 def _resolve_message(messages: dict | None, key: str, default: str) -> str:
     """Operator override if present and non-empty, else the hard-coded default."""
     if messages:
@@ -218,6 +282,17 @@ async def on_conversation_created(payload: dict) -> None:
     # text is wrong for an email thread, so we never fall through to it here.
     if channel_type == "Channel::Email":
         if not settings.email_autoack_enabled:
+            return
+        # A dealer/PIC (or the customer) replying to an escalation mail is not
+        # a new enquiry — see `_is_escalation_reply`. The conversation is still
+        # seeded and tracked above; only the customer-facing greeting is
+        # suppressed. `escalation_replies` closes and resolves this throwaway
+        # conversation shortly afterwards.
+        if _is_escalation_reply(payload):
+            logger.info(
+                "lifecycle: conversation %s is an escalation reply; skipping auto-ack",
+                conversation_id,
+            )
             return
         # Operator-edited template (tenant store) wins over the env default;
         # an unset/blank store value is not a signal to send nothing, it just

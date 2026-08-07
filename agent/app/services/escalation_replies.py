@@ -17,8 +17,16 @@ what stops someone guessing a conversation id to inject a private note.
 
 import logging
 import re
+from datetime import datetime, timezone
+
+from app.clients.deps import get_chatwoot_client, get_proton_config_client
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+_REPLIED_ATTR = "dealer_replied_at"
+_REPLIED_LABEL = "dealer_replied"
+_ORPHAN_LABEL = "escalation_reply"
 
 # `support+case42@host` in a To/Cc header — the primary correlation key.
 _ADDRESS_TOKEN = re.compile(r"\+case(\d+)@", re.IGNORECASE)
@@ -124,3 +132,120 @@ def strip_quoted_trail(text: str) -> str:
 
     stripped = text[:cut].strip()
     return stripped or text.strip()
+
+
+async def maybe_link_escalation_reply(payload: dict) -> None:
+    """Handle a Chatwoot `message_created` event: if this is an emailed
+    reply carrying an escalation token, copy it onto the escalated
+    conversation and close the throwaway one it arrived in.
+
+    Internal-sender path only (dealer/PIC). A reply from an unrecognised
+    address -- or one that arrives while the allowlist itself is
+    unreachable -- is left unlinked: this endpoint has no other proof the
+    reply is real, so silently doing nothing is the only safe default. Every
+    other "can't tell what this is" case (missing token, missing inbox,
+    downstream HTTP failure) is likewise a skip, never a raise -- this runs
+    as a background task and an exception here only produces an unretrieved-
+    exception log, not a retry.
+    """
+    settings = get_settings()
+    if not settings.escalation_reply_linking_enabled:
+        return
+    if payload.get("message_type") != "incoming":
+        return
+
+    case_id = extract_case_id(payload)
+    if case_id is None:
+        return
+
+    sender_email = str((payload.get("sender") or {}).get("email") or "").strip().lower()
+    if not sender_email:
+        return
+
+    reply_conv_id = (payload.get("conversation") or {}).get("id")
+    inbox_id = (payload.get("inbox") or {}).get("id")
+    if inbox_id is None:
+        return
+
+    chatwoot = get_chatwoot_client()
+    try:
+        inbox = await chatwoot.get_inbox(inbox_id)
+        if (inbox or {}).get("channel_type") != "Channel::Email":
+            return
+
+        conversation = await chatwoot.get_conversation(case_id)
+        if conversation is None:
+            logger.info("escalation_replies: conversation %s not found", case_id)
+            return
+        existing = (conversation or {}).get("custom_attributes") or {}
+        if existing.get(_REPLIED_ATTR):
+            logger.info(
+                "escalation_replies: conversation %s already linked a reply, skipping",
+                case_id,
+            )
+            return
+
+        proton = get_proton_config_client()
+        if proton is None:
+            return
+        contacts = await proton.get_escalation_contacts()
+        if contacts is None:
+            logger.warning(
+                "escalation_replies: contact allowlist unavailable, not linking reply "
+                "from %s to conversation %s",
+                sender_email,
+                case_id,
+            )
+            return
+        if sender_email not in contacts:
+            logger.info(
+                "escalation_replies: sender %s is not an escalation contact, skipping",
+                sender_email,
+            )
+            return
+
+        text = strip_quoted_trail(str(payload.get("content") or ""))
+        if not text:
+            return
+        sender_name = contacts.get(sender_email) or sender_email
+        await chatwoot.create_message(
+            case_id,
+            f"Reply from {sender_name} <{sender_email}>:\n\n{text}",
+            private=True,
+        )
+        await chatwoot.set_custom_attributes(
+            case_id, {_REPLIED_ATTR: datetime.now(timezone.utc).isoformat()}
+        )
+        await chatwoot.add_labels(case_id, [_REPLIED_LABEL])
+
+        if settings.escalation_reply_draft_enabled:
+            await _post_draft(case_id, text)
+
+        if reply_conv_id is not None:
+            await chatwoot.add_labels(reply_conv_id, [_ORPHAN_LABEL])
+            await chatwoot.toggle_status(reply_conv_id, "resolved")
+    except Exception:
+        logger.exception(
+            "escalation_replies: failed to link reply to conversation %s", case_id
+        )
+
+
+async def _post_draft(case_id: int, reply_text: str) -> None:
+    """Post a KB-grounded customer-facing draft as a second private note.
+
+    Best-effort: the linked note above is the deliverable, the draft is a
+    convenience. A backend failure logs and returns.
+    """
+    proton = get_proton_config_client()
+    if proton is None:
+        return
+    draft = await proton.suggest_reply(
+        str(case_id), [f"The dealer replied: {reply_text}"]
+    )
+    if not draft:
+        return
+    await get_chatwoot_client().create_message(
+        case_id,
+        f"Suggested customer reply (draft — review before sending):\n\n{draft}",
+        private=True,
+    )

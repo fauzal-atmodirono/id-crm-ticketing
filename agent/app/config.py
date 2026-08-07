@@ -100,6 +100,14 @@ class Settings(BaseSettings):
     # no-op otherwise). Default off, byte-identical when unset.
     email_escalation_enabled: bool = False
 
+    # Link an emailed reply (dealer/PIC/customer) back onto the conversation
+    # it was escalated from. Requires the backend's
+    # ESCALATION_REPLY_TO_TEMPLATE to be set, or no mail carries a token.
+    escalation_reply_linking_enabled: bool = False
+    # Post an AI-drafted customer reply as a second private note alongside a
+    # linked internal reply. Never sends anything to the customer.
+    escalation_reply_draft_enabled: bool = False
+
     # SOP completion (B: categorization taxonomy; C1: email auto-ack).
     # Comma-separated category slugs the bot may assign on resolution (must
     # match the tenant's deployed taxonomy). Empty → auto-categorize no-ops.

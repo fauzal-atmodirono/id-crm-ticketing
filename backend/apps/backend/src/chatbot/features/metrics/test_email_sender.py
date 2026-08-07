@@ -96,3 +96,24 @@ def test_send_no_op_when_smtp_host_is_empty() -> None:
     sender = SmtpEmailSender(_settings(smtp_host=""), smtp_factory=factory)
     sender.send(to=["a@b.my"], cc=[], subject="s", body="b", attachments=[])
     assert sent == []
+
+
+def test_send_sets_reply_to_when_given() -> None:
+    sent, factory = _capture_smtp()
+    sender = SmtpEmailSender(_settings(), smtp_factory=factory)
+    sender.send(
+        to=["dealer@test"],
+        cc=[],
+        subject="[CASE-42] hello",
+        body="body",
+        attachments=[],
+        reply_to="support+case42@test",
+    )
+    assert sent[0]["Reply-To"] == "support+case42@test"
+
+
+def test_send_omits_reply_to_by_default() -> None:
+    sent, factory = _capture_smtp()
+    sender = SmtpEmailSender(_settings(), smtp_factory=factory)
+    sender.send(to=["dealer@test"], cc=[], subject="hello", body="body", attachments=[])
+    assert sent[0]["Reply-To"] is None

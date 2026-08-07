@@ -13,6 +13,8 @@ from chatbot.features.chat.sla_policy_db import SlaPolicy, SlaPolicyValues
 _FIELDS = (
     "response_hours",
     "resolution_hours",
+    "tier2_hours",
+    "reminder_warning_minutes",
     "ack_minutes_by_channel_json",
     "pic_whatsapp",
     "engine_enabled",

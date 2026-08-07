@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 class SlaPolicyBody(BaseModel):
     response_hours: float | None = None
     resolution_hours: float | None = None
+    tier2_hours: float | None = None
+    reminder_warning_minutes: float | None = None
     ack_minutes_by_channel_json: str | None = None
     pic_whatsapp: str | None = None
     engine_enabled: bool | None = None
@@ -34,6 +36,8 @@ def _to_dict(values) -> dict:
     return {
         "response_hours": values.response_hours,
         "resolution_hours": values.resolution_hours,
+        "tier2_hours": values.tier2_hours,
+        "reminder_warning_minutes": values.reminder_warning_minutes,
         "ack_minutes_by_channel_json": values.ack_minutes_by_channel_json,
         "pic_whatsapp": values.pic_whatsapp,
         "engine_enabled": values.engine_enabled,

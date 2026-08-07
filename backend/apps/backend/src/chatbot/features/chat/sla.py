@@ -175,11 +175,14 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
 
     ``policy_repo``, when provided, is resolved per-conversation (scoped to the
     conversation's ``inbox_id``) and its non-None ``response_hours``/
-    ``resolution_hours``/``ack_minutes_by_channel_json`` fields override the
-    equivalent ``settings.sla_*`` values for that conversation only. When
-    ``policy_repo`` is None, or ``resolve()`` returns None / an all-None-fields
-    result for a given inbox, behavior is byte-identical to the env-only path
-    (this is a hard requirement — this engine drives live SLA breach alerts).
+    ``resolution_hours``/``tier2_hours``/``reminder_warning_minutes``/
+    ``ack_minutes_by_channel_json`` fields override the equivalent
+    ``settings.sla_*``/``settings.escalation_tier2_hours``/
+    ``settings.tasks_reminder_warning_minutes`` values for that conversation
+    only. When ``policy_repo`` is None, or ``resolve()`` returns None / an
+    all-None-fields result for a given inbox, behavior is byte-identical to
+    the env-only path (this is a hard requirement — this engine drives live
+    SLA breach alerts).
 
     ``engine_enabled`` is applied as a per-conversation OPT-OUT: when the
     resolved policy for a conversation's inbox has ``engine_enabled is False``,
@@ -326,7 +329,12 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
             and UNRESOLVED_BREACH in prior
             and TIER2_ESCALATION not in prior
         ):
-            tier2_threshold = settings.escalation_tier2_hours * _SECONDS_PER_HOUR
+            tier2_hours = (
+                resolved_policy.tier2_hours
+                if resolved_policy is not None and resolved_policy.tier2_hours is not None
+                else settings.escalation_tier2_hours
+            )
+            tier2_threshold = tier2_hours * _SECONDS_PER_HOUR
             # Find the age of the UNRESOLVED_BREACH entry.
             all_entries = await audit.list_for_ticket(ticket_id)
             breach_entry = next(
@@ -339,10 +347,7 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
                 except (ValueError, TypeError):
                     breach_age = 0.0
                 if breach_age >= tier2_threshold:
-                    remark = (
-                        f"Unresolved breach older than "
-                        f"{settings.escalation_tier2_hours}h; re-alerting level-2"
-                    )
+                    remark = f"Unresolved breach older than {tier2_hours}h; re-alerting level-2"
                     # Record the marker BEFORE calling the alert so a crash in
                     # the alert callback does not leave the dedup entry missing.
                     tier2_entry = AuditEntry(
@@ -378,7 +383,13 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
         # same `alert` callback as breaches (→ WhatsApp when configured). Deduped
         # via REMINDER_WARNING_STATE in the audit trail, exactly like the breaches.
         if settings.tasks_reminder_whatsapp_enabled and status != "resolved":
-            warning_threshold_sec = settings.tasks_reminder_warning_minutes * 60
+            reminder_warning_minutes = (
+                resolved_policy.reminder_warning_minutes
+                if resolved_policy is not None
+                and resolved_policy.reminder_warning_minutes is not None
+                else settings.tasks_reminder_warning_minutes
+            )
+            warning_threshold_sec = reminder_warning_minutes * 60
             resolution_remaining = resolution_threshold - age
             if (
                 0 < resolution_remaining < warning_threshold_sec
@@ -391,7 +402,7 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
                     to_state=REMINDER_WARNING_STATE,
                     remark=(
                         f"SLA reminder: {resolution_remaining / 60:.0f} min until resolution SLA "
-                        f"(warning threshold {settings.tasks_reminder_warning_minutes} min)"
+                        f"(warning threshold {reminder_warning_minutes} min)"
                     ),
                     clock=clock,
                     alert=alert,

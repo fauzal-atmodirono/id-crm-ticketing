@@ -79,6 +79,8 @@ async def test_get_default_returns_empty_policy_when_unset(tmp_path, respx_mock)
     assert body == {
         "response_hours": None,
         "resolution_hours": None,
+        "tier2_hours": None,
+        "reminder_warning_minutes": None,
         "ack_minutes_by_channel_json": None,
         "pic_whatsapp": None,
         "engine_enabled": None,

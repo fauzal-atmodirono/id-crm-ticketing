@@ -1,0 +1,45 @@
+diff --git a/app/javascript/dashboard/views/ProtonSlaPoliciesPage.vue b/app/javascript/dashboard/views/ProtonSlaPoliciesPage.vue
+index ba9782b..1a2c3d4 100644
+--- a/app/javascript/dashboard/views/ProtonSlaPoliciesPage.vue
++++ b/app/javascript/dashboard/views/ProtonSlaPoliciesPage.vue
+@@ -18,7 +18,9 @@
+ const EMPTY_FORM = {
+   response_hours: null,
+   resolution_hours: null,
++  tier2_hours: null,
++  reminder_warning_minutes: null,
+   ack_minutes_by_channel_json: null,
+   pic_whatsapp: null,
+   engine_enabled: null,
+ };
+@@ -122,10 +124,28 @@
+       <div>
+         <label class="block mb-1 text-sm text-n-slate-11">Resolution window (hours)</label>
+         <input
+           v-model.number="form.resolution_hours"
+           type="number"
+           step="0.5"
+           class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+         />
+       </div>
++      <div>
++        <label class="block mb-1 text-sm text-n-slate-11">Tier-2 re-alert after (hours)</label>
++        <input
++          v-model.number="form.tier2_hours"
++          type="number"
++          step="0.5"
++          class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        />
++      </div>
++      <div>
++        <label class="block mb-1 text-sm text-n-slate-11">Warn before breach (minutes)</label>
++        <input
++          v-model.number="form.reminder_warning_minutes"
++          type="number"
++          step="1"
++          class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        />
++      </div>
+       <div>
+         <label class="block mb-1 text-sm text-n-slate-11">Per-channel ACK minutes (JSON)</label>
+         <input

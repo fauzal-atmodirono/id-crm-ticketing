@@ -33,6 +33,8 @@ class SlaPolicy(Base):
     inbox_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     response_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
     resolution_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tier2_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reminder_warning_minutes: Mapped[float | None] = mapped_column(Float, nullable=True)
     ack_minutes_by_channel_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     pic_whatsapp: Mapped[str | None] = mapped_column(Text, nullable=True)
     engine_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
@@ -45,6 +47,8 @@ class SlaPolicy(Base):
 class SlaPolicyValues:
     response_hours: float | None = None
     resolution_hours: float | None = None
+    tier2_hours: float | None = None
+    reminder_warning_minutes: float | None = None
     ack_minutes_by_channel_json: str | None = None
     pic_whatsapp: str | None = None
     engine_enabled: bool | None = None

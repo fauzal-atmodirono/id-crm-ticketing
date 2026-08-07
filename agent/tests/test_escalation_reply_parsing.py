@@ -100,3 +100,15 @@ def test_preserves_quote_with_content_after():
             "That's what we're replying to.\n"
             "Our response continues...")
     assert strip_quoted_trail(body) == body.strip()
+
+
+def test_strips_trailing_quote_block_ignoring_isolated_early_quotes():
+    """Trailing quote block should be stripped even if isolated quotes appear earlier."""
+    body = ("See below:\n"
+            "> early quote alone\n"
+            "More reply text after early quote.\n\n"
+            "> trailing quote run\n"
+            "> continues to end")
+    # Early quote is preserved, trailing block is stripped
+    expected = "See below:\n> early quote alone\nMore reply text after early quote."
+    assert strip_quoted_trail(body) == expected

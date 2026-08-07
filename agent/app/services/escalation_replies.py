@@ -97,19 +97,30 @@ def strip_quoted_trail(text: str) -> str:
         if has_email_header and match.start() < cut:
             cut = match.start()
 
-    # Check ">" only if contiguous block extends to end of text
-    # (to avoid cutting at quotes mid-reply)
-    quote_match = re.search(r"^>", text, re.MULTILINE)
-    if quote_match:
-        remainder = text[quote_match.start():]
-        lines = remainder.split('\n')
-        # All remaining lines must be blank or start with >
-        all_quoted_to_end = all(
-            not line.strip() or line.lstrip().startswith('>')
-            for line in lines
-        )
-        if all_quoted_to_end and quote_match.start() < cut:
-            cut = quote_match.start()
+    # Check ">" - find trailing quoted block that extends to end of text.
+    # Walk backwards from the end to avoid false positives when isolated quotes
+    # appear earlier in the body.
+    lines = text.split('\n')
+    # Find the last non-blank line
+    last_non_blank_idx = len(lines) - 1
+    while last_non_blank_idx >= 0 and not lines[last_non_blank_idx].strip():
+        last_non_blank_idx -= 1
+
+    # If the last non-blank line is quoted, find the start of the trailing block
+    if last_non_blank_idx >= 0 and lines[last_non_blank_idx].lstrip().startswith('>'):
+        block_start_idx = last_non_blank_idx
+        # Walk backwards through blank/quoted lines to find block start
+        while block_start_idx > 0:
+            prev_line = lines[block_start_idx - 1]
+            if not prev_line.strip() or prev_line.lstrip().startswith('>'):
+                block_start_idx -= 1
+            else:
+                break
+
+        # Calculate text position of the block start
+        cut_position = sum(len(lines[i]) for i in range(block_start_idx)) + block_start_idx
+        if cut_position < cut:
+            cut = cut_position
 
     stripped = text[:cut].strip()
     return stripped or text.strip()

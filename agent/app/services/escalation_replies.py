@@ -26,14 +26,11 @@ _ADDRESS_TOKEN = re.compile(r"\+case(\d+)@", re.IGNORECASE)
 # plus-addressing.
 _SUBJECT_TOKEN = re.compile(r"\[CASE-(\d+)\]", re.IGNORECASE)
 
-# Where a mail client starts quoting what it is replying to. Anchored at a
-# line start so the words can't match mid-sentence.
-_TRAIL_MARKERS = (
+# Simple trail markers that are always a sign of quoted content.
+_SIMPLE_TRAIL_MARKERS = (
     re.compile(r"^On .{0,200}\bwrote:\s*$", re.MULTILINE),
     re.compile(r"^-{2,}\s*Original Message\s*-{2,}\s*$", re.MULTILINE | re.IGNORECASE),
     re.compile(r"^_{5,}\s*$", re.MULTILINE),
-    re.compile(r"^From: .+$", re.MULTILINE),
-    re.compile(r"^>", re.MULTILINE),
 )
 
 
@@ -76,9 +73,43 @@ def strip_quoted_trail(text: str) -> str:
     worse than a noisy note.
     """
     cut = len(text)
-    for marker in _TRAIL_MARKERS:
+
+    # Check simple markers: "On ... wrote:", "-----Original Message-----", underscores
+    for marker in _SIMPLE_TRAIL_MARKERS:
         match = marker.search(text)
         if match and match.start() < cut:
             cut = match.start()
+
+    # Check "From:" only if followed by Sent:/To:/Subject: within 4 lines
+    # (to avoid cutting at "From: ..." in prose paragraphs)
+    for match in re.finditer(r"^From: .+$", text, re.MULTILINE):
+        end_of_line = match.end()
+        remaining_text = text[end_of_line:]
+        # Split to get lines after this match
+        lines_after = remaining_text.split('\n', 5)  # Max 5 parts
+        next_4_lines = lines_after[1:5]  # Skip first part (rest of current line)
+
+        # Check if any of the next 4 lines start with an email header
+        has_email_header = any(
+            line.lstrip().startswith(('Sent:', 'To:', 'Subject:'))
+            for line in next_4_lines
+        )
+        if has_email_header and match.start() < cut:
+            cut = match.start()
+
+    # Check ">" only if contiguous block extends to end of text
+    # (to avoid cutting at quotes mid-reply)
+    quote_match = re.search(r"^>", text, re.MULTILINE)
+    if quote_match:
+        remainder = text[quote_match.start():]
+        lines = remainder.split('\n')
+        # All remaining lines must be blank or start with >
+        all_quoted_to_end = all(
+            not line.strip() or line.lstrip().startswith('>')
+            for line in lines
+        )
+        if all_quoted_to_end and quote_match.start() < cut:
+            cut = quote_match.start()
+
     stripped = text[:cut].strip()
     return stripped or text.strip()

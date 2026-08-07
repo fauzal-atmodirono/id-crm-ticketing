@@ -114,10 +114,13 @@ private note by guessing a conversation id.
 - Private note on conversation `#N`: `Reply from <name> <email>:` + stripped body.
 - Label `dealer_replied`; stamp `dealer_replied_at` first-write-wins, mirroring
   `maybe_stamp_dealer_escalation`'s existing `dealer_escalated_at` treatment.
-- Call the backend's existing `/assist/summarize` with the stripped reply plus
-  conversation context, and post the result as a second private note prefixed
-  `Suggested customer reply (draft — review before sending)`. Gated by
-  `escalation_reply_draft_enabled`.
+- Call the backend's existing `/assist/suggest` with the stripped reply plus
+  conversation context, and post the returned `draft` as a second private note
+  prefixed `Suggested customer reply (draft — review before sending)`. Gated by
+  `escalation_reply_draft_enabled`. (`/assist/suggest` rather than
+  `/assist/summarize`: the former returns a KB-grounded customer-facing reply,
+  the latter condenses a conversation into an internal summary the agent could
+  not send as-is.)
 
 **Customer reply (reply to the acknowledgement):**
 

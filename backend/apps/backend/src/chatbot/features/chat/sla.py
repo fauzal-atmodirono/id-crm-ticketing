@@ -507,7 +507,10 @@ def _build_pic_alert(
     is breaching. The email leg additionally depends on resolving a
     department from the conversation's own ``dept_<slug>`` label via
     ``pic_registry`` -- an unmapped department simply skips the email, it
-    must never skip the note.
+    must never skip the note. ``pic_registry.lookup`` is Firestore-backed and
+    can itself raise (network/parse failure); that is caught separately from
+    the ``email_sender.send`` call so a lookup failure can never propagate
+    out of ``_alert`` and take the note leg down with it.
     """
     pic_number = settings.sla_pic_whatsapp
     wa_to = "whatsapp:" + pic_number.removeprefix("whatsapp:") if pic_number else ""
@@ -528,15 +531,24 @@ def _build_pic_alert(
                 _log.warning("sla_alert_wa_failed", ticket_id=ticket_id, error=str(e))
 
         if want_email and pic_registry is not None:
-            department = next(
-                (
-                    lbl[len(_DEPT_LABEL_PREFIX) :]
-                    for lbl in labels
-                    if lbl.startswith(_DEPT_LABEL_PREFIX)
-                ),
-                None,
-            )
-            pic = await pic_registry.lookup(department) if department else None
+            pic: Any = None
+            department: str | None = None
+            try:
+                department = next(
+                    (
+                        lbl[len(_DEPT_LABEL_PREFIX) :]
+                        for lbl in labels
+                        if lbl.startswith(_DEPT_LABEL_PREFIX)
+                    ),
+                    None,
+                )
+                pic = await pic_registry.lookup(department) if department else None
+            except Exception as e:
+                # PicRegistry is Firestore-backed (network/parse failure
+                # possible) -- a lookup failure must not take the note leg
+                # down with it, so this is caught separately from the send
+                # below rather than left to propagate out of _alert.
+                _log.warning("sla_alert_pic_lookup_failed", ticket_id=ticket_id, error=str(e))
             if pic is None:
                 _log.info(
                     "sla_alert_no_pic_for_dept", ticket_id=ticket_id, department=department
@@ -544,9 +556,13 @@ def _build_pic_alert(
             else:
                 try:
                     assert email_sender is not None  # want_email implies this
+                    # Same CC gate as the escalation-email path
+                    # (escalation_notifier.py) -- one setting governs whether
+                    # the "relevant personnel" CC group is used anywhere.
+                    cc = list(pic.cc_emails or []) if settings.escalation_cc_pic else []
                     email_sender.send(
                         to=[pic.pic_email],
-                        cc=list(pic.cc_emails or []),
+                        cc=cc,
                         subject=f"[SLA] {to_state} on case {ticket_id}",
                         body=f"{remark}\n\nReference: Chatwoot conversation #{ticket_id}",
                         attachments=[],

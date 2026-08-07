@@ -47,12 +47,21 @@ def get_proton_config_client() -> ProtonConfigClient | None:
 
 
 async def aclose_clients() -> None:
-    """Close whichever clients were actually constructed. Safe to call even
-    if a given client was never instantiated (e.g. in tests that don't
-    exercise it)."""
+    """Close whichever clients were actually constructed, then evict them
+    from the `lru_cache`. Safe to call even if a given client was never
+    instantiated (e.g. in tests that don't exercise it).
+
+    The cache_clear() calls matter beyond tidiness: without them a closed
+    client stays cached, and every subsequent get_chatwoot_client()/
+    get_proton_config_client() call hands back that closed client instead of
+    constructing a fresh one -- a latent bug for any process that re-enters
+    the lifespan (or, in tests, for any test that runs after one that
+    exercises the real lifespan and reuses either singleton)."""
     if get_chatwoot_client.cache_info().currsize:
         await get_chatwoot_client().aclose()
+        get_chatwoot_client.cache_clear()
     if get_proton_config_client.cache_info().currsize:
         proton = get_proton_config_client()
         if proton is not None:
             await proton.aclose()
+        get_proton_config_client.cache_clear()

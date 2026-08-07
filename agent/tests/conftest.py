@@ -34,26 +34,8 @@ os.environ.setdefault("AGENT_DATABASE_URL", f"sqlite+aiosqlite:///{_TEST_DB_PATH
 
 import pytest
 
-from app.clients.deps import get_chatwoot_client, get_proton_config_client
 from app.db.models import Base
 from app.db.session import async_session_maker, init_db
-
-
-@pytest.fixture(autouse=True)
-def _reset_client_singletons():
-    """`get_chatwoot_client`/`get_proton_config_client` are process-wide
-    `lru_cache` singletons (see `app/clients/deps.py`). A test that exercises
-    the real lifespan (`test_lifecycle_lifespan.py`) calls `aclose_clients`,
-    which closes whichever singleton happens to already be cached -- without
-    this, any earlier test that populated the cache leaves every later test
-    that reuses it hitting a closed `httpx.AsyncClient`
-    ("RuntimeError: Cannot send a request, as the client has been closed").
-    Clearing both caches after every test keeps them test-local regardless
-    of file/collection order.
-    """
-    yield
-    get_chatwoot_client.cache_clear()
-    get_proton_config_client.cache_clear()
 
 
 @pytest.fixture(autouse=True)

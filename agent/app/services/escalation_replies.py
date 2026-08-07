@@ -144,7 +144,12 @@ async def maybe_link_escalation_reply(payload: dict) -> None:
     message, unstamped, since a customer may reply more than once) and an
     address in the escalation contact allowlist (dealer/PIC -- posted as a
     private note, stamped and labelled so a second internal reply doesn't
-    pile on). A reply from neither -- or one that arrives while the
+    pile on). These two are checked in that order: an address that happens
+    to be both the conversation's contact and an allowlisted dealer/PIC is
+    classified as the customer, and the allowlist is never consulted for
+    it -- a sensible default (the customer's own words go in the customer
+    thread), not a security gap, since the allowlist path is strictly more
+    restrictive. A reply from neither -- or one that arrives while the
     allowlist itself is unreachable -- is left unlinked: this endpoint has
     no other proof the reply is real, so silently doing nothing is the only
     safe default. Every other "can't tell what this is" case (missing

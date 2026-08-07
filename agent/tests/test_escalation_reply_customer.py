@@ -13,12 +13,12 @@ CHATWOOT = "http://chatwoot-rails:3000"
 PROTON = "http://proton-backend:8080"
 
 
-def _payload(sender="customer@test"):
+def _payload(sender="customer@test", content="Any update?"):
     return {
         "event": "message_created",
         "id": 901,
         "message_type": "incoming",
-        "content": "Any update?",
+        "content": content,
         "conversation": {"id": 778},
         "inbox": {"id": 4},
         "sender": {"email": sender, "name": "Jane"},
@@ -89,6 +89,30 @@ async def test_customer_reply_does_not_stamp_dealer_replied_at(monkeypatch):
         c for c in respx.calls
         if c.request.url.path.endswith("/conversations/42/custom_attributes")
     ]
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_customer_reply_twice_both_land(monkeypatch):
+    """A customer may reply more than once; nothing gates the second one.
+
+    Pins down the premise this task exists to satisfy -- if the stamp check
+    were ever moved back to cover the customer branch, this is the test that
+    would catch it (every other test in this file only sends one reply).
+    """
+    _enable(monkeypatch)
+    messages = _stub()
+
+    await escalation_replies.maybe_link_escalation_reply(_payload(content="Any update?"))
+    await escalation_replies.maybe_link_escalation_reply(_payload(content="Still waiting."))
+
+    assert len(messages.calls) == 2
+    bodies = [json.loads(c.request.read()) for c in messages.calls]
+    for body in bodies:
+        assert body["private"] is False
+        assert body["message_type"] == "incoming"
+    assert bodies[0]["content"] == "Any update?"
+    assert bodies[1]["content"] == "Still waiting."
     get_proton_config_client.cache_clear()
 
 

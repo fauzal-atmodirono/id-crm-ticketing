@@ -264,7 +264,17 @@ async def maybe_link_escalation_reply(payload: dict) -> None:
             if settings.escalation_reply_draft_enabled:
                 await _post_draft(case_id, text)
 
-        if reply_conv_id is not None:
+        # Tidy away the throwaway conversation the reply landed in -- but only
+        # if it really is a throwaway. Chatwoot does not always file a reply as
+        # a new conversation: its SupportMailbox looks up `In-Reply-To` against
+        # existing message source ids and, when it hits, threads the reply back
+        # onto the ORIGINAL conversation. `reply_conv_id` is then the customer's
+        # own live case, and labelling it `escalation_reply`, ending its
+        # lifecycle and resolving it would close the case the customer just
+        # wrote into -- and swallow the rating survey they should get when it is
+        # genuinely resolved later. Nothing needs tidying in that case anyway:
+        # the reply is already on the right conversation.
+        if reply_conv_id is not None and reply_conv_id != case_id:
             await chatwoot.add_labels(reply_conv_id, [_ORPHAN_LABEL])
             await _close_reply_lifecycle(reply_conv_id)
             await chatwoot.toggle_status(reply_conv_id, "resolved")

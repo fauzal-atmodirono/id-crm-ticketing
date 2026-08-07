@@ -15,6 +15,7 @@ customer email:
 Both are wrong and both are covered here.
 """
 
+import json
 from unittest.mock import AsyncMock
 
 import httpx
@@ -148,6 +149,48 @@ async def test_lifecycle_close_failure_still_resolves_the_reply_conversation(
     await escalation_replies.maybe_link_escalation_reply(_payload())
 
     assert toggle.called
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_reply_threaded_onto_the_original_case_is_not_resolved(monkeypatch):
+    """Chatwoot's SupportMailbox matches `In-Reply-To` against existing message
+    source ids and, when it hits, threads the reply onto the ORIGINAL
+    conversation instead of creating a new one. The tidy-up must recognise
+    that and leave the case alone: labelling it `escalation_reply`, ending its
+    lifecycle and resolving it would close the case the customer just wrote
+    into and swallow the rating survey they should get later."""
+    _enable(monkeypatch)
+    _stub_chatwoot()
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    await lifecycle_store.seed_active(42, channel="Channel::Email")
+
+    payload = _payload()
+    payload["conversation"]["id"] = 42  # same conversation as the case
+
+    await escalation_replies.maybe_link_escalation_reply(payload)
+
+    # The reply is still linked...
+    assert [
+        c
+        for c in respx.calls
+        if c.request.method == "POST"
+        and c.request.url.path.endswith("/conversations/42/messages")
+    ]
+    # ...but the case is neither resolved nor lifecycle-closed.
+    assert not [
+        c for c in respx.calls if c.request.url.path.endswith("/42/toggle_status")
+    ]
+    assert await lifecycle_store.get_state(42) == lifecycle.ACTIVE
+    labels = [
+        label
+        for c in respx.calls
+        if c.request.method == "POST" and c.request.url.path.endswith("/42/labels")
+        for label in json.loads(c.request.read())["labels"]
+    ]
+    assert "escalation_reply" not in labels
     get_proton_config_client.cache_clear()
 
 

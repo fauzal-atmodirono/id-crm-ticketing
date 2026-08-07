@@ -42,7 +42,6 @@ Dedup
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json as _json
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -70,10 +69,6 @@ FIRST_RESPONSE_STATE = "FIRST_RESPONSE"
 REMINDER_WARNING_STATE = "REMINDER_WARNING"
 
 _SECONDS_PER_HOUR = 3600
-# _alert_accepts_labels: the widened (Task 14) alert callback shape takes four
-# positional args (ticket_id, to_state, remark, labels); the pre-Task-14 shape
-# took three.
-_ALERT_LABELS_ARITY = 4
 
 # Maps the Chatwoot channel_type string to a short key used in the
 # sla_ack_minutes_by_channel_json config map.  Unknown channel_types
@@ -414,33 +409,6 @@ def _labels(conv: dict[str, Any]) -> list[str]:
     return []
 
 
-def _alert_accepts_labels(alert: Callable[..., Any]) -> bool:
-    """True when ``alert`` accepts the (Task 14) fourth ``labels`` argument.
-
-    The alert callback signature widened from three to four positional
-    arguments in this task. Some callers (pre-existing tests written against
-    the old three-argument shape) still pass a callable that only accepts
-    three; inspecting the signature before calling — rather than calling with
-    four and catching the resulting ``TypeError`` — lets both shapes coexist
-    without ever invoking a callable's side effects twice.
-    """
-    try:
-        params = inspect.signature(alert).parameters
-    except (TypeError, ValueError):
-        # Signature can't be introspected (e.g. certain C callables) — assume
-        # the current (four-argument) shape, since that's what every real
-        # (non-test-double) caller now provides.
-        return True
-    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params.values()):
-        return True
-    positional = [
-        p
-        for p in params.values()
-        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-    ]
-    return len(positional) >= _ALERT_LABELS_ARITY
-
-
 async def _fire(
     audit: AuditLogPort,
     *,
@@ -472,11 +440,7 @@ async def _fire(
     _log.info(event, ticket_id=ticket_id, breach=to_state)
     if alert is not None:
         try:
-            result = (
-                alert(ticket_id, to_state, remark, labels)
-                if _alert_accepts_labels(alert)
-                else alert(ticket_id, to_state, remark)  # type: ignore[call-arg]
-            )
+            result = alert(ticket_id, to_state, remark, labels)
             if asyncio.iscoroutine(result):
                 await result
         except Exception as e:  # an alert failure must never abort the scan

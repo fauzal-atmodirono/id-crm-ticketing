@@ -158,7 +158,7 @@ def test_breach_fires_pic_alert_callback() -> None:
     conv = _conv(808, status="open", created_at=_epoch(10))
     calls: list[tuple[str, str, str]] = []
 
-    def alert(ticket_id: str, to_state: str, remark: str) -> None:
+    def alert(ticket_id: str, to_state: str, remark: str, labels: list[str]) -> None:  # noqa: ARG001
         calls.append((ticket_id, to_state, remark))
 
     fired = asyncio.run(
@@ -388,7 +388,7 @@ def test_wa_reminder_fires_within_warning_window() -> None:
 
     sent: list[str] = []
 
-    async def fake_alert(ticket_id: str, to_state: str, remark: str) -> None:  # noqa: ARG001
+    async def fake_alert(ticket_id: str, to_state: str, remark: str, labels: list[str]) -> None:  # noqa: ARG001
         sent.append(to_state)
 
     asyncio.run(
@@ -414,7 +414,7 @@ def test_wa_reminder_dedups_across_scans() -> None:
 
     count = [0]
 
-    async def counting_alert(ticket_id: str, to_state: str, remark: str) -> None:  # noqa: ARG001
+    async def counting_alert(ticket_id: str, to_state: str, remark: str, labels: list[str]) -> None:  # noqa: ARG001
         if to_state == REMINDER_WARNING_STATE:
             count[0] += 1
 

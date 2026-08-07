@@ -116,3 +116,29 @@ async def test_note_failure_does_not_stop_the_email():
     await alert("42", "SLA_BREACH_NO_RESPONSE", "r", ["dept_sales"])
 
     assert sender.calls
+
+
+async def test_whatsapp_failure_does_not_stop_email_or_note():
+    """A broken WhatsApp leg must not swallow the email/note legs either --
+    all three are independent, best-effort deliveries."""
+
+    class _Settings2(_Settings):
+        sla_pic_whatsapp = "+60123456789"
+
+    class _BoomTwilio:
+        async def send_message(self, conversation_id, text):  # noqa: ARG002
+            raise RuntimeError("twilio down")
+
+    sender, notes = _Sender(), _Notes()
+    alert = _build_pic_alert(
+        _Settings2(),
+        _BoomTwilio(),
+        pic_registry=_Registry(),
+        email_sender=sender,
+        note_poster=notes,
+    )
+
+    await alert("42", "SLA_BREACH_NO_RESPONSE", "r", ["dept_sales"])
+
+    assert sender.calls
+    assert notes.calls

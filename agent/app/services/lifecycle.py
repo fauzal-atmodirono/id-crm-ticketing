@@ -219,7 +219,19 @@ async def on_conversation_created(payload: dict) -> None:
     if channel_type == "Channel::Email":
         if not settings.email_autoack_enabled:
             return
+        # Operator-edited template (tenant store) wins over the env default;
+        # an unset/blank store value is not a signal to send nothing, it just
+        # means "not configured" — fall back to env, same as every other
+        # store-backed override in this module.
         text = settings.email_autoack_template
+        proton = get_proton_config_client()
+        if proton is not None:
+            try:
+                stored = await proton.get_email_autoack_template()
+            except Exception:
+                stored = None
+            if stored:
+                text = stored
         if not text:
             logger.warning(
                 "lifecycle: email_autoack_enabled but template is empty for conversation %s; nothing posted",

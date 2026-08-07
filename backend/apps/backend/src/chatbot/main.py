@@ -301,6 +301,12 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     pic_registry = build_pic_registry(settings, store=pic_store)
     email_sender = SmtpEmailSender(settings)
 
+    # Built here (rather than down with the other "shared stores" below) so
+    # EscalationNotifier -- constructed further down, before that block --
+    # can read operator-edited email templates too (Task 18). Only one
+    # instance is ever built; the later block reuses this same variable.
+    _shared_tenant_settings_store = build_tenant_settings_store(settings)
+
     # Package F: DMS/TSP integration shell config store. Built unconditionally
     # (same reasoning as pic_store/dealer_store above) so a future Customer 360
     # DMS block can read it even when RBAC — and therefore the admin CRUD
@@ -387,6 +393,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             chatwoot_request=chatwoot_client._merge_custom_attributes,
             dealer_email_map=build_dealer_email_map(settings),
             dealer_store=dealer_store,
+            tenant_settings_store=_shared_tenant_settings_store,
         )
         chatwoot_client._escalation_notifier = escalation_notifier  # type: ignore[assignment]
         app.include_router(
@@ -407,7 +414,6 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
 
     # --- Shared stores (built once, passed to orchestrator, agent-assist and copilot) ---
     _shared_assistants_store = build_assistants_store(settings)
-    _shared_tenant_settings_store = build_tenant_settings_store(settings)
     _shared_tools_store = build_tools_store(settings)
     _shared_scenarios_store = build_scenarios_store(settings)
     _shared_assignment_store = build_inbox_assignment_store(settings)

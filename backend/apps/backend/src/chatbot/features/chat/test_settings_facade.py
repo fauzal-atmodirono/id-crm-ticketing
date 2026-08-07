@@ -79,6 +79,19 @@ def test_validate_debounce_seconds_bad_raises() -> None:
         validate_overrides({"debounce_seconds": "fast"})
 
 
+def test_validate_email_templates_coerce_to_str() -> None:
+    out = validate_overrides(
+        {
+            "email_autoack_template": "Custom auto-ack",
+            "email_escalation_ack_template": "Custom escalation ack",
+        }
+    )
+    assert out == {
+        "email_autoack_template": "Custom auto-ack",
+        "email_escalation_ack_template": "Custom escalation ack",
+    }
+
+
 def test_validate_unknown_keys_ignored() -> None:
     out = validate_overrides({"unknown_key": "value", "assist_gemini_model": "m"})
     assert "unknown_key" not in out
@@ -111,10 +124,54 @@ async def test_all_keys_present_with_env_source_when_store_empty() -> None:
         "feature_drafts",
         "default_mode",
         "debounce_seconds",
+        "email_autoack_template",
+        "email_escalation_ack_template",
     }
     assert set(result.keys()) == expected_keys
     for key in expected_keys:
         assert result[key]["source"] == "env", f"{key} should report source=env"
+
+
+@pytest.mark.anyio
+async def test_email_template_env_defaults() -> None:
+    """email_autoack_template has no backend-owned env value (the agent owns
+    its own env fallback) so its env default is "" — a caller must treat an
+    empty value as "not configured", never as "send an empty body".
+    email_escalation_ack_template mirrors the real Settings field, since the
+    backend itself sends that email."""
+    store = InMemoryTenantSettingsStore()
+    s = _settings(email_escalation_ack_template="Your case has been escalated.")
+    result = await get_effective_settings(store, s)
+
+    assert result["email_autoack_template"] == {"value": "", "source": "env"}
+    assert result["email_escalation_ack_template"] == {
+        "value": "Your case has been escalated.",
+        "source": "env",
+    }
+
+
+@pytest.mark.anyio
+async def test_email_template_override_and_clear() -> None:
+    store = InMemoryTenantSettingsStore()
+    s = _settings()
+    await store.set_overrides({"email_autoack_template": "Stored ack body"})
+
+    result = await get_effective_settings(store, s)
+    assert result["email_autoack_template"] == {"value": "Stored ack body", "source": "override"}
+
+    await store.set_overrides({"email_autoack_template": ""})
+    result = await get_effective_settings(store, s)
+    assert result["email_autoack_template"] == {"value": "", "source": "env"}
+
+
+@pytest.mark.anyio
+async def test_get_effective_value_resolves_email_escalation_ack_template() -> None:
+    store = InMemoryTenantSettingsStore()
+    s = _settings(email_escalation_ack_template="Default ack")
+    assert await get_effective_value(store, s, "email_escalation_ack_template") == "Default ack"
+
+    await store.set_overrides({"email_escalation_ack_template": "Overridden ack"})
+    assert await get_effective_value(store, s, "email_escalation_ack_template") == "Overridden ack"
 
 
 @pytest.mark.anyio

@@ -1,6 +1,6 @@
 """GET/PUT /kb/settings — tenant-level editable settings with env-default fallback.
 
-`GET /kb/settings` returns all eight managed keys as ``{key: {value, source}}``
+`GET /kb/settings` returns all ten managed keys as ``{key: {value, source}}``
 where source is "override" if the tenant has set that key, or "env" if falling
 back to the env default. Never raises — store failures degrade gracefully.
 

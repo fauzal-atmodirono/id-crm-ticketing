@@ -1,12 +1,23 @@
 """Effective-settings facade for tenant-level config overrides.
 
-Resolves override → env for the eight editable tenant settings. Each resolved
+Resolves override → env for the ten editable tenant settings. Each resolved
 key carries `{value, source}` where source is "override" when the store has a
 non-None/non-empty value for that key, or "env" when falling back to the env
 default.
 
-The three model/iteration defaults come from the passed `Settings` object; the
-remaining five are hardcoded as documented in the spec.
+The model/iteration/email-ack defaults come from the passed `Settings`
+object; the rest are hardcoded as documented in the spec.
+
+Task 18 added the two customer-facing email templates
+(`email_autoack_template`, `email_escalation_ack_template`) so operators can
+edit the actual words a customer receives without a redeploy — see the
+agent's `ProtonConfigClient.get_email_autoack_template` (reads this facade's
+output via GET /kb/settings) and the backend's `EscalationNotifier.
+_resolve_ack_template` (reads it in-process via `get_effective_value`).
+`email_autoack_template` has no backend-owned env default (the agent service
+owns its own `email_autoack_template` env var and applies it as the fallback
+client-side) — its env default here is "", which callers must treat as "not
+configured", not as "send an empty body".
 """
 
 from __future__ import annotations
@@ -24,9 +35,11 @@ _HARDCODED_DEFAULTS: dict[str, Any] = {
     "feature_drafts": False,
     "default_mode": "suggest",
     "debounce_seconds": 0,
+    # No backend Settings field backs this one — see module docstring.
+    "email_autoack_template": "",
 }
 
-# All eight managed keys (ordered for consistent GET output)
+# All ten managed keys (ordered for consistent GET output)
 _ALL_KEYS = [
     "assist_gemini_model",
     "copilot_gemini_model",
@@ -36,6 +49,8 @@ _ALL_KEYS = [
     "feature_drafts",
     "default_mode",
     "debounce_seconds",
+    "email_autoack_template",
+    "email_escalation_ack_template",
 ]
 
 _VALID_MODES = {"suggest", "auto"}
@@ -63,13 +78,19 @@ def _env_defaults(settings: Settings) -> dict[str, Any]:
         "assist_gemini_model": settings.assist_gemini_model,
         "copilot_gemini_model": settings.copilot_gemini_model,
         "copilot_max_tool_iterations": settings.copilot_max_tool_iterations,
+        "email_escalation_ack_template": settings.email_escalation_ack_template,
         **_HARDCODED_DEFAULTS,
     }
 
 
 def _coerce_value(key: str, value: Any) -> Any:
     """Coerce a single override value to its expected Python type."""
-    if key in ("assist_gemini_model", "copilot_gemini_model"):
+    if key in (
+        "assist_gemini_model",
+        "copilot_gemini_model",
+        "email_autoack_template",
+        "email_escalation_ack_template",
+    ):
         return str(value)
     if key == "copilot_max_tool_iterations":
         try:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock
 
+from chatbot.features.chat.adapters.tenant_settings_store import InMemoryTenantSettingsStore
 from chatbot.features.chat.escalation_notifier import EscalationNotifier, build_dealer_email_map
 from chatbot.features.chat.pic_registry import PicEntry, PicRegistry
 from chatbot.features.chat.pic_store import DealerRecord
@@ -370,6 +371,7 @@ def _notifier(
     dealer_map: dict[str, list[str]] | None = None,
     email_sender=None,
     settings_kw: dict[str, Any] | None = None,
+    tenant_settings_store: Any = None,
 ) -> tuple[EscalationNotifier, list[dict[str, Any]]]:
     sent_emails: list[dict[str, Any]] = []
 
@@ -392,6 +394,7 @@ def _notifier(
         twilio_adapter=None,
         chatwoot_request=_fake_merge,
         dealer_email_map=dealer_map or {},
+        tenant_settings_store=tenant_settings_store,
     )
     return notifier, sent_emails
 
@@ -422,6 +425,78 @@ async def test_notify_email_channel_escalation_skips_ack_when_disabled() -> None
         customer_email="alex@customer.example",
     )
     assert sent == []
+
+
+async def test_customer_ack_uses_tenant_store_override_when_present() -> None:
+    """Task 18: an operator-edited template in the tenant store wins over the
+    env default, resolved via the same get_effective_value helper the assist
+    router already uses."""
+    store = InMemoryTenantSettingsStore()
+    await store.set_overrides({"email_escalation_ack_template": "Custom stored ack body"})
+    notifier, sent = _notifier(
+        pic=None,
+        settings_kw={"email_escalation_ack_enabled": True},
+        tenant_settings_store=store,
+    )
+    await notifier.notify_email_channel_escalation(
+        conv_id="9",
+        title="t",
+        body="b",
+        department=None,
+        dealer=None,
+        customer_email="alex@customer.example",
+    )
+    assert len(sent) == 1
+    assert sent[0]["body"] == "Custom stored ack body"
+
+
+async def test_customer_ack_falls_back_to_env_when_store_has_no_override() -> None:
+    """An unset store value means "not configured" -- env template text goes
+    out byte-identically, never an empty body."""
+    store = InMemoryTenantSettingsStore()
+    notifier, sent = _notifier(
+        pic=None,
+        settings_kw={"email_escalation_ack_enabled": True},
+        tenant_settings_store=store,
+    )
+    await notifier.notify_email_channel_escalation(
+        conv_id="9",
+        title="t",
+        body="b",
+        department=None,
+        dealer=None,
+        customer_email="alex@customer.example",
+    )
+    assert len(sent) == 1
+    assert "specialist team" in sent[0]["body"]  # unchanged env default
+
+
+async def test_customer_ack_falls_back_to_env_when_store_unreachable() -> None:
+    """Fail-open: a broken/unreachable tenant store must not stop the
+    acknowledgement -- fall back to env rather than sending nothing."""
+
+    class _BoomStore:
+        async def get_overrides(self) -> dict[str, Any]:
+            raise RuntimeError("store unreachable")
+
+        async def set_overrides(self, partial: dict[str, Any]) -> None:
+            raise RuntimeError("store unreachable")
+
+    notifier, sent = _notifier(
+        pic=None,
+        settings_kw={"email_escalation_ack_enabled": True},
+        tenant_settings_store=_BoomStore(),
+    )
+    await notifier.notify_email_channel_escalation(
+        conv_id="9",
+        title="t",
+        body="b",
+        department=None,
+        dealer=None,
+        customer_email="alex@customer.example",
+    )
+    assert len(sent) == 1
+    assert "specialist team" in sent[0]["body"]
 
 
 async def test_notify_email_channel_escalation_sends_dealer_forward_when_mapped() -> None:

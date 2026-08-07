@@ -21,8 +21,10 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from chatbot.features.chat.case_state import CHATWOOT_CASE_STATE_ATTR, CaseState
+from chatbot.features.chat.settings_facade import get_effective_value
 
 if TYPE_CHECKING:
+    from chatbot.features.chat.adapters.tenant_settings_store import TenantSettingsStorePort
     from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
     from chatbot.features.chat.pic_registry import PicEntry, PicRegistry
     from chatbot.features.chat.pic_store import DealerStore
@@ -93,6 +95,7 @@ class EscalationNotifier:
         chatwoot_request: _CWMergeCustomAttributes,
         dealer_email_map: dict[str, list[str]] | None = None,
         dealer_store: DealerStore | None = None,
+        tenant_settings_store: TenantSettingsStorePort | None = None,
     ) -> None:
         self._settings = settings
         self._pic_registry = pic_registry
@@ -101,6 +104,13 @@ class EscalationNotifier:
         self._cw = chatwoot_request
         self._dealer_email_map = dealer_email_map or {}
         self._dealer_store = dealer_store
+        # Task 18: lets the customer ack body be operator-edited from the CRM
+        # (Knowledge Settings) rather than fixed at deploy time. None (the
+        # default) means "no store configured" -- _resolve_ack_template then
+        # falls back to self._settings.email_escalation_ack_template exactly
+        # as before, so this is byte-identical to pre-Task-18 behavior when
+        # unset.
+        self._tenant_settings_store = tenant_settings_store
 
     async def notify(
         self,
@@ -232,7 +242,7 @@ class EscalationNotifier:
         forward. Each failure is logged and does not affect the others.
         """
         if self._settings.email_escalation_ack_enabled and customer_email:
-            self._send_customer_ack(customer_email, conv_id=conv_id, title=title)
+            await self._send_customer_ack(customer_email, conv_id=conv_id, title=title)
 
         if self._settings.escalation_email_enabled:
             pic = await self._resolve_pic(department)
@@ -242,7 +252,27 @@ class EscalationNotifier:
         if dealer:
             await self._send_dealer_forward(dealer, conv_id=conv_id, title=title, body=body)
 
-    def _send_customer_ack(self, to_email: str, *, conv_id: str, title: str) -> None:
+    async def _resolve_ack_template(self) -> str:
+        """Operator-edited template from the tenant store, else the env
+        default -- mirrors assist/router.py's `_resolve_model` pattern.
+
+        Fail-open: any store error (unreachable Firestore, etc.) is caught
+        inside get_effective_settings and degrades that key to source="env",
+        so this only raises on a programmer error (an unregistered key), not
+        on a store outage -- but the try/except here is belt-and-suspenders
+        against that too, since a missing acknowledgement email is worse
+        than one that used the env default it would have used anyway.
+        """
+        if self._tenant_settings_store is not None:
+            try:
+                return await get_effective_value(
+                    self._tenant_settings_store, self._settings, "email_escalation_ack_template"
+                )
+            except Exception as exc:
+                _log.warning("escalation_ack_template_resolve_failed", error=str(exc))
+        return self._settings.email_escalation_ack_template
+
+    async def _send_customer_ack(self, to_email: str, *, conv_id: str, title: str) -> None:
         # No _case_tag here, deliberately: the customer thread must stay
         # clean -- only the invisible Reply-To carries the correlation token.
         try:
@@ -250,7 +280,7 @@ class EscalationNotifier:
                 to=[to_email],
                 cc=[],
                 subject=f"Update on your case: {title}",
-                body=self._settings.email_escalation_ack_template,
+                body=await self._resolve_ack_template(),
                 attachments=[],
                 reply_to=self._reply_to_for(conv_id),
             )

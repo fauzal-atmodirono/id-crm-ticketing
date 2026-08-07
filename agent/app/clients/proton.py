@@ -130,6 +130,32 @@ class ProtonConfigClient:
             logger.debug("proton_config: error resolving debounce_seconds", exc_info=True)
             return None
 
+    async def get_email_autoack_template(self) -> str | None:
+        """Operator-configured email auto-ack body from /kb/settings, or None.
+
+        None means unset/blank, missing, or the backend is unreachable —
+        caller (lifecycle.py) should fall back to Settings.email_autoack_template
+        (the env-configured default). Shares the same cached /kb/settings fetch
+        as effective_debounce_seconds, so no extra HTTP round-trip.
+        """
+        try:
+            data = await self._fetch_cached("/kb/settings")
+            if not isinstance(data, dict):
+                return None
+            settings = data.get("settings")
+            if not isinstance(settings, dict):
+                return None
+            entry = settings.get("email_autoack_template")
+            if not isinstance(entry, dict):
+                return None
+            value = entry.get("value")
+            if isinstance(value, str) and value.strip():
+                return value
+            return None
+        except Exception:
+            logger.debug("proton_config: error resolving email_autoack_template", exc_info=True)
+            return None
+
     async def _resolve_assistant(self, inbox_id: int | None) -> dict | None:
         """Resolve inbox_id → assistant dict (cached), or None on any failure.
 

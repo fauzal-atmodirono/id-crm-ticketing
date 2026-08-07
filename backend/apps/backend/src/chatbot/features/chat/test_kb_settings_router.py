@@ -67,7 +67,7 @@ def test_put_wrong_key_401() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_get_returns_all_eight_keys() -> None:
+def test_get_returns_all_ten_keys() -> None:
     c = _client()
     r = c.get("/kb/settings", headers={"x-api-key": "pk"})
     assert r.status_code == 200
@@ -81,6 +81,8 @@ def test_get_returns_all_eight_keys() -> None:
         "feature_drafts",
         "default_mode",
         "debounce_seconds",
+        "email_autoack_template",
+        "email_escalation_ack_template",
     }
     assert set(result.keys()) == expected
 
@@ -127,6 +129,47 @@ def test_put_override_reflected_in_get() -> None:
     assert result["feature_ai_assist"] == {"value": True, "source": "override"}
     # Unchanged keys still report env
     assert result["default_mode"]["source"] == "env"
+
+
+def test_put_email_templates_round_trip() -> None:
+    """The two Task-18 templates go through the same PUT/GET path as every
+    other operator-editable setting — the Knowledge Settings fork page and
+    the agent's ProtonConfigClient both consume this endpoint."""
+    store = InMemoryTenantSettingsStore()
+    s = _settings()
+    c = _client(settings=s, store=store)
+
+    r = c.put(
+        "/kb/settings",
+        json={
+            "email_autoack_template": "Custom auto-ack",
+            "email_escalation_ack_template": "Custom escalation ack",
+        },
+        headers={"x-api-key": "pk"},
+    )
+    assert r.status_code == 200
+    result = r.json()["settings"]
+    assert result["email_autoack_template"] == {"value": "Custom auto-ack", "source": "override"}
+    assert result["email_escalation_ack_template"] == {
+        "value": "Custom escalation ack",
+        "source": "override",
+    }
+
+    r = c.get("/kb/settings", headers={"x-api-key": "pk"})
+    result = r.json()["settings"]
+    assert result["email_autoack_template"]["value"] == "Custom auto-ack"
+    assert result["email_escalation_ack_template"]["value"] == "Custom escalation ack"
+
+    # Clearing (empty string) reverts each to its env default.
+    c.put(
+        "/kb/settings",
+        json={"email_autoack_template": "", "email_escalation_ack_template": ""},
+        headers={"x-api-key": "pk"},
+    )
+    r = c.get("/kb/settings", headers={"x-api-key": "pk"})
+    result = r.json()["settings"]
+    assert result["email_autoack_template"] == {"value": "", "source": "env"}
+    assert result["email_escalation_ack_template"]["source"] == "env"
 
 
 def test_put_returns_fresh_effective_settings() -> None:

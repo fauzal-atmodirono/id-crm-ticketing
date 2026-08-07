@@ -42,6 +42,7 @@ Dedup
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json as _json
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -69,6 +70,10 @@ FIRST_RESPONSE_STATE = "FIRST_RESPONSE"
 REMINDER_WARNING_STATE = "REMINDER_WARNING"
 
 _SECONDS_PER_HOUR = 3600
+# _alert_accepts_labels: the widened (Task 14) alert callback shape takes four
+# positional args (ticket_id, to_state, remark, labels); the pre-Task-14 shape
+# took three.
+_ALERT_LABELS_ARITY = 4
 
 # Maps the Chatwoot channel_type string to a short key used in the
 # sla_ack_minutes_by_channel_json config map.  Unknown channel_types
@@ -160,7 +165,7 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
     *,
     now: datetime | None = None,
     fetch: Callable[[Settings], list[dict[str, Any]]] | None = None,
-    alert: Callable[[str, str, str], Any] | None = None,
+    alert: Callable[[str, str, str, list[str]], Any] | None = None,
     level2_alert: Callable[[str, str, str], Any] | None = None,
     policy_repo: SlaPolicyRepository | None = None,
 ) -> list[AuditEntry]:
@@ -293,6 +298,7 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
                 ),
                 clock=clock,
                 alert=alert,
+                labels=_labels(conv),
             )
             fired.append(entry)
 
@@ -309,6 +315,7 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
                 ),
                 clock=clock,
                 alert=alert,
+                labels=_labels(conv),
             )
             fired.append(entry)
 
@@ -391,6 +398,7 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
                     ),
                     clock=clock,
                     alert=alert,
+                    labels=_labels(conv),
                 )
                 fired.append(reminder_entry)
 
@@ -406,6 +414,33 @@ def _labels(conv: dict[str, Any]) -> list[str]:
     return []
 
 
+def _alert_accepts_labels(alert: Callable[..., Any]) -> bool:
+    """True when ``alert`` accepts the (Task 14) fourth ``labels`` argument.
+
+    The alert callback signature widened from three to four positional
+    arguments in this task. Some callers (pre-existing tests written against
+    the old three-argument shape) still pass a callable that only accepts
+    three; inspecting the signature before calling — rather than calling with
+    four and catching the resulting ``TypeError`` — lets both shapes coexist
+    without ever invoking a callable's side effects twice.
+    """
+    try:
+        params = inspect.signature(alert).parameters
+    except (TypeError, ValueError):
+        # Signature can't be introspected (e.g. certain C callables) — assume
+        # the current (four-argument) shape, since that's what every real
+        # (non-test-double) caller now provides.
+        return True
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params.values()):
+        return True
+    positional = [
+        p
+        for p in params.values()
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    return len(positional) >= _ALERT_LABELS_ARITY
+
+
 async def _fire(
     audit: AuditLogPort,
     *,
@@ -414,9 +449,15 @@ async def _fire(
     to_state: str,
     remark: str,
     clock: datetime,
-    alert: Callable[[str, str, str], Any] | None,
+    alert: Callable[[str, str, str, list[str]], Any] | None,
+    labels: list[str],
 ) -> AuditEntry:
-    """Append one breach transition and (best-effort) alert the PIC."""
+    """Append one breach transition and (best-effort) alert the PIC.
+
+    ``labels`` carries the conversation's Chatwoot labels (e.g. ``dept_<slug>``)
+    through to the alert callback so it can route to the right PIC group
+    (Task 15) without this function needing to know about routing itself.
+    """
     entry = AuditEntry(
         ticket_id=ticket_id,
         session_id=session_id,
@@ -431,7 +472,11 @@ async def _fire(
     _log.info(event, ticket_id=ticket_id, breach=to_state)
     if alert is not None:
         try:
-            result = alert(ticket_id, to_state, remark)
+            result = (
+                alert(ticket_id, to_state, remark, labels)
+                if _alert_accepts_labels(alert)
+                else alert(ticket_id, to_state, remark)  # type: ignore[call-arg]
+            )
             if asyncio.iscoroutine(result):
                 await result
         except Exception as e:  # an alert failure must never abort the scan
@@ -466,18 +511,22 @@ def run_sla_scan_job(
 
 def _build_pic_alert(
     settings: Settings, twilio_adapter: TwilioChannelAdapter | None
-) -> Callable[[str, str, str], Any] | None:
+) -> Callable[[str, str, str, list[str]], Any] | None:
     """Build the optional PIC WhatsApp alert callback (reuses the Twilio path).
 
     Returns None when no PIC number / Twilio adapter is configured, so no alert is
     attempted. The audit transition is always recorded regardless.
+
+    ``labels`` (the conversation's Chatwoot labels) is accepted but unused here;
+    Task 15 uses it to route to a department-specific PIC instead of the single
+    global ``sla_pic_whatsapp`` number.
     """
     pic = settings.sla_pic_whatsapp
     if not pic or twilio_adapter is None:
         return None
     to = "whatsapp:" + pic.removeprefix("whatsapp:")
 
-    async def _alert(ticket_id: str, to_state: str, remark: str) -> None:
+    async def _alert(ticket_id: str, to_state: str, remark: str, labels: list[str]) -> None:  # noqa: ARG001
         await twilio_adapter.send_message(
             conversation_id=to,
             text=f"⚠️ SLA breach ({to_state}) on case {ticket_id}. {remark}",

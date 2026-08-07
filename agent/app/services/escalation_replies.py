@@ -139,14 +139,18 @@ async def maybe_link_escalation_reply(payload: dict) -> None:
     reply carrying an escalation token, copy it onto the escalated
     conversation and close the throwaway one it arrived in.
 
-    Internal-sender path only (dealer/PIC). A reply from an unrecognised
-    address -- or one that arrives while the allowlist itself is
-    unreachable -- is left unlinked: this endpoint has no other proof the
-    reply is real, so silently doing nothing is the only safe default. Every
-    other "can't tell what this is" case (missing token, missing inbox,
-    downstream HTTP failure) is likewise a skip, never a raise -- this runs
-    as a background task and an exception here only produces an unretrieved-
-    exception log, not a retry.
+    Two senders are trusted to link: the conversation's own contact (the
+    customer replying to their own ack -- posted as a public incoming
+    message, unstamped, since a customer may reply more than once) and an
+    address in the escalation contact allowlist (dealer/PIC -- posted as a
+    private note, stamped and labelled so a second internal reply doesn't
+    pile on). A reply from neither -- or one that arrives while the
+    allowlist itself is unreachable -- is left unlinked: this endpoint has
+    no other proof the reply is real, so silently doing nothing is the only
+    safe default. Every other "can't tell what this is" case (missing
+    token, missing inbox, downstream HTTP failure) is likewise a skip,
+    never a raise -- this runs as a background task and an exception here
+    only produces an unretrieved-exception log, not a retry.
     """
     settings = get_settings()
     if not settings.escalation_reply_linking_enabled:
@@ -178,53 +182,73 @@ async def maybe_link_escalation_reply(payload: dict) -> None:
             logger.info("escalation_replies: conversation %s not found", case_id)
             return
         existing = (conversation or {}).get("custom_attributes") or {}
-        if existing.get(_REPLIED_ATTR):
-            logger.info(
-                "escalation_replies: conversation %s already linked a reply, skipping",
-                case_id,
-            )
-            return
+        contact_email = str(
+            ((conversation.get("meta") or {}).get("sender") or {}).get("email") or ""
+        ).strip().lower()
+        is_customer = bool(contact_email) and sender_email == contact_email
 
-        proton = get_proton_config_client()
-        if proton is None:
-            return
-        contacts = await proton.get_escalation_contacts()
-        if contacts is None:
-            logger.warning(
-                "escalation_replies: contact allowlist unavailable, not linking reply "
-                "from %s to conversation %s",
-                sender_email,
-                case_id,
-            )
-            return
-        if sender_email not in contacts:
-            logger.info(
-                "escalation_replies: sender %s is not an escalation contact, skipping",
-                sender_email,
-            )
-            return
+        sender_name = sender_email
+        if not is_customer:
+            # The stamp only gates the internal-reply path: a customer
+            # replying to their own ack is a normal, repeatable event, but a
+            # second dealer/PIC note past the first stamp would just be
+            # duplicate noise on top of whatever a human already did with it.
+            if existing.get(_REPLIED_ATTR):
+                logger.info(
+                    "escalation_replies: conversation %s already linked a reply, skipping",
+                    case_id,
+                )
+                return
+
+            proton = get_proton_config_client()
+            if proton is None:
+                return
+            contacts = await proton.get_escalation_contacts()
+            if contacts is None:
+                logger.warning(
+                    "escalation_replies: contact allowlist unavailable, not linking reply "
+                    "from %s to conversation %s",
+                    sender_email,
+                    case_id,
+                )
+                return
+            if sender_email not in contacts:
+                logger.info(
+                    "escalation_replies: sender %s is not an escalation contact, skipping",
+                    sender_email,
+                )
+                return
+            sender_name = contacts.get(sender_email) or sender_email
 
         text = strip_quoted_trail(str(payload.get("content") or ""))
         if not text:
             return
-        sender_name = contacts.get(sender_email) or sender_email
-        # Deliberately note-then-stamp, not the reverse: if create_message
-        # fails, the exception below aborts before the stamp is written, so
-        # a retry of this event can still land the note. Stamping first
-        # would risk permanently losing the reply if the note post failed
-        # after the stamp had already landed.
-        await chatwoot.create_message(
-            case_id,
-            f"Reply from {sender_name} <{sender_email}>:\n\n{text}",
-            private=True,
-        )
-        await chatwoot.set_custom_attributes(
-            case_id, {_REPLIED_ATTR: datetime.now(timezone.utc).isoformat()}
-        )
-        await chatwoot.add_labels(case_id, [_REPLIED_LABEL])
 
-        if settings.escalation_reply_draft_enabled:
-            await _post_draft(case_id, text)
+        if is_customer:
+            # The customer's own words belong in the customer thread as an
+            # inbound message, not as an agent note -- which also reopens
+            # the conversation exactly as a real inbound message would.
+            await chatwoot.create_message(
+                case_id, text, private=False, message_type="incoming"
+            )
+        else:
+            # Deliberately note-then-stamp, not the reverse: if
+            # create_message fails, the exception below aborts before the
+            # stamp is written, so a retry of this event can still land the
+            # note. Stamping first would risk permanently losing the reply
+            # if the note post failed after the stamp had already landed.
+            await chatwoot.create_message(
+                case_id,
+                f"Reply from {sender_name} <{sender_email}>:\n\n{text}",
+                private=True,
+            )
+            await chatwoot.set_custom_attributes(
+                case_id, {_REPLIED_ATTR: datetime.now(timezone.utc).isoformat()}
+            )
+            await chatwoot.add_labels(case_id, [_REPLIED_LABEL])
+
+            if settings.escalation_reply_draft_enabled:
+                await _post_draft(case_id, text)
 
         if reply_conv_id is not None:
             await chatwoot.add_labels(reply_conv_id, [_ORPHAN_LABEL])

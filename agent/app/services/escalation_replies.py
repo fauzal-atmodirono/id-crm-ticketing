@@ -208,6 +208,11 @@ async def maybe_link_escalation_reply(payload: dict) -> None:
         if not text:
             return
         sender_name = contacts.get(sender_email) or sender_email
+        # Deliberately note-then-stamp, not the reverse: if create_message
+        # fails, the exception below aborts before the stamp is written, so
+        # a retry of this event can still land the note. Stamping first
+        # would risk permanently losing the reply if the note post failed
+        # after the stamp had already landed.
         await chatwoot.create_message(
             case_id,
             f"Reply from {sender_name} <{sender_email}>:\n\n{text}",

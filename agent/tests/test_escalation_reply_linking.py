@@ -34,6 +34,17 @@ def _enable(monkeypatch):
     get_proton_config_client.cache_clear()
 
 
+def _enable_without_proton(monkeypatch):
+    """Linking is on, but PROTON_BACKEND_URL/KEY are unset -- the same
+    "feature disabled" shape every other proton-backed feature in this repo
+    fails open to (get_proton_config_client() returns None)."""
+    monkeypatch.setattr(get_settings(), "escalation_reply_linking_enabled", True)
+    monkeypatch.setattr(get_settings(), "escalation_reply_draft_enabled", False)
+    monkeypatch.setattr(get_settings(), "proton_backend_url", None)
+    monkeypatch.setattr(get_settings(), "proton_backend_key", None)
+    get_proton_config_client.cache_clear()
+
+
 def _stub_chatwoot(*, conv_attrs=None):
     respx.get(f"{CHATWOOT}/api/v1/accounts/1/inboxes/4").mock(
         return_value=httpx.Response(200, json={"id": 4, "channel_type": "Channel::Email"})
@@ -178,4 +189,52 @@ async def test_noop_without_token(monkeypatch):
     await escalation_replies.maybe_link_escalation_reply(payload)
 
     assert not messages.called
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_skips_when_proton_client_unconfigured(monkeypatch):
+    _enable_without_proton(monkeypatch)
+    messages = _stub_chatwoot()
+
+    await escalation_replies.maybe_link_escalation_reply(_payload())
+
+    assert not messages.called
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_draft_enabled_posts_second_private_note_with_draft(monkeypatch):
+    _enable(monkeypatch)
+    monkeypatch.setattr(get_settings(), "escalation_reply_draft_enabled", True)
+    messages = _stub_chatwoot()
+    respx.post(f"{PROTON}/assist/suggest").mock(
+        return_value=httpx.Response(
+            200, json={"draft": "Try restarting the app.", "sources": []}
+        )
+    )
+
+    await escalation_replies.maybe_link_escalation_reply(_payload())
+
+    assert len(messages.calls) == 2
+    first_note = json.loads(messages.calls[0].request.read())
+    draft_note = json.loads(messages.calls[1].request.read())
+    assert "We fixed it." in first_note["content"]
+    assert draft_note["private"] is True
+    assert "Try restarting the app." in draft_note["content"]
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_draft_failure_leaves_first_note_intact(monkeypatch):
+    _enable(monkeypatch)
+    monkeypatch.setattr(get_settings(), "escalation_reply_draft_enabled", True)
+    messages = _stub_chatwoot()
+    respx.post(f"{PROTON}/assist/suggest").mock(return_value=httpx.Response(503))
+
+    await escalation_replies.maybe_link_escalation_reply(_payload())
+
+    assert len(messages.calls) == 1
+    first_note = json.loads(messages.calls[0].request.read())
+    assert "We fixed it." in first_note["content"]
     get_proton_config_client.cache_clear()

@@ -44,8 +44,15 @@ class SmtpEmailSender:
         subject: str,
         body: str,
         attachments: list[Attachment],
+        *,
+        reply_to: str | None = None,
     ) -> None:
-        """Send an email synchronously. Swallows and logs all errors."""
+        """Send an email synchronously. Swallows and logs all errors.
+
+        ``reply_to`` carries the escalation correlation token (see
+        escalation_notifier); omitted by default so existing callers produce
+        byte-identical mail.
+        """
         if not to or not self._s.smtp_host:
             return
         msg = EmailMessage()
@@ -53,6 +60,8 @@ class SmtpEmailSender:
         msg["To"] = ", ".join(to)
         if cc:
             msg["Cc"] = ", ".join(cc)
+        if reply_to:
+            msg["Reply-To"] = reply_to
         msg["Subject"] = subject
         msg.set_content(body)
         for filename, content, mimetype in attachments:

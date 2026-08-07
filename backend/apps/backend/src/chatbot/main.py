@@ -390,7 +390,13 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         )
         chatwoot_client._escalation_notifier = escalation_notifier  # type: ignore[assignment]
         app.include_router(
-            build_escalation_router(escalation_notifier, chatwoot_client._request, settings)  # type: ignore[arg-type]
+            build_escalation_router(
+                escalation_notifier,
+                chatwoot_client._request,  # type: ignore[arg-type]
+                settings,
+                pic_store=pic_store,
+                dealer_store=dealer_store,
+            )
         )
 
     # --- Metrics port (per-turn BigQuery streaming) ---

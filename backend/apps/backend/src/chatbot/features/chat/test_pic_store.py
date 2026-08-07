@@ -233,7 +233,7 @@ async def test_dealer_get_returns_record_when_found() -> None:
         doc.get.return_value = snap
         MockClient.return_value.collection.return_value.document.return_value = doc
         result = await _dealer_store().get("acme")
-    assert result == DealerRecord(dealer="acme", email="acme@example.com")
+    assert result == DealerRecord(dealer="acme", emails=["acme@example.com"])
 
 
 @pytest.mark.asyncio
@@ -243,8 +243,8 @@ async def test_dealer_set_writes_document() -> None:
     ) as MockClient:
         doc = MagicMock()
         MockClient.return_value.collection.return_value.document.return_value = doc
-        await _dealer_store().set("acme", "contact@acme.com")
-    doc.set.assert_called_once_with({"dealer": "acme", "email": "contact@acme.com"})
+        await _dealer_store().set("acme", ["contact@acme.com"])
+    doc.set.assert_called_once_with({"dealer": "acme", "emails": ["contact@acme.com"]})
 
 
 @pytest.mark.asyncio
@@ -272,8 +272,8 @@ async def test_dealer_list_all_returns_all_records() -> None:
         MockClient.return_value.collection.return_value = col
         results = await _dealer_store().list_all()
     assert len(results) == 2
-    assert DealerRecord(dealer="acme", email="acme@example.com") in results
-    assert DealerRecord(dealer="techcorp", email="contact@techcorp.com") in results
+    assert DealerRecord(dealer="acme", emails=["acme@example.com"]) in results
+    assert DealerRecord(dealer="techcorp", emails=["contact@techcorp.com"]) in results
 
 
 @pytest.mark.asyncio

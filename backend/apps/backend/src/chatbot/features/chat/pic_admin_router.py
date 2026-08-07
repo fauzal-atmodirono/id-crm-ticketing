@@ -28,7 +28,17 @@ class PicUpsertBody(BaseModel):
 
 
 class DealerUpsertBody(BaseModel):
-    email: str = Field(min_length=1)
+    """`emails` is the group's member list. `email` is accepted for
+    compatibility with the pre-groups UI and is folded into `emails`."""
+
+    emails: list[str] = Field(default_factory=list)
+    email: str | None = None
+
+    def members(self) -> list[str]:
+        merged = [e for e in self.emails if e]
+        if self.email and self.email not in merged:
+            merged.append(self.email)
+        return merged
 
 
 def build_pic_admin_router(
@@ -71,7 +81,7 @@ def build_pic_admin_router(
 
     @router.put("/dealers/{dealer}", dependencies=[Depends(manage_escalation)])
     async def upsert_dealer(dealer: str, body: DealerUpsertBody) -> dict:
-        await dealer_store.set(dealer, email=body.email)
+        await dealer_store.set(dealer, emails=body.members())
         return {"dealer": dealer, "status": "ok"}
 
     @router.delete("/dealers/{dealer}", dependencies=[Depends(manage_escalation)])

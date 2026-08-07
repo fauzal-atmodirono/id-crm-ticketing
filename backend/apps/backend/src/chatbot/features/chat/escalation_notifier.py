@@ -49,12 +49,15 @@ _log = structlog.get_logger(__name__)
 _CWMergeCustomAttributes = Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]
 
 
-def build_dealer_email_map(settings: Settings) -> dict[str, str]:
-    """Parse dealer_email_map_json into a lower-cased slug -> email dict.
+def build_dealer_email_map(settings: Settings) -> dict[str, list[str]]:
+    """Parse dealer_email_map_json into a lower-cased slug -> [email] dict.
 
-    Returns {} on absent/blank/malformed JSON or a non-dict/non-string-keyed
-    shape -- mirrors build_pic_registry's fail-safe parsing so a misconfigured
-    map never crashes the app, it just means no dealer email is ever sent.
+    A value may be a single string (the original shape) or a list of
+    addresses (dealers as groups) -- mirrors build_pic_registry's fail-safe
+    parsing so a misconfigured map never crashes the app, it just means fewer
+    dealers resolve. Returns {} on absent/blank/malformed JSON, and silently
+    drops entries that are neither a non-empty string nor a list containing
+    at least one address.
     """
     raw = (settings.dealer_email_map_json or "").strip()
     if not raw:
@@ -65,10 +68,16 @@ def build_dealer_email_map(settings: Settings) -> dict[str, str]:
         return {}
     if not isinstance(data, dict):
         return {}
-    result: dict[str, str] = {}
+    result: dict[str, list[str]] = {}
     for key, val in data.items():
-        if isinstance(key, str) and isinstance(val, str) and val:
-            result[key.lower()] = val
+        if not isinstance(key, str):
+            continue
+        if isinstance(val, str) and val:
+            result[key.lower()] = [val]
+        elif isinstance(val, list):
+            members = [str(v) for v in val if isinstance(v, str) and v]
+            if members:
+                result[key.lower()] = members
     return result
 
 
@@ -82,7 +91,7 @@ class EscalationNotifier:
         email_sender: SmtpEmailSender,
         twilio_adapter: TwilioChannelAdapter | None,
         chatwoot_request: _CWMergeCustomAttributes,
-        dealer_email_map: dict[str, str] | None = None,
+        dealer_email_map: dict[str, list[str]] | None = None,
         dealer_store: DealerStore | None = None,
     ) -> None:
         self._settings = settings
@@ -251,14 +260,14 @@ class EscalationNotifier:
     async def _send_dealer_forward(
         self, dealer_slug: str, *, conv_id: str, title: str, body: str
     ) -> None:
-        email = None
+        emails: list[str] = []
         if self._dealer_store is not None:
             record = await self._dealer_store.get(dealer_slug.lower())
             if record is not None:
-                email = record.email
-        if not email:
-            email = self._dealer_email_map.get(dealer_slug.lower())
-        if not email:
+                emails = list(record.emails)
+        if not emails:
+            emails = list(self._dealer_email_map.get(dealer_slug.lower()) or [])
+        if not emails:
             _log.info("escalation_dealer_unmapped", dealer=dealer_slug)
             return
         email_body = textwrap.dedent(f"""\
@@ -274,7 +283,7 @@ class EscalationNotifier:
         """)
         try:
             self._email_sender.send(
-                to=[email],
+                to=emails,
                 cc=[],
                 subject=f"[Escalation - Dealer Forward] {self._case_tag(conv_id)}{title}",
                 body=email_body,

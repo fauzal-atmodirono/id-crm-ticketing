@@ -14,7 +14,7 @@ def test_build_dealer_email_map_parses_json() -> None:
         dealer_email_map_json='{"kl_pj": "kl-pj@dealer.example", "JB": "jb@dealer.example"}'
     )
     result = build_dealer_email_map(settings)
-    assert result == {"kl_pj": "kl-pj@dealer.example", "jb": "jb@dealer.example"}
+    assert result == {"kl_pj": ["kl-pj@dealer.example"], "jb": ["jb@dealer.example"]}
 
 
 def test_build_dealer_email_map_empty_on_blank_or_bad_json() -> None:
@@ -367,7 +367,7 @@ async def test_email_reference_uses_chatwoot_conversation() -> None:
 def _notifier(
     *,
     pic: PicEntry | None = _APPS_PIC,
-    dealer_map: dict[str, str] | None = None,
+    dealer_map: dict[str, list[str]] | None = None,
     email_sender=None,
     settings_kw: dict[str, Any] | None = None,
 ) -> tuple[EscalationNotifier, list[dict[str, Any]]]:
@@ -427,7 +427,7 @@ async def test_notify_email_channel_escalation_skips_ack_when_disabled() -> None
 async def test_notify_email_channel_escalation_sends_dealer_forward_when_mapped() -> None:
     notifier, sent = _notifier(
         pic=None,
-        dealer_map={"kl_pj": "kl-pj@dealer.example"},
+        dealer_map={"kl_pj": ["kl-pj@dealer.example"]},
     )
     await notifier.notify_email_channel_escalation(
         conv_id="9",
@@ -457,7 +457,7 @@ async def test_notify_email_channel_escalation_skips_dealer_when_unmapped() -> N
 async def test_notify_email_channel_escalation_sends_pic_and_dealer_together() -> None:
     notifier, sent = _notifier(
         pic=_APPS_PIC,
-        dealer_map={"kl_pj": "kl-pj@dealer.example"},
+        dealer_map={"kl_pj": ["kl-pj@dealer.example"]},
         settings_kw={"escalation_email_enabled": True},
     )
     await notifier.notify_email_channel_escalation(
@@ -498,9 +498,9 @@ async def test_notify_email_channel_escalation_noop_when_everything_off() -> Non
 async def test_dealer_forward_uses_store_record_when_present() -> None:
     """DealerStore.get() wins over the legacy dealer_email_map dict."""
     dealer_store = AsyncMock()
-    dealer_store.get.return_value = DealerRecord(dealer="kl_pj", email="store@dealer.example")
+    dealer_store.get.return_value = DealerRecord(dealer="kl_pj", emails=["store@dealer.example"])
 
-    notifier, sent = _notifier(pic=None, dealer_map={"kl_pj": "legacy@dealer.example"})
+    notifier, sent = _notifier(pic=None, dealer_map={"kl_pj": ["legacy@dealer.example"]})
     notifier._dealer_store = dealer_store
 
     await notifier.notify_email_channel_escalation(
@@ -521,7 +521,7 @@ async def test_dealer_forward_falls_back_to_dict_when_store_has_no_entry() -> No
     dealer_store = AsyncMock()
     dealer_store.get.return_value = None
 
-    notifier, sent = _notifier(pic=None, dealer_map={"kl_pj": "legacy@dealer.example"})
+    notifier, sent = _notifier(pic=None, dealer_map={"kl_pj": ["legacy@dealer.example"]})
     notifier._dealer_store = dealer_store
 
     await notifier.notify_email_channel_escalation(
@@ -539,7 +539,7 @@ async def test_dealer_forward_falls_back_to_dict_when_store_has_no_entry() -> No
 
 async def test_dealer_forward_works_without_a_store_configured() -> None:
     """dealer_store=None (default) -> unchanged legacy dict-only behaviour."""
-    notifier, sent = _notifier(pic=None, dealer_map={"kl_pj": "legacy@dealer.example"})
+    notifier, sent = _notifier(pic=None, dealer_map={"kl_pj": ["legacy@dealer.example"]})
 
     await notifier.notify_email_channel_escalation(
         conv_id="9",

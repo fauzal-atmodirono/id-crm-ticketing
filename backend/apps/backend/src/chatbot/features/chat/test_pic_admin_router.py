@@ -192,7 +192,7 @@ async def test_authorized_user_can_list_upsert_delete_dealer(tmp_path, respx_moc
 
         put_res = client.put(
             "/admin/escalation/dealers/acme",
-            json={"email": "acme@example.com"},
+            json={"emails": ["acme@example.com", "second@example.com"]},
             headers=HEADERS,
         )
         assert put_res.status_code == 200
@@ -201,7 +201,9 @@ async def test_authorized_user_can_list_upsert_delete_dealer(tmp_path, respx_moc
         list_res = client.get("/admin/escalation/dealers", headers=HEADERS)
         assert list_res.status_code == 200
         dealers = list_res.json()["dealers"]
-        assert dealers == [{"dealer": "acme", "email": "acme@example.com"}]
+        assert dealers == [
+            {"dealer": "acme", "emails": ["acme@example.com", "second@example.com"]}
+        ]
 
         delete_res = client.delete("/admin/escalation/dealers/acme", headers=HEADERS)
         assert delete_res.status_code == 200
@@ -231,7 +233,10 @@ async def test_upsert_pic_missing_required_fields_returns_422(tmp_path, respx_mo
 
 
 @pytest.mark.asyncio
-async def test_upsert_dealer_missing_required_fields_returns_422(tmp_path, respx_mock):
+async def test_upsert_dealer_rejects_wrong_field_type_returns_422(tmp_path, respx_mock):
+    """`emails`/`email` are both optional now (a dealer group may start with
+    no members), so an empty body is valid -- but a wrong-typed `emails`
+    still fails Pydantic validation."""
     settings = get_settings().model_copy(update={"rbac_enabled": True})
     authz_repo = await _build_authz_repo(tmp_path, "dealer_422")
     await seed_defaults(authz_repo)
@@ -245,7 +250,9 @@ async def test_upsert_dealer_missing_required_fields_returns_422(tmp_path, respx
     router = build_pic_admin_router(pic_store, dealer_store, authz_repo, validator, settings)
     client = _app_with_router(router)
 
-    res = client.put("/admin/escalation/dealers/acme", json={}, headers=HEADERS)
+    res = client.put(
+        "/admin/escalation/dealers/acme", json={"emails": "not-a-list"}, headers=HEADERS
+    )
     assert res.status_code == 422
 
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from google.cloud import firestore
@@ -50,7 +50,30 @@ class PicRecord:
 @dataclass(frozen=True)
 class DealerRecord:
     dealer: str
-    email: str
+    emails: list[str] = field(default_factory=list)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, DealerRecord):
+            return NotImplemented
+        return self.dealer == other.dealer and list(self.emails) == list(other.emails)
+
+    def __hash__(self) -> int:
+        return hash((self.dealer, tuple(self.emails)))
+
+
+def _dealer_record_from_dict(data: dict[str, Any], fallback_key: str) -> DealerRecord:
+    """Build a DealerRecord from a Firestore document body.
+
+    Accepts BOTH shapes so no migration is needed: the new `emails` list and
+    the original single `email` string written before dealers became groups.
+    """
+    emails = data.get("emails")
+    if isinstance(emails, list):
+        members = [str(e) for e in emails if e]
+    else:
+        legacy = data.get("email")
+        members = [str(legacy)] if legacy else []
+    return DealerRecord(dealer=str(data.get("dealer", fallback_key)), emails=members)
 
 
 class PicStore:
@@ -157,14 +180,16 @@ class DealerStore:
             if not snap.exists:
                 return None
             data = snap.to_dict() or {}
-            return DealerRecord(dealer=str(data.get("dealer", dealer)), email=str(data.get("email", "")))
+            return _dealer_record_from_dict(data, dealer)
         except Exception as e:
             _log.error("dealer_store_get_failed", dealer=dealer, error=str(e))
             return None
 
-    async def set(self, dealer: str, email: str) -> None:
+    async def set(self, dealer: str, emails: list[str]) -> None:
         try:
-            await asyncio.to_thread(self._doc_ref(dealer).set, {"dealer": dealer, "email": email})
+            await asyncio.to_thread(
+                self._doc_ref(dealer).set, {"dealer": dealer, "emails": list(emails)}
+            )
         except Exception as e:
             _log.error("dealer_store_set_failed", dealer=dealer, error=str(e))
 
@@ -186,7 +211,7 @@ class DealerStore:
                 dealer = data.get("dealer")
                 if dealer is None:
                     continue
-                results.append(DealerRecord(dealer=str(dealer), email=str(data.get("email", ""))))
+                results.append(_dealer_record_from_dict(data, str(dealer)))
             return results
         except Exception as e:
             _log.error("dealer_store_list_failed", error=str(e))

@@ -9,7 +9,7 @@ only the invisible Reply-To -- so a customer-facing ack email reads clean.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from chatbot.features.chat.escalation_notifier import EscalationNotifier
 from chatbot.features.chat.pic_registry import PicEntry, PicRegistry
@@ -42,7 +42,7 @@ class _Sender:
 class _DealerStore:
     async def get(self, dealer: str):
         class _R:
-            email = "dealer@test"
+            emails: ClassVar[list[str]] = ["dealer@test"]
 
         return _R()
 

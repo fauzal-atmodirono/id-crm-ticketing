@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     # {"whatsapp": 2, "call": 0.333, "facebook": 120, "instagram": 120, "email": 240}.
     # Empty → the global sla_response_hours applies to every channel.
     sla_ack_minutes_by_channel_json: str = ""
+    # Inboxes the SLA engine scans. Empty (default) = the single
+    # chatwoot_inbox_id, preserving pre-existing behavior exactly. A
+    # comma-separated list scans each. "*" scans every inbox in the account
+    # -- needed for the email escalation timers, since the Email inbox is
+    # normally not chatwoot_inbox_id.
+    sla_inbox_ids: str = ""
 
     # --- Task Timers & Agent Reminders (Phase 6) ---
     # How many minutes before SLA breach the My-Tasks app shows a warning colour

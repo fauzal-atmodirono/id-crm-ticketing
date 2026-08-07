@@ -47,14 +47,62 @@ def _conversations_from_page(page: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def _inbox_scope(settings: Settings) -> list[int | None]:
+    """Inbox ids the SLA scan should cover, from ``settings.sla_inbox_ids``.
+
+    Empty (the default, and what a ``Settings``/stub without the attribute
+    at all also resolves to via ``getattr``) preserves pre-existing
+    behaviour exactly: scan only ``chatwoot_inbox_id``. ``"*"`` means "no
+    inbox filter" (``[None]``) -- needed because the Email inbox a tenant
+    needs the escalation timers to watch is normally NOT
+    ``chatwoot_inbox_id``. A comma-separated list scans each id in turn.
+    Garbage entries are dropped rather than raised on; if that empties the
+    list entirely, fall back to the single-inbox default so a malformed
+    value degrades safely instead of turning into an unbounded account-wide
+    scan.
+    """
+    raw = (getattr(settings, "sla_inbox_ids", "") or "").strip()
+    if not raw:
+        return [settings.chatwoot_inbox_id]
+    if raw == "*":
+        return [None]
+    ids: list[int | None] = [int(part) for part in raw.split(",") if part.strip().isdigit()]
+    return ids or [settings.chatwoot_inbox_id]
+
+
+def _fetch_conversations_for_inbox(
+    base: str, inbox_id: int | None, get_page: Callable[[str], dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Page one inbox scope entry until an empty page. ``inbox_id=None``
+    omits the query filter entirely (account-wide scan)."""
+    conversations: list[dict[str, Any]] = []
+    page_num = 1
+    while True:
+        filter_part = "" if inbox_id is None else f"&inbox_id={inbox_id}"
+        url = f"{base}?status=all{filter_part}&page={page_num}"
+        page = get_page(url)
+        batch = _conversations_from_page(page)
+        if not batch:
+            break
+        # Defensive inbox filter: the API filter should already scope this, but a
+        # shared instance may ignore an unknown param, so keep only our inbox.
+        conversations.extend(
+            c for c in batch if inbox_id in (0, None) or c.get("inbox_id") in (inbox_id, None)
+        )
+        page_num += 1
+    return conversations
+
+
 def fetch_conversations(
     settings: Settings, *, get_page: Callable[[str], dict[str, Any]] | None = None
 ) -> list[dict[str, Any]]:
-    """Page the Chatwoot account conversations API, filtered to our inbox.
+    """Page the Chatwoot account conversations API across the configured
+    inbox scope (see ``_inbox_scope`` / ``sla_inbox_ids``).
 
     Auth MUST use the dashed ``Api-Access-Token`` header (some reverse proxies
-    strip underscore headers, mirroring the adapter). Pages 1..N until a page
-    returns fewer conversations than the previous non-empty one / an empty page.
+    strip underscore headers, mirroring the adapter). Each scope entry pages
+    1..N until a page returns fewer conversations than the previous
+    non-empty one / an empty page; results accumulate across scope entries.
     """
     if get_page is None:
         token = settings.chatwoot_api_token
@@ -73,21 +121,9 @@ def fetch_conversations(
         f"{settings.chatwoot_api_url.rstrip('/')}"
         f"/api/v1/accounts/{settings.chatwoot_account_id}/conversations"
     )
-    inbox_id = settings.chatwoot_inbox_id
     conversations: list[dict[str, Any]] = []
-    page_num = 1
-    while True:
-        url = f"{base}?status=all&inbox_id={inbox_id}&page={page_num}"
-        page = get_page(url)
-        batch = _conversations_from_page(page)
-        if not batch:
-            break
-        # Defensive inbox filter: the API filter should already scope this, but a
-        # shared instance may ignore an unknown param, so keep only our inbox.
-        conversations.extend(
-            c for c in batch if inbox_id in (0, None) or c.get("inbox_id") in (inbox_id, None)
-        )
-        page_num += 1
+    for inbox_id in _inbox_scope(settings):
+        conversations.extend(_fetch_conversations_for_inbox(base, inbox_id, get_page))
     return conversations
 
 

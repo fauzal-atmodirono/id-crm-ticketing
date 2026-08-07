@@ -59,14 +59,22 @@ def _inbox_scope(settings: Settings) -> list[int | None]:
     Garbage entries are dropped rather than raised on; if that empties the
     list entirely, fall back to the single-inbox default so a malformed
     value degrades safely instead of turning into an unbounded account-wide
-    scan.
+    scan. Note ``str.isdigit()`` is true for non-ASCII digit characters
+    (e.g. superscript "²") that ``int()`` cannot parse -- use
+    ``.isdecimal()``, which only accepts characters ``int()`` accepts, so a
+    stray Unicode character degrades instead of raising out of a background
+    scan job. Duplicate ids (e.g. a copy-paste config mistake) are deduped,
+    preserving order, so a repeated id doesn't get double-fetched -- this
+    list also feeds ``/tasks/mine`` directly, where a duplicate would show
+    up as visibly duplicated rows.
     """
     raw = (getattr(settings, "sla_inbox_ids", "") or "").strip()
     if not raw:
         return [settings.chatwoot_inbox_id]
     if raw == "*":
         return [None]
-    ids: list[int | None] = [int(part) for part in raw.split(",") if part.strip().isdigit()]
+    ids: list[int | None] = [int(part) for part in raw.split(",") if part.strip().isdecimal()]
+    ids = list(dict.fromkeys(ids))
     return ids or [settings.chatwoot_inbox_id]
 
 

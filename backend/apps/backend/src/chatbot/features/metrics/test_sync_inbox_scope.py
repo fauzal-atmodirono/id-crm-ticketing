@@ -71,6 +71,31 @@ def test_malformed_value_degrades_to_single_inbox() -> None:
     assert urls == ["http://cw/api/v1/accounts/1/conversations?status=all&inbox_id=2&page=1"]
 
 
+def test_unicode_digit_degrades_to_single_inbox_instead_of_raising() -> None:
+    """``str.isdigit()`` is True for non-ASCII digit characters (e.g. the
+    superscript '²') that ``int()`` cannot parse, so guarding the
+    ``int()`` conversion with ``.isdigit()`` alone lets a stray Unicode
+    character crash the whole scan with a ValueError. Must degrade safely
+    to single-inbox behaviour instead, same as any other malformed value."""
+    urls: list[str] = []
+    settings = _Settings()
+    settings.sla_inbox_ids = "²"
+    fetch_conversations(settings, get_page=_recording_get_page(urls))
+    assert urls == ["http://cw/api/v1/accounts/1/conversations?status=all&inbox_id=2&page=1"]
+
+
+def test_duplicate_ids_are_deduped_not_fetched_twice() -> None:
+    """A duplicated id in sla_inbox_ids (e.g. copy-paste config error) must
+    not fetch the same inbox twice -- fetch_conversations has no dedup of
+    its own, and its results feed /tasks/mine directly, so a duplicate here
+    would show up as visibly duplicated task rows in the My-Tasks UI."""
+    urls: list[str] = []
+    settings = _Settings()
+    settings.sla_inbox_ids = "4,4"
+    fetch_conversations(settings, get_page=_recording_get_page(urls))
+    assert urls == ["http://cw/api/v1/accounts/1/conversations?status=all&inbox_id=4&page=1"]
+
+
 def test_multi_inbox_scan_keeps_each_inboxs_conversations_correctly_attributed() -> None:
     """A multi-inbox scan must not let inbox A's conversations leak into
     inbox B's results (or vice versa) via the defensive post-fetch filter --

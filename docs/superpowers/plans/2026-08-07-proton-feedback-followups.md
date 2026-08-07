@@ -2862,11 +2862,38 @@ docker compose -p proton -f docker-compose.tenant.yml --env-file tenants/proton.
 
 - [ ] **Step 5: Set the new env vars and subscribe the webhook**
 
-Set on `tenants/proton.env`: `ESCALATION_REPLY_TO_TEMPLATE`,
+**Verify or set the two master switches first.** Everything below is
+downstream of these; with the first one unset, the entire email escalation
+flow — and therefore the whole reply loop — is a silent no-op, with no error
+anywhere:
+
+- `EMAIL_ESCALATION_ENABLED=true` (**agent**, default `false`) — gates
+  `sync._maybe_notify_email_escalation`. Nothing in Task 3-12 runs without it,
+  because nothing is ever escalated by email in the first place.
+- `EMAIL_AUTOACK_ENABLED` (**agent**, default `false`) — gates the
+  once-per-thread customer acknowledgement on the Email inbox. Decide it
+  explicitly: on = customers get the SOP ack, off = they get nothing on a new
+  email thread (the AI disclaimer is deliberately not used on email).
+
+> `EMAIL_ESCALATION_ENABLED` (agent) is **not** `ESCALATION_EMAIL_ENABLED`
+> (backend). The names are one word apart, both default `false`, and they gate
+> different services: the agent flag is this two-thread EM-7 flow fired by a
+> human applying the `escalate` label; the backend flag is the AI's own
+> autonomous complaint-detection escalation path. Setting one does not set the
+> other — check which service's env file you are editing.
+
+Then set on `tenants/proton.env`: `ESCALATION_REPLY_TO_TEMPLATE`,
 `ESCALATION_REPLY_LINKING_ENABLED=true`, `ESCALATION_REPLY_DRAFT_ENABLED=true`,
 `SLA_ENGINE_ENABLED=true`, `SLA_ALERT_EMAIL_ENABLED=true`,
-`SLA_ALERT_NOTE_ENABLED=true`, `SLA_INBOX_IDS=<email inbox id>`,
+`SLA_ALERT_NOTE_ENABLED=true`, `SLA_INBOX_IDS=<main inbox id>,<email inbox id>`,
 `WHATSAPP_MEDIA_UNDERSTANDING_ENABLED=true`.
+
+> `SLA_INBOX_IDS` **replaces** the default scope, it does not extend it.
+> `_inbox_scope` (`metrics/sync.py`) returns `[CHATWOOT_INBOX_ID]` only when
+> the value is empty — so listing the email inbox alone stops the SLA engine
+> scanning `CHATWOOT_INBOX_ID` on the same deploy that enables it. List both
+> ids. The same list also widens `/tasks/mine` and, if `METRICS_SYNC_ENABLED`
+> is ever turned on, the BigQuery sync.
 
 In Chatwoot → Settings → Integrations → Webhooks, add **`message_created`**
 to the account webhook's subscribed events.
@@ -2880,11 +2907,23 @@ must pass before the access details go to Proton.
 
 - [ ] **Step 7: Commit and push**
 
+Stage **explicit paths only** — never `git add -A` here. The working tree has
+carried unrelated uncommitted changes throughout this plan (at time of
+writing, a whole deleted `docs/technical-proposal-generator/` tree that is not
+part of this work). `git add -A` would sweep that into a deploy commit and
+turn a one-line `git checkout` recovery into git-history archaeology.
+
 ```bash
-git add -A
+git add agent/ backend/ deploy/chatwoot-fork/patches/ \
+        docs/superpowers/plans/2026-08-07-proton-feedback-followups.md \
+        docs/testing/2026-08-06-escalation-email-e2e-scenario.md
+git status            # confirm nothing unrelated is staged before committing
 git commit -m "chore: deploy reply loop, SLA reminders, and admin surfaces to proton"
 git push origin dev-yuda
 ```
+
+Adjust the path list to what this deploy actually touched; the point is that
+every path is named, not that this exact list is complete.
 
 ---
 

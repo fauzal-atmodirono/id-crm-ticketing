@@ -89,6 +89,13 @@ class Settings(BaseSettings):
     # -- needed for the email escalation timers, since the Email inbox is
     # normally not chatwoot_inbox_id.
     sla_inbox_ids: str = ""
+    # SLA breach/reminder delivery beyond the WhatsApp ping. Email goes to
+    # the department PIC group resolved from the conversation's dept_<slug>
+    # label; the note is a private message on the conversation itself. Both
+    # default False so an unconfigured deployment keeps today's behaviour
+    # (WhatsApp-only, or nothing if sla_pic_whatsapp is also empty).
+    sla_alert_email_enabled: bool = False
+    sla_alert_note_enabled: bool = False
 
     # --- Task Timers & Agent Reminders (Phase 6) ---
     # How many minutes before SLA breach the My-Tasks app shows a warning colour

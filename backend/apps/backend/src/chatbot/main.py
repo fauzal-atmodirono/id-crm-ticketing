@@ -691,8 +691,18 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # --- SLA-timer escalation engine (Chatwoot has no native SLA engine) ---
     # Guarded behind sla_engine_enabled (default OFF) exactly like the metrics
     # scheduler, so nothing scans unless a deployment explicitly opts in.
+    # Task 15: reuse the SAME PicRegistry/SmtpEmailSender already constructed
+    # for EscalationNotifier (not new instances) so PIC routing config is
+    # read from one place, and post the note via the same ChatwootAdapter
+    # method (add_private_note) the escalation path uses.
     sla_scheduler = start_sla_scheduler(
-        settings, audit_log, twilio_adapter=twilio_adapter, policy_repo=sla_policy_repo
+        settings,
+        audit_log,
+        twilio_adapter=twilio_adapter,
+        policy_repo=sla_policy_repo,
+        pic_registry=pic_registry,
+        email_sender=email_sender,
+        note_poster=chatwoot_client.add_private_note if chatwoot_client is not None else None,
     )
     if sla_scheduler is not None:
 

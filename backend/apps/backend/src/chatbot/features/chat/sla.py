@@ -57,6 +57,8 @@ from chatbot.features.metrics.sync import fetch_conversations
 
 if TYPE_CHECKING:
     from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
+    from chatbot.features.chat.pic_registry import PicRegistry
+    from chatbot.features.metrics.email_sender import SmtpEmailSender
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
@@ -454,9 +456,18 @@ def run_sla_scan_job(
     *,
     twilio_adapter: TwilioChannelAdapter | None = None,
     policy_repo: SlaPolicyRepository | None = None,
+    pic_registry: PicRegistry | None = None,
+    email_sender: SmtpEmailSender | None = None,
+    note_poster: Callable[[str, str], Any] | None = None,
 ) -> list[AuditEntry]:
     """Synchronous entry point for the scheduler. Best-effort: never raises."""
-    alert = _build_pic_alert(settings, twilio_adapter)
+    alert = _build_pic_alert(
+        settings,
+        twilio_adapter,
+        pic_registry=pic_registry,
+        email_sender=email_sender,
+        note_poster=note_poster,
+    )
     level2_alert = _build_level2_alert(settings, twilio_adapter)
     try:
         return asyncio.run(
@@ -473,28 +484,84 @@ def run_sla_scan_job(
         return []
 
 
+_DEPT_LABEL_PREFIX = "dept_"
+
+
 def _build_pic_alert(
-    settings: Settings, twilio_adapter: TwilioChannelAdapter | None
+    settings: Settings,
+    twilio_adapter: TwilioChannelAdapter | None,
+    *,
+    pic_registry: PicRegistry | None = None,
+    email_sender: SmtpEmailSender | None = None,
+    note_poster: Callable[[str, str], Any] | None = None,
 ) -> Callable[[str, str, str, list[str]], Any] | None:
-    """Build the optional PIC WhatsApp alert callback (reuses the Twilio path).
+    """Build the SLA alert callback: WhatsApp ping, PIC-group email, and a
+    private note on the conversation.
 
-    Returns None when no PIC number / Twilio adapter is configured, so no alert is
-    attempted. The audit transition is always recorded regardless.
-
-    ``labels`` (the conversation's Chatwoot labels) is accepted but unused here;
-    Task 15 uses it to route to a department-specific PIC instead of the single
-    global ``sla_pic_whatsapp`` number.
+    Returns None when no leg is configured (no WhatsApp number, and both
+    ``sla_alert_email_enabled``/``sla_alert_note_enabled`` off, or the
+    matching collaborator is unwired), so the scan records the audit
+    transition and attempts nothing -- today's behaviour exactly. Every leg
+    is independent and best-effort: one failing must not suppress the
+    others, because these are the only signals an operator gets that a case
+    is breaching. The email leg additionally depends on resolving a
+    department from the conversation's own ``dept_<slug>`` label via
+    ``pic_registry`` -- an unmapped department simply skips the email, it
+    must never skip the note.
     """
-    pic = settings.sla_pic_whatsapp
-    if not pic or twilio_adapter is None:
+    pic_number = settings.sla_pic_whatsapp
+    wa_to = "whatsapp:" + pic_number.removeprefix("whatsapp:") if pic_number else ""
+    want_wa = bool(wa_to) and twilio_adapter is not None
+    want_email = bool(settings.sla_alert_email_enabled) and email_sender is not None
+    want_note = bool(settings.sla_alert_note_enabled) and note_poster is not None
+    if not (want_wa or want_email or want_note):
         return None
-    to = "whatsapp:" + pic.removeprefix("whatsapp:")
 
-    async def _alert(ticket_id: str, to_state: str, remark: str, labels: list[str]) -> None:  # noqa: ARG001
-        await twilio_adapter.send_message(
-            conversation_id=to,
-            text=f"⚠️ SLA breach ({to_state}) on case {ticket_id}. {remark}",
-        )
+    async def _alert(ticket_id: str, to_state: str, remark: str, labels: list[str]) -> None:
+        text = f"⚠️ SLA breach ({to_state}) on case {ticket_id}. {remark}"
+
+        if want_wa:
+            try:
+                assert twilio_adapter is not None  # want_wa implies this
+                await twilio_adapter.send_message(conversation_id=wa_to, text=text)
+            except Exception as e:
+                _log.warning("sla_alert_wa_failed", ticket_id=ticket_id, error=str(e))
+
+        if want_email and pic_registry is not None:
+            department = next(
+                (
+                    lbl[len(_DEPT_LABEL_PREFIX) :]
+                    for lbl in labels
+                    if lbl.startswith(_DEPT_LABEL_PREFIX)
+                ),
+                None,
+            )
+            pic = await pic_registry.lookup(department) if department else None
+            if pic is None:
+                _log.info(
+                    "sla_alert_no_pic_for_dept", ticket_id=ticket_id, department=department
+                )
+            else:
+                try:
+                    assert email_sender is not None  # want_email implies this
+                    email_sender.send(
+                        to=[pic.pic_email],
+                        cc=list(pic.cc_emails or []),
+                        subject=f"[SLA] {to_state} on case {ticket_id}",
+                        body=f"{remark}\n\nReference: Chatwoot conversation #{ticket_id}",
+                        attachments=[],
+                    )
+                except Exception as e:
+                    _log.warning("sla_alert_email_failed", ticket_id=ticket_id, error=str(e))
+
+        if want_note:
+            try:
+                assert note_poster is not None  # want_note implies this
+                result = note_poster(ticket_id, text)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as e:
+                _log.warning("sla_alert_note_failed", ticket_id=ticket_id, error=str(e))
 
     return _alert
 
@@ -529,6 +596,9 @@ def start_sla_scheduler(
     scheduler: Any | None = None,
     job: Callable[[], object] | None = None,
     policy_repo: SlaPolicyRepository | None = None,
+    pic_registry: PicRegistry | None = None,
+    email_sender: SmtpEmailSender | None = None,
+    note_poster: Callable[[str, str], Any] | None = None,
 ) -> Any | None:
     """Start the in-app SLA scan scheduler when enabled; else return None.
 
@@ -548,7 +618,13 @@ def start_sla_scheduler(
     sched = scheduler or BackgroundScheduler()
     run = job or (
         lambda: run_sla_scan_job(
-            settings, audit, twilio_adapter=twilio_adapter, policy_repo=policy_repo
+            settings,
+            audit,
+            twilio_adapter=twilio_adapter,
+            policy_repo=policy_repo,
+            pic_registry=pic_registry,
+            email_sender=email_sender,
+            note_poster=note_poster,
         )
     )
     sched.add_job(

@@ -27,9 +27,9 @@ does **not** use the `escalate` label. See §7.
 
 | Setting | Service | Value |
 |---|---|---|
-| `EMAIL_ESCALATION_ENABLED` | agent | `true` |
+| `EMAIL_ESCALATION_ENABLED` | agent | `true` — **the master switch for this whole document** (default `false`). With it off, applying `escalate` sends nothing and every case here silently fails. Not the same setting as `ESCALATION_EMAIL_ENABLED` two rows down: one word apart, different service, different flow. |
 | `EMAIL_ESCALATION_ACK_ENABLED` | backend | `true` |
-| `ESCALATION_EMAIL_ENABLED` | backend | `true` |
+| `ESCALATION_EMAIL_ENABLED` | backend | `true` — the **backend's** AI complaint-detection escalation path, not the agent's EM-7 label flow above |
 | `ESCALATION_CC_PIC` | backend | unset → default `true` (CC list is sent) |
 | `EMAIL_ESCALATION_ACK_TEMPLATE` | backend | unset → default: *"Your case has been escalated to a specialist team who will follow up shortly."* |
 | `PROTON_BACKEND_URL` | agent | `http://proton-backend:8080` |
@@ -39,7 +39,7 @@ does **not** use the `escalate` label. See §7.
 | `ESCALATION_REPLY_TO_TEMPLATE` | backend | `devotech29+case{conv_id}@gmail.com` (TC-08, TC-09 — Gmail's plus-addressing still lands in the same IMAP-polled mailbox; empty is the default and disables the reply loop entirely, dropping the `[CASE-n]` subject tag and the `Reply-To` header) |
 | `EMAIL_AUTOACK_ENABLED` | agent | `true` (TC-08, TC-09, TC-10 — side effect noted in each case below) |
 | `SLA_ENGINE_ENABLED` | backend | `true` (TC-10 only) |
-| `SLA_INBOX_IDS` | backend | `4` (the Email inbox — TC-10) |
+| `SLA_INBOX_IDS` | backend | `<main inbox id>,4` — this **replaces** the default scope rather than extending it, so listing the Email inbox (`4`) alone stops the SLA engine scanning `CHATWOOT_INBOX_ID`. List both. Also widens `/tasks/mine`. |
 | `SLA_ALERT_EMAIL_ENABLED` | backend | `true` (TC-10) |
 | `SLA_ALERT_NOTE_ENABLED` | backend | `true` (TC-10) |
 
@@ -235,21 +235,37 @@ verifies the store-first lookup (`PicRegistry.lookup`) is live-editable.
 
 ### TC-07 — Re-trigger
 
+The escalation fan-out is **edge-triggered**: it fires once per escalation and
+is re-armed only when the `escalate` label is removed. This case checks both
+halves.
+
 **Steps**
 
-1. On the TC-01 conversation, remove the `escalate` label, then re-apply it.
+1. On the TC-01 conversation, without touching the `escalate` label, change
+   something else that updates the conversation — add any other label, or edit
+   a custom attribute.
+2. Then remove the `escalate` label, and re-apply it.
 
 **Expected**
 
-- The ack and PIC mails are sent **again** — this path has no
-  once-per-conversation guard.
+- After step 1: **no** second ack and **no** second PIC mail. The conversation
+  carries an `escalation_notified_at` custom attribute from the first
+  escalation, and the fan-out skips while it is set. This is what stops the
+  reply loop (TC-08/TC-09) mailing the customer again on every reply — the
+  linker's own writes back onto the case are exactly this kind of update.
+- After step 2: the ack and PIC mails are sent **again**. Removing the label
+  clears `escalation_notified_at`, so re-applying it is a genuinely new
+  escalation. This is deliberate: a case escalated, worked, and escalated again
+  weeks later must still reach the PIC.
 - `dealer_escalated_at`, if already stamped, is **not** overwritten (that stamp
-  is idempotent).
+  is separate and idempotent for all time).
 
-**Pass criteria:** second pair of mails received; existing timestamp unchanged.
+**Pass criteria:** nothing sent for step 1; a second pair of mails for step 2;
+existing `dealer_escalated_at` unchanged.
 
-Worth knowing before a live demo: toggling the label in front of a client sends
-another round of real email.
+Worth knowing before a live demo: toggling the label off and on in front of a
+client still sends another round of real email — only updates that leave
+`escalate` in place are suppressed.
 
 ---
 
@@ -282,25 +298,35 @@ never sees the reply at all.
 - Conversation #N gains a second private note titled exactly
   `Suggested customer reply (draft — review before sending):`, with an
   AI-drafted reply text beneath it.
-- Conversation #N gains the `dealer_replied` label and a `dealer_replied_at`
-  custom attribute (current UTC time).
+- Conversation #N gains the `escalation_replied` label and an
+  `escalation_replied_at` custom attribute (current UTC time). Note the name:
+  a `dealer_`-prefixed marker would be read as a real dealer slug by the
+  BigQuery mapping and by the `dealer_escalated_at` stamper.
 - Conversation #M gains the `escalation_reply` label and is resolved.
-- If `EMAIL_AUTOACK_ENABLED=true`, #M — being a brand-new Email-channel
-  conversation — also fires the tenant's normal auto-ack reply back to the
-  dealer before the linker resolves it. That auto-ack landing in the dealer's
-  mailbox alongside their own sent reply is expected, not a duplicate of the
-  linked note above. **The auto-ack text itself opens "Dear Customer," and
-  continues into customer-facing SOP boilerplate (business hours, the
-  call-centre number) — it is the same fixed template used on a real
-  customer thread, sent here because Chatwoot cannot tell the sender is a
-  dealer. A dealer receiving a "Dear Customer" email is expected output of
-  this test, not evidence the reply was misrouted.**
+- The dealer receives **nothing** from the CRM in response to their reply:
+  - **no** auto-acknowledgement. #M is a brand-new Email-channel conversation
+    and would otherwise get the tenant's customer-facing "Dear Customer" SOP
+    reply (business hours, the call-centre number). The `[CASE-N]`
+    correlation token on the incoming mail is what suppresses it.
+  - **no** agent-rating survey. Resolving #M would otherwise post the public
+    "rate our support agent from 1 to 5" message — asking an external dealer
+    to rate a Proton agent. The linker closes #M's lifecycle before resolving
+    it, which lands in the existing terminal-state guard.
+  - The only mail the dealer should ever see from this step is their own
+    sent reply. **A "Dear Customer" email or a rating request arriving in the
+    dealer's mailbox is a failure of this case, not expected output.**
+- Conversation #N is **not** re-escalated: no second `Update on your case:`
+  mail to the customer, no second `[Escalation]` to the PIC, no second dealer
+  forward. The linker's writes to #N are ordinary conversation updates and
+  #N still carries `escalate`; `escalation_notified_at` is what suppresses
+  the re-fire (see TC-07).
 
-**Pass criteria:** both notes present on #N in that order, `dealer_replied`
-label and `dealer_replied_at` present on #N, #M labelled `escalation_reply`
-and resolved.
+**Pass criteria:** both notes present on #N in that order, `escalation_replied`
+label and `escalation_replied_at` present on #N, #M labelled
+`escalation_reply` and resolved, and **no** new mail in the customer, PIC or
+dealer mailboxes.
 
-> A second reply from the same dealer address after `dealer_replied_at` is
+> A second reply from the same dealer address after `escalation_replied_at` is
 > already stamped is silently not linked (the stamp gates the internal-reply
 > path so a second note never piles on) — worth knowing before re-running
 > this case on the same conversation.
@@ -331,16 +357,18 @@ reply either, and the failure is silent: no note, no reopen, no error.
   a message the customer sent to start the case.
 - #N reopens as a result (a real inbound message from the contact does this
   natively).
-- #N gains **no** `dealer_replied_at` attribute and **no** `dealer_replied`
-  label — those are internal-reply-only.
+- #N gains **no** `escalation_replied_at` attribute and **no**
+  `escalation_replied` label — those are internal-reply-only.
 - #M still gains the `escalation_reply` label and is resolved, same as the
-  dealer path.
-- If `EMAIL_AUTOACK_ENABLED=true`, #M also fires the tenant's normal auto-ack
-  reply back to the customer, same caveat as TC-08.
+  dealer path — and, as in TC-08, sends the customer neither a second auto-ack
+  nor a survey. They already received the acknowledgement on their own case;
+  the correlation token on their reply suppresses a duplicate.
+- The reopen of #N does **not** re-fire the escalation: no second ack, PIC or
+  dealer mail (see TC-07).
 
 **Pass criteria:** message visible on #N as an incoming customer message,
-#N reopened, no `dealer_replied_at`/`dealer_replied` on #N, #M resolved and
-labelled `escalation_reply`.
+#N reopened, no `escalation_replied_at`/`escalation_replied` on #N, #M
+resolved and labelled `escalation_reply`, and no new mail anywhere.
 
 ---
 
@@ -348,7 +376,9 @@ labelled `escalation_reply`.
 
 **Preconditions:** `SLA_ENGINE_ENABLED=true`, `SLA_ALERT_EMAIL_ENABLED=true`,
 `SLA_ALERT_NOTE_ENABLED=true`, the Email inbox id (`4`) listed in
-`SLA_INBOX_IDS`, and a short **Response window (hours)** set for the Email
+`SLA_INBOX_IDS` **alongside the main inbox id** (the value replaces the
+default scope, it does not extend it — see §2), and a short
+**Response window (hours)** set for the Email
 inbox at CRM → SLA Policies (e.g. `0.05` ≈ 3 min) so the case breaches
 during the test — that is the field's exact on-screen label; it maps to the
 `response_hours` column named elsewhere in this doc and in §2. (The SLA
@@ -363,7 +393,9 @@ already be applied, or saving the policy 500s.
    (left on from TC-08/09), this new conversation triggers the tenant's
    normal auto-ack reply the moment it's created — an extra email in your
    test mailbox at this step is that, not part of the SLA alert this case
-   is testing.
+   is testing. This one **is** expected: it is a genuine first-contact
+   customer email with no `[CASE-n]` correlation token, so the suppression
+   that silences the auto-ack in TC-08/TC-09 correctly does not apply.
 2. Apply `dept_sales` only. Do **not** reply to it and do **not** apply
    `escalate`.
 3. Wait past the Response SLA threshold, then wait for one SLA scan

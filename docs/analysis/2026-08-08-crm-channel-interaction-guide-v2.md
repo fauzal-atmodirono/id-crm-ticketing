@@ -452,6 +452,10 @@ Emails the support address.
 4. **Reply on an existing thread** → no additional auto-ack, just appended.
 5. Once **you** (a human) reply from the Chatwoot UI, further auto-acks on
    that thread are suppressed.
+6. A reply to an **escalation** email (dealer, PIC, or the customer's own
+   acknowledgement) lands as a new conversation but gets **no** auto-ack —
+   it carries the `[CASE-n]` correlation token, so it is recognised as a
+   reply rather than a fresh enquiry. See §7.6.
 
 ### 7.3 Scenario A — routine email, no escalation needed
 Customer sends the email; allow the ~1–2 minute IMAP poll (§7.2 step 2)
@@ -502,9 +506,15 @@ customer ack goes out.
    overwritten, and this part fires **on any channel**, not just Email
    (it's a separate, always-on stamp used for BI turnaround-time
    reporting).
-6. **Re-triggering:** removing and re-adding `escalate` sends the ack and
-   PIC mail again — there is no once-per-conversation guard. Toggling the
-   label in front of a client sends a second round of real email.
+6. **Re-triggering:** the fan-out is edge-triggered — it runs once per
+   escalation. Any other change to the conversation while `escalate` is
+   still on it (a label, a custom attribute, a reopen) sends nothing more;
+   an `escalation_notified_at` custom attribute records that this
+   escalation has already gone out. Removing `escalate` clears that
+   attribute, so removing and re-adding the label **does** send the ack and
+   PIC mail again — a case escalated, worked, and escalated again later is
+   a real second escalation. Toggling the label in front of a client still
+   sends a second round of real email.
 7. **No contact email on file** → no customer ack (nothing to send it to),
    but the PIC mail still goes out normally, no error shown.
 
@@ -533,25 +543,39 @@ never receives the dealer's reply.
    beneath it. **You review and send this yourself** — it never goes out
    automatically; nothing here posts to the customer without a human
    clicking send.
-4. The original conversation also gains a `dealer_replied` label and a
-   `dealer_replied_at` timestamp. **A second reply from the same dealer
+4. The original conversation also gains an `escalation_replied` label and an
+   `escalation_replied_at` timestamp. **A second reply from the same dealer
    address after that stamp is silently not linked** — the stamp gates the
    internal-reply path so a second note never piles on top of the first.
+   (The names are deliberately not `dealer_*`: anything in the
+   `dealer_<slug>` label namespace is read as a real dealer slug by the
+   BigQuery reporting mapping and by the `dealer_escalated_at` stamper.)
 5. The throwaway conversation the reply landed in gets labelled
    `escalation_reply` and auto-resolved — you don't need to do anything
-   with it.
-6. **If a customer instead replies to their own acknowledgement email**
+   with it. **The dealer receives nothing back from the CRM**: the
+   correlation token on their mail suppresses the customer-facing
+   "Dear Customer" auto-acknowledgement, and closing that conversation's
+   lifecycle before resolving it suppresses the "rate our support agent
+   from 1 to 5" survey. Neither belongs in an external dealer's mailbox.
+6. **The original case is not re-escalated by any of this.** The linker's
+   writes are ordinary conversation updates and the case still carries
+   `escalate`, so without the §7.5 step 6 guard each reply would send the
+   customer another `Update on your case:` email and the PIC another
+   `[Escalation]`.
+7. **If a customer instead replies to their own acknowledgement email**
    (not the dealer/PIC mail), the reply comes back as a normal **public
    incoming message on their own case**, reopening it exactly like a fresh
-   message would — not a private note. No `dealer_replied_at`/
-   `dealer_replied` gets set for a customer reply; those are internal-reply
-   only.
+   message would — not a private note. No `escalation_replied_at`/
+   `escalation_replied` gets set for a customer reply; those are
+   internal-reply only. They get no duplicate acknowledgement either.
 
 ### 7.7 SLA breach alerts (new since 08-04)
 Requires `SLA_ENGINE_ENABLED`, `SLA_ALERT_EMAIL_ENABLED`,
 `SLA_ALERT_NOTE_ENABLED` (all backend), and the Email inbox's id listed in
 `SLA_INBOX_IDS` — the SLA scan is otherwise scoped to a single inbox and
-will never look at Email at all if that inbox isn't listed.
+will never look at Email at all if that inbox isn't listed. The value
+**replaces** that default scope rather than extending it, so list the main
+inbox id alongside the Email one or the main inbox stops being scanned.
 
 1. On breach, the department's PIC (resolved from the conversation's
    `dept_<slug>` label, same routing table as escalation) receives an
@@ -563,9 +587,11 @@ will never look at Email at all if that inbox isn't listed.
    conversation.
 
 ### 7.8 What's not usable yet on Email
-- The reply loop and SLA alerts both depend on `message_created` being
-  subscribed on the Chatwoot account webhook — a setting made in the
-  Chatwoot UI itself, not in any tenant `.env` file, and easy to miss.
+- The reply loop depends on `message_created` being subscribed on the
+  Chatwoot account webhook — a setting made in the Chatwoot UI itself, not
+  in any tenant `.env` file, and easy to miss. (SLA alerts do **not**: the
+  SLA engine polls the conversations API on a timer and never reads a
+  webhook.)
 - Backend-sent mail (escalation, acks, SLA alerts) needs its **own**
   `SMTP_HOST`/`SMTP_USER`/`SMTP_FROM` set — these are read independently
   from Chatwoot's own `SMTP_ADDRESS`/`SMTP_USERNAME`/`MAILER_SENDER_EMAIL`

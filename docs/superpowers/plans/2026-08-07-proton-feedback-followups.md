@@ -2888,6 +2888,134 @@ git push origin dev-yuda
 
 ---
 
+### Task 22: Channel interaction guide, version 2
+
+**Files:**
+- Create: `docs/analysis/2026-08-08-crm-channel-interaction-guide-v2.md`
+- Read (do not modify): `docs/analysis/crm-channel-interaction-guide.md`, `docs/analysis/crm-channel-ui-testing-guide.md`, `docs/analysis/crm-process-flow-runbook.md`, `docs/testing/phone-channel-package-c-verification.md`, `docs/client-materials/feature-guide-src/*.md`
+
+No dependency on Task 21 — this can run before or after the deploy.
+
+The existing guide (`crm-channel-interaction-guide.md`, dated 2026-08-04) is
+organised around WhatsApp / Social / Email / Phone and is written as prose
+walkthroughs. It is **superseded but not deleted**: it stays as the historical
+record of what was true on 2026-08-04. Version 2 is a new file covering the
+four channels the customer actually asks about — **Web chatbot, Voice bot,
+Phone, and Email** — in numbered, click-by-click steps an agent can follow
+without prior context, plus WhatsApp (still the most-live channel) and the
+cross-channel view.
+
+**Why a v2 rather than an edit:** three things changed under the old guide.
+Email escalation is now a working two-thread flow with a **reply loop** (Tasks
+3-12) the old guide predates entirely; dealer routing is now **group-based**
+(Task 5); and the SLA timers now **notify by email and in-conversation note**
+(Tasks 13-16). An agent following the 08-04 guide today would be told email
+escalation is "built but not configured" and would have no idea a dealer's
+reply comes back into the case.
+
+- [ ] **Step 1: Establish the status of every claim before writing a line**
+
+Every "click here and X happens" in this guide must be true of the deployed
+system, not aspirational. For each channel, confirm against the code and the
+per-flag defaults:
+
+```bash
+# which channels have a real inbox type and what the agent service does with each
+grep -rn "Channel::" agent/app/services/ backend/apps/backend/src/chatbot/features/chat/ | grep -v test
+# every feature flag that gates behaviour described in the guide
+grep -n "enabled" agent/app/config.py backend/apps/backend/src/chatbot/platform/config.py
+# the phone/voice scenarios and their accepted limitations
+sed -n '1,120p' docs/testing/phone-channel-package-c-verification.md
+```
+
+Where a capability is real but **off by default**, the guide says so in the
+step itself — not in a footnote. Where it is not built, the guide says
+"not available today" rather than describing it in future tense. A guide that
+describes an unshipped feature in the present tense is worse than no guide:
+an agent will promise it to a customer.
+
+- [ ] **Step 2: Write the shared front matter**
+
+Open with: audience (agents and team leaders working cases day to day),
+what changed since the 08-04 guide (the three items above), a pointer to
+the old guide as the historical record, and a channel-map table with the
+columns: *Customer touchpoint | Chatwoot inbox type | What the AI does before
+a human sees it | Status today*. Cover Web chatbot, Voice bot, Phone, Email,
+WhatsApp.
+
+Then an "agent's toolkit" table — the actions that are identical on every
+channel (AI draft, FAQ suggestion, labels, escalate, reassign, resolve,
+contact history) with exactly where each one is in the UI.
+
+- [ ] **Step 3: Write the four channel walkthroughs, numbered step by step**
+
+Each channel gets the same skeleton, so an agent can learn one shape and
+apply it everywhere:
+
+1. **What the customer does** — how the conversation starts on this channel.
+2. **What happens before you see it** — bot/lifecycle behaviour, with the
+   flag that governs each step named inline.
+3. **Scenario A — the bot handles it fully.** Numbered steps, what the agent
+   sees, and when to leave it alone.
+4. **Scenario B — the customer wants a human.** Numbered steps from handoff
+   trigger to first agent reply, including where the AI's draft appears and
+   how to send it.
+5. **Scenario C — the case must be escalated.** Numbered steps: which label
+   first, which second, who receives what, and what comes back.
+6. **What is not usable on this channel yet** — plainly stated.
+
+Channel-specific content that must appear:
+
+- **Web chatbot:** the website-widget inbox; that the bot answers from the
+  same KB as every other channel; how the conversation reaches an agent; the
+  fact that a widget visitor may be anonymous and what that means for the
+  contact record.
+- **Voice bot:** the AI-answered call leg — what the caller hears, that
+  speech is transcribed into the conversation, the rating survey, and the
+  business-hours-aware roadside-assist routing. Name the accepted limitations
+  from the Package C runbook rather than restating them optimistically.
+- **Phone:** the human side — live transcript on the ticket, call
+  classification, recording attached after hangup, and transfer to a human
+  including the two failure modes the runbook documents (unanswered handoff,
+  and the refusal to dial without a caller id).
+- **Email:** the full current flow, which is the biggest change from v1 —
+  auto-acknowledgement on arrival; `dept_<slug>` label **first**, then
+  `escalate` (the order matters and the guide must say why); the two threads
+  the customer and the PIC/dealer each see; that the customer never sees the
+  internal trail; the dealer group receiving the forward; **the dealer's
+  reply arriving back on the case as a private note with an AI-drafted
+  customer reply beside it**; and that the agent reviews and sends that draft
+  rather than it going out automatically.
+
+- [ ] **Step 4: Write the cross-channel scenario**
+
+One customer, one problem, three touchpoints (web chat → phone → email
+escalation), showing that it is one contact and one history in the CRM.
+Numbered steps, naming what the agent clicks to see the prior conversations.
+
+- [ ] **Step 5: Write the quick-reference and the limitations table**
+
+A one-screen cheat sheet (task → where to click, per channel), and a
+limitations table with a *Channel | Limitation | Why | What to tell the
+customer* shape. The last column is the point: it turns a known gap into a
+script an agent can actually say out loud.
+
+- [ ] **Step 6: Self-check the guide against reality**
+
+Re-read your own draft looking for: any present-tense claim about a
+default-off feature that doesn't name the flag; any step that assumes a
+button exists without your having confirmed it; any place where v2
+contradicts the Package C runbook's accepted limitations. Fix them inline.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add docs/analysis/2026-08-08-crm-channel-interaction-guide-v2.md
+git commit -m "docs(analysis): channel interaction guide v2 — step-by-step, four channels"
+```
+
+---
+
 ## Self-Review
 
 **Spec coverage.** Spec §3.1 → Tasks 3-4. §3.2 → Tasks 8, 9, 11. §3.3 internal → Task 9; customer → Task 10. §3.4 idempotency → Task 9 (`dealer_replied_at` guard) plus the existing `claim_delivery`. §3.5 groups → Tasks 5, 12. §3.6 settings → Tasks 4, 9. §4 SLA scope/delivery/config → Tasks 13, 14, 15, 16. §5 assignee → Task 17; voice notes → Task 19; templates → Task 18. §6 spikes → Tasks 1-2. §7 verification → tests in every task plus Task 20. §8 rollout → Task 21. No spec section is unimplemented.

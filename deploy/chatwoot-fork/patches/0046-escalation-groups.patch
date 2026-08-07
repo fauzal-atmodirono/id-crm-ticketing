@@ -1,0 +1,155 @@
+diff --git a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
+index 33b8fcb..7c4a1e2 100644
+--- a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
++++ b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
+@@ -28,7 +28,7 @@ function splitEmails(value) {
+ 
+ const EMPTY_DEALER_FORM = {
+   dealer: '',
+-  email: '',
++  emails: '', // comma-separated in the UI; split to an array on submit
+ };
+ 
+ function splitEmails(value) {
+@@ -157,16 +157,15 @@ export default {
+       }
+     },
+     // ── Dealer (dealer -> email) ─────────────────────────────────────────
+     async createDealer() {
+-      if (!this.dealerForm.dealer || !this.dealerForm.email) {
+-        useAlert('Dealer and email are required.');
++      const emails = splitEmails(this.dealerForm.emails);
++      if (!this.dealerForm.dealer || !emails.length) {
++        useAlert('Dealer and at least one member email are required.');
+         return;
+       }
+       this.savingDealer = true;
+       try {
+-        await upsertDealer(this.dealerForm.dealer, {
+-          email: this.dealerForm.email,
+-        });
++        await upsertDealer(this.dealerForm.dealer, { emails });
+         useAlert('Dealer saved.');
+         this.dealerForm = { ...EMPTY_DEALER_FORM };
+         await this.load();
+@@ -177,25 +176,33 @@ export default {
+       }
+     },
+     startEditDealer(dealer) {
+       this.editingDealerName = dealer.dealer;
+-      this.editDealerForm = { dealer: dealer.dealer, email: dealer.email || '' };
++      this.editDealerForm = {
++        dealer: dealer.dealer,
++        emails: Array.isArray(dealer.emails)
++          ? dealer.emails.join(', ')
++          : dealer.email || '',
++      };
+     },
+     cancelEditDealer() {
+       this.editingDealerName = null;
+       this.editDealerForm = { ...EMPTY_DEALER_FORM };
+     },
+     async saveEditDealer() {
++      const emails = splitEmails(this.editDealerForm.emails);
++      if (!emails.length) {
++        useAlert('At least one member email is required.');
++        return;
++      }
+       this.savingDealer = true;
+       try {
+-        await upsertDealer(this.editingDealerName, {
+-          email: this.editDealerForm.email,
+-        });
++        await upsertDealer(this.editingDealerName, { emails });
+         useAlert('Dealer updated.');
+         this.cancelEditDealer();
+         await this.load();
+       } catch (err) {
+         useAlert('Failed to update dealer: ' + (err.message || String(err)));
+       } finally {
+         this.savingDealer = false;
+       }
+     },
+@@ -317,7 +324,7 @@ export default {
+               <th class="px-3 py-2 font-medium whitespace-nowrap">
+                 PIC WhatsApp
+               </th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">CC emails</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Members (CC)</th>
+               <th class="px-3 py-2 font-medium whitespace-nowrap">Actions</th>
+             </tr>
+           </thead>
+@@ -411,13 +418,13 @@ export default {
+       </div>
+ 
+       <!-- Dealer section -->
+-      <h2 class="mb-3 text-base font-medium text-n-slate-12">Dealers</h2>
++      <h2 class="mb-3 text-base font-medium text-n-slate-12">Dealer groups</h2>
+       <form
+         class="grid max-w-2xl grid-cols-1 gap-4 mb-6 md:grid-cols-2"
+         @submit.prevent="createDealer"
+       >
+         <div>
+-          <label class="block mb-1 text-sm text-n-slate-11">Dealer *</label>
++          <label class="block mb-1 text-sm text-n-slate-11">Group name *</label>
+           <input
+             v-model="dealerForm.dealer"
+             type="text"
+@@ -425,16 +432,20 @@ export default {
+             class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+           />
+         </div>
+         <div>
+-          <label class="block mb-1 text-sm text-n-slate-11">Email *</label>
++          <label class="block mb-1 text-sm text-n-slate-11">Members *</label>
+           <input
+-            v-model="dealerForm.email"
+-            type="email"
++            v-model="dealerForm.emails"
++            type="text"
+             required
++            placeholder="ops@example.com, manager@example.com"
+             class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+           />
++          <p class="mt-1 text-xs text-n-slate-11">
++            Comma-separated. Every member receives the escalation email.
++          </p>
+         </div>
+         <div class="md:col-span-2">
+           <button
+             type="submit"
+             :disabled="savingDealer"
+@@ -452,8 +463,8 @@ export default {
+         <table class="w-full text-sm border-collapse text-n-slate-11">
+           <thead>
+             <tr class="text-left border-b border-n-weak text-n-slate-12">
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">Dealer</th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">Email</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Group name</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Members</th>
+               <th class="px-3 py-2 font-medium whitespace-nowrap">Actions</th>
+             </tr>
+           </thead>
+@@ -467,11 +478,11 @@ export default {
+                 <td class="px-3 py-2 whitespace-nowrap text-n-slate-12">
+                   {{ dealer.dealer }}
+                 </td>
+                 <td class="px-2 py-1">
+                   <input
+-                    v-model="editDealerForm.email"
+-                    type="email"
++                    v-model="editDealerForm.emails"
++                    type="text"
+                     class="w-48 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
+                   />
+                 </td>
+                 <td class="px-3 py-2 whitespace-nowrap">
+@@ -494,7 +505,7 @@ export default {
+               </template>
+               <template v-else>
+                 <td class="px-3 py-2 whitespace-nowrap">{{ dealer.dealer }}</td>
+-                <td class="px-3 py-2 whitespace-nowrap">{{ dealer.email }}</td>
++                <td class="px-3 py-2 whitespace-nowrap">{{ Array.isArray(dealer.emails) ? dealer.emails.join(', ') : dealer.email }}</td>
+                 <td class="px-3 py-2 whitespace-nowrap">
+                   <button
+                     type="button"

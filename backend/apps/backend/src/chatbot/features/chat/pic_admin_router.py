@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from chatbot.features.authz.deps import require_permission
 
@@ -29,7 +29,15 @@ class PicUpsertBody(BaseModel):
 
 class DealerUpsertBody(BaseModel):
     """`emails` is the group's member list. `email` is accepted for
-    compatibility with the pre-groups UI and is folded into `emails`."""
+    compatibility with the pre-groups UI and is folded into `emails`.
+
+    A dealer row must always name at least one member: before groups, `email`
+    was `Field(min_length=1)`, so a body naming nobody was already a 422 and
+    could never wipe a stored dealer's recipients. `DealerStore.set` does a
+    bare Firestore `.set()` (no `merge=True`), so without this validator an
+    empty-looking PUT (`{}` or `{"emails": []}`) would 200 and silently
+    replace a working group's member list with an empty one.
+    """
 
     emails: list[str] = Field(default_factory=list)
     email: str | None = None
@@ -39,6 +47,12 @@ class DealerUpsertBody(BaseModel):
         if self.email and self.email not in merged:
             merged.append(self.email)
         return merged
+
+    @model_validator(mode="after")
+    def _require_at_least_one_member(self) -> DealerUpsertBody:
+        if not self.members():
+            raise ValueError("at least one email (in `emails` or `email`) is required")
+        return self
 
 
 def build_pic_admin_router(

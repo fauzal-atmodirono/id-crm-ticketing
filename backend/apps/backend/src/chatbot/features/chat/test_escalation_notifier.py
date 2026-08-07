@@ -441,6 +441,30 @@ async def test_notify_email_channel_escalation_sends_dealer_forward_when_mapped(
     assert sent[0]["to"] == ["kl-pj@dealer.example"]
 
 
+async def test_notify_email_channel_escalation_sends_to_every_group_member() -> None:
+    """Task 5's headline requirement, asserted end-to-end: a dealer mapped to
+    several addresses (a group, not a single contact) must have its
+    escalation forward reach every one of them in a single send -- not just
+    round-trip through storage. Covers the env-var (DEALER_EMAIL_MAP_JSON)
+    path; the store-backed path is covered by
+    test_dealer_forward_uses_store_record_when_present below (extended to a
+    multi-member record)."""
+    notifier, sent = _notifier(
+        pic=None,
+        dealer_map={"kl_pj": ["a@dealer.example", "b@dealer.example", "c@dealer.example"]},
+    )
+    await notifier.notify_email_channel_escalation(
+        conv_id="9",
+        title="t",
+        body="b",
+        department=None,
+        dealer="kl_pj",
+        customer_email=None,
+    )
+    assert len(sent) == 1
+    assert sent[0]["to"] == ["a@dealer.example", "b@dealer.example", "c@dealer.example"]
+
+
 async def test_notify_email_channel_escalation_skips_dealer_when_unmapped() -> None:
     notifier, sent = _notifier(pic=None, dealer_map={})
     await notifier.notify_email_channel_escalation(
@@ -515,6 +539,31 @@ async def test_dealer_forward_uses_store_record_when_present() -> None:
     assert len(sent) == 1
     assert sent[0]["to"] == ["store@dealer.example"]
     dealer_store.get.assert_awaited_once_with("kl_pj")
+
+
+async def test_dealer_forward_store_record_sends_to_every_group_member() -> None:
+    """Task 5's headline requirement via the store-backed path (the one the
+    admin UI actually writes through): a multi-member DealerRecord must
+    reach every member, not just its first."""
+    dealer_store = AsyncMock()
+    dealer_store.get.return_value = DealerRecord(
+        dealer="kl_pj", emails=["a@dealer.example", "b@dealer.example"]
+    )
+
+    notifier, sent = _notifier(pic=None, dealer_map={})
+    notifier._dealer_store = dealer_store
+
+    await notifier.notify_email_channel_escalation(
+        conv_id="9",
+        title="t",
+        body="b",
+        department=None,
+        dealer="kl_pj",
+        customer_email=None,
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["to"] == ["a@dealer.example", "b@dealer.example"]
 
 
 async def test_dealer_forward_falls_back_to_dict_when_store_has_no_entry() -> None:

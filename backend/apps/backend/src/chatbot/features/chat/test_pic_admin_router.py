@@ -233,10 +233,14 @@ async def test_upsert_pic_missing_required_fields_returns_422(tmp_path, respx_mo
 
 
 @pytest.mark.asyncio
-async def test_upsert_dealer_rejects_wrong_field_type_returns_422(tmp_path, respx_mock):
-    """`emails`/`email` are both optional now (a dealer group may start with
-    no members), so an empty body is valid -- but a wrong-typed `emails`
-    still fails Pydantic validation."""
+async def test_upsert_dealer_missing_required_fields_returns_422(tmp_path, respx_mock):
+    """`emails` and `email` are individually optional (either alone can name
+    the group's members) but a body naming NOBODY must still 422 -- exactly
+    the pre-groups guarantee (`email: str = Field(min_length=1)`) that a
+    dealer upsert can never silently wipe a stored group's recipients, since
+    `DealerStore.set` overwrites the whole Firestore document without
+    `merge=True`. Covers both ways a body can name nobody: omitting `emails`
+    entirely, and sending it explicitly empty."""
     settings = get_settings().model_copy(update={"rbac_enabled": True})
     authz_repo = await _build_authz_repo(tmp_path, "dealer_422")
     await seed_defaults(authz_repo)
@@ -244,6 +248,70 @@ async def test_upsert_dealer_rejects_wrong_field_type_returns_422(tmp_path, resp
 
     respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
         return_value=httpx.Response(200, json={"id": 13})
+    )
+    validator = TokenValidator(settings)
+    pic_store, dealer_store = _build_stores(settings)
+    router = build_pic_admin_router(pic_store, dealer_store, authz_repo, validator, settings)
+    client = _app_with_router(router)
+
+    empty_body_res = client.put("/admin/escalation/dealers/acme", json={}, headers=HEADERS)
+    assert empty_body_res.status_code == 422
+
+    empty_emails_res = client.put(
+        "/admin/escalation/dealers/acme", json={"emails": []}, headers=HEADERS
+    )
+    assert empty_emails_res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_upsert_dealer_does_not_wipe_existing_group_on_empty_body(tmp_path, respx_mock):
+    """Regression for the silent-wipe bug: a rejected empty-body PUT must
+    leave a previously-stored group's members untouched, not just 422."""
+    settings = get_settings().model_copy(update={"rbac_enabled": True})
+    authz_repo = await _build_authz_repo(tmp_path, "dealer_no_wipe")
+    await seed_defaults(authz_repo)
+    await authz_repo.assign_role(chatwoot_user_id=14, role_id="administrator")
+
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 14})
+    )
+    validator = TokenValidator(settings)
+    pic_store, dealer_store = _build_stores(settings)
+    router = build_pic_admin_router(pic_store, dealer_store, authz_repo, validator, settings)
+    client = _app_with_router(router)
+
+    with patch("chatbot.features.chat.pic_store.firestore.Client", autospec=True) as MockClient:
+        MockClient.return_value = _FakeFirestoreClient()
+
+        seed_res = client.put(
+            "/admin/escalation/dealers/acme",
+            json={"emails": ["a@example.com", "b@example.com"]},
+            headers=HEADERS,
+        )
+        assert seed_res.status_code == 200
+
+        wipe_res = client.put(
+            "/admin/escalation/dealers/acme", json={"emails": []}, headers=HEADERS
+        )
+        assert wipe_res.status_code == 422
+
+        list_res = client.get("/admin/escalation/dealers", headers=HEADERS)
+        assert list_res.json()["dealers"] == [
+            {"dealer": "acme", "emails": ["a@example.com", "b@example.com"]}
+        ]
+
+
+@pytest.mark.asyncio
+async def test_upsert_dealer_rejects_wrong_field_type_returns_422(tmp_path, respx_mock):
+    """A wrong-typed `emails` fails Pydantic validation before the
+    at-least-one-member check even runs."""
+    settings = get_settings().model_copy(update={"rbac_enabled": True})
+    authz_repo = await _build_authz_repo(tmp_path, "dealer_422_type")
+    await seed_defaults(authz_repo)
+    await authz_repo.assign_role(chatwoot_user_id=15, role_id="administrator")
+
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 15})
     )
     validator = TokenValidator(settings)
     pic_store, dealer_store = _build_stores(settings)

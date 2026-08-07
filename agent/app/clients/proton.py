@@ -397,6 +397,53 @@ class ProtonConfigClient:
         except Exception:
             logger.debug("proton_config: assign_agent failed", exc_info=True)
 
+    async def get_escalation_contacts(self) -> dict[str, str] | None:
+        """Lower-cased email -> display name for every escalation contact
+        (PIC, PIC CC, dealer group members).
+
+        Deliberately NOT cached: this is a security allowlist, and an
+        operator adding a dealer in the admin UI must take effect on the
+        next reply, not up to a TTL later. Returns None on any failure so
+        the caller can tell "unknown sender" from "could not check".
+        """
+        try:
+            response = await self._client.get("/escalation/contacts")
+            response.raise_for_status()
+            data = response.json()
+        except Exception:
+            logger.debug("proton_config: get_escalation_contacts failed", exc_info=True)
+            return None
+        contacts = (data or {}).get("contacts")
+        if not isinstance(contacts, list):
+            return None
+        out: dict[str, str] = {}
+        for entry in contacts:
+            if not isinstance(entry, dict):
+                continue
+            email = str(entry.get("email") or "").strip().lower()
+            if email:
+                out[email] = str(entry.get("name") or "")
+        return out
+
+    async def suggest_reply(
+        self, conversation_id: str, messages: list[str]
+    ) -> str | None:
+        """KB-grounded customer-facing draft (POST /assist/suggest). None on
+        any failure -- the reply note is posted regardless; only the draft
+        is lost."""
+        try:
+            response = await self._client.post(
+                "/assist/suggest",
+                json={"conversation_id": conversation_id, "messages": messages},
+            )
+            response.raise_for_status()
+            draft = (response.json() or {}).get("draft")
+        except Exception:
+            logger.debug("proton_config: suggest_reply failed", exc_info=True)
+            return None
+        text = str(draft or "").strip()
+        return text or None
+
     async def notify_email_escalation(
         self,
         conversation_id: int,

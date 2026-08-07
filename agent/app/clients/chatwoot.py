@@ -62,10 +62,19 @@ class ChatwootClient:
         private: bool = True,
         token_override: str | None = None,
         content_attributes: dict | None = None,
+        message_type: str | None = None,
     ) -> Any:
+        """Post a message. `message_type` is normally left unset (Chatwoot
+        infers "outgoing" from the API token). The escalation reply linker
+        passes "incoming" so a customer's mailed reply reads as the
+        customer's own message rather than an agent note -- which also
+        reopens the conversation, exactly as a real inbound message would.
+        """
         body: dict[str, Any] = {"content": content, "private": private}
         if content_attributes:
             body["content_attributes"] = content_attributes
+        if message_type:
+            body["message_type"] = message_type
         response = await self._client.post(
             f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}/messages",
             json=body,

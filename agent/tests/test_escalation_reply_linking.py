@@ -7,7 +7,7 @@ import respx
 
 from app.clients.deps import get_proton_config_client
 from app.config import get_settings
-from app.services import escalation_replies
+from app.services import escalation_replies, sync
 
 CHATWOOT = "http://chatwoot-rails:3000"
 PROTON = "http://proton-backend:8080"
@@ -100,7 +100,7 @@ async def test_posts_private_note_with_stripped_body(monkeypatch):
 
 
 @respx.mock
-async def test_stamps_dealer_replied_at_and_labels(monkeypatch):
+async def test_stamps_escalation_replied_at_and_labels(monkeypatch):
     _enable(monkeypatch)
     _stub_chatwoot()
 
@@ -111,14 +111,42 @@ async def test_stamps_dealer_replied_at_and_labels(monkeypatch):
         for c in respx.calls
         if c.request.url.path.endswith("/conversations/42/custom_attributes")
     ]
-    assert posted and "dealer_replied_at" in posted[0]["custom_attributes"]
+    assert posted and "escalation_replied_at" in posted[0]["custom_attributes"]
     labelled = [
         json.loads(c.request.read())
         for c in respx.calls
         if c.request.url.path.endswith("/conversations/42/labels")
         and c.request.method == "POST"
     ]
-    assert labelled and "dealer_replied" in labelled[0]["labels"]
+    assert labelled and "escalation_replied" in labelled[0]["labels"]
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_reply_label_stays_out_of_the_dealer_namespace(monkeypatch):
+    """The reply marker must not look like a `dealer_<slug>` label.
+
+    Three consumers parse `^dealer_(.+)$` and would read the slug of any
+    label in that namespace as a real dealer: the BigQuery mapping's
+    `_first_tag(labels, _DEALER_TAG)` (backend metrics/mapping.py) would
+    report `dealer = "replied"` on a PIC-only escalation, and
+    `sync.maybe_stamp_dealer_escalation` would stamp `dealer_escalated_at`
+    on a case that was never sent to a dealer -- both silently corrupting
+    the dealer turnaround-time reporting.
+    """
+    _enable(monkeypatch)
+    _stub_chatwoot()
+
+    await escalation_replies.maybe_link_escalation_reply(_payload())
+
+    written = [
+        label
+        for c in respx.calls
+        if c.request.method == "POST" and c.request.url.path.endswith("/labels")
+        for label in json.loads(c.request.read())["labels"]
+    ]
+    assert written, "expected the linker to write at least one label"
+    assert not [lbl for lbl in written if sync._DEALER_LABEL.match(lbl)]
     get_proton_config_client.cache_clear()
 
 
@@ -148,7 +176,7 @@ async def test_skips_when_contacts_unavailable(monkeypatch):
 @respx.mock
 async def test_skips_when_already_stamped(monkeypatch):
     _enable(monkeypatch)
-    messages = _stub_chatwoot(conv_attrs={"dealer_replied_at": "2026-08-06T00:00:00+00:00"})
+    messages = _stub_chatwoot(conv_attrs={"escalation_replied_at": "2026-08-06T00:00:00+00:00"})
 
     await escalation_replies.maybe_link_escalation_reply(_payload())
 

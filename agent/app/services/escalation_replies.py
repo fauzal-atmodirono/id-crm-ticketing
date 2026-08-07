@@ -24,8 +24,16 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-_REPLIED_ATTR = "dealer_replied_at"
-_REPLIED_LABEL = "dealer_replied"
+# Deliberately `escalation_replied`, NOT `dealer_replied`: three consumers
+# parse the `dealer_<slug>` label namespace and would read "replied" as a
+# real dealer slug -- the BigQuery mapping's `_first_tag(labels,
+# _DEALER_TAG)` (backend metrics/mapping.py) would report `dealer =
+# "replied"` on a PIC-only escalation, and `sync.maybe_stamp_dealer_
+# escalation` would stamp `dealer_escalated_at` on a case never sent to a
+# dealer. Both silently corrupt the dealer turnaround-time reporting, so the
+# marker stays outside that namespace. The attribute is named to match.
+_REPLIED_ATTR = "escalation_replied_at"
+_REPLIED_LABEL = "escalation_replied"
 _ORPHAN_LABEL = "escalation_reply"
 
 # `support+case42@host` in a To/Cc header — the primary correlation key.

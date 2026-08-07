@@ -79,7 +79,7 @@ async def test_customer_reply_posts_public_incoming_message(monkeypatch):
 
 
 @respx.mock
-async def test_customer_reply_does_not_stamp_dealer_replied_at(monkeypatch):
+async def test_customer_reply_does_not_stamp_escalation_replied_at(monkeypatch):
     _enable(monkeypatch)
     _stub()
 

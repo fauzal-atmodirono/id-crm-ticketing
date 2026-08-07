@@ -54,7 +54,7 @@ on, the step doesn't happen; say "not set up for you yet," not "broken."
 | Web chatbot (website widget) | Native Chatwoot Website Widget inbox (`Channel::WebWidget`) | Same agent-bot as WhatsApp (identical decision logic), plain-text replies (no WhatsApp-style chunking) | Live where the widget is connected and the agent-bot is assigned to that inbox — confirm both with an admin before promising it |
 | Voice bot (the AI-answered part of a call) | Generic API-channel inbox (`Channel::Api`), via Twilio + Gemini Live | Greeting, KB Q&A, CSAT prompt, optional live transcript/classification/recording behind flags — see §4 | The pre-Package-C basics (greeting, KB Q&A, mocked handoff, rating survey) were demoed live 2026-07-28. Everything added since (live transcript, classification, recording, real handoff) is code-complete and unit-tested but **has never been run against a real Twilio call** — see §5's opening caveat |
 | Phone (the human/agent side of that same call) | Same `Channel::Api` inbox — the call's Chatwoot conversation | n/a — this is what's left behind for an agent to work | Same caveat as Voice bot: real behind flags, unconfirmed against a real call |
-| Email | Native Email inbox (`Channel::Email`) | Once-per-thread auto-ack; two-thread escalation (customer ack + PIC + dealer group) on the `escalate` label; a dealer/customer reply now links back onto the case | Inbound mail is wired (IMAP-polled mailbox) and the flow is built and code-reviewed; see §7 for the exact flags |
+| Email | Native Email inbox (`Channel::Email`) | Once-per-thread auto-ack; two-thread escalation (customer ack + PIC + dealer group) on the `escalate` label, gated by `EMAIL_ESCALATION_ENABLED`; a dealer/customer reply now links back onto the case | Possible once an admin creates a two-way (IMAP+SMTP) Email inbox for the tenant — not automatic on a fresh one. The flow itself is built and code-reviewed; see §7 for the exact flags |
 | Social (Facebook/Instagram) | Native Social inbox | None by SOP design | Unchanged since 08-04 — still blocked on Meta Business verification. Not covered further here; see the 08-04 guide §4 |
 
 Every channel still funnels into the same Chatwoot conversation list — you
@@ -72,7 +72,7 @@ flags your tenant actually has on.
 | Ask the AI to draft a reply | Reply box → AI-actions menu → **Ask Copilot** | Needs the conversation's KB grounded first |
 | Get a suggested answer to the customer's last message | Reply box → AI-actions menu → suggestion icon ("FAQ Assist", informal name) | Matches the last message only, not the whole thread; shows a `Sources:` line when grounded |
 | Categorize the case | Right sidebar → **Conversation Actions → Labels** | Flat list — no main→sub cascading dependency in the picker yet, even though the underlying taxonomy (7 divisions / 26 subcategories) is real |
-| Escalate to a PIC/dealer | Add the **`escalate`** label | **Only sends anything on an Email-channel conversation** — see §7. On WhatsApp/Web, adding this label by hand does not by itself notify anyone; see each channel's Scenario C |
+| Escalate to a PIC/dealer | Add the **`escalate`** label | **Only sends anything on an Email-channel conversation, and only when `EMAIL_ESCALATION_ENABLED=true`** — see §7. On WhatsApp/Web, adding this label by hand does not by itself notify anyone; see each channel's Scenario C |
 | Reassign to another agent | Click the assignee name in the conversation header | Logged in **Audit Log** |
 | Resolve | Status control, top-right of the conversation | Triggers the rating survey when the lifecycle engine is on (`LIFECYCLE_ENABLED`) |
 | See who reassigned what | Standalone **Audit Log** icon, left sidebar | Needs `audit.view` permission + `RBAC_ENABLED=true` for the tenant |
@@ -411,9 +411,14 @@ Email inbox, so `escalate` alone notifies nobody. Escalate manually.
 ## 7. Email — the full current flow
 
 This is the biggest change from the 08-04 guide, which described email as
-blocked end-to-end. Inbound mail is now wired (an IMAP-polled mailbox), and
-the two-thread escalation flow plus a reply loop are built and code-
-reviewed. The exact behaviour below is drawn from
+blocked end-to-end. **"Wired" here describes what's now possible once an
+admin sets it up, not something automatic on a fresh tenant:** a two-way
+Email inbox (inbound IMAP + outbound SMTP) is added per tenant via
+**Settings → Inboxes → Add Inbox → Email** in the Chatwoot UI itself, not
+by any env var — a freshly-provisioned tenant has no Email inbox and no
+working inbound mail until an admin does this once. Once that inbox
+exists, the two-thread escalation flow plus a reply loop described below
+are built and code-reviewed. The exact behaviour below is drawn from
 `2026-08-06-escalation-email-e2e-scenario.md`'s ten test cases (TC-01…TC-10)
 against a live tenant — the most concrete source available — but that
 document's own pass/fail results are unfilled, so treat the specifics as
@@ -424,30 +429,52 @@ test before a demo.
 Emails the support address.
 
 ### 7.2 What happens before you see it
-1. **New subject line** → one auto-acknowledgement (`EMAIL_AUTOACK_ENABLED`,
+1. **The entire two-thread escalation flow in §7.5 — customer ack, PIC
+   email, dealer forward, all of it — is gated by one master switch:
+   `EMAIL_ESCALATION_ENABLED`** (agent service, `agent/app/config.py`,
+   default `false` — confirmed `EMAIL_ESCALATION_ENABLED=false` at
+   `deploy/tenants/example.env:113`). With it off, applying `dept_<slug>`/
+   `dealer_<slug>`/`escalate` labels in §7.5 changes the labels and nothing
+   else — no email of any kind fires, silently. **Do not confuse this with
+   `ESCALATION_EMAIL_ENABLED`** (backend service, named in §3.2 step 5 and
+   §4.2 step 4 above) — that one is a completely different flow: the AI's
+   own autonomous complaint-detection escalation on WhatsApp/Web. The two
+   names are one word apart, live in different services, and gate
+   different things — setting one does not set the other.
+2. Inbound mail is IMAP-polled, not pushed — a new email typically takes
+   **roughly 1–2 minutes** to appear as a Chatwoot conversation after the
+   customer sends it. If a test email doesn't show up instantly, that's
+   the poll interval, not a failure.
+3. **New subject line** → one auto-acknowledgement (`EMAIL_AUTOACK_ENABLED`,
    agent). The body is editable at **Settings → Knowledge → Settings →
    Tenant settings** (§2); the env var `EMAIL_AUTOACK_TEMPLATE` is only the
    fallback when nothing's saved there.
-2. **Reply on an existing thread** → no additional auto-ack, just appended.
-3. Once **you** (a human) reply from the Chatwoot UI, further auto-acks on
+4. **Reply on an existing thread** → no additional auto-ack, just appended.
+5. Once **you** (a human) reply from the Chatwoot UI, further auto-acks on
    that thread are suppressed.
 
 ### 7.3 Scenario A — routine email, no escalation needed
-Auto-ack fires, conversation assigned, you reply with a status update from
-the UI (your reply suppresses further auto-acks), customer replies again
-later with no duplicate ack, you resolve → rating survey.
+Customer sends the email; allow the ~1–2 minute IMAP poll (§7.2 step 2)
+before expecting the conversation to appear. Auto-ack fires, conversation
+assigned, you reply with a status update from the UI (your reply
+suppresses further auto-acks), customer replies again later with no
+duplicate ack, you resolve → rating survey.
 
 ### 7.4 Scenario B — customer wants a human / needs a substantive reply
 Work it like any assigned conversation — **Ask Copilot** for a KB-grounded
 draft, reply, resolve when done.
 
 ### 7.5 Scenario C — escalation (the two-thread flow, EM-7)
-**Label order matters and changes what fires — this is the single most
-important operational fact in this guide.** The handler reads whatever
-labels are present on the conversation **at the moment `escalate` is
-applied**. Apply `escalate` before the department label and the PIC leg
-silently does not fire for that trigger (a real, documented negative case,
-not a bug) — only the customer ack goes out.
+**Requires `EMAIL_ESCALATION_ENABLED=true`** (agent service, default off —
+§7.2 step 1). With it off, everything below still lets you apply the
+labels, but no email fires — confirm this flag before promising a customer
+anything below happens. **Label order also matters and changes what fires
+once the flag is on — this is the single most important operational fact
+in this guide.** The handler reads whatever labels are present on the
+conversation **at the moment `escalate` is applied**. Apply `escalate`
+before the department label and the PIC leg silently does not fire for
+that trigger (a real, documented negative case, not a bug) — only the
+customer ack goes out.
 
 1. Apply the **`dept_<slug>` label first** (e.g. `dept_sales` —
    pre-provisioned; ask an admin which department slugs have a PIC
@@ -494,7 +521,9 @@ never receives the dealer's reply.
 
 1. A dealer/PIC replies to the escalation email without editing the
    subject. Chatwoot has no way to thread it onto the original case on its
-   own — it lands as a brand-new, throwaway conversation.
+   own — it lands as a brand-new, throwaway conversation. Allow the same
+   ~1–2 minute IMAP poll (§7.2 step 2) before checking for it — a reply
+   that hasn't shown up after a few seconds isn't necessarily lost.
 2. The **original** conversation gains a private note that starts with
    `Reply from <name> <<email>>:` followed by the reply text with quoted
    trail/signature stripped — no "On ... wrote:" block.
@@ -602,7 +631,7 @@ will never look at Email at all if that inbox isn't listed.
 | Draft a reply with AI help | Reply box → AI-actions → **Ask Copilot** |
 | Get a suggested answer to the last message | Reply box → AI-actions → suggestion icon |
 | Categorize a case | Right sidebar → **Conversation Actions → Labels** |
-| Escalate an **Email** case to PIC/dealer | Labels: `dept_<slug>` → (`dealer_<slug>`) → `escalate`, **in that order** |
+| Escalate an **Email** case to PIC/dealer | Labels: `dept_<slug>` → (`dealer_<slug>`) → `escalate`, **in that order** — needs `EMAIL_ESCALATION_ENABLED=true` |
 | Escalate a WhatsApp/Web/Phone case | No automatic email — contact the PIC/dealer directly; only the AI's own complaint detection notifies anyone automatically on these channels |
 | See a dealer's reply to an escalation | Private note on the **original** case, `Reply from ... :` — plus a second note with a draft reply if `ESCALATION_REPLY_DRAFT_ENABLED` |
 | See who reassigned a case | Standalone **Audit Log** icon |
@@ -622,6 +651,7 @@ will never look at Email at all if that inbox isn't listed.
 |---|---|---|---|
 | WhatsApp / Web / Phone | `escalate` label alone doesn't notify a PIC/dealer | The email side of escalation is coded as Email-channel-only | "I'm looping in the right team directly — I'll follow up once I hear back," then actually contact them outside the CRM |
 | All chat/voice channels | The AI has no memory across channels | Each bot session is scoped to its own conversation; there's no shared customer memory store | "Let me pull up your earlier conversation so I have the full picture" — then actually use Previous Conversations before answering |
+| Email | Applying escalation labels does nothing at all unless `EMAIL_ESCALATION_ENABLED=true` | The whole two-thread flow is behind one master switch (agent service, default off) — easy to confuse with the similarly-named `ESCALATION_EMAIL_ENABLED` (backend, a different flow entirely) | If labels don't seem to send anything, check this flag with an admin before assuming the reply loop or routing table is broken |
 | Email | Label order matters (`dept_` then `dealer_` then `escalate`) | The handler reads labels present at the moment `escalate` is applied | Internal-only; don't promise a specific order to a customer, just follow it yourself |
 | Email | A second dealer reply after the first is linked doesn't post a new note | The stamp gates the internal-reply path so a note never piles on | If a dealer says they replied twice, check the mailbox directly, not just the case |
 | Email | Reply loop depends on a webhook subscription set in Chatwoot's UI, not a config file | Easy for an operator to miss during setup | If dealer replies "aren't showing up," ask an admin to check Settings → Integrations → Webhooks before assuming the feature is broken |

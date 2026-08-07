@@ -37,7 +37,7 @@ does **not** use the `escalate` label. See §7.
 | `ESCALATION_REPLY_LINKING_ENABLED` | agent | `true` (TC-08, TC-09) |
 | `ESCALATION_REPLY_DRAFT_ENABLED` | agent | `true` (TC-08 only — TC-09's customer-thread path never posts a draft) |
 | `ESCALATION_REPLY_TO_TEMPLATE` | backend | `devotech29+case{conv_id}@gmail.com` (TC-08, TC-09 — Gmail's plus-addressing still lands in the same IMAP-polled mailbox; empty is the default and disables the reply loop entirely, dropping the `[CASE-n]` subject tag and the `Reply-To` header) |
-| `EMAIL_AUTOACK_ENABLED` | agent | `true` (TC-08, TC-09 — side effect noted in both cases below) |
+| `EMAIL_AUTOACK_ENABLED` | agent | `true` (TC-08, TC-09, TC-10 — side effect noted in each case below) |
 | `SLA_ENGINE_ENABLED` | backend | `true` (TC-10 only) |
 | `SLA_INBOX_IDS` | backend | `4` (the Email inbox — TC-10) |
 | `SLA_ALERT_EMAIL_ENABLED` | backend | `true` (TC-10) |
@@ -289,7 +289,12 @@ never sees the reply at all.
   conversation — also fires the tenant's normal auto-ack reply back to the
   dealer before the linker resolves it. That auto-ack landing in the dealer's
   mailbox alongside their own sent reply is expected, not a duplicate of the
-  linked note above.
+  linked note above. **The auto-ack text itself opens "Dear Customer," and
+  continues into customer-facing SOP boilerplate (business hours, the
+  call-centre number) — it is the same fixed template used on a real
+  customer thread, sent here because Chatwoot cannot tell the sender is a
+  dealer. A dealer receiving a "Dear Customer" email is expected output of
+  this test, not evidence the reply was misrouted.**
 
 **Pass criteria:** both notes present on #N in that order, `dealer_replied`
 label and `dealer_replied_at` present on #N, #M labelled `escalation_reply`
@@ -306,7 +311,10 @@ and resolved.
 
 **Preconditions:** same as TC-08 — `ESCALATION_REPLY_TO_TEMPLATE` set (the
 ack email carries the correlation `Reply-To` invisibly; its subject is never
-tagged, so the customer thread stays clean) and `ESCALATION_REPLY_LINKING_ENABLED=true`.
+tagged, so the customer thread stays clean), `ESCALATION_REPLY_LINKING_ENABLED=true`,
+and `message_created` subscribed on the account webhook (Settings →
+Integrations → Webhooks) — without it the agent never sees the customer's
+reply either, and the failure is silent: no note, no reopen, no error.
 
 **Steps**
 
@@ -340,16 +348,22 @@ labelled `escalation_reply`.
 
 **Preconditions:** `SLA_ENGINE_ENABLED=true`, `SLA_ALERT_EMAIL_ENABLED=true`,
 `SLA_ALERT_NOTE_ENABLED=true`, the Email inbox id (`4`) listed in
-`SLA_INBOX_IDS`, and a short **Response SLA (hours)** set for the Email
+`SLA_INBOX_IDS`, and a short **Response window (hours)** set for the Email
 inbox at CRM → SLA Policies (e.g. `0.05` ≈ 3 min) so the case breaches
-during the test. (The SLA Policies page itself needs `RBAC_ENABLED=true` —
-if it isn't in the sidebar, that's why.) Requires the `sla_policies` table
-migration in §2 above to already be applied, or saving the policy 500s.
+during the test — that is the field's exact on-screen label; it maps to the
+`response_hours` column named elsewhere in this doc and in §2. (The SLA
+Policies page itself needs `RBAC_ENABLED=true` — if it isn't in the sidebar,
+that's why.) Requires the `sla_policies` table migration in §2 above to
+already be applied, or saving the policy 500s.
 
 **Steps**
 
 1. Send a new email to the Email inbox, first line
-   `Test escalation TC-10 — SLA breach`.
+   `Test escalation TC-10 — SLA breach`. If `EMAIL_AUTOACK_ENABLED=true`
+   (left on from TC-08/09), this new conversation triggers the tenant's
+   normal auto-ack reply the moment it's created — an extra email in your
+   test mailbox at this step is that, not part of the SLA alert this case
+   is testing.
 2. Apply `dept_sales` only. Do **not** reply to it and do **not** apply
    `escalate`.
 3. Wait past the Response SLA threshold, then wait for one SLA scan

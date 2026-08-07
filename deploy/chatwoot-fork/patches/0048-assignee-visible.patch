@@ -1,0 +1,89 @@
+From cf5de7d15d0dd233bcafed26eef7df35c0706ff3 Mon Sep 17 00:00:00 2001
+From: Test <test@example.com>
+Date: Sat, 8 Aug 2026 03:02:19 +0700
+Subject: [PATCH] feat(chatwoot-fork): show the assigned agent in the Cases
+ list
+
+Adds an Agent column to the custom Cases list table (patch 0043),
+between Aging (days) and Status. Extends protonCases.js's
+mapConversationToCaseRow with assigneeName, read from Chatwoot's own
+conversation.meta.assignee.name (the same object mapping.py's
+_chatwoot_agent_id already reads via .id) -- no per-row fetch, since
+/conversations already embeds the assignee on every conversation the
+same way meta.sender is embedded for the existing Purchased From /
+Car Plate columns. Unassigned cases render '-' via the table's
+existing null-to-em-dash convention.
+
+Scope note: the upstream ConversationCard.vue assignee-name change
+from the same task brief is deliberately NOT included here -- that
+file lives in the upstream Chatwoot SPA, no existing fork patch
+touches it, and this sandbox cannot reach github.com to fetch real
+context lines to patch against. Deferred to an environment with an
+upstream checkout.
+---
+ app/javascript/dashboard/api/protonCases.js        |  9 +++++++++
+ .../components/widgets/ProtonCasesTable.vue        | 14 +++++++++-----
+ 2 files changed, 18 insertions(+), 5 deletions(-)
+
+diff --git a/app/javascript/dashboard/api/protonCases.js b/app/javascript/dashboard/api/protonCases.js
+index 74acbb2..f75e046 100644
+--- a/app/javascript/dashboard/api/protonCases.js
++++ b/app/javascript/dashboard/api/protonCases.js
+@@ -139,6 +139,15 @@ export function mapConversationToCaseRow(conversation) {
+     // server-side date-range filter. Additive field; existing consumers
+     // (ProtonCasesTable.vue) don't read it and are unaffected.
+     createdAt: blankToNull(conversation.created_at),
++    // conversation.meta.assignee — Chatwoot's own currently-assigned agent,
++    // the same object mapping.py's _chatwoot_agent_id reads via `.id`. Read
++    // here (not fetched per row) because /conversations already embeds it on
++    // every conversation the same way meta.sender is embedded above.
++    assigneeName: blankToNull(
++      conversation.meta &&
++        conversation.meta.assignee &&
++        conversation.meta.assignee.name
++    ),
+   };
+ }
+ 
+diff --git a/app/javascript/dashboard/components/widgets/ProtonCasesTable.vue b/app/javascript/dashboard/components/widgets/ProtonCasesTable.vue
+index 84a98b2..b3c361f 100644
+--- a/app/javascript/dashboard/components/widgets/ProtonCasesTable.vue
++++ b/app/javascript/dashboard/components/widgets/ProtonCasesTable.vue
+@@ -4,11 +4,11 @@
+      already-loaded case rows instead of building a second table. Takes the
+      already-mapped rows from protonCases.js's `mapConversationToCaseRow`
+      (id, caseType, division, concern, purchasedFrom, escalatedTo, dealer,
+-     carPlate, agingDays, status, channel) — it does no Chatwoot API calls of
+-     its own. Columns and filters are the client's own WIP-table shape (see
+-     the Package D design doc): Case ID, Division, Concern, Purchased From,
+-     Escalated To, Car Plate, Aging (days), Status; filterable by division,
+-     case type, status, channel, dealer.
++     carPlate, agingDays, status, channel, assigneeName) — it does no
++     Chatwoot API calls of its own. Columns and filters are the client's own
++     WIP-table shape (see the Package D design doc): Case ID, Division,
++     Concern, Purchased From, Escalated To, Car Plate, Aging (days), Agent,
++     Status; filterable by division, case type, status, channel, dealer.
+ 
+      Legacy conversations are the normal case: any of the above fields may
+      be null (see protonCases.js's field-provenance comment for why), so
+@@ -214,6 +214,7 @@ export default {
+             <th class="px-3 py-2 font-medium whitespace-nowrap text-right">
+               Aging (days)
+             </th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">Agent</th>
+             <th class="px-3 py-2 font-medium whitespace-nowrap">Status</th>
+           </tr>
+         </thead>
+@@ -249,6 +250,9 @@ export default {
+             <td class="px-3 py-2 text-right whitespace-nowrap tabular-nums">
+               {{ row.agingDays ?? '—' }}
+             </td>
++            <td class="px-3 py-2 whitespace-nowrap">
++              {{ row.assigneeName ?? '—' }}
++            </td>
+             <td class="px-3 py-2 capitalize whitespace-nowrap">
+               {{ row.status ?? '—' }}
+             </td>
+-- 
+2.54.0
+

@@ -37,6 +37,11 @@ CATEGORY_TO_DIVISION = {
     "product": "Product",
     "marketing": "Marketing",
     "others": "Others",
+    # Added with RFP 2026_028's "Network" Case Division (case_taxonomy_json's
+    # "network" slug) — see test_category_to_division_covers_every_default_
+    # taxonomy_slug, which guards every default case_taxonomy_json slug has
+    # an entry here.
+    "network": "Network",
 }
 _CATEGORY_TAG = re.compile(r"^category_(.+)$")
 _SUBCAT_TAG = re.compile(r"^subcat_(.+)$")

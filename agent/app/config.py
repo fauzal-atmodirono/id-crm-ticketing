@@ -126,36 +126,60 @@ class Settings(BaseSettings):
     # Case category/subcategory taxonomy — set to the SAME value as backend/'s
     # CASE_TAXONOMY_JSON (both services parse it independently; there is no
     # shared library between them). Used by services/categorize.py as the
-    # resolution-time fallback classifier's candidate list. Ships with the
-    # SAME working default as backend/'s Settings.case_taxonomy_json so a
-    # tenant that turns on lifecycle_auto_categorize without overriding this
-    # var gets sensible behavior instead of a silent no-op; override per
-    # tenant once the client finalizes their scheme — no code change needed.
+    # resolution-time fallback classifier's candidate list. Default is the
+    # client's own taxonomy: RFP 2026_028's "APPENDIX A - Case Categorisation"
+    # (see docs/client-materials/RFP 2026_028/case-categorisation.json for the
+    # full 6-column, 300-row transcription this is derived from) — division
+    # slug -> {label: RFP "Case Division" value, subcategories: RFP "Level 1"
+    # values for that division}. Level 2/3/4 have no representation here yet
+    # (tracked as a follow-up, not built by this change). Two subcategory
+    # strings differ only in whitespace around a slash ("Service/Recall
+    # Campaign" vs "Service / Recall Campaign") because the client's own PDF
+    # spells the same After Sales concept both ways on different rows —
+    # preserved verbatim rather than silently merged.
     case_taxonomy_json: str = (
-        '{"sales":{"label":"Sales","subcategories":["Accessories","Booking",'
-        '"Insurance","New Model","Promotion","Refund","Test Drive","Trade In",'
-        '"Transfer Ownership","Vehicle Delivery","Vehicle Details",'
-        '"Customer Experience"]},'
-        '"aftersales":{"label":"Aftersales","subcategories":["Body",'
-        '"Roadside Assistance","Service / Recall Campaign","Service Operation",'
-        '"Spare Part","Warranty","User Manual","Features"]},'
-        '"apps":{"label":"Apps","subcategories":["Information","Operation",'
-        '"User ID","No QR Scanner","Notification","Profile","Remote Control"]},'
-        '"charging":{"label":"Charging","subcategories":["Home Charging",'
-        '"Public Charging"]},'
+        '{"sales":{"label":"Sales","subcategories":["Delivery","Refund",'
+        '"Customer Experience","Promotion","Test Drive","Outlet","Booking",'
+        '"Insurance","Finance Information","Vehicle Details","New Model",'
+        '"Custom EV Plate (Frame)","Staff","Sales Facilities","Others"]},'
         '"product":{"label":"Product","subcategories":["Infotainment",'
-        '"Telematics"]},'
-        '"marketing":{"label":"Marketing","subcategories":["Event / Campaign",'
-        '"Partnership / Collaboration","Proposal","Sponsorship"]},'
-        '"others":{"label":"Others","subcategories":['
-        '"Not Related to Proton e.MAS"]}}'
+        '"Accessories","Vehicle Specification","Vehicle Model",'
+        '"Specification","Performance","Features","Others"]},'
+        '"network":{"label":"Network","subcategories":["Outlet Facilities"]},'
+        '"charging":{"label":"Charging","subcategories":["Infotainment",'
+        '"Others","Home Charging","Charging Credit","Public Charging",'
+        '"Compatibility","Configuration","Booking","Refund","Billing",'
+        '"Vendor"]},"apps":{"label":"Apps",'
+        '"subcategories":["Apps Synchronization","Service Function",'
+        '"Remote Control","Unable to update.","Dealer Information","E-Mall",'
+        '"Notification","Vehicle Order Issue","smart points","Function",'
+        '"Finance Calculator","Test Drive Order Issue","Profile","Others",'
+        '"User ID","Unable to register","Operation","Apps Information",'
+        '"Point system","Information","Content"]},'
+        '"aftersales":{"label":"After Sales",'
+        '"subcategories":["Brake / Electronic Parking Brake","Airconditioner",'
+        '"Steering","Suspension","Cooling System","Body","Electrical","ADAS",'
+        '"Features","Airbag","Others","Spare Part","Warranty",'
+        '"Service Operation","Technical","Service/Recall Campaign",'
+        '"Service / Recall Campaign","Roadside Assistance","User Manual",'
+        '"Staff","Service Facilities"]},"others":{"label":"Others",'
+        '"subcategories":["Misdial","Job Vacancy","Scams/Spams",'
+        '"No Respond From Customer","Call Disconnected","Test Call"]},'
+        '"marketing":{"label":"Marketing","subcategories":["Merchandise",'
+        '"Charging Credit","Event/Campaign","Request to Collab",'
+        '"Marketing inquiry","Sponsorship"]}}'
     )
 
     # Vehicle-model / case-type dimensions — SAME values as backend/'s
     # VEHICLE_MODELS_JSON / CASE_TYPE_OPTIONS_JSON (each service parses
     # independently). Used by services/categorize.py's fallback classifier.
+    # case_type_options_json's 3 values are the client's exact "Case
+    # Category" strings from RFP 2026_028 Appendix A (note "Compliment &
+    # Feedback", not "Feedback").
     vehicle_models_json: str = '{"options": ["e.MAS 5", "e.MAS 7", "e.MAS 7 PHEV", "Not Applicable"]}'
-    case_type_options_json: str = '{"options": ["Inquiry", "Complaint", "Feedback"]}'
+    case_type_options_json: str = (
+        '{"options": ["Inquiry", "Complaint", "Compliment & Feedback"]}'
+    )
 
     # C1: email once-per-thread auto-acknowledgement.
     email_autoack_enabled: bool = False

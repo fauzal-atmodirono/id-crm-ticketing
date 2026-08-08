@@ -77,10 +77,11 @@ def test_default_settings_produce_non_empty_taxonomy():
     assert tax.is_empty() is False
     assert tax.main_categories() == [
         "sales",
-        "aftersales",
-        "apps",
-        "charging",
         "product",
-        "marketing",
+        "network",
+        "charging",
+        "apps",
+        "aftersales",
         "others",
+        "marketing",
     ]

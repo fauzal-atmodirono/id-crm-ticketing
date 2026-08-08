@@ -1,0 +1,2463 @@
+{
+  "_readme": [
+    "Full transcription of 'APPENDIX A - Case Categorisation.pdf' (RFP 2026_028), a 6-column table:",
+    "Case Category | Case Division | Level 1 | Level 2 | Level 3 | Level 4.",
+    "Shape: a flat array of row objects, one per PDF table row (300 data rows, matching the",
+    "PDF's own row count 1:1) -- chosen over a nested tree because several rows repeat the",
+    "same (case_category, case_division, level_1) combination with a *different* level_2 (and",
+    "the tree isn't strictly a tree: level_1 'Refund' under Sales/Inquiry, for instance, carries",
+    "level_2='Booking' on three separate rows with three different level_3 values). A flat table",
+    "has no merge ambiguity and stays trivially diffable against the PDF for future re-checks.",
+    "Empty string '' means that column was blank on that row in the source PDF (not missing data).",
+    "",
+    "Transcription notes:",
+    "- Multi-line PDF cells (word-wrap only, not client content) are joined with a single space,",
+    "  e.g. 'No Estimated Time\\nDelivery' -> 'No Estimated Time Delivery'.",
+    "- All other text, including the client's own typos and inconsistent capitalization, is",
+    "  preserved byte-for-byte. Notable typos (kept as-is because client reports key off these",
+    "  exact strings): 'Profesionalism' (Sale Specialist Profesionalism; Service Profesionalism),",
+    "  'Innacurate' (Map Innacurate location; Innacurate location), 'Allignment' (Body/Exterior",
+    "  only -- the Body/Interior and Steering/Suspension rows correctly say 'Alignment'),",
+    "  'Electical phase' (Charging/Configuration), 'Order Synhcronization' (Apps/Vehicle Order",
+    "  Issue), 'Charging abnormally Interupted' (Charging/Infotainment), 'Stock Availbility'",
+    "  (After Sales/Spare Part, Inquiry), 'Home Assesment' (Charging/Refund, Inquiry -- note",
+    "  'Assessment' IS spelled correctly elsewhere, e.g. Charging/Home Charging rows).",
+    "- Also present verbatim, not typos but genuine source inconsistencies: lowercase 'others'",
+    "  vs 'Others' used interchangeably as a Level 2 value across rows; 'smart points' / 'smart",
+    "  point charging' (lowercase, Apps/Charging divisions); 'Service/Recall Campaign' (no",
+    "  spaces, under Complaint) vs 'Service / Recall Campaign' (spaces, under Inquiry) for the",
+    "  same After Sales Level 1 concept; 'Unable to update.' (Apps Level 1, includes a literal",
+    "  trailing period).",
+    "",
+    "Source: docs/client-materials/RFP 2026_028/APPENDIX A - Case Categorisation.pdf (6 pages).",
+    "Extracted via pdfplumber table extraction, cross-checked against `pdftotext -layout` and a",
+    "manual visual read of each page. Row count sanity check: 3 Case Category values x 8 Case",
+    "Division values x (variable Level 1/2/3/4 depth) = 300 total data rows."
+  ],
+  "column_order": [
+    "case_category",
+    "case_division",
+    "level_1",
+    "level_2",
+    "level_3",
+    "level_4"
+  ],
+  "row_count": 300,
+  "case_category_values": [
+    "Complaint",
+    "Compliment & Feedback",
+    "Inquiry"
+  ],
+  "case_division_values": [
+    "After Sales",
+    "Apps",
+    "Charging",
+    "Marketing",
+    "Network",
+    "Others",
+    "Product",
+    "Sales"
+  ],
+  "rows": [
+    {
+      "case_category": "Complaint",
+      "case_division": "Sales",
+      "level_1": "Delivery",
+      "level_2": "No Estimated Time Delivery",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Sales",
+      "level_1": "Refund",
+      "level_2": "Delay",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Sales",
+      "level_1": "Customer Experience",
+      "level_2": "Poor Buying Experience",
+      "level_3": "Sale Specialist Profesionalism",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Sales",
+      "level_1": "Delivery",
+      "level_2": "No Allocation - Delay",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Sales",
+      "level_1": "Delivery",
+      "level_2": "Overpromised - ETD",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Sales",
+      "level_1": "Refund",
+      "level_2": "No Records",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Sales",
+      "level_1": "Refund",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Sales",
+      "level_1": "Promotion",
+      "level_2": "Ended Promotion",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Sales",
+      "level_1": "Test Drive",
+      "level_2": "Not Available",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Sales",
+      "level_1": "Test Drive",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Product",
+      "level_1": "Infotainment",
+      "level_2": "QR Code Broken",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Product",
+      "level_1": "Infotainment",
+      "level_2": "Account not exist",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Product",
+      "level_1": "Infotainment",
+      "level_2": "App Fault Notification",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Product",
+      "level_1": "Infotainment",
+      "level_2": "Data not Sync",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Product",
+      "level_1": "Infotainment",
+      "level_2": "3rd party Apps Update",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Product",
+      "level_1": "Infotainment",
+      "level_2": "OTA",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Product",
+      "level_1": "Infotainment",
+      "level_2": "Malfunction",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Product",
+      "level_1": "Infotainment",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Product",
+      "level_1": "Infotainment",
+      "level_2": "Display Malfunction",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Product",
+      "level_1": "Infotainment",
+      "level_2": "No GPS Signal",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Network",
+      "level_1": "Outlet Facilities",
+      "level_2": "Ambience/Environment",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Network",
+      "level_1": "Outlet Facilities",
+      "level_2": "Refreshment",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Network",
+      "level_1": "Outlet Facilities",
+      "level_2": "Staff Grooming",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Network",
+      "level_1": "Outlet Facilities",
+      "level_2": "Furniture & Fittings",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Infotainment",
+      "level_2": "Charging abnormally Interupted",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Others",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Home Charging",
+      "level_2": "Assessment",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Home Charging",
+      "level_2": "Installation",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Charging Credit",
+      "level_2": "Not Entitle",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Charging Credit",
+      "level_2": "Didn’t received Points",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Charging Credit",
+      "level_2": "others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "Map Innacurate location",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "Price",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "Car DHU Map not Updated",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "smart point charging",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Compatibility",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Configuration",
+      "level_2": "Charging speed",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Configuration",
+      "level_2": "Electical phase",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Home Charging",
+      "level_2": "Function",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Home Charging",
+      "level_2": "Quality",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Home Charging",
+      "level_2": "Warranty",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Home Charging",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "Power supply Issue",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "Loose Cable",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "Pre-Authorization",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Apps Synchronization",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Service Function",
+      "level_2": "Apps Stuck / Frozen",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Service Function",
+      "level_2": "Payment",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Remote Control",
+      "level_2": "Unable to view data balance",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Remote Control",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Unable to update.",
+      "level_2": "Apps Version",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Remote Control",
+      "level_2": "Climate / Weather",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Remote Control",
+      "level_2": "Car Location",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Dealer Information",
+      "level_2": "Contact not updated",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Dealer Information",
+      "level_2": "Innacurate location",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Service Function",
+      "level_2": "Unable to received OTP",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Service Function",
+      "level_2": "Unable to register",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Service Function",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "E-Mall",
+      "level_2": "Order Fulfillment",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "E-Mall",
+      "level_2": "Order not received",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "E-Mall",
+      "level_2": "Order not found",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "E-Mall",
+      "level_2": "Price",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "E-Mall",
+      "level_2": "Merchandise Quality",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "E-Mall",
+      "level_2": "Merchandise Stock",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "E-Mall",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Notification",
+      "level_2": "Error",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Notification",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Vehicle Order Issue",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Vehicle Order Issue",
+      "level_2": "Order Synhcronization",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "smart points",
+      "level_2": "Validity",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "smart points",
+      "level_2": "Unable to use",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "smart points",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Function",
+      "level_2": "Data info not updated",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Finance Calculator",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Test Drive Order Issue",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Profile",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "Apps",
+      "level_1": "Others",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Brake / Electronic Parking Brake",
+      "level_2": "Faulty",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Brake / Electronic Parking Brake",
+      "level_2": "Noise",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Brake / Electronic Parking Brake",
+      "level_2": "Judder",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Brake / Electronic Parking Brake",
+      "level_2": "Warning Light",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Brake / Electronic Parking Brake",
+      "level_2": "Burned Smell",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Brake / Electronic Parking Brake",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Airconditioner",
+      "level_2": "Smell",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Airconditioner",
+      "level_2": "Faulty",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Airconditioner",
+      "level_2": "Leakage",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Airconditioner",
+      "level_2": "Not Cold",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Airconditioner",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Steering",
+      "level_2": "Noise",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Steering",
+      "level_2": "Vibration",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Steering",
+      "level_2": "Position",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Steering",
+      "level_2": "Heavy",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Steering",
+      "level_2": "Alignment",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Suspension",
+      "level_2": "Leakage",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Suspension",
+      "level_2": "Noise",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Suspension",
+      "level_2": "Hard",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Suspension",
+      "level_2": "Alignment",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Suspension",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Cooling System",
+      "level_2": "Smell",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Cooling System",
+      "level_2": "Leakage",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Cooling System",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Noise",
+      "level_3": "Interior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Dented",
+      "level_3": "Interior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Alignment",
+      "level_3": "Interior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Gap",
+      "level_3": "Interior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Leakage",
+      "level_3": "Interior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Rusty",
+      "level_3": "Interior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Vibration",
+      "level_3": "Interior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Others",
+      "level_3": "Interior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Noise",
+      "level_3": "Exterior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Dented",
+      "level_3": "Exterior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Allignment",
+      "level_3": "Exterior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Gap",
+      "level_3": "Exterior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Leakage",
+      "level_3": "Exterior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Rusty",
+      "level_3": "Exterior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Vibration",
+      "level_3": "Exterior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Body",
+      "level_2": "Others",
+      "level_3": "Exterior",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Electrical",
+      "level_2": "Failure",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Electrical",
+      "level_2": "Improper Function",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Electrical",
+      "level_2": "Noise",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Electrical",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "ADAS",
+      "level_2": "Failure",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "ADAS",
+      "level_2": "Warning Light",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "ADAS",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Features",
+      "level_2": "Failure",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Features",
+      "level_2": "Improper Function",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Features",
+      "level_2": "Safety Features",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Features",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Airbag",
+      "level_2": "Airbag not deploy",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Airbag",
+      "level_2": "Airbag sudden deploy",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Airbag",
+      "level_2": "Recall",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Airbag",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Others",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Spare Part",
+      "level_2": "Parts Arrival Delay",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Spare Part",
+      "level_2": "No Stock",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Spare Part",
+      "level_2": "Price",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Spare Part",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Spare Part",
+      "level_2": "Quality",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Warranty",
+      "level_2": "Rejected",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Warranty",
+      "level_2": "Status",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Warranty",
+      "level_2": "Period",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "General Repair",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "Accident Repair",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "Insurance Claim",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "Repair Quality",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "Service Profesionalism",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "Courtesy Car",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "Delay Vehicle Repair",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "Outlet Facilities",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Technical",
+      "level_2": "Major Repair",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Technical",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Technical",
+      "level_2": "Comeback Job",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Service/Recall Campaign",
+      "level_2": "Information",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Complaint",
+      "case_division": "After Sales",
+      "level_1": "Service/Recall Campaign",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Outlet",
+      "level_2": "Contact",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Outlet",
+      "level_2": "Location",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Outlet",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Booking",
+      "level_2": "Fees",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Booking",
+      "level_2": "Status",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Booking",
+      "level_2": "Information",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Booking",
+      "level_2": "Cancellation",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Booking",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Delivery",
+      "level_2": "Vehicle ETD",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Delivery",
+      "level_2": "Stock Availability",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Delivery",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Refund",
+      "level_2": "Booking",
+      "level_3": "Status",
+      "level_4": "Dealer Refund"
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Refund",
+      "level_2": "Booking",
+      "level_3": "Status",
+      "level_4": "HQ Refund"
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Refund",
+      "level_2": "Booking",
+      "level_3": "Timeframe",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Insurance",
+      "level_2": "Insurance Package",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Insurance",
+      "level_2": "Insurance Renewal",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Insurance",
+      "level_2": "Insurance Coverage",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Insurance",
+      "level_2": "Other Insurance Matters",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Test Drive",
+      "level_2": "Appointment Booking",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Test Drive",
+      "level_2": "Appointment Cancellation",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Test Drive",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Finance Information",
+      "level_2": "Bank Loan",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Finance Information",
+      "level_2": "Loan Tenure",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Finance Information",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Vehicle Details",
+      "level_2": "Price",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Vehicle Details",
+      "level_2": "Colour",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Vehicle Details",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Promotion",
+      "level_2": "Ongoing Promotion",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Promotion",
+      "level_2": "Irrelevant Promotion",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Promotion",
+      "level_2": "Misleading Promotion",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Promotion",
+      "level_2": "Ended Promotion",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "New Model",
+      "level_2": "Launch Date",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "New Model",
+      "level_2": "Price",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "New Model",
+      "level_2": "Brochure",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "New Model",
+      "level_2": "Promotion",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "New Model",
+      "level_2": "Release Date",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Sales",
+      "level_1": "Custom EV Plate (Frame)",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Product",
+      "level_1": "Accessories",
+      "level_2": "Package",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Product",
+      "level_1": "Accessories",
+      "level_2": "Delivery Status",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Product",
+      "level_1": "Accessories",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Product",
+      "level_1": "Vehicle Specification",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Product",
+      "level_1": "Vehicle Model",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Product",
+      "level_1": "Infotainment",
+      "level_2": "Vehicle Settings",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Product",
+      "level_1": "Infotainment",
+      "level_2": "Data Information",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Product",
+      "level_1": "Infotainment",
+      "level_2": "Software Updates",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Product",
+      "level_1": "Infotainment",
+      "level_2": "Charging Map Display",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Product",
+      "level_1": "Infotainment",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Others",
+      "level_1": "Misdial",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Others",
+      "level_1": "Job Vacancy",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Others",
+      "level_1": "Scams/Spams",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Others",
+      "level_1": "No Respond From Customer",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Others",
+      "level_1": "Call Disconnected",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Others",
+      "level_1": "Test Call",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Marketing",
+      "level_1": "Merchandise",
+      "level_2": "Package",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Marketing",
+      "level_1": "Merchandise",
+      "level_2": "Delivery Status",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Marketing",
+      "level_1": "Merchandise",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Marketing",
+      "level_1": "Charging Credit",
+      "level_2": "Not Entitle",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Marketing",
+      "level_1": "Charging Credit",
+      "level_2": "Didn’t received",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Marketing",
+      "level_1": "Event/Campaign",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Marketing",
+      "level_1": "Request to Collab",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Marketing",
+      "level_1": "Marketing inquiry",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Marketing",
+      "level_1": "Sponsorship",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "Pre-Authorization",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Booking",
+      "level_2": "WallBox",
+      "level_3": "Assessment",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Booking",
+      "level_2": "WallBox",
+      "level_3": "Installation",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Refund",
+      "level_2": "Home Assesment",
+      "level_3": "Status",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Refund",
+      "level_2": "Home Assesment",
+      "level_3": "Timeframe",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Billing",
+      "level_2": "Charging Billing",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Home Charging",
+      "level_2": "Price",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Home Charging",
+      "level_2": "Purchase Matter",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Home Charging",
+      "level_2": "Warranty",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Home Charging",
+      "level_2": "Assessment",
+      "level_3": "Status",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Home Charging",
+      "level_2": "Assessment",
+      "level_3": "Reschedule",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Home Charging",
+      "level_2": "Installation",
+      "level_3": "Status",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Home Charging",
+      "level_2": "Installation",
+      "level_3": "Reschedule",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Home Charging",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "Price",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "Charging Location",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "Charger Malfunction",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "Promotion",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "User ID",
+      "level_2": "Forget User ID",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "User ID",
+      "level_2": "Information",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "User ID",
+      "level_2": "New Account ID",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "User ID",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "Unable to register",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "Operation",
+      "level_2": "Vehicle Registration",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "Operation",
+      "level_2": "Data Balance Information",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "Operation",
+      "level_2": "Finance Calculator",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "Apps Information",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "Point system",
+      "level_2": "Validity",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "Point system",
+      "level_2": "Redemption",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "Point system",
+      "level_2": "others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "Information",
+      "level_2": "Vehicle data not updated",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "Information",
+      "level_2": "Info / Event not updated",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "Operation",
+      "level_2": "Test Drive Order Issue",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "Information",
+      "level_2": "Profile",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "Apps",
+      "level_1": "Others",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Spare Part",
+      "level_2": "Price",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Spare Part",
+      "level_2": "Stock Availbility",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Spare Part",
+      "level_2": "Parts Information",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Spare Part",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Spare Part",
+      "level_2": "ETA",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Warranty",
+      "level_2": "Warranty Information",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Warranty",
+      "level_2": "Warranty Coverage",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Warranty",
+      "level_2": "Warranty Period",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Warranty",
+      "level_2": "Extended Limited Warranty",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Warranty",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "Vehicle Repair/Service Status",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "Regular Maintenance Service Time",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "Service Appointment",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "Service / Repair Price",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "Service Advisor's Professionalism/Attitude",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Service Operation",
+      "level_2": "Courtesy Car",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Service / Recall Campaign",
+      "level_2": "Information",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Service / Recall Campaign",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Roadside Assistance",
+      "level_2": "Request for RSA Contact",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Roadside Assistance",
+      "level_2": "Service Provided",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Roadside Assistance",
+      "level_2": "Panel Workshop/Location",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Roadside Assistance",
+      "level_2": "Tow Truck Varieties",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Roadside Assistance",
+      "level_2": "Towing Charges",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "Roadside Assistance",
+      "level_2": "Others",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "User Manual",
+      "level_2": "Obtain User Manual",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Inquiry",
+      "case_division": "After Sales",
+      "level_1": "User Manual",
+      "level_2": "Car Features",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "After Sales",
+      "level_1": "Staff",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "After Sales",
+      "level_1": "Service Facilities",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "After Sales",
+      "level_1": "Spare Part",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "After Sales",
+      "level_1": "Others",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "Sales",
+      "level_1": "Staff",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "Sales",
+      "level_1": "Sales Facilities",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "Sales",
+      "level_1": "Others",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "Charging",
+      "level_1": "Public Charging",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "Charging",
+      "level_1": "Home Charging",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "Charging",
+      "level_1": "Vendor",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "Product",
+      "level_1": "Specification",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "Product",
+      "level_1": "Performance",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "Product",
+      "level_1": "Features",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "Product",
+      "level_1": "Others",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "Apps",
+      "level_1": "Function",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "Apps",
+      "level_1": "Content",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "Apps",
+      "level_1": "Others",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    },
+    {
+      "case_category": "Compliment & Feedback",
+      "case_division": "Others",
+      "level_1": "",
+      "level_2": "",
+      "level_3": "",
+      "level_4": ""
+    }
+  ]
+}

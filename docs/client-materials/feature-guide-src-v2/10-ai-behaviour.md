@@ -120,9 +120,9 @@ Applying the **escalate** label to a conversation on an **Email** inbox
 triggers an automatic two-part escalation email: a short acknowledgement
 sent to the customer, and a separate forward containing the case details
 sent to the responsible department PIC and/or dealer group. This only
-applies to Email-channel conversations — applying the label on a WhatsApp
-or phone conversation doesn't send an email, since there's no email thread
-for it to join. **Label order matters**: the handler reads whatever
+applies to Email-channel conversations — applying the label on a WhatsApp,
+web chatbot, or phone conversation doesn't send an email, since there's no
+email thread for it to join. **Label order matters**: the handler reads whatever
 department/dealer labels are already present the moment `escalate` is
 applied, so applying `escalate` before the department label means that
 leg silently doesn't fire for that trigger — apply the department label,
@@ -257,23 +257,24 @@ chapter's Settings section. A conversation resolved through this flow shows
 up the same way as any other resolved conversation in the Conversations
 chapter.
 
-## Phone / IVR touchpoint
+## Voice bot behaviour (the AI-answered part of a call)
 
 ### What it is
 
 Inbound phone calls to Proton's support line are answered by the same AI
-assistant, using a voice conversation rather than text: it can hold a
-natural back-and-forth, answer vehicle questions from the same knowledge
-base used on WhatsApp, and ask the caller to rate the call 1–5 at the end.
-There is no traditional press-1-for-sales phone menu — callers speak
-naturally and the assistant works out what they need.
+assistant used on other channels, using a voice conversation rather than
+text: it can hold a natural back-and-forth, answer vehicle questions from
+the same knowledge base used on WhatsApp, and ask the caller to rate the
+call 1–5 at the end. There is no traditional press-1-for-sales phone menu
+— callers speak naturally and the assistant works out what they need.
 
 ### Where to find it
 
 There is no separate phone/IVR configuration screen inside the CRM. What
 you see is the result each call leaves behind: a conversation in the
 Conversations view with the call's transcript as its messages, updating
-close to real time during the call.
+close to real time during the call on tenants configured for it, or
+appearing all at once at hangup otherwise.
 
 <!-- VERIFY-LIVE: confirm current phone/IVR operator-visible surface on the live tenant -->
 
@@ -284,35 +285,112 @@ close to real time during the call.
    exchange logged as a transcript.
 2. Read that transcript conversation the same way you would a WhatsApp or
    web conversation, including after the call has ended.
-3. At the end of the call, the caller is asked to rate the interaction
+3. The assistant is instructed to answer in English, Bahasa Melayu, or
+   Chinese and switch languages mid-call to match the caller — but
+   **reliable Bahasa Melayu on a live call is a known, unresolved issue**
+   specific to this voice pipeline (the text channels don't have this
+   problem). Don't promise a Bahasa-speaking caller the assistant will
+   stay in Bahasa for the whole call; if they get stuck in English,
+   apologize and hand the call to a human rather than calling it fixed.
+4. At the end of the call, the caller is asked to rate the interaction
    1–5; that rating feeds the CSAT report (see the Reports chapter) the
    same way a text-channel rating does.
-4. If a caller reports an accident or breakdown outside business hours,
-   the assistant is designed to route them straight to the 24/7 roadside
-   assistance line rather than the normal queue — log the incident in the
-   RSA Incident Log chapter once it reaches an agent.
-5. If a caller asks to speak to a person, confirm with your administrator
-   what currently happens on your tenant — live transfer to an agent may
-   not be fully connected yet on every deployment.
+5. **Treat everything beyond the greeting, KB answers, and rating survey
+   as unconfirmed.** Those three were demonstrated live on a real call;
+   live transcript streaming, call classification, call recording, and a
+   real transfer to a human (see the Phone handoff behaviour section,
+   below) are built and code-reviewed but have not yet been run against a
+   real incoming call. If asked, describe them as "should work,
+   unconfirmed," not as proven.
 
 <!-- VERIFY-LIVE: confirm current phone/IVR operator-visible surface on the live tenant -->
 
-[[SCREENSHOT: ch10-phone-ivr | An inbound phone/IVR conversation in the inbox]]
+[[SCREENSHOT: ch10-voice-bot | A voice bot call transcript building up in the Conversations view]]
 
 ### Example scenario
 
 A customer calls outside business hours asking about the battery warranty
 on an e.MAS X70; the assistant answers from the knowledge base, and the
 call's transcript appears in the Conversations view for an agent to review
-the next morning. Had the same caller instead reported an accident, the
-assistant would route the call directly to the 24/7 roadside-assistance
-line.
+the next morning.
 
 ### Integrations & automation
 
-Phone/IVR conversations join the same single inbox front door described in
+Voice bot conversations join the same single inbox front door described in
 the Introduction chapter, are answered from the same knowledge base
-described in the Knowledge chapter, and feed the CSAT report and, for
-roadside-assistance calls, the RSA Incident Log chapter — the same way any
-other channel does. See also the Integration Overview chapter's Phone/IVR
-section.
+described in the Knowledge chapter, and feed the CSAT report the same way
+any other channel does. See also the Integration Overview chapter's Voice
+bot section, and the Phone handoff behaviour section below for what
+happens if the caller asks for a person.
+
+## Phone handoff behaviour (the human side)
+
+### What it is
+
+What happens when a caller asks for a person, and what's left behind in
+Chatwoot once a call ends. On tenants where a live transfer is turned on,
+the assistant tells the caller it's trying to connect them and dials a
+single support number — the same number for every reason a call gets
+transferred, including a roadside emergency. Where a live transfer isn't
+turned on (most tenants today), the assistant tells the caller a
+specialist will follow up and the call simply continues with the
+assistant.
+
+**A correction worth being precise about:** the 08-04 edition of the
+channel guide described roadside-assistance calls as routed straight to a
+24/7 line that bypasses normal business hours. **That isn't what's
+built.** Every transfer attempt — roadside or otherwise — is gated by the
+support inbox's normal business hours, with no exception for any
+particular kind of call. Outside those hours, the transfer is refused,
+not fast-tracked.
+
+### Where to find it
+
+The same conversation the Voice bot section describes — there's no
+separate "Phone" inbox or settings screen. Whether a live transfer is even
+attempted on your tenant is an administrator-level setting, not something
+an agent switches on.
+
+### How to use it
+
+1. If a caller asks for a person and a transfer is attempted, watch for
+   the conversation to reopen with a note recording the handoff — check
+   while the transfer is still ringing, since that's the signal someone is
+   being connected right now.
+2. **Don't promise an after-hours caller — roadside emergency or
+   otherwise — an automatic 24/7 transfer.** No such bypass exists; the
+   same business-hours gate applies to every call. Log a roadside case in
+   the RSA Incident Log chapter and follow up directly instead.
+3. **If nobody answers the transfer,** the caller hears a short apology
+   and the call ends — it does not return to the assistant, and the
+   conversation is tagged so it's easy to find. **The apology promises a
+   callback that nothing sends automatically** — only a human working that
+   tagged conversation makes the callback happen. Treat an unanswered
+   transfer as an action item still owed to the caller, not a closed loop.
+4. The `escalate` label works no differently on a phone-originated
+   conversation than on WhatsApp or the web chatbot: it doesn't notify
+   anyone, since this conversation isn't on the Email inbox. Escalate to a
+   dealer or PIC directly if the case needs one.
+5. Once the call has ended, work the resulting conversation like any
+   other — reply, resolve, and check the CSAT rating the same way as the
+   Voice bot section describes.
+
+<!-- VERIFY-LIVE: confirm current phone/IVR operator-visible surface on the live tenant -->
+
+[[SCREENSHOT: ch10-phone-handoff | An unanswered-transfer note on a phone conversation]]
+
+### Example scenario
+
+A customer calls after business hours reporting a breakdown and asks for
+a person. Because there's no after-hours exception for roadside calls, no
+transfer is attempted; the agent who picks up the transcript the next
+morning logs the incident in the RSA Incident Log chapter and calls the
+customer back directly, rather than assuming an overnight transfer
+happened.
+
+### Integrations & automation
+
+This is the agent-facing half of the Voice bot behaviour section, above.
+An unanswered-transfer tag is what should draw an agent's attention to a
+callback that's still owed; roadside calls that reach a human still feed
+the RSA Incident Log chapter regardless of how they got there.

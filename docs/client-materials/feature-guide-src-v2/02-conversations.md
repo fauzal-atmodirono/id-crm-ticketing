@@ -5,8 +5,8 @@
 ### What it is
 
 The conversation list is where every incoming conversation lands —
-WhatsApp, email, and phone/IVR alike — filterable by who it's assigned to
-and by its status. By default the CRM shows **every** conversation across
+WhatsApp, the website chatbot, email, and phone/IVR alike — filterable by
+who it's assigned to and by its status. By default the CRM shows **every** conversation across
 **all** statuses, so nothing is hidden behind a narrower filter unless you
 choose one.
 
@@ -40,9 +40,9 @@ without having to change any filter first.
 ### Integrations & automation
 
 New conversations can arrive automatically from the AI assistant handling
-WhatsApp or phone/IVR contact before a human ever sees them (see the AI
-assistant behaviour chapter); this list is also where assignment, labels,
-and priorities (below) become visible at a glance.
+WhatsApp, web chatbot, or phone/IVR contact before a human ever sees them
+(see the AI assistant behaviour chapter); this list is also where
+assignment, labels, and priorities (below) become visible at a glance.
 
 ## Assignment & teams
 
@@ -114,6 +114,14 @@ sidebar listing conversations by label.
 4. Apply the relevant dealer label so the conversation counts toward that
    dealer's turnaround reporting, even outside an email escalation.
 5. Remove a label the same way, by deselecting it.
+6. **A limitation worth knowing before you rely on this:** the automated
+   escalation email only fires on an **Email**-channel conversation.
+   Applying `escalate` on a WhatsApp, web chatbot, or phone conversation
+   changes the label and nothing else — no one is notified. The dealer
+   label still records the case for turnaround reporting on any channel;
+   that part isn't affected. See the Integration Overview chapter's
+   WhatsApp, Web chatbot, and Phone sections for what to actually do on
+   those channels instead.
 
 [[SCREENSHOT: ch02-labels | Applying a label to a conversation]]
 

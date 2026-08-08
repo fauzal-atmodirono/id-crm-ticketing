@@ -8,8 +8,10 @@ find the right one.
 | Integration | What it connects | What you see in the CRM |
 |---|---|---|
 | WhatsApp | Proton's WhatsApp Business number | A WhatsApp inbox in Conversations |
+| Web chatbot | The website chat widget | A Web Chatbot inbox in Conversations, running the same AI assistant as WhatsApp |
+| Voice bot | Proton's support phone line, answered by an AI voice assistant | A conversation with a call transcript, alongside your other channels |
+| Phone | The human side of that same call | The same conversation, plus — where turned on — a transfer attempt to a live agent |
 | Email (incl. escalation emails) | Proton's support email address(es) | An Email inbox in Conversations, plus automatic two-thread escalation emails when the `escalate` label is applied |
-| Phone / IVR | Proton's support phone line, answered by an AI voice assistant | A conversation with a call transcript, alongside your other channels |
 | Gemini AI | Google's Gemini AI model | AI-drafted replies, Ask Copilot answers, summaries, and Playground test answers |
 | DMS / TSP | A dealer's Dealer Management System / Telematics Service Provider | Vehicle and service-history results inside a Customer 360 lookup |
 | Knowledge base | Proton's FAQ and document corpus | The content AI-assist features and Ask Copilot draw their answers and source citations from |
@@ -36,7 +38,23 @@ Conversations chapter's Conversation inbox & views section).
    new (or continuing) conversation in the WhatsApp inbox.
 2. Handle it like any other conversation — read, reply, and use AI-assist
    features exactly as covered in the Conversations chapter.
-3. If WhatsApp messages stop arriving, or replies aren't reaching
+3. **If the case needs escalating, don't rely on the `escalate` label
+   here.** Adding it to a WhatsApp conversation by hand does not send an
+   email or a WhatsApp alert to anyone — the automatic escalation flow
+   only fires on an Email-channel conversation (see this chapter's Email
+   section, below). The only automatic PIC notification on WhatsApp is the
+   AI assistant's own judgement that a message is a genuine complaint,
+   which an agent can't trigger by hand. **What to actually do:** contact
+   the dealer or PIC directly (phone, a direct email), and don't tell the
+   customer "I've escalated this" on the strength of the label alone. A
+   `dealer_<slug>` label still records the case against that dealer for
+   turnaround reporting — that part works on every channel — but it's a
+   reporting stamp, not a notification.
+4. Voice notes and photos aren't a reliable way to get information to the
+   assistant yet — this has not been tested end to end on a real WhatsApp
+   number. Describe it as untested if a customer or colleague asks, not as
+   working.
+5. If WhatsApp messages stop arriving, or replies aren't reaching
    customers, report it to your CRM administrator or Devoteam support —
    this is usually a problem with the WhatsApp Business connection itself,
    not something fixable from inside the CRM.
@@ -48,13 +66,196 @@ Conversations chapter's Conversation inbox & views section).
 A customer messages Proton's WhatsApp number asking about e.MAS 7 test
 drive availability; the conversation arrives in the WhatsApp inbox, where
 the AI assistant drafts a reply for an agent to review and send (see the
-End-to-End Scenarios chapter's Scenario 1).
+End-to-End Scenarios chapter's Scenario 1). Where a case instead needs a
+dealer's attention, see the End-to-End Scenarios chapter's Scenario 12 for
+what escalating a WhatsApp case actually involves.
 
 ### Integrations & automation
 
 WhatsApp conversations feed the AI Assistant Behaviour chapter's decisions,
 create or update the customer's record in the Contacts chapter, and are
 counted in the channel breakdowns shown throughout the Reports chapter.
+
+## Web chatbot
+
+### What it is
+
+The website's live chat widget, connected as a channel so a visitor's
+typed questions are answered by the same AI assistant used on WhatsApp.
+Two practical differences from WhatsApp: replies go out as plain text (no
+chat-style formatting conversion), and a visitor isn't required to give a
+name, phone number, or email unless the widget's own pre-chat form has
+been set up to ask for one.
+
+### Where to find it
+
+Appears as a Web Chatbot inbox in the Conversations view, wherever the
+widget has been embedded on the website and the AI assistant has been
+assigned to that inbox — confirm both are set up with an administrator
+before promising a visitor the bot will answer.
+
+<!-- VERIFY-LIVE: confirm exact Web Chatbot inbox setup wording on the live tenant -->
+
+### How to use it
+
+1. A visitor opens the chat widget on the website and types a question;
+   it arrives as a new (or continuing) conversation in the Web Chatbot
+   inbox.
+2. Handle it like any other conversation — read, reply, and use AI-assist
+   features exactly as covered in the Conversations chapter. Replies sent
+   from here reach the visitor as plain text.
+3. Because a visitor may not have given any contact details, don't assume
+   a web-chat contact and a later phone or email contact are the same
+   person just because the story sounds similar — check the contact
+   panel's own record before treating them as linked (see the Contacts
+   chapter).
+4. **The `escalate` label has the same limitation here as on WhatsApp:**
+   adding it to a Web Chatbot conversation by hand doesn't send an email
+   or notify anyone — only an Email-channel conversation triggers the
+   automatic escalation flow. **What to actually do:** contact the dealer
+   or PIC directly, outside the CRM, the same as on WhatsApp.
+5. If the widget stops loading, or messages aren't arriving, report it to
+   your CRM administrator or Devoteam support.
+
+[[SCREENSHOT: ch12-web-chatbot | A Web Chatbot inbox conversation]]
+
+### Example scenario
+
+A website visitor asks about e.MAS 7 financing options through the chat
+widget; the assistant answers from the same knowledge base it would use on
+WhatsApp, and when the visitor asks a follow-up the bot can't resolve, an
+agent takes over and replies in plain text (see the End-to-End Scenarios
+chapter's Scenario 13 for what happens if that same case needs escalating).
+
+### Integrations & automation
+
+Web Chatbot conversations feed the AI Assistant Behaviour chapter's
+decisions and create or update the customer's record in the Contacts
+chapter the same way WhatsApp does, using the same knowledge base — there's
+no separate web-only content to maintain.
+
+## Voice bot
+
+### What it is
+
+The AI-answered part of an inbound call to Proton's support line: a live
+voice conversation (not a keypad menu) that greets the caller, answers
+questions from the same knowledge base as other channels, and asks for a
+1–5 rating before the call ends.
+
+### Where to find it
+
+No settings screen inside the CRM. What you see is what each call leaves
+behind: a conversation in the Conversations view carrying the call's
+transcript, appearing either live during the call or all at once at
+hangup, depending on how your tenant is configured.
+
+<!-- VERIFY-LIVE: confirm current phone/IVR operator-visible surface on the live tenant -->
+
+### How to use it
+
+1. A customer calls Proton's support line; the assistant answers, and the
+   call appears as a conversation with the spoken exchange logged as a
+   transcript.
+2. The assistant is meant to answer in English, Bahasa Melayu, or Chinese
+   and switch mid-call to match the caller — but **reliable Bahasa Melayu
+   on a live call is a known, unresolved issue.** Don't promise a
+   Bahasa-speaking caller the assistant will stay in Bahasa for the whole
+   call; if they get stuck in English, apologize and hand the call to a
+   human rather than calling it fixed.
+3. At the end of the call, the caller is asked to rate the interaction
+   1–5; that rating feeds the CSAT report the same way a text-channel
+   rating does.
+4. If the caller asks for a person, whether a transfer is even attempted
+   depends on your tenant's configuration — see the Phone section below
+   for what happens next once one is.
+5. **Read this before promising anything else about this channel:** the
+   greeting, KB answers, and rating survey were confirmed on a real,
+   live call. Live transcript streaming, call classification, recording,
+   and a real agent transfer are built and code-reviewed but, as of this
+   writing, have never been run against a real phone call — describe them
+   as "should work, unconfirmed" if a client asks, not as proven.
+
+[[SCREENSHOT: ch12-voice-bot | A voice bot call transcript in the Conversations view]]
+
+### Example scenario
+
+A customer calls asking about the e.MAS X70's battery warranty; the
+assistant answers from the same knowledge base used on WhatsApp, and the
+call's transcript appears in Conversations for an agent to review, exactly
+like a text conversation would (see the End-to-End Scenarios chapter's
+Scenario 3).
+
+### Integrations & automation
+
+Voice bot conversations join the same single-inbox front door described in
+the Introduction chapter and are answered from the same knowledge base as
+every other channel (see the Knowledge chapter); the rating feeds the CSAT
+report, and roadside-assistance calls feed the RSA Incident Log chapter
+once a human picks them up.
+
+## Phone
+
+### What it is
+
+The human side of the same call the Voice bot section covers: what's left
+behind in Chatwoot once a call ends or is handed to a person, and — on
+tenants where it's turned on — an attempted live transfer to an agent
+mid-call.
+
+### Where to find it
+
+The same conversation the Voice bot section describes — there's no
+separate "Phone" inbox or settings screen; it's what an agent does with
+that conversation.
+
+### How to use it
+
+1. Open the resulting conversation like any other and read the transcript.
+2. **If a transfer to a human is attempted:** the assistant tells the
+   caller it's trying to connect them, then dials a single support number
+   — the same number for every reason a call gets transferred; there's no
+   separate always-on line for any particular kind of call.
+3. **A real correction worth knowing:** every transfer attempt is gated by
+   the support inbox's normal business hours, with no exception for
+   accident or roadside calls. **Don't tell a caller reporting an accident
+   after hours that they'll be automatically connected to a 24/7 line —
+   that isn't built.** Log the incident in the RSA Incident Log chapter and
+   handle the follow-up manually instead.
+4. If someone answers, the conversation reopens with a note recording the
+   handoff — check it while the transfer is still ringing, not after
+   everyone's hung up.
+5. **If nobody answers,** the caller hears a short apology and the call
+   simply ends — it does not return to the assistant. The conversation is
+   tagged so it's easy to find in your queue. **The apology promises a
+   callback, but nothing sends that callback automatically** — only a
+   human working that tagged conversation makes it happen, so treat an
+   unanswered transfer as an open action item, not a closed loop.
+6. **The `escalate` label has the same limitation here as on WhatsApp and
+   the web chatbot:** a phone-originated conversation isn't on the Email
+   inbox, so applying `escalate` by hand doesn't send anyone an email.
+   Escalate to a dealer/PIC manually, the same as the other two channels.
+7. If a caller reports call quality issues, dropped transfers, or a
+   transfer that should have connected but didn't, report it to your CRM
+   administrator or Devoteam support — most of this behaviour is still
+   being confirmed against real calls.
+
+[[SCREENSHOT: ch12-phone | A call transferred to a human agent, and the note it leaves behind]]
+
+### Example scenario
+
+A caller reporting a breakdown after business hours asks to speak to
+someone; because there's no after-hours exception for roadside calls, the
+transfer isn't attempted, so the agent who picks up the transcript the
+next morning logs the incident in the RSA Incident Log chapter and follows
+up directly instead (see the End-to-End Scenarios chapter's Scenario 14).
+
+### Integrations & automation
+
+Phone conversations feed the CSAT report and, for roadside-assistance
+calls, the RSA Incident Log chapter, the same way the Voice bot section
+describes. An unanswered transfer's tag is what an agent should look for
+to know a callback is still owed.
 
 ## Email (incl. escalation emails)
 
@@ -64,7 +265,9 @@ Proton's support email address(es) connected as an Email channel, plus the
 two-thread escalation email flow that fires when an agent applies the
 `escalate` label to an Email-channel conversation, and the reply loop that
 links a dealer's, PIC's, or customer's reply back onto the case that sent
-it.
+it. This is the one channel where escalation labels actually send email —
+see the WhatsApp, Web chatbot, and Phone sections above for what to do on
+the others.
 
 ### Where to find it
 
@@ -115,53 +318,6 @@ Escalation emails rely on the Escalation Routing directory (Administration
 chapter) to know who to notify — and to check a reply against before
 linking it back onto a case — and feed the Dealer Escalation Turnaround
 figures in the Reports chapter.
-
-## Phone / IVR
-
-### What it is
-
-Proton's support phone line, answered by the same AI assistant used on
-other channels rather than a traditional keypad menu, using a live voice
-conversation.
-
-### Where to find it
-
-There is no phone/IVR settings screen inside the CRM. What you see is each
-call's artifact: a conversation with the call transcript, appearing
-alongside your other channels in the Conversations view.
-
-<!-- VERIFY-LIVE: confirm current phone/IVR operator-visible surface on the live tenant -->
-
-### How to use it
-
-1. A customer calls Proton's support line; the AI assistant answers and
-   the call appears as a conversation with a live-updating transcript.
-2. Review the transcript conversation the same way you would any other,
-   once the call has ended.
-3. A 1–5 rating captured at the end of the call feeds the CSAT report (see
-   the Reports chapter).
-4. Since there's no configuration screen for this integration inside the
-   CRM, report any issue with call handling (calls not answering, no
-   transcript appearing, or similar) to your CRM administrator or Devoteam
-   support.
-
-<!-- VERIFY-LIVE: confirm current phone/IVR operator-visible surface on the live tenant -->
-
-[[SCREENSHOT: ch12-phone-ivr | An inbound phone/IVR call reaching the inbox]]
-
-### Example scenario
-
-A customer calls reporting a breakdown; the call is answered by the AI
-assistant and logged as a conversation, and staff follow up by logging an
-RSA incident once they pick up the case (see the End-to-End Scenarios
-chapter's Scenario 3).
-
-### Integrations & automation
-
-Phone/IVR conversations join the same single-inbox front door described in
-the Introduction chapter, are answered from the same knowledge base as
-other channels (see the Knowledge chapter), and feed the CSAT report and,
-for roadside-assistance calls, the RSA Incident Log chapter.
 
 ## Gemini AI
 

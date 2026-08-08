@@ -65,7 +65,7 @@
 1. A customer calls Proton's support line reporting a breakdown on the
    toll road. The call is answered by the AI assistant, and the
    conversation appears in the Conversations view with the call transcript
-   (see the AI Assistant Behaviour chapter's Phone/IVR touchpoint section).
+   (see the AI Assistant Behaviour chapter's Voice bot behaviour section).
 2. Because it's a roadside situation, an administrator with access to the
    RSA Incident Log page logs a new entry with the vehicle number, cause,
    and breakdown location (see the RSA Incident Log chapter's Logging an
@@ -261,3 +261,77 @@
    nothing will actually send until an administrator enables it.
 
 [[SCREENSHOT: ch11-scenario11-email-template | Editing the escalation acknowledgement email wording under Knowledge Settings]]
+
+## Scenario 12: A WhatsApp case looks escalated, but nothing was sent
+
+1. A customer messages about a repeated delivery delay, and the agent
+   handling it decides the case needs the dealer's attention. Following
+   the same steps as an Email escalation (see Scenario 2, above), the
+   agent adds a `dealer_<slug>` label, then **escalate**, to the WhatsApp
+   conversation.
+2. Nothing happens. **Adding the `escalate` label to a WhatsApp
+   conversation by hand does not send an email or a WhatsApp alert to
+   anyone** — the automatic escalation flow only fires on an Email-channel
+   conversation (see the Integration Overview chapter's Email section);
+   WhatsApp conversations don't qualify, no matter what labels are on
+   them.
+3. The `dealer_<slug>` label does still do one thing: it stamps the
+   conversation for that dealer's turnaround reporting, the same as it
+   would on any channel. That part works — it's a reporting timestamp, not
+   a notification, and it's easy to mistake one for the other.
+4. The only way a PIC gets notified automatically on WhatsApp is if the AI
+   assistant itself judges the customer's message to be a genuine
+   complaint — its own decision, not something an agent can trigger by
+   adding a label (see the AI Assistant Behaviour chapter).
+5. **What the agent actually does:** call or email the dealer directly,
+   outside the CRM, and tell the customer only that the right team is
+   being looped in — not that "I've escalated this," since the label
+   alone didn't do anything on this channel.
+
+[[SCREENSHOT: ch11-scenario12-whatsapp-escalation-limit | Adding dealer and escalate labels to a WhatsApp conversation, with no email sent as a result]]
+
+## Scenario 13: The same limitation on a web chat case
+
+1. A website visitor asks about a warranty issue that turns out to need
+   the dealer's attention. The agent applies a `dealer_<slug>` label, then
+   **escalate**, to the Web Chatbot conversation — exactly the same steps
+   as Scenario 12, above.
+2. The result is identical: no email fires, because the conversation is on
+   the Web Chatbot inbox, not the Email inbox. The dealer turnaround stamp
+   still applies from the `dealer_<slug>` label; the notification still
+   doesn't happen.
+3. Since the visitor may not have given a phone number or email through
+   the widget, the agent may have no address to escalate to inside the CRM
+   even if the flow did fire here — reinforcing why this has to be handled
+   outside the CRM today, the same as WhatsApp.
+4. The agent contacts the dealer directly and tells the visitor only that
+   the right team has been looped in, the same wording as Scenario 12.
+
+[[SCREENSHOT: ch11-scenario13-webchat-escalation-limit | The same escalate-label limitation on a Web Chatbot conversation]]
+
+## Scenario 14: An after-hours breakdown call, and an unanswered transfer
+
+1. A customer calls late one evening reporting a breakdown and asks the
+   assistant to connect them to a person right away.
+2. Because every transfer attempt — roadside or otherwise — is gated by
+   the support inbox's normal business hours with no exception, the
+   transfer isn't attempted at all; the call continues with the assistant,
+   which tells the caller a specialist will follow up (see the AI
+   Assistant Behaviour chapter's Phone handoff behaviour section). This is
+   a real correction from the 08-04 guide, which described roadside calls
+   as bypassing business hours — that bypass was never built.
+3. The next morning, an agent opens the resulting conversation, reads the
+   transcript, and logs the incident in the RSA Incident Log chapter with
+   the vehicle number and cause, then calls the customer back directly —
+   not assuming any overnight transfer or callback already happened.
+4. Later that week, a different caller reaches an agent transfer during
+   business hours, but nobody picks up at the other end. The caller hears
+   a short apology and the call ends without returning to the assistant;
+   the conversation is tagged so agents can find it. The agent on duty
+   sees the tag, calls the customer back personally, since the apology's
+   promised callback doesn't send itself.
+5. Neither of these cases can be escalated to a dealer with just the
+   `escalate` label either — a phone conversation isn't on the Email
+   inbox, the same limitation as Scenarios 12 and 13.
+
+[[SCREENSHOT: ch11-scenario14-phone-unanswered-handoff | A tagged unanswered-transfer conversation, and an after-hours breakdown call logged manually]]

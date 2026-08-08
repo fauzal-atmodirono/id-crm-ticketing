@@ -54,6 +54,25 @@ Task 7 (their content is prescribed differently there):
   0029/0032 are the reason certain native Chatwoot menus (Enterprise limits
   banner, Audit Logs/Custom Roles nav under Settings pre-Proton-RBAC,
   Security settings) are absent from this guide.
+- **Channel-coverage pass (2026-08-08, against
+  `docs/analysis/2026-08-08-crm-channel-interaction-guide-v2.md`): fixed a
+  factual error carried over from the original draft.** The original
+  `10-ai-behaviour.md` "Phone / IVR touchpoint" section claimed a caller
+  reporting an accident/breakdown after hours is routed straight to a 24/7
+  roadside line, bypassing business hours. That bypass does not exist —
+  the shipped handoff resolver applies the same business-hours gate to
+  every transfer reason with no exception, and refuses (rather than
+  fast-tracks) the transfer outside those hours. The section is now split
+  into "Voice bot behaviour" and "Phone handoff behaviour" and states the
+  correct (no-bypass) behaviour. This same pass added the missing **Web
+  chatbot** channel (not covered anywhere in the original draft) to
+  `12-integrations.md`, split its "Phone / IVR" section into "Voice bot"
+  and "Phone" to match the reviewed guide's channel split, and added the
+  "`escalate` label only fires on Email-channel conversations" correction
+  to the WhatsApp/Web chatbot/Phone sections and to `02-conversations.md`'s
+  Labels section and `13-glossary.md`'s Escalation term — none of which
+  stated that limitation before. New scenarios 12–14 in `11-scenarios.md`
+  walk through the correction in the handbook's narrative style.
 - **Mandated addition (Task 1 review): `02-conversations.md` gained a
   `## Macros` section** that Task 1's skeleton had omitted despite the
   design spec listing macros as a conversation-level feature. Macros are
@@ -171,7 +190,8 @@ Task 7 (their content is prescribed differently there):
 | Suggest mode vs. Auto mode | `agent/app/services/orchestrator.py` (`AGENT_MODE`: suggest = private note + reopen; auto = direct send) | ch10-suggest-vs-auto |
 | Escalation labels & the escalation email | `agent/app/services/sync.py::maybe_escalate` (`escalate` label → two-thread EM-7 email), `maybe_stamp_dealer_escalation` (`dealer_<slug>` label) | ch10-escalation-label |
 | Lifecycle messages | `agent/app/services/lifecycle.py` (7 lifecycle messages); backend `ProtonConfigClient.get_assistant_messages` | ch10-lifecycle-messages |
-| Phone / IVR touchpoint | `deploy/twilio/ivr-studio-flow.json`; backend `features/chat/` phone endpoints | ch10-phone-ivr |
+| Voice bot behaviour (the AI-answered part of a call) | `deploy/twilio/ivr-studio-flow.json`; backend `features/chat/` phone endpoints; `docs/analysis/2026-08-08-crm-channel-interaction-guide-v2.md` §5 (Package C unconfirmed against a real call; Bahasa reliability open issue) | ch10-voice-bot |
+| Phone handoff behaviour (the human side) | `docs/analysis/2026-08-08-crm-channel-interaction-guide-v2.md` §6 (`HandoffTargetResolver.resolve()` — business hours gate every handoff reason uniformly, no RSA bypass; unanswered transfer hangs up, doesn't return to bot) — **corrects a factual error in the prior draft of this chapter**, which claimed roadside calls bypass business hours; `phone-channel-package-c-verification.md` §3 accepted limitations | ch10-phone-handoff |
 
 ### 11-scenarios.md (narrative walkthroughs — no 5-heading template)
 | `##` section | Evidence | Screenshot id(s) |
@@ -182,13 +202,23 @@ Task 7 (their content is prescribed differently there):
 | Scenario 4: FAQ batch import to live bot answer | Ch4 (FAQs bulk upload, Playground) | ch11-scenario4-faq-csv |
 | Scenario 5: Weekly reporting routine | Ch7 (Weekly Report) | ch11-scenario5-weekly-report |
 | Scenario 6: New agent onboarding | Ch9 (Roles, Teams, Inboxes) | ch11-scenario6-onboarding |
+| Scenario 7: A customer replies to their own acknowledgement email | Ch2 (Escalation replies) | ch11-scenario7-customer-reply |
+| Scenario 8: Maintaining a dealer group | Ch9 (Escalation Routing) | ch11-scenario8-dealer-group |
+| Scenario 9: An SLA breach reaches the PIC group and the case | Ch2 (SLA breach alerts), Ch9 (SLA Policies) | ch11-scenario9-sla-breach |
+| Scenario 10: Adjusting SLA thresholds ahead of a launch event | Ch9 (SLA Policies) | ch11-scenario10-sla-threshold |
+| Scenario 11: Editing a customer-facing email template | Ch4 (Knowledge Settings, Tenant settings panel) | ch11-scenario11-email-template |
+| Scenario 12: A WhatsApp case looks escalated, but nothing was sent | `docs/analysis/2026-08-08-crm-channel-interaction-guide-v2.md` §3.5 (`maybe_escalate` returns unless `Channel::Email`) | ch11-scenario12-whatsapp-escalation-limit |
+| Scenario 13: The same limitation on a web chat case | Same guide §4.5 | ch11-scenario13-webchat-escalation-limit |
+| Scenario 14: An after-hours breakdown call, and an unanswered transfer | Same guide §6.3 (no RSA bypass; unanswered-handoff apology promises a callback nothing schedules) | ch11-scenario14-phone-unanswered-handoff |
 
 ### 12-integrations.md
 | `##` section | Evidence | Screenshot id(s) |
 |---|---|---|
-| WhatsApp | Native Chatwoot channel — `<!-- VERIFY-LIVE -->` | ch12-whatsapp |
+| WhatsApp | Native Chatwoot channel — `<!-- VERIFY-LIVE -->`; escalation limitation per `docs/analysis/2026-08-08-crm-channel-interaction-guide-v2.md` §3.5, §3.6 (media understanding untested) | ch12-whatsapp |
+| Web chatbot | Native Chatwoot Website Widget channel, same orchestrator as WhatsApp minus chunking/formatting; `docs/analysis/2026-08-08-crm-channel-interaction-guide-v2.md` §4 | ch12-web-chatbot |
+| Voice bot | `deploy/twilio/ivr-studio-flow.json`; backend `features/chat/` phone endpoints; same guide §5 (Package C unconfirmed against a real call; Bahasa reliability open issue) | ch12-voice-bot |
+| Phone | Same guide §6 (business-hours-gated handoff, no RSA bypass; unanswered-handoff apology promises an uncommitted callback) | ch12-phone |
 | Email (incl. escalation emails) | Native Chatwoot channel; `agent/app/services/sync.py` EM-7 escalation email | ch12-email |
-| Phone / IVR | `deploy/twilio/ivr-studio-flow.json`; backend `features/chat/` phone endpoints | ch12-phone-ivr |
 | Gemini AI | `agent/app/ai/gemini.py`, `app/ai/tools.py` | ch12-gemini-ai |
 | DMS / TSP | `backend/.../features/chat/dms_client.py`; `0045-dms-integration-card.patch` | ch12-dms |
 | Knowledge base (Vertex corpus) | `backend/.../features/chat` KB retrieval; pgvector operator KB (`/kb/knowledge`) | ch12-knowledge-base |

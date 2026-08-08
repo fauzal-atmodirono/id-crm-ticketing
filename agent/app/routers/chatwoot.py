@@ -13,7 +13,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from app.config import get_settings
 from app.security import verify_chatwoot_signature
-from app.services import escalation_replies, lifecycle, orchestrator, sync
+from app.services import dept_suggestion, escalation_replies, lifecycle, orchestrator, sync
 from app.services.dedupe import claim_delivery
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,7 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks):
         background_tasks.add_task(
             escalation_replies.maybe_link_escalation_reply, payload
         )
+        background_tasks.add_task(dept_suggestion.maybe_suggest_department, payload)
     elif event in _STATUS_ONLY_EVENTS:
         background_tasks.add_task(sync.record_conversation_status, payload)
         if settings_flags.lifecycle_enabled and payload.get("status") == "resolved":

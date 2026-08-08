@@ -209,6 +209,18 @@ class ChatwootClient:
         response.raise_for_status()
         return response.json() if response.content else None
 
+    async def get_labels(self, conversation_id: int) -> Any:
+        """Current label titles on a conversation: `{"payload": [...]}`.
+        Raises on failure like `get_conversation`/`get_messages` -- callers
+        that need a fail-open read (e.g. `dept_suggestion`) wrap this in
+        their own try/except, matching every other background-task helper
+        in this codebase."""
+        response = await self._client.get(
+            f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}/labels"
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def add_labels(self, conversation_id: int, labels: list[str]) -> Any:
         """Add labels without clobbering existing ones. Chatwoot's labels
         endpoint REPLACES the whole set, so we GET the current labels and POST

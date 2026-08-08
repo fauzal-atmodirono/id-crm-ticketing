@@ -42,6 +42,7 @@ does **not** use the `escalate` label. See §7.
 | `SLA_INBOX_IDS` | backend | `<main inbox id>,4` — this **replaces** the default scope rather than extending it, so listing the Email inbox (`4`) alone stops the SLA engine scanning `CHATWOOT_INBOX_ID`. List both. Also widens `/tasks/mine`. |
 | `SLA_ALERT_EMAIL_ENABLED` | backend | `true` (TC-10) |
 | `SLA_ALERT_NOTE_ENABLED` | backend | `true` (TC-10) |
+| `DEPT_SUGGESTION_ENABLED` | agent | `true` (TC-11 only, default `false`) — the AI-suggested-department private note. Independent of `EMAIL_ESCALATION_ENABLED`: it runs on the inbound message, before any label is ever applied, and never applies a label itself. |
 
 Two more things TC-08/09/10 need that are **not** env vars:
 
@@ -457,6 +458,46 @@ private note on #N, no duplicates on the rescan.
 
 > Reset the inbox's Response SLA afterwards — a 3-minute threshold left in
 > place will breach every real email on this inbox.
+
+---
+
+### TC-11 — AI-suggested escalation department (new, suggest-only)
+
+**Preconditions:** `DEPT_SUGGESTION_ENABLED=true` (agent, default `false` —
+with it off this case is a no-op: the inbound message is processed as normal
+and no private note appears). `PROTON_BACKEND_URL`/`PROTON_BACKEND_KEY` set
+(shared with the rest of this document). At least one department has a PIC
+configured at CRM → Escalation Routing (`engineer`, `pre_sales`, `sales` on
+this tenant today) — candidates for the suggestion always come from that
+store, never a static list, so `dept_aftersales`/`dept_cs`/`dept_technical`
+(no PIC record) can never be suggested.
+
+**Steps**
+
+1. Send a new email to the Email inbox, first line
+   `Test escalation TC-11 — engine light stays on after service`, with no
+   `dept_*` label applied yet.
+2. Wait for the ~1–2 minute IMAP poll, then for the AI to process the
+   inbound message (a few seconds after the conversation appears).
+
+**Expected**
+
+- The conversation gains a **private note** starting `AI-suggested
+  escalation department: **<slug>**.`, naming one of the departments that
+  has a PIC configured, and explicitly stating the label must be applied
+  **before** `escalate`. No `dept_*` label is applied automatically — the
+  note is the entire effect.
+- Reply again on the same thread (a second inbound customer message): **no**
+  second note — `dept_suggested_at` on the conversation's custom attributes
+  already stamps this conversation as suggested.
+- Apply a **different** `dept_<slug>` label yourself before `escalate` (the
+  suggestion is a nudge, not a constraint) and confirm TC-01 still behaves
+  normally — the suggestion note has no bearing on which department actually
+  receives the PIC mail.
+
+**Pass criteria:** exactly one private note naming a department that has a
+PIC configured, no second note on a follow-up reply, no `dept_*` label
+applied by the AI itself.
 
 ---
 

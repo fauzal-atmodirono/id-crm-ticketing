@@ -108,6 +108,14 @@ class Settings(BaseSettings):
     # linked internal reply. Never sends anything to the customer.
     escalation_reply_draft_enabled: bool = False
 
+    # Suggest-only AI escalation-department nudge (app/services/dept_suggestion.py):
+    # on an incoming customer message to an Email-channel conversation with no
+    # dept_* label yet, classify it against the departments that actually have
+    # a PIC configured (backend GET /escalation/departments) and post a private
+    # note naming one. Never applies the label itself -- a human still has to
+    # add dept_<slug> before escalate. Default off, byte-identical when unset.
+    dept_suggestion_enabled: bool = False
+
     # SOP completion (B: categorization taxonomy; C1: email auto-ack).
     # Comma-separated category slugs the bot may assign on resolution (must
     # match the tenant's deployed taxonomy). Empty → auto-categorize no-ops.

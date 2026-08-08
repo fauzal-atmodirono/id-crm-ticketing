@@ -461,6 +461,20 @@ Emails the support address.
    clean), so the only signal left is a Reply-To token that isn't always
    available when this webhook fires — the customer may still receive one
    auto-ack on the throwaway conversation their reply lands in. See §7.6.
+7. **New, suggest-only, gated by `DEPT_SUGGESTION_ENABLED`** (agent, default
+   `false`): the first inbound customer message on a conversation with no
+   `dept_*` label yet gets classified against whichever departments actually
+   have a PIC configured (never a static list — a department with no PIC,
+   e.g. `dept_aftersales`/`dept_cs`/`dept_technical` on this tenant, can
+   never be suggested) and, if one fits, a **private note** appears naming
+   it — e.g. `AI-suggested escalation department: **sales**.` — and
+   reminding you to apply `dept_sales` **before** `escalate` (§7.5's label-
+   order rule). This is purely a nudge: **no label is ever applied
+   automatically**, an AI decision silently triggering a real escalation
+   email would be worse than the silent-failure this feature exists to
+   prevent. At most one note per conversation (a `dept_suggested_at` custom
+   attribute stamps it). With the flag off — the default — this step simply
+   doesn't run.
 
 ### 7.3 Scenario A — routine email, no escalation needed
 Customer sends the email; allow the ~1–2 minute IMAP poll (§7.2 step 2)
@@ -488,7 +502,11 @@ customer ack goes out.
 1. Apply the **`dept_<slug>` label first** (e.g. `dept_sales` —
    pre-provisioned; ask an admin which department slugs have a PIC
    configured, since an unmapped one only logs
-   `escalation_notifier_no_pic_for_dept` and sends no PIC mail).
+   `escalation_notifier_no_pic_for_dept` and sends no PIC mail). If
+   `DEPT_SUGGESTION_ENABLED` is on (§7.2 step 7), a private note may already
+   be sitting on the conversation suggesting which one — a nudge, not a
+   requirement; use your own judgement and apply the label yourself either
+   way.
 2. **If a dealer is involved**, also apply a **`dealer_<slug>` label**
    before `escalate` — this must be **created first** under
    **Settings → Labels**, named to match the dealer's routing-table slug

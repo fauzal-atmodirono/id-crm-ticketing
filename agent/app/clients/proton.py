@@ -451,6 +451,29 @@ class ProtonConfigClient:
             logger.debug("proton_config: get_escalation_contacts failed", exc_info=True)
             return None
 
+    async def get_escalation_departments(self) -> list[str] | None:
+        """Department keys that currently have a PIC configured (GET
+        /escalation/departments), for the AI-suggested-department
+        classifier's candidate list (`services.dept_suggestion`).
+
+        Deliberately NOT cached, mirroring `get_escalation_contacts`: an
+        operator editing PIC routing should be reflected on the very next
+        inbound message, not up to a TTL later. Returns None on any failure,
+        non-2xx, or bad shape -- never raises -- so the caller can fail-open
+        and post no suggestion.
+        """
+        try:
+            response = await self._client.get("/escalation/departments")
+            response.raise_for_status()
+            data = response.json()
+            departments = (data or {}).get("departments") if isinstance(data, dict) else None
+            if not isinstance(departments, list):
+                return None
+            return [str(d) for d in departments if d]
+        except Exception:
+            logger.debug("proton_config: get_escalation_departments failed", exc_info=True)
+            return None
+
     async def suggest_reply(
         self, conversation_id: str, messages: list[str]
     ) -> str | None:

@@ -18,6 +18,13 @@ conversation id is guessable, so anyone who can send mail could forge a
 agent/ service is expected to only link a reply when its From address
 appears in this list, i.e. it's someone the escalation mail was actually
 sent to.
+
+GET /escalation/departments exists so the agent/ service's AI-suggested-
+department feature (agent/app/services/dept_suggestion.py) can classify a
+conversation only against departments that actually have a PIC configured --
+suggesting a department with no PIC would recreate exactly the silent-failure
+escalation this feature exists to prevent. Same auth, same `PicStore`
+instance as /escalation/contacts.
 """
 
 from __future__ import annotations
@@ -146,5 +153,35 @@ def build_escalation_router(
                     _add(member, rec.dealer, "dealer")
 
         return {"contacts": out}
+
+    @router.get("/escalation/departments", dependencies=[Depends(auth)])
+    async def departments() -> dict[str, list[str]]:
+        """Department keys that currently have a PIC configured, for the
+        agent service's AI-suggested-department feature. Suggesting a
+        department with no PIC would silently escalate to nobody -- the
+        exact failure that feature exists to prevent -- so candidates come
+        from this store, never a static list.
+
+        Best-effort, same posture as /escalation/contacts: a store failure
+        yields fewer (or zero) departments, never a 5xx. The agent side
+        treats an empty list as "nothing to suggest" and posts no note --
+        degrading to "no suggestion" is always safe, where a 5xx here would
+        just make the caller retry against the same failing store.
+        """
+        if pic_store is None:
+            return {"departments": []}
+        try:
+            pics = await pic_store.list_all()
+        except Exception:
+            _log.warning("escalation_departments_pic_store_failed")
+            return {"departments": []}
+        seen: set[str] = set()
+        out: list[str] = []
+        for rec in pics:
+            key = (rec.department or "").strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                out.append(key)
+        return {"departments": out}
 
     return router

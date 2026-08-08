@@ -1,0 +1,214 @@
+# 0051-page-scroll.patch — OUR patch. Make the standalone Proton admin pages
+# scroll.
+#
+# Every one of these pages is a direct child of Chatwoot's Dashboard.vue
+# (AppContainer) <main>, which is `flex flex-1 h-full w-full min-h-0
+# overflow-hidden`: the router-view child is stretched to exactly the viewport
+# height and anything taller is CLIPPED, not scrolled — <main> owns the
+# overflow and hides it. Our pages rendered a plain `<div class="p-6">` root,
+# so any page whose content exceeded the viewport (Escalation Routing, with two
+# stacked tables, was the first one long enough to notice) simply lost its
+# bottom half with no way to reach it.
+#
+# The Knowledge pages (patches 0010-0021) already handle this the right way —
+# their roots carry `w-full h-full overflow-auto` — so this patch brings the
+# later standalone admin pages in line with that same convention rather than
+# inventing a new one. `h-full` is redundant-but-explicit (the flex stretch
+# already sizes them); `overflow-y-auto` is what actually restores scrolling,
+# and `w-full` pins the width to <main> instead of letting it be content-sized.
+#
+# Kept as a separate patch rather than editing 0025/0026/0027/0035/0039/0041/
+# 0043/0045 in place so the fix is one reviewable unit and the original
+# feature patches keep applying unchanged.
+
+diff --git a/app/javascript/dashboard/views/ProtonAuditLogPage.vue b/app/javascript/dashboard/views/ProtonAuditLogPage.vue
+--- a/app/javascript/dashboard/views/ProtonAuditLogPage.vue
++++ b/app/javascript/dashboard/views/ProtonAuditLogPage.vue
+@@ -50,7 +50,7 @@ export default {
+ </script>
+ 
+ <template>
+-  <div class="p-6">
++  <div class="w-full h-full p-6 overflow-y-auto">
+     <h1 class="mb-1 text-lg font-medium text-n-slate-12">Audit Log</h1>
+     <p class="mb-6 text-sm text-n-slate-11">Cross-ticket case state changes, newest first.</p>
+ 
+diff --git a/app/javascript/dashboard/views/ProtonCasesPage.vue b/app/javascript/dashboard/views/ProtonCasesPage.vue
+--- a/app/javascript/dashboard/views/ProtonCasesPage.vue
++++ b/app/javascript/dashboard/views/ProtonCasesPage.vue
+@@ -61,7 +61,7 @@ export default {
+ </script>
+ 
+ <template>
+-  <div class="p-6">
++  <div class="w-full h-full p-6 overflow-y-auto">
+     <h1 class="mb-1 text-lg font-medium text-n-slate-12">Cases</h1>
+     <p class="mb-6 text-sm text-n-slate-11">
+       Every conversation as a case, filterable by division, case type, status,
+diff --git a/app/javascript/dashboard/views/ProtonCustomer360Page.vue b/app/javascript/dashboard/views/ProtonCustomer360Page.vue
+--- a/app/javascript/dashboard/views/ProtonCustomer360Page.vue
++++ b/app/javascript/dashboard/views/ProtonCustomer360Page.vue
+@@ -86,7 +86,7 @@ export default {
+ </script>
+ 
+ <template>
+-  <div class="p-6">
++  <div class="w-full h-full p-6 overflow-y-auto">
+     <h1 class="mb-1 text-lg font-medium text-n-slate-12">Customer 360</h1>
+     <p class="mb-6 text-sm text-n-slate-11">
+       Look up a customer by phone number or vehicle number to see their contact
+diff --git a/app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue b/app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue
+--- a/app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue
++++ b/app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue
+@@ -225,7 +225,7 @@ export default {
+ </script>
+ 
+ <template>
+-  <div class="p-6">
++  <div class="w-full h-full p-6 overflow-y-auto">
+     <h1 class="mb-1 text-lg font-medium text-n-slate-12">DMS / TSP</h1>
+     <p class="mb-6 text-sm text-n-slate-11">
+       Configure the Dealer Management / Telematics Service Provider connection
+diff --git a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
+--- a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
++++ b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
+@@ -228,7 +228,7 @@ export default {
+ </script>
+ 
+ <template>
+-  <div class="p-6">
++  <div class="w-full h-full p-6 overflow-y-auto">
+     <h1 class="mb-1 text-lg font-medium text-n-slate-12">
+       Escalation Routing
+     </h1>
+diff --git a/app/javascript/dashboard/views/ProtonIntegrationsPage.vue b/app/javascript/dashboard/views/ProtonIntegrationsPage.vue
+--- a/app/javascript/dashboard/views/ProtonIntegrationsPage.vue
++++ b/app/javascript/dashboard/views/ProtonIntegrationsPage.vue
+@@ -61,7 +61,7 @@ export default {
+ </script>
+ 
+ <template>
+-  <div class="p-6">
++  <div class="w-full h-full p-6 overflow-y-auto">
+     <h1 class="mb-1 text-lg font-medium text-n-slate-12">Integrations</h1>
+     <p class="mb-6 text-sm text-n-slate-11">
+       Third-party systems connected to this CRM.
+diff --git a/app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue b/app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue
+--- a/app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue
++++ b/app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue
+@@ -179,7 +179,7 @@ export default {
+ </script>
+ 
+ <template>
+-  <div class="p-6">
++  <div class="w-full h-full p-6 overflow-y-auto">
+     <h1 class="mb-1 text-lg font-medium text-n-slate-12">Roles & Permissions</h1>
+     <p class="mb-6 text-sm text-n-slate-11">
+       Manage roles, the permissions each role grants, and which users hold each role.
+diff --git a/app/javascript/dashboard/views/ProtonRsaPage.vue b/app/javascript/dashboard/views/ProtonRsaPage.vue
+--- a/app/javascript/dashboard/views/ProtonRsaPage.vue
++++ b/app/javascript/dashboard/views/ProtonRsaPage.vue
+@@ -159,7 +159,7 @@ export default {
+ </script>
+ 
+ <template>
+-  <div class="p-6">
++  <div class="w-full h-full p-6 overflow-y-auto">
+     <h1 class="mb-1 text-lg font-medium text-n-slate-12">RSA Incident Log</h1>
+     <p class="mb-6 text-sm text-n-slate-11">
+       Log roadside-assistance incidents and review a running summary by cause
+diff --git a/app/javascript/dashboard/views/ProtonSlaPoliciesPage.vue b/app/javascript/dashboard/views/ProtonSlaPoliciesPage.vue
+--- a/app/javascript/dashboard/views/ProtonSlaPoliciesPage.vue
++++ b/app/javascript/dashboard/views/ProtonSlaPoliciesPage.vue
+@@ -88,7 +88,7 @@ export default {
+ </script>
+ 
+ <template>
+-  <div class="p-6">
++  <div class="w-full h-full p-6 overflow-y-auto">
+     <h1 class="mb-1 text-lg font-medium text-n-slate-12">SLA Policies</h1>
+     <p class="mb-6 text-sm text-n-slate-11">
+       Edit the tenant-wide default, or override it for a specific inbox. Unset fields inherit from
+
+--- Changes ---
+
+app/javascript/dashboard/views/ProtonAuditLogPage.vue
+  @@ -50,7 +50,7 @@ export default {
+  -  <div class="p-6">
+  +  <div class="w-full h-full p-6 overflow-y-auto">
+       <h1 class="mb-1 text-lg font-medium text-n-slate-12">Audit Log</h1>
+       <p class="mb-6 text-sm text-n-slate-11">Cross-ticket case state changes, newest first.</p>
+   
+  +1 -1
+
+app/javascript/dashboard/views/ProtonCasesPage.vue
+  @@ -61,7 +61,7 @@ export default {
+  -  <div class="p-6">
+  +  <div class="w-full h-full p-6 overflow-y-auto">
+       <h1 class="mb-1 text-lg font-medium text-n-slate-12">Cases</h1>
+       <p class="mb-6 text-sm text-n-slate-11">
+         Every conversation as a case, filterable by division, case type, status,
+  +1 -1
+
+app/javascript/dashboard/views/ProtonCustomer360Page.vue
+  @@ -86,7 +86,7 @@ export default {
+  -  <div class="p-6">
+  +  <div class="w-full h-full p-6 overflow-y-auto">
+       <h1 class="mb-1 text-lg font-medium text-n-slate-12">Customer 360</h1>
+       <p class="mb-6 text-sm text-n-slate-11">
+         Look up a customer by phone number or vehicle number to see their contact
+  +1 -1
+
+app/javascript/dashboard/views/ProtonDmsIntegrationPage.vue
+  @@ -225,7 +225,7 @@ export default {
+  -  <div class="p-6">
+  +  <div class="w-full h-full p-6 overflow-y-auto">
+       <h1 class="mb-1 text-lg font-medium text-n-slate-12">DMS / TSP</h1>
+       <p class="mb-6 text-sm text-n-slate-11">
+         Configure the Dealer Management / Telematics Service Provider connection
+  +1 -1
+
+app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
+  @@ -228,7 +228,7 @@ export default {
+  -  <div class="p-6">
+  +  <div class="w-full h-full p-6 overflow-y-auto">
+       <h1 class="mb-1 text-lg font-medium text-n-slate-12">
+         Escalation Routing
+       </h1>
+  +1 -1
+
+app/javascript/dashboard/views/ProtonIntegrationsPage.vue
+  @@ -61,7 +61,7 @@ export default {
+  -  <div class="p-6">
+  +  <div class="w-full h-full p-6 overflow-y-auto">
+       <h1 class="mb-1 text-lg font-medium text-n-slate-12">Integrations</h1>
+       <p class="mb-6 text-sm text-n-slate-11">
+         Third-party systems connected to this CRM.
+  +1 -1
+
+app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue
+  @@ -179,7 +179,7 @@ export default {
+  -  <div class="p-6">
+  +  <div class="w-full h-full p-6 overflow-y-auto">
+       <h1 class="mb-1 text-lg font-medium text-n-slate-12">Roles & Permissions</h1>
+       <p class="mb-6 text-sm text-n-slate-11">
+         Manage roles, the permissions each role grants, and which users hold each role.
+  +1 -1
+
+app/javascript/dashboard/views/ProtonRsaPage.vue
+  @@ -159,7 +159,7 @@ export default {
+  -  <div class="p-6">
+  +  <div class="w-full h-full p-6 overflow-y-auto">
+       <h1 class="mb-1 text-lg font-medium text-n-slate-12">RSA Incident Log</h1>
+       <p class="mb-6 text-sm text-n-slate-11">
+         Log roadside-assistance incidents and review a running summary by cause
+  +1 -1
+
+app/javascript/dashboard/views/ProtonSlaPoliciesPage.vue
+  @@ -88,7 +88,7 @@ export default {
+  -  <div class="p-6">
+  +  <div class="w-full h-full p-6 overflow-y-auto">
+       <h1 class="mb-1 text-lg font-medium text-n-slate-12">SLA Policies</h1>
+       <p class="mb-6 text-sm text-n-slate-11">
+         Edit the tenant-wide default, or override it for a specific inbox. Unset fields inherit from
+  +1 -1

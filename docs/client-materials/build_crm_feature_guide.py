@@ -6,6 +6,11 @@ Renders the 13 hand-drafted markdown chapters in `feature-guide-src/`
 template (`Google Docs template - Short version.docx`), producing
 `PROTON - CRM Feature Guide.docx`.
 
+`SRC_DIR`/`OUT`/`COVER_TITLE`/`COVER_SUBTITLE` are overridable via the
+`FG_SRC_DIR`/`FG_OUT`/`FG_COVER_TITLE`/`FG_COVER_SUBTITLE` env vars, so a
+second edition (e.g. `feature-guide-src-v2/`) can be built without editing
+this file or touching the default v1 output.
+
 The markdown subset implemented here is deliberately narrow — it's exactly
 what the chapter files use, no more:
   - `#`.."####" headings -> Heading 1..4
@@ -39,12 +44,24 @@ from docx.shared import Inches, Pt, RGBColor
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, "Google Docs template - Short version.docx")
-SRC_DIR = os.path.join(BASE, "feature-guide-src")
 ASSETS_DIR = os.path.join(BASE, "feature-guide-assets")
-OUT = os.path.join(BASE, "PROTON - CRM Feature Guide.docx")
 
-COVER_TITLE = "PROTON e.MAS — CRM Feature Guide"
-COVER_SUBTITLE = "Operator Handbook — August 2026"
+# SRC_DIR / OUT / COVER_TITLE / COVER_SUBTITLE are overridable by environment
+# variable so a second edition (e.g. a v2 revision living in its own
+# feature-guide-src-v2/ dir) can be built without touching this script or
+# disturbing the default v1 build. Un-set, every default below is byte-for-
+# byte what this script has always produced.
+SRC_DIR = os.environ.get("FG_SRC_DIR", os.path.join(BASE, "feature-guide-src"))
+OUT = os.environ.get(
+    "FG_OUT", os.path.join(BASE, "PROTON - CRM Feature Guide.docx")
+)
+
+COVER_TITLE = os.environ.get(
+    "FG_COVER_TITLE", "PROTON e.MAS — CRM Feature Guide"
+)
+COVER_SUBTITLE = os.environ.get(
+    "FG_COVER_SUBTITLE", "Operator Handbook — August 2026"
+)
 
 BORDER_COLOR = "4472C4"  # a muted blue, used for table borders and the
                           # blockquote/placeholder left accent

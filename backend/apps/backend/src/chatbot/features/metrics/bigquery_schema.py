@@ -43,6 +43,12 @@ CONVERSATIONS_SCHEMA: list[bigquery.SchemaField] = [
     bigquery.SchemaField("vehicle_model", "STRING"),
     bigquery.SchemaField("first_response_working_minutes", "INT64"),
     bigquery.SchemaField("resolution_working_minutes", "INT64"),
+    # P1: NULLABLE on purpose. Every row synced before P1 has no intake stamp,
+    # and NULL is the only honest value for "we never measured this" -- the
+    # after-hours views bucket it as `unknown` rather than counting it against
+    # either side.
+    bigquery.SchemaField("received_in_business_hours", "BOOLEAN", mode="NULLABLE"),
+    bigquery.SchemaField("received_at_local", "TIMESTAMP", mode="NULLABLE"),
 ]
 
 
@@ -136,6 +142,32 @@ def view_ddls(
             f"COUNTIF(nps_score >= 9) - COUNTIF(nps_score IS NOT NULL AND nps_score <= 6), "
             f"COUNTIF(nps_score IS NOT NULL)) * 100 AS nps "
             f"FROM {fq} GROUP BY channel"
+        ),
+        # P1: the two after-hours tiles. Three buckets, never two -- a row with
+        # no intake stamp is `unknown`, because counting unmeasured history as
+        # after-hours would invent an out-of-hours problem the tenant may not
+        # have.
+        "v_first_response_by_hours_split": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_first_response_by_hours_split` AS "
+            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, channel, "
+            f"CASE WHEN received_in_business_hours IS NULL THEN 'unknown' "
+            f"WHEN received_in_business_hours THEN 'in_hours' ELSE 'after_hours' END "
+            f"AS arrival_window, "
+            f"COUNT(*) AS cases, "
+            f"AVG(first_response_working_minutes) AS avg_first_response_working_min, "
+            f"APPROX_QUANTILES(first_response_working_minutes, 100)[OFFSET(90)] "
+            f"AS p90_first_response_working_min "
+            f"FROM {fq} GROUP BY month, channel, arrival_window"
+        ),
+        "v_volume_after_hours": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_after_hours` AS "
+            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, "
+            f"DATE(created_at) AS day, channel, "
+            f"CASE WHEN received_in_business_hours IS NULL THEN 'unknown' "
+            f"WHEN received_in_business_hours THEN 'in_hours' ELSE 'after_hours' END "
+            f"AS arrival_window, "
+            f"COUNT(*) AS volume "
+            f"FROM {fq} GROUP BY month, day, channel, arrival_window"
         ),
         "v_volume_by_division": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_by_division` AS "

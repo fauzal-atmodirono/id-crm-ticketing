@@ -145,6 +145,22 @@ def build_metrics_insights_router(port: MetricsQueryPort, settings: Settings) ->
         reject_period("case-aging", parse_period_or_400(period_query))
         return asdict(await port.fetch_case_aging())
 
+    @router.get("/metrics/after-hours")
+    async def after_hours(
+        period_query: PeriodQuery,
+        x_api_key: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """P1: how much volume arrives outside business hours, and how first
+        response compares across that split.
+
+        Period-capable: `v_volume_after_hours` is day-grain. The first-response
+        block is month-grain and says so via its own scope rather than being
+        silently served all-time under a period header.
+        """
+        _require_key(x_api_key)
+        period = parse_period_or_400(period_query)
+        return asdict(await port.fetch_after_hours(period))
+
     @router.get("/metrics/volume-by-type")
     async def volume_by_type(
         period_query: PeriodQuery,

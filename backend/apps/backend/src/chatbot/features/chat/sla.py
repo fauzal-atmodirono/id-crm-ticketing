@@ -70,6 +70,11 @@ UNRESOLVED_BREACH = "SLA_BREACH_UNRESOLVED"
 TIER2_ESCALATION = "TIER2_ESCALATION"
 FIRST_RESPONSE_STATE = "FIRST_RESPONSE"
 REMINDER_WARNING_STATE = "REMINDER_WARNING"
+# P1: an explicit "someone has responded to the customer" event, recorded by
+# the escalation reply linker. Deliberately distinct from FIRST_RESPONSE_STATE:
+# Appendix B asks separately for an acknowledgement (B-WA-14) and a customer
+# update (B-EM-05), and one signal cannot answer both questions.
+ACKNOWLEDGED_STATE = "ACKNOWLEDGED"
 
 _SECONDS_PER_HOUR = 3600
 
@@ -169,6 +174,25 @@ def _has_first_agent_response(conv: dict[str, Any], prior_states: set[str]) -> b
     return FIRST_RESPONSE_STATE in prior_states
 
 
+def _has_acknowledgement(
+    conv: dict[str, Any], prior_states: set[str], *, enabled: bool
+) -> bool:
+    """True when the customer has been acknowledged, for the ack-breach gate.
+
+    With ``enabled=False`` this is exactly ``_has_first_agent_response`` — the
+    only signal the engine had before P1 — so the dark path is unchanged.
+
+    With it on, an explicit ``ACKNOWLEDGED`` transition also counts. An agent
+    reply still counts too: replying obviously acknowledges, and dropping that
+    would turn the flag into a source of *new* breaches on cases a human had
+    already answered. The flag can therefore only ever suppress an ack breach,
+    never create one.
+    """
+    if _has_first_agent_response(conv, prior_states):
+        return True
+    return enabled and ACKNOWLEDGED_STATE in prior_states
+
+
 async def _prior_states(audit: AuditLogPort, ticket_id: str) -> set[str]:
     """All ``to_state`` values already recorded for a ticket (dedup + response)."""
     entries = await audit.list_for_ticket(ticket_id)
@@ -241,6 +265,10 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
     # fetched at all, so the dark path costs nothing.
     working_hours_on = bool(getattr(settings, "sla_working_hours_enabled", False))
     cache = inbox_cache if inbox_cache is not None else InboxCache(None)
+
+    # P1: whether an explicit ACKNOWLEDGED transition satisfies the ack breach.
+    # Off by default, and off means the pre-P1 first-reply-only gate.
+    ack_state_on = bool(getattr(settings, "sla_acknowledgement_enabled", False))
 
     fired: list[AuditEntry] = []
     for conv in conversations:
@@ -327,7 +355,7 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
         # older than the effective per-channel (or global) ack threshold.
         if (
             status == "open"
-            and not _has_first_agent_response(conv, prior)
+            and not _has_acknowledgement(conv, prior, enabled=ack_state_on)
             and age > conv_response_threshold
             and NO_RESPONSE_BREACH not in prior
         ):

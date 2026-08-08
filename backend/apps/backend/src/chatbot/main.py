@@ -377,6 +377,11 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     if settings.twilio_account_sid and settings.twilio_auth_token:
         twilio_adapter = TwilioChannelAdapter(settings)
 
+    # --- Audit log (case state transition trail) ---
+    # Built before the escalation router because POST /escalation/acknowledge
+    # writes to it (P1 task 6).
+    audit_log = build_audit_log(settings)
+
     # --- Phase-2: wire EscalationNotifier into ChatwootAdapter now that twilio is ready ---
     # Post-construction injection is safe: escalation only fires inside async request
     # handlers, which run after bootstrap_application() returns.
@@ -403,14 +408,12 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
                 settings,
                 pic_store=pic_store,
                 dealer_store=dealer_store,
+                audit=audit_log,
             )
         )
 
     # --- Metrics port (per-turn BigQuery streaming) ---
     metrics_port = build_metrics_port(settings)
-
-    # --- Audit log (case state transition trail) ---
-    audit_log = build_audit_log(settings)
 
     # --- Shared stores (built once, passed to orchestrator, agent-assist and copilot) ---
     _shared_assistants_store = build_assistants_store(settings)

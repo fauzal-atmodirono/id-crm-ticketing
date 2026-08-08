@@ -377,3 +377,38 @@ def test_period_incapable_endpoint_400_takes_priority_over_missing_key():
     # anything about which endpoints support period filtering.
     r = _client().get("/metrics/departments", params=_week_params())
     assert r.status_code == 401
+
+
+# --- P1: the after-hours split -------------------------------------------
+
+
+def test_after_hours_requires_key():
+    assert _client().get("/metrics/after-hours").status_code == 401
+
+
+def test_the_after_hours_endpoint_returns_both_buckets():
+    res = _client().get("/metrics/after-hours", headers={"x-api-key": "secret"})
+    assert res.status_code == 200
+    windows = {row["arrival_window"] for row in res.json()["volume"]}
+    assert {"in_hours", "after_hours"} <= windows
+
+
+def test_the_after_hours_endpoint_returns_a_first_response_block():
+    res = _client().get("/metrics/after-hours", headers={"x-api-key": "secret"})
+    assert "first_response" in res.json()
+
+
+def test_the_after_hours_endpoint_accepts_a_period_range():
+    res = _client().get(
+        "/metrics/after-hours", headers={"x-api-key": "secret"}, params=_week_params()
+    )
+    assert res.status_code == 200
+
+
+def test_the_after_hours_endpoint_rejects_an_inverted_period():
+    res = _client().get(
+        "/metrics/after-hours",
+        headers={"x-api-key": "secret"},
+        params=_week_params(start="2026-07-23", end="2026-07-17"),
+    )
+    assert res.status_code == 400

@@ -79,6 +79,12 @@ class ConversationRow:
     vehicle_model: str | None = None
     first_response_working_minutes: int | None = None
     resolution_working_minutes: int | None = None
+    # P1: whether this case ARRIVED inside the inbox's business hours, stamped
+    # once at intake by the agent service. None means "never stamped" -- every
+    # row synced before P1 -- and must stay None: defaulting it to False would
+    # reclassify the whole history as after-hours.
+    received_in_business_hours: bool | None = None
+    received_at_local: str | None = None
 
 
 def channel_from_external_id(external_id: str | None) -> str:
@@ -284,6 +290,27 @@ def _chatwoot_sla_minutes(conv: dict[str, object], labels: list[str]) -> int | N
     return None
 
 
+def _optional_bool(value: object) -> bool | None:
+    """Coerce a Chatwoot custom-attribute value to bool, preserving absence.
+
+    Chatwoot round-trips custom attributes as strings often enough that
+    trusting the JSON type drops the flag on real tenants -- but `bool("false")`
+    is True, so the string forms have to be read explicitly. Anything
+    unrecognised returns None ("not stamped") rather than guessing, because the
+    caller's whole nullability contract rests on absent staying absent.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes"):
+        return True
+    if text in ("false", "0", "no"):
+        return False
+    return None
+
+
 def _chatwoot_reopen_count(conv: dict[str, object]) -> int | None:
     """Read reopen_count from Chatwoot additional_attributes (written by an
     external write-back integration, when one is configured).
@@ -373,6 +400,14 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
         dealer_escalated_at=dealer_escalated_at,
         case_type=case_type,
         vehicle_model=vehicle_model,
+        received_in_business_hours=_optional_bool(
+            custom_attrs.get("received_in_business_hours")
+        ),
+        received_at_local=(
+            str(custom_attrs["received_at_local"])
+            if custom_attrs.get("received_at_local")
+            else None
+        ),
     )
 
 

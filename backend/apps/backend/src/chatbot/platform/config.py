@@ -94,6 +94,12 @@ class Settings(BaseSettings):
     # breach alerts on a production tenant, so the dark path is load-bearing.
     # Per-inbox override: SlaPolicyRepository.resolve().working_hours_enabled.
     sla_working_hours_enabled: bool = False
+    # Let an explicit ACKNOWLEDGED audit transition (recorded by the escalation
+    # reply linker via POST /escalation/acknowledge) satisfy the first-response
+    # SLA, so "acknowledge the customer" and "update the customer" are two
+    # measurable events rather than one. Default False = first-agent-reply is
+    # the only signal, exactly as before. Can only ever suppress an ack breach.
+    sla_acknowledgement_enabled: bool = False
     # Inboxes the SLA engine scans. Empty (default) = the single
     # chatwoot_inbox_id, preserving pre-existing behavior exactly. A
     # comma-separated list scans each. "*" scans every inbox in the account

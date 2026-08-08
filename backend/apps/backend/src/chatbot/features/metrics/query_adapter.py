@@ -75,6 +75,9 @@ import structlog
 from google.cloud import bigquery
 
 from chatbot.features.metrics.query_port import (
+    AfterHoursFirstResponseRow,
+    AfterHoursMetrics,
+    AfterHoursVolumeRow,
     AnomalyRow,
     BlockScope,
     BounceRow,
@@ -434,6 +437,60 @@ class BigQueryMetricsQuery:
         self, period: PeriodRange | None = None
     ) -> VolumeByTypeDivisionMetrics:
         return await asyncio.to_thread(self._fetch_volume_by_type_division_sync, period)
+
+    def _fetch_after_hours_sync(
+        self, period: PeriodRange | None = None
+    ) -> AfterHoursMetrics:
+        """P1: after-hours arrival volume, and first-response speed split by it.
+
+        The two blocks report different scopes on purpose. `v_volume_after_hours`
+        carries a `day` column and is period-capable; the first-response split
+        is month-grain only, so under a period it reports `unsupported_granularity`
+        rather than quietly serving an all-time answer inside a period-labelled
+        response -- the failure this module's docstring exists to prevent.
+        """
+        if period is None:
+            volume_rows = self._block("v_volume_after_hours", AfterHoursVolumeRow)
+            volume_scope = _UNFILTERED_SCOPE
+        else:
+            volume_rows, ok = self._day_grain_block_for_period(
+                "v_volume_after_hours",
+                AfterHoursVolumeRow,
+                period,
+                ("channel", "arrival_window"),
+                "volume",
+            )
+            volume_scope = BlockScope(
+                status="ok" if ok else "unavailable",
+                period=period,
+                supported_granularity=None,
+            )
+
+        first_response_rows = self._block(
+            "v_first_response_by_hours_split", AfterHoursFirstResponseRow
+        )
+        first_response_scope = (
+            _UNFILTERED_SCOPE
+            if period is None
+            else BlockScope(
+                status="unsupported_granularity",
+                period=period,
+                supported_granularity="month",
+            )
+        )
+
+        metrics = AfterHoursMetrics(
+            volume=volume_rows, first_response=first_response_rows
+        )
+        metrics.attach_scopes(
+            {"volume": volume_scope, "first_response": first_response_scope}
+        )
+        return metrics
+
+    async def fetch_after_hours(
+        self, period: PeriodRange | None = None
+    ) -> AfterHoursMetrics:
+        return await asyncio.to_thread(self._fetch_after_hours_sync, period)
 
 
 def build_metrics_query_port(settings: Settings) -> MetricsQueryPort:

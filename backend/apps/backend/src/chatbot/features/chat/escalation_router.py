@@ -31,15 +31,20 @@ from __future__ import annotations
 
 import hmac
 from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
+from chatbot.features.chat.ports import AuditEntry
+from chatbot.features.chat.sla import ACKNOWLEDGED_STATE
+
 if TYPE_CHECKING:
     from chatbot.features.chat.escalation_notifier import EscalationNotifier
     from chatbot.features.chat.pic_store import DealerStore, PicStore
+    from chatbot.features.chat.ports import AuditLogPort
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
@@ -53,6 +58,12 @@ class _NotifyIn(BaseModel):
     body: str
     department: str | None = None
     dealer: str | None = None
+
+
+class _AcknowledgeIn(BaseModel):
+    conversation_id: str
+    actor: str = "escalation-reply"
+    remark: str = ""
 
 
 def _require_api_key(settings: Settings):
@@ -92,6 +103,7 @@ def build_escalation_router(
     settings: Settings,
     pic_store: PicStore | None = None,
     dealer_store: DealerStore | None = None,
+    audit: AuditLogPort | None = None,
 ) -> APIRouter:
     router = APIRouter()
     auth = _require_api_key(settings)
@@ -153,6 +165,49 @@ def build_escalation_router(
                     _add(member, rec.dealer, "dealer")
 
         return {"contacts": out}
+
+    @router.post("/escalation/acknowledge", dependencies=[Depends(auth)])
+    async def acknowledge(payload: _AcknowledgeIn) -> dict[str, str]:
+        """Record that someone has acknowledged the customer on this case.
+
+        Called by the agent/ service's reply linker when a PIC or dealer's
+        emailed reply is matched back onto its case. The SLA engine reads the
+        resulting ACKNOWLEDGED transition for the first-response breach only
+        when ``sla_acknowledgement_enabled`` is on, so calling this is always
+        safe -- at worst it writes an audit row nothing reads yet.
+
+        Idempotent: the reply linker can legitimately fire twice for the same
+        case (a second reply on the same thread), and an acknowledgement is a
+        fact that has either happened or not -- recording it twice would
+        double-count in any audit-derived report.
+        """
+        if audit is None:
+            raise HTTPException(status_code=404, detail="Audit log not configured")
+        ticket_id = payload.conversation_id
+        try:
+            existing = await audit.list_for_ticket(ticket_id)
+        except Exception:
+            # Same posture as the read endpoints above: a store failure must
+            # not 5xx the caller. Skipping is the safe direction -- it can
+            # only leave an ack unrecorded, never invent one.
+            _log.warning("escalation_acknowledge_list_failed", ticket_id=ticket_id)
+            return {"status": "skipped"}
+        if any(e.to_state == ACKNOWLEDGED_STATE for e in existing):
+            return {"status": "duplicate"}
+
+        await audit.append(
+            AuditEntry(
+                ticket_id=ticket_id,
+                session_id=f"chatwoot-conv-{ticket_id}",
+                actor=payload.actor,
+                from_state="OPEN",
+                to_state=ACKNOWLEDGED_STATE,
+                at=datetime.now(UTC).isoformat(),
+                remark=payload.remark,
+            )
+        )
+        _log.info("escalation_acknowledged", ticket_id=ticket_id, actor=payload.actor)
+        return {"status": "ok"}
 
     @router.get("/escalation/departments", dependencies=[Depends(auth)])
     async def departments() -> dict[str, list[str]]:

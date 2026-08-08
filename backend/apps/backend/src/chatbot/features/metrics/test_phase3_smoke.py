@@ -81,6 +81,9 @@ _EXPECTED_VIEW_KEYS = {
     # originals -- see bigquery_schema.py's comments beside each.
     "v_state_trend_daily",
     "v_volume_by_type_division_daily",
+    # P1: after-hours arrival volume + the first-response split across it
+    "v_first_response_by_hours_split",
+    "v_volume_after_hours",
 }
 
 _PROJECT = "myproject"
@@ -93,16 +96,16 @@ _TABLE = "conversations"
 # ---------------------------------------------------------------------------
 
 
-def test_view_ddls_returns_exactly_27_views() -> None:
-    """view_ddls() must return exactly 27 view keys (13 original + 6 Phase-3
+def test_view_ddls_returns_exactly_29_views() -> None:
+    """view_ddls() must return exactly 29 view keys (13 original + 6 Phase-3
     + 1 Task-11 + 3 Task-12 + 2 Task-13 + 2 Task-2/Package-E-reopened
-    day-grain siblings)."""
+    day-grain siblings + 2 P1 after-hours)."""
     ddls = view_ddls(_PROJECT, _DATASET, _TABLE)
     assert set(ddls) == _EXPECTED_VIEW_KEYS, (
         f"Missing: {_EXPECTED_VIEW_KEYS - set(ddls)}  "
         f"Extra: {set(ddls) - _EXPECTED_VIEW_KEYS}"
     )
-    assert len(ddls) == 27
+    assert len(ddls) == 29
 
 
 @pytest.mark.parametrize("key", sorted(_EXPECTED_VIEW_KEYS))

@@ -401,6 +401,53 @@ class CaseAgingMetrics:
 
 
 @dataclass(frozen=True)
+class AfterHoursVolumeRow:
+    """One row of `v_volume_after_hours`.
+
+    `arrival_window` is always one of `in_hours` / `after_hours` / `unknown` --
+    the third exists because rows synced before P1 carry no intake stamp, and
+    counting them as after-hours would invent an out-of-hours problem.
+    """
+
+    month: str
+    channel: str
+    arrival_window: str
+    volume: int
+    # See StateTrendRow.month_start — same widening, same reason.
+    month_start: date | None = None
+    bucket: str | None = field(default=None, metadata={"period_only": True})
+
+
+@dataclass(frozen=True)
+class AfterHoursFirstResponseRow:
+    """One row of `v_first_response_by_hours_split`."""
+
+    month: str
+    channel: str
+    arrival_window: str
+    cases: int
+    avg_first_response_working_min: float | None = None
+    p90_first_response_working_min: float | None = None
+
+
+@dataclass(frozen=True)
+class AfterHoursMetrics:
+    volume: list[AfterHoursVolumeRow]
+    first_response: list[AfterHoursFirstResponseRow]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_scopes", {})
+
+    @property
+    def scopes(self) -> dict[str, BlockScope]:
+        """See DashboardMetrics.scopes (same not-a-field rationale)."""
+        return self._scopes  # type: ignore[attr-defined,no-any-return]
+
+    def attach_scopes(self, scopes: dict[str, BlockScope]) -> None:
+        object.__setattr__(self, "_scopes", scopes)
+
+
+@dataclass(frozen=True)
 class VolumeByTypeDivisionRow:
     month: str
     channel: str
@@ -465,6 +512,9 @@ class MetricsQueryPort(Protocol):
     async def fetch_volume_by_type_division(
         self, period: PeriodRange | None = None
     ) -> VolumeByTypeDivisionMetrics: ...
+    async def fetch_after_hours(
+        self, period: PeriodRange | None = None
+    ) -> AfterHoursMetrics: ...
 
 
 _UNFILTERED_SCOPE = BlockScope(status="unfiltered", period=None, supported_granularity=None)
@@ -679,4 +729,25 @@ class MockMetricsQuery:
             volume=[VolumeByTypeDivisionRow("2026-06", "WhatsApp", "Inquiry", "Sales", 682)]
         )
         metrics.attach_scopes({"volume": self._scope})
+        return metrics
+
+    async def fetch_after_hours(
+        self, period: PeriodRange | None = None
+    ) -> AfterHoursMetrics:
+        del period  # mock always returns the same canned payload
+        metrics = AfterHoursMetrics(
+            volume=[
+                AfterHoursVolumeRow("2026-06", "WhatsApp", "in_hours", 480),
+                AfterHoursVolumeRow("2026-06", "WhatsApp", "after_hours", 202),
+            ],
+            first_response=[
+                AfterHoursFirstResponseRow("2026-06", "WhatsApp", "in_hours", 480, 12.5, 41.0),
+                AfterHoursFirstResponseRow(
+                    "2026-06", "WhatsApp", "after_hours", 202, 18.0, 63.0
+                ),
+            ],
+        )
+        metrics.attach_scopes(
+            {"volume": self._scope, "first_response": self._scope}
+        )
         return metrics

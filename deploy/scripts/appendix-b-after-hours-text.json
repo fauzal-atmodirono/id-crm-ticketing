@@ -1,0 +1,28 @@
+{
+  "_source": "docs/client-materials/RFP 2026_028/APPENDIX B - Call Handling Process Flow.xlsx",
+  "_note": [
+    "Verbatim transcriptions of Appendix B's customer-facing auto-reply text.",
+    "Client typos, double spaces and trailing whitespace are preserved deliberately:",
+    "this file is evidence that the deployed wording matches the appendix, so",
+    "'improving' it would defeat its only purpose.",
+    "Appendix B carries ENGLISH ONLY. There is no Malay variant in the source; none",
+    "has been invented here. If PROTON wants a bilingual reply they must supply the",
+    "Malay wording."
+  ],
+  "after_hours_reply": {
+    "_cells": ["WhatsApp Process!B18", "Social Media!B20"],
+    "_applies_to": ["Channel::Whatsapp", "Channel::TwilioSms", "Channel::FacebookPage", "Channel::Instagram"],
+    "en": "Thank you for reaching out. Our customer service team is  \ncurrently unavailable as it's outside of our operating hours \nMon–Fri: 8:30 AM – 5:30 PM \nSat–Sun & Public Holidays: 9:00 AM – 5:00 PM \nTo learn more about our product and services, you may visit our website at emas.proton.com or social media, at PROTON e.MAS Cars. We will respond to your inquiry as soon as we resume operations. Thank you for your patience. "
+  },
+  "email_auto_acknowledgement": {
+    "_cells": ["Email!A11"],
+    "_applies_to": ["Channel::Email"],
+    "_note": "Sent by the agent service's EMAIL_AUTOACK_ENABLED path, not by a Chatwoot inbox setting. Included here so both customer-facing texts have one verifiable source.",
+    "en": "Dear Customer,\nThank you for your email. This message serves to acknowledge receipt of your enquiry.\nWe will respond within one (1) business day during our operating hours.\nFor urgent matters, please contact our Call Centre at 1300 888 877.\nOperating Hours:\nMonday–Friday: 8:30 AM – 5:30 PM\nSaturday, Sunday & Public Holidays: 9:00 AM – 5:00 PM\nThank you for your patience and understanding.\n\nWarm regards,\nProton e.MAS Centre"
+  },
+  "operating_hours": {
+    "_note": "Stated in Appendix B alongside the reply text. Mirror these into each inbox's Chatwoot working-hours config, or the working-hours SLA clock measures against the wrong calendar.",
+    "weekday": {"days": ["monday", "tuesday", "wednesday", "thursday", "friday"], "open": "08:30", "close": "17:30"},
+    "weekend_and_public_holidays": {"days": ["saturday", "sunday"], "open": "09:00", "close": "17:00"}
+  }
+}

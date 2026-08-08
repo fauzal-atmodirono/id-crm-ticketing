@@ -493,6 +493,33 @@ class ProtonConfigClient:
         text = str(draft or "").strip()
         return text or None
 
+    async def record_acknowledgement(
+        self, conversation_id: int | str, actor: str, remark: str = ""
+    ) -> bool:
+        """Record that the customer has been acknowledged on this case
+        (POST /escalation/acknowledge).
+
+        Fire-and-forget by design: the acknowledgement is an SLA-reporting
+        signal, not part of linking the reply. A backend that is down must
+        cost the operator a metric, never the note that tells them a dealer
+        replied. Returns True only when the backend accepted it, so callers
+        can log the difference.
+        """
+        try:
+            response = await self._client.post(
+                "/escalation/acknowledge",
+                json={
+                    "conversation_id": str(conversation_id),
+                    "actor": actor,
+                    "remark": remark,
+                },
+            )
+            response.raise_for_status()
+        except Exception:
+            logger.debug("proton_config: record_acknowledgement failed", exc_info=True)
+            return False
+        return True
+
     async def notify_email_escalation(
         self,
         conversation_id: int,

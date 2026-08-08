@@ -201,6 +201,42 @@ or dealer entry. The old path, setting `PIC_MAP_JSON` and
 for tenants that never touch the admin page, but the admin UI is the
 preferred way to manage routing going forward.
 
+### Turning on the working-hours SLA clock
+
+**Read this before setting `SLA_WORKING_HOURS_ENABLED=true` on a live tenant.**
+
+SLA *reporting* has always measured working hours; SLA *enforcement* measured
+the wall clock. The two halves disagreed. This flag puts enforcement on the
+same clock — which changes what your existing targets mean:
+
+> With `SLA_WORKING_HOURS_ENABLED` on, an SLA target of "2 hours" means
+> **2 working hours**, measured against that inbox's configured business hours.
+> **Your existing configured targets do not need changing** — they were always
+> intended as working-hours targets. A case that arrives at 18:00 on Friday
+> will breach a 2-hour target on Monday morning, not on Friday evening.
+
+Practical consequences:
+
+- **Fewer breaches, later.** Nothing breaches *sooner* than it does today. If
+  breach volume does not drop after enabling, the inbox has no working-hours
+  config and is falling back to calendar minutes — check that first.
+- **The inbox's working hours must be real.** An inbox with
+  `working_hours_enabled` off behaves exactly as before, flag on or off.
+  Appendix B's hours for PROTON are Mon–Fri 08:30–17:30 and Sat/Sun/public
+  holidays 09:00–17:00; `deploy/scripts/appendix-b-after-hours-text.json`
+  carries them alongside the customer-facing wording, and they must match, or
+  the clock contradicts what the customer was told.
+- **Per-inbox override.** The SLA Policies admin page's `working_hours_enabled`
+  beats the global switch in both directions; unset inherits it.
+- **Roll back by setting it to `false`.** The off path is byte-identical to the
+  pre-P1 engine, asserted in `test_sla_clock.py`.
+
+Two related flags, both independent and both default-off:
+`SLA_ACKNOWLEDGEMENT_ENABLED` (backend) makes an explicit acknowledgement
+satisfy the first-response SLA, and `ESCALATION_REPLY_ACKNOWLEDGEMENT_ENABLED`
+(agent) is what records one when a PIC or dealer answers by email. Neither does
+anything on its own — the first reads a signal the second writes.
+
 ## 7. Switching to a real domain later
 
 The nip.io setup is HTTP-only and meant to get you running fast. To move to

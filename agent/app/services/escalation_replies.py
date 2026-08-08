@@ -294,6 +294,18 @@ async def maybe_link_escalation_reply(payload: dict) -> None:
             )
             await chatwoot.add_labels(case_id, [_REPLIED_LABEL])
 
+            # A PIC or dealer replying IS the acknowledgement Appendix B asks
+            # for, and until now it left no trace the SLA engine could read --
+            # the case still counted as un-answered because no *agent* had
+            # typed in Chatwoot. Recorded last and best-effort: it is a
+            # reporting signal, and losing it must never cost the note above.
+            if settings.escalation_reply_acknowledgement_enabled:
+                await proton.record_acknowledgement(
+                    case_id,
+                    actor=sender_email,
+                    remark=f"Reply from {sender_name} <{sender_email}>",
+                )
+
             if settings.escalation_reply_draft_enabled:
                 await _post_draft(case_id, text)
 

@@ -115,6 +115,12 @@ class Settings(BaseSettings):
     # Post an AI-drafted customer reply as a second private note alongside a
     # linked internal reply. Never sends anything to the customer.
     escalation_reply_draft_enabled: bool = False
+    # Record an ACKNOWLEDGED transition on the backend when an internal
+    # (PIC/dealer) reply is linked, so the SLA engine can tell "the customer
+    # was acknowledged" from "an agent typed in Chatwoot". Inert on its own:
+    # the backend's SLA_ACKNOWLEDGEMENT_ENABLED decides whether any breach
+    # reads it.
+    escalation_reply_acknowledgement_enabled: bool = False
 
     # Suggest-only AI escalation-department nudge (app/services/dept_suggestion.py):
     # on an incoming customer message to an Email-channel conversation with no

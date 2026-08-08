@@ -51,3 +51,15 @@ def test_flat_options_non_dict_json_yields_empty_list():
 
 def test_flat_options_non_list_options_value_yields_empty_list():
     assert _flat_options('{"options": "not-a-list"}') == []
+
+
+def test_flat_options_parses_case_detail_style_values():
+    # case_detail is provisioned via _flat_options too (CASE_DETAIL_OPTIONS_JSON),
+    # not derived from the nested taxonomy — same shape as case_type/vehicle_model.
+    assert _flat_options(
+        '{"options": ["Sales: Delivery: No Estimated Time Delivery", '
+        '"Sales: Refund: Booking — Status — Dealer Refund"]}'
+    ) == [
+        "Sales: Delivery: No Estimated Time Delivery",
+        "Sales: Refund: Booking — Status — Dealer Refund",
+    ]

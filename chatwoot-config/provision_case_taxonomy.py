@@ -1,10 +1,23 @@
 #!/usr/bin/env python3
-"""Provision the case_category/case_subcategory/case_type/vehicle_model
-Chatwoot custom attribute definitions from CASE_TAXONOMY_JSON (nested) and
-CASE_TYPE_OPTIONS_JSON/VEHICLE_MODELS_JSON (flat), so Chatwoot's native
-conversation sidebar renders them as single-select dropdowns (List type) —
-the mechanism that enforces "one main category" without any custom frontend
-code.
+"""Provision the case_category/case_subcategory/case_detail/case_type/
+vehicle_model Chatwoot custom attribute definitions from CASE_TAXONOMY_JSON
+(nested) and CASE_DETAIL_OPTIONS_JSON/CASE_TYPE_OPTIONS_JSON/
+VEHICLE_MODELS_JSON (flat), so Chatwoot's native conversation sidebar
+renders them as single-select dropdowns (List type) — the mechanism that
+enforces "one main category" without any custom frontend code.
+
+case_detail is RFP 2026_028 Appendix A's Level 2 (with Level 3/4 folded in
+— see agent/app/config.py's CASE_DETAIL_OPTIONS_JSON docstring for the exact
+"<Case Division>: <Level 1>: <Level 2>[ — <Level 3>[ — <Level 4>]]"
+convention). Unlike case_category/case_subcategory, it is NOT derived from
+CASE_TAXONOMY_JSON here — it ships as its own flat CASE_DETAIL_OPTIONS_JSON
+option list (same `{"options": [...]}` shape as CASE_TYPE_OPTIONS_JSON/
+VEHICLE_MODELS_JSON) because it is already fully pre-flattened against the
+division+level-1 chain; there is nothing left to derive at provision time.
+The sidebar cascade (deploy/chatwoot-fork/patches/
+0050-case-detail-hierarchy.patch) filters it by prefix against whatever
+case_subcategory value is selected, exactly like case_subcategory is
+filtered against case_category.
 
 Unlike provision_features.py (account *features*, not in Chatwoot's public
 REST API — requires `rails runner`), custom attribute definitions ARE public
@@ -119,10 +132,13 @@ def main() -> int:
     headers = {"api_access_token": args.api_token, "Api-Access-Token": args.api_token}
     case_types_raw = os.environ.get("CASE_TYPE_OPTIONS_JSON", "").strip()
     vehicle_models_raw = os.environ.get("VEHICLE_MODELS_JSON", "").strip()
+    case_detail_raw = os.environ.get("CASE_DETAIL_OPTIONS_JSON", "").strip()
 
     with httpx.Client(headers=headers, timeout=15.0) as client:
         _upsert(client, base, "case_category", "Case Category", _category_options(taxonomy), args.dry_run)
         _upsert(client, base, "case_subcategory", "Case Subcategory", _subcategory_options(taxonomy), args.dry_run)
+        if case_detail_raw:
+            _upsert(client, base, "case_detail", "Case Detail", _flat_options(case_detail_raw), args.dry_run)
         if case_types_raw:
             _upsert(client, base, "case_type", "Case Type", _flat_options(case_types_raw), args.dry_run)
         if vehicle_models_raw:

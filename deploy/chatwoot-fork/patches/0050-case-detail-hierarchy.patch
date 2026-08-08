@@ -1,0 +1,85 @@
+From 1c29fc6fa1ff1b13c0b426c6811776d2c485f440 Mon Sep 17 00:00:00 2001
+From: scratch <scratch@example.com>
+Date: Sat, 8 Aug 2026 09:27:02 +0700
+Subject: [PATCH] feat(chatwoot-fork): generalize case-category cascade to a
+ 3-tier chain
+
+Extends CustomAttributes.vue's case_category -> case_subcategory
+prefix-cascade (patch 0036) into an ordered case_category ->
+case_subcategory -> case_detail chain. case_detail is RFP 2026_028
+Appendix A's Level 2, with Level 3/4 folded into each value using
+an em dash (see agent/app/config.py's CASE_DETAIL_OPTIONS_JSON).
+
+valuesForAttribute() now looks up an attribute's position in
+CASCADE_ATTRS and filters by its immediate parent's selected value,
+generalizing the old hardcoded pair. onUpdate() walks every level
+below the changed one so changing case_category also clears a
+now-stale case_detail even though case_detail's own value never
+mentioned case_category directly -- the clear propagates down the
+chain one link at a time.
+---
+ .../customAttributes/CustomAttributes.vue     | 35 +++++++++++++------
+ 1 file changed, 25 insertions(+), 10 deletions(-)
+
+diff --git a/app/javascript/dashboard/routes/dashboard/conversation/customAttributes/CustomAttributes.vue b/app/javascript/dashboard/routes/dashboard/conversation/customAttributes/CustomAttributes.vue
+index 727ffbd..d6d5fbe 100644
+--- a/app/javascript/dashboard/routes/dashboard/conversation/customAttributes/CustomAttributes.vue
++++ b/app/javascript/dashboard/routes/dashboard/conversation/customAttributes/CustomAttributes.vue
+@@ -88,18 +88,25 @@
+   })
+ );
+ 
+-const CASCADING_PREFIX_ATTR = 'case_category';
+-const CASCADING_CHILD_ATTR = 'case_subcategory';
++// Ordered top-down: case_category -> case_subcategory -> case_detail.
++// Each attribute's option list is filtered to values prefixed by its
++// immediate parent's selected value + ": ", and changing any attribute
++// clears every attribute below it in the chain whose value no longer
++// matches (see onUpdate). case_detail is RFP 2026_028 Appendix A's Level
++// 2, with Level 3/4 folded into its value using " — " (em dash) — see
++// agent/app/config.py's CASE_DETAIL_OPTIONS_JSON for the exact convention.
++const CASCADE_ATTRS = ['case_category', 'case_subcategory', 'case_detail'];
+ 
+ const valuesForAttribute = attribute => {
+-  if (attribute.attribute_key !== CASCADING_CHILD_ATTR) {
++  const level = CASCADE_ATTRS.indexOf(attribute.attribute_key);
++  if (level <= 0) {
+     return attribute.attribute_values;
+   }
+-  const selectedCategory = customAttributes.value[CASCADING_PREFIX_ATTR];
+-  if (!selectedCategory) {
++  const parentValue = customAttributes.value[CASCADE_ATTRS[level - 1]];
++  if (!parentValue) {
+     return attribute.attribute_values;
+   }
+-  const prefix = `${selectedCategory}: `;
++  const prefix = `${parentValue}: `;
+   return attribute.attribute_values.filter(v => v.startsWith(prefix));
+ };
+ 
+@@ -214,10 +221,18 @@ const orderKey = computed(
+ 
+ const onUpdate = async (key, value) => {
+   const updatedAttributes = { ...customAttributes.value, [key]: value };
+-  if (key === CASCADING_PREFIX_ATTR) {
+-    const currentSub = updatedAttributes[CASCADING_CHILD_ATTR];
+-    if (currentSub && !currentSub.startsWith(`${value}: `)) {
+-      updatedAttributes[CASCADING_CHILD_ATTR] = '';
++  const changedLevel = CASCADE_ATTRS.indexOf(key);
++  if (changedLevel !== -1) {
++    for (let i = changedLevel + 1; i < CASCADE_ATTRS.length; i += 1) {
++      const childKey = CASCADE_ATTRS[i];
++      const parentValue = updatedAttributes[CASCADE_ATTRS[i - 1]];
++      const currentChild = updatedAttributes[childKey];
++      if (
++        currentChild &&
++        (!parentValue || !currentChild.startsWith(`${parentValue}: `))
++      ) {
++        updatedAttributes[childKey] = '';
++      }
+     }
+   }
+   try {
+-- 
+2.54.0
+

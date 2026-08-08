@@ -181,6 +181,158 @@ class Settings(BaseSettings):
         '{"options": ["Inquiry", "Complaint", "Compliment & Feedback"]}'
     )
 
+    # Level-2 (+ folded Level 3/4) case detail — RFP 2026_028 Appendix A's
+    # fourth taxonomy tier stored in a THIRD custom attribute, "case_detail"
+    # (not three more attributes for Level 2/3/4 separately). JSON object
+    # {"options": [str, ...]}, the SAME shape and fail-open pattern as
+    # CASE_TYPE_OPTIONS_JSON/VEHICLE_MODELS_JSON — reused as-is by
+    # services/option_lists.py's OptionList/build_option_list, no new
+    # parsing code needed.
+    #
+    # Each value is prefix-encoded against the FULL case_subcategory value
+    # ("<Case Division>: <Level 1>"), one level deeper than case_subcategory
+    # is against case_category, using the same ": " join:
+    # "<Case Division>: <Level 1>: <Level 2>". Where the RFP row also has a
+    # Level 3 and/or Level 4, they are folded into that SAME value (never a
+    # 4th/5th picker) with " — " (em dash) appended in order: "...<Level
+    # 2> — <Level 3> — <Level 4>", e.g. "Sales: Refund: Booking — Status
+    # — Dealer Refund". An em dash was chosen over "/" (already used
+    # inside several Level 2 strings themselves, e.g. "Roadside Assistance:
+    # Panel Workshop/Location") and over a second ": " (which would collide
+    # visually with the division/level-1 join).
+    #
+    # Full-chain prefixing (NOT Level-1-only, e.g. NOT "Delivery: No
+    # Estimated Time Delivery") is deliberate: Level 1 names repeat across
+    # divisions with their OWN distinct Level 2 sets — "Refund" under both
+    # Sales and Charging, "Infotainment" under both Product and Charging,
+    # "Charging Credit" under both Marketing and Charging, "Booking" under
+    # both Sales and Charging. A Level-1-only prefix would mix unrelated
+    # divisions' Level 2 options together in the sidebar cascade
+    # (deploy/chatwoot-fork/patches/0050-case-detail-hierarchy.patch).
+    #
+    # 246 unique values, covering the 258 of 300 RFP rows that carry a
+    # Level 2 (the remaining 42 rows have no Level 2 in the source PDF, so
+    # no case_detail option is generated for them — their Level 1 alone,
+    # via case_subcategory, is the full available detail). Generated from
+    # docs/client-materials/RFP 2026_028/case-categorisation.json, not
+    # hand-transcribed — see that file for the source-of-truth rows this
+    # is derived from. SAME value as backend/'s CASE_DETAIL_OPTIONS_JSON
+    # (both services parse it independently).
+    case_detail_options_json: str = (
+        '{"options":["Sales: Delivery: No Estimated Time Delivery","Sales: Refund: Delay","Sales: '
+        'Customer Experience: Poor Buying Experience — Sale Specialist Profesionalism","Sales: Del'
+        'ivery: No Allocation - Delay","Sales: Delivery: Overpromised - ETD","Sales: Refund: No Re'
+        'cords","Sales: Refund: Others","Sales: Promotion: Ended Promotion","Sales: Test Drive: No'
+        't Available","Sales: Test Drive: Others","Product: Infotainment: QR Code Broken","Product'
+        ': Infotainment: Account not exist","Product: Infotainment: App Fault Notification","Produ'
+        'ct: Infotainment: Data not Sync","Product: Infotainment: 3rd party Apps Update","Product:'
+        ' Infotainment: OTA","Product: Infotainment: Malfunction","Product: Infotainment: Others",'
+        '"Product: Infotainment: Display Malfunction","Product: Infotainment: No GPS Signal","Netw'
+        'ork: Outlet Facilities: Ambience/Environment","Network: Outlet Facilities: Refreshment","'
+        'Network: Outlet Facilities: Staff Grooming","Network: Outlet Facilities: Furniture & Fitt'
+        'ings","Charging: Infotainment: Charging abnormally Interupted","Charging: Home Charging: '
+        'Assessment","Charging: Home Charging: Installation","Charging: Charging Credit: Not Entit'
+        'le","Charging: Charging Credit: Didn’t received Points","Charging: Charging Credit: other'
+        's","Charging: Public Charging: Map Innacurate location","Charging: Public Charging: Price'
+        '","Charging: Public Charging: Car DHU Map not Updated","Charging: Public Charging: smart '
+        'point charging","Charging: Public Charging: others","Charging: Configuration: Charging sp'
+        'eed","Charging: Configuration: Electical phase","Charging: Home Charging: Function","Char'
+        'ging: Home Charging: Quality","Charging: Home Charging: Warranty","Charging: Home Chargin'
+        'g: Others","Charging: Public Charging: Power supply Issue","Charging: Public Charging: Lo'
+        'ose Cable","Charging: Public Charging: Pre-Authorization","Charging: Public Charging: Oth'
+        'ers","Apps: Service Function: Apps Stuck / Frozen","Apps: Service Function: Payment","App'
+        's: Remote Control: Unable to view data balance","Apps: Remote Control: Others","Apps: Una'
+        'ble to update.: Apps Version","Apps: Remote Control: Climate / Weather","Apps: Remote Con'
+        'trol: Car Location","Apps: Dealer Information: Contact not updated","Apps: Dealer Informa'
+        'tion: Innacurate location","Apps: Service Function: Unable to received OTP","Apps: Servic'
+        'e Function: Unable to register","Apps: Service Function: Others","Apps: E-Mall: Order Ful'
+        'fillment","Apps: E-Mall: Order not received","Apps: E-Mall: Order not found","Apps: E-Mal'
+        'l: Price","Apps: E-Mall: Merchandise Quality","Apps: E-Mall: Merchandise Stock","Apps: E-'
+        'Mall: Others","Apps: Notification: Error","Apps: Notification: Others","Apps: Vehicle Ord'
+        'er Issue: Others","Apps: Vehicle Order Issue: Order Synhcronization","Apps: smart points:'
+        ' Validity","Apps: smart points: Unable to use","Apps: smart points: Others","Apps: Functi'
+        'on: Data info not updated","After Sales: Brake / Electronic Parking Brake: Faulty","After'
+        ' Sales: Brake / Electronic Parking Brake: Noise","After Sales: Brake / Electronic Parking'
+        ' Brake: Judder","After Sales: Brake / Electronic Parking Brake: Warning Light","After Sal'
+        'es: Brake / Electronic Parking Brake: Burned Smell","After Sales: Brake / Electronic Park'
+        'ing Brake: Others","After Sales: Airconditioner: Smell","After Sales: Airconditioner: Fau'
+        'lty","After Sales: Airconditioner: Leakage","After Sales: Airconditioner: Not Cold","Afte'
+        'r Sales: Airconditioner: Others","After Sales: Steering: Noise","After Sales: Steering: V'
+        'ibration","After Sales: Steering: Position","After Sales: Steering: Heavy","After Sales: '
+        'Steering: Alignment","After Sales: Suspension: Leakage","After Sales: Suspension: Noise",'
+        '"After Sales: Suspension: Hard","After Sales: Suspension: Alignment","After Sales: Suspen'
+        'sion: Others","After Sales: Cooling System: Smell","After Sales: Cooling System: Leakage"'
+        ',"After Sales: Cooling System: Others","After Sales: Body: Noise — Interior","After Sales'
+        ': Body: Dented — Interior","After Sales: Body: Alignment — Interior","After Sales: Body: '
+        'Gap — Interior","After Sales: Body: Leakage — Interior","After Sales: Body: Rusty — Inter'
+        'ior","After Sales: Body: Vibration — Interior","After Sales: Body: Others — Interior","Af'
+        'ter Sales: Body: Noise — Exterior","After Sales: Body: Dented — Exterior","After Sales: B'
+        'ody: Allignment — Exterior","After Sales: Body: Gap — Exterior","After Sales: Body: Leaka'
+        'ge — Exterior","After Sales: Body: Rusty — Exterior","After Sales: Body: Vibration — Exte'
+        'rior","After Sales: Body: Others — Exterior","After Sales: Electrical: Failure","After Sa'
+        'les: Electrical: Improper Function","After Sales: Electrical: Noise","After Sales: Electr'
+        'ical: Others","After Sales: ADAS: Failure","After Sales: ADAS: Warning Light","After Sale'
+        's: ADAS: Others","After Sales: Features: Failure","After Sales: Features: Improper Functi'
+        'on","After Sales: Features: Safety Features","After Sales: Features: Others","After Sales'
+        ': Airbag: Airbag not deploy","After Sales: Airbag: Airbag sudden deploy","After Sales: Ai'
+        'rbag: Recall","After Sales: Airbag: Others","After Sales: Spare Part: Parts Arrival Delay'
+        '","After Sales: Spare Part: No Stock","After Sales: Spare Part: Price","After Sales: Spar'
+        'e Part: Others","After Sales: Spare Part: Quality","After Sales: Warranty: Rejected","Aft'
+        'er Sales: Warranty: Status","After Sales: Warranty: Period","After Sales: Service Operati'
+        'on: General Repair","After Sales: Service Operation: Accident Repair","After Sales: Servi'
+        'ce Operation: Insurance Claim","After Sales: Service Operation: Repair Quality","After Sa'
+        'les: Service Operation: Service Profesionalism","After Sales: Service Operation: Courtesy'
+        ' Car","After Sales: Service Operation: Delay Vehicle Repair","After Sales: Service Operat'
+        'ion: Outlet Facilities","After Sales: Service Operation: Others","After Sales: Technical:'
+        ' Major Repair","After Sales: Technical: Others","After Sales: Technical: Comeback Job","A'
+        'fter Sales: Service/Recall Campaign: Information","After Sales: Service/Recall Campaign: '
+        'Others","Sales: Outlet: Contact","Sales: Outlet: Location","Sales: Outlet: Others","Sales'
+        ': Booking: Fees","Sales: Booking: Status","Sales: Booking: Information","Sales: Booking: '
+        'Cancellation","Sales: Booking: Others","Sales: Delivery: Vehicle ETD","Sales: Delivery: S'
+        'tock Availability","Sales: Delivery: Others","Sales: Refund: Booking — Status — Dealer Re'
+        'fund","Sales: Refund: Booking — Status — HQ Refund","Sales: Refund: Booking — Timeframe",'
+        '"Sales: Insurance: Insurance Package","Sales: Insurance: Insurance Renewal","Sales: Insur'
+        'ance: Insurance Coverage","Sales: Insurance: Other Insurance Matters","Sales: Test Drive:'
+        ' Appointment Booking","Sales: Test Drive: Appointment Cancellation","Sales: Finance Infor'
+        'mation: Bank Loan","Sales: Finance Information: Loan Tenure","Sales: Finance Information:'
+        ' Others","Sales: Vehicle Details: Price","Sales: Vehicle Details: Colour","Sales: Vehicle'
+        ' Details: Others","Sales: Promotion: Ongoing Promotion","Sales: Promotion: Irrelevant Pro'
+        'motion","Sales: Promotion: Misleading Promotion","Sales: New Model: Launch Date","Sales: '
+        'New Model: Price","Sales: New Model: Brochure","Sales: New Model: Promotion","Sales: New '
+        'Model: Release Date","Product: Accessories: Package","Product: Accessories: Delivery Stat'
+        'us","Product: Accessories: Others","Product: Infotainment: Vehicle Settings","Product: In'
+        'fotainment: Data Information","Product: Infotainment: Software Updates","Product: Infotai'
+        'nment: Charging Map Display","Marketing: Merchandise: Package","Marketing: Merchandise: D'
+        'elivery Status","Marketing: Merchandise: Others","Marketing: Charging Credit: Not Entitle'
+        '","Marketing: Charging Credit: Didn’t received","Charging: Booking: WallBox — Assessment"'
+        ',"Charging: Booking: WallBox — Installation","Charging: Refund: Home Assesment — Status",'
+        '"Charging: Refund: Home Assesment — Timeframe","Charging: Billing: Charging Billing","Cha'
+        'rging: Home Charging: Price","Charging: Home Charging: Purchase Matter","Charging: Home C'
+        'harging: Assessment — Status","Charging: Home Charging: Assessment — Reschedule","Chargin'
+        'g: Home Charging: Installation — Status","Charging: Home Charging: Installation — Resched'
+        'ule","Charging: Public Charging: Charging Location","Charging: Public Charging: Charger M'
+        'alfunction","Charging: Public Charging: Promotion","Apps: User ID: Forget User ID","Apps:'
+        ' User ID: Information","Apps: User ID: New Account ID","Apps: User ID: Others","Apps: Ope'
+        'ration: Vehicle Registration","Apps: Operation: Data Balance Information","Apps: Operatio'
+        'n: Finance Calculator","Apps: Point system: Validity","Apps: Point system: Redemption","A'
+        'pps: Point system: others","Apps: Information: Vehicle data not updated","Apps: Informati'
+        'on: Info / Event not updated","Apps: Operation: Test Drive Order Issue","Apps: Informatio'
+        'n: Profile","After Sales: Spare Part: Stock Availbility","After Sales: Spare Part: Parts '
+        'Information","After Sales: Spare Part: ETA","After Sales: Warranty: Warranty Information"'
+        ',"After Sales: Warranty: Warranty Coverage","After Sales: Warranty: Warranty Period","Aft'
+        'er Sales: Warranty: Extended Limited Warranty","After Sales: Warranty: Others","After Sal'
+        'es: Service Operation: Vehicle Repair/Service Status","After Sales: Service Operation: Re'
+        'gular Maintenance Service Time","After Sales: Service Operation: Service Appointment","Af'
+        'ter Sales: Service Operation: Service / Repair Price","After Sales: Service Operation: Se'
+        'rvice Advisor\'s Professionalism/Attitude","After Sales: Service / Recall Campaign: Infor'
+        'mation","After Sales: Service / Recall Campaign: Others","After Sales: Roadside Assistanc'
+        'e: Request for RSA Contact","After Sales: Roadside Assistance: Service Provided","After S'
+        'ales: Roadside Assistance: Panel Workshop/Location","After Sales: Roadside Assistance: To'
+        'w Truck Varieties","After Sales: Roadside Assistance: Towing Charges","After Sales: Roads'
+        'ide Assistance: Others","After Sales: User Manual: Obtain User Manual","After Sales: User'
+        ' Manual: Car Features"]}'
+    )
+
     # C1: email once-per-thread auto-acknowledgement.
     email_autoack_enabled: bool = False
     email_autoack_template: str = (

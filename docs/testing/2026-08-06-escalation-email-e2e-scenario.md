@@ -360,15 +360,39 @@ reply either, and the failure is silent: no note, no reopen, no error.
 - #N gains **no** `escalation_replied_at` attribute and **no**
   `escalation_replied` label — those are internal-reply-only.
 - #M still gains the `escalation_reply` label and is resolved, same as the
-  dealer path — and, as in TC-08, sends the customer neither a second auto-ack
-  nor a survey. They already received the acknowledgement on their own case;
-  the correlation token on their reply suppresses a duplicate.
+  dealer path. The **survey** suppression is reliable here exactly as in
+  TC-08 — no "rate our support agent" message goes to the customer.
+- The **auto-ack** suppression is *not* reliable on this branch, unlike
+  TC-08's dealer/PIC path. The customer's original acknowledgement (`Update
+  on your case: …`) is deliberately sent with no `[CASE-n]` subject tag —
+  the customer's thread has to stay clean — so only the invisible `Reply-To`
+  carries the correlation token, and that token is only visible via the
+  webhook payload's `messages` array, which can legitimately be empty by the
+  time this event fires (see `agent/app/services/lifecycle.py`'s
+  `_is_escalation_reply` docstring and the test
+  `test_autoack_still_sent_when_the_payload_carries_no_messages`). **The
+  customer may therefore receive one more "Dear Customer" auto-acknowledgement
+  email on #M. That is expected behaviour, not a defect** — do not fail this
+  case on that basis alone.
 - The reopen of #N does **not** re-fire the escalation: no second ack, PIC or
   dealer mail (see TC-07).
 
-**Pass criteria:** message visible on #N as an incoming customer message,
-#N reopened, no `escalation_replied_at`/`escalation_replied` on #N, #M
-resolved and labelled `escalation_reply`, and no new mail anywhere.
+**Pass criteria:**
+
+- the customer's reply is visible on conversation #N as an **incoming**
+  message
+- #N is **reopened**
+- **no** `escalation_replied` label and **no** `escalation_replied_at`
+  attribute on #N (those are the internal-sender path only)
+- the throwaway conversation #M is **resolved** and labelled
+  `escalation_reply`
+- **no survey** email is sent
+- **no** second escalation fan-out (no duplicate `Update on your case:`,
+  `[Escalation]`, or dealer forward)
+
+A single "Dear Customer" auto-acknowledgement landing in the customer's
+mailbox on #M is **not** grounds to fail this case — see Expected above. Fail
+it only if one of the six criteria above does not hold.
 
 ---
 

@@ -452,10 +452,15 @@ Emails the support address.
 4. **Reply on an existing thread** → no additional auto-ack, just appended.
 5. Once **you** (a human) reply from the Chatwoot UI, further auto-acks on
    that thread are suppressed.
-6. A reply to an **escalation** email (dealer, PIC, or the customer's own
-   acknowledgement) lands as a new conversation but gets **no** auto-ack —
-   it carries the `[CASE-n]` correlation token, so it is recognised as a
-   reply rather than a fresh enquiry. See §7.6.
+6. A reply to an **escalation** email lands as a new conversation. For a
+   **dealer or PIC** reply this reliably gets **no** auto-ack — the internal
+   escalation mail carries a visible `[CASE-n]` subject tag, so it is always
+   recognised as a reply rather than a fresh enquiry. A reply to the
+   **customer's own acknowledgement** is not the same guarantee: that ack is
+   deliberately sent with no subject tag (to keep the customer's own thread
+   clean), so the only signal left is a Reply-To token that isn't always
+   available when this webhook fires — the customer may still receive one
+   auto-ack on the throwaway conversation their reply lands in. See §7.6.
 
 ### 7.3 Scenario A — routine email, no escalation needed
 Customer sends the email; allow the ~1–2 minute IMAP poll (§7.2 step 2)
@@ -567,7 +572,14 @@ never receives the dealer's reply.
    incoming message on their own case**, reopening it exactly like a fresh
    message would — not a private note. No `escalation_replied_at`/
    `escalation_replied` gets set for a customer reply; those are
-   internal-reply only. They get no duplicate acknowledgement either.
+   internal-reply only. The **survey** suppression still applies (the
+   throwaway conversation their reply lands in is resolved with no rating
+   request). The **auto-ack** suppression is *not* guaranteed here the way
+   it is for dealer/PIC in step 5: the customer's acknowledgement email is
+   deliberately sent with no `[CASE-n]` subject tag, so the only correlation
+   signal is a Reply-To token that isn't always present on this webhook
+   event — the customer may receive one more "Dear Customer"
+   auto-acknowledgement on that throwaway conversation. Expected, not a bug.
 
 ### 7.7 SLA breach alerts (new since 08-04)
 Requires `SLA_ENGINE_ENABLED`, `SLA_ALERT_EMAIL_ENABLED`,

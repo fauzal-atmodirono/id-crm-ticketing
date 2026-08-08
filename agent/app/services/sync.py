@@ -19,9 +19,11 @@ logged and skipped, not treated as errors.
 import logging
 import re
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from app.clients.deps import get_chatwoot_client, get_proton_config_client
 from app.config import get_settings
+from app.services.business_hours import is_within_business_hours, next_working_instant
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,9 @@ _WHITESPACE_RUN = re.compile(r"\s+")
 
 # Once-per-escalation guard for the EM-7 fan-out. See `maybe_escalate`.
 _NOTIFIED_ATTR = "escalation_notified_at"
+
+# Once-per-conversation intake stamp. See `maybe_stamp_business_hours`.
+_BUSINESS_HOURS_ATTR = "received_in_business_hours"
 
 
 def _single_line(text: str, limit: int = 100) -> str:
@@ -251,6 +256,85 @@ async def maybe_escalate(payload: dict) -> None:
         return
 
     await _maybe_notify_email_escalation(conversation_id, labels)
+
+
+async def maybe_stamp_business_hours(payload: dict) -> None:
+    """Handle a Chatwoot `message_created` event: on the FIRST inbound customer
+    message, record whether the case arrived inside the inbox's configured
+    business hours.
+
+    Why intake is the only correct moment: an operator can edit an inbox's
+    working hours at any time, so the same question asked at report time
+    ("would this have been in hours under TODAY's config?") is a different
+    question from the one the requirement asks ("was it in hours when it
+    arrived?"). The flag is a fact about arrival, so it is written once and
+    never overwritten -- the same never-overwrite discipline as
+    `maybe_stamp_dealer_escalation` below.
+
+    Dispatched from `message_created`, NOT `conversation_updated`: the latter
+    fires on every subsequent label write, long after arrival.
+
+    Writes three attributes:
+      * `received_in_business_hours` (bool)
+      * `received_at_local`  (ISO-8601, in the inbox's timezone)
+      * `attend_after`       (ISO-8601) -- only when out of hours
+
+    Fail-open throughout: any Chatwoot error is logged and swallowed, matching
+    every other background-task helper in this module.
+    """
+    settings = get_settings()
+    if not settings.business_hours_stamp_enabled:
+        return
+
+    conversation = payload.get("conversation") or {}
+    conversation_id = conversation.get("id")
+    if conversation_id is None:
+        return
+
+    # Only a real inbound customer message marks arrival. An agent's reply or a
+    # private note is not the customer contacting us.
+    if payload.get("message_type") != "incoming" or payload.get("private"):
+        return
+
+    try:
+        chatwoot = get_chatwoot_client()
+        existing = ((await chatwoot.get_conversation(conversation_id)) or {}).get(
+            "custom_attributes"
+        ) or {}
+        # `in`, not truthiness: False is a real answer and must count as stamped.
+        if _BUSINESS_HOURS_ATTR in existing:
+            return
+
+        inbox_id = conversation.get("inbox_id")
+        inbox = (await chatwoot.get_inbox(inbox_id)) or {} if inbox_id is not None else {}
+
+        created = payload.get("created_at")
+        arrived_at = (
+            datetime.fromtimestamp(float(created), tz=timezone.utc)
+            if isinstance(created, (int, float, str))
+            else datetime.now(timezone.utc)
+        )
+
+        tz_name = inbox.get("timezone") or "UTC"
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = timezone.utc
+
+        in_hours = is_within_business_hours(inbox, arrived_at)
+        attrs: dict = {
+            _BUSINESS_HOURS_ATTR: in_hours,
+            "received_at_local": arrived_at.astimezone(tz).isoformat(),
+        }
+        if not in_hours:
+            attrs["attend_after"] = next_working_instant(arrived_at, inbox).isoformat()
+
+        await chatwoot.set_custom_attributes(conversation_id, attrs)
+    except Exception:
+        logger.exception(
+            "maybe_stamp_business_hours: failed for conversation %s",
+            conversation_id,
+        )
 
 
 async def maybe_stamp_dealer_escalation(payload: dict) -> None:

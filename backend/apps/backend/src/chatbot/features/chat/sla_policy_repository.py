@@ -18,6 +18,7 @@ _FIELDS = (
     "ack_minutes_by_channel_json",
     "pic_whatsapp",
     "engine_enabled",
+    "working_hours_enabled",
 )
 
 

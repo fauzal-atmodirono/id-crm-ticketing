@@ -13,7 +13,7 @@ isoweekday() is Monday=1..Sunday=7, so `isoweekday() % 7` maps Sunday→0.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
@@ -45,3 +45,69 @@ def is_within_business_hours(inbox: dict, now: datetime | None = None) -> bool:
     close_minute = int(row.get("close_hour", 0)) * 60 + int(row.get("close_minutes", 0))
     now_minute = now.hour * 60 + now.minute
     return open_minute <= now_minute < close_minute
+
+
+# A pathological config (every day closed) would otherwise walk forever.
+_MAX_LOOKAHEAD_DAYS = 14
+
+
+def next_working_instant(after: datetime, inbox: dict) -> datetime:
+    """The first instant at or after *after* that falls inside working hours.
+
+    Used to stamp `attend_after` on an out-of-hours arrival, so the promise in
+    the after-hours auto-reply ("our team will reach out on the next business
+    day") has a real timestamp behind it.
+
+    Mirrors backend's `features.metrics.business_hours.next_working_instant`.
+    Deliberately a second implementation rather than a shared import: `agent`
+    and `backend` are separate services with no shared process (see CLAUDE.md),
+    exactly as `is_within_business_hours` above mirrors that module's
+    `working_minutes_between`. Both read the identical Chatwoot row shape.
+
+    Fails open: returns *after* unchanged when hours are not configured or no
+    opening is found within _MAX_LOOKAHEAD_DAYS. A case that is never
+    "attendable" must not become a case that is never attended.
+    """
+    if not inbox.get("working_hours_enabled"):
+        return after
+
+    rows = inbox.get("working_hours") or []
+    if not rows:
+        return after
+
+    tz_name = inbox.get("timezone") or "UTC"
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        logger.debug("next_working_instant: unknown timezone %r, using UTC", tz_name)
+        tz = timezone.utc
+
+    local = after.astimezone(tz)
+    rows_by_dow = {r.get("day_of_week"): r for r in rows}
+
+    cursor = local.date()
+    for _ in range(_MAX_LOOKAHEAD_DAYS):
+        row = rows_by_dow.get(cursor.isoweekday() % 7)
+        if row and not row.get("closed_all_day"):
+            day_start = datetime.combine(cursor, time.min, tzinfo=tz)
+            if row.get("open_all_day"):
+                open_dt, close_dt = day_start, day_start + timedelta(days=1)
+            else:
+                open_dt = day_start + timedelta(
+                    hours=int(row.get("open_hour", 0)),
+                    minutes=int(row.get("open_minutes", 0)),
+                )
+                close_dt = day_start + timedelta(
+                    hours=int(row.get("close_hour", 0)),
+                    minutes=int(row.get("close_minutes", 0)),
+                )
+            if local < close_dt:
+                return local if local >= open_dt else open_dt
+
+        cursor += timedelta(days=1)
+
+    logger.debug(
+        "next_working_instant: no opening within %d days; failing open",
+        _MAX_LOOKAHEAD_DAYS,
+    )
+    return after

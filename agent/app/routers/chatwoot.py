@@ -63,6 +63,10 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks):
             escalation_replies.maybe_link_escalation_reply, payload
         )
         background_tasks.add_task(dept_suggestion.maybe_suggest_department, payload)
+        # P1: record whether the case arrived inside business hours. Dispatched
+        # here rather than on conversation_updated because the requirement is
+        # about ARRIVAL, and conversation_updated fires on every label write.
+        background_tasks.add_task(sync.maybe_stamp_business_hours, payload)
     elif event in _STATUS_ONLY_EVENTS:
         background_tasks.add_task(sync.record_conversation_status, payload)
         if settings_flags.lifecycle_enabled and payload.get("status") == "resolved":

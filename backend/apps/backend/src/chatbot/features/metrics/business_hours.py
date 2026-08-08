@@ -69,3 +69,75 @@ def working_minutes_between(start: datetime, end: datetime, inbox: dict) -> int:
         cursor_date += timedelta(days=1)
 
     return total_minutes
+
+
+def _resolve_tz(inbox: dict, *, caller: str):
+    tz_name = inbox.get("timezone") or "UTC"
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        _log.debug("%s: unknown timezone %r, using UTC", caller, tz_name)
+        return timezone.utc
+
+
+# A pathological config (every day closed) would otherwise walk forever. 14 days
+# is comfortably past any real weekly cycle plus a public-holiday run.
+_MAX_LOOKAHEAD_DAYS = 14
+
+
+def next_working_instant(after: datetime, inbox: dict) -> datetime:
+    """The first instant at or after `after` that falls inside working hours.
+
+    Returns `after` unchanged when it is already inside working hours, when the
+    inbox has no working-hours config (the "always open" fallback
+    working_minutes_between uses), or when no opening can be found within
+    _MAX_LOOKAHEAD_DAYS.
+
+    That last case is a deliberate fail-open: a case that is never "attendable"
+    must not become a case that is never enforced. Callers stamp the result as
+    `attend_after`, so returning `after` means "attend now" rather than "never".
+
+    Walks the same day-by-day calendar as working_minutes_between and reads the
+    identical row shape (day_of_week 0=Sunday..6=Saturday).
+    """
+    if not inbox.get("working_hours_enabled"):
+        return after
+
+    rows_by_dow = {r.get("day_of_week"): r for r in (inbox.get("working_hours") or [])}
+    if not rows_by_dow:
+        return after
+
+    tz = _resolve_tz(inbox, caller="next_working_instant")
+    after_local = after.astimezone(tz)
+
+    cursor_date: date = after_local.date()
+    for _ in range(_MAX_LOOKAHEAD_DAYS):
+        dow = (cursor_date.isoweekday()) % 7
+        row = rows_by_dow.get(dow)
+        if row and not row.get("closed_all_day"):
+            day_start = datetime.combine(cursor_date, time.min, tzinfo=tz)
+            if row.get("open_all_day"):
+                open_dt, close_dt = day_start, day_start + timedelta(days=1)
+            else:
+                open_dt = day_start + timedelta(
+                    hours=int(row.get("open_hour", 0)),
+                    minutes=int(row.get("open_minutes", 0)),
+                )
+                close_dt = day_start + timedelta(
+                    hours=int(row.get("close_hour", 0)),
+                    minutes=int(row.get("close_minutes", 0)),
+                )
+            # Already inside today's window -> now. Before it -> the opening.
+            # After it -> fall through to the next day.
+            if after_local < close_dt:
+                return after_local if after_local >= open_dt else open_dt
+
+        cursor_date += timedelta(days=1)
+
+    _log.debug(
+        "next_working_instant: no opening within %d days for inbox tz=%r; "
+        "failing open and returning the original instant",
+        _MAX_LOOKAHEAD_DAYS,
+        inbox.get("timezone"),
+    )
+    return after

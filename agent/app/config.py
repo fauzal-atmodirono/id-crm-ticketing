@@ -100,6 +100,14 @@ class Settings(BaseSettings):
     # no-op otherwise). Default off, byte-identical when unset.
     email_escalation_enabled: bool = False
 
+    # P1: on the first inbound message, stamp received_in_business_hours /
+    # received_at_local / attend_after onto the conversation, so after-hours
+    # volume is reportable and the SLA clock has an arrival fact to read.
+    # Written once at intake and never overwritten -- see
+    # services/sync.py::maybe_stamp_business_hours for why report-time
+    # recomputation answers a different question. Default off.
+    business_hours_stamp_enabled: bool = False
+
     # Link an emailed reply (dealer/PIC/customer) back onto the conversation
     # it was escalated from. Requires the backend's
     # ESCALATION_REPLY_TO_TEMPLATE to be set, or no mail carries a token.

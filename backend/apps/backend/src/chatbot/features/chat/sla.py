@@ -51,6 +51,7 @@ import structlog
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from chatbot.features.chat.ports import AuditEntry, AuditLogPort
+from chatbot.features.chat.sla_clock import InboxCache, elapsed_minutes
 from chatbot.features.chat.sla_policy_repository import SlaPolicyRepository
 from chatbot.features.metrics.mapping import _chatwoot_sla_minutes
 from chatbot.features.metrics.sync import fetch_conversations
@@ -125,8 +126,26 @@ def _conversation_channel(conv: dict[str, Any]) -> str | None:
     return _CHANNEL_MAP.get(str(raw))
 
 
-def _conversation_age_seconds(conv: dict[str, Any], now: datetime) -> float | None:
-    """Age of a Chatwoot conversation in seconds, from its epoch ``created_at``."""
+def _conversation_age_seconds(
+    conv: dict[str, Any],
+    now: datetime,
+    inbox: dict[str, Any] | None = None,
+    *,
+    working_hours: bool = False,
+) -> float | None:
+    """Age of a Chatwoot conversation in seconds, from its epoch ``created_at``.
+
+    With ``working_hours=False`` (the default, and what every pre-P1 caller
+    gets) this is wall-clock seconds, byte-identical to the arithmetic this
+    function has always done — see
+    ``test_sla_clock.py::test_working_hours_false_matches_the_old_age_seconds_arithmetic_exactly``.
+
+    With ``working_hours=True`` the elapsed time is measured on the inbox's
+    configured business hours instead, so an SLA target of "2 hours" means 2
+    *working* hours. The body delegates to ``sla_clock.elapsed_minutes`` rather
+    than the call sites changing, which keeps the ``age > threshold``
+    comparisons below identical in shape — only the source of ``age`` moves.
+    """
     created = conv.get("created_at")
     if not isinstance(created, (int, float, str)):
         return None
@@ -134,7 +153,7 @@ def _conversation_age_seconds(conv: dict[str, Any], now: datetime) -> float | No
         created_at = datetime.fromtimestamp(float(created), tz=UTC)
     except (ValueError, TypeError, OSError):
         return None
-    return (now - created_at).total_seconds()
+    return elapsed_minutes(created_at, now, inbox or {}, working_hours=working_hours) * 60
 
 
 def _has_first_agent_response(conv: dict[str, Any], prior_states: set[str]) -> bool:
@@ -165,6 +184,7 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
     alert: Callable[[str, str, str, list[str]], Any] | None = None,
     level2_alert: Callable[[str, str, str], Any] | None = None,
     policy_repo: SlaPolicyRepository | None = None,
+    inbox_cache: InboxCache | None = None,
 ) -> list[AuditEntry]:
     """Scan Chatwoot conversations once and fire any un-fired SLA breaches.
 
@@ -213,6 +233,15 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
     # falls back to response_threshold (global).
     ack_minutes_by_channel = _parse_ack_minutes(settings.sla_ack_minutes_by_channel_json)
 
+    # P1: with sla_working_hours_enabled on, every threshold below is measured
+    # on the inbox's configured business hours instead of the wall clock. The
+    # cache is built ONCE here, outside the conversation loop — resolving hours
+    # per conversation would turn one inbox fetch into a fetch per conversation
+    # (~100x API amplification on a real tenant). With the flag off no inbox is
+    # fetched at all, so the dark path costs nothing.
+    working_hours_on = bool(getattr(settings, "sla_working_hours_enabled", False))
+    cache = inbox_cache if inbox_cache is not None else InboxCache(None)
+
     fired: list[AuditEntry] = []
     for conv in conversations:
         conv_id = conv.get("id")
@@ -220,18 +249,33 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
             continue
         ticket_id = str(conv_id)
         status = str(conv.get("status") or "")
-        age = _conversation_age_seconds(conv, clock)
-        if age is None:
-            continue
 
         # Resolve the operator-configured policy store scoped to this
         # conversation's inbox (tenant-default merged under inbox-specific).
         # When policy_repo is None, or resolve() returns None / leaves a field
         # unset, the equivalent settings.sla_* value is used unchanged — this
         # keeps behavior byte-identical to the pre-policy-store engine.
+        #
+        # Resolved BEFORE `age` because P1's working-hours decision feeds the
+        # age calculation itself, not just the thresholds compared against it.
         resolved_policy = None
         if policy_repo is not None:
             resolved_policy = await policy_repo.resolve(conv.get("inbox_id"))
+
+        # An explicit per-inbox working_hours_enabled wins over the global
+        # switch in BOTH directions; None (unset) inherits it.
+        conv_working_hours = (
+            resolved_policy.working_hours_enabled
+            if resolved_policy is not None and resolved_policy.working_hours_enabled is not None
+            else working_hours_on
+        )
+
+        inbox_hours = await cache.get(conv.get("inbox_id")) if conv_working_hours else {}
+        age = _conversation_age_seconds(
+            conv, clock, inbox_hours, working_hours=conv_working_hours
+        )
+        if age is None:
+            continue
 
         # Per-inbox opt-out: an explicit engine_enabled=False in the policy
         # store disables SLA scanning for this conversation's inbox only.

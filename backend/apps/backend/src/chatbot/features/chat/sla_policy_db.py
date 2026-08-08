@@ -38,6 +38,11 @@ class SlaPolicy(Base):
     ack_minutes_by_channel_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     pic_whatsapp: Mapped[str | None] = mapped_column(Text, nullable=True)
     engine_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # P1: per-inbox override of settings.sla_working_hours_enabled. NULL means
+    # "inherit the global setting" -- deliberately not False, so a policy row
+    # written before this column existed does not silently opt its inbox out
+    # of the working-hours clock.
+    working_hours_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
@@ -52,6 +57,7 @@ class SlaPolicyValues:
     ack_minutes_by_channel_json: str | None = None
     pic_whatsapp: str | None = None
     engine_enabled: bool | None = None
+    working_hours_enabled: bool | None = None
 
 
 def _to_async_url(url: str) -> str:

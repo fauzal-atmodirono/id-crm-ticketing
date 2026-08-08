@@ -78,3 +78,74 @@ async def test_resolve_inbox_only_no_tenant_default(repo):
     resolved = await repo.resolve(42)
     assert resolved.engine_enabled is False
     assert resolved.response_hours is None
+
+
+# --- P1 task 4: per-inbox working-hours override --------------------------
+#
+# Lets a tenant opt one inbox onto the working-hours clock (or off it) without
+# moving the global switch. The compatibility guard is
+# test_every_existing_stored_policy_resolves_unchanged: a policy row written
+# before this column existed must resolve to None (inherit the global), never
+# to False (silently opt that inbox out).
+
+
+@pytest.mark.asyncio
+async def test_an_unset_working_hours_enabled_inherits_the_global_setting(repo):
+    await repo.upsert_for_inbox(7, response_hours=4)
+
+    resolved = await repo.resolve(7)
+
+    assert resolved is not None
+    assert resolved.working_hours_enabled is None
+
+
+@pytest.mark.asyncio
+async def test_an_inbox_can_opt_in_while_the_global_setting_is_off(repo):
+    await repo.upsert_for_inbox(7, working_hours_enabled=True)
+
+    resolved = await repo.resolve(7)
+
+    assert resolved is not None
+    assert resolved.working_hours_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_an_inbox_can_opt_out_while_the_global_setting_is_on(repo):
+    await repo.upsert_tenant_default(working_hours_enabled=True)
+    await repo.upsert_for_inbox(7, working_hours_enabled=False)
+
+    resolved = await repo.resolve(7)
+
+    assert resolved is not None
+    assert resolved.working_hours_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_an_inbox_inherits_the_tenant_default_working_hours_value(repo):
+    await repo.upsert_tenant_default(working_hours_enabled=True)
+    await repo.upsert_for_inbox(7, response_hours=4)
+
+    resolved = await repo.resolve(7)
+
+    assert resolved is not None
+    assert resolved.working_hours_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_every_existing_stored_policy_resolves_unchanged(repo):
+    """A row written before this field existed must resolve to None, not False."""
+    await repo.upsert_tenant_default(
+        response_hours=8,
+        resolution_hours=48,
+        tier2_hours=4,
+        engine_enabled=True,
+    )
+
+    resolved = await repo.resolve(None)
+
+    assert resolved is not None
+    assert resolved.working_hours_enabled is None
+    assert resolved.response_hours == 8
+    assert resolved.resolution_hours == 48
+    assert resolved.tier2_hours == 4
+    assert resolved.engine_enabled is True

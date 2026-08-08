@@ -83,6 +83,17 @@ class Settings(BaseSettings):
     # {"whatsapp": 2, "call": 0.333, "facebook": 120, "instagram": 120, "email": 240}.
     # Empty → the global sla_response_hours applies to every channel.
     sla_ack_minutes_by_channel_json: str = ""
+    # P1: measure every SLA threshold on the inbox's configured business hours
+    # instead of the wall clock. With this ON, a target of "2 hours" means 2
+    # WORKING hours -- a case arriving 18:00 Friday breaches on Monday morning,
+    # not at 20:00 Friday. Existing configured targets do NOT need changing;
+    # they were always intended as working-hours targets.
+    #
+    # Default False, and with it off the arithmetic is byte-identical to the
+    # pre-P1 engine (asserted in test_sla_clock.py). This engine drives live
+    # breach alerts on a production tenant, so the dark path is load-bearing.
+    # Per-inbox override: SlaPolicyRepository.resolve().working_hours_enabled.
+    sla_working_hours_enabled: bool = False
     # Inboxes the SLA engine scans. Empty (default) = the single
     # chatwoot_inbox_id, preserving pre-existing behavior exactly. A
     # comma-separated list scans each. "*" scans every inbox in the account

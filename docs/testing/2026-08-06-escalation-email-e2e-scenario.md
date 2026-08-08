@@ -352,11 +352,21 @@ reply either, and the failure is silent: no note, no reopen, no error.
 
 - The reply is filed by Chatwoot as a brand-new conversation on the Email
   inbox (call it #M), same as TC-08.
-- The reply appears on conversation #N as a normal **incoming customer
-  message** (not a private note) — visible in the main thread exactly like
-  a message the customer sent to start the case.
-- #N reopens as a result (a real inbound message from the contact does this
-  natively).
+- The linker **attempts** to post the reply on conversation #N as a normal
+  incoming customer message, but Chatwoot rejects it: `message_type=
+  "incoming"` is only accepted on Api-channel inboxes, and #N sits on the
+  Email inbox (`Channel::Email`) — the only channel this reply loop ever
+  runs on, so this post 422s every time in production
+  (`"Incoming messages are only allowed in Api inboxes"`). The linker
+  catches that failure and falls back to a **private note** on #N instead,
+  prefixed `Customer's own reply (from <email>, could not be posted
+  inline...)` so it reads unambiguously as the customer's own words rather
+  than an agent note or a dealer reply — it is not visible to the customer
+  and does not appear as a message in the main thread.
+- #N still **reopens**, but via an explicit `toggle_status` call the linker
+  makes itself (not as a side effect of an inbound message landing, since
+  none did) — same visible outcome for the agent queue, different
+  mechanism.
 - #N gains **no** `escalation_replied_at` attribute and **no**
   `escalation_replied` label — those are internal-reply-only.
 - #M still gains the `escalation_reply` label and is resolved, same as the
@@ -379,8 +389,11 @@ reply either, and the failure is silent: no note, no reopen, no error.
 
 **Pass criteria:**
 
-- the customer's reply is visible on conversation #N as an **incoming**
-  message
+- the customer's reply lands on conversation #N as a **private note**
+  prefixed `Customer's own reply (from <email>, could not be posted
+  inline...)`, carrying the reply text — **not** as a visible incoming
+  message; that inline post is expected to 422 and fall back, per Expected
+  above
 - #N is **reopened**
 - **no** `escalation_replied` label and **no** `escalation_replied_at`
   attribute on #N (those are the internal-sender path only)

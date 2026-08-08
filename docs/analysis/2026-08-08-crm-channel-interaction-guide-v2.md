@@ -568,18 +568,31 @@ never receives the dealer's reply.
    customer another `Update on your case:` email and the PIC another
    `[Escalation]`.
 7. **If a customer instead replies to their own acknowledgement email**
-   (not the dealer/PIC mail), the reply comes back as a normal **public
-   incoming message on their own case**, reopening it exactly like a fresh
-   message would — not a private note. No `escalation_replied_at`/
-   `escalation_replied` gets set for a customer reply; those are
-   internal-reply only. The **survey** suppression still applies (the
-   throwaway conversation their reply lands in is resolved with no rating
-   request). The **auto-ack** suppression is *not* guaranteed here the way
-   it is for dealer/PIC in step 5: the customer's acknowledgement email is
-   deliberately sent with no `[CASE-n]` subject tag, so the only correlation
-   signal is a Reply-To token that isn't always present on this webhook
-   event — the customer may receive one more "Dear Customer"
-   auto-acknowledgement on that throwaway conversation. Expected, not a bug.
+   (not the dealer/PIC mail), the linker tries to post it back as a public
+   incoming message on their own case — the same call that works for a
+   dealer/PIC reply's private note — but Chatwoot rejects it: the
+   Application API only accepts `message_type=incoming` on **Api-channel**
+   inboxes, and this whole reply loop only ever runs on the tenant's
+   **Email** inbox, so that post 422s every time in production
+   (`"Incoming messages are only allowed in Api inboxes"`; confirmed live
+   against the tenant, not a lab finding). What actually lands on the case
+   is a **private note**, prefixed `Customer's own reply (from <email>,
+   could not be posted inline...)` so it's unmistakably the customer's own
+   words rather than an agent note or a dealer reply — it does **not**
+   appear in the main thread the way a dealer/PIC's `Reply from <name>
+   <<email>>:` note does either; both are private, agent-visible only. The
+   case is still **reopened** so it returns to the queue, just via an
+   explicit status change rather than as a side effect of an inbound
+   message. No `escalation_replied_at`/`escalation_replied` gets set for a
+   customer reply; those are internal-reply only. The **survey** suppression
+   still applies (the throwaway conversation their reply lands in is
+   resolved with no rating request). The **auto-ack** suppression is *not*
+   guaranteed here the way it is for dealer/PIC in step 5: the customer's
+   acknowledgement email is deliberately sent with no `[CASE-n]` subject
+   tag, so the only correlation signal is a Reply-To token that isn't
+   always present on this webhook event — the customer may receive one
+   more "Dear Customer" auto-acknowledgement on that throwaway
+   conversation. Expected, not a bug.
 
 ### 7.7 SLA breach alerts (new since 08-04)
 Requires `SLA_ENGINE_ENABLED`, `SLA_ALERT_EMAIL_ENABLED`,

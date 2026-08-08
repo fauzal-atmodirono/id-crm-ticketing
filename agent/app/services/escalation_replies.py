@@ -149,11 +149,15 @@ async def maybe_link_escalation_reply(payload: dict) -> None:
     conversation and close the throwaway one it arrived in.
 
     Two senders are trusted to link: the conversation's own contact (the
-    customer replying to their own ack -- posted as a public incoming
-    message, unstamped, since a customer may reply more than once) and an
-    address in the escalation contact allowlist (dealer/PIC -- posted as a
-    private note, stamped and labelled so a second internal reply doesn't
-    pile on). These two are checked in that order: an address that happens
+    customer replying to their own ack -- an incoming message is attempted
+    first, unstamped since a customer may reply more than once, but Chatwoot
+    only allows message_type="incoming" on Api-channel inboxes, so on the
+    Channel::Email inboxes this loop actually runs on it always falls back to
+    a private note carrying the customer's own words, with the conversation
+    reopened either way) and an address in the escalation contact allowlist
+    (dealer/PIC -- posted as a private note, stamped and labelled so a
+    second internal reply doesn't pile on). These two are checked in that
+    order: an address that happens
     to be both the conversation's contact and an allowlisted dealer/PIC is
     classified as the customer, and the allowlist is never consulted for
     it -- a sensible default (the customer's own words go in the customer
@@ -240,11 +244,40 @@ async def maybe_link_escalation_reply(payload: dict) -> None:
 
         if is_customer:
             # The customer's own words belong in the customer thread as an
-            # inbound message, not as an agent note -- which also reopens
-            # the conversation exactly as a real inbound message would.
-            await chatwoot.create_message(
-                case_id, text, private=False, message_type="incoming"
-            )
+            # inbound message, not as an agent note -- and posting one would
+            # also reopen the conversation exactly as a real inbound message
+            # would. But Chatwoot only accepts message_type="incoming" on
+            # Api-channel inboxes; this loop only ever runs on Channel::Email
+            # (checked above), so in production that post always 422s
+            # ("Incoming messages are only allowed in Api inboxes"). Attempt
+            # it anyway -- it is correct and would succeed if this ever runs
+            # on an Api inbox -- and fall back to a private note carrying the
+            # customer's own text when Chatwoot rejects it. Either way,
+            # reopen the conversation directly: that's the part of "reads as
+            # an inbound message" still deliverable on any inbox, and it
+            # covers both the success case (belt-and-braces, in case some
+            # future Chatwoot version silently drops the auto-reopen) and
+            # the fallback case (a private note does not reopen anything on
+            # its own).
+            try:
+                await chatwoot.create_message(
+                    case_id, text, private=False, message_type="incoming"
+                )
+            except Exception:
+                logger.info(
+                    "escalation_replies: incoming post to conversation %s was "
+                    "rejected (expected on a Channel::Email inbox -- Chatwoot "
+                    "only allows message_type=incoming on Api inboxes); "
+                    "falling back to a private note",
+                    case_id,
+                )
+                await chatwoot.create_message(
+                    case_id,
+                    f"Customer's own reply (from {sender_email}, could not be "
+                    f"posted inline -- see conversation {reply_conv_id}):\n\n{text}",
+                    private=True,
+                )
+            await chatwoot.toggle_status(case_id, "open")
         else:
             # Deliberately note-then-stamp, not the reverse: if
             # create_message fails, the exception below aborts before the

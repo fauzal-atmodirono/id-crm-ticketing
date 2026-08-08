@@ -30,7 +30,7 @@ def test_notify_rejects_missing_api_key() -> None:
     client = _client(notifier, {}, _settings())
     resp = client.post("/escalation/notify", json={"conversation_id": "9", "title": "t", "body": "b"})
     assert resp.status_code == 401
-    notifier.notify_email_channel_escalation.assert_not_called()
+    notifier.notify_escalation.assert_not_called()
 
 
 def test_notify_rejects_wrong_api_key() -> None:
@@ -60,13 +60,14 @@ def test_notify_resolves_customer_email_and_calls_notifier() -> None:
         },
     )
     assert resp.status_code == 200
-    notifier.notify_email_channel_escalation.assert_awaited_once_with(
+    notifier.notify_escalation.assert_awaited_once_with(
         conv_id="9",
         title="Late delivery",
         body="details",
         department="dept_apps",
         dealer="kl_pj",
         customer_email="alex@customer.example",
+        ack_transport="email",
     )
 
 
@@ -79,6 +80,7 @@ def test_notify_handles_missing_customer_email() -> None:
         json={"conversation_id": "9", "title": "t", "body": "b"},
     )
     assert resp.status_code == 200
-    notifier.notify_email_channel_escalation.assert_awaited_once_with(
+    notifier.notify_escalation.assert_awaited_once_with(
         conv_id="9", title="t", body="b", department=None, dealer=None, customer_email=None,
+        ack_transport="email",
     )

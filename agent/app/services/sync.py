@@ -2,7 +2,7 @@
 ticketing backend).
 
   - EM-7 two-thread email-channel escalation notification
-    (`maybe_escalate` / `_maybe_notify_email_escalation`).
+    (`maybe_escalate` / `_maybe_notify_escalation`).
   - Dealer-label escalation timestamping for reporting
     (`maybe_stamp_dealer_escalation`).
   - `upsert_contact` / `record_conversation_status`: no-op stubs kept as the
@@ -73,12 +73,19 @@ async def record_conversation_status(payload: dict) -> None:
     return None
 
 
-async def _maybe_notify_email_escalation(conversation_id: int, labels: list[str]) -> None:
-    """EM-7: for an Email-channel conversation, ask the backend to send the
-    two-thread escalation email (customer ack + PIC/dealer forward).
+async def _maybe_notify_escalation(conversation_id: int, labels: list[str]) -> None:
+    """EM-7: ask the backend to send the escalation (customer ack + PIC/dealer
+    forward) for a conversation an agent has labelled `escalate`.
+
+    With ``escalation_all_channels_enabled`` off this is Email-only, exactly as
+    before. With it on, every channel escalates and the *customer
+    acknowledgement* picks its transport from the channel -- mail on an Email
+    inbox, a message in the thread on WhatsApp/social/web, nothing at all on
+    voice (the caller was already spoken to). The PIC and dealer legs never
+    depended on the channel and are unchanged either way.
 
     Fail-open throughout: any missing config, unreachable service, or
-    resolution failure just means no email fires -- never raises, matching
+    resolution failure just means no escalation fires -- never raises, matching
     every other background-task helper in this module.
     """
     settings = get_settings()
@@ -102,7 +109,14 @@ async def _maybe_notify_email_escalation(conversation_id: int, labels: list[str]
         )
         return
 
-    if (inbox or {}).get("channel_type") != "Channel::Email":
+    # With the flag off this is the original Email-only gate. With it on, the
+    # channel is reported to the backend rather than resolved here: the backend
+    # is what dispatches to a transport, so it owns that mapping (see
+    # features/chat/escalation_ack.py). Duplicating the table in both services
+    # would mean two places to update when a channel is added, and the two
+    # deploy independently.
+    channel_type = (inbox or {}).get("channel_type")
+    if not settings.escalation_all_channels_enabled and channel_type != "Channel::Email":
         return
 
     # Once-per-escalation guard. The stamp is read off the conversation we
@@ -110,7 +124,7 @@ async def _maybe_notify_email_escalation(conversation_id: int, labels: list[str]
     # no new failure mode: if that GET had failed we would already have
     # returned above, so a "stamp read failure" can never be what suppresses
     # a genuine first escalation. The guard is checked after the channel
-    # check so a non-Email conversation is never stamped.
+    # check so a conversation we are not escalating is never stamped.
     existing = (conversation or {}).get("custom_attributes") or {}
     if existing.get(_NOTIFIED_ATTR):
         logger.info(
@@ -165,6 +179,7 @@ async def _maybe_notify_email_escalation(conversation_id: int, labels: list[str]
         body=body,
         department=department,
         dealer=dealer,
+        channel_type=channel_type,
     )
     if not sent:
         # Deliberately notify-then-stamp, and only on a confirmed send.
@@ -255,7 +270,7 @@ async def maybe_escalate(payload: dict) -> None:
         await _rearm_escalation_guard(conversation_id, payload)
         return
 
-    await _maybe_notify_email_escalation(conversation_id, labels)
+    await _maybe_notify_escalation(conversation_id, labels)
 
 
 async def maybe_stamp_business_hours(payload: dict) -> None:

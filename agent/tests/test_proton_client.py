@@ -698,6 +698,10 @@ async def test_notify_email_escalation_posts_payload():
         "body": "details",
         "department": "dept_apps",
         "dealer": "kl_pj",
+        # P2: sent so the backend can resolve the customer-ack transport.
+        # None here means "caller did not say", which the backend reads as
+        # Email -- the only channel that reached this endpoint before P2.
+        "channel_type": None,
     }
 
 

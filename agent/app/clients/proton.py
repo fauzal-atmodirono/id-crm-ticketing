@@ -527,6 +527,7 @@ class ProtonConfigClient:
         body: str,
         department: str | None,
         dealer: str | None,
+        channel_type: str | None = None,
     ) -> bool:
         """Ask the backend to send the EM-7 two-thread email escalation for a
         natively-escalated Email-channel conversation (POST
@@ -534,7 +535,7 @@ class ProtonConfigClient:
         matching assign_agent's pattern.
 
         Returns True only when the backend accepted the request. The caller
-        (`sync._maybe_notify_email_escalation`) stamps its once-per-escalation
+        (`sync._maybe_notify_escalation`) stamps its once-per-escalation
         guard on that answer, so a send that never happened does not leave a
         stamp behind that permanently suppresses the escalation -- which is
         why this reports success rather than being purely fire-and-forget.
@@ -548,6 +549,10 @@ class ProtonConfigClient:
                     "body": body,
                     "department": department,
                     "dealer": dealer,
+                    # The backend resolves this to a customer-ack transport
+                    # (features/chat/escalation_ack.py). Sent as the raw
+                    # channel so the mapping lives in exactly one service.
+                    "channel_type": channel_type,
                 },
             )
             response.raise_for_status()

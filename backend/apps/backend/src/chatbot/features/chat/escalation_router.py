@@ -38,6 +38,7 @@ import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
+from chatbot.features.chat.escalation_ack import ack_transport
 from chatbot.features.chat.ports import AuditEntry
 from chatbot.features.chat.sla import ACKNOWLEDGED_STATE
 
@@ -58,6 +59,11 @@ class _NotifyIn(BaseModel):
     body: str
     department: str | None = None
     dealer: str | None = None
+    # P2: the Chatwoot channel the case came from. The agent sends the raw
+    # channel and this service resolves the acknowledgement transport, so the
+    # channel table lives in exactly one place. Absent (a pre-P2 agent) is
+    # treated as Email, which is the only channel that used to reach here.
+    channel_type: str | None = None
 
 
 class _AcknowledgeIn(BaseModel):
@@ -110,14 +116,22 @@ def build_escalation_router(
 
     @router.post("/escalation/notify", dependencies=[Depends(auth)])
     async def notify(payload: _NotifyIn) -> dict[str, str]:
-        customer_email = await _resolve_customer_email(chatwoot_request, payload.conversation_id)
-        await notifier.notify_email_channel_escalation(
+        transport = (
+            "email" if payload.channel_type is None else ack_transport(payload.channel_type)
+        )
+        customer_email = (
+            await _resolve_customer_email(chatwoot_request, payload.conversation_id)
+            if transport == "email"
+            else None
+        )
+        await notifier.notify_escalation(
             conv_id=payload.conversation_id,
             title=payload.title,
             body=payload.body,
             department=payload.department,
             dealer=payload.dealer,
             customer_email=customer_email,
+            ack_transport=transport,
         )
         return {"status": "ok"}
 

@@ -48,6 +48,7 @@ _log = structlog.get_logger(__name__)
 # a hand-rolled reimplementation. The type alias below is deliberately
 # narrow (not the old raw-request shape) so a future accidental revert to
 # injecting `_request` again is a mypy error, not a silent regression.
+_CWPostMessage = Callable[[str, dict[str, Any]], Coroutine[Any, Any, Any]]
 _CWMergeCustomAttributes = Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]
 
 
@@ -96,6 +97,7 @@ class EscalationNotifier:
         dealer_email_map: dict[str, list[str]] | None = None,
         dealer_store: DealerStore | None = None,
         tenant_settings_store: TenantSettingsStorePort | None = None,
+        chatwoot_post_message: _CWPostMessage | None = None,
     ) -> None:
         self._settings = settings
         self._pic_registry = pic_registry
@@ -111,6 +113,10 @@ class EscalationNotifier:
         # as before, so this is byte-identical to pre-Task-18 behavior when
         # unset.
         self._tenant_settings_store = tenant_settings_store
+        # P2: posts the customer acknowledgement into the conversation thread
+        # on every non-Email channel. None means "not wired" -- a composition
+        # root that predates P2 simply sends no chat ack, rather than raising.
+        self._post_message = chatwoot_post_message
 
     async def notify(
         self,
@@ -222,7 +228,7 @@ class EscalationNotifier:
         except Exception as exc:
             _log.warning("escalation_wa_failed", to=to, error=str(exc))
 
-    async def notify_email_channel_escalation(
+    async def notify_escalation(
         self,
         *,
         conv_id: str,
@@ -231,18 +237,27 @@ class EscalationNotifier:
         department: str | None,
         dealer: str | None,
         customer_email: str | None,
+        ack_transport: str = "email",
     ) -> None:
-        """Two-thread email escalation (EM-7) for a natively-escalated
-        Email-channel conversation -- reached only via the /escalation/notify
-        endpoint, called from agent/'s maybe_escalate() when a human applies
-        the `escalate` label. Independent of notify(), which is the AI's own
-        autonomous escalation path and is never touched by this method.
+        """Escalation fan-out (EM-7) for a conversation a human labelled
+        `escalate` -- reached only via the /escalation/notify endpoint, called
+        from agent/'s maybe_escalate(). Independent of notify(), which is the
+        AI's own autonomous escalation path and is never touched here.
 
         Three independent, best-effort sends: customer ack, PIC email, dealer
         forward. Each failure is logged and does not affect the others.
+
+        ``ack_transport`` decides only how the CUSTOMER is acknowledged --
+        ``email`` (mail, the pre-P2 behaviour and the default), ``conversation``
+        (an outgoing message in the thread) or ``none`` (voice: the caller has
+        already been spoken to). The PIC and dealer legs never depended on the
+        channel and are unaffected by it.
         """
-        if self._settings.email_escalation_ack_enabled and customer_email:
-            await self._send_customer_ack(customer_email, conv_id=conv_id, title=title)
+        if self._settings.email_escalation_ack_enabled:
+            if ack_transport == "email" and customer_email:
+                await self._send_customer_ack(customer_email, conv_id=conv_id, title=title)
+            elif ack_transport == "conversation":
+                await self._send_chat_ack(conv_id, title=title)
 
         if self._settings.escalation_email_enabled:
             pic = await self._resolve_pic(department)
@@ -286,6 +301,35 @@ class EscalationNotifier:
             )
         except Exception as exc:
             _log.warning("escalation_customer_ack_failed", to_email=to_email, error=str(exc))
+
+    async def _send_chat_ack(self, conv_id: str, *, title: str) -> None:
+        """Acknowledge the customer in the conversation thread.
+
+        This MUST be an outgoing public message. A private note would leave the
+        conversation looking handled while the customer received nothing --
+        exactly the failure commit `0aa643d` shipped on the reply path, and the
+        reason `test_escalation_chat_ack.py` asserts the payload rather than
+        the call.
+
+        Best-effort like every other leg: a Chatwoot rejection is logged and
+        the PIC and dealer legs still fire.
+        """
+        del title  # the thread already shows what the case is about
+        if self._post_message is None:
+            _log.info("escalation_chat_ack_unwired", conv_id=conv_id)
+            return
+        content = (self._settings.escalation_ack_chat_template or "").strip()
+        if not content:
+            # An operator emptying the template is an opt-out, not a mandate to
+            # post an empty message at the customer.
+            return
+        try:
+            await self._post_message(
+                conv_id,
+                {"content": content, "private": False, "message_type": "outgoing"},
+            )
+        except Exception as exc:
+            _log.warning("escalation_chat_ack_failed", conv_id=conv_id, error=str(exc))
 
     async def _send_dealer_forward(
         self, dealer_slug: str, *, conv_id: str, title: str, body: str

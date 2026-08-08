@@ -399,6 +399,12 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             dealer_email_map=build_dealer_email_map(settings),
             dealer_store=dealer_store,
             tenant_settings_store=_shared_tenant_settings_store,
+            # P2: posts the customer acknowledgement into the thread on every
+            # non-Email channel. A lambda rather than a method so the notifier
+            # stays free of Chatwoot URL knowledge.
+            chatwoot_post_message=lambda conv_id, payload: chatwoot_client._request(
+                "POST", f"/conversations/{conv_id}/messages", payload
+            ),
         )
         chatwoot_client._escalation_notifier = escalation_notifier  # type: ignore[assignment]
         app.include_router(

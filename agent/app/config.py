@@ -122,6 +122,13 @@ class Settings(BaseSettings):
     # reads it.
     escalation_reply_acknowledgement_enabled: bool = False
 
+    # Fire the escalation on EVERY channel, not just Email. Before this, the
+    # `escalate` label on a WhatsApp/Web/Phone case notified nobody and said
+    # nothing about it -- the operator saw the label stick and assumed it had
+    # worked. Default off so the existing Email-only behaviour is preserved
+    # byte-for-byte until a tenant opts in.
+    escalation_all_channels_enabled: bool = False
+
     # Suggest-only AI escalation-department nudge (app/services/dept_suggestion.py):
     # on an incoming customer message to an Email-channel conversation with no
     # dept_* label yet, classify it against the departments that actually have

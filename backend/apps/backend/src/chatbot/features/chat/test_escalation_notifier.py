@@ -361,7 +361,7 @@ async def test_email_reference_uses_chatwoot_conversation() -> None:
 
 
 # ---------------------------------------------------------------------------
-# EM-7: notify_email_channel_escalation (two-thread email escalation)
+# EM-7: notify_escalation (two-thread email escalation)
 # ---------------------------------------------------------------------------
 
 
@@ -379,7 +379,7 @@ def _notifier(
         def send(self, to, cc, subject, body, attachments, *, reply_to=None) -> None:
             sent_emails.append({"to": to, "cc": cc, "subject": subject, "body": body})
 
-    # notify_email_channel_escalation (what every caller of this helper
+    # notify_escalation (what every caller of this helper
     # exercises) never calls _write_case_state -- only notify() does -- so
     # this is never actually invoked here; kept shaped like the real
     # merge-safe callable purely so nothing here looks like it's still on
@@ -399,9 +399,9 @@ def _notifier(
     return notifier, sent_emails
 
 
-async def test_notify_email_channel_escalation_sends_customer_ack_when_enabled() -> None:
+async def test_notify_escalation_sends_customer_ack_when_enabled() -> None:
     notifier, sent = _notifier(pic=None, settings_kw={"email_escalation_ack_enabled": True})
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="9",
         title="Late delivery",
         body="details",
@@ -414,9 +414,9 @@ async def test_notify_email_channel_escalation_sends_customer_ack_when_enabled()
     assert "specialist team" in sent[0]["body"]
 
 
-async def test_notify_email_channel_escalation_skips_ack_when_disabled() -> None:
+async def test_notify_escalation_skips_ack_when_disabled() -> None:
     notifier, sent = _notifier(pic=None, settings_kw={"email_escalation_ack_enabled": False})
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="9",
         title="t",
         body="b",
@@ -438,7 +438,7 @@ async def test_customer_ack_uses_tenant_store_override_when_present() -> None:
         settings_kw={"email_escalation_ack_enabled": True},
         tenant_settings_store=store,
     )
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="9",
         title="t",
         body="b",
@@ -459,7 +459,7 @@ async def test_customer_ack_falls_back_to_env_when_store_has_no_override() -> No
         settings_kw={"email_escalation_ack_enabled": True},
         tenant_settings_store=store,
     )
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="9",
         title="t",
         body="b",
@@ -487,7 +487,7 @@ async def test_customer_ack_falls_back_to_env_when_store_unreachable() -> None:
         settings_kw={"email_escalation_ack_enabled": True},
         tenant_settings_store=_BoomStore(),
     )
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="9",
         title="t",
         body="b",
@@ -499,12 +499,12 @@ async def test_customer_ack_falls_back_to_env_when_store_unreachable() -> None:
     assert "specialist team" in sent[0]["body"]
 
 
-async def test_notify_email_channel_escalation_sends_dealer_forward_when_mapped() -> None:
+async def test_notify_escalation_sends_dealer_forward_when_mapped() -> None:
     notifier, sent = _notifier(
         pic=None,
         dealer_map={"kl_pj": ["kl-pj@dealer.example"]},
     )
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="9",
         title="t",
         body="b",
@@ -516,7 +516,7 @@ async def test_notify_email_channel_escalation_sends_dealer_forward_when_mapped(
     assert sent[0]["to"] == ["kl-pj@dealer.example"]
 
 
-async def test_notify_email_channel_escalation_sends_to_every_group_member() -> None:
+async def test_notify_escalation_sends_to_every_group_member() -> None:
     """Task 5's headline requirement, asserted end-to-end: a dealer mapped to
     several addresses (a group, not a single contact) must have its
     escalation forward reach every one of them in a single send -- not just
@@ -528,7 +528,7 @@ async def test_notify_email_channel_escalation_sends_to_every_group_member() -> 
         pic=None,
         dealer_map={"kl_pj": ["a@dealer.example", "b@dealer.example", "c@dealer.example"]},
     )
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="9",
         title="t",
         body="b",
@@ -540,9 +540,9 @@ async def test_notify_email_channel_escalation_sends_to_every_group_member() -> 
     assert sent[0]["to"] == ["a@dealer.example", "b@dealer.example", "c@dealer.example"]
 
 
-async def test_notify_email_channel_escalation_skips_dealer_when_unmapped() -> None:
+async def test_notify_escalation_skips_dealer_when_unmapped() -> None:
     notifier, sent = _notifier(pic=None, dealer_map={})
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="9",
         title="t",
         body="b",
@@ -553,13 +553,13 @@ async def test_notify_email_channel_escalation_skips_dealer_when_unmapped() -> N
     assert sent == []
 
 
-async def test_notify_email_channel_escalation_sends_pic_and_dealer_together() -> None:
+async def test_notify_escalation_sends_pic_and_dealer_together() -> None:
     notifier, sent = _notifier(
         pic=_APPS_PIC,
         dealer_map={"kl_pj": ["kl-pj@dealer.example"]},
         settings_kw={"escalation_email_enabled": True},
     )
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="9",
         title="t",
         body="b",
@@ -572,13 +572,13 @@ async def test_notify_email_channel_escalation_sends_pic_and_dealer_together() -
     assert ("kl-pj@dealer.example",) in recipients
 
 
-async def test_notify_email_channel_escalation_noop_when_everything_off() -> None:
+async def test_notify_escalation_noop_when_everything_off() -> None:
     notifier, sent = _notifier(
         pic=None,
         dealer_map={},
         settings_kw={"escalation_email_enabled": False, "email_escalation_ack_enabled": False},
     )
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="9",
         title="t",
         body="b",
@@ -602,7 +602,7 @@ async def test_dealer_forward_uses_store_record_when_present() -> None:
     notifier, sent = _notifier(pic=None, dealer_map={"kl_pj": ["legacy@dealer.example"]})
     notifier._dealer_store = dealer_store
 
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="9",
         title="t",
         body="b",
@@ -628,7 +628,7 @@ async def test_dealer_forward_store_record_sends_to_every_group_member() -> None
     notifier, sent = _notifier(pic=None, dealer_map={})
     notifier._dealer_store = dealer_store
 
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="9",
         title="t",
         body="b",
@@ -648,7 +648,7 @@ async def test_dealer_forward_falls_back_to_dict_when_store_has_no_entry() -> No
     notifier, sent = _notifier(pic=None, dealer_map={"kl_pj": ["legacy@dealer.example"]})
     notifier._dealer_store = dealer_store
 
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="9",
         title="t",
         body="b",
@@ -665,7 +665,7 @@ async def test_dealer_forward_works_without_a_store_configured() -> None:
     """dealer_store=None (default) -> unchanged legacy dict-only behaviour."""
     notifier, sent = _notifier(pic=None, dealer_map={"kl_pj": ["legacy@dealer.example"]})
 
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="9",
         title="t",
         body="b",

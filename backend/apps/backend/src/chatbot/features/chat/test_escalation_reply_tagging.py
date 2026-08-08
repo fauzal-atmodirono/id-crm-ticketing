@@ -71,7 +71,7 @@ def _notifier(sender: _Sender, settings: Settings) -> EscalationNotifier:
 
 async def test_pic_and_dealer_mail_carry_token_customer_ack_does_not() -> None:
     sender = _Sender()
-    await _notifier(sender, _settings()).notify_email_channel_escalation(
+    await _notifier(sender, _settings()).notify_escalation(
         conv_id="42",
         title="my car will not start",
         body="transcript",
@@ -97,7 +97,7 @@ async def test_empty_template_leaves_mail_untagged() -> None:
     settings = _settings(escalation_reply_to_template="")
     notifier = _notifier(sender, settings)
 
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="42",
         title="t",
         body="b",
@@ -122,7 +122,7 @@ async def test_malformed_template_falls_back_to_untagged_but_still_sends() -> No
     settings = _settings(escalation_reply_to_template="support+case{conv_id:d}@test")
     notifier = _notifier(sender, settings)
 
-    await notifier.notify_email_channel_escalation(
+    await notifier.notify_escalation(
         conv_id="42",
         title="t",
         body="b",

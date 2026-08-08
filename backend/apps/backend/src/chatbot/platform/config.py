@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     # measurable events rather than one. Default False = first-agent-reply is
     # the only signal, exactly as before. Can only ever suppress an ack breach.
     sla_acknowledgement_enabled: bool = False
+    # P2: the customer acknowledgement posted into the conversation thread when
+    # an escalation happens on a non-Email channel. Blank (the default) means
+    # no chat ack is posted -- an operator emptying it is opting out, not
+    # asking for an empty message at the customer.
+    escalation_ack_chat_template: str = ""
     # Inboxes the SLA engine scans. Empty (default) = the single
     # chatwoot_inbox_id, preserving pre-existing behavior exactly. A
     # comma-separated list scans each. "*" scans every inbox in the account

@@ -202,7 +202,7 @@ async def test_authorized_user_can_list_upsert_delete_dealer(tmp_path, respx_moc
         assert list_res.status_code == 200
         dealers = list_res.json()["dealers"]
         assert dealers == [
-            {"dealer": "acme", "emails": ["acme@example.com", "second@example.com"]}
+            {"dealer": "acme", "emails": ["acme@example.com", "second@example.com"], "cc_emails": []}
         ]
 
         delete_res = client.delete("/admin/escalation/dealers/acme", headers=HEADERS)
@@ -297,7 +297,7 @@ async def test_upsert_dealer_does_not_wipe_existing_group_on_empty_body(tmp_path
 
         list_res = client.get("/admin/escalation/dealers", headers=HEADERS)
         assert list_res.json()["dealers"] == [
-            {"dealer": "acme", "emails": ["a@example.com", "b@example.com"]}
+            {"dealer": "acme", "emails": ["a@example.com", "b@example.com"], "cc_emails": []}
         ]
 
 

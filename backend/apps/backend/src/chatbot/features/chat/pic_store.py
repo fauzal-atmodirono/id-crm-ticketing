@@ -51,14 +51,22 @@ class PicRecord:
 class DealerRecord:
     dealer: str
     emails: list[str] = field(default_factory=list)
+    # P2: "relevant personnel" kept in the loop on the dealer forward (e.g. a
+    # service manager). Empty = To-the-group only, which is every record
+    # written before P2. Gated by escalation_cc_dealer.
+    cc_emails: list[str] = field(default_factory=list)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, DealerRecord):
             return NotImplemented
-        return self.dealer == other.dealer and list(self.emails) == list(other.emails)
+        return (
+            self.dealer == other.dealer
+            and list(self.emails) == list(other.emails)
+            and list(self.cc_emails) == list(other.cc_emails)
+        )
 
     def __hash__(self) -> int:
-        return hash((self.dealer, tuple(self.emails)))
+        return hash((self.dealer, tuple(self.emails), tuple(self.cc_emails)))
 
 
 def _dealer_record_from_dict(data: dict[str, Any], fallback_key: str) -> DealerRecord:
@@ -73,7 +81,11 @@ def _dealer_record_from_dict(data: dict[str, Any], fallback_key: str) -> DealerR
     else:
         legacy = data.get("email")
         members = [str(legacy)] if legacy else []
-    return DealerRecord(dealer=str(data.get("dealer", fallback_key)), emails=members)
+    raw_cc = data.get("cc_emails")
+    cc = [str(e) for e in raw_cc if e] if isinstance(raw_cc, list) else []
+    return DealerRecord(
+        dealer=str(data.get("dealer", fallback_key)), emails=members, cc_emails=cc
+    )
 
 
 class PicStore:

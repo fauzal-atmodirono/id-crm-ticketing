@@ -724,6 +724,11 @@ class Settings(BaseSettings):
     # When true (default), escalation emails CC the department's configured
     # cc_emails (the "relevant personnel" beyond the To-recipient PIC).
     escalation_cc_pic: bool = True
+    # P2: the same idea on the dealer forward, which had no CC at all. Default
+    # FALSE, not True like escalation_cc_pic -- the dealer leg carries the full
+    # transcript to an address outside the company, so widening its recipient
+    # list has to be a deliberate act.
+    escalation_cc_dealer: bool = False
     escalation_level2_whatsapp: str = ""  # E.164, e.g. "+60112345678"
     escalation_tier2_hours: float = 4.0  # hours after first breach before level-2 alert
 

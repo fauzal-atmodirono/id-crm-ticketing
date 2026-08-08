@@ -265,7 +265,13 @@ class EscalationNotifier:
                 self._send_email(pic, conv_id=conv_id, title=title, body=body)
 
         if dealer:
-            await self._send_dealer_forward(dealer, conv_id=conv_id, title=title, body=body)
+            await self._send_dealer_forward(
+                dealer,
+                conv_id=conv_id,
+                title=title,
+                body=body,
+                customer_email=customer_email,
+            )
 
     async def _resolve_ack_template(self) -> str:
         """Operator-edited template from the tenant store, else the env
@@ -332,13 +338,17 @@ class EscalationNotifier:
             _log.warning("escalation_chat_ack_failed", conv_id=conv_id, error=str(exc))
 
     async def _send_dealer_forward(
-        self, dealer_slug: str, *, conv_id: str, title: str, body: str
+        self, dealer_slug: str, *, conv_id: str, title: str, body: str,
+        customer_email: str | None = None,
     ) -> None:
         emails: list[str] = []
+        cc: list[str] = []
         if self._dealer_store is not None:
             record = await self._dealer_store.get(dealer_slug.lower())
             if record is not None:
                 emails = list(record.emails)
+                if self._settings.escalation_cc_dealer:
+                    cc = list(record.cc_emails or [])
         if not emails:
             emails = list(self._dealer_email_map.get(dealer_slug.lower()) or [])
         if not emails:
@@ -355,10 +365,24 @@ class EscalationNotifier:
 
             Please action this case promptly.
         """)
+        # This mail carries the full transcript. If the dealer's CC list happens
+        # to hold the customer's own address, that transcript would go straight
+        # back to them -- drop it rather than trust the routing config.
+        if customer_email:
+            target = customer_email.strip().lower()
+            kept = [a for a in cc if a.strip().lower() != target]
+            if len(kept) != len(cc):
+                _log.warning(
+                    "escalation_dealer_cc_dropped_customer",
+                    dealer=dealer_slug,
+                    conv_id=conv_id,
+                )
+            cc = kept
+
         try:
             self._email_sender.send(
                 to=emails,
-                cc=[],
+                cc=cc,
                 subject=f"[Escalation - Dealer Forward] {self._case_tag(conv_id)}{title}",
                 body=email_body,
                 attachments=[],

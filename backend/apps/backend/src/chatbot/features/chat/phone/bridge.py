@@ -809,23 +809,27 @@ class PhoneBridge:
 
     def _genai(self) -> Any | None:
         """Lazily build (and cache) a google-genai client for post-call
-        transcript classification. Mirrors ``CallControl._twilio()`` and
-        ``main.py``'s ``_build_genai_client``: construction is fail-open and
-        never raises. A construction failure is deliberately not cached, so
-        a later call retries rather than repeating the failure forever."""
+        transcript classification. Mirrors ``CallControl._twilio()``:
+        construction is fail-open and never raises. A construction failure is
+        deliberately not cached, so a later call retries rather than repeating
+        the failure forever.
+
+        P8: the client comes from ``build_metered_genai_client`` rather than
+        from ``google.genai.Client`` directly, so this call site's tokens are
+        counted by construction. With ``token_metering_enabled`` off (the
+        default) that returns the raw SDK client unwrapped -- byte-identical
+        to the previous code, no proxy on the classification path."""
         if self._genai_client is not None:
             return self._genai_client
         try:
-            from google.genai import Client  # noqa: PLC0415 -- lazy: fail-open without the SDK
+            from chatbot.platform.metered_genai import (  # noqa: PLC0415 -- lazy: fail-open without the SDK
+                SURFACE_PHONE_CLASSIFY,
+                build_metered_genai_client,
+            )
 
-            if self._settings.google_genai_use_vertexai:
-                self._genai_client = Client(
-                    vertexai=True,
-                    project=self._settings.vertex_project_id,
-                    location=self._settings.vertex_location,
-                )
-            else:
-                self._genai_client = Client()
+            self._genai_client = build_metered_genai_client(
+                self._settings, surface=SURFACE_PHONE_CLASSIFY
+            )
         except Exception as e:
             _log.error("phone_transcript_classify_client_init_failed", error=str(e))
             return None

@@ -7,9 +7,10 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Protocol
 
 import structlog
-from google.genai import Client, live, types
+from google.genai import live, types
 
 from chatbot.features.chat.phone.live_events import LiveEvent, normalize_server_message
+from chatbot.platform.metered_genai import SURFACE_PHONE_LIVE, build_metered_genai_client
 
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
@@ -92,15 +93,24 @@ async def connect_live(
     system_instruction: str,
     tools: list[types.Tool],
 ) -> AsyncIterator[LiveSession]:
-    """Open a Gemini Live session configured for telephony audio + KB tools."""
-    if settings.google_genai_use_vertexai:
-        client = Client(
-            vertexai=True,
-            project=settings.vertex_project_id,
-            location=settings.vertex_location,
-        )
-    else:
-        client = Client()
+    """Open a Gemini Live session configured for telephony audio + KB tools.
+
+    P8: the client comes from ``build_metered_genai_client`` so this call site
+    is metered by construction rather than by remembering. The Live API's own
+    token accounting arrives in server messages rather than on a response
+    object, so nothing is recorded here *yet* -- what routing through the
+    wrapper buys is that when Live usage is captured there is exactly one
+    place to add it, and that the architectural guard test keeps this file from
+    growing a direct ``Client(...)`` again. With ``token_metering_enabled``
+    off (the default) the wrapper hands back the raw SDK client unwrapped, so
+    the live audio path is byte-identical to pre-P8.
+    """
+    client = build_metered_genai_client(settings, surface=SURFACE_PHONE_LIVE)
+    if client is None:
+        # Previously a construction failure raised out of connect_live; keep
+        # that contract rather than degrading to a None-typed client that
+        # fails later with an opaque AttributeError.
+        raise RuntimeError("google-genai client unavailable for the phone Live session")
     config = _build_live_config(settings, system_instruction, tools)
     async with client.aio.live.connect(model=settings.gemini_live_model, config=config) as session:
         _log.info("phone_live_session_connected", model=settings.gemini_live_model)

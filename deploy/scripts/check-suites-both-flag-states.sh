@@ -38,6 +38,20 @@ FLAGS_ON=(
   CASE_FIELDS_ENABLED=true
   # P4 — reporting
   REOPEN_TRACKING_ENABLED=true
+  # P5 — targets & report delivery
+  CONTROL_ITEMS_ENABLED=true
+  TARGETS_SEED_ENABLED=true
+  # P6 — agent presence & workforce. ROUTING_ENABLED is NOT set here: it is a
+  # Phase-5 switch P6 does not own, and the routing sweeper is gated on it as
+  # well as on ROUTING_SWEEP_ENABLED, so its on-path is covered instead by
+  # features/routing/test_p6_wiring.py, which sets both.
+  PRESENCE_TRACKING_ENABLED=true
+  PRESENCE_CUSTOM_STATUSES_ENABLED=true
+  PRESENCE_THRESHOLD_ALERTS_ENABLED=true
+  ACW_ENABLED=true
+  ROUTING_FAIR_SHARE_ENABLED=true
+  ROUTING_SWEEP_ENABLED=true
+  FOLLOW_UP_DATE_ENABLED=true
 )
 
 failed=0

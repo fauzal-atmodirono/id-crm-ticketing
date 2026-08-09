@@ -27,8 +27,8 @@ from chatbot.features.chat.adapters.vertex_search import VertexAISearchAdapter
 from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
 from chatbot.features.chat.dms_client import DmsClient, MockDmsClient
 from chatbot.features.chat.dms_config_store import DmsConfigStore
-from chatbot.features.chat.escalation_notifier import EscalationNotifier, build_dealer_email_map
 from chatbot.features.chat.escalation_attachments import ChatwootAttachmentFetcher
+from chatbot.features.chat.escalation_notifier import EscalationNotifier, build_dealer_email_map
 from chatbot.features.chat.escalation_router import build_escalation_router
 from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.handoff_bridge import HandoffBridge
@@ -64,11 +64,18 @@ from chatbot.features.metrics.qa_adapter import build_qa_label_port
 from chatbot.features.metrics.qa_router import build_qa_router
 from chatbot.features.metrics.query_adapter import build_metrics_query_port
 from chatbot.features.metrics.scheduler import start_metrics_scheduler, start_report_scheduler
+from chatbot.features.routing.acw import build_acw_controller, start_acw_sweeper
 from chatbot.features.routing.assigner import RoutingAssigner
+from chatbot.features.routing.custom_status import build_custom_status_store
 from chatbot.features.routing.presence import PresenceFetcher
+from chatbot.features.routing.presence_poller import start_presence_poller
+from chatbot.features.routing.presence_store import build_presence_event_store
+from chatbot.features.routing.presence_thresholds import start_presence_threshold_sweeper
 from chatbot.features.routing.router import build_routing_router
 from chatbot.features.routing.service import RoutingService
 from chatbot.features.routing.store import ChannelPriorityStore
+from chatbot.features.routing.sweeper import start_routing_sweeper
+from chatbot.features.routing.workforce_router import build_workforce_router
 from chatbot.features.tasks.tasks_router import build_tasks_router
 from chatbot.platform.config import Settings, get_settings
 from chatbot.platform.logger import configure_logging
@@ -123,6 +130,7 @@ def _wire_assist(
     # backend's .env, and they are merged into allow_origins at startup:
     if settings.assist_cors_origins:
         import structlog as _sl
+
         _sl.get_logger(__name__).info(
             "assist_cors_origins_added", count=len(settings.assist_cors_origins)
         )
@@ -130,6 +138,7 @@ def _wire_assist(
         # Re-registering with a merged list is the simplest approach; FastAPI
         # evaluates middlewares in stack order and the first matching one wins.
         from fastapi.middleware.cors import CORSMiddleware as _CORS
+
         app.add_middleware(
             _CORS,
             allow_origins=settings.assist_cors_origins,
@@ -239,9 +248,7 @@ def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
     from chatbot.features.metrics.control_items_router import build_control_items_router
     from chatbot.features.metrics.targets_store import build_targets_store
 
-    app.include_router(
-        build_control_items_router(build_targets_store(settings), settings)
-    )
+    app.include_router(build_control_items_router(build_targets_store(settings), settings))
 
     report_scheduler = start_report_scheduler(
         settings, query_port, build_email_report_port(settings)
@@ -339,6 +346,18 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # customer360_router.py's module docstring for why that distinction
     # matters.
     dms_client: DmsClient | None = MockDmsClient() if settings.dms_mock_client_enabled else None
+
+    # --- P6: the two presence stores (constructed unconditionally) ---
+    # Same reasoning as pic_store/dealer_store/dms_config_store above: neither
+    # touches Firestore until a caller actually invokes a method, so building
+    # them is free even on a tenant with every P6 flag off. They are built here,
+    # ahead of everything that reads them, because four separate consumers need
+    # to see the SAME instances rather than four private copies: the routing
+    # service's fair-share `routable` filter, the workforce dashboard, the ACW
+    # controller and the startup seed below. Each of those consumers is
+    # individually flag-gated; construction is not, so there is nothing to gate.
+    _presence_event_store = build_presence_event_store(settings)
+    _custom_status_store = build_custom_status_store(settings)
 
     if settings.crm_provider == "zendesk":
         zendesk_client = ZendeskAdapter(settings)
@@ -468,6 +487,21 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         tenant_settings_store=_shared_tenant_settings_store,
     )
 
+    # --- P6: after-call work, built before the chat router that consumes it ---
+    # RoutingAssigner used to be constructed further down, in the Phase 5 block,
+    # AFTER build_chat_router. It has moved up here because the dependency chain
+    # runs chat router -> ACW controller -> assigner: the phone dial-status
+    # webhook lives in the chat router and is what puts an agent into ACW at
+    # call end. The Phase 5 routing router below reuses this same instance
+    # rather than constructing a second one.
+    _routing_assigner = RoutingAssigner(settings)
+    # Passed in unconditionally, not gated here: ChatRouter checks
+    # `settings.acw_enabled` itself before it does any work at all (no ticket
+    # lookup, no assignee resolution, no status write), so with the flag off the
+    # controller is an unreachable object rather than an inert code path -- and
+    # `start_acw_sweeper` below needs the same instance to sweep.
+    _acw_controller = build_acw_controller(settings, _routing_assigner)
+
     app.include_router(
         build_chat_router(
             orchestrator=orchestrator,
@@ -475,26 +509,31 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             human_agent_bridge=human_agent_bridge,
             twilio_adapter=twilio_adapter,
             audit_log=audit_log,
+            acw_controller=_acw_controller,
         )
     )
 
     # --- Phase 5: agent routing & presence ---
-    # Mount the config router unconditionally (its GET endpoints back the
-    # routing-admin UI); only wire the RoutingService onto the live chat adapter
-    # when routing is enabled.
+    # Only wire the RoutingService onto the live chat adapter when routing is
+    # enabled. The config router itself is mounted unconditionally (its GET
+    # endpoints back the routing-admin UI) -- but down in the P6 block below,
+    # after RBAC, because the supervisor-reassignment path needs the authz
+    # repo/validator that block builds.
     _routing_presence = PresenceFetcher(settings)
     _routing_priority_store = ChannelPriorityStore(settings)
     _routing_svc = RoutingService(
-        presence=_routing_presence, store=_routing_priority_store, settings=settings
+        presence=_routing_presence,
+        store=_routing_priority_store,
+        settings=settings,
+        # P6 fair share: consulted only when routing_fair_share_enabled is on
+        # (pick_agent skips the whole `routable` filter and the open-count fetch
+        # otherwise), so wiring them in unconditionally keeps flag-off selection
+        # byte-identical, including which Chatwoot calls are made.
+        custom_status_store=_custom_status_store,
+        presence_store=_presence_event_store,
     )
     if settings.routing_enabled and chatwoot_client is not None:
         chatwoot_client._routing_service = _routing_svc  # type: ignore[assignment]
-    _routing_assigner = RoutingAssigner(settings)
-    app.include_router(
-        build_routing_router(
-            settings, _routing_priority_store, _routing_presence, _routing_svc, _routing_assigner
-        )
-    )
 
     # --- Agent-assist FAQ ---
     _wire_agent_assist(
@@ -512,11 +551,13 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # Merge CRM-authored live-FAQ into the KB that /assist + Copilot ground on,
     # so an authored entry surfaces in their answers immediately.
     from chatbot.features.chat.adapters.merged_knowledge import MergedKnowledgeAdapter
+
     _assist_genai = _build_genai_client(settings)
     _assist_live_store = build_live_faq_store(settings, _assist_genai)  # type: ignore[arg-type]
     _assist_embedder = (
         VertexEmbedder(_assist_genai, settings.embedding_model)
-        if _assist_genai is not None else None
+        if _assist_genai is not None
+        else None
     )
     assist_knowledge_port = MergedKnowledgeAdapter(
         knowledge_port, _assist_live_store, _assist_embedder
@@ -526,7 +567,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     kb_pg_adapter = None
     if settings.knowledge_pg_enabled and settings.knowledge_database_url:
         from chatbot.features.chat.adapters.pgvector_knowledge import PgVectorKnowledgeAdapter
-        from chatbot.features.chat.kb_db import build_engine, build_session_maker, init_kb_db
+        from chatbot.features.chat.kb_db import build_engine, build_session_maker
         from chatbot.features.chat.kb_knowledge_router import build_kb_knowledge_router
         from chatbot.features.chat.kb_repository import PgKbRepository
 
@@ -535,7 +576,8 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         kb_repo = PgKbRepository(kb_session_maker)
         kb_embedder = (
             VertexEmbedder(_assist_genai, settings.embedding_model)
-            if _assist_genai is not None else None
+            if _assist_genai is not None
+            else None
         )
         if kb_embedder is not None:
             kb_pg_adapter = PgVectorKnowledgeAdapter(kb_repo, kb_embedder, settings.kb_score_floor)
@@ -545,6 +587,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             # Enabled but embeddings unavailable → skip mounting so uploads 404
             # rather than every doc silently failing to embed. Log for visibility.
             import structlog as _sl
+
             _sl.get_logger(__name__).warning(
                 "knowledge_pg_enabled but no embedder (genai unavailable); /kb/knowledge not mounted"
             )
@@ -559,6 +602,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         engine = getattr(app.state, "kb_engine", None)
         if engine is not None:
             from chatbot.features.chat.kb_db import init_kb_db
+
             await init_kb_db(engine)
 
     # --- RSA (roadside assistance) incident log (default-off) ---
@@ -583,17 +627,24 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         engine = getattr(app.state, "rsa_engine", None)
         if engine is not None:
             from chatbot.features.rsa.rsa_db import init_rsa_db
+
             await init_rsa_db(engine)
 
     # --- RBAC (roles/permissions; default-off) ---
+    # authz_validator is initialized out here (like authz_repo) so the P6 block
+    # below can hand both to the routing/workforce routers without a NameError
+    # when RBAC is off. `require_permission` already treats a None pair as
+    # "fall back to the shared-secret x-api-key check", which is exactly the
+    # right behaviour for an RBAC-disabled tenant.
     authz_repo = None
+    authz_validator = None
     sla_policy_repo = None
     if settings.rbac_enabled and settings.rbac_database_url:
+        from chatbot.features.authz.chatwoot_role_mirror import ChatwootRoleMirror
         from chatbot.features.authz.db import build_engine as build_authz_engine
         from chatbot.features.authz.db import build_session_maker as build_authz_session_maker
         from chatbot.features.authz.identity import TokenValidator
         from chatbot.features.authz.repository import AuthzRepository
-        from chatbot.features.authz.chatwoot_role_mirror import ChatwootRoleMirror
         from chatbot.features.authz.router import build_authz_router
         from chatbot.features.chat.sla_policy_db import build_engine as build_sla_policy_engine
         from chatbot.features.chat.sla_policy_db import (
@@ -607,7 +658,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         authz_repo = AuthzRepository(authz_session_maker)
         authz_validator = TokenValidator(settings)
         authz_mirror = ChatwootRoleMirror(settings)
-        app.include_router(build_authz_router(authz_repo, authz_validator, settings, mirror=authz_mirror))
+        app.include_router(
+            build_authz_router(authz_repo, authz_validator, settings, mirror=authz_mirror)
+        )
         app.state.authz_engine = authz_engine
         app.state.authz_repo = authz_repo
 
@@ -688,6 +741,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             )
         else:
             import structlog as _sl
+
             _sl.get_logger(__name__).warning(
                 "customer360_prerequisites_missing",
                 detail=(
@@ -699,6 +753,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             )
     elif settings.rbac_enabled:
         import structlog as _sl
+
         _sl.get_logger(__name__).warning(
             "rbac_enabled_but_no_database_url",
             detail="RBAC_ENABLED is true but RBAC_DATABASE_URL is empty; /authz not mounted",
@@ -724,6 +779,102 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             from chatbot.features.chat.sla_policy_db import init_sla_policy_db
 
             await init_sla_policy_db(sla_policy_engine)
+
+    # --- P6: agent presence, custom statuses & the workforce dashboard ---
+    # Sits after the RBAC block, not with the Phase 5 constructions above, for
+    # one reason: both routers here gate on a permission, and with RBAC on
+    # `require_permission` needs the repo/validator that block builds. With RBAC
+    # off both are None and both routers fall back to the shared-secret check,
+    # exactly as they did before this package.
+    #
+    # The routing config router is mounted unconditionally, as it always was --
+    # `routing_enabled` gates automatic agent *selection* inside the handler,
+    # never the endpoints' existence. `audit`/`authz_repo`/`validator` are new
+    # (P6 task 8's supervisor reassignment): all three reuse the instances built
+    # once above rather than constructing duplicates, same convention as
+    # pic_store/dealer_store.
+    app.include_router(
+        build_routing_router(
+            settings,
+            _routing_priority_store,
+            _routing_presence,
+            _routing_svc,
+            _routing_assigner,
+            audit=audit_log,
+            authz_repo=authz_repo,
+            validator=authz_validator,
+        )
+    )
+
+    # The dashboard reads the presence-event log directly, so it is gated on the
+    # flag that fills that log. Mounting it with presence tracking off would
+    # serve a page of rows whose every presence field is null -- technically
+    # honest, but indistinguishable from a broken dashboard.
+    if settings.presence_tracking_enabled:
+        app.include_router(
+            build_workforce_router(
+                settings,
+                authz_repo,
+                authz_validator,
+                presence_fetcher=_routing_presence,
+                presence_store=_presence_event_store,
+                status_store=_custom_status_store,
+            )
+        )
+
+    # Seeding the nine-status catalogue is create-only (an operator who
+    # re-tinted "Lunch" keeps their edit across restarts), the same discipline
+    # as TargetsStore.seed_from_settings -- so it is safe to run on every boot.
+    # It is still gated on the custom-status flag, because seeding is a real
+    # Firestore write: with the flag off nothing reads the catalogue, and
+    # writing nine documents into every tenant's Firestore anyway would break
+    # the "all flags off changes nothing" guarantee this package is sold on.
+    if settings.presence_custom_statuses_enabled:
+
+        @app.on_event("startup")
+        async def _seed_custom_statuses() -> None:
+            created = await _custom_status_store.seed()
+            import structlog as _sl
+
+            _sl.get_logger(__name__).info("custom_statuses_seeded", created=created)
+
+    # Four schedulers, each returning None when its own flag is off (no
+    # BackgroundScheduler is even constructed then), each with the shutdown hook
+    # convention the metrics/SLA schedulers already use in this file.
+    presence_poller = start_presence_poller(settings)
+    if presence_poller is not None:
+
+        @app.on_event("shutdown")
+        def _stop_presence_poller() -> None:
+            presence_poller.shutdown(wait=False)
+
+    presence_threshold_sweeper = start_presence_threshold_sweeper(settings)
+    if presence_threshold_sweeper is not None:
+
+        @app.on_event("shutdown")
+        def _stop_presence_threshold_sweeper() -> None:
+            presence_threshold_sweeper.shutdown(wait=False)
+
+    # ACW's timeout is derived from the stored event timestamp and self-heals on
+    # the next read, so this sweeper is not what makes the timeout correct -- it
+    # is what bounds how long an agent who forgot to leave ACW waits to be
+    # noticed on a quiet queue.
+    acw_sweeper = start_acw_sweeper(settings, _acw_controller)
+    if acw_sweeper is not None:
+
+        @app.on_event("shutdown")
+        def _stop_acw_sweeper() -> None:
+            acw_sweeper.shutdown(wait=False)
+
+    # Reuses the same routing service and assigner /routing/assign uses, so the
+    # sweeper can never disagree with the event-driven path about who is
+    # eligible. Gated on routing_enabled AND routing_sweep_enabled.
+    routing_sweeper = start_routing_sweeper(settings, _routing_svc, _routing_assigner)
+    if routing_sweeper is not None:
+
+        @app.on_event("shutdown")
+        def _stop_routing_sweeper() -> None:
+            routing_sweeper.shutdown(wait=False)
 
     # --- Proton AI-assist (rewired Captain AI) ---
     _wire_assist(

@@ -329,6 +329,74 @@ CONTROL_ITEMS_ENABLED=true
 TARGETS_SEED_ENABLED=true    # creates only; never overwrites an operator edit
 ```
 
+### Agent presence, custom statuses & the workforce dashboard (P6)
+
+Seven independent flags, all default-off. With all seven off the backend
+registers no scheduler job at all — not a poller that ticks and finds nothing,
+which would still call Chatwoot once a minute on every tenant that never asked
+for any of this.
+
+```bash
+PRESENCE_TRACKING_ENABLED=true          # the poller + the presence-event log
+PRESENCE_CUSTOM_STATUSES_ENABLED=true   # the nine-status catalogue + its seed
+PRESENCE_THRESHOLD_ALERTS_ENABLED=true  # the 10-minute / 1-hour alerts
+ACW_ENABLED=true                        # After-Call-Work as a presence state
+ROUTING_FAIR_SHARE_ENABLED=true         # least-loaded within a tier
+ROUTING_SWEEP_ENABLED=true              # also needs ROUTING_ENABLED=true
+FOLLOW_UP_DATE_ENABLED=true             # per-ticket follow-up date (agent svc)
+```
+
+`PRESENCE_TRACKING_ENABLED` is the primitive: it is what fills the
+presence-event log every other flag reads. `GET /admin/workforce` (permission
+`workforce.view`, Chatwoot fork patch `0053`) is only mounted when it is on —
+with presence tracking off the dashboard would render a row per agent with
+every presence field blank, which is honest but indistinguishable from a broken
+page.
+
+**The one thing to understand before showing this to an operator:**
+
+> Custom statuses mirror into Chatwoot's native Online/Busy/Offline. Selecting
+> "Lunch" shows as **Busy** inside Chatwoot's own UI and as **Lunch** on the
+> workforce dashboard. This is deliberate: Chatwoot's presence field is a fixed
+> enum, and mirroring means an agent is still correctly excluded from routing
+> even if the custom-status service is unavailable.
+>
+> The "Availability history" column is derived from transitions to and from
+> Offline. It is **not** a login/logout record — an agent who closes their
+> laptop without going offline stays shown as available until their next
+> transition.
+
+Four more things the dashboard and the alerts do not claim, each of which a
+reader would otherwise assume:
+
+- **`cases_closed_today` is always blank, never `0`.** No helper can
+  date-filter "resolved today" without an unbounded full-history scan on every
+  ~30s poll. Same rule as the control-item slide above: a zero would be a claim
+  about performance, a blank is a statement about instrumentation. The response
+  carries `cases_closed_today_caveat` saying so.
+- **The 1-hour alert's WIP list is scoped to `SLA_INBOX_IDS`** — the same inbox
+  scope the SLA engine watches, *not* an account-wide audit. If a tenant routes
+  agent chats through inboxes outside that scope, those open cases are invisible
+  to the alert. Do not present it as exhaustive.
+- **The follow-up date has no Chatwoot UI yet.** The backend and agent-service
+  behaviour exist and are tested (a follow-up date provably never appears as an
+  SLA breach), but the conversation-panel field needs P3's panel patch, which is
+  not part of this work. `FOLLOW_UP_DATE_ENABLED` keeps it invisible until then.
+- **Patch `0053-workforce-dashboard.patch` was hand-built and could not be
+  verified against upstream Chatwoot** from the environment it was written in
+  (no network to github). Its hunks are internally consistent and it applies to
+  a synthetic tree; that is not proof it applies to the real fork. **Validate it
+  on the first Cloud Build**, before anyone plans a demo around the page.
+
+Requirement 4.69 asks for After-Call-Work **and** average handling time. P6
+delivers the ACW state only; AHT stays blocked on the missing call-queue
+instrumentation (gap R9), the same gap that blanks four of the control items.
+
+An agent can never be trapped out of routing by a status: ACW auto-exits after
+`ACW_TIMEOUT_SECONDS`, and that timeout is derived from the stored event
+timestamp rather than an in-process timer, so it survives a restart. The sweeper
+that enforces it only bounds *how long detection takes*, not whether it happens.
+
 ## 7. Switching to a real domain later
 
 The nip.io setup is HTTP-only and meant to get you running fast. To move to

@@ -31,9 +31,7 @@ def test_reopen_tracking_defaults_to_false_in_the_agent_env_template():
     assert "REOPEN_TRACKING_ENABLED=false" in EXAMPLE_ENV
 
 
-@pytest.mark.parametrize(
-    "key", ["REPORTING_TIMEZONE=UTC", "REOPEN_TRACKING_ENABLED=false"]
-)
+@pytest.mark.parametrize("key", ["REPORTING_TIMEZONE=UTC", "REOPEN_TRACKING_ENABLED=false"])
 def test_every_new_setting_is_documented_in_example_env(key):
     assert key in EXAMPLE_ENV
 
@@ -65,7 +63,17 @@ def test_the_p5_settings_are_documented_in_example_env():
     assert "TARGETS_SEED_ENABLED=false" in EXAMPLE_ENV
 
 
-def test_the_p5_settings_default_to_false():
+def test_the_p5_settings_default_to_false(monkeypatch):
+    """The delenv calls are load-bearing. `_env_file=None` does not stop
+    pydantic-settings reading `os.environ`, and
+    `deploy/scripts/check-suites-both-flag-states.sh` now runs this suite a
+    second time with both P5 flags exported as `true` (P6 task 11 added them to
+    `FLAGS_ON`, per that script's own rule that a flag missing from the list is
+    a flag whose on-path is untested). Without this, the test asserted the
+    opposite of its own name on the run that exists to find defects.
+    """
+    monkeypatch.delenv("CONTROL_ITEMS_ENABLED", raising=False)
+    monkeypatch.delenv("TARGETS_SEED_ENABLED", raising=False)
     settings = _settings()
     assert settings.control_items_enabled is False
     assert settings.targets_seed_enabled is False

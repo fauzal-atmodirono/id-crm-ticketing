@@ -181,6 +181,7 @@ Task 7 (their content is prescribed differently there):
 | Audit Log | `0026-audit-log-admin.patch` (permission `audit.view`) | ch09-audit-log |
 | Roles & Permissions | `0027-roles-permissions-admin.patch`, `0028-chatwoot-access-permissions.patch` (permission list), `0031-permissions-no-poison-retry.patch` | ch09-roles-permissions |
 | Escalation Routing | `0039-escalation-routing-admin.patch` (PIC per department, dealer directory, permission `escalation.manage`) | ch09-escalation-routing |
+| Agent Availability & Workforce Dashboard | `0053-workforce-dashboard.patch` (permission `workforce.view`) + `features/routing/{custom_status,presence_store,presence_poller,presence_thresholds,acw,workforce_router}.py`. **Patch 0053 is unverified against upstream — validate on the first Cloud Build before this section is demonstrated.** Section states the native-status mirroring, the availability-history-is-not-a-login-record caveat, the always-blank "cases closed today" column, the SLA-inbox scope of the 1-hour alert's WIP list, and that AHT (4.69's other half) is not delivered. | ch09-workforce |
 | Account settings | Native — `<!-- VERIFY-LIVE -->` | ch09-account-settings |
 
 ### 10-ai-behaviour.md

@@ -692,6 +692,117 @@ Escalation replies section) checks against — a reply that lands from an
 address not listed here as a PIC or a dealer-group member is not linked
 back onto the case.
 
+## Agent Availability & Workforce Dashboard
+
+### What it is
+
+Two related things. First, an extended set of **availability statuses** an
+agent can choose beyond the three the CRM offers natively (Online, Busy,
+Offline): Available, Busy, Lunch, Break, Coaching, Training, Toilet and
+Prayer, plus **After-Call Work**, which the system sets automatically when a
+phone call ends rather than being chosen by anyone. Second, a supervisor
+**Workforce dashboard** showing, live, who is in which status, how long they
+have been in it, how their day has been split across statuses, their
+availability against the working day, and how many cases they currently have
+open.
+
+Two things about how this is presented are deliberate, and knowing them
+prevents a supervisor drawing the wrong conclusion from the page:
+
+> Custom statuses mirror into Chatwoot's native Online/Busy/Offline. Selecting
+> "Lunch" shows as **Busy** inside Chatwoot's own UI and as **Lunch** on the
+> workforce dashboard. This is deliberate: Chatwoot's presence field is a fixed
+> enum, and mirroring means an agent is still correctly excluded from routing
+> even if the custom-status service is unavailable.
+>
+> The "Availability history" column is derived from transitions to and from
+> Offline. It is **not** a login/logout record — an agent who closes their
+> laptop without going offline stays shown as available until their next
+> transition.
+
+Where the dashboard cannot measure something, it shows **blank rather than
+zero**, the same rule the monthly control-item report follows. In particular
+the **"Cases closed today"** column is always blank: nothing in the platform
+records a date-filtered "resolved today" count that can be read cheaply enough
+to refresh every half minute, and a zero there would be a statement about the
+team's output rather than about what is instrumented. Read a blank as "not
+measured", never as "none".
+
+Two capacity limits worth stating plainly, so nobody plans around them:
+
+- **The one-hour unavailability alert lists the agent's open cases from the
+  inboxes the SLA engine watches**, not from every inbox in the account. If a
+  team routes work through an inbox outside that scope, those cases are not in
+  the list. Treat it as a prompt to review, not as a complete audit.
+- **Average handling time is not part of this.** The After-Call Work *state*
+  exists; the handling-time figure that usually accompanies it depends on call
+  queue statistics the platform does not yet receive from the telephony side —
+  the same gap that leaves several call-related rows of the monthly report
+  unmeasured.
+
+### Where to find it
+
+Agents change their own status from the availability control in the CRM's top
+bar. Supervisors open **Workforce** in the main left-hand navigation (visible
+only if your role has been granted the "View the workforce/presence dashboard"
+permission).
+
+<!-- VERIFY-LIVE: confirm the Workforce nav label and the availability control's exact placement on the live tenant -->
+
+### How to use it
+
+1. **As an agent**, open the availability control and pick the status that
+   matches what you are doing — for example **Lunch** when you step out. You
+   do not need to remember to also set yourself Busy: choosing Lunch does that
+   for you, which is why colleagues see you as Busy in the CRM while the
+   supervisor's dashboard shows the reason.
+2. Set yourself back to **Available** when you return. Anything other than
+   Available means new conversations are not routed to you.
+3. **After a phone call**, you are placed into **After-Call Work**
+   automatically so you can finish your notes. Set yourself back to
+   **Available** when you are done — and if you forget, the system releases
+   you automatically after a short interval, so a forgotten wrap-up can never
+   quietly remove you from routing for the rest of the shift.
+4. **As a supervisor**, open **Workforce** to see the live grid. Refresh the
+   page (or leave it open — it re-reads roughly every half minute) to follow
+   the day; this is a polled view of current data, not a pushed live feed.
+5. Read the **"Time in status today"** and **"Availability %"** columns
+   together: the percentage is measured against the inbox's configured working
+   hours, not against a flat 24 hours, so an agent who worked their whole shift
+   reads near 100% rather than around a third.
+6. If an agent stays in a status that counts as unavailable — Lunch, Break,
+   Toilet or Prayer — past the configured thresholds, the agent and an
+   administrator are notified after the first threshold, and an administrator
+   again (with that agent's open cases attached) after the second. Coaching,
+   Training and After-Call Work are expected, scheduled states and never alert.
+7. To add a status of your own — a shift pattern or an activity specific to
+   your team — an administrator can add one without a software release.
+
+[[SCREENSHOT: ch09-workforce | The Workforce dashboard, with the availability-history disclaimer shown on the page]]
+
+### Example scenario
+
+Proton's after-sales supervisor opens **Workforce** at 11:40 and sees one
+agent has been in **Lunch** for 55 minutes while three cases sit open against
+her name. The dashboard is where she sees the *reason*; in the conversation
+list that agent simply reads as Busy. Rather than guessing, the supervisor
+waits for the one-hour alert, which arrives with the agent's three open case
+numbers attached, and reassigns the most urgent of them to a colleague from
+the conversation view. Separately, a second agent finished a phone call two
+minutes ago and shows as **After-Call Work** — the supervisor leaves him
+alone, because that status is expected and clears itself.
+
+### Integrations & automation
+
+Availability is what conversation routing already reads to decide who can
+receive new work (see the Conversations chapter), so a custom status takes
+effect on routing through the native status it mirrors — which is why routing
+keeps behaving correctly even if the custom-status service is unavailable. The
+same status history feeds the availability figures in the Reports chapter's
+agent reporting. Who may open this page is controlled from **Roles &
+Permissions**, and who may reassign a conversation to a named agent is a
+separate permission granted there too.
+
 ## Account settings
 
 ### What it is

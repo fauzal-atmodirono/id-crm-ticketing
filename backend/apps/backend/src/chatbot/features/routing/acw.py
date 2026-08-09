@@ -39,9 +39,9 @@ Two mechanisms both rely on that same derived check, per the task brief's
   it exits them for you and returns ``True``.
 - ``sweep()`` -- the explicit belt: iterates every Chatwoot agent (via the
   injected ``_PresenceProbe.fetch_agents``) and calls ``expire_if_due`` on
-  each. This module does not itself schedule ``sweep()`` on a timer --
-  wiring that up (e.g. onto the existing presence-poller cadence) is a
-  later wave's job, per this task's "do not touch main.py" instruction.
+  each. ``start_acw_sweeper`` (bottom of this file) puts it on the presence
+  poller's own cadence, which is what turns the worst-case detection window
+  from "whenever something next looks at that agent" into a fixed interval.
 
 This module is inert unless ``settings.acw_enabled`` is True: both
 ``start_after_call`` (the call-end entry point) and, for defense in depth,
@@ -50,10 +50,13 @@ This module is inert unless ``settings.acw_enabled`` is True: both
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from chatbot.features.routing.custom_status import (
     CustomStatus,
@@ -255,3 +258,62 @@ def build_acw_controller(settings: Settings, assigner: _AssigneeResolver) -> ACW
     reason to construct a second one.
     """
     return ACWController(settings, assigner)
+
+
+def run_acw_sweep_job(settings: Settings, controller: ACWController) -> int:
+    """Run one ACW timeout sweep from a synchronous scheduler context.
+
+    ``BackgroundScheduler`` calls plain sync functions; ``sweep`` is async
+    because the presence store is. ``asyncio.run`` bridges that, the same
+    solution ``run_presence_poll_job``/``run_sweep_job`` use elsewhere in
+    this package. Wrapped in its own try/except on top of ``sweep``'s own
+    per-agent guards, so nothing here can crash the scheduler thread or stop
+    the next tick.
+    """
+    if not settings.acw_enabled:
+        return 0
+    try:
+        return asyncio.run(controller.sweep())
+    except Exception as e:  # pragma: no cover - defensive; sweep() never raises
+        _log.error("acw_sweep_job_failed", error=str(e))
+        return 0
+
+
+def start_acw_sweeper(
+    settings: Settings,
+    controller: ACWController,
+    *,
+    scheduler: Any | None = None,
+    job: Callable[[], object] | None = None,
+) -> Any | None:
+    """Put ``ACWController.sweep`` on a timer when ACW is enabled; else
+    return ``None`` without creating a scheduler at all.
+
+    The timeout itself is derived and self-heals on the next read of that
+    agent's status (see the module docstring), so correctness does not
+    depend on this sweeper existing -- it exists to bound the *detection*
+    window. Without it, an agent who forgot to leave ACW is only released
+    when something happens to look at them, which on a quiet queue can be
+    a long time; with it, the bound is one tick.
+
+    Ticks at ``settings.presence_poll_seconds`` rather than a cadence of its
+    own: the sweep is a cheap Firestore read per agent on top of one
+    ``fetch_agents`` call, exactly the same shape and cost as the presence
+    poller's own tick, and a second tunable for the same class of work would
+    only be another number to get wrong. ``scheduler``/``job`` are
+    injectable, matching ``start_presence_poller``/``start_routing_sweeper``.
+    """
+    if not settings.acw_enabled:
+        return None
+    sched = scheduler or BackgroundScheduler()
+    run = job or (lambda: run_acw_sweep_job(settings, controller))
+    sched.add_job(
+        run,
+        trigger="interval",
+        seconds=settings.presence_poll_seconds,
+        id="acw_timeout_sweep",
+        replace_existing=True,
+    )
+    sched.start()
+    _log.info("acw_sweeper_started", interval_seconds=settings.presence_poll_seconds)
+    return sched

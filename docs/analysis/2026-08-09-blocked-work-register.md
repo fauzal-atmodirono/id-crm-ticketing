@@ -89,6 +89,7 @@ or image sent to the tenant.
 | **Cloud Build for fork patch 0052** | The tier-2 manager field on the Escalation Routing page. Patch is written and verified with `git apply --check`; no image contains it. | `gcloud builds submit deploy/chatwoot-fork/ …` — off-VM, amd64. **Never build this on the prod VM, never from an arm64 Mac.** |
 | **`provision_case_record_fields.py`** | P3's sidebar panel needs the custom-attribute definitions to exist. No fork patch needed. | One dry-run then live run per tenant. |
 | **The Power BI `.pbix` (§4.55)** | A proprietary binary only Power BI Desktop can author. `proton-crm.pbids` (the connection) and the page-by-page spec ship instead — those are the reviewable, diffable parts. | One Power BI Desktop session. **Evidence required before reporting it done:** every page rendering against a real dataset, refresh succeeding under the service account, and a screenshot of each page in `power-bi-runbook.md`. The client raised this at the 2026-07-28 demo (feedback item 5), so an unevidenced claim will be checked. |
+| **Cloud Build for fork patch 0053** | P6's Workforce dashboard page. **Hand-built and never verified against a real Chatwoot checkout** — context lines were transcribed from `0045`, the hunk arithmetic is script-verified, and it applies to a *synthetic* tree, which proves internal consistency only. If some unlisted patch also touches `protonAdmin.js` / `Sidebar` / `dashboard.routes.js`, or 0045's shipped content differs from what was transcribed, 0053 needs a line-number fix-up or a regenerated diff. | `gcloud builds submit deploy/chatwoot-fork/ …` — off-VM, amd64. **Do not schedule a demo of the Workforce page before this build has gone green.** |
 | **Upstream Chatwoot source** | This sandbox cannot reach github. | Only matters for files **upstream owns**. Files our own patches *created* can be reconstructed by replaying the patch history — that is how 0052 was authored. `CustomAttributes.vue` is upstream-owned and therefore genuinely out of reach. |
 
 ---
@@ -116,6 +117,36 @@ single most likely way this work gets undone, and it will look like an
 improvement to whoever does it.
 
 ---
+
+## 3c. P6 workforce dashboard — one column that cannot be measured
+
+Same rule as §3b, one column instead of five rows:
+
+| Column | Why it cannot be measured | Unblocked by |
+|---|---|---|
+| Cases closed today | No helper date-filters "resolved today". The only conversation pager in the codebase is a synchronous, unfiltered, full-history one built for a nightly batch job; calling it on every ~30 s dashboard poll would get slower as history grows. Reported as `null` with a `cases_closed_today_caveat`, never `0`. | A "resolved since" incremental query (new plumbing, not requested by any package) |
+
+Two scope statements that belong here rather than only in prose, because both
+read as more than they are:
+
+- **The 1-hour unavailability alert's WIP list is scoped to `SLA_INBOX_IDS`** —
+  the same inboxes the SLA engine watches, **not** account-wide. A tenant
+  routing agent chats through an out-of-scope inbox has those open cases
+  invisible to the alert. It is a prompt to review, not an audit.
+- **Requirement 4.69's average-handling-time half is not delivered.** P6 ships
+  the After-Call-Work *state*; AHT needs the same call-queue instrumentation
+  (R9) that blanks four control items above. Do not let the ACW state be
+  reported as closing 4.69.
+
+## 3d. P6 follow-up date — built, and deliberately invisible
+
+Not blocked on anyone outside this repo, recorded here so it is not mistaken
+for shipped: the per-ticket follow-up date exists end to end in the backend and
+the `agent` service (and is asserted never to appear as an SLA breach), but
+there is **no Chatwoot UI for it**. The field needs P3's conversation-panel
+patch, which is not part of P6. `FOLLOW_UP_DATE_ENABLED` keeps it invisible
+until that patch exists — so the flag being off is the honest state, not an
+oversight.
 
 ## 4. Deliberately not attempted
 
@@ -157,3 +188,15 @@ runs both suites with every feature flag forced ON. That run has already caught
 two defects the flags-off run could not — the on-path is code nobody exercises
 until a tenant opts in. **Every new default-off flag must be added to
 `FLAGS_ON`**, or its on-path is untested.
+
+P6 added its seven flags **and P5's two, which had been omitted**. Adding them
+immediately caught a third class of defect the flags-off run cannot see: three
+tests asserting "this flag defaults to false" by constructing `Settings()`
+without clearing the environment first. `_env_file=None` does not stop
+pydantic-settings reading `os.environ`, so on the flags-ON run those tests were
+asserting the exact opposite of their own names — passing while proving nothing.
+**A new default-asserting test must clear its variable from the environment**,
+or adding its flag to `FLAGS_ON` turns the test into a lie rather than a check.
+`ROUTING_ENABLED` is deliberately *not* in `FLAGS_ON`: it is a Phase-5 switch,
+and the one P6 component gated on it (the assignment sweeper) has its on-path
+covered by `features/routing/test_p6_wiring.py` instead.

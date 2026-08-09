@@ -26,6 +26,7 @@ from chatbot.features.routing.acw import (
     ACW_EXIT_STATUS_KEY,
     ACW_STATUS_KEY,
     ACWController,
+    start_acw_sweeper,
 )
 from chatbot.features.routing.custom_status import SEED_STATUSES, CustomStatus
 from chatbot.features.routing.presence import AgentRecord
@@ -297,3 +298,55 @@ async def test_sweep_exits_every_agent_past_the_timeout():
     assert exited == 2
     assert (await store.latest(1)).status == ACW_EXIT_STATUS_KEY  # type: ignore[union-attr]
     assert (await store.latest(2)).status == ACW_EXIT_STATUS_KEY  # type: ignore[union-attr]
+
+
+# --- the timeout sweeper's scheduler wiring (P6 task 11) ------------------
+
+
+class _RecordingScheduler:
+    def __init__(self) -> None:
+        self.jobs: list[dict[str, object]] = []
+        self.started = False
+
+    def add_job(self, func: object, **kwargs: object) -> None:
+        self.jobs.append(kwargs)
+
+    def start(self) -> None:
+        self.started = True
+
+
+def test_the_acw_sweeper_does_not_exist_with_the_flag_off():
+    """Flag off must mean no scheduler at all, not a scheduler that ticks and
+    finds nothing: the latter still calls Chatwoot's agent list every minute on
+    a tenant that never asked for After-Call-Work."""
+    sched = _RecordingScheduler()
+    controller = _controller(
+        _FakeAssigner(1), _FakeStatusStoreAndPresence(), _FakePresenceFetcher()
+    )
+
+    result = start_acw_sweeper(
+        _settings(acw_enabled=False), controller, scheduler=sched, job=lambda: None
+    )
+
+    assert result is None
+    assert sched.jobs == []
+    assert sched.started is False
+
+
+def test_the_acw_sweeper_ticks_on_the_presence_poll_cadence():
+    """One tunable for one class of work: the sweep is the same shape and cost
+    as a presence-poller tick, so it reuses that interval rather than adding a
+    second number for an operator to get wrong."""
+    sched = _RecordingScheduler()
+    settings = _settings()
+    controller = _controller(
+        _FakeAssigner(1), _FakeStatusStoreAndPresence(), _FakePresenceFetcher()
+    )
+
+    result = start_acw_sweeper(settings, controller, scheduler=sched, job=lambda: None)
+
+    assert result is sched
+    assert sched.started is True
+    assert len(sched.jobs) == 1
+    assert sched.jobs[0]["id"] == "acw_timeout_sweep"
+    assert sched.jobs[0]["seconds"] == settings.presence_poll_seconds

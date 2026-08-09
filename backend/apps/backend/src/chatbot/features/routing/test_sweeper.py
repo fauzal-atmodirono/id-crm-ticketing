@@ -281,11 +281,19 @@ async def test_the_flag_off_runs_no_sweep() -> None:
     async def fetch(_settings: Settings) -> list[dict[str, Any]]:
         return [conv]
 
-    # Sweep flag off, master routing switch also off (both are Settings()
-    # defaults) -- no sweep at all.
+    # Both flags off -- no sweep at all. Stated explicitly rather than left to
+    # `Settings()`'s defaults: the both-flag-states gate
+    # (deploy/scripts/check-suites-both-flag-states.sh) runs this whole suite
+    # with ROUTING_SWEEP_ENABLED=true in the environment, and pydantic-settings
+    # reads os.environ regardless of `_env_file`, so a bare `Settings()` here
+    # would silently assert the flag-ON behaviour on that run.
     assigner = _FakeAssigner()
     result = await run_sweep(
-        Settings(), picker, assigner, fetch_conversations=fetch, now=lambda: NOW
+        Settings(routing_enabled=False, routing_sweep_enabled=False),
+        picker,
+        assigner,
+        fetch_conversations=fetch,
+        now=lambda: NOW,
     )
     assert result == {"scanned": 0, "assigned": 0, "skipped": 0}
     assert assigner.assign_calls == []
@@ -293,7 +301,7 @@ async def test_the_flag_off_runs_no_sweep() -> None:
     # routing_enabled on, but routing_sweep_enabled still off -- still no
     # sweep. The two flags are gated independently.
     result = await run_sweep(
-        Settings(routing_enabled=True),
+        Settings(routing_enabled=True, routing_sweep_enabled=False),
         picker,
         assigner,
         fetch_conversations=fetch,
@@ -305,7 +313,7 @@ async def test_the_flag_off_runs_no_sweep() -> None:
     # routing_sweep_enabled on, but the master routing_enabled switch still
     # off -- still no sweep.
     result = await run_sweep(
-        Settings(routing_sweep_enabled=True),
+        Settings(routing_enabled=False, routing_sweep_enabled=True),
         picker,
         assigner,
         fetch_conversations=fetch,

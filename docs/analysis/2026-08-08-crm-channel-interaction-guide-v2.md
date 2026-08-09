@@ -5,7 +5,7 @@ day to day, and anyone training them. This is a "how do I actually work a
 case" guide, written so an agent with no prior context can follow it.
 
 **Date:** 2026-08-08. **Supersedes (does not replace):**
-`crm-channel-interaction-guide.md` (dated 2026-08-04) — that file is kept as
+`docs/archive/analysis/crm-channel-interaction-guide.md` (dated 2026-08-04) — that file is kept as
 the historical record of what was true on that date. Do not delete it; do
 not treat it as current. Three things changed under it that this version
 covers and the old one does not:
@@ -25,7 +25,7 @@ flag turned on, the flag is named **in the step**, not in a footnote. Where
 something described here isn't built, it says so plainly.
 
 **Companion docs, still current:**
-- `crm-channel-ui-testing-guide.md` — per-step build status table.
+- `docs/archive/analysis/crm-channel-ui-testing-guide.md` — per-step build status table.
 - `phone-channel-package-c-verification.md` — the phone/voice scenarios in
   full detail, and the accepted limitations this guide will keep pointing
   back to rather than re-litigate.
@@ -36,7 +36,7 @@ something described here isn't built, it says so plainly.
   configuration, not a completed pass/fail run. Treat the specifics (exact
   subject lines, note text, label order) as reliable; treat "will definitely
   work end-to-end on your tenant" as still worth a smoke test.
-- `crm-process-flow-runbook.md` — how to wire the lifecycle engine
+- `docs/archive/analysis/crm-process-flow-runbook.md` — how to wire the lifecycle engine
   (disclaimer → idle → resolution → survey → auto-categorize) per tenant.
 
 **A rule that applies to every section below:** almost nothing here is on by
@@ -106,7 +106,7 @@ Messages the connected WhatsApp number.
 3. Outside business hours, the bot posts the hours/website auto-reply
    instead.
 4. Idle handling and the resolution/rating survey run per
-   `crm-process-flow-runbook.md` — `LIFECYCLE_ENABLED` must be on for any of
+   `docs/archive/analysis/crm-process-flow-runbook.md` — `LIFECYCLE_ENABLED` must be on for any of
    this to happen; it's a byte-identical no-op when off.
 5. If the AI itself judges a handoff to be a genuine complaint (its own
    classification, not a human's decision), it automatically adds the

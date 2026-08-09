@@ -485,7 +485,7 @@ positional arg). Names below were read directly out of `bridge.py`,
 ## 7. Reporting results
 
 Whoever runs this should update
-`docs/analysis/proton-demo-feedback-coverage-2026-07-28.md` items **#23**
+`docs/archive/analysis/proton-demo-feedback-coverage-2026-07-28.md` items **#23**
 (real human hand-off) and **#27** (call recording) — currently both
 marked ❌ "not covered" — with which specific scenarios above were
 actually exercised on a real number, and which were not. Do not mark

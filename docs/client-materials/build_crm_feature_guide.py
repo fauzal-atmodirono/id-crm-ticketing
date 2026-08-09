@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """PROTON CRM Feature Guide — operator handbook builder.
 
-Renders the 13 hand-drafted markdown chapters in `feature-guide-src/`
+Renders the 13 hand-drafted markdown chapters in `feature-guide-src-v3/`
 (01-introduction.md ... 13-glossary.md) into the client's Google Docs
 template (`Google Docs template - Short version.docx`), producing
-`PROTON - CRM Feature Guide.docx`.
+`PROTON - CRM Feature Guide v3.docx`.
 
 `SRC_DIR`/`OUT`/`COVER_TITLE`/`COVER_SUBTITLE` are overridable via the
 `FG_SRC_DIR`/`FG_OUT`/`FG_COVER_TITLE`/`FG_COVER_SUBTITLE` env vars, so a
-second edition (e.g. `feature-guide-src-v2/`) can be built without editing
-this file or touching the default v1 output.
+further edition can be built without editing this file. The v1 and v2
+sources and outputs live under `archive/`; to rebuild one, point
+`FG_SRC_DIR`/`FG_OUT` at the archived paths.
 
 The markdown subset implemented here is deliberately narrow — it's exactly
 what the chapter files use, no more:
@@ -47,13 +48,13 @@ TEMPLATE = os.path.join(BASE, "Google Docs template - Short version.docx")
 ASSETS_DIR = os.path.join(BASE, "feature-guide-assets")
 
 # SRC_DIR / OUT / COVER_TITLE / COVER_SUBTITLE are overridable by environment
-# variable so a second edition (e.g. a v2 revision living in its own
-# feature-guide-src-v2/ dir) can be built without touching this script or
-# disturbing the default v1 build. Un-set, every default below is byte-for-
-# byte what this script has always produced.
-SRC_DIR = os.environ.get("FG_SRC_DIR", os.path.join(BASE, "feature-guide-src"))
+# variable so a further edition living in its own source dir can be built
+# without touching this script. The defaults track the CURRENT edition (v3);
+# v1/v2 moved under archive/ on 2026-08-09 and are rebuilt by pointing
+# FG_SRC_DIR/FG_OUT at those archived paths.
+SRC_DIR = os.environ.get("FG_SRC_DIR", os.path.join(BASE, "feature-guide-src-v3"))
 OUT = os.environ.get(
-    "FG_OUT", os.path.join(BASE, "PROTON - CRM Feature Guide.docx")
+    "FG_OUT", os.path.join(BASE, "PROTON - CRM Feature Guide v3.docx")
 )
 
 COVER_TITLE = os.environ.get(

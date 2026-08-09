@@ -8,7 +8,7 @@ uses after migrating off Zendesk to Chatwoot.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
 import structlog
@@ -103,6 +103,10 @@ class ConversationRow:
     wip_issue: str | None = None
     wip_action_taken: str | None = None
     wip_next_action: str | None = None
+    # P4 task 8: the raw label list, for the tag breakdown. Every dimension
+    # derived from labels already has its own column; this is the unreduced
+    # source.
+    labels: list[str] = field(default_factory=list)
 
 
 def channel_from_external_id(external_id: str | None) -> str:
@@ -457,6 +461,7 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
         wip_issue=_case_field(custom_attrs, "wip_issue"),
         wip_action_taken=_case_field(custom_attrs, "wip_action_taken"),
         wip_next_action=_case_field(custom_attrs, "wip_next_action"),
+        labels=list(labels),
     )
 
 

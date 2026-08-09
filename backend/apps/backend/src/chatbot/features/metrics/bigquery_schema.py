@@ -62,6 +62,11 @@ CONVERSATIONS_SCHEMA: list[bigquery.SchemaField] = [
     bigquery.SchemaField("wip_issue", "STRING", mode="NULLABLE"),
     bigquery.SchemaField("wip_action_taken", "STRING", mode="NULLABLE"),
     bigquery.SchemaField("wip_next_action", "STRING", mode="NULLABLE"),
+    # P4 task 8: REPEATED, not a joined string -- a comma-joined value cannot
+    # be UNNESTed, and splitting it in SQL would break on any label containing
+    # a comma. Every dimension derived from labels (dept, dealer, category) is
+    # already its own column; this is the raw list for the tag breakdown.
+    bigquery.SchemaField("labels", "STRING", mode="REPEATED"),
 ]
 
 
@@ -140,6 +145,7 @@ def view_ddls(
     table: str = "conversations",
     sla_targets_json: str = "{}",
     reporting_timezone: str = "UTC",
+    first_response_target_minutes: int = 120,
 ) -> dict[str, str]:
     """The CREATE OR REPLACE VIEW statements for the Looker tiles.
 
@@ -526,6 +532,43 @@ def view_ddls(
         # the headline case count -- which is exactly the C2 297-vs-264
         # discrepancy the gap analysis raised as question Q8. One instance of
         # that problem is enough.
+        # P4 task 7: per-dealer first response against a working-minutes
+        # target. `first_response_working_minutes` has been stored since
+        # Package E and read by nothing; P1 was its first reader, this is its
+        # second.
+        #
+        # Cases with no first response are EXCLUDED, not counted as failures.
+        # An open case has not missed the target -- it has not answered it, and
+        # counting it against the rate would make attainment fall as volume
+        # rises, which reads as a service regression that did not happen.
+        # `measured_cases` ships alongside the percentage because 100% over 3
+        # cases and 100% over 3,000 are different statements.
+        "v_first_response_by_dealer": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_first_response_by_dealer` AS "
+            f"SELECT {d_created} AS day, COALESCE(dealer, 'Unknown') AS dealer, "
+            f"COUNT(*) AS measured_cases, "
+            f"AVG(first_response_working_minutes) AS avg_first_response_working_min, "
+            f"APPROX_QUANTILES(first_response_working_minutes, 100)[OFFSET(90)] "
+            f"AS p90_first_response_working_min, "
+            f"SAFE_DIVIDE("
+            f"COUNTIF(first_response_working_minutes <= {int(first_response_target_minutes)}), "
+            f"COUNT(*)) AS attainment_rate "
+            f"FROM {fq} WHERE first_response_working_minutes IS NOT NULL "
+            f"GROUP BY day, dealer"
+        ),
+        # P4 task 8 (§4.80): volume per label.
+        #
+        # UNNEST means a case with three labels appears in three buckets, so
+        # this view's total is deliberately LARGER than the case count, and a
+        # case with no labels does not appear at all. Both are correct for a
+        # tag breakdown and both make the column un-summable -- which is why
+        # /metrics/by-tag carries a note saying so.
+        "v_volume_by_tag": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_by_tag` AS "
+            f"SELECT {d_created} AS day, tag, channel, COUNT(*) AS cases "
+            f"FROM {fq}, UNNEST(labels) AS tag "
+            f"GROUP BY day, tag, channel"
+        ),
         "v_concern_pivot": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_concern_pivot` AS "
             f"SELECT FORMAT_DATE('%Y-%m', {d_created}) AS month, "

@@ -475,6 +475,35 @@ class AfterHoursMetrics:
 
 
 @dataclass(frozen=True)
+class TagVolumeRow:
+    month: str
+    tag: str
+    channel: str
+    cases: int
+    month_start: date | None = None
+    bucket: str | None = field(default=None, metadata={"period_only": True})
+
+
+@dataclass(frozen=True)
+class TagVolumeMetrics(_ScopedMetrics):
+    by_tag: list[TagVolumeRow]
+
+    @property
+    def note(self) -> str:
+        """Printed with the block, not left to the reader to work out.
+
+        A case with three labels is in three buckets, so summing `cases` gives
+        a number larger than the case count -- and a case with no labels is not
+        here at all. Both are correct for a tag breakdown and both make the
+        column un-summable, which a slide will otherwise do confidently.
+        """
+        return (
+            "Cases are counted once per label, so these figures overlap and do "
+            "not sum to the total case count; cases with no label are excluded."
+        )
+
+
+@dataclass(frozen=True)
 class VolumeByTypeDivisionRow:
     month: str
     channel: str
@@ -552,6 +581,9 @@ class MetricsQueryPort(Protocol):
     async def fetch_after_hours(
         self, period: PeriodRange | None = None
     ) -> AfterHoursMetrics: ...
+    async def fetch_by_tag(
+        self, period: PeriodRange | None = None, tag: str | None = None
+    ) -> TagVolumeMetrics: ...
 
 
 _UNFILTERED_SCOPE = BlockScope(status="unfiltered", period=None, supported_granularity=None)
@@ -766,6 +798,20 @@ class MockMetricsQuery:
             volume=[VolumeByTypeDivisionRow("2026-06", "WhatsApp", "Inquiry", "Sales", 682)]
         )
         metrics.attach_scopes({"volume": self._scope})
+        return metrics
+
+    async def fetch_by_tag(
+        self, period: PeriodRange | None = None, tag: str | None = None
+    ) -> TagVolumeMetrics:
+        del period
+        rows = [
+            TagVolumeRow("2026-06", "dept_sales", "WhatsApp", 120),
+            TagVolumeRow("2026-06", "escalate", "WhatsApp", 18),
+        ]
+        if tag is not None:
+            rows = [r for r in rows if r.tag == tag]
+        metrics = TagVolumeMetrics(by_tag=rows)
+        metrics.attach_scopes({"by_tag": self._scope})
         return metrics
 
     async def fetch_after_hours(

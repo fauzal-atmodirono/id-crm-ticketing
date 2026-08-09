@@ -420,3 +420,43 @@ def test_the_after_hours_endpoint_rejects_an_inverted_period():
         params=_week_params(start="2026-07-23", end="2026-07-17"),
     )
     assert res.status_code == 400
+
+
+# --- P4 task 8: the tag breakdown -----------------------------------------
+
+
+def test_by_tag_requires_key():
+    assert _client().get("/metrics/by-tag").status_code == 401
+
+
+def test_the_endpoint_filters_to_a_single_tag():
+    res = _client().get(
+        "/metrics/by-tag", params={"tag": "escalate"}, headers={"x-api-key": "secret"}
+    )
+    assert res.status_code == 200
+    assert {r["tag"] for r in res.json()["by_tag"]} == {"escalate"}
+
+
+def test_a_tag_that_matches_nothing_returns_an_empty_list_not_404():
+    """'No cases carried this tag' is an answer, not a missing resource."""
+    res = _client().get(
+        "/metrics/by-tag", params={"tag": "no_such_tag"}, headers={"x-api-key": "secret"}
+    )
+    assert res.status_code == 200
+    assert res.json()["by_tag"] == []
+
+
+def test_the_endpoint_accepts_a_period():
+    res = _client().get(
+        "/metrics/by-tag", params=_week_params(), headers={"x-api-key": "secret"}
+    )
+    assert res.status_code == 200
+
+
+def test_the_response_says_the_figures_overlap_and_must_not_be_summed():
+    """The honesty guard. Tag counts double-count by construction, and a slide
+    that totals them will be confidently wrong."""
+    res = _client().get("/metrics/by-tag", headers={"x-api-key": "secret"})
+    note = res.json()["note"]
+    assert "do not sum" in note
+    assert "no label are excluded" in note

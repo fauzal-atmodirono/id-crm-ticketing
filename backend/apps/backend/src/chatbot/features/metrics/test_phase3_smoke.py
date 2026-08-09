@@ -88,6 +88,9 @@ _EXPECTED_VIEW_KEYS = {
     # v_state_trend, which still reads Chatwoot's status)
     "v_concern_pivot",
     "v_case_state_trend",
+    # P4: per-dealer first response + the tag breakdown (4.80)
+    "v_first_response_by_dealer",
+    "v_volume_by_tag",
 }
 
 _PROJECT = "myproject"
@@ -100,16 +103,16 @@ _TABLE = "conversations"
 # ---------------------------------------------------------------------------
 
 
-def test_view_ddls_returns_exactly_31_views() -> None:
-    """view_ddls() must return exactly 31 view keys (13 original + 6 Phase-3
+def test_view_ddls_returns_exactly_33_views() -> None:
+    """view_ddls() must return exactly 33 view keys (13 original + 6 Phase-3
     + 1 Task-11 + 3 Task-12 + 2 Task-13 + 2 Task-2/Package-E-reopened
-    day-grain siblings + 2 P1 after-hours + 2 P3 case-record)."""
+    day-grain siblings + 2 P1 after-hours + 2 P3 case-record + 2 P4 reporting)."""
     ddls = view_ddls(_PROJECT, _DATASET, _TABLE)
     assert set(ddls) == _EXPECTED_VIEW_KEYS, (
         f"Missing: {_EXPECTED_VIEW_KEYS - set(ddls)}  "
         f"Extra: {set(ddls) - _EXPECTED_VIEW_KEYS}"
     )
-    assert len(ddls) == 31
+    assert len(ddls) == 33
 
 
 @pytest.mark.parametrize("key", sorted(_EXPECTED_VIEW_KEYS))

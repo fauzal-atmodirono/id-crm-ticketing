@@ -45,6 +45,8 @@ def test_schema_has_expected_fields() -> None:
         "wip_issue",
         "wip_action_taken",
         "wip_next_action",
+        # P4: the raw label list, for the tag breakdown
+        "labels",
     }
 
 
@@ -91,6 +93,9 @@ def test_view_ddls_keys_and_targets() -> None:
         # P3: case_detail pivot + the real case-state trend
         "v_concern_pivot",
         "v_case_state_trend",
+        # P4: per-dealer first response + the tag breakdown
+        "v_first_response_by_dealer",
+        "v_volume_by_tag",
     }
     assert "`proj.ds.v_volume_by_month_channel`" in ddls["v_volume_by_month_channel"]
     assert "`proj.ds.conversations`" in ddls["v_volume_by_month_channel"]

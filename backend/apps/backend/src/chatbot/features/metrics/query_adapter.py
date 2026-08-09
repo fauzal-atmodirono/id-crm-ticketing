@@ -108,6 +108,8 @@ from chatbot.features.metrics.query_port import (
     SlaAchievementRow,
     SlaBucketMetrics,
     SlaBucketRow,
+    TagVolumeMetrics,
+    TagVolumeRow,
     SpeedRow,
     StateTrendRow,
     TasksPerAgentRow,
@@ -620,6 +622,27 @@ class BigQueryMetricsQuery:
         self, period: PeriodRange | None = None
     ) -> AfterHoursMetrics:
         return await asyncio.to_thread(self._fetch_after_hours_sync, period)
+
+    def _fetch_by_tag_sync(
+        self, period: PeriodRange | None = None, tag: str | None = None
+    ) -> TagVolumeMetrics:
+        rows, scope = self._dated_block(
+            "v_volume_by_tag", TagVolumeRow, period, ("tag", "channel"), "cases"
+        )
+        if tag is not None:
+            # Filtered in Python rather than SQL: the value comes from a query
+            # string, and the block helper's parameter list is fixed. An empty
+            # result is an empty list, never a 404 -- "no cases carried this
+            # tag" is an answer, not a missing resource.
+            rows = [r for r in rows if getattr(r, "tag", None) == tag]
+        metrics = TagVolumeMetrics(by_tag=rows)
+        metrics.attach_scopes({"by_tag": scope})
+        return metrics
+
+    async def fetch_by_tag(
+        self, period: PeriodRange | None = None, tag: str | None = None
+    ) -> TagVolumeMetrics:
+        return await asyncio.to_thread(self._fetch_by_tag_sync, period, tag)
 
 
 def build_metrics_query_port(settings: Settings) -> MetricsQueryPort:

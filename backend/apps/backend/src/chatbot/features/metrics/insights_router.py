@@ -162,6 +162,23 @@ def build_metrics_insights_router(port: MetricsQueryPort, settings: Settings) ->
         period = parse_period_or_400(period_query)
         return asdict(await port.fetch_after_hours(period))
 
+    @router.get("/metrics/by-tag")
+    async def by_tag(
+        period_query: PeriodQuery,
+        tag: str | None = None,
+        x_api_key: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """4.80: volume per label.
+
+        The `note` is part of the payload, not a caption someone might forget:
+        a case with three labels is counted three times, so these figures
+        overlap and must not be summed into a total.
+        """
+        _require_key(x_api_key)
+        period = parse_period_or_400(period_query)
+        metrics = await port.fetch_by_tag(period, tag)
+        return {**asdict(metrics), "note": metrics.note}
+
     @router.get("/metrics/volume-by-type")
     async def volume_by_type(
         period_query: PeriodQuery,

@@ -214,16 +214,33 @@ async def test_an_unauthorised_caller_is_rejected(tmp_path) -> None:
     assigner.assign.assert_not_awaited()
 
 
-async def test_the_reassignment_is_audited_with_the_acting_user() -> None:
-    settings = _settings()
+async def test_the_reassignment_is_audited_with_the_acting_user(tmp_path) -> None:
+    """RBAC on and the caller's `routing.reassign` permission actually
+    checks out (an "administrator" role, granted the full registry) --
+    only then is x-chatwoot-uid Chatwoot-confirmed (via the /profile stub)
+    rather than merely client-claimed, so only then may it become the
+    audited actor. See test below for the non-RBAC (default) case, where
+    the same header must NOT be trusted (review finding 3)."""
+    settings = _settings(rbac_enabled=True)
+    authz_repo = await _authz_repo(tmp_path, "actor_admin")
+    await seed_defaults(authz_repo)
+    await authz_repo.assign_role(chatwoot_user_id=77, role_id="administrator")
+    validator = TokenValidator(settings)
     audit = AsyncMock()
-    client, _presence, _routing_svc, _assigner = _build(settings, audit=audit)
 
-    resp = client.post(
-        "/routing/assign",
-        json={"conversation_id": 5, "agent_id": 1},
-        headers={"x-api-key": API_KEY, **CHATWOOT_HEADERS},
-    )
+    with respx.mock:
+        respx.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+            return_value=httpx.Response(200, json={"id": 77})
+        )
+        client, _presence, _routing_svc, _assigner = _build(
+            settings, audit=audit, authz_repo=authz_repo, validator=validator
+        )
+
+        resp = client.post(
+            "/routing/assign",
+            json={"conversation_id": 5, "agent_id": 1},
+            headers={"x-api-key": API_KEY, **CHATWOOT_HEADERS},
+        )
 
     assert resp.status_code == 200
     audit.append.assert_awaited_once()
@@ -247,3 +264,97 @@ async def test_reassignment_audit_falls_back_to_api_key_label_without_rbac() -> 
     assert resp.status_code == 200
     entry = audit.append.await_args.args[0]
     assert entry.actor == "api-key"
+
+
+async def test_a_forged_uid_header_cannot_reach_the_audit_actor_without_rbac() -> None:
+    """Review finding 3: with rbac_enabled=False (the default), the
+    non-RBAC auth path never inspects the Chatwoot header triplet at all
+    -- so x-chatwoot-uid is completely unauthenticated there. A caller who
+    only holds the shared secret must not be able to forge
+    `x-chatwoot-uid: <victim>` and have the audit row implicate that
+    person; the actor must fall back to the honest "api-key" label."""
+    settings = _settings()
+    audit = AsyncMock()
+    client, _presence, _routing_svc, _assigner = _build(settings, audit=audit)
+
+    resp = client.post(
+        "/routing/assign",
+        json={"conversation_id": 5, "agent_id": 1},
+        headers={"x-api-key": API_KEY, "x-chatwoot-uid": "999-forged"},
+    )
+
+    assert resp.status_code == 200
+    entry = audit.append.await_args.args[0]
+    assert entry.actor == "api-key"
+    assert entry.actor != "999-forged"
+
+
+async def test_reassignment_bypasses_routing_enabled_while_auto_pick_stays_disabled() -> None:
+    """Review finding 1: routing_enabled gates automatic SELECTION, not a
+    supervisor's explicit choice. With routing_enabled=False (the default
+    for every tenant), an explicit-agent_id reassignment must still
+    succeed, while the agent_id-absent auto-pick path must still return
+    the byte-identical `disabled` payload it always has."""
+    settings = _settings(routing_enabled=False)
+    client, presence, routing_svc, assigner = _build(settings)
+
+    reassign_resp = client.post(
+        "/routing/assign",
+        json={"conversation_id": 5, "agent_id": 1},
+        headers={"x-api-key": API_KEY},
+    )
+    assert reassign_resp.status_code == 200
+    assert reassign_resp.json()["assigned_agent_id"] == 1
+    assigner.assign.assert_awaited_once_with(5, 1)
+
+    auto_pick_resp = client.post(
+        "/routing/assign",
+        json={"conversation_id": 6},
+        headers={"x-api-key": API_KEY},
+    )
+    assert auto_pick_resp.status_code == 200
+    assert auto_pick_resp.json() == {"assigned_agent_id": None, "disabled": True}
+    routing_svc.pick_agent.assert_not_awaited()
+    presence.fetch_agents.assert_awaited_once()  # only from the reassign call above
+
+
+async def test_a_firestore_blip_does_not_turn_a_completed_reassignment_into_a_500() -> None:
+    """Review finding 2: assigner.assign() has already landed by the time
+    the audit write is attempted. An unguarded audit.append that raises
+    must not 500 a request whose side effect already happened -- that
+    would push a supervisor to retry and double-assign."""
+    settings = _settings()
+    audit = AsyncMock()
+    audit.append = AsyncMock(side_effect=RuntimeError("firestore is down"))
+    client, _presence, _routing_svc, assigner = _build(settings, audit=audit)
+
+    resp = client.post(
+        "/routing/assign",
+        json={"conversation_id": 5, "agent_id": 1},
+        headers={"x-api-key": API_KEY},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["assigned_agent_id"] == 1
+    assigner.assign.assert_awaited_once_with(5, 1)
+    audit.append.assert_awaited_once()
+
+
+async def test_a_routing_admin_key_only_tenant_can_reassign_without_rbac() -> None:
+    """Review finding 4: require_permission's non-RBAC fallback doesn't
+    accept routing_admin_api_key, but this router's own `_require_api_key`
+    does -- and that (not the narrower fallback) is what must gate
+    reassignment when RBAC is off, so a tenant configured with only
+    ROUTING_ADMIN_API_KEY isn't locked out."""
+    settings = _settings(proton_backend_key="", routing_admin_api_key="routing-only-key")
+    client, _presence, _routing_svc, assigner = _build(settings)
+
+    resp = client.post(
+        "/routing/assign",
+        json={"conversation_id": 5, "agent_id": 1},
+        headers={"x-api-key": "routing-only-key"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["assigned_agent_id"] == 1
+    assigner.assign.assert_awaited_once_with(5, 1)

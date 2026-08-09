@@ -138,16 +138,41 @@ def build_routing_router(
         represents a human supervisor actually choosing an agent needs the
         extra gate; the decorator's `Depends(auth)` (the pre-existing
         shared-secret check) still runs for both branches, unchanged.
+
+        Also note: `settings.routing_enabled` is deliberately never
+        consulted here -- see the comment at this function's call site in
+        `assign_conversation` for why that switch does not apply to an
+        explicit reassignment.
         """
-        permission_check = require_permission(
-            "routing.reassign", repo=authz_repo, validator=validator, settings=settings
-        )
-        await permission_check(
-            x_api_key=x_api_key,
-            x_chatwoot_access_token=x_chatwoot_access_token,
-            x_chatwoot_client=x_chatwoot_client,
-            x_chatwoot_uid=x_chatwoot_uid,
-        )
+        # Review finding 4: require_permission's non-RBAC fallback
+        # (features/authz/deps.py's `_shared_secret_check`) only accepts
+        # faq_admin_api_key / proton_backend_key -- NOT
+        # routing_admin_api_key -- unlike this router's own
+        # `_require_api_key` (bound to `auth` above, already run
+        # unconditionally by the route decorator's `Depends(auth)`), which
+        # accepts all three. Widening deps.py's candidate list would
+        # silently grant routing_admin_api_key access to the pic-admin,
+        # customer360, and dms-admin routers too -- a security change
+        # nobody asked for -- so a tenant configured with only
+        # ROUTING_ADMIN_API_KEY must not be locked out of reassignment
+        # instead. Fix lives here: when RBAC is off, authorise this branch
+        # with this router's own key-check (`auth`, a cheap, idempotent
+        # re-check of a request that already passed it once) rather than
+        # routing it through require_permission's narrower fallback. When
+        # RBAC is on, require_permission's Chatwoot-identity +
+        # permission-set check is the real gate, unchanged.
+        if settings.rbac_enabled:
+            permission_check = require_permission(
+                "routing.reassign", repo=authz_repo, validator=validator, settings=settings
+            )
+            await permission_check(
+                x_api_key=x_api_key,
+                x_chatwoot_access_token=x_chatwoot_access_token,
+                x_chatwoot_client=x_chatwoot_client,
+                x_chatwoot_uid=x_chatwoot_uid,
+            )
+        else:
+            auth(x_api_key=x_api_key)
 
         # fetch_agents() is fail-open (returns [] when Chatwoot is
         # unreachable) -- that's the right default for presence *reads*
@@ -187,28 +212,58 @@ def build_routing_router(
 
         await assigner.assign(conversation_id, agent_id)
 
-        # The acting user: prefer the Chatwoot identity require_permission
-        # already resolved this request against (x-chatwoot-uid), since
-        # that is the human who actually chose this agent. When RBAC is off
-        # and only the shared secret was presented, there is no per-user
-        # identity to record -- "api-key" says plainly that the caller was
-        # a trusted service, not a fabricated/blank actor.
-        actor = x_chatwoot_uid or "api-key"
+        # Review finding 3: x-chatwoot-uid is a client-supplied header, not
+        # by itself a verified identity. On the RBAC-off path (the
+        # default), the `auth(...)` check just above never inspects the
+        # Chatwoot header triplet at all -- so trusting x_chatwoot_uid here
+        # would let anyone holding the shared secret forge
+        # `x-chatwoot-uid: <team leader's id>` and have the audit row
+        # implicate that person. It only becomes trustworthy once RBAC has
+        # actually authenticated it: on the `if settings.rbac_enabled`
+        # branch above, require_permission resolved this exact header
+        # triplet against Chatwoot's own /profile endpoint
+        # (features/authz/identity.py::TokenValidator.resolve_user_id)
+        # before granting `routing.reassign` -- so reaching here with
+        # rbac_enabled True means x_chatwoot_uid is Chatwoot-confirmed, not
+        # merely client-claimed. Otherwise: an honest, clearly
+        # non-personal label -- never blank, never a guess.
+        actor = x_chatwoot_uid if (settings.rbac_enabled and x_chatwoot_uid) else "api-key"
         if audit is not None:
             remark = f"Supervisor reassignment to agent {agent_id}"
             if warning is not None:
                 remark = f"{remark} ({warning})"
-            await audit.append(
-                AuditEntry(
-                    ticket_id=str(conversation_id),
-                    session_id=f"chatwoot-conv-{conversation_id}",
-                    actor=actor,
-                    from_state="",
-                    to_state=f"assigned:{agent_id}",
-                    at=datetime.now(UTC).isoformat(),
-                    remark=remark,
+            try:
+                await audit.append(
+                    AuditEntry(
+                        ticket_id=str(conversation_id),
+                        session_id=f"chatwoot-conv-{conversation_id}",
+                        actor=actor,
+                        from_state="",
+                        to_state=f"assigned:{agent_id}",
+                        at=datetime.now(UTC).isoformat(),
+                        remark=remark,
+                    )
                 )
-            )
+            except Exception:
+                # Review finding 2: assigner.assign() above has already
+                # succeeded by this point -- the reassignment is a real,
+                # completed side effect. FirestoreAuditLog.append does not
+                # swallow its own exceptions, so an unguarded call here
+                # would turn a transient Firestore blip into an HTTP 500 on
+                # a request whose work is already done; a supervisor
+                # retrying on that 500 would double-assign. Every
+                # audit/alert leg elsewhere in this codebase is
+                # independent and best-effort (see e.g.
+                # agent/app/services/sync.py's escalation/notification
+                # helpers), so this one follows suit: log loudly -- a
+                # silently-dropped audit row is its own defect -- but never
+                # fail a request whose side effect already landed.
+                _log.warning(
+                    "routing_reassign_audit_failed",
+                    conversation_id=conversation_id,
+                    agent_id=agent_id,
+                    exc_info=True,
+                )
 
         result: dict[str, Any] = {"assigned_agent_id": agent_id}
         if warning is not None:
@@ -223,9 +278,24 @@ def build_routing_router(
         x_chatwoot_client: str | None = Header(default=None),
         x_chatwoot_uid: str | None = Header(default=None),
     ) -> dict:
-        if not settings.routing_enabled:
-            return {"assigned_agent_id": None, "disabled": True}
-
+        # Review finding 1: an explicit agent_id is a human supervisor
+        # naming who does the work, not the engine choosing. routing_enabled
+        # gates automatic agent SELECTION (the auto-pick branch below) --
+        # this endpoint's own spec wording for the agent_id-supplied path is
+        # "bypassing selection", and bypassing selection means bypassing the
+        # engine, not asking the engine's on/off switch for permission.
+        # routing_enabled defaults off and P6 deliberately keeps it off, so
+        # gating this branch on it too would mean reassignment can never be
+        # used by any tenant -- checked here, first, so it can never be
+        # short-circuited by the `disabled` early return below.
+        #
+        # Do NOT "tidy" this by hoisting the `if not settings.routing_enabled`
+        # check back above this branch -- that reads like a simplification
+        # but silently kills the feature again. The early return below MUST
+        # stay exactly as-is for the auto-pick (agent_id-absent) path: that
+        # byte-identical `disabled: True` response is what the package's
+        # "routing_enabled remains default-off" constraint protects, and the
+        # live handoff flow depends on this exact shape when routing is off.
         if body.agent_id is not None:
             return await _reassign(
                 body.conversation_id,
@@ -235,6 +305,9 @@ def build_routing_router(
                 x_chatwoot_client=x_chatwoot_client,
                 x_chatwoot_uid=x_chatwoot_uid,
             )
+
+        if not settings.routing_enabled:
+            return {"assigned_agent_id": None, "disabled": True}
 
         channel = await assigner.resolve_channel(body.conversation_id)
         agent_id = await routing_svc.pick_agent(channel)

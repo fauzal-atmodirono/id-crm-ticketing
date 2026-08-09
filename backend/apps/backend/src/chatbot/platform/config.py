@@ -740,6 +740,11 @@ class Settings(BaseSettings):
     # told instead of seeing an `escalate` label and assuming it worked.
     # Private always -- the customer must never be shown our SMTP problems.
     escalation_failure_note_enabled: bool = False
+    # P2 task 6: consult Chatwoot agent availability when escalating, so an
+    # offline PIC's online colleagues are told too. Can only ever WIDEN the
+    # recipient list -- the PIC is always included. Off by default because it
+    # costs an extra API call per escalation.
+    escalation_presence_check_enabled: bool = False
     escalation_level2_whatsapp: str = ""  # E.164, e.g. "+60112345678"
     escalation_tier2_hours: float = 4.0  # hours after first breach before level-2 alert
 

@@ -111,6 +111,7 @@ class EscalationNotifier:
         chatwoot_post_message: _CWPostMessage | None = None,
         attachment_fetcher: AttachmentFetcher | None = None,
         audit: Any | None = None,
+        presence: Any | None = None,
     ) -> None:
         self._settings = settings
         self._pic_registry = pic_registry
@@ -137,6 +138,10 @@ class EscalationNotifier:
         # the sends proceed regardless -- recording the escalation matters
         # less than making it.
         self._audit = audit
+        # P2 task 6: reads who is actually on duty, to WIDEN the PIC leg's
+        # recipients. None = not wired; gated additionally by
+        # escalation_presence_check_enabled so the API call is opt-in.
+        self._presence = presence
 
     async def notify(
         self,
@@ -202,6 +207,28 @@ class EscalationNotifier:
         # dept label is "dept_apps" — strip prefix if present
         key = department.removeprefix("dept_")
         return await self._pic_registry.lookup(key)
+
+    async def _pic_recipients(self, pic: PicEntry, department: str | None) -> list[str]:
+        """Who the PIC leg actually mails.
+
+        Without the on-duty check this is just the PIC, exactly as before. With
+        it, an offline PIC's online colleagues are added so somebody at their
+        desk sees the escalation -- the PIC is never dropped, so this can only
+        ever widen the list.
+        """
+        base = [pic.pic_email] if pic.pic_email else []
+        if not getattr(self._settings, "escalation_presence_check_enabled", False):
+            return base
+        if self._presence is None or not department:
+            return base
+        try:
+            resolution = await self._pic_registry.resolve(
+                department.removeprefix("dept_"), presence=self._presence
+            )
+        except Exception as exc:
+            _log.warning("escalation_presence_resolve_failed", error=str(exc))
+            return base
+        return resolution.recipients or base
 
     async def _record_delivery(
         self,
@@ -303,6 +330,7 @@ class EscalationNotifier:
         body: str,
         attachments: list | None = None,
         skipped: list[str] | None = None,
+        recipients: list[str] | None = None,
     ) -> tuple[bool, str]:
         reference = f"Chatwoot conversation #{conv_id}"
         # CC the department's configured "relevant personnel" (managers / DLs),
@@ -322,7 +350,7 @@ class EscalationNotifier:
         email_body = self._with_skip_notes(email_body, skipped or [])
         try:
             self._email_sender.send(
-                to=[pic.pic_email],
+                to=list(recipients or [pic.pic_email]),
                 cc=cc,
                 subject=f"[Escalation] {self._case_tag(conv_id)}{title}",
                 body=email_body,
@@ -395,6 +423,7 @@ class EscalationNotifier:
         if self._settings.escalation_email_enabled:
             pic = await self._resolve_pic(department)
             if pic is not None:
+                recipients = await self._pic_recipients(pic, department)
                 ok, error = self._send_email(
                     pic,
                     conv_id=conv_id,
@@ -402,11 +431,12 @@ class EscalationNotifier:
                     body=body,
                     attachments=attachments,
                     skipped=skipped,
+                    recipients=recipients,
                 )
                 await self._record_delivery(
                     conv_id,
                     leg="pic",
-                    recipients=[pic.pic_email],
+                    recipients=recipients,
                     transport="email",
                     ok=ok,
                     error=error,

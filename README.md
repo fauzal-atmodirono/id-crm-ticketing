@@ -237,6 +237,44 @@ satisfy the first-response SLA, and `ESCALATION_REPLY_ACKNOWLEDGEMENT_ENABLED`
 (agent) is what records one when a PIC or dealer answers by email. Neither does
 anything on its own — the first reads a signal the second writes.
 
+### Escalation on every channel (P2)
+
+Before this, applying the `escalate` label to a **WhatsApp, Web or Phone** case
+notified nobody: the code returned early unless the inbox was `Channel::Email`.
+The label stuck and the operator assumed it had worked. Turn it on with:
+
+```bash
+ESCALATION_ALL_CHANNELS_ENABLED=true                   # agent
+ESCALATION_ACK_CHAT_TEMPLATE=<customer-facing text>    # backend; blank = post nothing
+```
+
+The customer acknowledgement picks its transport from the channel — mail on an
+Email inbox, an **outgoing message in the thread** everywhere else, and nothing
+at all on voice (the caller has already been spoken to). The PIC and dealer
+legs never depended on the channel and are unaffected.
+
+The chat acknowledgement is a normal public reply, never a private note. If you
+see it land as a note, that is a bug — say so, because the customer then
+receives nothing while the conversation looks handled.
+
+Four independent additions, all default-off:
+
+| Flag | What it does |
+|---|---|
+| `ESCALATION_CC_DEALER` | CC the dealer's `cc_emails` on the forward. Default *false* (unlike `ESCALATION_CC_PIC`) — this mail carries the full transcript outside the company. |
+| `ESCALATION_ATTACHMENT_BUDGET_BYTES` | Attach the customer's photos/PDFs to the PIC and dealer mail. `0` = off, and off costs not even an API call. The customer ack never receives attachments. |
+| `ESCALATION_FAILURE_NOTE_ENABLED` | Post a **private** note when a leg fails to send, so a failed escalation is not just a log line. |
+| `ESCALATION_PRESENCE_CHECK_ENABLED` | Add an offline PIC's online colleagues to the recipients. Only ever widens. |
+
+**Tier-2** now emails the department's `escalation_manager_email` instead of
+re-pinging the same PIC. Set it per department via
+`PUT /admin/escalation/pics/<dept>` — the Escalation Routing admin *page* has no
+field for it yet (the fork patch is not written).
+
+**Scope honesty for §4.39:** the failure note covers SMTP *send* failures only.
+Bounces and invalid recipients need a bounce mailbox (client question Q6) and
+are not handled — do not report §4.39 as closed.
+
 ## 7. Switching to a real domain later
 
 The nip.io setup is HTTP-only and meant to get you running fast. To move to

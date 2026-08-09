@@ -253,3 +253,71 @@ async def test_a_manager_email_failure_does_not_suppress_the_whatsapp_leg():
     await alert("42", "TIER2_ESCALATION", "unanswered", ["dept_sales"])
 
     assert twilio.calls
+
+
+# --- task 6 wired into the notifier ----------------------------------------
+
+
+from chatbot.features.chat.escalation_notifier import EscalationNotifier  # noqa: E402
+
+
+class _NotifySender:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def send(self, to, cc, subject, body, attachments, *, reply_to=None):
+        self.calls.append({"to": to})
+
+
+class _NotifySettings:
+    escalation_email_enabled = True
+    email_escalation_ack_enabled = False
+    email_escalation_ack_template = ""
+    escalation_ack_chat_template = ""
+    escalation_cc_pic = False
+    escalation_cc_dealer = False
+    escalation_reply_to_template = ""
+    dealer_email_map_json = ""
+    escalation_attachment_budget_bytes = 0
+    escalation_failure_note_enabled = False
+    escalation_presence_check_enabled = True
+
+
+async def _cw(conv_id, attrs):
+    return None
+
+
+async def _notify_with(presence, settings):
+    sender = _NotifySender()
+    notifier = EscalationNotifier(
+        settings, _registry(PIC), sender, None, _cw, presence=presence
+    )
+    await notifier.notify_escalation(
+        conv_id="42", title="t", body="b", department="dept_sales",
+        dealer=None, customer_email=None, ack_transport="none",
+    )
+    return sender
+
+
+async def test_the_pic_leg_widens_to_an_online_colleague_when_the_pic_is_offline():
+    sender = await _notify_with(
+        _Presence({"pic@test": "offline", "colleague@test": "online"}),
+        _NotifySettings(),
+    )
+    assert set(sender.calls[0]["to"]) == {"pic@test", "colleague@test"}
+
+
+async def test_the_pic_leg_is_unchanged_when_the_check_is_off():
+    settings = _NotifySettings()
+    settings.escalation_presence_check_enabled = False
+    presence = _Presence({"pic@test": "offline", "colleague@test": "online"})
+
+    sender = await _notify_with(presence, settings)
+
+    assert sender.calls[0]["to"] == ["pic@test"]
+    assert presence.calls == 0, "the check must cost nothing when off"
+
+
+async def test_a_presence_outage_still_mails_the_pic():
+    sender = await _notify_with(_Presence(raises=True), _NotifySettings())
+    assert sender.calls[0]["to"] == ["pic@test"]

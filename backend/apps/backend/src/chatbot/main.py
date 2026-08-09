@@ -414,6 +414,11 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             # P2: one audit row per escalation leg, so "we escalated it" can be
             # checked rather than assumed.
             audit=audit_log,
+            # P2: who is actually on duty. Its own instance rather than the
+            # routing one below, which is constructed later; PresenceFetcher
+            # holds only settings and opens a client per call, so a second one
+            # costs nothing. Inert unless escalation_presence_check_enabled.
+            presence=PresenceFetcher(settings),
         )
         chatwoot_client._escalation_notifier = escalation_notifier  # type: ignore[assignment]
         app.include_router(

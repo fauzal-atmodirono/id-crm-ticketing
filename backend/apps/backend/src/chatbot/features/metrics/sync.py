@@ -198,8 +198,7 @@ def load_conversations(settings: Settings, rows: list[ConversationRow]) -> None:
     # `synced_at` is the one field with no row counterpart: it records when
     # THIS sync ran, not anything about the conversation.
     json_rows = [
-        {**{f.name: getattr(r, f.name) for f in fields(r)}, "synced_at": now}
-        for r in rows
+        {**{f.name: getattr(r, f.name) for f in fields(r)}, "synced_at": now} for r in rows
     ]
     job_config = bigquery.LoadJobConfig(
         schema=CONVERSATIONS_SCHEMA, write_disposition="WRITE_TRUNCATE"
@@ -208,7 +207,15 @@ def load_conversations(settings: Settings, rows: list[ConversationRow]) -> None:
 
 
 def ensure_views(settings: Settings) -> None:
-    """Create/replace the Looker views (live)."""
+    """Create/replace the Looker views (live).
+
+    P8 task 6: `csat_by_agent_enabled` and `csat_ranking_min_samples` are
+    threaded through here because a flag that never reaches `view_ddls` is a
+    flag with no effect -- the per-agent CSAT view would simply never be
+    created, with a passing unit test on the DDL builder either way. Off (the
+    default) omits the view entirely, so a tenant who has not opted in gets
+    the exact same warehouse it had before P8.
+    """
     client = bigquery.Client(project=settings.bigquery_project_id)
     for ddl in view_ddls(
         settings.bigquery_project_id,
@@ -220,6 +227,11 @@ def ensure_views(settings: Settings) -> None:
         # on the next ensure_views() run, which is why it is an operator
         # decision, not a deploy-time default.
         settings.reporting_timezone,
+        # `first_response_target_minutes` is skipped deliberately: there is no
+        # setting for it (checked -- `config.py` has no such field), so it
+        # keeps its 120-minute default rather than being invented here.
+        csat_by_agent_enabled=settings.csat_by_agent_enabled,
+        csat_ranking_min_samples=settings.csat_ranking_min_samples,
     ).values():
         client.query(ddl).result()
 

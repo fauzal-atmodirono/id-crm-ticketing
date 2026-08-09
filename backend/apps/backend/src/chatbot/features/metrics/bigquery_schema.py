@@ -153,6 +153,8 @@ def view_ddls(
     sla_targets_json: str = "{}",
     reporting_timezone: str = "UTC",
     first_response_target_minutes: int = 120,
+    csat_by_agent_enabled: bool = False,
+    csat_ranking_min_samples: int = 10,
 ) -> dict[str, str]:
     """The CREATE OR REPLACE VIEW statements for the Looker tiles.
 
@@ -162,6 +164,11 @@ def view_ddls(
     thing to BigQuery but is a different string, and "the string is unchanged"
     is what proves no live tenant's numbers moved. See
     test_bigquery_schema_timezone.py.
+
+    ``csat_by_agent_enabled`` defaults False and omits `v_csat_by_agent`
+    entirely, so the defaulted call returns the exact same key set it returned
+    before P8 -- flags-off means "not created", not "created and empty",
+    because `ensure_views` runs this over a live warehouse.
     """
     fq = f"`{project}.{dataset}.{table}`"
     bucket_case = _sla_bucket_case_sql(sla_targets_json)
@@ -173,7 +180,7 @@ def view_ddls(
     d_escalated = f"DATE(dealer_escalated_at{_tz})"
     # EXTRACT takes the zone in a different position from DATE.
     at_zone = "" if zone == "UTC" else f" AT TIME ZONE '{zone}'"
-    return {
+    ddls: dict[str, str] = {
         "v_volume_by_month_channel": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_by_month_channel` AS "
             f"SELECT FORMAT_DATE('%Y-%m', {d_created}) AS month, channel, "
@@ -608,6 +615,62 @@ def view_ddls(
             f"FROM {fq} GROUP BY month, day, case_state, escalated_to"
         ),
     }
+
+    # ── P8 task 6: CSAT per agent.
+    #
+    # A SIBLING of `v_csat`, never a widening of it. `v_csat` is grouped by
+    # channel and read by live dashboards; adding `agent_id` to it would
+    # multiply its rows and silently change every tile built on it. So `v_csat`
+    # above is byte-identical (`test_v_csat_is_completely_unchanged`) and this
+    # is a second view.
+    #
+    # **The ranking floor suppresses the RANKING, not the row.** An agent with
+    # one 5-star response next to one with 200 responses averaging 4.7 is not
+    # a comparison, and publishing it as a league table is how a measurement
+    # becomes a grievance. But hiding the low-sample agent entirely makes the
+    # list look complete when it is not -- the reader cannot tell "this agent
+    # has too few ratings to rank" from "this agent has no cases". So every
+    # agent gets a row with their real `respondents` count, and
+    # `rank_in_channel` is NULL below the floor while `is_rankable` says why.
+    # `ranking_min_samples` travels ON the row so a consumer renders the
+    # actual configured floor rather than a hardcoded guess.
+    #
+    # **Every rate ships its denominator.** `avg_score` and `satisfied_rate`
+    # are meaningless without `respondents`, and `respondents` is meaningless
+    # without `cases` -- 100% satisfied over 2 responses from 300 cases is a
+    # response-rate story, not a satisfaction story.
+    #
+    # **An agent with no ratings has a NULL score, never a 0.** `AVG` over an
+    # all-NULL column is NULL and it is deliberately not COALESCEd: 0 is the
+    # worst possible rating and "nobody answered" is not a rating at all. The
+    # partition trick in `rank_in_channel` (`PARTITION BY ... is_rankable`)
+    # exists so the suppressed rows do not consume rank positions -- ranking
+    # over every row and then blanking some would leave the visible ranks
+    # reading 1, 3, 7.
+    if csat_by_agent_enabled:
+        floor = int(csat_ranking_min_samples)
+        ddls["v_csat_by_agent"] = (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_csat_by_agent` AS "
+            f"WITH per_agent AS (SELECT {d_created} AS day, "
+            f"COALESCE(agent_id, 'Unassigned') AS agent_id, channel, "
+            f"COUNT(*) AS cases, "
+            f"COUNTIF(csat_score IS NOT NULL) AS respondents, "
+            f"AVG(csat_score) AS avg_score, "
+            f"COUNTIF(csat_score >= 4) AS satisfied, "
+            f"SAFE_DIVIDE(COUNTIF(csat_score >= 4), COUNTIF(csat_score IS NOT NULL)) "
+            f"AS satisfied_rate "
+            f"FROM {fq} GROUP BY day, agent_id, channel) "
+            f"SELECT day, agent_id, channel, cases, respondents, avg_score, "
+            f"satisfied, satisfied_rate, "
+            f"{floor} AS ranking_min_samples, "
+            f"respondents >= {floor} AS is_rankable, "
+            f"CASE WHEN respondents >= {floor} THEN RANK() OVER ("
+            f"PARTITION BY day, channel, respondents >= {floor} "
+            f"ORDER BY avg_score DESC) END AS rank_in_channel "
+            f"FROM per_agent"
+        )
+
+    return ddls
 
 
 # ---------------------------------------------------------------------------

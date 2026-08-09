@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import structlog
@@ -89,8 +90,17 @@ def build_ai_agent(  # noqa: PLR0915 — one builder, many tool closures
         # hasn't opted in gets a session_state that never contains "sentiment"
         # at all, matching pre-P7 behaviour byte-for-byte (rather than just
         # gating what's later read back out of it).
+        #
+        # P7 task 11a: "sentiment_at" stamps WHEN this was classified. Sentiment
+        # lives in session state for the whole conversation, so tone adjustment
+        # (service.py's _tone_sentiment) needs to tell "the customer is angry
+        # right now" from "the customer was angry an hour ago" -- without a
+        # stamp, a cheerful message resuming an old conversation would be
+        # answered apologetically. Written in the same gated block, so a
+        # disabled tenant's state gains neither key.
         if settings.sentiment_classifier_enabled:
             tool_context.state["sentiment"] = sentiment
+            tool_context.state["sentiment_at"] = datetime.now(UTC).isoformat()
 
         tool_context.state["priority"] = priority
         tool_context.state["sla_minutes"] = sla_minutes

@@ -43,7 +43,7 @@ from chatbot.features.chat.ports import (
     TextToSpeechPort,
     TicketingPort,
 )
-from chatbot.features.chat.prompts import AGENT_INSTRUCTION
+from chatbot.features.chat.prompts import AGENT_INSTRUCTION, build_agent_instruction
 from chatbot.features.metrics.events import build_turn_event
 from chatbot.features.metrics.mapping import CATEGORY_TO_DIVISION
 
@@ -109,6 +109,78 @@ _FALLBACK_REPLIES = frozenset({_EMPTY_REPLY_FALLBACK, _TECH_ERROR_FALLBACK})
 # membership check with no typing-introspection surprises.
 _VALID_SENTIMENTS: tuple[Sentiment, ...] = ("positive", "neutral", "negative", "urgent")
 
+# P7 task 11a: how long a classified sentiment may still colour the bot's tone.
+#
+# session_state["sentiment"] persists for the life of the conversation (and,
+# with the Firestore session store, across process restarts), so without a
+# freshness window a customer who was furious this morning would be answered
+# apologetically this afternoon when they write back to say thanks. Fifteen
+# minutes is roughly a live-chat sitting: long enough that consecutive turns of
+# one exchange keep the register the customer's mood established, short enough
+# that a resumed conversation starts from today's neutral wording again.
+# Deliberately a module constant, not a setting -- it is a property of how
+# conversations work, not something a tenant should tune.
+_TONE_SENTIMENT_TTL_SECONDS = 900.0
+# Tolerated clock skew for a stamp that appears to be in the future (two
+# processes, or a Firestore session written by a differently-skewed instance).
+# A stamp further ahead than this is treated as unusable, not as fresh.
+_TONE_SENTIMENT_FUTURE_SKEW_SECONDS = 60.0
+
+
+def _sentiment_is_fresh(raw_stamp: Any) -> bool:
+    """Whether `session_state["sentiment_at"]` is recent enough to act on.
+
+    A missing, unparseable, or absent stamp is NOT fresh: a sentiment with no
+    evidence of when it was classified degrades to today's neutral wording
+    rather than being applied optimistically. (Sessions that predate this
+    change carry `sentiment` without a stamp -- they must not resurrect an old
+    mood on their next turn.)
+    """
+    if not raw_stamp:
+        return False
+    try:
+        stamped = datetime.fromisoformat(str(raw_stamp))
+    except (TypeError, ValueError):
+        return False
+    if stamped.tzinfo is None:
+        stamped = stamped.replace(tzinfo=UTC)
+    age_seconds = (datetime.now(UTC) - stamped).total_seconds()
+    return -_TONE_SENTIMENT_FUTURE_SKEW_SECONDS <= age_seconds <= _TONE_SENTIMENT_TTL_SECONDS
+
+
+def _media_kinds_in_user_content(ctx: Any) -> tuple[bool, bool]:
+    """(has_image, has_video) for the turn this ADK invocation is serving.
+
+    Read off `ReadonlyContext.user_content` -- the very `types.Content`
+    `handle_turn` assembled and handed to the runner -- so the media signal
+    cannot drift from what the model was actually sent, and cannot leak into a
+    later turn the way a mutable per-session flag could.
+
+    AUDIO IS DELIBERATELY NOT MEDIA HERE: a voice note gives the model nothing
+    to look at, so the diagnosis instruction ("describe the specific thing you
+    observe") would be asking for a description of something that doesn't
+    exist. Only image/* and video/* count.
+
+    Fail-open to (False, False) -- i.e. today's instruction -- for any ctx
+    shape that doesn't expose readable parts.
+    """
+    has_image = False
+    has_video = False
+    try:
+        parts = getattr(getattr(ctx, "user_content", None), "parts", None) or []
+        for part in parts:
+            inline = getattr(part, "inline_data", None)
+            if inline is None:
+                continue
+            mime = str(getattr(inline, "mime_type", "") or "")
+            if mime.startswith("image/"):
+                has_image = True
+            elif mime.startswith("video/"):
+                has_video = True
+    except Exception:
+        return False, False
+    return has_image, has_video
+
 
 class OrchestratorService:
     """Core orchestrator driving conversational turns for both Chatbot and Voicebot."""
@@ -147,7 +219,19 @@ class OrchestratorService:
         # Per-session override map: session_id -> instruction string.
         # Empty by default → every session gets AGENT_INSTRUCTION (no behaviour
         # change until a caller registers a persona via this dict).
+        # This holds the PERSONA-ONLY composition — exactly the string that
+        # shipped before P7 — and is what the per-turn composer falls back to
+        # if anything goes wrong, so a failure can only ever cost a tenant the
+        # new per-turn sections, never today's wording.
         self._instruction_by_session: dict[str, str] = {}
+
+        # session_id -> the assistant resolved for the most recent turn (or
+        # None). The per-turn instruction composer needs the resolved persona
+        # object itself, not just the string built from it, to read the
+        # operator's tone_* / media_diagnosis_instruction overrides while the
+        # model is running. Re-resolved every turn by _register_chat_persona,
+        # so an operator's edit takes effect on the next message.
+        self._assistant_by_session: dict[str, Any] = {}
 
         # Initialize ADK agents
         self._support_agent = build_ai_agent(
@@ -200,17 +284,122 @@ class OrchestratorService:
         )
 
     def _chat_instruction_provider(self, ctx: Any) -> str:
-        """ADK InstructionProvider: per-session composed instruction, else base.
+        """ADK InstructionProvider: the instruction for THIS LLM request.
 
         Reads the session id from the ReadonlyContext via ``ctx.session.id``
         (the public property exposed by google.adk.agents.ReadonlyContext).
         Any exception reading the session id → fail-open, return AGENT_INSTRUCTION.
+
+        This is called by ADK before EVERY LLM request, not once per turn —
+        which is what makes the per-turn sections in _compose_turn_instruction
+        able to see state the current turn produced. Any failure in that
+        composition degrades to the persona-only instruction registered for
+        the session (today's wording), never to an exception on the customer's
+        turn and never to a half-composed prompt.
         """
         try:
             session_id = ctx.session.id
         except Exception:
             return AGENT_INSTRUCTION
-        return self._instruction_by_session.get(session_id, AGENT_INSTRUCTION)
+        registered = self._instruction_by_session.get(session_id, AGENT_INSTRUCTION)
+        try:
+            return self._compose_turn_instruction(session_id, registered, ctx)
+        except Exception as e:
+            _log.warning(
+                "chat_turn_instruction_composition_failed",
+                session_id=session_id,
+                error=str(e),
+            )
+            return registered
+
+    def _compose_turn_instruction(self, session_id: str, registered: str, ctx: Any) -> str:
+        """Layer P7's per-request sections onto the persona-only instruction.
+
+        Both flags off → returns ``registered`` untouched, so a tenant that
+        has opted into neither feature gets the byte-identical pre-P7 string
+        and pays one dict lookup for it.
+
+        MEDIA (task 8): `_media_kinds_in_user_content` derives has_image /
+        has_video from this invocation's own user content, so the diagnosis
+        instruction appears on exactly the turns that carry a photo or video.
+
+        TONE (task 2), and what the customer actually experiences:
+
+        The turn's sentiment is produced BY the turn's `classify_ticket_tool`
+        call, so no once-per-session registration could ever reflect it. It
+        works here because a turn is one agent run made of several LLM
+        requests: the model calls its tools (request 1), ADK re-resolves this
+        provider, and the request that writes the customer-facing reply sees
+        the sentiment the tool just recorded. **On the customer's first angry
+        message the reply is therefore already in the measured/apologetic
+        register — provided the model called `classify_ticket_tool` on that
+        turn, which AGENT_INSTRUCTION mandates for negative tone and before
+        any escalation.** If the model answers an angry message with no tool
+        call at all, that single reply keeps today's wording and the adjusted
+        register arrives on the following turn (the sentiment is carried in
+        session state, bounded by _TONE_SENTIMENT_TTL_SECONDS). There is no
+        second Gemini round-trip either way: re-composing a string is free.
+
+        Tone requires `sentiment_classifier_enabled` as well as
+        `sentiment_tone_adjustment_enabled` — with no classifier nothing ever
+        writes a sentiment, so the tone flag alone would silently pin every
+        conversation to the "neutral" slot and change the register of tenants
+        who set a `tone_neutral` override without ever opting into sentiment.
+
+        Fail-open detail worth knowing: when the assistant could not be
+        resolved (no inbox, no store, or a tenant-store outage — all of which
+        `_resolve_chat_assistant` collapses to None), the built-in per-sentiment
+        and media default wordings apply. The operator's own custom text is
+        absent for that turn, but the block is never empty and the turn never
+        raises.
+        """
+        media_enabled = self._settings.media_diagnosis_prompt_enabled
+        tone_enabled = (
+            self._settings.sentiment_classifier_enabled
+            and self._settings.sentiment_tone_adjustment_enabled
+        )
+        if not media_enabled and not tone_enabled:
+            return registered
+        assistant = self._assistant_by_session.get(session_id)
+        has_image, has_video = _media_kinds_in_user_content(ctx)
+        base = build_agent_instruction(
+            media_diagnosis_prompt_enabled=media_enabled,
+            has_image=has_image,
+            has_video=has_video,
+            assistant=assistant,
+        )
+        return compose_chat_agent_instruction(
+            base,
+            assistant,
+            sentiment=self._tone_sentiment(ctx) if tone_enabled else None,
+            tone_adjustment_enabled=tone_enabled,
+        )
+
+    def _tone_sentiment(self, ctx: Any) -> Sentiment:
+        """The sentiment tone selection may act on for this LLM request.
+
+        Never `None`: an absent, unrecognised or stale value resolves to
+        "neutral", whose default body reproduces today's "## Tone" paragraph
+        verbatim. `None` would read as "we looked and it was fine" (task 1's
+        reasoning) and, worse here, an empty tone block would silently change
+        the bot's register with nothing to show something went wrong.
+
+        Staleness is the reason the freshness stamp exists — see
+        `_sentiment_is_fresh` and `_TONE_SENTIMENT_TTL_SECONDS`. Note this is
+        deliberately NOT `_resolve_sentiment`: that one reports what the turn
+        classified (for the API response and the Chatwoot attribute) and must
+        not be time-bounded, this one decides how to speak right now and must
+        be.
+        """
+        raw: Any = None
+        stamp: Any = None
+        state = getattr(ctx, "state", None)
+        if state is not None:
+            raw = state.get("sentiment")
+            stamp = state.get("sentiment_at")
+        if raw not in _VALID_SENTIMENTS or not _sentiment_is_fresh(stamp):
+            return "neutral"
+        return raw  # type: ignore[no-any-return]  # narrowed by the membership check above
 
     async def _resolve_chat_assistant(self, inbox_id: int | None) -> Any:
         """Resolve the assistant for a given inbox_id.
@@ -243,15 +432,25 @@ class OrchestratorService:
         _instruction_by_session so _chat_instruction_provider picks it up.
         Pops the key (restores default) if the persona is empty or any error
         occurs. Fail-open: never raises.
+
+        Also parks the resolved assistant OBJECT for the turn
+        (_assistant_by_session), because P7's per-request composer needs to
+        read the operator's tone_*/media_diagnosis_instruction overrides off it
+        while the model is running — long after this coroutine returned. The
+        string alone can't carry those: which tone slot applies isn't known
+        until the turn's sentiment is classified. This resolve stays exactly
+        one tenant-store read per turn, as before.
         """
         try:
             assistant = await self._resolve_chat_assistant(inbox_id)
+            self._assistant_by_session[session_id] = assistant
             composed = compose_chat_agent_instruction(AGENT_INSTRUCTION, assistant)
             if composed != AGENT_INSTRUCTION:
                 self._instruction_by_session[session_id] = composed
             else:
                 self._instruction_by_session.pop(session_id, None)
         except Exception:
+            self._assistant_by_session.pop(session_id, None)
             self._instruction_by_session.pop(session_id, None)
 
     def _sync_history_from_state(self, session_id: str, session: Session) -> list[dict[str, Any]]:

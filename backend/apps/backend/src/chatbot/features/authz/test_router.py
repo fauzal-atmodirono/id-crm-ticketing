@@ -3,7 +3,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from chatbot.features.authz.chatwoot_role_mirror import ChatwootRoleMirror, ChatwootRoleMirrorError
+from chatbot.features.authz.chatwoot_role_mirror import ChatwootRoleMirrorError
 from chatbot.features.authz.db import build_engine, build_session_maker, init_authz_db
 from chatbot.features.authz.identity import TokenValidator
 from chatbot.features.authz.repository import AuthzRepository
@@ -34,26 +34,49 @@ async def client(tmp_path, respx_mock):
 
 
 def test_permissions_endpoint_returns_callers_own_permissions(client):
-    res = client.get("/authz/permissions", headers={"x-chatwoot-access-token": "agent-tok", "x-chatwoot-client": "client-2", "x-chatwoot-uid": "uid-2"})
+    res = client.get(
+        "/authz/permissions",
+        headers={
+            "x-chatwoot-access-token": "agent-tok",
+            "x-chatwoot-client": "client-2",
+            "x-chatwoot-uid": "uid-2",
+        },
+    )
     assert res.status_code == 200
     # The default `agent` role's whole set, sorted. `presence.set_own_status` is the
     # fourth member: choosing your own availability status is an agent's own job, so
     # P6's status-selection endpoint would be unusable gated on anything admin-only
-    # (see features/authz/seed.py's comment on the two new keys).
-    assert res.json()["permissions"] == ["cases.manage", "cases.view", "knowledge.edit", "presence.set_own_status"]
+    # (see features/authz/seed.py's comment on the two new keys). `translation.use`
+    # (P7 task 3) is the fifth: reading a customer's message in translation is
+    # likewise an agent's ordinary job, not an admin action.
+    assert res.json()["permissions"] == [
+        "cases.manage",
+        "cases.view",
+        "knowledge.edit",
+        "presence.set_own_status",
+        "translation.use",
+    ]
 
 
 def test_check_endpoint(client):
     res = client.get(
         "/authz/check",
         params={"permission": "sla.manage"},
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
     assert res.json() == {"allowed": True}
     res = client.get(
         "/authz/check",
         params={"permission": "sla.manage"},
-        headers={"x-chatwoot-access-token": "agent-tok", "x-chatwoot-client": "client-2", "x-chatwoot-uid": "uid-2"},
+        headers={
+            "x-chatwoot-access-token": "agent-tok",
+            "x-chatwoot-client": "client-2",
+            "x-chatwoot-uid": "uid-2",
+        },
     )
     assert res.json() == {"allowed": False}
 
@@ -62,7 +85,11 @@ def test_create_role_requires_roles_manage_permission(client):
     res = client.post(
         "/authz/roles",
         json={"id": "leader", "name": "Team Leader", "description": ""},
-        headers={"x-chatwoot-access-token": "agent-tok", "x-chatwoot-client": "client-2", "x-chatwoot-uid": "uid-2"},
+        headers={
+            "x-chatwoot-access-token": "agent-tok",
+            "x-chatwoot-client": "client-2",
+            "x-chatwoot-uid": "uid-2",
+        },
     )
     assert res.status_code == 403
 
@@ -71,20 +98,35 @@ def test_administrator_can_create_role_and_assign(client):
     res = client.post(
         "/authz/roles",
         json={"id": "leader", "name": "Team Leader", "description": ""},
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
     assert res.status_code == 200
 
     res = client.post(
         "/authz/roles/leader/assign",
         json={"chatwoot_user_id": 99},
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
     assert res.status_code == 200
 
 
 def test_permission_registry_endpoint(client):
-    res = client.get("/authz/permission-registry", headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"})
+    res = client.get(
+        "/authz/permission-registry",
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
+    )
     assert res.status_code == 200
     data = res.json()
     assert "permissions" in data
@@ -93,12 +135,26 @@ def test_permission_registry_endpoint(client):
 
 
 def test_permission_registry_requires_roles_manage_permission(client):
-    res = client.get("/authz/permission-registry", headers={"x-chatwoot-access-token": "agent-tok", "x-chatwoot-client": "client-2", "x-chatwoot-uid": "uid-2"})
+    res = client.get(
+        "/authz/permission-registry",
+        headers={
+            "x-chatwoot-access-token": "agent-tok",
+            "x-chatwoot-client": "client-2",
+            "x-chatwoot-uid": "uid-2",
+        },
+    )
     assert res.status_code == 403
 
 
 def test_role_permissions_endpoint(client):
-    res = client.get("/authz/roles/administrator/permissions", headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"})
+    res = client.get(
+        "/authz/roles/administrator/permissions",
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
+    )
     assert res.status_code == 200
     data = res.json()
     assert "permissions" in data
@@ -106,7 +162,14 @@ def test_role_permissions_endpoint(client):
 
 
 def test_role_permissions_requires_roles_manage_permission(client):
-    res = client.get("/authz/roles/administrator/permissions", headers={"x-chatwoot-access-token": "agent-tok", "x-chatwoot-client": "client-2", "x-chatwoot-uid": "uid-2"})
+    res = client.get(
+        "/authz/roles/administrator/permissions",
+        headers={
+            "x-chatwoot-access-token": "agent-tok",
+            "x-chatwoot-client": "client-2",
+            "x-chatwoot-uid": "uid-2",
+        },
+    )
     assert res.status_code == 403
 
 
@@ -114,13 +177,24 @@ def test_grant_role_permission_endpoint(client):
     res = client.post(
         "/authz/roles/agent/permissions",
         json={"permission_key": "sla.manage"},
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
     assert res.status_code == 200
     assert res.json() == {"ok": True}
 
     # Verify the permission was actually granted
-    res = client.get("/authz/roles/agent/permissions", headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"})
+    res = client.get(
+        "/authz/roles/agent/permissions",
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
+    )
     assert res.status_code == 200
     perms = res.json()["permissions"]
     assert "sla.manage" in perms
@@ -130,7 +204,11 @@ def test_grant_role_permission_requires_roles_manage_permission(client):
     res = client.post(
         "/authz/roles/agent/permissions",
         json={"permission_key": "sla.manage"},
-        headers={"x-chatwoot-access-token": "agent-tok", "x-chatwoot-client": "client-2", "x-chatwoot-uid": "uid-2"},
+        headers={
+            "x-chatwoot-access-token": "agent-tok",
+            "x-chatwoot-client": "client-2",
+            "x-chatwoot-uid": "uid-2",
+        },
     )
     assert res.status_code == 403
 
@@ -140,19 +218,34 @@ def test_revoke_role_permission_endpoint(client):
     client.post(
         "/authz/roles/agent/permissions",
         json={"permission_key": "sla.manage"},
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
 
     # Now revoke it
     res = client.delete(
         "/authz/roles/agent/permissions/sla.manage",
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
     assert res.status_code == 200
     assert res.json() == {"ok": True}
 
     # Verify the permission was actually revoked
-    res = client.get("/authz/roles/agent/permissions", headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"})
+    res = client.get(
+        "/authz/roles/agent/permissions",
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
+    )
     assert res.status_code == 200
     perms = res.json()["permissions"]
     assert "sla.manage" not in perms
@@ -161,13 +254,24 @@ def test_revoke_role_permission_endpoint(client):
 def test_revoke_role_permission_requires_roles_manage_permission(client):
     res = client.delete(
         "/authz/roles/agent/permissions/sla.manage",
-        headers={"x-chatwoot-access-token": "agent-tok", "x-chatwoot-client": "client-2", "x-chatwoot-uid": "uid-2"},
+        headers={
+            "x-chatwoot-access-token": "agent-tok",
+            "x-chatwoot-client": "client-2",
+            "x-chatwoot-uid": "uid-2",
+        },
     )
     assert res.status_code == 403
 
 
 def test_role_users_endpoint(client):
-    res = client.get("/authz/roles/agent/users", headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"})
+    res = client.get(
+        "/authz/roles/agent/users",
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
+    )
     assert res.status_code == 200
     data = res.json()
     assert "chatwoot_user_ids" in data
@@ -175,13 +279,27 @@ def test_role_users_endpoint(client):
 
 
 def test_role_users_requires_roles_manage_permission(client):
-    res = client.get("/authz/roles/agent/users", headers={"x-chatwoot-access-token": "agent-tok", "x-chatwoot-client": "client-2", "x-chatwoot-uid": "uid-2"})
+    res = client.get(
+        "/authz/roles/agent/users",
+        headers={
+            "x-chatwoot-access-token": "agent-tok",
+            "x-chatwoot-client": "client-2",
+            "x-chatwoot-uid": "uid-2",
+        },
+    )
     assert res.status_code == 403
 
 
 def test_unassign_role_endpoint(client):
     # First verify the user has the agent role
-    res = client.get("/authz/roles/agent/users", headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"})
+    res = client.get(
+        "/authz/roles/agent/users",
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
+    )
     assert 2 in res.json()["chatwoot_user_ids"]
 
     # Now unassign the role
@@ -189,13 +307,24 @@ def test_unassign_role_endpoint(client):
         "DELETE",
         "/authz/roles/agent/assign",
         json={"chatwoot_user_id": 2},
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
     assert res.status_code == 200
     assert res.json() == {"ok": True}
 
     # Verify the role was actually removed
-    res = client.get("/authz/roles/agent/users", headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"})
+    res = client.get(
+        "/authz/roles/agent/users",
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
+    )
     assert 2 not in res.json()["chatwoot_user_ids"]
 
 
@@ -204,7 +333,11 @@ def test_unassign_role_requires_roles_manage_permission(client):
         "DELETE",
         "/authz/roles/agent/assign",
         json={"chatwoot_user_id": 2},
-        headers={"x-chatwoot-access-token": "agent-tok", "x-chatwoot-client": "client-2", "x-chatwoot-uid": "uid-2"},
+        headers={
+            "x-chatwoot-access-token": "agent-tok",
+            "x-chatwoot-client": "client-2",
+            "x-chatwoot-uid": "uid-2",
+        },
     )
     assert res.status_code == 403
 
@@ -273,7 +406,11 @@ async def test_grant_native_conversation_key_syncs_mirror_and_assigns_agent(mirr
     res = client.post(
         "/authz/roles/leader/permissions",
         json={"permission_key": "chatwoot.conversation_unassigned_manage"},
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
     assert res.status_code == 200
     assert mirror.ensure_calls[-1][3] == ["conversation_unassigned_manage"]
@@ -287,12 +424,20 @@ async def test_grant_second_conversation_key_replaces_first_in_mirror(mirror_cli
     client.post(
         "/authz/roles/leader/permissions",
         json={"permission_key": "chatwoot.conversation_manage"},
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
     client.post(
         "/authz/roles/leader/permissions",
         json={"permission_key": "chatwoot.conversation_unassigned_manage"},
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
     perms = await repo.role_permissions("leader")
     assert "chatwoot.conversation_manage" not in perms
@@ -307,7 +452,11 @@ async def test_grant_native_key_rolls_back_db_on_mirror_failure(mirror_client):
     res = client.post(
         "/authz/roles/leader/permissions",
         json={"permission_key": "chatwoot.conversation_manage"},
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
     assert res.status_code == 502
     perms = await repo.role_permissions("leader")
@@ -335,7 +484,11 @@ async def test_grant_native_key_rolls_back_already_applied_user_on_partial_mirro
     res = client.post(
         "/authz/roles/leader/permissions",
         json={"permission_key": "chatwoot.conversation_manage"},
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
     assert res.status_code == 502
 
@@ -383,7 +536,11 @@ async def test_grant_native_key_rolls_back_orphaned_state_when_set_agent_custom_
     res = client.post(
         "/authz/roles/leader/permissions",
         json={"permission_key": "chatwoot.conversation_manage"},
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
     assert res.status_code == 502
 
@@ -422,7 +579,11 @@ async def test_grant_non_native_key_unaffected_by_missing_mirror(tmp_path, respx
     res = client.post(
         "/authz/roles/leader/permissions",
         json={"permission_key": "audit.view"},
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
     assert res.status_code == 200
     assert "audit.view" in await repo.role_permissions("leader")
@@ -434,13 +595,21 @@ async def test_revoke_last_native_key_deletes_mirror_and_clears_agent(mirror_cli
     client.post(
         "/authz/roles/leader/permissions",
         json={"permission_key": "chatwoot.conversation_manage"},
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
     mirror.ensure_calls.clear()
     mirror.agent_calls.clear()
     res = client.delete(
         "/authz/roles/leader/permissions/chatwoot.conversation_manage",
-        headers={"x-chatwoot-access-token": "admin-tok", "x-chatwoot-client": "client-1", "x-chatwoot-uid": "uid-1"},
+        headers={
+            "x-chatwoot-access-token": "admin-tok",
+            "x-chatwoot-client": "client-1",
+            "x-chatwoot-uid": "uid-1",
+        },
     )
     assert res.status_code == 200
     assert await repo.get_native_role_mirror(5) is None

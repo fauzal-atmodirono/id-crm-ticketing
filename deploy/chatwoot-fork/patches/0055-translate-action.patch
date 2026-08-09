@@ -1,0 +1,141 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] P7 task 3: agent-facing translate action
+
+Gives an agent reading a Malay, Tamil, or Chinese customer message a one-
+click way to read it in English: a small "Translate" button in the reply
+composer's top panel (next to the existing Copilot button) that calls
+POST /assist/translate for the latest customer message. Backs
+translate_router.py.
+
+WHY THIS DOES NOT INSERT TEXT ANYWHERE. The three existing Proton actions in
+this same file (reply_suggestion/summarize/ask_copilot, patch 0002) each
+return a string the panel inserts into the reply box or note composer.
+Translate is different on purpose: translate_router.py posts the translation
+directly into the conversation as a private note (never an outgoing message
+-- see that file's module docstring for the customer-safety invariant), so
+there is nothing for this panel to insert. This action therefore stays a
+separate method (handleTranslateLastCustomerMessage) rather than being added
+to the PROTON_ACTIONS/PROTON_ACTION_MODE maps above, which both assume a
+reply/note string exists to route somewhere. On success the button shows a
+toast confirmation; the private note itself appears via Chatwoot's own
+realtime conversation update, the same way any other private note does.
+
+Visibility is gated on `protonEnabled` (the same ai_assist feature surface
+0002 already reads) -- a client-side convenience only, not the real
+boundary. The actual gates are the backend's own: `translation_enabled`
+(returns {disabled: true} and does nothing when off, so a stale/cached
+frontend build cannot bypass it) and the `translation.use` RBAC permission
+via require_permission (granted to the default "agent" role). A tenant with
+translation_enabled=False sees this button do nothing but show "Translation
+is not enabled on this account."
+
+The outbound-Tamil split (translation_outbound_tamil_enabled) is invisible
+to this button by construction: it never sends a target_language, so the
+backend's default ("en") is always what gets requested here, and the
+outbound-Tamil gate (which only fires when a caller explicitly asks to
+translate INTO Tamil) never applies to this UI surface. There is
+deliberately no "reply in Tamil" action anywhere in this patch.
+
+DEPENDENCY: this patch applies ON TOP OF 0002-ai-assist-backend.patch. Its
+four hunks are all anchored on ReplyTopPanel.vue content that 0002 itself
+adds (the PROTON_ACTIONS/PROTON_ACTION_MODE block, the protonEnabled/
+showAiButton computed refs, handleCopilotAction's body, and the
+`showAiButton` template div), not on unverified upstream Chatwoot content --
+every context line below was transcribed verbatim from 0002's own diff
+(which is already merged in this repo) and the four hunks' line-number
+offsets were computed by hand to account for each other cumulatively within
+this same file, the same arithmetic approach 0054 used on top of 0053.
+
+NOTE: hand-constructed and NOT verified with `git apply --check` against a
+real checkout -- this sandbox has no network access to clone upstream or the
+fork, the same constraint recorded for patches 0053/0054. Anchoring on our
+own already-merged 0002 content (rather than on unverified upstream lines)
+is deliberate risk reduction, but it does not substitute for a real
+`git apply --check`. Verify on the first Cloud Build; it is a row in
+docs/analysis/2026-08-09-blocked-work-register.md beside 0053/0054's.
+---
+ .../widgets/WootWriter/ReplyTopPanel.vue          | 53 +++++++++++++++++++++++
+ 1 file changed, 53 insertions(+)
+diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+index 0a6cec2..7c1d2e3 100644
+--- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
++++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+@@ -12,4 +12,5 @@
+ import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
+ import { callAssist } from 'dashboard/api/protonAssist';
+ import { useStore } from 'dashboard/composables/store';
++import { useAlert } from 'dashboard/composables';
+
+@@ -135,5 +136,44 @@ export default {
+       emit('executeCopilotAction', actionKey, data || props.editorContent);
+     };
+
++    // Task 3 (P7): translate the latest customer message into English.
++    // POST /assist/translate posts the result directly into the
++    // conversation as a private note (translate_router.py) -- there is no
++    // reply/note text for this panel to insert, so this stays a separate
++    // method rather than folding into PROTON_ACTIONS/handleCopilotAction
++    // above, which both assume exactly that: text to insert somewhere.
++    const translating = ref(false);
++    const handleTranslateLastCustomerMessage = async () => {
++      if (!protonEnabled.value || translating.value) return;
++      const chat = store.getters.getSelectedChat;
++      const lastCustomerMessage = [...(chat?.messages || [])]
++        .reverse()
++        .find(m => m.content && m.message_type === 0);
++      if (!lastCustomerMessage) {
++        useAlert('No customer message to translate yet.');
++        return;
++      }
++      translating.value = true;
++      try {
++        const result = await callAssist('translate', {
++          conversation_id: String(props.conversationId),
++          text: lastCustomerMessage.content,
++        });
++        if (result.disabled) {
++          useAlert('Translation is not enabled on this account.');
++        } else {
++          useAlert(
++            `Translated (${result.detected_source_language} → en) and posted as a private note.`
++          );
++        }
++      } catch (err) {
++        // eslint-disable-next-line no-console
++        console.error('[proton-assist]', 'translate', 'failed', err);
++        useAlert('Translation failed. Please try again.');
++      } finally {
++        translating.value = false;
++      }
++    };
++
+     const toggleCopilotMenu = () => {
+       const isOpening = !showCopilotMenu.value;
+@@ -168,8 +208,10 @@ export default {
+       handleNoteClick,
+       REPLY_EDITOR_MODES,
+       captainTasksEnabled,
+       protonEnabled,
+       showAiButton,
++      translating,
++      handleTranslateLastCustomerMessage,
+       handleCopilotAction,
+       showCopilotMenu,
+       copilotToggleRef,
+@@ -217,5 +259,16 @@ export default {
+         </span>
+       </div>
+     </div>
++    <div v-if="protonEnabled" class="flex items-center gap-2">
++      <button
++        class="flex items-center gap-1 px-2 py-1 text-xs border rounded-lg border-n-weak text-n-slate-11"
++        :disabled="translating"
++        title="Translate the customer's last message to English"
++        @click="handleTranslateLastCustomerMessage"
++      >
++        <span class="i-lucide-languages" />
++        {{ translating ? 'Translating…' : 'Translate' }}
++      </button>
++    </div>
+     <div v-if="showAiButton" class="flex items-center gap-2">
+       <div class="relative">

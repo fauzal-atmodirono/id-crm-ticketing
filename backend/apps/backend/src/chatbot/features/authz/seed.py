@@ -78,6 +78,15 @@ PERMISSION_REGISTRY: dict[str, str] = {
     # routing and starts an absence-alert clock against their name.
     "presence.set_own_status": "Set your own availability status",
     "workforce.manage": "Edit the status catalogue and set other agents' statuses",
+    # P7 task 3: the agent-facing translate action (POST /assist/translate).
+    # Granted to "agent" below, like presence.set_own_status and
+    # cases.view/cases.manage above and unlike escalation.manage/
+    # customer360.view -- reading a customer's own message in translation is
+    # an agent's ordinary job on every conversation they handle, not an
+    # administrative act, so gating it admin-only would make the feature
+    # unusable by the people it exists for (the same mistake ruling D5 and
+    # the presence.set_own_status decision both had to correct).
+    "translation.use": "Translate a customer message for reading",
 }
 
 _AGENT_PERMISSIONS = {
@@ -85,6 +94,7 @@ _AGENT_PERMISSIONS = {
     "cases.view",
     "cases.manage",
     "presence.set_own_status",
+    "translation.use",
 }
 
 # Native Chatwoot conversation/inbox visibility, mirrored into Chatwoot's own

@@ -67,7 +67,7 @@ SUMMARIZER_INSTRUCTION = (
     "- `summary`: A 1-2 sentence summary of what the customer is asking and the "
     "issue they are facing.\n"
     '- `urgency`: "low", "medium", or "high".\n'
-    '- `language`: The language of the conversation ("en", "ms", "zh").\n\n'
+    '- `language`: The language of the conversation ("en", "ms", "zh", "ta").\n\n'
     "Example Output:\n"
     "{\n"
     '  "summary": "Customer is reporting that their app is crashing during login. '

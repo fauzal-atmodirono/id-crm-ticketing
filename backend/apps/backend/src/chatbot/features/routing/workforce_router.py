@@ -42,18 +42,33 @@ string `"offline"` or resolves (via `CustomStatusStore.get`) to a
 treated as available, the same fail-open direction `custom_status.py`'s own
 contract recommends ("no extra information" must never read as "absent").
 
-**2. An agent with no events yet must show *unknown*, not zero.** Task 1's
-store deliberately returns `None` (never a zero-value duration) for an
-agent with no presence history, because "0 min in Available" would assert a
-transition that never happened. This router preserves that distinction all
-the way to the response: `current_status.elapsed_minutes`,
-`availability_percent_of_working_day` are `null`, and
-`time_in_status_today_minutes` / `availability_history` are empty, for such
-an agent -- never a fabricated `0`. `current_status.key` still falls back to
-the agent's LIVE native Chatwoot status (`AgentRecord.availability_status`,
+**2. An agent with no events *ever* must show *unknown*, not zero -- but an
+agent with events, just none since local midnight, is a different agent.**
+Task 1's store deliberately returns `None` (never a zero-value duration) for
+an agent with no presence history at all, because "0 min in Available" would
+assert a transition that never happened. This router preserves that
+distinction all the way to the response: `current_status.elapsed_minutes`
+is `null` for such an agent, and `current_status.key` falls back to the
+agent's LIVE native Chatwoot status (`AgentRecord.availability_status`,
 always available from `PresenceFetcher.fetch_agents()` regardless of
 presence history) so the row still renders something honest, just not an
 elapsed duration.
+
+`availability_percent_of_working_day` used to conflate this with a second,
+narrower case -- an agent whose *last* transition was before today, so
+`since(day_start)` comes back empty even though the agent's status is
+perfectly well known (review finding I3: an agent "available" since
+yesterday 08:00 rendered `time_in_status_today_minutes = {"available":
+~600}` right beside `availability_percent_of_working_day: null` for the
+same row). `_availability_percent` now accepts the agent's `latest` event as
+a `carried` fallback: when there are no events *today*, but the agent has
+been seen before (`carried is not None`), that carried status is credited
+from `day_start` to `now` -- the exact segment `time_in_status_since` (task
+1's store) already credits for the same reason. The blank stays reserved
+for the one case where nothing is known at all: `since(day_start)` is empty
+AND `carried is None`, i.e. the agent has no presence history whatsoever.
+`time_in_status_today_minutes` / `availability_history` are still `{}` / `[]`
+for that agent -- this fix does not touch that pair, only the percentage.
 
 **3. "Cases closed today" is reported as `null`, not `0` -- see
 `_CASES_CLOSED_TODAY_CAVEAT` below for why no helper exists that can honestly answer
@@ -71,6 +86,28 @@ does not exist today. `_AVAILABILITY_HISTORY_DISCLAIMER` carries this
 caveat in the response itself (and the fork's admin page titles the column
 "Availability history", never "Login/logout" -- see
 `deploy/chatwoot-fork/patches/0053-workforce-dashboard.patch`).
+
+## Open case counts -- an empty tally is not a global zero
+
+`PresenceFetcher.fetch_agent_open_counts()` is fail-open by its own contract
+(see its docstring in `presence.py`): a Chatwoot pager failure on *any* page
+returns `{}`, the exact same value a genuinely empty account (nobody has an
+open conversation right now) would also produce -- both collapse to the same
+empty dict at the source, and this router cannot tell them apart from the
+dict alone (review finding I4). The old `open_counts.get(agent.id, 0)`
+therefore rendered a Chatwoot outage as "the whole team is idle", the same
+fabricated-zero lie this file exists to avoid for `cases_closed_today`.
+
+The fix distinguishes three states, only two of which are ever a number:
+the tally could not be established this poll (`open_counts` came back
+empty) -> every agent's `open_case_count` is `null` and the response carries
+`open_case_count_caveat`; the tally was established and this agent is absent
+from it -> a real `0`; the tally was established and this agent is present
+-> its real count. "Established" is inferred from non-emptiness (any agent
+present with any count proves the fetch actually ran) rather than from an
+exception, because `fetch_agent_open_counts()` never raises -- it already
+fail-opens internally, so a router-level `try/except` around the call can
+only ever see a normal return, never the failure itself.
 
 ## Freshness, not a fake "real-time" claim
 
@@ -132,6 +169,22 @@ _CASES_CLOSED_TODAY_CAVEAT = (
     "not be an honest trade against the two other blocking full-account "
     "reads this endpoint already makes. A null is a statement about "
     "instrumentation; a 0 would be a claim about performance."
+)
+
+_OPEN_CASE_COUNT_CAVEAT = (
+    "open_case_count is null for every agent this poll, not 0. "
+    "fetch_agent_open_counts() came back empty, and that helper is "
+    "deliberately fail-open (see presence.py: a partial undercount would be "
+    "worse than no data), so an entirely empty tally is ambiguous between "
+    "'the whole account genuinely has zero open conversations right now' "
+    "and 'the Chatwoot conversations pager failed this poll' -- both "
+    "collapse to the same {} at the source. Rather than assume the benign "
+    "reading and show 0 for every agent (indistinguishable from a "
+    "genuinely idle team on the very page built to avoid that fabrication), "
+    "this poll reports unavailable. This does not apply once any agent has "
+    "a nonzero count in the same poll -- at that point the fetch is known "
+    "to have worked, and an agent absent from a non-empty tally has a real, "
+    "honest 0."
 )
 
 
@@ -220,35 +273,55 @@ async def _availability_percent(
     inbox: dict[str, Any],
     status_store: _StatusCatalogue,
     day_start: datetime,
+    carried: PresenceEvent | None,
 ) -> float | None:
     """Percentage of the working day elapsed so far spent in an "available"
-    status (see `_is_available_status`). `None` -- never `0.0` -- when there
-    is no presence history to compute from today (an agent who has never
-    been seen, or has no events since `day_start`), matching the store's own
-    "unknown, not zero" contract.
+    status (see `_is_available_status`). `None` -- never `0.0` -- ONLY when
+    there is no presence history to compute from at all: no events since
+    `day_start` AND no prior event to carry in (`carried is None`).
 
-    Each segment (one event to the next event's `at`, the last to `now`) is
-    scored against `working_minutes_between` individually, THEN summed --
-    not the reverse -- so a segment outside working hours (e.g. an agent
-    online at 2am) is never credited as working-day availability just
-    because its status label says "available". Bounded by `min(pct, 100.0)`
-    as a defensive clamp against integer-floor rounding across many small
-    segments; the two sides are computed with the same calendar so they
-    should already satisfy numerator <= denominator without it.
+    `carried` is the agent's `latest()` event from the store, supplied by
+    the caller. When `events` (today's, from `since(day_start)`) is empty,
+    this function falls back to treating `carried` as a single segment
+    running the entire elapsed working day (`day_start` to `now`) --
+    `since`'s own contract guarantees that if `events` is empty, `carried`
+    (when present at all) predates `day_start`, so this is exactly the
+    status that was already in effect when today's window opened, which is
+    what genuinely happened. This mirrors `time_in_status_since`'s own
+    carried-forward fix (task 1) and closes review finding I3, where this
+    function returned `null` right next to a nonzero
+    `time_in_status_today_minutes` for the same agent -- a blank and a
+    number that both claimed to describe the same day and disagreed. An
+    agent with events today is unaffected: `carried` is ignored whenever
+    `events` is non-empty.
+
+    Each segment (one event to the next event's `at`, the last to `now`,
+    clamped to start no earlier than `day_start` so a carried event's
+    original -- possibly days-old -- timestamp never leaks working minutes
+    from before today) is scored against `working_minutes_between`
+    individually, THEN summed -- not the reverse -- so a segment outside
+    working hours (e.g. an agent online at 2am) is never credited as
+    working-day availability just because its status label says
+    "available". Bounded by `min(pct, 100.0)` as a defensive clamp against
+    integer-floor rounding across many small segments; the two sides are
+    computed with the same calendar so they should already satisfy
+    numerator <= denominator without it.
     """
-    if not events:
+    segments = events if events else ([carried] if carried is not None else [])
+    if not segments:
         return None
     working_minutes_today = working_minutes_between(day_start, now, inbox)
     if working_minutes_today <= 0:
         return None
     available_minutes = 0
-    for i, event in enumerate(events):
-        segment_end = events[i + 1].at if i + 1 < len(events) else now
-        if segment_end <= event.at:
+    for i, event in enumerate(segments):
+        segment_start = max(event.at, day_start)
+        segment_end = segments[i + 1].at if i + 1 < len(segments) else now
+        if segment_end <= segment_start:
             continue
         custom = await status_store.get(event.status)
         if _is_available_status(event.status, custom):
-            available_minutes += working_minutes_between(event.at, segment_end, inbox)
+            available_minutes += working_minutes_between(segment_start, segment_end, inbox)
     percent = (available_minutes / working_minutes_today) * 100
     return round(min(percent, 100.0), 1)
 
@@ -294,6 +367,7 @@ async def _build_agent_row(
     presence_store: _PresenceLog,
     status_store: _StatusCatalogue,
     open_counts: dict[int, int],
+    open_counts_available: bool,
 ) -> dict[str, Any]:
     latest = await presence_store.latest(agent.id)
     elapsed = await presence_store.elapsed_in_current_status(agent.id, now)
@@ -310,7 +384,12 @@ async def _build_agent_row(
         key: round(duration.total_seconds() / 60, 1) for key, duration in time_today.items()
     }
     availability_percent = await _availability_percent(
-        events_today, now=now, inbox=inbox, status_store=status_store, day_start=day_start
+        events_today,
+        now=now,
+        inbox=inbox,
+        status_store=status_store,
+        day_start=day_start,
+        carried=latest,
     )
 
     return {
@@ -328,7 +407,10 @@ async def _build_agent_row(
         "time_in_status_today_minutes": time_today_minutes,
         "availability_percent_of_working_day": availability_percent,
         "availability_history": _availability_history(events_today),
-        "open_case_count": open_counts.get(agent.id, 0),
+        # null (never a fabricated 0) whenever this poll's tally is empty --
+        # see _OPEN_CASE_COUNT_CAVEAT and the module docstring's "Open case
+        # counts" section (review finding I4).
+        "open_case_count": (open_counts.get(agent.id, 0) if open_counts_available else None),
         # Always null -- see _CASES_CLOSED_TODAY_CAVEAT.
         "cases_closed_today": None,
     }
@@ -382,6 +464,13 @@ def build_workforce_router(
         except Exception as e:
             _log.error("workforce_fetch_open_counts_failed", error=str(e))
             open_counts = {}
+        # fetch_agent_open_counts() is itself fail-open (see presence.py),
+        # so it never actually raises here -- an empty dict is the ONLY
+        # signal a failure ever produces, and it is indistinguishable from
+        # "genuinely nobody has an open conversation right now". Treat
+        # non-emptiness as the proof the fetch actually ran (see the module
+        # docstring's "Open case counts" section / review finding I4).
+        open_counts_available = bool(open_counts)
 
         inbox = await _fetch_inbox_fail_open(fetch_hours, settings.chatwoot_inbox_id)
         day_start = _local_day_start(now, inbox)
@@ -395,6 +484,7 @@ def build_workforce_router(
                 presence_store=presence,
                 status_store=statuses,
                 open_counts=open_counts,
+                open_counts_available=open_counts_available,
             )
             for agent in agents
         ]
@@ -414,6 +504,7 @@ def build_workforce_router(
             },
             "availability_history_disclaimer": _AVAILABILITY_HISTORY_DISCLAIMER,
             "cases_closed_today_caveat": _CASES_CLOSED_TODAY_CAVEAT,
+            "open_case_count_caveat": (None if open_counts_available else _OPEN_CASE_COUNT_CAVEAT),
             "agents": rows,
         }
 

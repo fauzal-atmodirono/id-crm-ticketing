@@ -274,13 +274,111 @@ async def test_the_availability_percentage_is_computed_over_the_working_day_not_
 
 
 @pytest.mark.asyncio
+async def test_an_agent_with_events_yesterday_but_none_today_gets_a_real_availability_percent():
+    """Finding I3: an agent whose last transition predates today (so
+    `since(day_start)` comes back empty) must NOT render
+    `availability_percent_of_working_day: null` next to a nonzero
+    `time_in_status_today_minutes` for the same status -- that contradicted
+    itself. The carried-forward status (from `latest()`) must be credited
+    for the whole elapsed working day, exactly like `time_in_status_since`
+    (task 1's store) already credits it. This is a DIFFERENT agent shape
+    than `test_an_agent_with_no_events_today_renders_without_error`, which
+    has no events at all, ever -- that one must still render `null`.
+    """
+    base = datetime(2026, 8, 10, 0, 0, tzinfo=UTC)  # local midnight, UTC inbox tz
+    now = base + timedelta(hours=20)
+    inbox = {
+        "working_hours_enabled": True,
+        "timezone": "UTC",
+        "working_hours": [
+            {
+                "day_of_week": base.isoweekday() % 7,
+                "open_hour": 9,
+                "open_minutes": 0,
+                "close_hour": 17,
+                "close_minutes": 0,
+                "open_all_day": False,
+                "closed_all_day": False,
+            }
+        ],
+    }
+    carried_event = PresenceEvent(
+        agent_id=AGENT.id,
+        status="available",
+        at=base - timedelta(hours=16),  # yesterday 08:00 -- well before today
+        source="agent",
+        previous="lunch",
+    )
+    presence_store = _FakePresenceLog(
+        latest={AGENT.id: carried_event},
+        since_events={AGENT.id: []},  # nothing today -- the exact I3 shape
+        time_in_status={AGENT.id: {"available": timedelta(minutes=1200)}},
+    )
+    router = _build_router(
+        agents=[AGENT],
+        presence_store=presence_store,
+        inbox_hours_fetcher=lambda: inbox,
+        now=now,
+    )
+    client = _app_with_router(router)
+
+    res = client.get("/admin/workforce", headers=API_KEY_HEADERS)
+    assert res.status_code == 200
+    row = res.json()["agents"][0]
+
+    # The carried "available" status covers the entire elapsed working day
+    # -> 100%, not null. Consistent with the nonzero
+    # time_in_status_today_minutes on the same row -- the two no longer
+    # contradict each other.
+    assert row["time_in_status_today_minutes"] == {"available": 1200.0}
+    assert row["availability_percent_of_working_day"] == 100.0
+
+
+@pytest.mark.asyncio
 async def test_open_case_counts_are_included():
     router = _build_router(agents=[AGENT], open_counts={AGENT.id: 4})
     client = _app_with_router(router)
 
     res = client.get("/admin/workforce", headers=API_KEY_HEADERS)
     assert res.status_code == 200
-    assert res.json()["agents"][0]["open_case_count"] == 4
+    body = res.json()
+    assert body["agents"][0]["open_case_count"] == 4
+    # The tally was clearly established (someone has a nonzero count) --
+    # no caveat needed.
+    assert body["open_case_count_caveat"] is None
+
+
+@pytest.mark.asyncio
+async def test_an_agent_absent_from_a_non_empty_tally_gets_a_real_zero():
+    """Once the tally is known to have worked (AGENT has a nonzero count),
+    an agent simply missing from it has a genuine 0 open cases -- this is
+    the "fetched, and this agent has none" state, distinct from "could not
+    be fetched" (finding I4)."""
+    router = _build_router(agents=[AGENT, OTHER_AGENT], open_counts={AGENT.id: 4})
+    client = _app_with_router(router)
+
+    res = client.get("/admin/workforce", headers=API_KEY_HEADERS)
+    assert res.status_code == 200
+    rows = {row["agent_id"]: row for row in res.json()["agents"]}
+    assert rows[AGENT.id]["open_case_count"] == 4
+    assert rows[OTHER_AGENT.id]["open_case_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_empty_open_case_tally_renders_as_unavailable_not_zero():
+    """Finding I4: `fetch_agent_open_counts()` returns `{}` both when
+    Chatwoot's pager fails AND when the account genuinely has zero open
+    conversations -- this router cannot tell those apart, so it must not
+    render the ambiguous case as a fabricated 0 for the whole team."""
+    router = _build_router(agents=[AGENT, OTHER_AGENT], open_counts={})
+    client = _app_with_router(router)
+
+    res = client.get("/admin/workforce", headers=API_KEY_HEADERS)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["open_case_count_caveat"] is not None
+    for row in body["agents"]:
+        assert row["open_case_count"] is None
 
 
 @pytest.mark.asyncio

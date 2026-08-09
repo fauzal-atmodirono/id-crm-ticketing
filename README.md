@@ -275,6 +275,34 @@ field for it yet (the fork patch is not written).
 Bounces and invalid recipients need a bounce mailbox (client question Q6) and
 are not handled — do not report §4.39 as closed.
 
+### Changing the reporting timezone
+
+`REPORTING_TIMEZONE` defaults to `UTC`, and that default emits **byte-identical**
+view DDL to before it existed — so no dashboard number moves until you change
+it deliberately.
+
+Changing it **re-buckets every historical figure on every chart** the next time
+`ensure_views()` runs. Totals stay the same; cases slide between adjacent days,
+weeks and months (a case created 23:00 MYT is the *next* UTC day). That is why
+it looks like "close but not quite" rather than an obvious error.
+
+**Before switching a live tenant**, run the comparison and keep the output — it
+is your evidence that Monday's movement was expected:
+
+```bash
+python3 scripts/compare-reporting-timezone.py \
+  --project <bq-project> --dataset <bq-dataset> \
+  --from 2026-07-01 --to 2026-07-31 \
+  --to-timezone Asia/Kuala_Lumpur
+```
+
+It is read-only by construction — it refuses to run anything that is not a bare
+SELECT, and its date window is parameterised, never interpolated.
+
+Then set `REPORTING_TIMEZONE`, redeploy the backend, and re-run `ensure_views()`.
+An unsupported zone is rejected at view-creation time, not at query time on a
+dashboard.
+
 ## 7. Switching to a real domain later
 
 The nip.io setup is HTTP-only and meant to get you running fast. To move to

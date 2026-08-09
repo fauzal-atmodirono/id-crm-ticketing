@@ -251,6 +251,141 @@ async def test_a_native_status_write_failure_does_not_append_a_misleading_event(
 
 
 @pytest.mark.asyncio
+async def test_a_native_online_status_resolves_to_the_available_entry():
+    """The C1 defect in one assertion. The presence poller writes Chatwoot's
+    native strings into the event log, and `online` is not a catalogue key --
+    `available` is. `get` therefore answers `None`, which every consumer is
+    contractually obliged to read as "no information", and that is why the
+    threshold sweeper returned early on every event the product could
+    actually produce. `resolve` is what closes the gap."""
+    with patch("chatbot.features.routing.custom_status.firestore.Client", autospec=True) as C:
+        C.return_value = _FakeFirestoreClient()
+        store = _store()
+        await store.seed()
+
+        assert await store.get("online") is None  # the contract `resolve` exists to bridge
+
+        resolved = await store.resolve("online")
+        assert resolved is not None
+        assert resolved.key == "available"
+        assert resolved.routable is True
+        assert resolved.counts_as_unavailable is False
+
+
+@pytest.mark.asyncio
+async def test_offline_is_catalogued_and_does_not_count_as_unavailable():
+    """An agent going offline is off shift, not missing mid-shift -- the
+    design derives login/logout from exactly these transitions. Alerting on
+    it would page an admin ten minutes after every agent logs off, every
+    night. Being *catalogued* is still the point: before this, `offline`
+    resolved to `None`, i.e. "we know nothing", about the one transition the
+    design says the most about."""
+    with patch("chatbot.features.routing.custom_status.firestore.Client", autospec=True) as C:
+        C.return_value = _FakeFirestoreClient()
+        store = _store()
+        await store.seed()
+
+        offline = await store.resolve("offline")
+        assert offline is not None
+        assert offline.native == "offline"
+        assert offline.routable is False
+        assert offline.counts_as_unavailable is False
+
+
+@pytest.mark.asyncio
+async def test_a_status_resolves_from_the_shipped_defaults_when_the_seed_never_ran():
+    """The hidden flag dependency (review finding I2), self-healed.
+
+    The catalogue was only ever populated by a startup seed gated on
+    `PRESENCE_CUSTOM_STATUSES_ENABLED`, so a tenant running `ACW_ENABLED`
+    alone logged `custom_status_set_unknown_key` + `acw_enter_failed` on every
+    completed call, forever, with no operator-visible symptom. `get` now falls
+    back to the shipped definition -- a read, no Firestore write, so a tenant
+    that never asked for this feature still gets nothing written."""
+    with patch("chatbot.features.routing.custom_status.firestore.Client", autospec=True) as C:
+        client = _FakeFirestoreClient()
+        C.return_value = client
+        presence = _FakePresenceStore()
+        store = CustomStatusStore(get_settings(), presence, _FakeAvailabilityWriter(succeed=True))
+        # NOTE: deliberately no `seed()` call.
+
+        acw = await store.get("acw")
+        assert acw is not None
+        assert acw.native == "busy"
+        assert await store.set_status(AGENT, "acw") is True
+        assert [e.status for e in presence.appended] == ["acw"]
+        assert client._collections.get("custom_statuses", {}) == {}  # nothing written
+
+
+@pytest.mark.asyncio
+async def test_a_stored_status_always_wins_over_the_shipped_default():
+    with patch("chatbot.features.routing.custom_status.firestore.Client", autospec=True) as C:
+        C.return_value = _FakeFirestoreClient()
+        store = _store()
+
+        edited = CustomStatus(
+            key="lunch",
+            label="Makan",
+            color="#ff0000",
+            routable=False,
+            native="busy",
+            counts_as_unavailable=False,  # this tenant does not want lunch alerts
+        )
+        await store.add(edited)
+
+        assert await store.get("lunch") == edited
+        assert await store.resolve("lunch") == edited
+
+
+@pytest.mark.asyncio
+async def test_a_catalogue_outage_still_returns_none_rather_than_a_default():
+    """The fail-open contract is unchanged by the defaults fallback: `None` on
+    an outage is what stops a store failure from either halting all routing or
+    silently overriding a stored operator edit with a shipped default."""
+
+    class _ExplodingClient:
+        def collection(self, name: str) -> Any:
+            raise RuntimeError("firestore unavailable")
+
+    with patch("chatbot.features.routing.custom_status.firestore.Client", autospec=True) as C:
+        C.return_value = _ExplodingClient()
+        store = _store()
+
+        assert await store.get("lunch") is None
+        assert await store.resolve("online") is None
+
+
+@pytest.mark.asyncio
+async def test_seeding_skips_a_status_it_cannot_read_rather_than_overwriting_it():
+    """`seed()` reads documents directly, not through `get()`.
+
+    Two reasons, both load-bearing. Through `get()` every status would look
+    "already present" (the defaults fallback) and nothing would ever be
+    persisted, leaving the admin catalogue page permanently blank. And a read
+    failure must not read as "absent", or a Firestore hiccup at startup would
+    overwrite an operator's edited status with the shipped default."""
+    with patch("chatbot.features.routing.custom_status.firestore.Client", autospec=True) as C:
+        client = _FakeFirestoreClient()
+
+        class _FlakyClient:
+            def __init__(self) -> None:
+                self.reads = 0
+
+            def collection(self, name: str) -> Any:
+                self.reads += 1
+                if self.reads == 1:  # the very first status read blows up
+                    raise RuntimeError("firestore unavailable")
+                return client.collection(name)
+
+        C.return_value = _FlakyClient()
+        store = _store()
+
+        created = await store.seed()
+
+        assert created == len(SEED_STATUSES) - 1  # the unreadable one was skipped, not written
+
+
+@pytest.mark.asyncio
 async def test_seeding_never_overwrites_an_operator_edited_status():
     with patch("chatbot.features.routing.custom_status.firestore.Client", autospec=True) as C:
         C.return_value = _FakeFirestoreClient()

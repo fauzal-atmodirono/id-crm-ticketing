@@ -1,0 +1,444 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] P6 C1 fix: the agent availability-status selector
+
+Gives agents the control the handbook describes and the P6 review found
+missing: a "My status" page where an agent picks Available / Lunch / Break /
+Toilet / Prayer / Coaching / Training, plus (for `workforce.manage` holders
+only) the catalogue editor that makes §4.17's "an administrator can add a
+status without a software release" reachable from the product instead of
+from a hand-written Firestore document.
+
+Backs features/routing/status_router.py's four endpoints. Nav visibility is
+gated on `presence.set_own_status` exactly the way 0039/0041/0053 gate theirs
+on their own permission; the backend's require_permission remains the actual
+boundary.
+
+WHY THIS IS A PAGE AND NOT CHATWOOT'S TOP-BAR AVAILABILITY CONTROL. That
+control writes Chatwoot's own fixed three-value enum (online/busy/offline),
+which has no extension point -- extending it would mean patching upstream
+components this sandbox cannot even read (see the note below), and it would
+still have to mirror into the same three values. So the named statuses live
+on their own page and MIRROR: picking Lunch sets your real Chatwoot
+availability to Busy and records "lunch" alongside it. The top bar keeps
+working, unmodified, and keeps showing Busy -- which is also why routing
+still excludes you correctly when the custom-status service is down.
+
+After-Call Work and Offline are not offered in the picker (the backend
+refuses them too): ACW is entered automatically at call end and times out on
+its own, and Offline belongs to Chatwoot's control. The page reads the
+backend's `system_managed` flag rather than hard-coding that list.
+
+NOTE: hand-constructed, and NOT verified with `git apply --check` against a
+real checkout -- this sandbox has no network access to clone upstream or the
+fork, the same constraint recorded for patch 0053. The three anchored hunks
+below apply ON TOP OF 0053: their context lines are transcribed verbatim from
+0053's own added lines (the workforce API helper, the Workforce nav entry and
+the proton/workforce route), which is what `git apply`'s offset search relies
+on, and the line numbers assume 0053 has been applied and nothing else has
+touched these three files since. Hunk arithmetic was script-generated and the
+patch applies cleanly to a synthetic tree reconstructing that context -- that
+proves internal consistency only. Verify on the first Cloud Build before
+demoing the page; it is a row in
+docs/analysis/2026-08-09-blocked-work-register.md beside 0053's.
+---
+ app/javascript/dashboard/api/protonAdmin.js       |  35 +
+ .../components-next/sidebar/Sidebar.vue           |  10 +
+ .../routes/dashboard/dashboard.routes.js          |   6 +
+ .../dashboard/views/ProtonMyStatusPage.vue        | 305 ++++++++++++++
+ 4 files changed, 356 insertions(+)
+ create mode 100644 app/javascript/dashboard/views/ProtonMyStatusPage.vue
+diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
+index 1a2b3c4..2b3c4d5 100644
+--- a/app/javascript/dashboard/api/protonAdmin.js
++++ b/app/javascript/dashboard/api/protonAdmin.js
+@@ -251,3 +251,38 @@
+ export function getWorkforceDashboard() {
+   return adminRequest('/admin/workforce');
+ }
++
++// ── Availability statuses (the My status page) ───────────────────────────
++// Backs status_router.py. getPresenceStatuses is the catalogue an agent picks
++// from, gated by `presence.set_own_status` -- the one permission the default
++// Agent role carries, because choosing your own availability is an agent's
++// own job. upsertPresenceStatus edits the catalogue and is gated by
++// `workforce.manage` (administrators only).
++//
++// setMyPresenceStatus deliberately sends NO agent_id: with RBAC on the
++// backend resolves the caller from the same Chatwoot session triplet
++// adminRequest already forwards, so this page cannot ask to change a
++// colleague's status even by mistake. Setting someone else's requires
++// `workforce.manage` and is not offered anywhere in this UI.
++
++export function getPresenceStatuses() {
++  return adminRequest('/routing/presence/statuses');
++}
++
++export function getMyPresenceStatus() {
++  return adminRequest('/routing/presence/status');
++}
++
++export function setMyPresenceStatus(key) {
++  return adminRequest('/routing/presence/status', {
++    method: 'POST',
++    body: { key },
++  });
++}
++
++export function upsertPresenceStatus(key, entry) {
++  return adminRequest(`/routing/presence/statuses/${key}`, {
++    method: 'PUT',
++    body: entry,
++  });
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 7c6f2a1..8d7g3b2 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -647,6 +647,16 @@
+           },
+         ]
+       : []),
++    ...(protonHasPermission('presence.set_own_status')
++      ? [
++          {
++            name: 'ProtonMyStatus',
++            icon: 'i-lucide-circle-user',
++            label: 'My status',
++            to: accountScopedRoute('proton_my_status'),
++          },
++        ]
++      : []),
+     // RSA incident log — the backend /rsa/incidents* endpoints authorize by the
+     // shared x-api-key (like /kb + /metrics), NOT the RBAC require_permission
+     // used by SLA/Audit/Roles, so there is no dedicated `rsa.manage` permission
+diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+index 9d8e7f2..ae9f8g3 100644
+--- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+@@ -85,9 +85,15 @@
+         {
+           path: 'proton/workforce',
+           name: 'proton_workforce',
+           component: () => import('../../views/ProtonWorkforceDashboardPage.vue'),
+           meta: { permissions: ['administrator'] },
+         },
++        {
++          path: 'proton/my-status',
++          name: 'proton_my_status',
++          component: () => import('../../views/ProtonMyStatusPage.vue'),
++          meta: { permissions: ['administrator', 'agent'] },
++        },
+         {
+           path: 'proton/cases',
+           name: 'proton_cases',
+diff --git a/app/javascript/dashboard/views/ProtonMyStatusPage.vue b/app/javascript/dashboard/views/ProtonMyStatusPage.vue
+new file mode 100644
+index 0000000..b2c3d4e
+--- /dev/null
++++ b/app/javascript/dashboard/views/ProtonMyStatusPage.vue
+@@ -0,0 +1,305 @@
++<!-- ProtonMyStatusPage.vue — OUR file. The agent-facing availability status
++     picker, plus (for administrators only) the status catalogue editor.
++     Backs features/routing/status_router.py:
++       GET  /routing/presence/statuses      the catalogue
++       GET  /routing/presence/status        what I am set to right now
++       POST /routing/presence/status        set my status
++       PUT  /routing/presence/statuses/:key add/edit a catalogue entry
++
++     IMPORTANT — this page, NOT Chatwoot's own top-bar availability control,
++     is where a named status (Lunch, Break, Toilet, Prayer, Coaching,
++     Training) is chosen. Chatwoot's presence field is a fixed three-value
++     enum with no extension point, so every named status MIRRORS onto one of
++     those three: picking Lunch sets your real Chatwoot availability to Busy
++     and records "lunch" separately. That is why the top bar keeps showing
++     Busy after you pick Lunch — deliberate, and the reason routing still
++     excludes you correctly even if this service is down.
++
++     Two statuses are deliberately NOT offered here (the backend refuses them
++     too, so this is not the only guard): After-Call Work is entered
++     automatically when a phone call ends and times out on its own, and
++     Offline stays with Chatwoot's own control — the backend marks both with
++     `system_managed: true` rather than this page hard-coding a list.
++
++     "Not recorded yet" is shown, never "Available", for an agent with no
++     presence history: a status this page has never seen set is not a claim
++     that you are available for routing. -->
++<script>
++import { useAlert } from 'dashboard/composables';
++import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';
++import {
++  getPresenceStatuses,
++  getMyPresenceStatus,
++  setMyPresenceStatus,
++  upsertPresenceStatus,
++} from 'dashboard/api/protonAdmin';
++
++const { hasPermission: protonHasPermission } = useProtonPermissions();
++
++export default {
++  name: 'ProtonMyStatusPage',
++  data() {
++    return {
++      statuses: [],
++      current: null,
++      loading: true,
++      saving: '',
++      disabled: false,
++      disabledReason: '',
++      draft: {
++        key: '',
++        label: '',
++        color: '#94a3b8',
++        native: 'busy',
++        routable: false,
++        counts_as_unavailable: false,
++      },
++    };
++  },
++  computed: {
++    // A computed, not a data field: useProtonPermissions loads the caller's
++    // permission set asynchronously (module-level cache), so a value snapshotted
++    // in data() would be false on first render and never correct itself, and the
++    // catalogue editor would be invisible to the administrator it exists for.
++    canManage() {
++      return protonHasPermission('workforce.manage');
++    },
++    // The backend flags the statuses it sets on an agent's behalf; this page
++    // never hard-codes which ones those are.
++    selectable() {
++      return this.statuses.filter(s => !s.system_managed);
++    },
++    currentLabel() {
++      if (!this.current || !this.current.key) return 'Not recorded yet';
++      return this.current.label || this.current.key;
++    },
++  },
++  async mounted() {
++    await this.load();
++  },
++  methods: {
++    async load() {
++      try {
++        const [catalogue, mine] = await Promise.all([
++          getPresenceStatuses(),
++          getMyPresenceStatus(),
++        ]);
++        if (catalogue.disabled) {
++          this.disabled = true;
++          this.disabledReason = catalogue.reason || '';
++        }
++        this.statuses = Array.isArray(catalogue.statuses)
++          ? catalogue.statuses
++          : [];
++        this.current = mine && !mine.disabled ? mine : null;
++      } catch (err) {
++        useAlert('Failed to load statuses: ' + (err.message || String(err)));
++      } finally {
++        this.loading = false;
++      }
++    },
++    async choose(key) {
++      this.saving = key;
++      try {
++        await setMyPresenceStatus(key);
++        this.current = await getMyPresenceStatus();
++      } catch (err) {
++        // A failed Chatwoot mirror is a 502 from the backend and nothing was
++        // recorded, so surfacing the error is the honest outcome — silently
++        // highlighting the button would show a status you are not in.
++        useAlert('Could not change your status: ' + (err.message || String(err)));
++      } finally {
++        this.saving = '';
++      }
++    },
++    editEntry(entry) {
++      this.draft = {
++        key: entry.key,
++        label: entry.label,
++        color: entry.color,
++        native: entry.native,
++        routable: entry.routable,
++        counts_as_unavailable: entry.counts_as_unavailable,
++      };
++    },
++    async saveEntry() {
++      if (!this.draft.key || !this.draft.label) {
++        useAlert('A status needs both a key and a label.');
++        return;
++      }
++      try {
++        await upsertPresenceStatus(this.draft.key, {
++          label: this.draft.label,
++          color: this.draft.color,
++          native: this.draft.native,
++          routable: this.draft.routable,
++          counts_as_unavailable: this.draft.counts_as_unavailable,
++        });
++        await this.load();
++        useAlert('Status saved.');
++      } catch (err) {
++        useAlert('Failed to save status: ' + (err.message || String(err)));
++      }
++    },
++  },
++};
++</script>
++
++<template>
++  <div class="p-6">
++    <h1 class="mb-1 text-lg font-medium text-n-slate-12">My status</h1>
++    <p class="mb-4 text-sm text-n-slate-11">
++      Pick the status that matches what you are doing. Named statuses mirror
++      into Chatwoot's own Online/Busy/Offline, so colleagues see you as Busy
++      while the workforce dashboard shows the reason.
++    </p>
++
++    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
++      Loading…
++    </div>
++    <div
++      v-else-if="disabled"
++      class="p-4 text-sm border rounded-lg border-n-weak text-n-slate-11"
++    >
++      Named availability statuses are not enabled on this account.
++      <span v-if="disabledReason">({{ disabledReason }})</span>
++    </div>
++    <div v-else>
++      <p class="mb-4 text-sm text-n-slate-12">
++        Currently: <strong>{{ currentLabel }}</strong>
++        <span
++          v-if="current && current.elapsed_minutes !== null"
++          class="text-n-slate-11"
++        >
++          — for {{ current.elapsed_minutes }} min
++        </span>
++      </p>
++
++      <div class="flex flex-wrap gap-2 mb-8">
++        <button
++          v-for="status in selectable"
++          :key="status.key"
++          class="flex items-center gap-2 px-3 py-2 text-sm border rounded-lg border-n-weak text-n-slate-12"
++          :class="
++            current && current.key === status.key
++              ? 'bg-n-slate-3 font-medium'
++              : ''
++          "
++          :disabled="saving === status.key"
++          @click="choose(status.key)"
++        >
++          <span
++            class="inline-block w-2 h-2 rounded-full"
++            :style="{ backgroundColor: status.color || '#94a3b8' }"
++          />
++          {{ status.label }}
++          <span v-if="status.counts_as_unavailable" class="text-n-slate-11">
++            (alerts)
++          </span>
++        </button>
++      </div>
++
++      <div v-if="canManage" class="pt-6 border-t border-n-weak">
++        <h2 class="mb-1 text-sm font-medium text-n-slate-12">
++          Status catalogue
++        </h2>
++        <p class="mb-3 text-xs text-n-slate-11">
++          Administrators only. Adding a status here needs no software release.
++          "Counts as unavailable" is what arms the absence alerts — leave it
++          off for scheduled activities like Coaching, on for stepping away.
++          Entries marked "default" have not been saved on this account yet;
++          saving one writes it.
++        </p>
++        <table class="w-full mb-4 text-sm border-collapse text-n-slate-11">
++          <thead>
++            <tr class="text-left border-b border-n-weak text-n-slate-12">
++              <th class="px-2 py-1 font-medium">Key</th>
++              <th class="px-2 py-1 font-medium">Label</th>
++              <th class="px-2 py-1 font-medium">Chatwoot status</th>
++              <th class="px-2 py-1 font-medium">Routable</th>
++              <th class="px-2 py-1 font-medium">Counts as unavailable</th>
++              <th class="px-2 py-1 font-medium">Stored</th>
++              <th class="px-2 py-1 font-medium" />
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="status in statuses"
++              :key="status.key"
++              class="border-b border-n-weak last:border-b-0"
++            >
++              <td class="px-2 py-1">{{ status.key }}</td>
++              <td class="px-2 py-1">{{ status.label }}</td>
++              <td class="px-2 py-1">{{ status.native }}</td>
++              <td class="px-2 py-1">{{ status.routable ? 'Yes' : 'No' }}</td>
++              <td class="px-2 py-1">
++                {{ status.counts_as_unavailable ? 'Yes' : 'No' }}
++              </td>
++              <td class="px-2 py-1">
++                {{ status.stored ? 'Saved' : 'Default' }}
++              </td>
++              <td class="px-2 py-1">
++                <button
++                  class="text-xs underline text-n-slate-11"
++                  @click="editEntry(status)"
++                >
++                  Edit
++                </button>
++              </td>
++            </tr>
++          </tbody>
++        </table>
++
++        <div class="flex flex-wrap items-end gap-3">
++          <label class="flex flex-col gap-1 text-xs text-n-slate-11">
++            Key
++            <input
++              v-model="draft.key"
++              type="text"
++              class="px-2 py-1 text-sm border rounded border-n-weak"
++              placeholder="offsite_visit"
++            />
++          </label>
++          <label class="flex flex-col gap-1 text-xs text-n-slate-11">
++            Label
++            <input
++              v-model="draft.label"
++              type="text"
++              class="px-2 py-1 text-sm border rounded border-n-weak"
++              placeholder="Offsite Visit"
++            />
++          </label>
++          <label class="flex flex-col gap-1 text-xs text-n-slate-11">
++            Colour
++            <input v-model="draft.color" type="color" />
++          </label>
++          <label class="flex flex-col gap-1 text-xs text-n-slate-11">
++            Chatwoot status
++            <select
++              v-model="draft.native"
++              class="px-2 py-1 text-sm border rounded border-n-weak"
++            >
++              <option value="online">online</option>
++              <option value="busy">busy</option>
++              <option value="offline">offline</option>
++            </select>
++          </label>
++          <label class="flex items-center gap-2 text-xs text-n-slate-11">
++            <input v-model="draft.routable" type="checkbox" />
++            Routable
++          </label>
++          <label class="flex items-center gap-2 text-xs text-n-slate-11">
++            <input v-model="draft.counts_as_unavailable" type="checkbox" />
++            Counts as unavailable
++          </label>
++          <button
++            class="px-3 py-2 text-sm rounded-lg bg-n-brand text-white"
++            @click="saveEntry"
++          >
++            Save status
++          </button>
++        </div>
++      </div>
++    </div>
++  </div>
++</template>

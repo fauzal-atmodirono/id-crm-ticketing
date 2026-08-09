@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from chatbot.features.routing.custom_status import CustomStatus
+from chatbot.features.routing.custom_status import _NATIVE_TO_KEY, CustomStatus
 from chatbot.features.routing.presence import AgentRecord
 from chatbot.features.routing.presence_store import PresenceEvent
 from chatbot.features.routing.presence_thresholds import (
@@ -44,8 +44,21 @@ BASE = datetime(2026, 8, 9, 8, 0, tzinfo=UTC)
 
 
 def _settings(**overrides: Any) -> Any:
+    """The two thresholds are pinned, not inherited.
+
+    `get_settings()` reads the ambient environment, so without these the
+    11-minute/61-minute assertions below silently depend on
+    `PRESENCE_WARN_MINUTES`/`PRESENCE_ESCALATE_MINUTES` being unset -- the
+    same class of vacuous test ruling D6 recorded for booleans, where a
+    flags-on gate run turns an assertion into the opposite of its own name.
+    """
     return get_settings().model_copy(
-        update={"presence_threshold_alerts_enabled": True, **overrides}
+        update={
+            "presence_threshold_alerts_enabled": True,
+            "presence_warn_minutes": 10,
+            "presence_escalate_minutes": 60,
+            **overrides,
+        }
     )
 
 
@@ -121,29 +134,48 @@ class _FakePresenceLog:
         self._event = event
 
 
-def _status(key: str, counts_as_unavailable: bool) -> CustomStatus:
+def _status(key: str, counts_as_unavailable: bool, native: str = "busy") -> CustomStatus:
     return CustomStatus(
         key=key,
         label=key.title(),
         color="#000000",
         routable=False,
-        native="busy",
+        native=native,
         counts_as_unavailable=counts_as_unavailable,
     )
 
 
 class _FakeStatusCatalogue:
+    """Mirrors `CustomStatusStore.resolve`, not just a dict lookup.
+
+    The sweeper reads a log written by two writers: `set_status` puts
+    catalogue keys in it, the presence poller puts Chatwoot's native values
+    in it. `resolve` is what reconciles the two, and a fake that skipped the
+    native aliasing would let the sweeper's most important production case
+    pass here while failing in the product -- which is precisely how P6's
+    absence alerts shipped dead. `_NATIVE_TO_KEY` is imported from the real
+    module rather than restated, so an alias added there is covered here.
+    """
+
     def __init__(self, statuses: dict[str, CustomStatus]) -> None:
         self._statuses = statuses
 
-    async def get(self, key: str) -> CustomStatus | None:
-        return self._statuses.get(key)
+    async def resolve(self, observed: str) -> CustomStatus | None:
+        direct = self._statuses.get(observed)
+        if direct is not None:
+            return direct
+        aliased = _NATIVE_TO_KEY.get(observed)
+        if aliased is None or aliased == observed:
+            return None
+        return self._statuses.get(aliased)
 
 
 CATALOGUE = _FakeStatusCatalogue(
     {
+        "available": _status("available", False, native="online"),
         "lunch": _status("lunch", True),
         "busy": _status("busy", False),
+        "offline": _status("offline", False, native="offline"),
         "coaching": _status("coaching", False),
         "training": _status("training", False),
         "acw": _status("acw", False),
@@ -266,7 +298,7 @@ async def test_returning_to_available_and_leaving_again_re_arms_both_thresholds(
     # The agent comes back to Available (not counts_as_unavailable), then
     # leaves again -- each a brand-new presence event with an empty
     # `alerts_sent`, exactly like a real append to the store.
-    presence.set_event(_event("busy", 95))  # "available" isn't in our fake catalogue; busy works
+    presence.set_event(_event("available", 95))
     presence.set_event(_event("lunch", 100))
 
     await sweep_presence_thresholds(
@@ -323,6 +355,62 @@ async def test_a_status_with_counts_as_unavailable_false_never_alerts(status_key
     await sweep_presence_thresholds(
         _settings(),
         now=_at(180),  # well past both thresholds
+        presence_fetcher=_FakeAgents([AGENT]),
+        presence_store=presence,
+        status_store=CATALOGUE,
+        alert=alert,
+        open_case_fetcher=lambda: [],
+    )
+
+    assert alert.calls == []
+    assert presence.stamped == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native", ["online", "busy", "offline"])
+async def test_a_native_status_from_the_poller_resolves_and_alerts_about_nothing(native: str):
+    """The reconciliation half of the C1 fix.
+
+    In production every presence event comes from the poller as one of these
+    three raw native strings, and the sweeper used to look them up with
+    `get()`: `online` missed entirely (the catalogue key is `available`) and
+    returned early, which is what made a real absence produce zero alerts out
+    of 180 sweeps. All three now RESOLVE, and all three still alert about
+    nothing -- for stated reasons, not by accident: Available is present,
+    Busy is an agent working, Offline is an agent off shift. If a future
+    change makes any of these `counts_as_unavailable=True`, this test fails
+    loudly rather than the admin's phone doing it every evening at 18:10.
+    """
+    presence = _FakePresenceLog(_event(native, 0))
+    alert = _RecordingAlert()
+
+    await sweep_presence_thresholds(
+        _settings(),
+        now=_at(180),  # well past both thresholds
+        presence_fetcher=_FakeAgents([AGENT]),
+        presence_store=presence,
+        status_store=CATALOGUE,
+        alert=alert,
+        open_case_fetcher=lambda: [],
+    )
+
+    assert await CATALOGUE.resolve(native) is not None  # resolution really happened...
+    assert alert.calls == []  # ...and produced no alert
+    assert presence.stamped == []
+
+
+@pytest.mark.asyncio
+async def test_a_status_key_in_neither_the_catalogue_nor_the_native_enum_still_never_alerts():
+    """`resolve()` keeps `get()`'s fail-open direction for a value it cannot
+    place at all: "no information" must never become "treat as absent", or a
+    document written by a newer build would page the admin about every agent.
+    """
+    presence = _FakePresenceLog(_event("some_future_status", 0))
+    alert = _RecordingAlert()
+
+    await sweep_presence_thresholds(
+        _settings(),
+        now=_at(180),
         presence_fetcher=_FakeAgents([AGENT]),
         presence_store=presence,
         status_store=CATALOGUE,

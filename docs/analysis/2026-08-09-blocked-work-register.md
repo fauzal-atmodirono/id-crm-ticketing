@@ -117,6 +117,7 @@ is a template awaiting that run, not a result.
 | **`provision_case_record_fields.py`** | P3's sidebar panel needs the custom-attribute definitions to exist. No fork patch needed. | One dry-run then live run per tenant. |
 | **The Power BI `.pbix` (§4.55)** | A proprietary binary only Power BI Desktop can author. `proton-crm.pbids` (the connection) and the page-by-page spec ship instead — those are the reviewable, diffable parts. | One Power BI Desktop session. **Evidence required before reporting it done:** every page rendering against a real dataset, refresh succeeding under the service account, and a screenshot of each page in `power-bi-runbook.md`. The client raised this at the 2026-07-28 demo (feedback item 5), so an unevidenced claim will be checked. |
 | **Cloud Build for fork patch 0053** | P6's Workforce dashboard page. **Hand-built and never verified against a real Chatwoot checkout** — context lines were transcribed from `0045`, the hunk arithmetic is script-verified, and it applies to a *synthetic* tree, which proves internal consistency only. If some unlisted patch also touches `protonAdmin.js` / `Sidebar` / `dashboard.routes.js`, or 0045's shipped content differs from what was transcribed, 0053 needs a line-number fix-up or a regenerated diff. | `gcloud builds submit deploy/chatwoot-fork/ …` — off-VM, amd64. **Do not schedule a demo of the Workforce page before this build has gone green.** |
+| **Cloud Build for fork patch 0054** | P6's agent-facing **My status** page (the availability-status picker + the administrator's status-catalogue editor). Same constraint as 0053 and the same evidence: hand-built, hunk arithmetic script-generated, applies to a *synthetic* tree reconstructing its context, **never checked against a real Chatwoot checkout**. Its three anchored hunks apply ON TOP OF 0053 and transcribe 0053's own added lines as context, so if 0053 needs a line-number fix-up, 0054 needs the same one. The backend behind it (`features/routing/status_router.py`, 15 tests) is complete and needs no build — but **`build_status_router` is not yet mounted in `main.py`**, deliberately left to a wiring step because a concurrent task owned that file. Until it is mounted the endpoints return 404 and the page cannot work even after a green build. | `gcloud builds submit deploy/chatwoot-fork/ …` — off-VM, amd64. **Do not promise agents the "My status" page, or demo the catalogue editor, before this build has gone green.** Until then `PRESENCE_CUSTOM_STATUSES_ENABLED` on a tenant buys an API with no UI. |
 | **Upstream Chatwoot source** | This sandbox cannot reach github. | Only matters for files **upstream owns**. Files our own patches *created* can be reconstructed by replaying the patch history — that is how 0052 was authored. `CustomAttributes.vue` is upstream-owned and therefore genuinely out of reach. |
 
 ---
@@ -174,6 +175,33 @@ there is **no Chatwoot UI for it**. The field needs P3's conversation-panel
 patch, which is not part of P6. `FOLLOW_UP_DATE_ENABLED` keeps it invisible
 until that patch exists — so the flag being off is the honest state, not an
 oversight.
+
+## 3e. P6 absence alerts — the two statuses that deliberately never alert
+
+Recorded because both look like bugs and neither is, and "fixing" either would
+produce an alert storm that gets the whole feature switched off:
+
+- **Chatwoot's native `busy` never counts as an absence.** Busy means an agent
+  is working — mid-conversation, or on a long call. A 10-minute alert on Busy
+  fires at every agent handling anything substantial.
+- **Chatwoot's native `offline` never counts as an absence either.** Offline is
+  an agent stating they are off shift; the design derives the availability
+  history from exactly these transitions. Alerting on it pages an
+  administrator ten minutes after every agent logs off in the evening, and
+  again an hour later, every night, per agent.
+
+The alerts fire for the away-from-desk statuses an agent picks — Lunch, Break,
+Toilet, Prayer — which is what §4.13/4.14 ask for. Both native values *do* now
+resolve to catalogue entries (before the C1 fix they resolved to "no
+information", which is what made the alerts unreachable in production); they
+resolve to entries with `counts_as_unavailable=False`. Named tests pin all of
+this: `test_a_native_status_from_the_poller_resolves_and_alerts_about_nothing`
+and `test_offline_is_catalogued_and_does_not_count_as_unavailable`.
+
+**A consequence worth stating for operators:** a tenant that enables
+`PRESENCE_THRESHOLD_ALERTS_ENABLED` but never enables
+`PRESENCE_CUSTOM_STATUSES_ENABLED` will correctly see **no alerts at all** —
+it has no way for an agent to record an absence in the first place.
 
 ## 4. Deliberately not attempted
 

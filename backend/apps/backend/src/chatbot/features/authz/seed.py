@@ -62,9 +62,30 @@ PERMISSION_REGISTRY: dict[str, str] = {
     # above -- auto-granted to "administrator", withheld from "agent".
     "routing.reassign": "Reassign a conversation to a chosen agent",
     "workforce.view": "View the workforce/presence dashboard",
+    # P6 C1 fix: the status-selection write path (features/routing/
+    # status_router.py). Two keys, because the two actions are not the same
+    # kind of act.
+    #
+    # presence.set_own_status is granted to "agent" below -- one of only four
+    # keys that is. Choosing your own availability IS the agent's job, and
+    # gating it behind an admin permission would leave the eight-status
+    # catalogue selectable by nobody, which is the mistake ruling D5 had to
+    # correct on the reassignment path.
+    #
+    # workforce.manage is the admin counterpart, withheld from "agent" like
+    # escalation.manage/workforce.view: it covers editing the catalogue AND
+    # setting a DIFFERENT agent's status, which removes that agent from
+    # routing and starts an absence-alert clock against their name.
+    "presence.set_own_status": "Set your own availability status",
+    "workforce.manage": "Edit the status catalogue and set other agents' statuses",
 }
 
-_AGENT_PERMISSIONS = {"knowledge.edit", "cases.view", "cases.manage"}
+_AGENT_PERMISSIONS = {
+    "knowledge.edit",
+    "cases.view",
+    "cases.manage",
+    "presence.set_own_status",
+}
 
 # Native Chatwoot conversation/inbox visibility, mirrored into Chatwoot's own
 # CustomRole via features/authz/chatwoot_role_mirror.py (Phase 3). Registered

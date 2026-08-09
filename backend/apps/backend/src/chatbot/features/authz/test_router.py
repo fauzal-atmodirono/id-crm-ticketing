@@ -36,7 +36,11 @@ async def client(tmp_path, respx_mock):
 def test_permissions_endpoint_returns_callers_own_permissions(client):
     res = client.get("/authz/permissions", headers={"x-chatwoot-access-token": "agent-tok", "x-chatwoot-client": "client-2", "x-chatwoot-uid": "uid-2"})
     assert res.status_code == 200
-    assert res.json()["permissions"] == ["cases.manage", "cases.view", "knowledge.edit"]
+    # The default `agent` role's whole set, sorted. `presence.set_own_status` is the
+    # fourth member: choosing your own availability status is an agent's own job, so
+    # P6's status-selection endpoint would be unusable gated on anything admin-only
+    # (see features/authz/seed.py's comment on the two new keys).
+    assert res.json()["permissions"] == ["cases.manage", "cases.view", "knowledge.edit", "presence.set_own_status"]
 
 
 def test_check_endpoint(client):

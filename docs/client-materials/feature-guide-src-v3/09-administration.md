@@ -706,10 +706,15 @@ have been in it, how their day has been split across statuses, their
 availability against the working day, and how many cases they currently have
 open.
 
-Two things about how this is presented are deliberate, and knowing them
+Three things about how this is presented are deliberate, and knowing them
 prevents a supervisor drawing the wrong conclusion from the page:
 
-> Custom statuses mirror into Chatwoot's native Online/Busy/Offline. Selecting
+> Named statuses are chosen on their own **My status** page, not from the
+> availability control in the CRM's top bar. That control sets the CRM's own
+> three-value status and is left exactly as it is; the named statuses sit
+> alongside it and mirror into it.
+>
+> Named statuses mirror into Chatwoot's native Online/Busy/Offline. Selecting
 > "Lunch" shows as **Busy** inside Chatwoot's own UI and as **Lunch** on the
 > workforce dashboard. This is deliberate: Chatwoot's presence field is a fixed
 > enum, and mirroring means an agent is still correctly excluded from routing
@@ -719,6 +724,17 @@ prevents a supervisor drawing the wrong conclusion from the page:
 > Offline. It is **not** a login/logout record — an agent who closes their
 > laptop without going offline stays shown as available until their next
 > transition.
+
+Which statuses raise an absence alert is also a deliberate choice rather than
+a technical accident. **Lunch, Break, Toilet and Prayer** do: they mean an
+agent has stepped away and cannot be relied on to be back within a normal
+working rhythm, which is exactly what the alerts are for. **Coaching,
+Training and After-Call Work** do not: those are expected, scheduled or
+automatic states, and alerting on them would be noise. **Busy** does not,
+because Busy means an agent is working — a long call must not raise an
+"agent is missing" alert. And **Offline** does not, because going offline is
+an agent saying they are off shift, not that they have disappeared mid-shift;
+an alert there would fire for every agent every evening.
 
 Where the dashboard cannot measure something, it shows **blank rather than
 zero**, the same rule the monthly control-item report follows. In particular
@@ -742,22 +758,37 @@ Two capacity limits worth stating plainly, so nobody plans around them:
 
 ### Where to find it
 
-Agents change their own status from the availability control in the CRM's top
-bar. Supervisors open **Workforce** in the main left-hand navigation (visible
-only if your role has been granted the "View the workforce/presence dashboard"
-permission).
+Agents open **My status** in the main left-hand navigation. Supervisors open
+**Workforce** in the same navigation. Each entry appears only if your role has
+been granted the matching permission — "Set your own availability status" for
+My status (which the default Agent role carries) and "View the
+workforce/presence dashboard" for Workforce — so if an agent cannot see **My
+status**, check that they have been assigned a role on the **Roles &
+Permissions** page.
 
-<!-- VERIFY-LIVE: confirm the Workforce nav label and the availability control's exact placement on the live tenant -->
+> **Pending verification.** Both pages are built, but the CRM interface
+> containing them has not yet been rebuilt and deployed at the time of
+> writing, so the nav labels and the exact layout described here are what to
+> expect rather than what has been confirmed on a live tenant. The underlying
+> service behind My status is complete and tested. This is tracked in the
+> project's blocked-work register alongside the same note for the Workforce
+> page; ask for confirmation before scheduling a demonstration of either page.
+
+<!-- VERIFY-LIVE: confirm both nav labels ("My status", "Workforce") and the page layouts on the live tenant once fork patches 0053 + 0054 have gone through a Cloud Build -->
 
 ### How to use it
 
-1. **As an agent**, open the availability control and pick the status that
-   matches what you are doing — for example **Lunch** when you step out. You
-   do not need to remember to also set yourself Busy: choosing Lunch does that
-   for you, which is why colleagues see you as Busy in the CRM while the
-   supervisor's dashboard shows the reason.
+1. **As an agent**, open **My status** and pick the status that matches what
+   you are doing — for example **Lunch** when you step out. You do not need to
+   remember to also set yourself Busy: choosing Lunch does that for you, which
+   is why colleagues see you as Busy in the CRM while the supervisor's
+   dashboard shows the reason. The CRM's own top-bar availability control keeps
+   working as it always did and will show you as Busy; it does not list the
+   named statuses.
 2. Set yourself back to **Available** when you return. Anything other than
-   Available means new conversations are not routed to you.
+   Available means new conversations are not routed to you. Your current
+   status and how long you have been in it are shown at the top of the page,
+   so a page refresh never leaves you guessing.
 3. **After a phone call**, you are placed into **After-Call Work**
    automatically so you can finish your notes. Set yourself back to
    **Available** when you are done — and if you forget, the system releases
@@ -774,17 +805,29 @@ permission).
    Toilet or Prayer — past the configured thresholds, the agent and an
    administrator are notified after the first threshold, and an administrator
    again (with that agent's open cases attached) after the second. Coaching,
-   Training and After-Call Work are expected, scheduled states and never alert.
+   Training and After-Call Work are expected, scheduled states and never alert;
+   neither does the CRM's own Busy or Offline (see the reasoning above). A
+   three-hour absence therefore produces exactly two notifications, not one
+   every minute, and an agent who returns and steps away again starts the
+   count fresh.
 7. To add a status of your own — a shift pattern or an activity specific to
-   your team — an administrator can add one without a software release.
+   your team — an administrator can add one from the **Status catalogue**
+   section at the bottom of the **My status** page, with no software release.
+   Give it a key, a label, a colour, which of the CRM's three native statuses
+   it should mirror into, whether an agent in it can still receive new
+   conversations, and whether it should raise the absence alerts. Existing
+   statuses can be edited the same way — including turning an alert off for a
+   team that does not want it. Statuses are never deleted, because past
+   history refers to them; retire one by marking it as not receiving new
+   conversations.
 
 [[SCREENSHOT: ch09-workforce | The Workforce dashboard, with the availability-history disclaimer shown on the page]]
 
 ### Example scenario
 
-Proton's after-sales supervisor opens **Workforce** at 11:40 and sees one
-agent has been in **Lunch** for 55 minutes while three cases sit open against
-her name. The dashboard is where she sees the *reason*; in the conversation
+An agent sets herself to **Lunch** from **My status** at 10:45. Proton's
+after-sales supervisor opens **Workforce** at 11:40 and sees she has been in
+**Lunch** for 55 minutes while three cases sit open against her name. The dashboard is where she sees the *reason*; in the conversation
 list that agent simply reads as Busy. Rather than guessing, the supervisor
 waits for the one-hour alert, which arrives with the agent's three open case
 numbers attached, and reassigns the most urgent of them to a colleague from
@@ -799,9 +842,16 @@ receive new work (see the Conversations chapter), so a custom status takes
 effect on routing through the native status it mirrors — which is why routing
 keeps behaving correctly even if the custom-status service is unavailable. The
 same status history feeds the availability figures in the Reports chapter's
-agent reporting. Who may open this page is controlled from **Roles &
-Permissions**, and who may reassign a conversation to a named agent is a
-separate permission granted there too.
+agent reporting.
+
+Three separate permissions, all granted from **Roles & Permissions**, govern
+this area, and the split matters: *setting your own status* belongs to the
+Agent role by default, because it is part of an agent's own working day;
+*viewing the workforce dashboard* and *editing the status catalogue or setting
+another agent's status* are administrator permissions. An agent cannot mark a
+colleague as being on Lunch — that would take the colleague out of routing and
+start an absence clock against their name. Who may reassign a conversation to
+a named agent is a fourth, separate permission.
 
 ## Account settings
 

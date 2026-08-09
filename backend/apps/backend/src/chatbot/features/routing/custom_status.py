@@ -23,11 +23,38 @@ which is exactly the class of defect this package exists to prevent. See
 whether this store is reachable. This catalogue only ever adds *extra*
 information on top of that (via `routable`/`counts_as_unavailable`) -- it
 never replaces the native filter. That is why `get()` must fail open to
-`None` on both an unknown key and a store outage, and why callers must treat
-`None` as "no extra information available", not as "not routable" (which
-would silently halt all routing on an outage) and not as "routable" (which
-would silently let an agent parked in an unroutable custom status keep
-receiving new chats). See `get()`'s docstring.
+`None` on a store outage, and why callers must treat `None` as "no extra
+information available", not as "not routable" (which would silently halt all
+routing on an outage) and not as "routable" (which would silently let an
+agent parked in an unroutable custom status keep receiving new chats). See
+`get()`'s docstring.
+
+Two things below exist because the presence log holds *two kinds* of value
+---------------------------------------------------------------------------
+`PresenceEvent.status` is written by two different writers: `set_status`
+(below) writes a **catalogue key** like ``"lunch"``, while
+`presence_poller._reconcile` writes whatever **native** value Chatwoot
+reported -- ``"online"``, ``"busy"`` or ``"offline"``. Anything reading the
+log back therefore has to cope with both, and the first whole-branch review
+of P6 found that nothing did: the threshold sweeper looked up ``"online"``,
+got `None` (the catalogue key is ``"available"``), and returned early on
+every sweep, which made requirements 4.13/4.14 unreachable on every tenant.
+
+* **`resolve()`** is the read path for an *observed* status value: it maps
+  the three native values onto their catalogue entries (`_NATIVE_TO_KEY`)
+  before looking them up. Consumers that read the presence log
+  (`presence_thresholds`) must use it; consumers that already hold an
+  operator-chosen key can keep using `get()`.
+* **`get()` falls back to the shipped `SEED_STATUSES` definition** when the
+  document simply does not exist (a *successful* read of an absent
+  document -- an outage still returns `None`, unchanged). Without that, the
+  catalogue only worked on tenants where the startup seed had run, so
+  `ACW_ENABLED=true` with `PRESENCE_CUSTOM_STATUSES_ENABLED=false` logged
+  `custom_status_set_unknown_key` + `acw_enter_failed` on every completed
+  call, forever, with no operator-visible symptom. The fallback is read-only
+  -- it writes nothing, so a tenant that never asked for this feature still
+  gets zero Firestore writes -- and a stored document always wins, so an
+  operator edit is never shadowed by the shipped default.
 """
 
 from __future__ import annotations
@@ -63,13 +90,20 @@ class CustomStatus:
     counts_as_unavailable: bool  # feeds the 10-min / 1-h thresholds
 
 
-# The eight §4.17 names, plus a ninth (`acw`) needed by the concurrently
-# built After-Call-Work task. `native`/`routable` follow directly from what
-# each status means for routing: only "Available" should ever receive a new
-# assignment, so it is the sole `routable=True` entry and the sole one
-# mirrored to `online`; everything else mirrors to `busy` (still "not idle"
-# from Chatwoot's point of view) except -- there is no custom mirror to
-# `offline`; an agent who is truly offline just uses Chatwoot's own control.
+# The eight §4.17 names, plus `acw` (needed by the After-Call-Work
+# controller) and `offline` (see below). `native`/`routable` follow directly
+# from what each status means for routing: only "Available" should ever
+# receive a new assignment, so it is the sole `routable=True` entry and the
+# sole one mirrored to `online`; everything in between mirrors to `busy`
+# (still "not idle" from Chatwoot's point of view).
+#
+# `offline` is in this catalogue for one reason: the presence poller writes
+# raw native values into the event log, so `offline` is a status the sweeper
+# and the dashboard genuinely observe, and before it was catalogued they
+# resolved it to `None` -- "no information" -- about the one transition the
+# design says the most about. No agent picks it here (Chatwoot's own control
+# is where you go offline, and this entry mirrors straight back to
+# `offline`); it exists so that reading it back means something.
 #
 # `counts_as_unavailable` is a SEPARATE axis from `routable`, not a restating
 # of it -- this is the distinction the whole threshold-alert design (task 4)
@@ -89,6 +123,17 @@ class CustomStatus:
 #     call ends, never chosen by the agent. Short, expected wrap-up work, so
 #     it follows the same reasoning as Coaching/Training:
 #     `counts_as_unavailable=False`.
+#   - `offline`: `counts_as_unavailable=False`, deliberately. Offline is the
+#     agent stating they are NOT WORKING, not that they are missing from a
+#     shift -- the design's own reading (§"Login/logout (4.73) derive from
+#     transitions to and from offline") treats offline as the off-shift
+#     boundary. The absence alerts exist to catch an agent who is on shift
+#     but away from their desk; alerting on offline would page the admin ten
+#     minutes after every agent logs off for the evening and again an hour
+#     later, every night, for every agent -- noise that would get the whole
+#     alert switched off. Nothing is silently queued to an offline agent
+#     either: `native="offline"` means Chatwoot's own filter already
+#     excludes them, and `routable=False` says so a second time.
 SEED_STATUSES: tuple[CustomStatus, ...] = (
     CustomStatus(
         key="available",
@@ -162,7 +207,39 @@ SEED_STATUSES: tuple[CustomStatus, ...] = (
         native="busy",
         counts_as_unavailable=False,
     ),
+    CustomStatus(
+        key="offline",
+        label="Offline",
+        color="#7f8c8d",
+        routable=False,
+        native="offline",
+        counts_as_unavailable=False,
+    ),
 )
+
+# Chatwoot's three native `availability_status` values, mapped onto the
+# catalogue key each one means. Used only by `resolve()` -- see the module
+# docstring for why the presence log contains both kinds of value.
+#
+# `busy` and `offline` are their own catalogue keys, so those two rows are
+# identities; they are written out anyway so that this dict is the single,
+# complete statement of "what does a native value mean here" rather than a
+# special case for `online` that a reader has to infer the rest of.
+_NATIVE_TO_KEY: dict[str, str] = {
+    "online": "available",
+    "busy": "busy",
+    "offline": "offline",
+}
+
+# Statuses the product sets on an agent's behalf, which therefore must not be
+# offered in an agent-facing picker: `acw` is entered by the After-Call-Work
+# controller at call end and auto-exits on a timeout, and `offline` belongs to
+# Chatwoot's own availability control. Consumed by `status_router.py`.
+SYSTEM_MANAGED_KEYS: frozenset[str] = frozenset({"acw", "offline"})
+
+# Lookup form of SEED_STATUSES, for `get()`'s "the seed never ran here"
+# fallback. Derived, never hand-maintained, so it cannot drift.
+_SEED_BY_KEY: dict[str, CustomStatus] = {status.key: status for status in SEED_STATUSES}
 
 
 class _PresenceSink(Protocol):
@@ -291,29 +368,75 @@ class CustomStatusStore:
         # `TargetsStore._doc` has -- this isn't specific to this file).
         return self._collection().document(key)  # type: ignore[return-value]
 
-    async def get(self, key: str) -> CustomStatus | None:
-        """Look up one status by key.
+    async def _stored(self, key: str) -> CustomStatus | None:
+        """The stored document for `key`, or `None` if there isn't one.
 
-        Returns `None` for BOTH an unknown key AND a Firestore outage --
-        fail-open matters more here than in most stores. `None` must always
-        mean "we know nothing extra about routability" to a caller (e.g.
-        task 6's fair-share selection): the caller MUST fall back to
-        filtering on the native Chatwoot `availability_status` alone.
-        Treating `None` as "not routable" would let a store outage silently
-        stop all routing; treating it as "routable" would let an agent
-        parked in an unroutable custom status keep receiving new chats
+        **Raises** on a Firestore failure, unlike every other read on this
+        store -- that is the whole point of it being separate from `get()`.
+        `seed()` must be able to tell "this status has never been written"
+        from "I could not find out", because writing on the second reading
+        would overwrite an operator's edit with the shipped default every
+        time Firestore hiccuped at startup. `get()` catches instead.
+        """
+        snap = await asyncio.to_thread(self._doc(key).get)
+        if not snap.exists:
+            return None
+        return CustomStatus(**(snap.to_dict() or {}))
+
+    async def get(self, key: str) -> CustomStatus | None:
+        """Look up one status by key: the stored document if there is one,
+        else the shipped `SEED_STATUSES` definition of that key, else `None`.
+
+        Returns `None` for BOTH a genuinely unknown key AND a Firestore
+        outage -- fail-open matters more here than in most stores. `None`
+        must always mean "we know nothing extra about routability" to a
+        caller (e.g. task 6's fair-share selection): the caller MUST fall
+        back to filtering on the native Chatwoot `availability_status`
+        alone. Treating `None` as "not routable" would let a store outage
+        silently stop all routing; treating it as "routable" would let an
+        agent parked in an unroutable custom status keep receiving new chats
         whenever the store happened to be unreachable. Neither is
         acceptable -- the native status is the real gate, this catalogue
         only ever adds information on top of it.
+
+        The `SEED_STATUSES` fallback (see the module docstring) applies only
+        to a *successful* read of an absent document, i.e. a tenant whose
+        startup seed never ran. An outage still returns `None` so the
+        fail-open contract above is exactly as it was, and a stored document
+        always takes precedence, so an operator edit is never shadowed.
         """
         try:
-            snap = await asyncio.to_thread(self._doc(key).get)
-            if not snap.exists:
-                return None
-            return CustomStatus(**(snap.to_dict() or {}))
+            stored = await self._stored(key)
         except Exception as e:
             _log.error("custom_status_get_failed", key=key, error=str(e))
             return None
+        if stored is not None:
+            return stored
+        return _SEED_BY_KEY.get(key)
+
+    async def resolve(self, observed: str) -> CustomStatus | None:
+        """Resolve an *observed* status value to a catalogue entry.
+
+        Use this, not `get()`, for anything read out of the presence log:
+        that log holds catalogue keys (written by `set_status`) **and** raw
+        native Chatwoot values (written by the poller), and the two do not
+        share a namespace -- Chatwoot says `online` where this catalogue says
+        `available`. `get("online")` therefore answers `None`, which a
+        consumer is contractually obliged to read as "no information", and
+        that is how P6's threshold alerts came to be unreachable in
+        production: every event the poller wrote resolved to nothing.
+
+        Native values are mapped through `_NATIVE_TO_KEY` only after a direct
+        key lookup misses, so an operator who adds a status whose key happens
+        to be a native word keeps their own definition.
+        """
+        direct = await self.get(observed)
+        if direct is not None:
+            return direct
+        aliased = _NATIVE_TO_KEY.get(observed)
+        if aliased is None or aliased == observed:
+            return None
+        return await self.get(aliased)
 
     async def list_all(self) -> list[CustomStatus]:
         """The full catalogue, for admin surfaces. `[]` on any outage."""
@@ -333,15 +456,23 @@ class CustomStatusStore:
             _log.error("custom_status_list_failed", error=str(e))
             return []
 
-    async def add(self, status: CustomStatus) -> None:
+    async def add(self, status: CustomStatus) -> bool:
         """Create or overwrite a status document -- the operator-facing
         add/edit path. Unlike `seed`, this always writes: this is what makes
         the catalogue a store rather than an enum, per the class docstring.
+
+        Returns whether the write landed. The admin endpoint behind this
+        (`status_router.upsert_status`) must not answer 200 for an edit
+        Firestore refused -- an operator who is told their change saved and
+        finds it gone will conclude the catalogue is unreliable, which is
+        worse than an error they can retry.
         """
         try:
             await asyncio.to_thread(self._doc(status.key).set, asdict(status))
         except Exception as e:
             _log.error("custom_status_add_failed", key=status.key, error=str(e))
+            return False
+        return True
 
     async def seed(self) -> int:
         """Seed `SEED_STATUSES` into the catalogue. Create-only, mirroring
@@ -350,14 +481,27 @@ class CustomStatusStore:
         silently reverted on the next restart, which is what makes it safe
         to call this unconditionally at startup.
 
+        Deliberately checks `_stored`, not `get`: `get` now answers from the
+        shipped defaults when a document is absent, so seeding off it would
+        find every status "already there" and persist nothing -- leaving the
+        catalogue permanently empty and the admin catalogue page blank. It
+        also means a read failure is skipped rather than treated as "absent",
+        so a Firestore hiccup can no longer revert an operator's edit (the
+        narrow risk the earlier review logged as a deferred Minor, which
+        stops being acceptable now that there IS an edit UI to revert).
+
         Returns how many statuses were newly created.
         """
         created = 0
         for status in SEED_STATUSES:
-            if await self.get(status.key) is not None:
+            try:
+                if await self._stored(status.key) is not None:
+                    continue
+            except Exception as e:
+                _log.error("custom_status_seed_read_failed", key=status.key, error=str(e))
                 continue
-            await self.add(status)
-            created += 1
+            if await self.add(status):
+                created += 1
         return created
 
     async def set_status(

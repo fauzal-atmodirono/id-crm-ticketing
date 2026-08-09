@@ -14,11 +14,29 @@ raw native status.** A ``busy`` agent mid-conversation is working, not
 absent; ``counts_as_unavailable`` is exactly the flag task 2 built so this
 task doesn't have to re-litigate which statuses are "away" (see
 ``custom_status.py``'s ``SEED_STATUSES`` comment). An unknown/unreadable
-status key (``CustomStatusStore.get`` returning ``None``, which it does on
-BOTH an unknown key and a store outage) is treated as "do not alert" --
-the same fail-open direction ``get()``'s own contract recommends for
-routing, applied here: a threshold-alert false negative during a store
+status key (a catalogue lookup returning ``None``, which it does on BOTH an
+unknown key and a store outage) is treated as "do not alert" -- the same
+fail-open direction ``CustomStatusStore.get()``'s own contract recommends
+for routing, applied here: a threshold-alert false negative during a store
 outage is far cheaper than an alert storm for a key nobody recognises.
+
+**Lookups go through ``CustomStatusStore.resolve``, never ``get``, and that
+is not a style choice.** The presence log this sweeper reads is written by
+two things: ``set_status`` writes catalogue keys (``"lunch"``), while the
+presence poller writes whatever native value Chatwoot reported
+(``"online"``/``"busy"``/``"offline"``). ``get("online")`` answers ``None``
+-- the catalogue key is ``"available"`` -- so a sweeper built on ``get``
+returned early on *every* event the poller had written, which is how
+4.13/4.14 came to fire on no tenant at all despite a green unit suite (the
+suite injected ``lunch`` events no production writer could produce).
+``resolve`` maps the native values onto their catalogue entries first. Note
+what that does and does not change once resolution works: ``busy`` and
+``offline`` both resolve to ``counts_as_unavailable=False`` entries and so
+still alert about nothing -- deliberately, and for different reasons (Busy
+is an agent working, Offline is an agent off shift; see
+``custom_status.py``'s ``SEED_STATUSES`` comment). The alerts fire for the
+away-from-desk statuses an agent picks, which is exactly what §4.13 asks
+for.
 
 **Anti-noise, via the event-store's own ``stamp_alert``/``alerts_sent``.**
 Each threshold (``WARN_ALERT_KEY``, ``ESCALATE_ALERT_KEY``) fires at most
@@ -171,9 +189,10 @@ class _PresenceLog(Protocol):
 
 
 class _StatusCatalogue(Protocol):
-    """The one `CustomStatusStore` method this module depends on."""
+    """The one `CustomStatusStore` method this module depends on -- and it is
+    `resolve`, not `get`, on purpose: see the module docstring."""
 
-    async def get(self, key: str) -> CustomStatus | None: ...
+    async def resolve(self, observed: str) -> CustomStatus | None: ...
 
 
 class ThresholdAlert(Protocol):
@@ -326,7 +345,10 @@ async def _check_agent(
     if latest is None:
         return  # never seen this agent -- nothing to measure elapsed time from
 
-    status = await status_store.get(latest.status)
+    # `resolve`, not `get`: `latest.status` may be a catalogue key OR one of
+    # Chatwoot's three native values, depending on which writer produced the
+    # event -- see the module docstring's second load-bearing point.
+    status = await status_store.resolve(latest.status)
     if status is None or not status.counts_as_unavailable:
         # Fail-open in the same direction `CustomStatusStore.get`'s own
         # contract recommends: an unknown status key (or a catalogue

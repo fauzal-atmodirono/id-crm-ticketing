@@ -72,10 +72,33 @@ _SUGGEST_SYSTEM = (
     "FAQ context:\n{faq_context}"
 )
 
+# PII note (fix for a gap P7 task 9's resolved-case-index report found: this
+# constant had NO PII-omission instruction at all, even though the P7 design
+# states the summariser "is instructed to omit identifiers" as the mitigation
+# before summaries go into a pgvector store). The sentence below is a REQUEST
+# to the model, not a masking or redaction mechanism — nothing in this module,
+# or in resolved_case_index.py (which stores this endpoint's output), inspects,
+# strips, or validates the returned summary text. The model can still include
+# a name, phone number, plate number, or address if it includes one anyway.
+# The real fix is gap R16, tracked as blocked on Q7 in
+# docs/analysis/2026-08-09-blocked-work-register.md — do not read this
+# instruction as closing that gap, only as making the stated mitigation
+# actually exist as a prompt line.
+#
+# `_apply_persona` (below, and at its one call site for this constant) only
+# PREPENDS an operator persona prefix ahead of this string — it never removes
+# or replaces text after it, so no wiring path can structurally drop this
+# instruction. An operator's own guardrails/instructions could still tell the
+# model to do the opposite (e.g. "always include the customer's full name");
+# that is a model-instruction-following risk, not a code path that strips
+# this sentence.
 _SUMMARIZE_SYSTEM = (
     "You are a customer-support supervisor. "
     "Summarise the following conversation between a customer and a support agent "
     "in 3–5 bullet points. Focus on: the customer's issue, steps taken, and current status. "
+    "Do not include the customer's name, phone number, email address, home "
+    "address, or vehicle registration/plate number in the summary — refer to "
+    'them generically instead (e.g. "the customer", "their vehicle"). '
     "Reply in English regardless of the conversation language."
 )
 

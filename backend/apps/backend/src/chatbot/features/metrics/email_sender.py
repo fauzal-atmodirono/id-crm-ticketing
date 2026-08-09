@@ -21,6 +21,22 @@ _log = structlog.get_logger(__name__)
 Attachment = tuple[str, bytes, str]  # (filename, content, mimetype)
 
 
+def _blocked(settings: Settings) -> set[str]:
+    """Addresses this service must never send to, whatever the config says.
+
+    A last line of defence, deliberately enforced at the transport rather than
+    at each caller: a routing record, an env var, a stale automation rule and a
+    hand-typed CC are four different ways to aim mail at a dead address, and
+    only the transport sees all four.
+
+    The cost of getting this wrong is not a bounce. Sustained delivery failures
+    to a non-existent domain are what gets the sending Gmail account
+    rate-limited or suspended, which takes every real escalation down with it.
+    """
+    raw = getattr(settings, "email_blocked_recipients", "") or ""
+    return {part.strip().lower() for part in raw.split(",") if part.strip()}
+
+
 class SmtpEmailSender:
     """Sends a single email (To + CC + optional attachments) via STARTTLS SMTP.
 
@@ -55,6 +71,17 @@ class SmtpEmailSender:
         """
         if not to or not self._s.smtp_host:
             return
+
+        blocked = _blocked(self._s)
+        if blocked:
+            to = [a for a in to if a.strip().lower() not in blocked]
+            cc = [a for a in cc if a.strip().lower() not in blocked]
+            if not to:
+                # Every recipient was blocked: there is no mail to send, and
+                # promoting a CC into the To line would defeat the block.
+                _log.warning("email_send_blocked", subject=subject)
+                return
+
         msg = EmailMessage()
         msg["From"] = self._s.smtp_from
         msg["To"] = ", ".join(to)

@@ -746,6 +746,13 @@ class Settings(BaseSettings):
     # costs an extra API call per escalation.
     escalation_presence_check_enabled: bool = False
 
+    # Addresses this service must NEVER send to, comma-separated. Enforced in
+    # SmtpEmailSender itself, so no routing record, env var, stale automation
+    # rule or hand-typed CC can get past it. Exists because sustained delivery
+    # failures to a dead domain get the sending account rate-limited, which
+    # takes every real escalation down with it.
+    email_blocked_recipients: str = ""
+
     # P3: the case-record panel in the conversation sidebar (case_detail,
     # vehicle plate/chassis, WIP notes...) and its GET/PATCH endpoints. Off
     # means the endpoints 404, so the fork panel simply does not render rather

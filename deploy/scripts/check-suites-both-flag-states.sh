@@ -52,6 +52,20 @@ FLAGS_ON=(
   ROUTING_FAIR_SHARE_ENABLED=true
   ROUTING_SWEEP_ENABLED=true
   FOLLOW_UP_DATE_ENABLED=true
+  # P7 — AI conversational quality. TRANSLATION_OUTBOUND_TAMIL_ENABLED is
+  # DELIBERATELY NOT in this list: the plan requires the full suite green
+  # with all flags off, then with all on EXCEPT outbound Tamil, because that
+  # flag ships disabled pending a signed-off Tamil evaluation. Do not add it
+  # here to "complete" the set -- that would defeat the one exception this
+  # script exists to honour.
+  SENTIMENT_CLASSIFIER_ENABLED=true
+  SENTIMENT_TONE_ADJUSTMENT_ENABLED=true
+  TRANSLATION_ENABLED=true
+  FAQ_KEYWORD_WEIGHT=0.5
+  FAQ_SUGGESTION_POPUP_ENABLED=true
+  MEDIA_DIAGNOSIS_PROMPT_ENABLED=true
+  RESOLVED_CASE_INDEX_ENABLED=true
+  AUTO_SUMMARY_ON_RESOLVE_ENABLED=true
 )
 
 failed=0

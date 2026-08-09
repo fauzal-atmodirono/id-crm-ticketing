@@ -864,6 +864,77 @@ class Settings(BaseSettings):
     # pre-reply-loop behavior. `{conv_id}` is the only placeholder.
     escalation_reply_to_template: str = ""
 
+    # --- P7: AI conversational quality --------------------------------------
+    # Nine settings, all default-off/default-zero, so a tenant that sets none
+    # of them gets byte-identical behaviour to before P7: sentiment stays
+    # unclassified, no translate action exists, FAQ ranking is pure semantic
+    # search, media attachments get today's generic instruction, and nothing
+    # is auto-summarised or indexed on resolve.
+
+    # Task 1: classify sentiment per turn (an extra tool argument on the
+    # existing per-turn Gemini call, never a second round-trip) and write
+    # session_state["sentiment"], which the existing ticket-creation gate and
+    # API response already read. Off = the field stays None, exactly as today.
+    sentiment_classifier_enabled: bool = False
+    # Task 2: replace the static "## Tone" persona paragraph with one selected
+    # by the current sentiment (operator-editable in Knowledge Settings).
+    # Inert without sentiment_classifier_enabled above. Off = the static
+    # paragraph, unchanged.
+    sentiment_tone_adjustment_enabled: bool = False
+    # Task 3: the agent-facing translate action (POST /assist/translate) that
+    # renders an inbound message in the agent's own language as a private
+    # note, on demand. Off = no translate action exists.
+    translation_enabled: bool = False
+    # Task 3: OUTBOUND Tamil replies to CUSTOMERS specifically. This is a
+    # separate, one-directional gate and is NOT symmetric with
+    # translation_enabled above: inbound Tamil translation (so an agent can
+    # READ a Tamil message) is enabled by translation_enabled alone and is
+    # useful now -- an imperfect translation an agent reads is far better
+    # than a message they cannot read at all. Outbound Tamil sends unverified
+    # machine translation directly to a customer in a regulated automotive-
+    # support context, and ships disabled on purpose pending a signed-off
+    # evaluation (30 real Tamil enquiries, scored by a Tamil speaker). Do not
+    # flip this just because translation_enabled is on -- keep it False until
+    # that evaluation exists.
+    translation_outbound_tamil_enabled: bool = False
+    # Task 4: weight given to a keyword-overlap score (against the authored
+    # FAQ `keywords` field) blended into `_rank`'s cosine-similarity ranking.
+    # 0.0 is not merely "off" -- it is required to reproduce today's ranking
+    # EXACTLY, entry for entry and score for score. That equivalence is the
+    # entire safety argument for shipping hybrid ranking onto a live tenant:
+    # a defaulted call must be provably identical to the pre-P7 call, not
+    # just similar. Raise it only after the calibration evaluation set
+    # (task 10) shows a net improvement -- a large weight would regress the
+    # common case (semantic search, which already works) to fix the rare one
+    # (exact codes like e.MAS7 that embed poorly).
+    faq_keyword_weight: float = 0.0
+    # Task 7: a transient, dismissible FAQ-suggestion strip rendered above the
+    # fork's composer when a suggestion's confidence exceeds a threshold.
+    # Off = side panel only -- an agent's typing path is left alone by
+    # default.
+    faq_suggestion_popup_enabled: bool = False
+    # Task 8: append a media-diagnosis instruction (describe what's visible,
+    # name the likely fault, state a confidence level, ask at most one
+    # follow-up question) whenever an image/video part reaches the model.
+    # Off = today's generic instruction, unchanged.
+    media_diagnosis_prompt_enabled: bool = False
+    # Task 9: index a resolved conversation's SUMMARY (never its transcript)
+    # into its own pgvector namespace, separate from the authored FAQ corpus,
+    # so it can be purged independently of curated content and its
+    # suggestions labelled in the panel as machine-generated rather than
+    # approved guidance. This is a PII mitigation, not PII masking (the real
+    # fix is R16, blocked on Q7) -- off by default for that reason.
+    # Off = nothing indexed.
+    resolved_case_index_enabled: bool = False
+    # Task 9: fire the existing agent-triggered POST /assist/summarize
+    # automatically on the resolve event and post the summary as a private
+    # note; idempotent per resolve -- a case resolved, reopened and resolved
+    # again appends a second summary rather than overwriting the first. Off =
+    # summaries stay agent-triggered only, exactly as today. Independent of
+    # resolved_case_index_enabled above -- the two share a resolve-event
+    # handler, not a dependency.
+    auto_summary_on_resolve_enabled: bool = False
+
     # Settings configurations
     model_config = SettingsConfigDict(
         env_file=".env",

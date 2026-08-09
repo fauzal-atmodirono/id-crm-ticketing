@@ -106,6 +106,38 @@ WhatsApp/Chatwoot transcript) in `docs/testing/`, dated, the same way
 E2E cases. Until that exists, `docs/testing/2026-08-09-media-diagnosis-prompt-live-check.md`
 is a template awaiting that run, not a result.
 
+### 2.5 The Malay SMS query normaliser (P7 task 6)
+
+`nlu_normalise.py`'s `normalise()` — collapses repeated characters and
+expands a fixed table of SMS-register Malay abbreviations (`brp`→`berapa`,
+`nk`→`nak`, etc., sourced from P7 task 5's 56-case corpus) — is code-complete,
+unit-tested against real production call payloads (`test_nlu_normalise.py`:
+the text handed to the model and the text echoed back on the agent-facing
+`/kb/suggest` surface are both asserted, against actual captured payloads, to
+survive un-normalised), and wired into the single retrieval call site
+(`MergedKnowledgeAdapter.search_kb`). It ships **disabled**
+(`NORMALISE_RETRIEVAL_QUERY_ENABLED = False`, a plain module constant, not a
+`Settings`/env flag — this task was explicitly scoped to add no config
+surface) because its acceptance gate is literally "ship only if it
+measurably improves task 5's corpus pass rate", and **that pass rate has
+never been measured for real**: task 5's corpus runner only exists against a
+stub keyword classifier and a stub topic embedder in this sandbox
+(`CorpusReport.mode == "stub"`), because there is no real Gemini/Vertex
+credential here. `test_nlu_normalise.py`'s eighth test runs the corpus
+with and without the normaliser through that same stub harness and proves
+the comparison mechanism works and reports both rates — it does not, and
+structurally cannot, assert an improvement.
+
+**What must happen before this flag may be flipped on any tenant:** run P7
+task 5's corpus (`test_malay_sms_corpus.py`) against real Gemini/Vertex
+credentials twice — once with the query fed to FAQ retrieval left raw, once
+with `normalise()` applied — and confirm the FAQ-hit pass rate is measurably
+better with it on. Only that comparison, run for real, is the evidence the
+brief's gate asked for. Until it exists, `NORMALISE_RETRIEVAL_QUERY_ENABLED`
+stays `False` — flipping it on the strength of the stub numbers this sandbox
+can produce would be exactly the "plausible wrong number" this register
+exists to prevent.
+
 ---
 
 ## 3. Blocked on infrastructure I cannot reach

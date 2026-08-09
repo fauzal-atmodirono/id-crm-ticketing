@@ -30,6 +30,14 @@ _CHANNEL_BY_PREFIX = {
 _AGENT_STATUSES = {"new", "open", "pending", "hold"}
 _CSAT_TAG = re.compile(r"^csat_([1-5])$")
 _NPS_TAG = re.compile(r"^nps_(10|[0-9])$")
+# P8 task 5: the agent id stamped by `nps.record_nps_agent_attribution` AT
+# SURVEY-ANSWER TIME. When a row carries an NPS score, this tag -- not the
+# conversation's CURRENT assignee -- is the agent the score is attributed
+# to, so a reassignment after the survey never silently re-attributes an
+# already-recorded score. NPS replaces CSAT for a sampled conversation (see
+# nps.py's module docstring), so a row never needs to choose between the
+# two attributions.
+_NPS_AGENT_TAG = re.compile(r"^nps_agent_(.+)$")
 
 CATEGORY_TO_DIVISION = {
     "apps": "Apps",
@@ -207,6 +215,11 @@ def map_ticket_to_row(ticket: dict[str, object]) -> ConversationRow | None:
     assignee = ticket.get("assignee_id")
     agent_id = str(assignee) if assignee is not None else None
     pic = _first_tag(tags, _PIC_TAG) or agent_id
+    # P8 task 5: an NPS-bearing row is attributed to the agent stamped AT
+    # SURVEY-ANSWER TIME (the nps_agent_<id> tag), not the ticket's current
+    # assignee -- see _NPS_AGENT_TAG's comment above.
+    if nps is not None:
+        agent_id = _first_tag(tags, _NPS_AGENT_TAG) or agent_id
     division = CATEGORY_TO_DIVISION.get(category.lower()) if category else None
 
     resolved_at, first_response_at, reopen_count = _timing_from_metric_set(
@@ -403,6 +416,11 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
 
     agent_id = _chatwoot_agent_id(conv)
     pic = _first_tag(labels, _PIC_TAG) or agent_id
+    # P8 task 5: an NPS-bearing row is attributed to the agent stamped AT
+    # SURVEY-ANSWER TIME (the nps_agent_<id> label), not the conversation's
+    # current assignee -- see _NPS_AGENT_TAG's comment above.
+    if nps is not None:
+        agent_id = _first_tag(labels, _NPS_AGENT_TAG) or agent_id
     dealer = _first_tag(labels, _DEALER_TAG)
     dealer_escalated_at = custom_attrs.get("dealer_escalated_at")
     reopen_count = _chatwoot_reopen_count(conv)
@@ -440,9 +458,7 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
         dealer_escalated_at=dealer_escalated_at,
         case_type=case_type,
         vehicle_model=vehicle_model,
-        received_in_business_hours=_optional_bool(
-            custom_attrs.get("received_in_business_hours")
-        ),
+        received_in_business_hours=_optional_bool(custom_attrs.get("received_in_business_hours")),
         received_at_local=(
             str(custom_attrs["received_at_local"])
             if custom_attrs.get("received_at_local")
@@ -465,9 +481,7 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
     )
 
 
-def apply_working_hours(
-    row: ConversationRow, inbox: dict[str, object] | None
-) -> ConversationRow:
+def apply_working_hours(row: ConversationRow, inbox: dict[str, object] | None) -> ConversationRow:
     """Return a copy of row with first_response_working_minutes/
     resolution_working_minutes computed. inbox=None (hours fetch failed or
     inbox has no hours configured) -> plain calendar-time minutes, per this

@@ -11,9 +11,10 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from chatbot.features.chat.csat import record_csat_on_ticket
+from chatbot.features.chat.nps import record_nps_agent_attribution, record_nps_on_ticket
 from chatbot.features.chat.phone.audio_codec import mulaw8k_to_pcm16k, pcm24k_to_mulaw8k
 from chatbot.features.chat.phone.call_control import CallControl
-from chatbot.features.chat.phone.handoff_csat_tools import parse_csat_score
+from chatbot.features.chat.phone.handoff_csat_tools import parse_csat_score, parse_nps_score
 from chatbot.features.chat.phone.handoff_target import HandoffTargetResolver, dial_twiml
 from chatbot.features.chat.phone.kb_tool import dispatch_kb_search
 from chatbot.features.chat.phone.live_events import (
@@ -171,6 +172,11 @@ class PhoneBridge:
         self.transcript: list[tuple[str, str]] = []
         self.handoff: dict[str, str] | None = None
         self.csat_score: int | None = None
+        # P8 task 5: mutually exclusive with csat_score in practice -- the
+        # tool list built in router.py's phone_stream offers exactly ONE of
+        # submit_csat/submit_nps per call (never both), based on whether the
+        # call was sampled for NPS before the Gemini Live session opened.
+        self.nps_score: int | None = None
         # Ticket created at call start (Task 3), not just at hangup, so a
         # live transcript has somewhere to stream into. None until the
         # "start" event fires with the flag on, or (fallback) until
@@ -517,6 +523,15 @@ class PhoneBridge:
                 event.id,
                 event.name,
                 {"status": "recorded" if score is not None else "ignored"},
+            )
+        elif event.name == "submit_nps":
+            nps_score = parse_nps_score(event.args)
+            if nps_score is not None:
+                self.nps_score = nps_score
+            await self._live.send_tool_response(
+                event.id,
+                event.name,
+                {"status": "recorded" if nps_score is not None else "ignored"},
             )
         else:
             _log.warning("phone_unknown_tool", name=event.name, call_id=event.id)
@@ -1023,7 +1038,17 @@ class PhoneBridge:
             else:
                 await self._log_port.append_conversation_comment(ticket_id, body, status=status)
             await self._log_port.set_ticket_external_id(ticket_id, session_id)
-            if self.handoff is None and self.csat_score is not None:
+            if self.handoff is None and self.nps_score is not None:
+                # P8 task 5: attribute to whoever is assigned AT THIS MOMENT
+                # (call finalize is the survey-answer instant for phone --
+                # there is no later reply to wait for, unlike WhatsApp/email).
+                # Best-effort and independent of the tag write itself: a
+                # failed assignee lookup must not stop the score recording.
+                await record_nps_on_ticket(self._log_port, ticket_id, self.nps_score, "phone")
+                agent_id = await self._log_port.get_conversation_assignee(ticket_id)
+                if agent_id is not None:
+                    await record_nps_agent_attribution(self._log_port, ticket_id, agent_id)
+            elif self.handoff is None and self.csat_score is not None:
                 await record_csat_on_ticket(self._log_port, ticket_id, self.csat_score, "phone")
         except Exception as e:
             _log.error(

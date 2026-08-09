@@ -32,9 +32,14 @@ from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
 from chatbot.features.chat.case_state import CHATWOOT_CASE_STATE_ATTR, CaseState, record_transition
 from chatbot.features.chat.handoff_bridge import HandoffBridge, SurveyEvent
 from chatbot.features.chat.models import AgentMessageEvent
+from chatbot.features.chat.nps import parse_nps, record_nps_agent_attribution, should_survey_nps
 from chatbot.features.chat.phone.bridge import PhoneBridge
 from chatbot.features.chat.phone.gemini_live import LiveSession, connect_live
-from chatbot.features.chat.phone.handoff_csat_tools import REQUEST_HANDOFF_TOOL, SUBMIT_CSAT_TOOL
+from chatbot.features.chat.phone.handoff_csat_tools import (
+    REQUEST_HANDOFF_TOOL,
+    SUBMIT_CSAT_TOOL,
+    SUBMIT_NPS_TOOL,
+)
 from chatbot.features.chat.phone.kb_tool import KB_SEARCH_TOOL
 from chatbot.features.chat.phone.rate_limit import RateLimiter
 from chatbot.features.chat.phone.token import mint_voice_token
@@ -215,6 +220,20 @@ _CSAT_THANKS = (
     "whenever you need anything."
 )
 
+# P8 task 5: sampled IN PLACE OF the CSAT survey above -- see
+# `should_survey_nps`'s docstring for why this REPLACES rather than appends
+# to the CSAT survey (never both, for the one conversation).
+_NPS_SURVEY_MESSAGE = (
+    "Thanks for chatting with our support team! On a scale of 0-10, how likely are you to "
+    "recommend us to a friend or colleague? Reply with a number 0-10 (0 = not at all likely, "
+    "10 = extremely likely)."
+)
+_NPS_NUDGE = "Please reply with a number 0-10."
+_NPS_THANKS = (
+    "Thank you for your feedback! \U0001f64f You're back with our automated assistant "
+    "whenever you need anything."
+)
+
 _EMAIL_HANDOFF_MESSAGE = (
     "Thanks for reaching out. I'm connecting you with a specialist from our team "
     "who will reply to this email shortly."
@@ -226,12 +245,33 @@ _EMAIL_SURVEY_MESSAGE = (
 _EMAIL_CSAT_NUDGE = "Please reply with a single number from 1 to 5 to rate your experience."
 _EMAIL_CSAT_THANKS = "Thank you for your feedback! Reply any time if you need further help."
 
+# P8 task 5: email equivalents of the NPS constants above.
+_EMAIL_NPS_SURVEY_MESSAGE = (
+    "Thanks for contacting Proton support! On a scale of 0-10, how likely are you to recommend "
+    "us to a friend or colleague? Reply with a number from 0 to 10 (0 = not at all likely, "
+    "10 = extremely likely)."
+)
+_EMAIL_NPS_NUDGE = "Please reply with a single number from 0 to 10 to rate your experience."
+_EMAIL_NPS_THANKS = "Thank you for your feedback! Reply any time if you need further help."
+
 _NO_REPLY_RE = re.compile(r"(no-?reply|do-?not-?reply|mailer-daemon|postmaster)", re.IGNORECASE)
 
 
 def _is_no_reply(email: str | None) -> bool:
     """True for automated/system senders we must never auto-reply to (loop guard)."""
     return bool(email and _NO_REPLY_RE.search(email))
+
+
+def _call_sid_from_start(msg: dict[str, Any]) -> str | None:
+    """Pull `callSid` out of Twilio's "start" frame, mirroring
+    `PhoneBridge.handle_twilio`'s own parsing. Used by `phone_stream` to
+    decide NPS sampling BEFORE the Gemini Live session (and its fixed tool
+    list) is opened -- see the P8 task 5 comment there."""
+    start = msg.get("start")
+    if isinstance(start, dict):
+        csid = start.get("callSid")
+        return str(csid) if csid else None
+    return None
 
 
 def _card_caption(product: Any) -> str:
@@ -740,7 +780,54 @@ class ChatRouter:
         )
         return Response(status_code=200)
 
+    async def _attribute_nps_agent(self, ticket_id: str) -> None:
+        """Best-effort: stamp the agent assigned to `ticket_id` AT THIS
+        MOMENT as the NPS attribution tag (P8 task 5). Called once, at the
+        instant the survey is answered -- see nps.py's module docstring for
+        why this must never be re-derived later from a live lookup."""
+        port = self.orchestrator._conversation_log_port
+        agent_id = await port.get_conversation_assignee(ticket_id)
+        if agent_id is not None:
+            await record_nps_agent_attribution(port, ticket_id, agent_id)
+
+    async def _whatsapp_survey_giveup(self, from_addr: str, session_id: str, body: str) -> None:
+        """Second invalid survey reply: stop trapping the customer, resume
+        normal AI handling of this message."""
+        await self.orchestrator.resume_ai(session_id)
+        result = await self.orchestrator.handle_turn(session_id=session_id, text=body)
+        await self._send_whatsapp_reply(from_addr, result)
+        await self.orchestrator.capture_conversation(session_id, channel="WhatsApp")
+
+    async def _handle_whatsapp_nps_survey(self, from_addr: str, session_id: str, body: str) -> None:
+        score = parse_nps(body)
+        if score is not None:
+            await self.orchestrator.record_nps(session_id, score, channel="WhatsApp")
+            ticket_id = await self.orchestrator._conversation_log_port.find_conversation_ticket(
+                session_id
+            )
+            if ticket_id:
+                await self._attribute_nps_agent(ticket_id)
+            # record_nps (unlike record_csat) deliberately does not touch
+            # handoff state -- see its docstring -- so the "back to the bot"
+            # transition the auto-survey flow needs is done explicitly here.
+            await self.orchestrator.resume_ai(session_id)
+            if self._twilio_adapter is not None:
+                await self._twilio_adapter.send_message(conversation_id=from_addr, text=_NPS_THANKS)
+            return
+        # Invalid: nudge once, then stop trapping the customer.
+        if await self.orchestrator.consume_survey_nudge(session_id):
+            if self._twilio_adapter is not None:
+                await self._twilio_adapter.send_message(conversation_id=from_addr, text=_NPS_NUDGE)
+            return
+        await self._whatsapp_survey_giveup(from_addr, session_id, body)
+
     async def _handle_whatsapp_survey(self, from_addr: str, session_id: str, body: str) -> None:
+        # Re-hashes the SAME session_id used to pick the question when the
+        # survey was sent, so the reply is always parsed against the
+        # question this conversation was actually asked.
+        if should_survey_nps(session_id, self.orchestrator._settings.nps_sample_rate):
+            await self._handle_whatsapp_nps_survey(from_addr, session_id, body)
+            return
         score = OrchestratorService.parse_csat(body)
         if score is not None:
             await self.orchestrator.record_csat(session_id, score, channel="WhatsApp")
@@ -755,10 +842,7 @@ class ChatRouter:
                 await self._twilio_adapter.send_message(conversation_id=from_addr, text=_CSAT_NUDGE)
             return
         # Second invalid → resume AI and process this message normally.
-        await self.orchestrator.resume_ai(session_id)
-        result = await self.orchestrator.handle_turn(session_id=session_id, text=body)
-        await self._send_whatsapp_reply(from_addr, result)
-        await self.orchestrator.capture_conversation(session_id, channel="WhatsApp")
+        await self._whatsapp_survey_giveup(from_addr, session_id, body)
 
     async def _send_whatsapp_reply(self, to: str, result: Any) -> None:
         """Send the AI reply to WhatsApp.
@@ -965,18 +1049,26 @@ class ChatRouter:
                 await self.orchestrator.begin_survey(session_id)
                 if self._twilio_adapter is not None:
                     to = "whatsapp:" + session_id[len("whatsapp-") :]
-                    await self._twilio_adapter.send_message(
-                        conversation_id=to, text=_SURVEY_MESSAGE
+                    # P8 task 5: the SAME session_id is hashed again when the
+                    # reply arrives (_handle_whatsapp_survey), so the question
+                    # asked here and the one the reply is parsed against are
+                    # always the same one for this conversation.
+                    nps_mode = should_survey_nps(
+                        session_id, self.orchestrator._settings.nps_sample_rate
                     )
+                    text = _NPS_SURVEY_MESSAGE if nps_mode else _SURVEY_MESSAGE
+                    await self._twilio_adapter.send_message(conversation_id=to, text=text)
         elif session_id.startswith("email-"):
             # Only on a genuine handoff (paused) -> solved transition; re-fires
             # from our own survey/CSAT writes are end-user-agnostic and ignored.
             if await self.orchestrator.conversation_state(session_id) == "paused":
                 ticket_id = session_id[len("email-") :]
                 await self.orchestrator.begin_survey(session_id)
-                await self.orchestrator._conversation_log_port.post_public_reply(
-                    ticket_id, _EMAIL_SURVEY_MESSAGE
+                nps_mode = should_survey_nps(
+                    session_id, self.orchestrator._settings.nps_sample_rate
                 )
+                text = _EMAIL_NPS_SURVEY_MESSAGE if nps_mode else _EMAIL_SURVEY_MESSAGE
+                await self.orchestrator._conversation_log_port.post_public_reply(ticket_id, text)
         else:
             await self.orchestrator.begin_survey(session_id)
             if self._handoff_bridge is not None:
@@ -1137,8 +1229,40 @@ class ChatRouter:
         else:
             await port.post_public_reply(ticket_id, reply, status="pending")
 
+    async def _email_survey_giveup(self, ticket_id: str, session_id: str, body: str) -> None:
+        """Second invalid survey reply: stop trapping the customer, resume
+        normal AI handling of this message."""
+        port = self.orchestrator._conversation_log_port
+        await self.orchestrator.resume_ai(session_id)
+        result = await self.orchestrator.handle_turn(session_id=session_id, text=body)
+        await self.orchestrator.bind_email_ticket(session_id, ticket_id)
+        reply = getattr(result, "reply", "") or ""
+        if reply:
+            await port.post_public_reply(ticket_id, reply, status="pending")
+
+    async def _handle_email_nps_survey(self, ticket_id: str, session_id: str, body: str) -> None:
+        port = self.orchestrator._conversation_log_port
+        score = parse_nps(body)
+        if score is not None:
+            await self.orchestrator.record_nps(session_id, score, channel="email")
+            await self._attribute_nps_agent(ticket_id)
+            # record_nps deliberately does not touch handoff state -- see its
+            # docstring -- so the "back to the bot" transition is explicit here.
+            await self.orchestrator.resume_ai(session_id)
+            await port.post_public_reply(ticket_id, _EMAIL_NPS_THANKS, status="solved")
+            return
+        if await self.orchestrator.consume_survey_nudge(session_id):
+            await port.post_public_reply(ticket_id, _EMAIL_NPS_NUDGE)
+            return
+        await self._email_survey_giveup(ticket_id, session_id, body)
+
     async def _handle_email_survey(self, ticket_id: str, session_id: str, body: str) -> None:
         port = self.orchestrator._conversation_log_port
+        # Re-hashes the SAME session_id used to pick the question when the
+        # survey was sent -- see _handle_whatsapp_survey's identical note.
+        if should_survey_nps(session_id, self.orchestrator._settings.nps_sample_rate):
+            await self._handle_email_nps_survey(ticket_id, session_id, body)
+            return
         score = OrchestratorService.parse_csat(body)
         if score is not None:
             await self.orchestrator.record_csat(session_id, score, channel="email")
@@ -1148,12 +1272,7 @@ class ChatRouter:
             await port.post_public_reply(ticket_id, _EMAIL_CSAT_NUDGE)
             return
         # Second invalid → resume AI and process this message as a normal turn.
-        await self.orchestrator.resume_ai(session_id)
-        result = await self.orchestrator.handle_turn(session_id=session_id, text=body)
-        await self.orchestrator.bind_email_ticket(session_id, ticket_id)
-        reply = getattr(result, "reply", "") or ""
-        if reply:
-            await port.post_public_reply(ticket_id, reply, status="pending")
+        await self._email_survey_giveup(ticket_id, session_id, body)
 
     # --- Frontend-facing API (consumed by the Vue app) ----------------------
 
@@ -1370,74 +1489,115 @@ class ChatRouter:
            the pending task and finalises the bridge.
         """
         await websocket.accept()
-        # Whole-branch review fix (Important 2): the transfer-aware handoff
-        # paragraph is built ONLY when phone_handoff_enabled is on. Task 6
-        # rewrote it unconditionally, but with the flag off -- every
-        # deployed tenant today -- `_attempt_transfer` returns
-        # "ticket_created" 100% of the time, so the bot would promise "Let
-        # me try to get a specialist for you now..." and then immediately
-        # retract it with "a live transfer was not possible right now". That
-        # is a customer-visible behaviour change with all flags off, which
-        # this package's own runbook certifies cannot happen. Off ->
-        # byte-identical to the pre-package wording; on -> Task 6's wording,
-        # which is only honest when a transfer can actually occur.
-        if self.orchestrator._settings.phone_handoff_enabled:
-            handoff_instruction = (
-                "issue, they ask for a human, or it is a complaint or sensitive matter: a live "
-                "transfer is not always possible, so BEFORE calling request_human_handoff say "
-                "something like 'Let me try to get a specialist for you now — if I can't connect "
-                "you right away, they'll call you back soon,' THEN call request_human_handoff "
-                "with a short reason and summary — once you call it you may be transferred "
-                "immediately and unable to say anything further on this call, so say that line "
-                "before calling the tool, never after. Then check the tool's status: if it is "
-                '"transferring", say nothing further — you may already be off the line. If it is '
-                '"ticket_created", tell the caller a live transfer was not possible right now '
-                "but a specialist has the details and will call them back. "
-            )
-        else:
-            handoff_instruction = (
-                "issue, they ask for a human, or it is a complaint or sensitive matter, call "
-                "request_human_handoff with a short reason and summary, then tell the caller a "
-                "specialist will follow up. "
-            )
-        system_instruction = (
-            "You are Proton's friendly phone support agent. Answer spoken questions "
-            "concisely and naturally. You are fully multilingual: ALWAYS reply in the SAME "
-            "language the caller uses — English, Bahasa Melayu, or Chinese — and switch "
-            "immediately if they switch. You speak Bahasa Melayu fluently; NEVER say you cannot "
-            "speak a language and NEVER hand off merely because of language. "
-            "Use the kb_search tool to ground answers in the "
-            "Proton knowledge base before giving facts. If you cannot resolve the caller's "
-            + handoff_instruction
-            + "After you answer, ask if there is anything else you can "
-            "help with, and keep helping across as many questions as the caller has. Do NOT ask "
-            "for a rating mid-conversation. ONLY once the caller clearly signals they are finished "
-            "(e.g. 'no, that's all', 'nothing else', 'goodbye'), ask 'How would you rate your "
-            "experience from 1 to 5?' then STOP and wait — do not thank them, wrap up, or say "
-            "anything else until the caller replies with a number. Only after they say a number, "
-            "call submit_csat with it and then give a brief thank-you. Do NOT ask for a rating if "
-            "you handed off to a human. No markdown — this is spoken aloud."
-        )
+        settings = self.orchestrator._settings
         try:
+            # The Twilio Media Streams protocol always sends a "start" event as
+            # the very first message. Read it BEFORE opening the Gemini Live
+            # session -- moved here for P8 task 5: which survey tool to offer
+            # (submit_csat vs submit_nps) is decided from the call's own
+            # CallSid, which only this "start" frame carries, and the tool
+            # list has to be fixed at session-open time. This costs nothing:
+            # Twilio's websocket is a separate connection from Gemini's, so
+            # reading "start" first and opening Gemini second takes the same
+            # wall-clock time as the previous order, just swapped -- bridge.
+            # stream_sid is still set (via bridge.handle_twilio below) before
+            # pump_task begins forwarding audio frames.
+            start_raw = await websocket.receive_text()
+            start_msg = json.loads(start_raw)
+            call_sid = _call_sid_from_start(start_msg)
+            # A conversation-keyed decision, exactly like the WhatsApp/email
+            # survey flow -- see should_survey_nps's docstring. A missing
+            # CallSid (malformed frame) fails closed to CSAT, today's
+            # behaviour, rather than risking a tool list Gemini never agreed
+            # to at session-open time.
+            nps_mode = (
+                should_survey_nps(f"phone-{call_sid}", settings.nps_sample_rate)
+                if call_sid
+                else False
+            )
+            # Whole-branch review fix (Important 2): the transfer-aware handoff
+            # paragraph is built ONLY when phone_handoff_enabled is on. Task 6
+            # rewrote it unconditionally, but with the flag off -- every
+            # deployed tenant today -- `_attempt_transfer` returns
+            # "ticket_created" 100% of the time, so the bot would promise "Let
+            # me try to get a specialist for you now..." and then immediately
+            # retract it with "a live transfer was not possible right now". That
+            # is a customer-visible behaviour change with all flags off, which
+            # this package's own runbook certifies cannot happen. Off ->
+            # byte-identical to the pre-package wording; on -> Task 6's wording,
+            # which is only honest when a transfer can actually occur.
+            if settings.phone_handoff_enabled:
+                handoff_instruction = (
+                    "issue, they ask for a human, or it is a complaint or sensitive matter: a live "
+                    "transfer is not always possible, so BEFORE calling request_human_handoff say "
+                    "something like 'Let me try to get a specialist for you now — if I can't connect "
+                    "you right away, they'll call you back soon,' THEN call request_human_handoff "
+                    "with a short reason and summary — once you call it you may be transferred "
+                    "immediately and unable to say anything further on this call, so say that line "
+                    "before calling the tool, never after. Then check the tool's status: if it is "
+                    '"transferring", say nothing further — you may already be off the line. If it is '
+                    '"ticket_created", tell the caller a live transfer was not possible right now '
+                    "but a specialist has the details and will call them back. "
+                )
+            else:
+                handoff_instruction = (
+                    "issue, they ask for a human, or it is a complaint or sensitive matter, call "
+                    "request_human_handoff with a short reason and summary, then tell the caller a "
+                    "specialist will follow up. "
+                )
+            # P8 task 5: NPS replaces CSAT for a sampled call, never both --
+            # exactly one closing question, and exactly one matching tool.
+            if nps_mode:
+                rating_instruction = (
+                    "Do NOT ask for a rating mid-conversation. ONLY once the caller clearly signals "
+                    "they are finished (e.g. 'no, that's all', 'nothing else', 'goodbye'), ask 'On "
+                    "a scale of 0 to 10, how likely are you to recommend us to a friend or "
+                    "colleague?' then STOP and wait — do not thank them, wrap up, or say anything "
+                    "else until the caller replies with a number. Only after they say a number, "
+                    "call submit_nps with it and then give a brief thank-you. Do NOT ask for a "
+                    "rating if you handed off to a human. No markdown — this is spoken aloud."
+                )
+            else:
+                rating_instruction = (
+                    "Do NOT ask for a rating mid-conversation. ONLY once the caller clearly signals "
+                    "they are finished (e.g. 'no, that's all', 'nothing else', 'goodbye'), ask 'How "
+                    "would you rate your experience from 1 to 5?' then STOP and wait — do not thank "
+                    "them, wrap up, or say anything else until the caller replies with a number. "
+                    "Only after they say a number, call submit_csat with it and then give a brief "
+                    "thank-you. Do NOT ask for a rating if you handed off to a human. No markdown — "
+                    "this is spoken aloud."
+                )
+            system_instruction = (
+                "You are Proton's friendly phone support agent. Answer spoken questions "
+                "concisely and naturally. You are fully multilingual: ALWAYS reply in the SAME "
+                "language the caller uses — English, Bahasa Melayu, or Chinese — and switch "
+                "immediately if they switch. You speak Bahasa Melayu fluently; NEVER say you cannot "
+                "speak a language and NEVER hand off merely because of language. "
+                "Use the kb_search tool to ground answers in the "
+                "Proton knowledge base before giving facts. If you cannot resolve the caller's "
+                + handoff_instruction
+                + "After you answer, ask if there is anything else you can "
+                "help with, and keep helping across as many questions as the caller has. "
+                + rating_instruction
+            )
+            survey_tool = SUBMIT_NPS_TOOL if nps_mode else SUBMIT_CSAT_TOOL
             async with self._live_session_factory(
-                self.orchestrator._settings,
+                settings,
                 system_instruction,
-                [KB_SEARCH_TOOL, REQUEST_HANDOFF_TOOL, SUBMIT_CSAT_TOOL],
+                [KB_SEARCH_TOOL, REQUEST_HANDOFF_TOOL, survey_tool],
             ) as live:
                 bridge = PhoneBridge(
                     live,
                     self.orchestrator._knowledge_port,
                     self.orchestrator._conversation_log_port,
                     websocket.send_json,
-                    self.orchestrator._settings,
+                    settings,
                 )
 
-                # The Twilio Media Streams protocol always sends a "start" event
-                # as the very first message. Handle it synchronously here so that
-                # bridge.stream_sid is set before pump_task begins forwarding
-                # audio frames — avoiding a race between the two concurrent tasks.
-                start_raw = await websocket.receive_text()
-                await bridge.handle_twilio(json.loads(start_raw))
+                # Feed the "start" frame read above so bridge.stream_sid is set
+                # before pump_task begins forwarding audio frames — avoiding a
+                # race between the two concurrent tasks.
+                await bridge.handle_twilio(start_msg)
 
                 async def from_twilio() -> None:
                     while True:

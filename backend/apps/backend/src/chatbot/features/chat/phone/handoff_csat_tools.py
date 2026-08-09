@@ -66,3 +66,46 @@ def parse_csat_score(args: dict[str, object]) -> int | None:
     except (TypeError, ValueError):
         return None
     return score if _CSAT_MIN <= score <= _CSAT_MAX else None
+
+
+# P8 task 5: the phone-channel equivalent of SUBMIT_CSAT_TOOL, offered
+# INSTEAD OF it (never alongside -- see router.py's phone_stream, which picks
+# exactly one of the two survey tools per call based on `should_survey_nps`)
+# when the call is sampled for NPS.
+SUBMIT_NPS_TOOL = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="submit_nps",
+            description=(
+                "After the caller gives a 0 to 10 likelihood-to-recommend rating at the end of "
+                "a resolved call, call this with the number they said."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "score": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="The caller's rating, an integer from 0 to 10.",
+                    )
+                },
+                required=["score"],
+            ),
+        )
+    ]
+)
+
+
+_NPS_MIN = 0
+_NPS_MAX = 10
+
+
+def parse_nps_score(args: dict[str, object]) -> int | None:
+    """Validate the submit_nps `score` arg -> int 0-10, else None. Rejected,
+    never clamped -- an out-of-range value is not the caller's actual
+    answer."""
+    raw = args.get("score")
+    try:
+        score = int(raw)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return None
+    return score if _NPS_MIN <= score <= _NPS_MAX else None

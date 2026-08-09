@@ -1059,6 +1059,23 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         res = await self._request("GET", f"/inboxes/{inbox_id}")
         return res if isinstance(res, dict) else None
 
+    async def get_conversation_assignee(self, ticket_id: str) -> str | None:
+        """GET the conversation and return `meta.assignee.id`, or None on any
+        failure/absence -- see the port docstring for the P8 task 5 NPS/CSAT
+        attribution contract this exists for. Same shape as
+        `features.metrics.mapping._chatwoot_agent_id`, which reads the
+        identical field off a synced conversation payload."""
+        res = await self._request("GET", f"/conversations/{ticket_id}")
+        if not isinstance(res, dict):
+            return None
+        meta = res.get("meta")
+        if not isinstance(meta, dict):
+            return None
+        assignee = meta.get("assignee")
+        if isinstance(assignee, dict) and assignee.get("id") is not None:
+            return str(assignee["id"])
+        return None
+
     async def get_latest_public_comment(self, ticket_id: str) -> tuple[str, str | None, str | None]:
         res = await self._request("GET", f"/conversations/{ticket_id}/messages")
         payload = res.get("payload", []) if isinstance(res, dict) else []

@@ -56,6 +56,12 @@ PERMISSION_REGISTRY: dict[str, str] = {
     # simply never be used.
     "cases.view": "View the case record panel",
     "cases.manage": "Edit the case record panel",
+    # P6: supervisor-facing reassignment (POST /routing/assign with an
+    # explicit agent_id) and the workforce/presence dashboard (GET
+    # /admin/workforce). Same shape as escalation.manage/customer360.view
+    # above -- auto-granted to "administrator", withheld from "agent".
+    "routing.reassign": "Reassign a conversation to a chosen agent",
+    "workforce.view": "View the workforce/presence dashboard",
 }
 
 _AGENT_PERMISSIONS = {"knowledge.edit", "cases.view", "cases.manage"}

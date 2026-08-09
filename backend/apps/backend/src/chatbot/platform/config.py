@@ -207,6 +207,68 @@ class Settings(BaseSettings):
     # agent may hold before pick_agent skips them. 0 = unlimited (today's
     # behavior, no cap enforced).
     routing_max_concurrent_per_agent: int = 0
+
+    # --- P6: agent presence, custom statuses & workforce dashboard ---
+    # Seven independent flags, all off by default, so a first deploy of this
+    # package is byte-identical to today. Note routing_enabled (above) is
+    # NOT one of them and P6 does not change its default -- a routing engine
+    # is switched on deliberately, per tenant, same as before this package.
+    #
+    # Off = no poller, no presence events -- the missing primitive (§3.1 of
+    # the P6 design) that every other P6 flag below builds on.
+    presence_tracking_enabled: bool = False
+    # Off = only the three native Chatwoot statuses (online/busy/offline)
+    # exist; the eight-status catalogue (Available, Busy, Lunch, Break,
+    # Coaching, Training, Toilet, Prayer) is not offered anywhere.
+    presence_custom_statuses_enabled: bool = False
+    # Off = no 10-minute / 1-hour unavailability alerts fire, regardless of
+    # presence_tracking_enabled.
+    presence_threshold_alerts_enabled: bool = False
+    # Off = no After-Call-Work state exists; a call ending never places an
+    # agent into a wrap-up status.
+    acw_enabled: bool = False
+    # Off = pick_agent keeps today's first-match-in-iteration-order
+    # selection. On = fewest-open-conversations wins within a tier, tie
+    # broken by least-recently-assigned.
+    routing_fair_share_enabled: bool = False
+    # Off = assignment stays purely event-driven (pick_agent runs only at
+    # handoff time); no sweeper polls for unassigned work sitting idle.
+    routing_sweep_enabled: bool = False
+    # Off = the follow-up-date panel is hidden and no follow_up_at custom
+    # attribute is read or written.
+    follow_up_date_enabled: bool = False
+
+    # Tuning values for the flags above. Each is inert while its owning flag
+    # is off, so shipping non-default tunables ahead of enabling a flag is
+    # safe.
+    #
+    # How often the presence poller ticks. Chatwoot has no presence webhook,
+    # so this is the only way to see a status change made in Chatwoot's own
+    # UI. The thresholds it drives are 10 minutes and 1 hour, so a minute of
+    # granularity is well inside the noise; tighter polling would only
+    # multiply Chatwoot API calls for no decision-relevant precision.
+    presence_poll_seconds: int = 60
+    # Elapsed time in a counts_as_unavailable status before the agent (and
+    # admin) are notified.
+    presence_warn_minutes: int = 10
+    # Elapsed time in a counts_as_unavailable status before the admin gets
+    # the escalated alert (with the agent's WIP list attached).
+    presence_escalate_minutes: int = 60
+    # An agent who forgets to leave After-Call-Work would otherwise be
+    # excluded from routing indefinitely -- a self-inflicted outage that
+    # would get blamed on the routing engine. This is the auto-exit timeout.
+    acw_timeout_seconds: int = 120
+    # Minimum age (seconds) an unassigned conversation must reach before the
+    # sweeper will assign it. This is the race guard from §3.6 of the P6
+    # design: without it, the sweeper and the event-driven assignment path
+    # (which runs at handoff time, essentially immediately) would both try
+    # to assign the same fresh conversation. 120s is chosen to comfortably
+    # exceed that event-driven path's own latency, which is the only race
+    # this gate exists to prevent.
+    routing_sweep_min_age_seconds: int = 120
+    # How often the sweeper itself ticks.
+    routing_sweep_interval_seconds: int = 60
+
     live_faq_collection: str = "live_faq"
     embedding_model: str = "text-embedding-004"
 

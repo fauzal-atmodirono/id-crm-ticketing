@@ -135,6 +135,13 @@ class Settings(BaseSettings):
     # and resolves the DSN conversation so it stops inflating the SLA backlog.
     bounce_handling_enabled: bool = False
 
+    # P6: gates the follow_up_at custom-attribute handling in
+    # services/sync.py (a per-conversation follow-up date an agent sets,
+    # distinct from the SLA deadline). Default off = panel hidden, no
+    # attribute read or written. The other twelve P6 settings are
+    # backend-only; see backend/apps/backend/src/chatbot/platform/config.py.
+    follow_up_date_enabled: bool = False
+
     # Count reopens (a resolved -> not-resolved transition) onto
     # `reopen_count`/`last_reopened_at`. The warehouse column and the
     # v_reopen_rate view have existed since Phase 3 with nothing writing them,

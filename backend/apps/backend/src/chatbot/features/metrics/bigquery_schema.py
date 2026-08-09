@@ -234,6 +234,24 @@ def _validate_timezone(reporting_timezone: str) -> str:
     return zone
 
 
+# P9 task 4: how many preceding days the hourly baseline averages over.
+#
+# Seven, and NOT a setting: `config.py` has no field for it, and inventing an
+# env var here would be a knob nobody documented (the same reason
+# `first_response_target_minutes` keeps its default in `ensure_views` instead of
+# being fabricated from settings). Seven same-hour samples is the smallest
+# window that gives `STDDEV` something to work with while still reacting inside
+# a week.
+#
+# The trade-off this window makes, recorded rather than hidden: the baseline for
+# Monday 14:00 includes Saturday and Sunday 14:00. A same-WEEKDAY baseline
+# ("this Tuesday 14:00 against the preceding Tuesdays") would be cleaner, but at
+# one sample per week it needs 28+ days of history to have a usable standard
+# deviation and it reacts to a shift in traffic a month late. The looser hourly
+# `k` (3.5 vs the daily 3.0) is what absorbs the extra weekday variance.
+HOURLY_BASELINE_DAYS = 7
+
+
 def view_ddls(
     project: str,
     dataset: str,
@@ -244,6 +262,9 @@ def view_ddls(
     csat_by_agent_enabled: bool = False,
     csat_ranking_min_samples: int = 10,
     kb_score_floor: float = 0.55,
+    anomaly_hourly_enabled: bool = False,
+    anomaly_hourly_zscore_k: float = 3.5,
+    anomaly_hourly_min_baseline: int = 5,
 ) -> dict[str, str]:
     """The CREATE OR REPLACE VIEW statements for the Looker tiles.
 
@@ -258,6 +279,12 @@ def view_ddls(
     entirely, so the defaulted call returns the exact same key set it returned
     before P8 -- flags-off means "not created", not "created and empty",
     because `ensure_views` runs this over a live warehouse.
+
+    ``anomaly_hourly_enabled`` behaves the same way for
+    `v_channel_anomaly_hourly` (P9 task 4), and its two tunables are
+    parameters rather than constants for the reason P8 established: a view
+    that hardcodes a value the operator believes they configured is inert
+    configuration.
     """
     fq = f"`{project}.{dataset}.{table}`"
     bucket_case = _sla_bucket_case_sql(sla_targets_json)
@@ -867,6 +894,83 @@ def view_ddls(
             f"PARTITION BY day, channel, respondents >= {floor} "
             f"ORDER BY avg_score DESC) END AS rank_in_channel "
             f"FROM per_agent"
+        )
+
+    # ── P9 task 4: the hourly channel-volume anomaly source.
+    #
+    # A SIBLING of `v_channel_anomaly`, never a widening of it. The daily view
+    # above is byte-identical (`test_the_daily_detector_is_completely_unchanged`)
+    # and is what the deployed anomaly page and the report scheduler still read.
+    #
+    # **The baseline is the SAME HOUR ACROSS PRECEDING DAYS, never the trailing
+    # hours of today.** That is what `same_hour` (`WHERE hour_of_day =
+    # <reference hour>`) plus `GROUP BY channel, hour_of_day` plus the
+    # `USING (channel, hour_of_day)` join express, and it is the whole design:
+    # comparing 14:00 against 13:00, 12:00 and 11:00 flags every lunchtime dip
+    # and every morning ramp as an anomaly, and a detector that fires on the
+    # daily traffic shape is one an operator mutes within a week -- after which
+    # it detects nothing at all, forever.
+    #
+    # **`min_baseline` travels ON the row and is not a filter.** No `WHERE`
+    # removes a low-volume hour, for the reason `v_csat_by_agent`'s ranking
+    # floor is also not a filter: "we did not look" and "we looked and it was
+    # fine" have to stay distinguishable on the dashboard (P5's `no_data`
+    # principle). So a below-floor hour is present, carries its real
+    # `current_volume`, and says `has_sufficient_volume = false` -- the
+    # dashboard renders it as "insufficient volume", not as normal.
+    #
+    # The floor is mandatory rather than a refinement: at 03:00 a channel's
+    # baseline may be 0.3 cases an hour, two cases is then a z-score of 6, and
+    # without the floor the detector alerts every single night.
+    #
+    # **The reference bucket is the last COMPLETE hour**, not the hour in
+    # progress. `TIMESTAMP_TRUNC(TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1
+    # HOUR), HOUR)` is the same choice the daily view makes with yesterday: a
+    # partially-elapsed bucket is systematically under-counted against complete
+    # ones, so every query would see the current hour as a collapse in volume.
+    # (Hour truncation is zone-independent for every zone in
+    # SUPPORTED_REPORTING_TIMEZONES -- all whole-hour offsets.)
+    #
+    # `baseline_days` is emitted because the mean is over days that had ANY
+    # traffic in that hour: an hour with zero conversations produces no row in
+    # `hourly` and is absent rather than zero, which raises the mean for sparse
+    # hours. That bias is conservative -- a higher baseline makes a spike LESS
+    # likely to be flagged -- and the floor suppresses exactly the sparse hours
+    # where it is largest, so it is documented rather than corrected with a
+    # generated day spine.
+    #
+    # No z-score and no flagged/normal verdict here, deliberately: that
+    # decision lives once, in `features/metrics/anomaly.py`
+    # (`evaluate_hourly_anomalies`), exactly as it does for the daily grain.
+    # Two implementations of one threshold is a drift waiting to happen.
+    # `min_baseline` and `zscore_k` are echoed as columns only so a Looker tile
+    # renders the configured values instead of a hardcoded guess.
+    if anomaly_hourly_enabled:
+        hourly_floor = int(anomaly_hourly_min_baseline)
+        hourly_k = float(anomaly_hourly_zscore_k)
+        ref_ts = "TIMESTAMP_TRUNC(TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR), HOUR)"
+        ref_day = f"DATE({ref_ts}{_tz})"
+        ref_hour = f"EXTRACT(HOUR FROM {ref_ts}{at_zone})"
+        ddls["v_channel_anomaly_hourly"] = (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_channel_anomaly_hourly` AS "
+            f"WITH hourly AS (SELECT channel, {d_created} AS d, "
+            f"EXTRACT(HOUR FROM created_at{at_zone}) AS hour_of_day, COUNT(*) AS v "
+            f"FROM {fq} WHERE created_at IS NOT NULL GROUP BY channel, d, hour_of_day), "
+            f"same_hour AS (SELECT * FROM hourly WHERE hour_of_day = {ref_hour}), "
+            f"cur AS (SELECT channel, hour_of_day, v AS current_volume FROM same_hour "
+            f"WHERE d = {ref_day}), "
+            f"base AS (SELECT channel, hour_of_day, AVG(v) AS baseline_mean, "
+            f"STDDEV(v) AS baseline_stddev, COUNT(*) AS baseline_days FROM same_hour "
+            f"WHERE d BETWEEN DATE_SUB({ref_day}, INTERVAL {HOURLY_BASELINE_DAYS} DAY) "
+            f"AND DATE_SUB({ref_day}, INTERVAL 1 DAY) "
+            f"GROUP BY channel, hour_of_day) "
+            f"SELECT b.channel, b.hour_of_day, {ref_day} AS day, "
+            f"COALESCE(c.current_volume, 0) AS current_volume, "
+            f"b.baseline_mean, b.baseline_stddev, b.baseline_days, "
+            f"{hourly_floor} AS min_baseline, "
+            f"b.baseline_mean >= {hourly_floor} AS has_sufficient_volume, "
+            f"{hourly_k} AS zscore_k "
+            f"FROM base b LEFT JOIN cur c USING (channel, hour_of_day)"
         )
 
     return ddls

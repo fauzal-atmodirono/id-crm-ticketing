@@ -97,6 +97,7 @@ from chatbot.features.metrics.query_port import (
     DeptPicRow,
     FallbackRow,
     FirstResponseRow,
+    HourlyAnomalyRow,
     LifecycleMetrics,
     MockMetricsQuery,
     NpsByAgentRow,
@@ -137,6 +138,7 @@ _BUCKET_FORMAT = {
     "week": "%G-W%V",  # ISO year + ISO week, matches period.bucket_key
     "month": "%Y-%m",
 }
+
 
 def _in_period(day: Any, period: PeriodRange) -> bool:
     """Is a row's `day` inside the requested window?
@@ -391,9 +393,19 @@ class BigQueryMetricsQuery:
     async def fetch_anomalies(self) -> list[AnomalyRow]:
         return await asyncio.to_thread(self._fetch_anomalies_sync)
 
-    def _dated_block(
-        self, view, row_type, period, group_columns, value_column, filters=None
-    ):
+    def _fetch_hourly_anomalies_sync(self) -> tuple[list[HourlyAnomalyRow], bool]:
+        # `_query_block`, not `_block`: this view is flag-gated, so "the view is
+        # not there yet" is a real and likely state on a tenant that has enabled
+        # ANOMALY_HOURLY_ENABLED but not yet re-run `ensure_views`. `_block`
+        # would discard the `ok` flag and hand the endpoint an empty list, which
+        # renders as "no anomalies" -- a reassurance about an examination that
+        # never happened.
+        return self._query_block("v_channel_anomaly_hourly", HourlyAnomalyRow)
+
+    async def fetch_hourly_anomalies(self) -> tuple[list[HourlyAnomalyRow], bool]:
+        return await asyncio.to_thread(self._fetch_hourly_anomalies_sync)
+
+    def _dated_block(self, view, row_type, period, group_columns, value_column, filters=None):
         """One block of a now-dated view, filtered when a period is given.
 
         P4: these views gained a `day` column precisely so this is possible.
@@ -416,11 +428,19 @@ class BigQueryMetricsQuery:
         self, period: PeriodRange | None = None, filters: Any | None = None
     ) -> DepartmentsMetrics:
         dept_rows, dept_scope = self._dated_block(
-            "v_dept_pic_performance", DeptPicRow, period, ("department", "pic"), "cases",
+            "v_dept_pic_performance",
+            DeptPicRow,
+            period,
+            ("department", "pic"),
+            "cases",
             filters,
         )
         reopen_rows, reopen_scope = self._dated_block(
-            "v_reopen_rate", ReopenRow, period, ("dealer", "department", "pic"), "reopened",
+            "v_reopen_rate",
+            ReopenRow,
+            period,
+            ("dealer", "department", "pic"),
+            "reopened",
             filters,
         )
         # v_category_by_vehicle_model has no day column (it is a taxonomy
@@ -433,11 +453,13 @@ class BigQueryMetricsQuery:
                 "v_category_by_vehicle_model", CategoryByVehicleModelRow
             ),
         )
-        metrics.attach_scopes({
-            "dept_pic": dept_scope,
-            "reopen": reopen_scope,
-            "category_by_vehicle_model": _UNFILTERED_SCOPE,
-        })
+        metrics.attach_scopes(
+            {
+                "dept_pic": dept_scope,
+                "reopen": reopen_scope,
+                "category_by_vehicle_model": _UNFILTERED_SCOPE,
+            }
+        )
         return metrics
 
     async def fetch_departments(
@@ -468,16 +490,29 @@ class BigQueryMetricsQuery:
         a week header."""
         blocks = {
             "sla": ("v_sla_achievement", SlaAchievementRow, ("channel", "division"), "with_sla"),
-            "tasks_per_agent": ("v_tasks_per_agent", TasksPerAgentRow, ("agent_id", "pic"), "cases"),
+            "tasks_per_agent": (
+                "v_tasks_per_agent",
+                TasksPerAgentRow,
+                ("agent_id", "pic"),
+                "cases",
+            ),
             "first_response": (
-                "v_first_response_by_channel", FirstResponseRow, ("channel",),
+                "v_first_response_by_channel",
+                FirstResponseRow,
+                ("channel",),
                 "with_first_response",
             ),
             "resolution_time": (
-                "v_resolution_time", ResolutionTimeRow, ("channel", "division"), "resolved",
+                "v_resolution_time",
+                ResolutionTimeRow,
+                ("channel", "division"),
+                "resolved",
             ),
             "nps_by_agent": (
-                "v_nps_by_agent", NpsByAgentRow, ("agent_id", "channel"), "respondents",
+                "v_nps_by_agent",
+                NpsByAgentRow,
+                ("agent_id", "channel"),
+                "respondents",
             ),
         }
         rows: dict[str, Any] = {}
@@ -550,18 +585,24 @@ class BigQueryMetricsQuery:
         # `created_at` -- see v_dealer_escalation in bigquery_schema.py. A case
         # created in May and escalated in June is a JUNE row.
         by_dealer, dealer_scope = self._dated_block(
-            "v_dealer_escalation", DealerEscalationRow, period, ("dealer",),
-            "cases_escalated", filters,
+            "v_dealer_escalation",
+            DealerEscalationRow,
+            period,
+            ("dealer",),
+            "cases_escalated",
+            filters,
         )
         metrics = DealerEscalationMetrics(
             by_dealer=by_dealer,
             slowest_cases=self._block("v_dealer_escalation_slowest_cases", DealerSlowCaseRow),
         )
-        metrics.attach_scopes({
-            "by_dealer": dealer_scope,
-            # A worst-offenders list is a ranking, not a time series.
-            "slowest_cases": _UNFILTERED_SCOPE,
-        })
+        metrics.attach_scopes(
+            {
+                "by_dealer": dealer_scope,
+                # A worst-offenders list is a ranking, not a time series.
+                "slowest_cases": _UNFILTERED_SCOPE,
+            }
+        )
         return metrics
 
     async def fetch_dealer_escalation(
@@ -573,8 +614,12 @@ class BigQueryMetricsQuery:
         self, period: PeriodRange | None = None, filters: Any | None = None
     ) -> SlaBucketMetrics:
         rows, scope = self._dated_block(
-            "v_resolution_sla_buckets", SlaBucketRow, period,
-            ("case_type", "bucket_label"), "cases", filters,
+            "v_resolution_sla_buckets",
+            SlaBucketRow,
+            period,
+            ("case_type", "bucket_label"),
+            "cases",
+            filters,
         )
         metrics = SlaBucketMetrics(buckets=rows)
         metrics.attach_scopes({"buckets": scope})
@@ -617,9 +662,7 @@ class BigQueryMetricsQuery:
     ) -> VolumeByTypeDivisionMetrics:
         return await asyncio.to_thread(self._fetch_volume_by_type_division_sync, period)
 
-    def _fetch_after_hours_sync(
-        self, period: PeriodRange | None = None
-    ) -> AfterHoursMetrics:
+    def _fetch_after_hours_sync(self, period: PeriodRange | None = None) -> AfterHoursMetrics:
         """P1: after-hours arrival volume, and first-response speed split by it.
 
         The two blocks report different scopes on purpose. `v_volume_after_hours`
@@ -658,17 +701,11 @@ class BigQueryMetricsQuery:
             )
         )
 
-        metrics = AfterHoursMetrics(
-            volume=volume_rows, first_response=first_response_rows
-        )
-        metrics.attach_scopes(
-            {"volume": volume_scope, "first_response": first_response_scope}
-        )
+        metrics = AfterHoursMetrics(volume=volume_rows, first_response=first_response_rows)
+        metrics.attach_scopes({"volume": volume_scope, "first_response": first_response_scope})
         return metrics
 
-    async def fetch_after_hours(
-        self, period: PeriodRange | None = None
-    ) -> AfterHoursMetrics:
+    async def fetch_after_hours(self, period: PeriodRange | None = None) -> AfterHoursMetrics:
         return await asyncio.to_thread(self._fetch_after_hours_sync, period)
 
     def _fetch_by_tag_sync(

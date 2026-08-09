@@ -166,6 +166,38 @@ class AnomalyRow:
 
 
 @dataclass(frozen=True)
+class HourlyAnomalyRow:
+    """One row of `v_channel_anomaly_hourly` (P9 task 4).
+
+    Columns match that view's SELECT exactly, because `_query_block` does
+    `row_type(**dict(r))`.
+
+    The last four carry defaults so a test (or a hand-built fixture) can state
+    only the numbers it is about. They are context/echo columns the real view
+    always supplies: `day` is which day the reference hour belongs to, and
+    `min_baseline`/`zscore_k` are the configured values echoed onto the row so a
+    BI tile renders the operator's actual configuration rather than a hardcoded
+    guess. `has_sufficient_volume` is the view's own `baseline_mean >=
+    min_baseline`; the authoritative verdict is still
+    `anomaly.evaluate_hourly_anomalies`, which reads the live `Settings` values
+    -- if an operator changes the floor without re-running `ensure_views`, the
+    echoed column is the stale one, and that divergence is visible rather than
+    silent.
+    """
+
+    channel: str
+    hour_of_day: int
+    current_volume: int
+    baseline_mean: float | None
+    baseline_stddev: float | None
+    baseline_days: int = 0
+    day: date | None = None
+    min_baseline: int = 0
+    has_sufficient_volume: bool | None = None
+    zscore_k: float = 0.0
+
+
+@dataclass(frozen=True)
 class DashboardMetrics:
     volume: list[VolumeRow]
     resolution: list[ResolutionRow]
@@ -559,6 +591,16 @@ class MetricsQueryPort(Protocol):
     # them would be a dishonest API surface rather than a real capability.
     async def fetch_dashboard(self, period: PeriodRange | None = None) -> DashboardMetrics: ...
     async def fetch_anomalies(self) -> list[AnomalyRow]: ...
+
+    # P9 task 4. Returns `(rows, ok)` rather than a bare list, unlike every
+    # other method here, and the asymmetry is deliberate: `v_channel_anomaly_hourly`
+    # is FLAG-GATED, so on a tenant where `anomaly_hourly_enabled` was turned on
+    # but `ensure_views` has not yet run, the view genuinely does not exist. An
+    # empty list would then read as "no anomalies in the last hour" -- a
+    # reassurance -- when the truth is "nothing was examined". `ok=False` is what
+    # lets the endpoint say so.
+    async def fetch_hourly_anomalies(self) -> tuple[list[HourlyAnomalyRow], bool]: ...
+
     async def fetch_departments(
         self, period: PeriodRange | None = None, filters: object | None = None
     ) -> DepartmentsMetrics: ...
@@ -578,9 +620,7 @@ class MetricsQueryPort(Protocol):
     async def fetch_volume_by_type_division(
         self, period: PeriodRange | None = None
     ) -> VolumeByTypeDivisionMetrics: ...
-    async def fetch_after_hours(
-        self, period: PeriodRange | None = None
-    ) -> AfterHoursMetrics: ...
+    async def fetch_after_hours(self, period: PeriodRange | None = None) -> AfterHoursMetrics: ...
     async def fetch_by_tag(
         self, period: PeriodRange | None = None, tag: str | None = None
     ) -> TagVolumeMetrics: ...
@@ -638,7 +678,57 @@ class MockMetricsQuery:
             AnomalyRow("whatsapp", current_volume=260, baseline_mean=90.0, baseline_stddev=15.0),
         ]
 
-    async def fetch_departments(self, period: PeriodRange | None = None, filters: object | None = None) -> DepartmentsMetrics:
+    async def fetch_hourly_anomalies(self) -> tuple[list[HourlyAnomalyRow], bool]:
+        """Canned hourly buckets: one normal, one genuine spike, one below the
+        floor -- so the dev/test anomaly page renders all three labels.
+
+        `degraded=True` returns `([], False)` and NOT the canned rows. This is
+        the fail-open fallback for a BigQuery client that would not initialise,
+        and a fabricated "whatsapp is at 3x baseline" on a client-facing page is
+        worse than an honest "unavailable"; `fetch_anomalies` above predates that
+        reasoning, and this method is not going to repeat it.
+        """
+        if self._degraded:
+            return [], False
+        return [
+            HourlyAnomalyRow(
+                "web",
+                hour_of_day=14,
+                current_volume=130,
+                baseline_mean=125.0,
+                baseline_stddev=10.0,
+                baseline_days=7,
+                min_baseline=5,
+                has_sufficient_volume=True,
+                zscore_k=3.5,
+            ),
+            HourlyAnomalyRow(
+                "whatsapp",
+                hour_of_day=14,
+                current_volume=260,
+                baseline_mean=90.0,
+                baseline_stddev=15.0,
+                baseline_days=7,
+                min_baseline=5,
+                has_sufficient_volume=True,
+                zscore_k=3.5,
+            ),
+            HourlyAnomalyRow(
+                "phone",
+                hour_of_day=14,
+                current_volume=3,
+                baseline_mean=0.4,
+                baseline_stddev=0.5,
+                baseline_days=3,
+                min_baseline=5,
+                has_sufficient_volume=False,
+                zscore_k=3.5,
+            ),
+        ], True
+
+    async def fetch_departments(
+        self, period: PeriodRange | None = None, filters: object | None = None
+    ) -> DepartmentsMetrics:
         if self._degraded:
             return DepartmentsMetrics(dept_pic=[], reopen=[], category_by_vehicle_model=[])
         return DepartmentsMetrics(
@@ -649,7 +739,9 @@ class MockMetricsQuery:
             ],
         )
 
-    async def fetch_callcenter(self, period: PeriodRange | None = None, filters: object | None = None) -> CallCentreMetrics:
+    async def fetch_callcenter(
+        self, period: PeriodRange | None = None, filters: object | None = None
+    ) -> CallCentreMetrics:
         if self._degraded:
             return CallCentreMetrics(
                 sla=[],
@@ -758,7 +850,9 @@ class MockMetricsQuery:
         metrics.attach_scopes({"cases": self._scope, "state_trend": self._scope})
         return metrics
 
-    async def fetch_dealer_escalation(self, period: PeriodRange | None = None, filters: object | None = None) -> DealerEscalationMetrics:
+    async def fetch_dealer_escalation(
+        self, period: PeriodRange | None = None, filters: object | None = None
+    ) -> DealerEscalationMetrics:
         if self._degraded:
             return DealerEscalationMetrics(by_dealer=[], slowest_cases=[])
         return DealerEscalationMetrics(
@@ -766,7 +860,9 @@ class MockMetricsQuery:
             slowest_cases=[DealerSlowCaseRow("CONV042", "Dealer KL", 12.0)],
         )
 
-    async def fetch_sla_buckets(self, period: PeriodRange | None = None, filters: object | None = None) -> SlaBucketMetrics:
+    async def fetch_sla_buckets(
+        self, period: PeriodRange | None = None, filters: object | None = None
+    ) -> SlaBucketMetrics:
         if self._degraded:
             return SlaBucketMetrics(buckets=[])
         return SlaBucketMetrics(
@@ -778,14 +874,23 @@ class MockMetricsQuery:
             ]
         )
 
-    async def fetch_case_aging(self, period: PeriodRange | None = None, filters: object | None = None) -> CaseAgingMetrics:
+    async def fetch_case_aging(
+        self, period: PeriodRange | None = None, filters: object | None = None
+    ) -> CaseAgingMetrics:
         if self._degraded:
             return CaseAgingMetrics(cases=[])
         return CaseAgingMetrics(
             cases=[
                 CaseAgingRow(
-                    "CONV099", "Complaint", "Sales", "Dealer KL", "Ali", "open",
-                    created_at=None, age_days=4.0, bucket_label="4-6 days",
+                    "CONV099",
+                    "Complaint",
+                    "Sales",
+                    "Dealer KL",
+                    "Ali",
+                    "open",
+                    created_at=None,
+                    age_days=4.0,
+                    bucket_label="4-6 days",
                 )
             ]
         )
@@ -814,9 +919,7 @@ class MockMetricsQuery:
         metrics.attach_scopes({"by_tag": self._scope})
         return metrics
 
-    async def fetch_after_hours(
-        self, period: PeriodRange | None = None
-    ) -> AfterHoursMetrics:
+    async def fetch_after_hours(self, period: PeriodRange | None = None) -> AfterHoursMetrics:
         del period  # mock always returns the same canned payload
         metrics = AfterHoursMetrics(
             volume=[
@@ -825,12 +928,8 @@ class MockMetricsQuery:
             ],
             first_response=[
                 AfterHoursFirstResponseRow("2026-06", "WhatsApp", "in_hours", 480, 12.5, 41.0),
-                AfterHoursFirstResponseRow(
-                    "2026-06", "WhatsApp", "after_hours", 202, 18.0, 63.0
-                ),
+                AfterHoursFirstResponseRow("2026-06", "WhatsApp", "after_hours", 202, 18.0, 63.0),
             ],
         )
-        metrics.attach_scopes(
-            {"volume": self._scope, "first_response": self._scope}
-        )
+        metrics.attach_scopes({"volume": self._scope, "first_response": self._scope})
         return metrics

@@ -215,6 +215,11 @@ def ensure_views(settings: Settings) -> None:
     created, with a passing unit test on the DDL builder either way. Off (the
     default) omits the view entirely, so a tenant who has not opted in gets
     the exact same warehouse it had before P8.
+
+    P9 task 4 forwards the hourly-anomaly trio for the same reason, and the two
+    tunables for one more: `v_channel_anomaly_hourly` prints `min_baseline` and
+    `zscore_k` on every row, so a view built from hardcoded constants would show
+    an operator a configuration they do not have.
     """
     client = bigquery.Client(project=settings.bigquery_project_id)
     for ddl in view_ddls(
@@ -236,6 +241,9 @@ def ensure_views(settings: Settings) -> None:
         # `coverage_basis` column, so a coverage trend cannot be read across a
         # floor change without noticing.
         kb_score_floor=settings.kb_score_floor,
+        anomaly_hourly_enabled=settings.anomaly_hourly_enabled,
+        anomaly_hourly_zscore_k=settings.anomaly_hourly_zscore_k,
+        anomaly_hourly_min_baseline=settings.anomaly_hourly_min_baseline,
     ).values():
         client.query(ddl).result()
 

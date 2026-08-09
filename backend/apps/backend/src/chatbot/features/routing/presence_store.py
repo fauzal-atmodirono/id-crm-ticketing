@@ -24,6 +24,18 @@ or `previous`, and it takes the event the caller actually decided about
 (`expected_event`) as an identity guard: if a new transition has landed
 between the caller's decision and this call, the stamp is a no-op (logged),
 never a mis-attributed write onto the new period.
+
+**`latest()` and `stamp_alert()` are bounded, not full scans.** Both are on
+the routing hot path -- fair-share selection (`RoutingService._is_routable`)
+calls `latest()` once per candidate agent on every `pick_agent` call -- so
+their cost cannot grow with how many presence events an agent has ever had.
+Both use `order_by("at", DESCENDING).limit(...)` instead of streaming every
+document for the agent and taking the max client-side. See
+`PresenceEventStore`'s docstring for why `since()` and `_latest_at_or_before()`
+are *not* bounded the same way (a composite index would be required, and
+this store does not provision one blind), and for the fact that this bounds
+the *read*, not the underlying collection's unbounded growth -- retention is
+still nobody's job.
 """
 
 from __future__ import annotations
@@ -42,6 +54,18 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(__name__)
 
 _COLLECTION = "presence_events"
+
+_LATEST_QUERY_LIMIT = 5
+"""How many of an agent's most-recent events `latest()`/`stamp_alert()`
+fetch, newest first, before giving up. `1` would suffice if every document
+were guaranteed parseable, but `_from_document` deliberately *skips* (logs,
+does not raise) a document it can't read rather than taking the whole read
+down -- see its own docstring. Fetching a small constant instead of exactly
+one lets that skip still resolve to the true latest event without falling
+back to streaming the agent's entire history. The important property is
+that this is a fixed constant, not proportional to how many events the
+agent has ever accumulated -- that is what makes the query O(1) instead of
+O(history) as the account ages."""
 
 
 @dataclass(frozen=True)
@@ -124,13 +148,49 @@ class PresenceEventStore:
     """Firestore-backed, append-only log of agent presence transitions.
 
     One document per event (auto-generated id) in the ``presence_events``
-    collection, queried by ``agent_id`` and sorted client-side by ``at`` --
-    the same shape as `FirestoreAuditLog`, and for the same reason: a plain
-    equality filter needs no composite index, so querying never depends on
-    an index being provisioned. All I/O runs via ``asyncio.to_thread`` so
-    the async FastAPI event loop is never blocked, and every read fails open
-    (logged, empty/``None`` result) -- a Firestore hiccup must not break
-    presence reporting.
+    collection. All I/O runs via ``asyncio.to_thread`` so the async FastAPI
+    event loop is never blocked, and every read fails open (logged,
+    empty/``None`` result) -- a Firestore hiccup must not break presence
+    reporting.
+
+    **Query shape differs by method, deliberately.**
+
+    ``latest()`` and ``stamp_alert()`` are bounded server-side:
+    ``where("agent_id", "==", agent_id).order_by("at",
+    direction=DESCENDING).limit(_LATEST_QUERY_LIMIT)``. A single equality
+    filter plus a single ``order_by`` on a *different* field is one of
+    Firestore's documented exemptions from composite indexing -- it is
+    served entirely by the automatic single-field indexes Firestore
+    maintains for every field, so this bound needs nothing provisioned. This
+    matters because ``latest()`` is on the routing hot path:
+    ``RoutingService._is_routable`` calls it once per candidate agent on
+    every ``pick_agent`` call, so its cost must not grow with how many
+    presence transitions an agent has accumulated over the account's
+    lifetime -- at ~20 transitions/agent/day, a year-old 20-agent account
+    would otherwise mean ~140k documents streamed per routing decision.
+
+    ``since()`` and ``_latest_at_or_before()`` are **not** bounded the same
+    way and remain a full per-agent equality-filtered scan, sorted/filtered
+    client-side, exactly as before this fix. Both need every event *in* (or
+    at-or-before) a time range, which is a range filter on ``at`` combined
+    with an equality filter on a *different* field (``agent_id``) --
+    Firestore requires a **composite** index for that combination, and one
+    cannot be provisioned from application code; a query that needs an
+    index it doesn't have fails at runtime, not at review time, and a
+    routing/reporting read failing silently is worse than the slow read it
+    would replace. So this store stays within what a single-field-plus-order
+    query supports for the two hot-path methods, and leaves the range-query
+    methods as a known, documented follow-up rather than guessing at an
+    index. They are called from the workforce dashboard's per-agent "today"
+    tile and the threshold-alert sweeper -- both real, but neither is the
+    per-routing-decision hot path this fix targets.
+
+    **Bounding the read does not bound the collection.** There is still no
+    retention/archival policy for ``presence_events`` and no task in this
+    package owns adding one -- the collection grows forever regardless of
+    how any individual method queries it. This fix stops routing decisions
+    (and alert stamping) from paying for the full history; it does not stop
+    the history from growing.
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -174,15 +234,29 @@ class PresenceEventStore:
         `None` here -- never a synthetic event -- is what lets
         `elapsed_in_current_status` tell "no history" apart from "zero
         seconds in status".
+
+        Bounded server-side (`order_by("at", DESCENDING).limit(_LATEST_QUERY_LIMIT)`)
+        rather than streaming every event for the agent and taking the max
+        client-side -- see the class docstring's "Query shape" section for
+        why this needs no composite index and why it matters (this is the
+        read fair-share routing makes once per candidate agent on every
+        `pick_agent` call).
         """
         try:
 
             def _query() -> PresenceEvent | None:
-                docs = self._collection().where("agent_id", "==", agent_id).stream()
-                events = [e for e in (_from_document(d) for d in docs) if e is not None]
-                if not events:
-                    return None
-                return max(events, key=lambda e: e.at)
+                docs = (
+                    self._collection()
+                    .where("agent_id", "==", agent_id)
+                    .order_by("at", direction=firestore.Query.DESCENDING)
+                    .limit(_LATEST_QUERY_LIMIT)
+                    .stream()
+                )
+                for doc in docs:
+                    event = _from_document(doc)
+                    if event is not None:
+                        return event
+                return None
 
             return await asyncio.to_thread(_query)
         except Exception as e:
@@ -298,17 +372,30 @@ class PresenceEventStore:
         except `alerts_sent`, which this method itself is free to have
         already mutated), the stamp is skipped and logged rather than
         applied to the wrong period.
+
+        Like `latest()`, this resolves "the latest event" via a bounded,
+        server-side ``order_by("at", DESCENDING).limit(_LATEST_QUERY_LIMIT)``
+        query rather than streaming and `max()`-ing the agent's entire
+        history -- the threshold sweeper calls this once per alert per
+        agent per poll, so it has the same growth problem `latest()` does if
+        left unbounded.
         """
         try:
 
             def _run() -> None:
-                docs = list(self._collection().where("agent_id", "==", agent_id).stream())
+                docs = list(
+                    self._collection()
+                    .where("agent_id", "==", agent_id)
+                    .order_by("at", direction=firestore.Query.DESCENDING)
+                    .limit(_LATEST_QUERY_LIMIT)
+                    .stream()
+                )
                 candidates: list[tuple[Any, PresenceEvent]] = [
                     (d, e) for d in docs if (e := _from_document(d)) is not None
                 ]
                 if not candidates:
                     return
-                doc, latest_event = max(candidates, key=lambda pair: pair[1].at)
+                doc, latest_event = candidates[0]  # already ordered newest-first
                 if not _same_period(latest_event, expected_event):
                     _log.info(
                         "presence_store_stamp_alert_skipped_stale_event",

@@ -121,6 +121,32 @@ class RoutingService:
       be down). A custom-status outage therefore degrades to exactly
       today's native-status-only routing, never to "nobody eligible" and
       never to "everybody eligible".
+    - The ``routable`` check is evaluated **lazily, tier by tier**, in the
+      same order ``pick_agent`` already tries tiers, and only against the
+      candidates *in* the tier being tried — not against every online
+      agent up front. As soon as a tier's filtered candidate list is
+      non-empty, that tier is used and no later tier's candidates are
+      inspected at all. This is a plain reordering, not a behavior change:
+      routability is a per-agent property independent of which tier an
+      agent falls in, so filtering per tier and filtering globally-then-
+      splitting-into-tiers produce the same final candidate sets — the
+      only difference is that a tier-3 idle-pool agent's status is never
+      looked up (one ``PresenceEventStore.latest`` call each) when a
+      tier-1 or tier-2 candidate already satisfies the request. Each
+      ``latest()`` call is itself now O(1) regardless of the agent's event
+      history (see ``PresenceEventStore``'s docstring) — this reordering is
+      the second, independent lever on the same cost: fewer calls, each
+      cheaper. A true batched "latest status for N agents in one round
+      trip" was considered and rejected: Firestore has no "latest per
+      group" aggregation, so the only way to answer that in one query is
+      an ``in`` filter across agent ids, which reads *every* matching event
+      document for *all* of those agents rather than just each one's
+      latest — reintroducing the exact unbounded-scan problem this fix
+      removes, just merged across agents instead of per agent. Per-agent
+      calls, each bounded, is the right shape without a schema change
+      (e.g. a denormalized "current status" projection) that is out of
+      scope here and would touch the presence-poller code a sibling task
+      owns.
     """
 
     def __init__(
@@ -151,6 +177,15 @@ class RoutingService:
         not wired, no presence history for this agent, an unknown status
         key, or a catalogue outage -- returns `True` (don't exclude), per
         `CustomStatusStore.get`'s fail-open contract.
+
+        Only ever called for a candidate actually being considered in the
+        tier `pick_agent` is currently trying (see the class docstring's
+        "lazy, tier by tier" note) -- never for every online agent up
+        front. `presence_store.latest(agent_id)` itself is now a bounded,
+        O(1) read regardless of the agent's event history (see
+        `PresenceEventStore`'s docstring); this method does not change that
+        cost, it just avoids calling it for agents whose status will never
+        matter to the outcome.
         """
         if self._custom_status_store is None or self._presence_event_store is None:
             return True
@@ -204,12 +239,13 @@ class RoutingService:
                 or open_counts.get(a.id, 0) < self._settings.routing_max_concurrent_per_agent
             )
         }
-        if fair_share:
-            online = {
-                agent_id: record
-                for agent_id, record in online.items()
-                if await self._is_routable(agent_id)
-            }
+        # Note: `online` is intentionally the native/cap gate only -- the
+        # `routable` filter is applied per tier, below, not here. See the
+        # class docstring's "lazy, tier by tier" note: filtering globally
+        # up front and filtering per tier produce the same final candidate
+        # sets (routability doesn't depend on which tier an agent is in),
+        # but per-tier filtering skips the presence-store lookup entirely
+        # for tiers that never end up mattering.
 
         priority_map: dict[int, list[str]] = {
             p.agent_id: [c.lower() for c in p.channel_priorities] for p in priorities
@@ -233,9 +269,12 @@ class RoutingService:
             ("routing_tier2_pick", tier2),
             ("routing_tier3_idle_fallback", tier3),
         ):
-            if not candidates:
+            eligible = candidates
+            if fair_share:
+                eligible = [aid for aid in candidates if await self._is_routable(aid)]
+            if not eligible:
                 continue
-            chosen = self._pick_fair_share(candidates, open_counts) if fair_share else candidates[0]
+            chosen = self._pick_fair_share(eligible, open_counts) if fair_share else eligible[0]
             _log.info(event_name, agent_id=chosen, channel=conv_channel)
             return chosen
 

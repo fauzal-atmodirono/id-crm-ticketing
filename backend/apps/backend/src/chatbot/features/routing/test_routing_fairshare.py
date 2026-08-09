@@ -75,8 +75,14 @@ class _FakePresenceEventStore:
     """Stands in for `PresenceEventStore`, just the `latest` read `service.py` needs."""
 
     latest_by_agent: dict[int, PresenceEvent] = field(default_factory=dict)
+    calls: list[int] = field(default_factory=list)
+    """Every `agent_id` `latest()` was actually called with, in order --
+    lets a test assert *which* agents' presence was looked up, not just the
+    final pick, so a regression back to "check every online agent up
+    front" (instead of lazily, tier by tier) would be caught."""
 
     async def latest(self, agent_id: int) -> PresenceEvent | None:
+        self.calls.append(agent_id)
         return self.latest_by_agent.get(agent_id)
 
 
@@ -223,6 +229,35 @@ async def test_a_custom_status_store_outage_falls_back_to_the_native_status_filt
         presence_store=presence_store,
     ).pick_agent("whatsapp")
     assert result == 1  # outage -> get() returns None -> fail open, still eligible
+
+
+@pytest.mark.asyncio
+async def test_routability_is_checked_lazily_and_never_for_a_tier_that_is_never_tried() -> None:
+    """The perf half of this fix: a tier-3 idle-pool agent's presence
+    status must never be looked up when a tier-1 candidate already
+    satisfies the request -- checking every online agent up front (instead
+    of only the tier actually used) was extra `PresenceEventStore.latest`
+    round trips for agents whose routability could never change the
+    outcome."""
+    agents = [
+        AgentRecord(id=1, name="Alice", availability_status="online"),  # tier 1
+        AgentRecord(id=2, name="Ivan", availability_status="online"),  # tier 3, idle
+    ]
+    priorities = [
+        AgentPriority(agent_id=1, channel_priorities=["whatsapp"]),
+    ]
+    presence_store = _FakePresenceEventStore()
+    status_store = _FakeCustomStatusStore()
+    result = await _svc(
+        agents,
+        priorities,
+        open_counts={1: 0, 2: 0},
+        fair_share=True,
+        custom_status_store=status_store,
+        presence_store=presence_store,
+    ).pick_agent("whatsapp")
+    assert result == 1
+    assert presence_store.calls == [1]  # agent 2's status was never checked
 
 
 @pytest.mark.asyncio

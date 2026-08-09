@@ -12,6 +12,13 @@ never happened.
 `test_the_store_is_append_only_and_exposes_no_update_method`: if an
 `update`/`set_status`-style mutator existed, someone would eventually use
 it and the event log would stop being trustworthy as history.
+
+`test_latest_reads_a_bounded_number_of_documents_regardless_of_history_size`:
+`latest()` is called once per online agent on every routing decision
+(`RoutingService._is_routable`) -- it must cost the same whether the agent
+has 3 events or 300,000. The fake below honours `order_by()`/`limit()`
+(not just `where()`) specifically so this test can fail against a query
+that streams everything and sorts client-side, the way `latest()` used to.
 """
 
 from __future__ import annotations
@@ -57,23 +64,75 @@ class _FakeDocSnapshot:
 
 
 class _FakeQuery:
-    """Enough of `firestore.Query` to support `.where(...).stream()`."""
+    """Enough of `firestore.Query` to support
+    `.where(...).order_by(...).limit(...).stream()`.
+
+    `order_by`/`limit` are honoured for real (sorting/truncating `_docs`),
+    not stubbed out -- a fake that accepted but ignored them would let a
+    query that streams every document and sorts client-side pass the same
+    tests as one that is actually bounded, which is exactly the gap this
+    file's bounded-read test exists to close. Every `stream()` call records
+    how many documents it returned onto the shared `stream_log`, so a test
+    can assert a query read a bounded number of documents rather than only
+    asserting the final answer was correct.
+    """
 
     def __init__(
-        self, collection_store: dict[str, dict[str, Any]], docs: list[tuple[str, dict[str, Any]]]
+        self,
+        collection_store: dict[str, dict[str, Any]],
+        docs: list[tuple[str, dict[str, Any]]],
+        stream_log: list[int],
+        order_field: str | None = None,
+        descending: bool = False,
+        limit_n: int | None = None,
     ) -> None:
         self._collection_store = collection_store
         self._docs = docs
+        self._stream_log = stream_log
+        self._order_field = order_field
+        self._descending = descending
+        self._limit_n = limit_n
 
     def where(self, field: str, op: str, value: Any) -> _FakeQuery:
         assert op == "==", "the store only ever issues equality filters"
         filtered = [(doc_id, data) for doc_id, data in self._docs if data.get(field) == value]
-        return _FakeQuery(self._collection_store, filtered)
+        return _FakeQuery(
+            self._collection_store,
+            filtered,
+            self._stream_log,
+            self._order_field,
+            self._descending,
+            self._limit_n,
+        )
+
+    def order_by(self, field: str, direction: str = "ASCENDING") -> _FakeQuery:
+        return _FakeQuery(
+            self._collection_store,
+            self._docs,
+            self._stream_log,
+            order_field=field,
+            descending=(direction == "DESCENDING"),
+            limit_n=self._limit_n,
+        )
+
+    def limit(self, n: int) -> _FakeQuery:
+        return _FakeQuery(
+            self._collection_store,
+            self._docs,
+            self._stream_log,
+            self._order_field,
+            self._descending,
+            limit_n=n,
+        )
 
     def stream(self) -> list[_FakeDocSnapshot]:
-        return [
-            _FakeDocSnapshot(doc_id, data, self._collection_store) for doc_id, data in self._docs
-        ]
+        docs = list(self._docs)
+        if self._order_field is not None:
+            docs.sort(key=lambda pair: pair[1].get(self._order_field), reverse=self._descending)
+        if self._limit_n is not None:
+            docs = docs[: self._limit_n]
+        self._stream_log.append(len(docs))
+        return [_FakeDocSnapshot(doc_id, data, self._collection_store) for doc_id, data in docs]
 
 
 class _FakeCollection:
@@ -84,8 +143,9 @@ class _FakeCollection:
     assigns globally unique ids the same way regardless of client identity.
     """
 
-    def __init__(self, store: dict[str, dict[str, Any]]) -> None:
+    def __init__(self, store: dict[str, dict[str, Any]], stream_log: list[int]) -> None:
         self._store = store
+        self._stream_log = stream_log
 
     def add(self, data: dict[str, Any]) -> tuple[None, _FakeDocRef]:
         doc_id = uuid.uuid4().hex
@@ -93,19 +153,25 @@ class _FakeCollection:
         return None, _FakeDocRef(self._store, doc_id)
 
     def where(self, field: str, op: str, value: Any) -> _FakeQuery:
-        query = _FakeQuery(self._store, list(self._store.items()))
+        query = _FakeQuery(self._store, list(self._store.items()), self._stream_log)
         return query.where(field, op, value)
 
     def stream(self) -> list[_FakeDocSnapshot]:
+        self._stream_log.append(len(self._store))
         return [_FakeDocSnapshot(doc_id, data, self._store) for doc_id, data in self._store.items()]
 
 
 class _FakeFirestoreClient:
     def __init__(self) -> None:
         self._collections: dict[str, dict[str, dict[str, Any]]] = {}
+        self.stream_log: list[int] = []
+        """Number of documents returned by each `.stream()` call this
+        client has served, in order -- shared across every `_FakeCollection`
+        this client hands out, so a test can inspect exactly how many
+        documents a given store method actually read."""
 
     def collection(self, name: str) -> _FakeCollection:
-        return _FakeCollection(self._collections.setdefault(name, {}))
+        return _FakeCollection(self._collections.setdefault(name, {}), self.stream_log)
 
 
 def _store(**overrides: Any) -> PresenceEventStore:
@@ -336,6 +402,61 @@ async def test_time_in_status_since_ends_the_carried_segment_at_the_first_in_win
 
         assert totals["available"] == timedelta(minutes=30)
         assert totals["on_call"] == timedelta(minutes=30)
+
+
+@pytest.mark.asyncio
+async def test_latest_reads_a_bounded_number_of_documents_regardless_of_history_size():
+    """The regression this whole fix is about: `latest()` must cost O(1),
+    not O(history). Before the fix, `latest()` did `where(...).stream()`
+    with no `order_by`/`limit` and took `max()` client-side -- correct, but
+    it would have read all 300 documents below. `_FakeQuery.stream()`
+    records how many documents each query actually returned; asserting
+    that number stays small (and constant regardless of how many events
+    exist) is what would catch a regression back to the full scan, which
+    asserting only `latest()`'s return value never would."""
+    with patch("chatbot.features.routing.presence_store.firestore.Client", autospec=True) as C:
+        client = _FakeFirestoreClient()
+        C.return_value = client
+        store = _store()
+
+        for minute in range(300):
+            await store.append(
+                _event("available", _dt(0, minute % 60, day=1 + minute // 60), previous=None)
+            )
+        client.stream_log.clear()  # only count reads from here on
+
+        result = await store.latest(AGENT)
+
+        assert result is not None
+        assert len(client.stream_log) == 1
+        assert client.stream_log[0] <= 5, (
+            "latest() must not read anywhere near the full 300-event history"
+        )
+
+
+@pytest.mark.asyncio
+async def test_stamp_alert_reads_a_bounded_number_of_documents_regardless_of_history_size():
+    """Same regression, for `stamp_alert`'s own latest-event resolution --
+    it used to do the identical unbounded `where(...).stream()` + `max()`."""
+    with patch("chatbot.features.routing.presence_store.firestore.Client", autospec=True) as C:
+        client = _FakeFirestoreClient()
+        C.return_value = client
+        store = _store()
+
+        for minute in range(300):
+            await store.append(
+                _event("available", _dt(0, minute % 60, day=1 + minute // 60), previous=None)
+            )
+        current = await store.latest(AGENT)
+        assert current is not None
+        client.stream_log.clear()  # only count reads from stamp_alert itself
+
+        await store.stamp_alert(AGENT, "x", current)
+
+        assert len(client.stream_log) == 1
+        assert client.stream_log[0] <= 5, (
+            "stamp_alert() must not read anywhere near the full 300-event history"
+        )
 
 
 @pytest.mark.asyncio

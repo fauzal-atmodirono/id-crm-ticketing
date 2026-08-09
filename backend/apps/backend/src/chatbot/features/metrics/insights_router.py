@@ -1,5 +1,5 @@
 """GET /metrics/{departments,callcenter,lifecycle,dealer-escalation,sla-buckets,
-case-aging,volume-by-type} — gated report reads.
+case-aging,volume-by-type,ai-cost} — gated report reads.
 
 Agent/PIC-level aggregates, so x-api-key gated (unlike /metrics/dashboard).
 
@@ -61,6 +61,13 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Header, HTTPException
 
+from chatbot.features.metrics.ai_cost import (
+    AI_COST_VIEW,
+    AiCostUsagePort,
+    PriceLookup,
+    build_ai_cost_report,
+    build_ai_cost_usage_port,
+)
 from chatbot.features.metrics.filter_query import MetricFiltersQuery
 from chatbot.features.metrics.period import previous_period
 from chatbot.features.metrics.period_query import (
@@ -69,14 +76,56 @@ from chatbot.features.metrics.period_query import (
     parse_period_or_400,
     wrap_period_response,
 )
+from chatbot.features.metrics.price_table import build_price_table
 
 if TYPE_CHECKING:
     from chatbot.features.metrics.query_port import MetricsQueryPort
     from chatbot.platform.config import Settings
 
 
-def build_metrics_insights_router(port: MetricsQueryPort, settings: Settings) -> APIRouter:
+async def _ai_cost_payload(
+    settings: Settings,
+    cache: dict[str, Any],
+    ai_cost_port: AiCostUsagePort | None,
+    price_table: PriceLookup | None,
+    period: Any,
+) -> dict[str, Any]:
+    """Read the cost inputs and build the report.
+
+    Module-level rather than a closure so the router factory stays readable,
+    and so the lazy dependency construction has exactly one home. The
+    real readers are built on FIRST REQUEST and cached, not at boot: a tenant
+    that never opens the cost report never constructs a BigQuery client or a
+    Firestore client for it, and the existing `main.py` call site needs no
+    change to get them.
+    """
+    if "deps" not in cache:
+        cache["deps"] = (
+            ai_cost_port or build_ai_cost_usage_port(settings),
+            price_table or build_price_table(settings),
+        )
+    usage_port, prices = cache["deps"]
+    rows, ok = await usage_port.fetch_token_usage(period)
+    conversations = await usage_port.fetch_conversation_count(period)
+    return await build_ai_cost_report(
+        rows, prices, ok=ok, conversations=conversations, period=period
+    )
+
+
+def build_metrics_insights_router(
+    port: MetricsQueryPort,
+    settings: Settings,
+    *,
+    ai_cost_port: AiCostUsagePort | None = None,
+    price_table: PriceLookup | None = None,
+) -> APIRouter:
+    """The two AI-cost dependencies are keyword-only with `None` defaults so
+    `main.py`'s existing call site needs no change and the real deployment
+    still gets the real readers -- see `_ai_cost_payload`, which builds them
+    lazily off the same `metrics_provider` switch every other metrics adapter
+    reads."""
     router = APIRouter(tags=["metrics"])
+    _cost_cache: dict[str, Any] = {}
 
     def _require_key(x_api_key: str | None) -> None:
         key = settings.metrics_api_key
@@ -184,6 +233,41 @@ def build_metrics_insights_router(port: MetricsQueryPort, settings: Settings) ->
         period = parse_period_or_400(period_query)
         metrics = await port.fetch_by_tag(period, tag)
         return {**asdict(metrics), "note": metrics.note}
+
+    @router.get("/metrics/ai-cost")
+    async def ai_cost(
+        period_query: PeriodQuery,
+        filters: MetricFiltersQuery,
+        x_api_key: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """4.28.2: what the AI costs, and everything that figure cannot see.
+
+        The payload has **no total** -- `priced_subtotal_usd` plus a
+        `completeness` block naming every unmetered and unpriceable surface.
+        See `ai_cost.py`; the incompleteness is structural on purpose, because
+        the largest single line item (`chat.turn`) produces no usage row at
+        all and a total would silently omit it.
+
+        `conversations` ships in the same response as the subtotal so
+        cost-per-conversation is answerable from ONE response rather than by
+        joining two -- and it ships with `cost_per_conversation_basis`, which
+        says the numerator is partial.
+
+        The five standard dimension filters are declared (an undeclared param
+        is invisible to the handler, so "ignore" and "reject" become
+        indistinguishable) and any of them that is actually supplied is a 400:
+        a Gemini call knows its product surface, not the agent or dealer of
+        the conversation that triggered it, so filtering by one could only be
+        ignored. Off by default -- `ai_cost_reporting_enabled`.
+        """
+        _require_key(x_api_key)
+        if not getattr(settings, "ai_cost_reporting_enabled", False):
+            raise HTTPException(status_code=404, detail="AI cost reporting is not enabled")
+        period = parse_period_or_400(period_query)
+        # Raises UnsupportedFilter (400) for any supplied filter; a no-op when
+        # none was.
+        filters.predicates_for(AI_COST_VIEW)
+        return await _ai_cost_payload(settings, _cost_cache, ai_cost_port, price_table, period)
 
     @router.get("/metrics/volume-by-type")
     async def volume_by_type(

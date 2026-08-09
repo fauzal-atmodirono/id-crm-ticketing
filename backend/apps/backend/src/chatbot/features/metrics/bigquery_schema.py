@@ -13,6 +13,7 @@ day-grain views below for what that means for the period-scoped pages.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 
 from google.cloud import bigquery
 
@@ -38,7 +39,9 @@ CONVERSATIONS_SCHEMA: list[bigquery.SchemaField] = [
     bigquery.SchemaField("resolved_at", "TIMESTAMP"),
     bigquery.SchemaField("reopen_count", "INT64"),
     bigquery.SchemaField("dealer", "STRING"),  # Phase-3: dealer dimension for CRR grouping
-    bigquery.SchemaField("dealer_escalated_at", "TIMESTAMP"),  # Task 10: dealer escalation timestamp
+    bigquery.SchemaField(
+        "dealer_escalated_at", "TIMESTAMP"
+    ),  # Task 10: dealer escalation timestamp
     bigquery.SchemaField("case_type", "STRING"),
     bigquery.SchemaField("vehicle_model", "STRING"),
     bigquery.SchemaField("first_response_working_minutes", "INT64"),
@@ -88,7 +91,11 @@ def _sla_bucket_case_sql(sla_targets_json: str) -> str:
             continue
         edges = spec.get("buckets_wh")
         labels = spec.get("labels")
-        if not isinstance(edges, list) or not isinstance(labels, list) or len(labels) != len(edges) + 1:
+        if (
+            not isinstance(edges, list)
+            or not isinstance(labels, list)
+            or len(labels) != len(edges) + 1
+        ):
             continue
         if not all(isinstance(label, str) for label in labels):
             continue
@@ -599,5 +606,221 @@ def view_ddls(
             f"COALESCE(escalated_to, 'none') AS escalated_to, "
             f"COUNT(*) AS cases "
             f"FROM {fq} GROUP BY month, day, case_state, escalated_to"
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# P8 task 4 -- AI cost, and the honesty problem it inherits
+# ---------------------------------------------------------------------------
+#
+# These views read `token_usage` (see `features/metrics/token_usage.py`), NOT
+# `conversations`, which is why they live in their own function rather than in
+# `view_ddls`: one DDL builder per base table, the same split `faq_schema.py`
+# and `turn_schema.py` already use.
+#
+# **There is no cost column in any of them, and that is deliberate.** Prices
+# are effective-dated and stored in Firestore (`features/metrics/
+# price_table.py`), so a BigQuery view cannot join to a rate at all -- tokens
+# become money in Python, in `features/metrics/ai_cost.py`, at the point where
+# `PriceTable.price_for(model, token_class, at=day)` can be asked about the
+# date of the usage rather than about today. A view that emitted a
+# `cost_usd` column would have to hardcode a rate to do it.
+#
+# **What these views exist to make structural: the cost report cannot be
+# complete, and must not read as if it were.** Five of the nine surfaces this
+# product calls Gemini from are metered; one is visible but unpriceable; three
+# produce no row at all. A `SELECT SUM(...) FROM token_usage` would therefore
+# print a number that silently omits the busiest surface in the product, and
+# would print it as a total. So the inventory below is published *into the
+# warehouse* as its own view and LEFT JOINed onto the usage aggregate: every
+# declared surface gets a row in `v_ai_cost` whether or not it has ever
+# produced usage, and an unmetered one carries NULL tokens and a
+# `cost_status_reason` saying why. A zero is a claim about spend; a NULL is a
+# statement about instrumentation, and the two must not be interchangeable on
+# a dashboard that reads only SQL.
+
+AI_COST_STATUS_METERED = "metered"
+AI_COST_STATUS_UNPRICEABLE = "unpriceable"
+AI_COST_STATUS_UNMETERED = "unmetered"
+
+
+@dataclass(frozen=True)
+class SurfaceCoverage:
+    """One product surface that calls Gemini, and whether its spend is
+    knowable.
+
+    `status` is one of the three `AI_COST_STATUS_*` constants above.
+    `reason` is shown to the reader of the report -- it is the sentence that
+    stops a NULL being read as a zero, so it says what is missing and why,
+    not "unavailable".
+    """
+
+    service: str
+    surface: str
+    status: str
+    reason: str
+
+
+# The exact inventory established by P8 tasks 1-3 and the metering routing
+# fix. Any change here is a change to what the cost report claims, so it is
+# one list, in one place, read by both the warehouse view and the endpoint.
+AI_COST_SURFACE_COVERAGE: tuple[SurfaceCoverage, ...] = (
+    SurfaceCoverage(
+        "backend",
+        "assist.suggest",
+        AI_COST_STATUS_METERED,
+        "Metered at the google-genai client boundary. /assist/summarize and "
+        "/assist/ask roll up here -- one router, one client.",
+    ),
+    SurfaceCoverage(
+        "backend",
+        "assist.copilot",
+        AI_COST_STATUS_METERED,
+        "Metered at the google-genai client boundary.",
+    ),
+    SurfaceCoverage(
+        "backend",
+        "assist.translate",
+        AI_COST_STATUS_METERED,
+        "Metered at the google-genai client boundary.",
+    ),
+    SurfaceCoverage(
+        "backend",
+        "chat.transcribe",
+        AI_COST_STATUS_METERED,
+        "Metered, but this is the speech-to-text call only. The /chat/turn "
+        "reply on the same path is generated by google-adk and is not "
+        "metered -- see the chat.turn row.",
+    ),
+    SurfaceCoverage(
+        "backend",
+        "phone.classify",
+        AI_COST_STATUS_METERED,
+        "Metered at the google-genai client boundary.",
+    ),
+    SurfaceCoverage(
+        "backend",
+        "embed",
+        AI_COST_STATUS_UNPRICEABLE,
+        "Visible but unpriceable. Embeddings bill per CHARACTER and "
+        "EmbedContentResponse carries no usage_metadata at all, so all three "
+        "token counts are NULL by construction. The price table has a "
+        "per-character class, but token_usage has no character-count column, "
+        "so embedding cost is not computable end to end. Reported as "
+        "unpriced, never as 0.",
+    ),
+    SurfaceCoverage(
+        "backend",
+        "chat.turn",
+        AI_COST_STATUS_UNMETERED,
+        "Absent entirely, and this is the largest gap. google-adk takes a "
+        "model STRING and constructs its own Gemini client inside the "
+        "installed package, so the busiest surface in the product cannot be "
+        "metered at our client boundary. No usage row is ever written, so "
+        "its spend is missing from this report rather than being zero.",
+    ),
+    SurfaceCoverage(
+        "backend",
+        "phone.live",
+        AI_COST_STATUS_UNMETERED,
+        "Absent entirely. Live API usage arrives in server messages rather "
+        "than on a response object, so no usage row is produced even though "
+        "the session is routed through the metered client.",
+    ),
+    SurfaceCoverage(
+        "agent",
+        "orchestrator",
+        AI_COST_STATUS_UNMETERED,
+        "Absent from the warehouse. The agent service records all three "
+        "token counts onto its ai_actions table in Postgres, and nothing "
+        "exports them to BigQuery, so this service contributes no priced "
+        "spend here yet.",
+    ),
+)
+
+# Billed token classes `TokenUsage` never captures, so no report built on it
+# can include them. Named rather than dropped: dropping them understates
+# spend for any thinking-enabled model.
+AI_COST_EXCLUDED_TOKEN_CLASSES: tuple[str, ...] = (
+    "thoughts_token_count",
+    "tool_use_prompt_token_count",
+)
+
+
+def _sql_string(value: str) -> str:
+    """A single-quoted SQL literal. Doubles embedded quotes -- these strings
+    are ours, but a reason sentence acquiring an apostrophe must not be able
+    to produce a view that fails at query time on somebody's dashboard."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def ai_cost_view_ddls(
+    project: str,
+    dataset: str,
+    table: str = "token_usage",
+    reporting_timezone: str = "UTC",
+) -> dict[str, str]:
+    """The three `token_usage` views behind `GET /metrics/ai-cost`.
+
+    - **`v_ai_token_usage`** -- day x service x surface x model: the token
+      sums, and beside each sum the number of calls that actually carried
+      that count. The counts are not decoration. `SUM()` skips NULLs, so a
+      surface whose responses carry no usage metadata sums to NULL and one
+      that carried it on 3 of 3000 calls sums to a small number; without
+      `calls_with_*` beside it a reader cannot tell a small bill from a small
+      sample. `calls_without_usage_metadata` counts the calls that carried
+      none of the three, which is exactly the embedding case.
+    - **`v_ai_cost_surface_coverage`** -- the `AI_COST_SURFACE_COVERAGE`
+      inventory as SQL rows, so the caveat lives in the warehouse and not
+      only in an endpoint payload a BI tool never reads.
+    - **`v_ai_cost`** -- the coverage inventory LEFT JOINed onto the usage
+      aggregate. Every declared surface appears. An unmetered surface has
+      `day IS NULL` and NULL tokens, never 0, with its reason on the row.
+
+    None of the three carries money; see the module comment above.
+    """
+    fq = f"`{project}.{dataset}.{table}`"
+    zone = _validate_timezone(reporting_timezone)
+    _tz = "" if zone == "UTC" else f", '{zone}'"
+    d_occurred = f"DATE(occurred_at{_tz})"
+
+    coverage_structs = ", ".join(
+        f"STRUCT({_sql_string(row.service)} AS service, "
+        f"{_sql_string(row.surface)} AS surface, "
+        f"{_sql_string(row.status)} AS cost_status, "
+        f"{_sql_string(row.reason)} AS cost_status_reason)"
+        for row in AI_COST_SURFACE_COVERAGE
+    )
+
+    return {
+        "v_ai_token_usage": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_ai_token_usage` AS "
+            f"SELECT {d_occurred} AS day, service, surface, model, "
+            f"COUNT(*) AS calls, "
+            f"SUM(prompt_tokens) AS prompt_tokens, "
+            f"SUM(output_tokens) AS output_tokens, "
+            f"SUM(cached_tokens) AS cached_tokens, "
+            f"COUNTIF(prompt_tokens IS NOT NULL) AS calls_with_prompt_tokens, "
+            f"COUNTIF(output_tokens IS NOT NULL) AS calls_with_output_tokens, "
+            f"COUNTIF(cached_tokens IS NOT NULL) AS calls_with_cached_tokens, "
+            f"COUNTIF(prompt_tokens IS NULL AND output_tokens IS NULL "
+            f"AND cached_tokens IS NULL) AS calls_without_usage_metadata "
+            f"FROM {fq} GROUP BY day, service, surface, model"
+        ),
+        "v_ai_cost_surface_coverage": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_ai_cost_surface_coverage` AS "
+            f"SELECT * FROM UNNEST([{coverage_structs}])"
+        ),
+        "v_ai_cost": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_ai_cost` AS "
+            f"SELECT c.service, c.surface, c.cost_status, c.cost_status_reason, "
+            f"u.day, u.model, u.calls, "
+            f"u.prompt_tokens, u.output_tokens, u.cached_tokens, "
+            f"u.calls_with_prompt_tokens, u.calls_with_output_tokens, "
+            f"u.calls_with_cached_tokens, u.calls_without_usage_metadata "
+            f"FROM `{project}.{dataset}.v_ai_cost_surface_coverage` c "
+            f"LEFT JOIN `{project}.{dataset}.v_ai_token_usage` u "
+            f"ON u.service = c.service AND u.surface = c.surface"
         ),
     }

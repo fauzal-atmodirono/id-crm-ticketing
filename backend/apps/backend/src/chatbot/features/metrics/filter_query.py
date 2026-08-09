@@ -49,6 +49,13 @@ VIEW_COLUMNS: dict[str, frozenset[str]] = {
     "v_first_response_by_dealer": frozenset({"dealer"}),
     "v_volume_by_tag": frozenset({"tag", "channel"}),
     "v_reopen_rate": frozenset({"dealer", "department", "pic"}),
+    # P8 task 4: the cost views are dimensioned by service/surface/model and
+    # carry NONE of the case dimensions -- a Gemini call knows which product
+    # surface made it, not which agent or dealer the conversation belonged to.
+    # An empty set (rather than an absent key) is what makes every one of the
+    # five standard filters a loud 400 here instead of a filter placeholder
+    # against a column the view does not have.
+    "v_ai_cost": frozenset(),
 }
 
 
@@ -123,8 +130,11 @@ def metric_filters(
 ) -> MetricFilters:
     """FastAPI dependency, mirroring the `PeriodQuery` shape already used here."""
     return MetricFilters(
-        agent_id=agent_id, team=team, department=department,
-        channel=channel, dealer=dealer,
+        agent_id=agent_id,
+        team=team,
+        department=department,
+        channel=channel,
+        dealer=dealer,
     )
 
 

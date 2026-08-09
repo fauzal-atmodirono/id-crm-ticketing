@@ -3,6 +3,7 @@ so /assist/* and Ask Copilot ground on freshly-authored knowledge immediately.
 Live-FAQ hits rank first; dedup by lowercased title; never raises (falls back to
 the base KB if the live store/embedder is missing or errors). Mirrors kb_suggest.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -10,10 +11,10 @@ from typing import TYPE_CHECKING
 import structlog
 
 from chatbot.features.chat.models import KbArticle
+from chatbot.features.chat.nlu_normalise import NORMALISE_RETRIEVAL_QUERY_ENABLED, normalise
 
 if TYPE_CHECKING:
-    from chatbot.features.chat.adapters.live_faq import Embedder
-    from chatbot.features.chat.ports import KnowledgePort, LiveFaqPort
+    pass
 
 _log = structlog.get_logger(__name__)
 
@@ -51,8 +52,21 @@ class MergedKnowledgeAdapter:
         ]
 
     async def search_kb(self, query: str, limit: int = 2) -> list[KbArticle]:
-        pg = await self._pg_articles(query, limit)
-        live = await self._live_articles(query, limit)
+        # P7 task 6 -- the single production application point for the
+        # SMS-register-Malay query normaliser (see nlu_normalise.py). Only
+        # the copy fed to the two purely-cosine, embedding-driven branches
+        # (pg + live-FAQ) is normalised; `base` always gets the untouched
+        # `query`. That split matters: `base` is the Vertex-Search-backed
+        # adapter, out of this task's scope, which may fold in its own
+        # keyword/exact-match signal a normalised string would silently
+        # break (e.g. "brp" -> "berapa" must never risk turning an exact
+        # product code like "e.MAS7" into something that stops matching).
+        # `NORMALISE_RETRIEVAL_QUERY_ENABLED` defaults False -- flipping it
+        # is conditional on the real-credential corpus re-run recorded in
+        # docs/analysis/2026-08-09-blocked-work-register.md.
+        retrieval_query = normalise(query) if NORMALISE_RETRIEVAL_QUERY_ENABLED else query
+        pg = await self._pg_articles(retrieval_query, limit)
+        live = await self._live_articles(retrieval_query, limit)
         base = await self._base.search_kb(query, limit)
 
         # pg/live intentionally rank first (freshly operator-authored

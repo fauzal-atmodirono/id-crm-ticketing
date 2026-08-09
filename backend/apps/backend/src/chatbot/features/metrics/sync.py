@@ -10,6 +10,7 @@ Chatwoot conversation LABELS that ``ChatwootAdapter`` writes at escalation time.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import fields
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -185,35 +186,19 @@ def load_conversations(settings: Settings, rows: list[ConversationRow]) -> None:
         f"{settings.bigquery_conversations_table}"
     )
     now = datetime.now(UTC).isoformat()
+    # Derived field-by-field from the dataclass rather than hand-listed.
+    #
+    # It WAS hand-listed, and P1 and P3 both added columns to the schema and to
+    # ConversationRow while this dict silently kept dropping them -- twelve
+    # columns that would have loaded as NULL forever, with the schema, the
+    # mapper and the views all looking correct. Nothing failed; the data just
+    # was not there. `test_every_conversation_row_field_is_loaded` is the guard
+    # that makes the next omission impossible.
+    #
+    # `synced_at` is the one field with no row counterpart: it records when
+    # THIS sync ran, not anything about the conversation.
     json_rows = [
-        {
-            "conversation_id": r.conversation_id,
-            "channel": r.channel,
-            "created_at": r.created_at,
-            "updated_at": r.updated_at,
-            "status": r.status,
-            "resolved_by": r.resolved_by,
-            "csat_score": r.csat_score,
-            "nps_score": r.nps_score,
-            "synced_at": now,
-            "division": r.division,
-            "category": r.category,
-            "subcategory": r.subcategory,
-            "department": r.department,
-            "agent_id": r.agent_id,
-            "pic": r.pic,
-            "sla_minutes": r.sla_minutes,
-            "sla_deadline": r.sla_deadline,
-            "first_response_at": r.first_response_at,
-            "resolved_at": r.resolved_at,
-            "reopen_count": r.reopen_count,
-            "dealer": r.dealer,  # Phase-3
-            "dealer_escalated_at": r.dealer_escalated_at,  # Task 10
-            "case_type": r.case_type,
-            "vehicle_model": r.vehicle_model,
-            "first_response_working_minutes": r.first_response_working_minutes,
-            "resolution_working_minutes": r.resolution_working_minutes,
-        }
+        {**{f.name: getattr(r, f.name) for f in fields(r)}, "synced_at": now}
         for r in rows
     ]
     job_config = bigquery.LoadJobConfig(

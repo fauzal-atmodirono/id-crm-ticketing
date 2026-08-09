@@ -543,7 +543,10 @@ class EscalationNotifier:
             if record is not None:
                 emails = list(record.emails)
                 if self._settings.escalation_cc_dealer:
-                    cc = list(record.cc_emails or [])
+                    # getattr, not attribute access: this leg must not fail on
+                    # a record shape that predates cc_emails. Losing the CC is
+                    # a nuisance; losing the dealer forward is not.
+                    cc = list(getattr(record, "cc_emails", None) or [])
         if not emails:
             emails = list(self._dealer_email_map.get(dealer_slug.lower()) or [])
         if not emails:

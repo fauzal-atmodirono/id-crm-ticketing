@@ -4,8 +4,9 @@ Everything here is **committed to `dev-yuda` and off by default**. With every
 new flag unset, the platform behaves exactly as it did before — that is
 asserted, not assumed. Nothing below has been enabled on a live tenant.
 
-Branch state: `33df8ef..abb935a`, four commits. Suites: agent **389 passed**,
-backend **1925 passed / 1 skipped**.
+Branch state: `33df8ef..HEAD`, ten commits. Suites: agent **389 passed**,
+backend **1981 passed / 1 skipped** — green with every new flag off *and* with
+all of them forced on.
 
 ---
 
@@ -159,18 +160,36 @@ but confirm it with your own eyes on a real thread once.
 A **voice** escalation deliberately sends no written ack — the caller was
 already spoken to — while the PIC and dealer legs still fire.
 
-### Dealer CC
+### The other four P2 flags, all default-off and independent
+
+| Flag | What it does | What to look for |
+|---|---|---|
+| `ESCALATION_CC_DEALER` | CC the dealer's `cc_emails` on the forward | Defaults *false*, unlike `ESCALATION_CC_PIC`: this mail carries the full transcript outside the company. A CC entry equal to the customer's own address is always dropped, flag on or off. |
+| `ESCALATION_ATTACHMENT_BUDGET_BYTES` | Attach the customer's photos/PDFs to the PIC and dealer mail (try `10485760`) | The PIC gets the photo; the customer ack never does. Anything too large is *described in the body*, not silently dropped. |
+| `ESCALATION_FAILURE_NOTE_ENABLED` | Private note when a leg fails to send | Break it deliberately: set a bad `SMTP_HOST`, escalate, and confirm a private note names the unreachable recipient. This is the only way you currently learn a PIC was never told. |
+| `ESCALATION_PRESENCE_CHECK_ENABLED` | Add an offline PIC's online colleagues | Set the PIC's Chatwoot agent to offline, a colleague on their `cc_emails` to online, escalate — both should receive it. It can only ever widen. |
+
+**Tier-2** now emails the department's manager instead of re-pinging the same
+PIC. Set it with:
 
 ```bash
-ESCALATION_CC_DEALER=false   # default; set true to enable
+curl -X PUT .../admin/escalation/pics/sales \
+  -d '{"pic_name":"...","pic_email":"...","escalation_manager_email":"boss@..."}'
 ```
 
-Defaults to *false*, unlike `ESCALATION_CC_PIC` which defaults true: the dealer
-forward carries the full transcript to an address outside the company.
+The Escalation Routing admin **page** has no field for it yet — the fork patch
+is not written, because this environment cannot reach github to build one.
 
-Two guards you can verify: a dealer CC entry equal to the customer's own
-address is always dropped (flag on or off), and the customer acknowledgement
-CCs nobody under any flag combination.
+**Scope honesty for §4.39:** the failure note covers SMTP *send* failures only.
+Bounces and invalid recipients need a bounce mailbox (client question Q6). Do
+not report §4.39 as closed.
+
+### A risk score you can argue with
+
+`risk_score.py` scores a case 0-100 from case type, SLA proximity, reopens and
+escalation depth. `contributions()` returns the per-signal breakdown and sums
+exactly to the headline number, so an operator can be told *why* a case scored
+82. It is not wired into any UI yet — P4's reporting layer is where it lands.
 
 ---
 
@@ -204,5 +223,7 @@ docker compose -p proton -f docker-compose.tenant.yml \
 - **`WHATSAPP_MEDIA_UNDERSTANDING_ENABLED=true`** is set on proton and has
   never been tested.
 - **BigQuery `ensure_views()`** has never been run against real GCP.
-- **P2 tasks 4, 6–11** and **packages P3–P14** are not built. See the session
-  summary for the complexity breakdown.
+- **P2 is now complete** (all 11 tasks). **Packages P3–P14** are not built.
+- The **Escalation Routing admin page** has no field for the tier-2 manager
+  contact; the REST API accepts it. Needs a Chatwoot fork patch, which cannot
+  be generated in this environment.

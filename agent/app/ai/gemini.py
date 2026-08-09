@@ -38,6 +38,8 @@ class Decision(NamedTuple):
     args: dict
     raw_text: str | None
     prompt_tokens: int | None
+    output_tokens: int | None = None
+    cached_tokens: int | None = None
 
 
 def _client() -> genai.Client:
@@ -54,28 +56,50 @@ def _client() -> genai.Client:
     return genai.Client(api_key=settings.gemini_api_key)
 
 
-def _prompt_tokens(response: object) -> int | None:
+def _usage_tokens(response: object) -> tuple[int | None, int | None, int | None]:
+    """Extract (prompt, output, cached) token counts from `usage_metadata`.
+
+    Missing metadata records `None` for all three, never `0` — a zero-token
+    call is a real, observed thing that happened; "we did not capture it" is
+    a different fact, and a cost report that conflates the two understates
+    spend, silently, in exactly the direction nobody double-checks. Each
+    field is looked up independently via `getattr(..., None)` so a genuinely
+    zero field (attribute present, value `0`) is preserved as `0` rather than
+    collapsed into the same `None` as a field the SDK never populated.
+
+    Field names verified against the installed `google-genai` 2.12.1 SDK's
+    `types.GenerateContentResponseUsageMetadata` (`prompt_token_count`,
+    `candidates_token_count`, `cached_content_token_count`) — see task-1
+    report for how.
+    """
     usage = getattr(response, "usage_metadata", None)
     if usage is None:
-        return None
-    return getattr(usage, "prompt_token_count", None)
+        return None, None, None
+    prompt_tokens = getattr(usage, "prompt_token_count", None)
+    output_tokens = getattr(usage, "candidates_token_count", None)
+    cached_tokens = getattr(usage, "cached_content_token_count", None)
+    return prompt_tokens, output_tokens, cached_tokens
 
 
 def _handoff_fallback(
     reason: str = _HANDOFF_NO_ACTION_REASON,
     raw_text: str | None = None,
     prompt_tokens: int | None = None,
+    output_tokens: int | None = None,
+    cached_tokens: int | None = None,
 ) -> Decision:
     return Decision(
         action="handoff_to_human",
         args={"reason": reason},
         raw_text=raw_text,
         prompt_tokens=prompt_tokens,
+        output_tokens=output_tokens,
+        cached_tokens=cached_tokens,
     )
 
 
 def _extract_decision(response: object) -> Decision:
-    prompt_tokens = _prompt_tokens(response)
+    prompt_tokens, output_tokens, cached_tokens = _usage_tokens(response)
 
     for candidate in getattr(response, "candidates", None) or []:
         content = getattr(candidate, "content", None)
@@ -88,12 +112,22 @@ def _extract_decision(response: object) -> Decision:
                     args=dict(function_call.args or {}),
                     raw_text=None,
                     prompt_tokens=prompt_tokens,
+                    output_tokens=output_tokens,
+                    cached_tokens=cached_tokens,
                 )
 
     # The model answered in plain text (or returned nothing usable) instead
-    # of calling a function. Map that to a handoff so a human always sees it.
+    # of calling a function. Map that to a handoff so a human always sees
+    # it -- but a real Gemini call still happened and still has real usage
+    # metadata, so still record it: losing the token count on exactly the
+    # calls that went wrong would silently under-report them.
     text = getattr(response, "text", None)
-    return _handoff_fallback(raw_text=text, prompt_tokens=prompt_tokens)
+    return _handoff_fallback(
+        raw_text=text,
+        prompt_tokens=prompt_tokens,
+        output_tokens=output_tokens,
+        cached_tokens=cached_tokens,
+    )
 
 
 async def decide(

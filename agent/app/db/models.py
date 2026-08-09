@@ -37,6 +37,23 @@ class AiAction(Base):
     decision: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(Text, nullable=False)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    # output_tokens/cached_tokens (P8 task 1): the other two of the three
+    # token classes `google-genai` reports per call, alongside prompt_tokens
+    # above. Nullable for two independent reasons, not just SQLAlchemy
+    # convention: (1) `None` here means "not captured" and must stay
+    # distinguishable from a genuine `0`-token call, the same rule that
+    # governs how `app/ai/gemini.py` extracts them; (2) an existing row
+    # predates these columns and can never retroactively know its own
+    # counts. Because this repo has no Alembic/migrations (schema is created
+    # via `Base.metadata.create_all` in `init_db`), these columns exist on a
+    # freshly created database but do NOT retroactively appear on an
+    # already-deployed tenant's `ai_actions` table -- that needs a manual
+    # `ALTER TABLE ai_actions ADD COLUMN IF NOT EXISTS output_tokens INTEGER,
+    # ADD COLUMN IF NOT EXISTS cached_tokens INTEGER;` against
+    # `AGENT_DATABASE_URL` before any already-deployed tenant will have them.
+    # See docs/analysis/2026-08-09-blocked-work-register.md.
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    cached_tokens: Mapped[int | None] = mapped_column(Integer)
     output: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

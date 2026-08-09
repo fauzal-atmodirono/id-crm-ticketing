@@ -226,6 +226,29 @@ read as more than they are:
   (R9) that blanks four control items above. Do not let the ACW state be
   reported as closing 4.69.
 
+## 3c-1. P8 task 1 — `ai_actions` needs a manual `ALTER TABLE` on already-deployed tenants
+
+Same root cause as the SLA-policy migration on 2026-08-08 (`ALTER TABLE
+sla_policies ADD COLUMN IF NOT EXISTS tier2_hours DOUBLE PRECISION` etc.,
+against `RBAC_DATABASE_URL`, recorded in that day's deploy notes): this repo
+has no Alembic, so `agent/app/db/models.py`'s new `output_tokens`/
+`cached_tokens` columns on `AiAction` are created automatically by
+`Base.metadata.create_all` for a **fresh** database only. An already-deployed
+tenant's `ai_actions` table (every live tenant today) does not gain these
+columns until someone runs, against that tenant's `AGENT_DATABASE_URL`:
+
+```sql
+ALTER TABLE ai_actions ADD COLUMN IF NOT EXISTS output_tokens INTEGER;
+ALTER TABLE ai_actions ADD COLUMN IF NOT EXISTS cached_tokens INTEGER;
+```
+
+Both columns are nullable, so the migration is additive and safe to run
+against a populated table — existing rows simply read `NULL` (correctly:
+"not captured", not "zero"). Until it runs on a given tenant, any future
+consumer of these columns (P8 task 4's cost pricing) reading directly against
+that tenant's Postgres will fail on the missing columns rather than silently
+return wrong numbers, which is the correct failure mode for a schema gap.
+
 ## 3d. P6 follow-up date — built, and deliberately invisible
 
 Not blocked on anyone outside this repo, recorded here so it is not mistaken

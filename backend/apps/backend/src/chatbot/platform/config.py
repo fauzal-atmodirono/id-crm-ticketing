@@ -745,6 +745,17 @@ class Settings(BaseSettings):
     # recipient list -- the PIC is always included. Off by default because it
     # costs an extra API call per escalation.
     escalation_presence_check_enabled: bool = False
+
+    # P3: the case-record panel in the conversation sidebar (case_detail,
+    # vehicle plate/chassis, WIP notes...) and its GET/PATCH endpoints. Off
+    # means the endpoints 404, so the fork panel simply does not render rather
+    # than showing a permissions error on every conversation.
+    case_fields_enabled: bool = False
+    # Attach a coverage note to any report block grouped by one of these
+    # sparse, agent-entered fields. ON by default, unlike everything else
+    # here: a chart built on a half-filled column that does not say so invites
+    # precisely the wrong conclusion.
+    report_coverage_disclosure: bool = True
     escalation_level2_whatsapp: str = ""  # E.164, e.g. "+60112345678"
     escalation_tier2_hours: float = 4.0  # hours after first breach before level-2 alert
 

@@ -619,6 +619,26 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             build_pic_admin_router(pic_store, dealer_store, authz_repo, authz_validator, settings)
         )
 
+        # P3: the case-record panel's read/write endpoints. The merge-safe
+        # attribute writer, not the raw request method: the custom-attributes
+        # endpoint REPLACES the whole object, so a bare POST would wipe
+        # case_category, recording_url and everything else on the conversation.
+        if chatwoot_client is not None:
+            from chatbot.features.chat.case_fields_router import build_case_fields_router
+
+            app.include_router(
+                build_case_fields_router(
+                    lambda conv_id: chatwoot_client._request(
+                        "GET", f"/conversations/{conv_id}", None
+                    ),
+                    chatwoot_client._merge_custom_attributes,
+                    authz_repo,
+                    authz_validator,
+                    settings,
+                    dealer_store=dealer_store,
+                )
+            )
+
         # Package F: DMS/TSP integration shell admin CRUD + connection test.
         # Reuses the dms_config_store instance constructed unconditionally
         # above, same pattern as pic_store/dealer_store. The error handler

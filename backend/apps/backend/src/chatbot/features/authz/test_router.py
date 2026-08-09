@@ -36,7 +36,7 @@ async def client(tmp_path, respx_mock):
 def test_permissions_endpoint_returns_callers_own_permissions(client):
     res = client.get("/authz/permissions", headers={"x-chatwoot-access-token": "agent-tok", "x-chatwoot-client": "client-2", "x-chatwoot-uid": "uid-2"})
     assert res.status_code == 200
-    assert res.json()["permissions"] == ["knowledge.edit"]
+    assert res.json()["permissions"] == ["cases.manage", "cases.view", "knowledge.edit"]
 
 
 def test_check_endpoint(client):

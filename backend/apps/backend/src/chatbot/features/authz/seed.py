@@ -50,9 +50,15 @@ PERMISSION_REGISTRY: dict[str, str] = {
     # escalation.manage/sla.manage above -- auto-granted to "administrator",
     # withheld from "agent".
     "integration.manage": "Manage DMS/TSP integration settings",
+    # P3: the case-record panel in the conversation sidebar. Unlike every
+    # other entry here, these are granted to "agent" as well -- filling in the
+    # WIP and vehicle fields IS the agent's job, and an admin-only panel would
+    # simply never be used.
+    "cases.view": "View the case record panel",
+    "cases.manage": "Edit the case record panel",
 }
 
-_AGENT_PERMISSIONS = {"knowledge.edit"}
+_AGENT_PERMISSIONS = {"knowledge.edit", "cases.view", "cases.manage"}
 
 # Native Chatwoot conversation/inbox visibility, mirrored into Chatwoot's own
 # CustomRole via features/authz/chatwoot_role_mirror.py (Phase 3). Registered

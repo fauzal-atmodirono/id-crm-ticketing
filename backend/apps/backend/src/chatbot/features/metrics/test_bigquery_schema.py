@@ -96,6 +96,14 @@ def test_view_ddls_keys_and_targets() -> None:
         # P4: per-dealer first response + the tag breakdown
         "v_first_response_by_dealer",
         "v_volume_by_tag",
+        # P8 task 8: the four AI performance reports plus the satisfaction
+        # split. Ungated -- unlike v_csat_by_agent (task 6) there is no flag
+        # for these, so they are created for every tenant.
+        "v_ai_resolution",
+        "v_ai_vs_human",
+        "v_ai_escalation_reasons",
+        "v_ai_deflection",
+        "v_csat_by_resolution",
     }
     assert "`proj.ds.v_volume_by_month_channel`" in ddls["v_volume_by_month_channel"]
     assert "`proj.ds.conversations`" in ddls["v_volume_by_month_channel"]

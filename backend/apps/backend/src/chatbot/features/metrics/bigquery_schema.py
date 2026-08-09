@@ -128,6 +128,76 @@ def _sla_bucket_case_sql(sla_targets_json: str) -> str:
 # Zones a tenant may report in. An allowlist, not a regex: this value is
 # interpolated into DDL, and config is not a trust boundary worth betting a
 # warehouse on. Add entries as tenants need them.
+# ---------------------------------------------------------------------------
+# P8 task 8 -- the four AI performance reports, and the column they must NOT
+# be built on
+# ---------------------------------------------------------------------------
+#
+# **`resolved_by` cannot distinguish AI from human, and building on it would
+# overstate AI resolution by the entire resolved population.** It is derived in
+# `mapping.py` from Chatwoot's `status` alone --
+# `"agent" if status in {"open", "pending", "snoozed"} else "bot"` -- so
+# `resolved_by='bot'` means "this case is not open, pending or snoozed", i.e.
+# "resolved", and says nothing at all about who resolved it. (`v_resolution_
+# split`'s existing `closed_by_bot` / `transfer_to_agent` column names are
+# therefore misleading, but they are live and are deliberately left alone; the
+# numbers under them are "resolved" and "not yet resolved".)
+#
+# So human involvement is inferred from the three signals the warehouse
+# actually carries per case: a human assignee (`agent_id`, Chatwoot's
+# `meta.assignee.id`), the `escalate` label the AI handoff writes, and
+# `escalated_to` for a dealer escalation. One SQL fragment
+# (`_HUMAN_TOUCH_SQL`), used by all four reports, so they cannot drift into
+# four slightly different definitions of the same word.
+#
+# **What this still cannot see, named rather than papered over:** whether a
+# human sent a MESSAGE without ever being assigned. `first_response_at` is
+# Chatwoot's `first_reply_created_at`, which an agent-bot reply also sets, so
+# it cannot separate a bot reply from a human one. Assignment is the closest
+# available proxy and the definition string says so.
+
+# Whether a human was ever involved in this case. Never NULL: `IS NOT NULL`,
+# `IN UNNEST` over a REPEATED column, and `COALESCE` each return a real
+# boolean, so `NOT (...)` is safe and no case falls out of both buckets.
+_HUMAN_TOUCH_SQL = (
+    "(agent_id IS NOT NULL "
+    "OR 'escalate' IN UNNEST(labels) "
+    "OR COALESCE(escalated_to, 'none') != 'none')"
+)
+_RESOLVED_SQL = "status = 'resolved'"
+_AI_RESOLVED_SQL = f"({_RESOLVED_SQL} AND NOT {_HUMAN_TOUCH_SQL})"
+_AGENT_RESOLVED_SQL = f"({_RESOLVED_SQL} AND {_HUMAN_TOUCH_SQL})"
+
+# Returned as a column ON every one of these reports, not as documentation.
+# Two reasonable readings of "deflection" differ by roughly a factor of two,
+# and the one a client quotes must not be a guess about which we used.
+AI_DEFLECTION_DEFINITION = (
+    "Deflected means the case reached resolved status with NO human "
+    "involvement at all -- no human assignee, no escalate label, no dealer "
+    "escalation. A conversation the bot answered before a human took over is "
+    "NOT deflected. Human involvement is inferred from assignment, not from "
+    "message authorship."
+)
+
+AI_RESOLUTION_BASIS = (
+    "AI-resolved means resolved with no human assignee, no escalate label and "
+    "no dealer escalation. Deliberately NOT derived from resolved_by, which "
+    "is computed from Chatwoot status alone and means resolved-vs-open rather "
+    "than AI-vs-human. A human who replied without ever being assigned counts "
+    "here as AI-resolved; Chatwoot first_reply_created_at is also set by "
+    "agent-bot replies, so message authorship is not available to separate "
+    "them."
+)
+
+AI_HANDOFF_REASON_BASIS = (
+    "Reason is the AI classified subcategory on the escalated case. The "
+    "model own free-text handoff reason is recorded on the ai_actions table in "
+    "the agent service Postgres and is not exported to BigQuery, so it cannot "
+    "be grouped here. An unclassified escalation buckets as not_classified, "
+    "never folded into another reason."
+)
+
+
 SUPPORTED_REPORTING_TIMEZONES = frozenset(
     {"UTC", "Asia/Kuala_Lumpur", "Asia/Jakarta", "Asia/Singapore", "Asia/Bangkok"}
 )
@@ -613,6 +683,86 @@ def view_ddls(
             f"COALESCE(escalated_to, 'none') AS escalated_to, "
             f"COUNT(*) AS cases "
             f"FROM {fq} GROUP BY month, day, case_state, escalated_to"
+        ),
+        # ── P8 task 8: the four AI performance reports (§4.56 ①-④ plus the
+        # satisfaction split). See `_HUMAN_TOUCH_SQL` above for why none of
+        # them reads `resolved_by`.
+        #
+        # Every rate ships its denominator, and the denominator is `cases`
+        # (every case in the bucket), not `resolved` -- an AI resolution rate
+        # computed over resolved cases only rises as the backlog grows, which
+        # reads as an improvement that did not happen.
+        "v_ai_resolution": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_ai_resolution` AS "
+            f"SELECT {d_created} AS day, channel, "
+            f"COUNT(*) AS cases, "
+            f"COUNTIF{_AI_RESOLVED_SQL} AS ai_resolved, "
+            f"COUNTIF{_AGENT_RESOLVED_SQL} AS agent_resolved, "
+            f"COUNTIF(NOT ({_RESOLVED_SQL})) AS unresolved, "
+            f"SAFE_DIVIDE(COUNTIF{_AI_RESOLVED_SQL}, COUNT(*)) AS ai_resolution_rate, "
+            f"SAFE_DIVIDE(COUNTIF{_AGENT_RESOLVED_SQL}, COUNT(*)) AS agent_resolution_rate, "
+            f"{_sql_string(AI_RESOLUTION_BASIS)} AS resolution_basis "
+            f"FROM {fq} GROUP BY day, channel, resolution_basis"
+        ),
+        # Long form, one row per bucket, deliberately three buckets and not
+        # two: `ai_resolved + agent_resolved` alone would not sum to the case
+        # count, and a reader who checks (they do) would find the report
+        # disagreeing with the headline volume -- the same C2 discrepancy
+        # `v_concern_pivot` was written to avoid.
+        "v_ai_vs_human": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_ai_vs_human` AS "
+            f"SELECT {d_created} AS day, channel, "
+            f"CASE WHEN NOT ({_RESOLVED_SQL}) THEN 'unresolved' "
+            f"WHEN {_HUMAN_TOUCH_SQL} THEN 'agent_resolved' "
+            f"ELSE 'ai_resolved' END AS resolution_path, "
+            f"COUNT(*) AS cases, "
+            f"SUM(COUNT(*)) OVER (PARTITION BY {d_created}, channel) AS cases_in_bucket, "
+            f"{_sql_string(AI_RESOLUTION_BASIS)} AS resolution_basis "
+            f"FROM {fq} GROUP BY day, channel, resolution_path, resolution_basis"
+        ),
+        # A `not_classified` bucket of its own, never folded into another
+        # reason: an escalation nobody classified is a gap in classification,
+        # not a category of problem.
+        "v_ai_escalation_reasons": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_ai_escalation_reasons` AS "
+            f"SELECT {d_created} AS day, "
+            f"COALESCE(NULLIF(TRIM(subcategory), ''), 'not_classified') AS handoff_reason, "
+            f"COUNT(*) AS cases, "
+            f"SUM(COUNT(*)) OVER (PARTITION BY {d_created}) AS escalated_cases, "
+            f"SAFE_DIVIDE(COUNT(*), SUM(COUNT(*)) OVER (PARTITION BY {d_created})) "
+            f"AS share_of_escalations, "
+            f"{_sql_string(AI_HANDOFF_REASON_BASIS)} AS handoff_reason_basis "
+            f"FROM {fq} WHERE {_HUMAN_TOUCH_SQL} "
+            f"GROUP BY day, handoff_reason, handoff_reason_basis "
+            f"ORDER BY cases DESC"
+        ),
+        "v_ai_deflection": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_ai_deflection` AS "
+            f"SELECT {d_created} AS day, channel, "
+            f"COUNT(*) AS cases, "
+            f"COUNTIF{_AI_RESOLVED_SQL} AS deflected, "
+            f"COUNTIF({_HUMAN_TOUCH_SQL}) AS human_involved, "
+            f"SAFE_DIVIDE(COUNTIF{_AI_RESOLVED_SQL}, COUNT(*)) AS deflection_rate, "
+            f"{_sql_string(AI_DEFLECTION_DEFINITION)} AS deflection_definition "
+            f"FROM {fq} GROUP BY day, channel, deflection_definition"
+        ),
+        # The satisfaction split. `respondents` is the denominator of both
+        # rates and is not the same as `cases` -- a path with better CSAT and
+        # a quarter of the response rate is not a better path, and the reader
+        # needs both numbers to see that.
+        "v_csat_by_resolution": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_csat_by_resolution` AS "
+            f"SELECT {d_created} AS day, channel, "
+            f"CASE WHEN NOT ({_RESOLVED_SQL}) THEN 'unresolved' "
+            f"WHEN {_HUMAN_TOUCH_SQL} THEN 'agent_resolved' "
+            f"ELSE 'ai_resolved' END AS resolution_path, "
+            f"COUNT(*) AS cases, "
+            f"COUNTIF(csat_score IS NOT NULL) AS respondents, "
+            f"AVG(csat_score) AS avg_score, "
+            f"SAFE_DIVIDE(COUNTIF(csat_score >= 4), COUNTIF(csat_score IS NOT NULL)) "
+            f"AS satisfied_rate, "
+            f"{_sql_string(AI_RESOLUTION_BASIS)} AS resolution_basis "
+            f"FROM {fq} GROUP BY day, channel, resolution_path, resolution_basis"
         ),
     }
 

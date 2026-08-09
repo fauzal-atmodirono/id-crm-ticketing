@@ -91,6 +91,14 @@ _EXPECTED_VIEW_KEYS = {
     # P4: per-dealer first response + the tag breakdown (4.80)
     "v_first_response_by_dealer",
     "v_volume_by_tag",
+    # P8 task 8 (§4.56 ①-④ plus the satisfaction split): the AI performance
+    # reports. None of them reads `resolved_by` -- see `_HUMAN_TOUCH_SQL` in
+    # bigquery_schema.py for why that column cannot tell AI from human.
+    "v_ai_resolution",
+    "v_ai_vs_human",
+    "v_ai_escalation_reasons",
+    "v_ai_deflection",
+    "v_csat_by_resolution",
 }
 
 _PROJECT = "myproject"
@@ -103,25 +111,27 @@ _TABLE = "conversations"
 # ---------------------------------------------------------------------------
 
 
-def test_view_ddls_returns_exactly_33_views() -> None:
-    """view_ddls() must return exactly 33 view keys (13 original + 6 Phase-3
+def test_view_ddls_returns_exactly_38_views() -> None:
+    """view_ddls() must return exactly 38 view keys (13 original + 6 Phase-3
     + 1 Task-11 + 3 Task-12 + 2 Task-13 + 2 Task-2/Package-E-reopened
-    day-grain siblings + 2 P1 after-hours + 2 P3 case-record + 2 P4 reporting)."""
+    day-grain siblings + 2 P1 after-hours + 2 P3 case-record + 2 P4 reporting
+    + 5 P8-task-8 AI performance).
+
+    `v_csat_by_agent` (P8 task 6) is deliberately NOT here: it is flag-gated
+    off `csat_by_agent_enabled`, so the DEFAULTED call this test makes returns
+    the same key set it returned before P8 plus only the ungated additions."""
     ddls = view_ddls(_PROJECT, _DATASET, _TABLE)
     assert set(ddls) == _EXPECTED_VIEW_KEYS, (
-        f"Missing: {_EXPECTED_VIEW_KEYS - set(ddls)}  "
-        f"Extra: {set(ddls) - _EXPECTED_VIEW_KEYS}"
+        f"Missing: {_EXPECTED_VIEW_KEYS - set(ddls)}  Extra: {set(ddls) - _EXPECTED_VIEW_KEYS}"
     )
-    assert len(ddls) == 33
+    assert len(ddls) == 38
 
 
 @pytest.mark.parametrize("key", sorted(_EXPECTED_VIEW_KEYS))
 def test_every_ddl_has_create_or_replace_view(key: str) -> None:
     """Every DDL string must start with CREATE OR REPLACE VIEW."""
     ddls = view_ddls(_PROJECT, _DATASET, _TABLE)
-    assert "CREATE OR REPLACE VIEW" in ddls[key], (
-        f"{key}: missing 'CREATE OR REPLACE VIEW'"
-    )
+    assert "CREATE OR REPLACE VIEW" in ddls[key], f"{key}: missing 'CREATE OR REPLACE VIEW'"
 
 
 @pytest.mark.parametrize("key", sorted(_EXPECTED_VIEW_KEYS))
@@ -143,9 +153,7 @@ def test_every_non_cte_ddl_references_base_table(key: str) -> None:
     """
     ddls = view_ddls(_PROJECT, _DATASET, _TABLE)
     base_ref = f"`{_PROJECT}.{_DATASET}.{_TABLE}`"
-    assert base_ref in ddls[key], (
-        f"{key}: DDL doesn't reference base table ({base_ref!r})"
-    )
+    assert base_ref in ddls[key], f"{key}: DDL doesn't reference base table ({base_ref!r})"
 
 
 def test_channel_anomaly_ddl_references_base_table_inside_cte() -> None:
@@ -176,28 +184,32 @@ def test_conversation_row_has_reopen_count_field() -> None:
 
 def test_dealer_label_parsed_correctly() -> None:
     """A dealer_<slug> label must map to row.dealer == slug."""
-    row = map_chatwoot_conversation_to_row({
-        "id": 1,
-        "status": "resolved",
-        "labels": ["dealer_surabaya", "category_aftersales"],
-        "created_at": 1782032400,
-        "last_activity_at": 1782036000,
-        "additional_attributes": {"reopen_count": 2},
-    })
+    row = map_chatwoot_conversation_to_row(
+        {
+            "id": 1,
+            "status": "resolved",
+            "labels": ["dealer_surabaya", "category_aftersales"],
+            "created_at": 1782032400,
+            "last_activity_at": 1782036000,
+            "additional_attributes": {"reopen_count": 2},
+        }
+    )
     assert row is not None, "map returned None for a conversation with labels"
     assert row.dealer == "surabaya", f"dealer={row.dealer!r}, expected 'surabaya'"
 
 
 def test_reopen_count_from_additional_attributes() -> None:
     """reopen_count must be read from additional_attributes.reopen_count."""
-    row = map_chatwoot_conversation_to_row({
-        "id": 1,
-        "status": "resolved",
-        "labels": ["dealer_surabaya", "category_aftersales"],
-        "created_at": 1782032400,
-        "last_activity_at": 1782036000,
-        "additional_attributes": {"reopen_count": 2},
-    })
+    row = map_chatwoot_conversation_to_row(
+        {
+            "id": 1,
+            "status": "resolved",
+            "labels": ["dealer_surabaya", "category_aftersales"],
+            "created_at": 1782032400,
+            "last_activity_at": 1782036000,
+            "additional_attributes": {"reopen_count": 2},
+        }
+    )
     assert row is not None
     assert row.reopen_count == 2, f"reopen_count={row.reopen_count!r}, expected 2"
 
@@ -208,14 +220,16 @@ def test_full_dealer_and_reopen_smoke() -> None:
     Mirrors the plan's Step 3 one-liner that prints
     ``OK — dealer='surabaya', reopen_count=2``.
     """
-    row = map_chatwoot_conversation_to_row({
-        "id": 1,
-        "status": "resolved",
-        "labels": ["dealer_surabaya", "category_aftersales"],
-        "created_at": 1782032400,
-        "last_activity_at": 1782036000,
-        "additional_attributes": {"reopen_count": 2},
-    })
+    row = map_chatwoot_conversation_to_row(
+        {
+            "id": 1,
+            "status": "resolved",
+            "labels": ["dealer_surabaya", "category_aftersales"],
+            "created_at": 1782032400,
+            "last_activity_at": 1782036000,
+            "additional_attributes": {"reopen_count": 2},
+        }
+    )
     assert row is not None
     assert row.dealer == "surabaya"
     assert row.reopen_count == 2
@@ -267,9 +281,9 @@ def test_load_conversations_serialises_dealer() -> None:
 
         load_conversations(_FakeSettings(), [row])  # type: ignore[arg-type]
 
-        json_rows: list[dict[str, Any]] = (
-            bq.Client.return_value.load_table_from_json.call_args[0][0]
-        )
+        json_rows: list[dict[str, Any]] = bq.Client.return_value.load_table_from_json.call_args[0][
+            0
+        ]
 
     assert json_rows, "load_conversations sent no rows to BQ"
     assert "dealer" in json_rows[0], "'dealer' key missing from BQ row dict"
@@ -314,23 +328,34 @@ def test_schema_field_names_are_superset_of_non_derived_view_columns() -> None:
     # Columns that appear in at least one view DDL and must be in the schema.
     # (sla_minutes is excluded: stored in schema but not referenced in any view.)
     columns_used_in_ddls = {
-        "conversation_id", "channel", "created_at", "status",
-        "resolved_by", "csat_score", "nps_score", "division",
-        "category", "subcategory", "department", "agent_id", "pic",
-        "sla_deadline", "first_response_at", "resolved_at",
-        "reopen_count", "dealer",
+        "conversation_id",
+        "channel",
+        "created_at",
+        "status",
+        "resolved_by",
+        "csat_score",
+        "nps_score",
+        "division",
+        "category",
+        "subcategory",
+        "department",
+        "agent_id",
+        "pic",
+        "sla_deadline",
+        "first_response_at",
+        "resolved_at",
+        "reopen_count",
+        "dealer",
     }
     # All of these must be in the schema
     missing_from_schema = columns_used_in_ddls - schema_cols
     assert not missing_from_schema, (
-        f"Columns referenced in DDLs but absent from CONVERSATIONS_SCHEMA: "
-        f"{missing_from_schema}"
+        f"Columns referenced in DDLs but absent from CONVERSATIONS_SCHEMA: {missing_from_schema}"
     )
     # And each must actually appear in at least one DDL string
     not_in_any_ddl = {col for col in columns_used_in_ddls if col not in all_ddl_text}
     assert not not_in_any_ddl, (
-        f"Columns listed as DDL-referenced but not found in any DDL text: "
-        f"{not_in_any_ddl}"
+        f"Columns listed as DDL-referenced but not found in any DDL text: {not_in_any_ddl}"
     )
 
 

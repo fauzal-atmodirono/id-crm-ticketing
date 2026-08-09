@@ -1,4 +1,53 @@
-# Power BI ↔ BigQuery Connection Runbook
+# Rebuilding the Power BI artefact
+
+> **Status (2026-08-09):** the `.pbix` itself does **not** exist in this repo and
+> cannot be produced here — it is a proprietary binary only Power BI Desktop can
+> author. What ships instead is `proton-crm.pbids` (the connection, in
+> version-controllable JSON) plus the page-by-page spec below, which is the part
+> that can be reviewed and diffed.
+>
+> §4.55 was raised by the client at the 2026-07-28 demo (feedback item 5).
+> **A claim that it is done needs evidence attached**: the file opened, every
+> page rendering against a real dataset, refresh succeeding under the service
+> account, and a screenshot of each page pasted into this runbook. Until those
+> screenshots are here, report it as in progress.
+
+## Quick start
+
+Open `proton-crm.pbids` in Power BI Desktop after replacing its two
+`REPLACE_WITH_` placeholders. It opens the Navigator already pointed at the
+tenant's dataset in **DirectQuery** mode.
+
+**Use DirectQuery, not Import.** Import copies data into the `.pbix`, so the
+report serves whatever was true at the last refresh — which is the staleness the
+client raised in the first place.
+
+## The five cuts §4.55 names, and the views behind each
+
+| Page | Views | Notes |
+|---|---|---|
+| **By channel** | `v_volume_by_month_channel`, `v_resolution_split`, `v_first_response_by_channel` | |
+| **By division** | `v_volume_by_division`, `v_volume_by_type_division`, `v_concern_pivot` | `v_concern_pivot` uses ROLLUP — filter to the grain you want or subtotal rows double-count. |
+| **Trend** | `v_volume_daily`, `v_volume_weekly`, `v_case_state_trend`, `v_volume_after_hours` | `v_case_state_trend` is the real case state; `v_state_trend` is Chatwoot's `status`. They are different questions. |
+| **By PIC** | `v_dept_pic_performance`, `v_tasks_per_agent`, `v_nps_by_agent` | |
+| **CRR / dealer** | `v_dealer_escalation`, `v_first_response_by_dealer`, `v_dealer_escalation_slowest_cases` | **`v_dealer_escalation` keys on `dealer_escalated_at`, not `created_at`** — its monthly total deliberately does not sum to that month's case count. |
+| **SLA** | `v_sla_achievement`, `v_resolution_sla_buckets`, `v_case_aging` | |
+
+### Three things that will otherwise be read wrong
+
+1. **`v_volume_by_tag` double-counts by construction.** A case with three
+   labels is in three buckets, and a case with no labels is absent. Do not put
+   a total on that page.
+2. **Every `day` column is bucketed in `REPORTING_TIMEZONE`** (UTC by default).
+   If the deck is compiled in MYT, see the timezone section of the main README
+   before assuming a discrepancy is a bug.
+3. **Blank columns mean "not yet captured", not "zero"** — most P3 case fields
+   are agent-entered. `/metrics/*` responses carry a coverage note; put it on
+   the slide.
+
+---
+
+# Appendix: the original connection runbook
 
 **Purpose:** Connect Power BI Desktop to the existing BigQuery `conversations` dataset/views,
 build a report, publish it to Power BI Service, and wire the embed URL into the Reports nav item.

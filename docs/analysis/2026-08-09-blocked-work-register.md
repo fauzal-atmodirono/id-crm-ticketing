@@ -85,9 +85,10 @@ or image sent to the tenant.
 
 | Item | Why | Unblocked by |
 |---|---|---|
-| **BigQuery `ensure_views()`** | All development ran against the mocked adapter. There are now **31 views** and the schema has grown by 12 columns. | One live run with GCP credentials. Note it **re-creates every view** — see the timezone warning below. |
+| **BigQuery `ensure_views()`** | All development ran against the mocked adapter. There are now **33 views** and the schema has grown by 13 columns. | One live run with GCP credentials. Note it **re-creates every view** — see the timezone warning below. |
 | **Cloud Build for fork patch 0052** | The tier-2 manager field on the Escalation Routing page. Patch is written and verified with `git apply --check`; no image contains it. | `gcloud builds submit deploy/chatwoot-fork/ …` — off-VM, amd64. **Never build this on the prod VM, never from an arm64 Mac.** |
 | **`provision_case_record_fields.py`** | P3's sidebar panel needs the custom-attribute definitions to exist. No fork patch needed. | One dry-run then live run per tenant. |
+| **The Power BI `.pbix` (§4.55)** | A proprietary binary only Power BI Desktop can author. `proton-crm.pbids` (the connection) and the page-by-page spec ship instead — those are the reviewable, diffable parts. | One Power BI Desktop session. **Evidence required before reporting it done:** every page rendering against a real dataset, refresh succeeding under the service account, and a screenshot of each page in `power-bi-runbook.md`. The client raised this at the 2026-07-28 demo (feedback item 5), so an unevidenced claim will be checked. |
 | **Upstream Chatwoot source** | This sandbox cannot reach github. | Only matters for files **upstream owns**. Files our own patches *created* can be reconstructed by replaying the patch history — that is how 0052 was authored. `CustomAttributes.vue` is upstream-owned and therefore genuinely out of reach. |
 
 ---

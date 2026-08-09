@@ -1,0 +1,35 @@
+{
+  "version": "0.1",
+  "connections": [
+    {
+      "details": {
+        "protocol": "google-bigquery",
+        "address": {
+          "project": "REPLACE_WITH_BIGQUERY_PROJECT_ID",
+          "dataset": "REPLACE_WITH_BIGQUERY_DATASET"
+        }
+      },
+      "mode": "DirectQuery"
+    }
+  ],
+  "_comment": [
+    "Power BI Data Source file (.pbids) -- open this in Power BI Desktop and it",
+    "opens the Navigator already pointed at the tenant's BigQuery dataset in",
+    "DirectQuery mode, so nobody has to retype the connection or accidentally",
+    "pick Import and ship a stale snapshot.",
+    "",
+    "This is NOT the .pbix. A .pbix is a proprietary binary that only Power BI",
+    "Desktop can author; see docs/analysis/2026-08-09-blocked-work-register.md.",
+    "This file is the part that can be version-controlled, reviewed and diffed.",
+    "",
+    "Replace both REPLACE_WITH_ placeholders with the tenant's values -- they are",
+    "settings.bigquery_project_id and settings.bigquery_dataset. Deliberately not",
+    "pre-filled: this file is committed, and a real project id in the repo is a",
+    "small invitation to point a report at the wrong tenant.",
+    "",
+    "DirectQuery, not Import, is the mode that matters. Import copies the data",
+    "into the .pbix, so the report silently serves whatever was true at the last",
+    "refresh -- which is exactly the failure the client raised at the 2026-07-28",
+    "demo. See power-bi-runbook.md."
+  ]
+}

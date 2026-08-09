@@ -303,6 +303,12 @@ Then set `REPORTING_TIMEZONE`, redeploy the backend, and re-run `ensure_views()`
 An unsupported zone is rejected at view-creation time, not at query time on a
 dashboard.
 
+**Change-record step, not optional:** attach the comparison output to the change
+record, **schedule the switch at a month boundary** so the seam in any published
+series falls at a natural break, and **tell the reporting team before, not
+after**. They are the people who will otherwise spend a morning reconciling a
+discrepancy that we created on purpose.
+
 ## 7. Switching to a real domain later
 
 The nip.io setup is HTTP-only and meant to get you running fast. To move to

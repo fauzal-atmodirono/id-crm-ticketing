@@ -458,7 +458,17 @@ class OrchestratorService:
         """
         try:
             assistant = await self._resolve_chat_assistant(inbox_id)
-            self._assistant_by_session[session_id] = assistant
+            # Store only a real persona, and POP otherwise -- mirroring
+            # _instruction_by_session's discipline below. Writing the key
+            # unconditionally (including the `None` a default tenant always
+            # resolves to) made this dict grow by one entry per session forever,
+            # reclaimed only by a restart, on exactly the tenants that get no
+            # benefit from it. `_persona_for_session` treats a missing key and a
+            # `None` value identically, so popping loses nothing.
+            if assistant is not None:
+                self._assistant_by_session[session_id] = assistant
+            else:
+                self._assistant_by_session.pop(session_id, None)
             composed = compose_chat_agent_instruction(AGENT_INSTRUCTION, assistant)
             if composed != AGENT_INSTRUCTION:
                 self._instruction_by_session[session_id] = composed

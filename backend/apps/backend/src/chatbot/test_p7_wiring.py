@@ -354,6 +354,49 @@ def test_the_summariser_is_bound_to_the_live_assist_route(monkeypatch):
             find_summarize_endpoint,
         )
 
-        assert find_summarize_endpoint(app.router) is not None
+        endpoint = find_summarize_endpoint(app.router)
+        assert endpoint is not None
+    finally:
+        _clear_settings_cache()
+
+
+def test_main_actually_binds_the_summariser_to_that_route(monkeypatch):
+    """The companion above asserts less than its name, and did so silently.
+
+    `/assist/summarize` is mounted by the assist router, so the route is
+    findable whether or not `main.py` ever calls `AssistSummarizeAdapter.bind()`.
+    Deleting that call therefore left the structural test green -- caught by the
+    P7 final review, not by CI. An unbound summariser returns `""`, the indexer
+    correctly reads that as "nothing to do", and the result is indistinguishable
+    from the flag being off: a silent no-op on a feature the operator switched on.
+
+    So assert the binding itself: `bind()` must be called during bootstrap, with
+    the same endpoint object `find_summarize_endpoint` locates on the finished app.
+    """
+    from chatbot.features.chat.resolved_case_adapters import (  # noqa: PLC0415
+        AssistSummarizeAdapter,
+        find_summarize_endpoint,
+    )
+
+    bound: list[object] = []
+    real_bind = AssistSummarizeAdapter.bind
+
+    def _spy(self, endpoint):
+        bound.append(endpoint)
+        return real_bind(self, endpoint)
+
+    monkeypatch.setattr(AssistSummarizeAdapter, "bind", _spy)
+
+    _patch_edges(monkeypatch, "- summary")
+    try:
+        app = _boot(monkeypatch)
+
+        assert bound, "main.py never called AssistSummarizeAdapter.bind()"
+        assert bound[-1] is not None, "bind() was called with None -- nothing to summarise with"
+        assert bound[-1] is find_summarize_endpoint(app.router), (
+            "the summariser was bound to a different function than the mounted "
+            "/assist/summarize route, so the automatic path can drift from the "
+            "one the agent-facing endpoint uses"
+        )
     finally:
         _clear_settings_cache()

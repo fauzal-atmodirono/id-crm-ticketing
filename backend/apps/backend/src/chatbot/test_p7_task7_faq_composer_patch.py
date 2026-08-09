@@ -230,7 +230,21 @@ def test_the_apply_button_writes_the_suggestion_into_the_composer(
 
     assert "emit('protonAssistResult'" in body
     assert "mode: 'reply'" in body
-    assert "faqSuggestion.value.snippet" in body
+
+    # It must paste the FULL answer, not the display snippet. `snippet` is a
+    # 280-char truncation for the strip; pasting it sends the customer a
+    # warranty clause cut off mid-word. The original version of this assertion
+    # required `snippet` and so pinned that bug in place -- the P7 final review
+    # caught it. `snippet` may still appear, but only after `answer` as the
+    # fallback for a backend predating the field.
+    assert "faqSuggestion.value.answer" in body, (
+        "Apply must source the full `answer`, not the truncated `snippet`"
+    )
+    answer_pos = body.index("faqSuggestion.value.answer")
+    if "faqSuggestion.value.snippet" in body:
+        assert body.index("faqSuggestion.value.snippet") > answer_pos, (
+            "`snippet` may only be a fallback after `answer`, never preferred"
+        )
 
     # The template's Apply control must call this exact handler.
     assert re.search(r'@click="applyFaqSuggestion"', applied_file)
@@ -375,3 +389,46 @@ def test_dismissing_the_strip_does_not_re_show_it_for_the_same_message(
     assert visible_after_dismiss(42, dismissed_id) is False
     # A new customer message (43) must not be suppressed by 42's dismissal.
     assert visible_after_dismiss(43, dismissed_id) is True
+
+
+def test_the_suggestion_does_not_leak_across_conversations(applied_file: str) -> None:
+    """P7 final review, I7. The first version watched only
+    `getSelectedChat?.messages?.length`, so switching from conversation A to
+    conversation B with an equal message count fired no callback at all: the
+    strip kept showing A's suggestion and Apply pasted A's answer into B's
+    composer. A conversation with no customer message yet showed A's too.
+
+    The watch must therefore track the conversation *id*, clear eagerly when it
+    changes (so no stale suggestion is visible during B's fetch), and run on
+    entry rather than waiting for B's next inbound message.
+    """
+    match = re.search(r"watch\(\s*\(\) => \[(.*?)\],", applied_file, re.DOTALL)
+    assert match, "the watch source is not a list -- it cannot be tracking both keys"
+    source = match.group(1)
+
+    assert "getSelectedChat?.id" in source, "the conversation id is not watched"
+    assert "messages?.length" in source, "the message count is no longer watched"
+
+    body_match = re.search(r"watch\(\s*\(\) => \[.*?\],\s*\((.*?)\n\s*\},", applied_file, re.DOTALL)
+    assert body_match, "the watch callback was not found"
+    body = body_match.group(1)
+    assert "faqSuggestion.value = null" in body, (
+        "the callback never clears the previous conversation's suggestion"
+    )
+    assert "dismissedFaqMessageId.value = null" in body, (
+        "a dismissal must not carry over to a different conversation"
+    )
+
+    # `immediate` is what makes the strip appear on entering a conversation
+    # rather than only after its next inbound message.
+    assert "immediate: true" in applied_file, "the watch does not run on entry"
+
+    # A conversation with no customer message must show nothing, not the
+    # previous conversation's suggestion.
+    refresh = re.search(
+        r"const refreshFaqSuggestion = \(\) => \{(.*?)\n\s*\};", applied_file, re.DOTALL
+    )
+    assert refresh, "refreshFaqSuggestion not found"
+    assert "faqSuggestion.value = null" in refresh.group(1), (
+        "a conversation with no customer message leaves the old suggestion visible"
+    )

@@ -110,7 +110,7 @@ index 7c1d2e3..9f4b6e1 100644
  
  export default {
    name: 'ReplyTopPanel',
-@@ -97,11 +103,80 @@
+@@ -97,11 +103,107 @@
      };
  
      const { captainTasksEnabled } = useCaptain();
@@ -167,10 +167,13 @@ index 7c1d2e3..9f4b6e1 100644
 +
 +    const applyFaqSuggestion = () => {
 +      if (!faqSuggestion.value) return;
-+      emit('protonAssistResult', {
-+        text: faqSuggestion.value.snippet,
-+        mode: 'reply',
-+      });
++      // `answer` is the full FAQ text; `snippet` is a 280-char DISPLAY
++      // truncation. Pasting the snippet sends the customer a warranty clause
++      // cut off mid-word, so Apply must never use it. Falls back to snippet
++      // only for a backend older than the `answer` field.
++      const text = faqSuggestion.value.answer || faqSuggestion.value.snippet;
++      if (!text) return;
++      emit('protonAssistResult', { text, mode: 'reply' });
 +    };
 +
 +    const dismissFaqSuggestion = () => {
@@ -179,16 +182,40 @@ index 7c1d2e3..9f4b6e1 100644
 +      }
 +    };
 +
-+    // Re-check whenever a new message arrives in the open conversation.
-+    watch(
-+      () => store.getters.getSelectedChat?.messages?.length,
-+      () => {
-+        const chat = store.getters.getSelectedChat;
-+        const lastCustomerMessage = [...(chat?.messages || [])]
-+          .reverse()
-+          .find(m => m.content && m.message_type === 0);
-+        if (lastCustomerMessage) fetchFaqSuggestion(lastCustomerMessage);
++    const refreshFaqSuggestion = () => {
++      const chat = store.getters.getSelectedChat;
++      const lastCustomerMessage = [...(chat?.messages || [])]
++        .reverse()
++        .find(m => m.content && m.message_type === 0);
++      if (lastCustomerMessage) {
++        fetchFaqSuggestion(lastCustomerMessage);
++      } else {
++        // A conversation with no customer message yet must show nothing --
++        // NOT whatever the previously-open conversation was showing.
++        faqSuggestion.value = null;
 +      }
++    };
++
++    // Watch the conversation id as well as the message count. Watching only
++    // the count leaked across conversations: switching from A to B with an
++    // equal message count fired no callback at all, so the strip kept showing
++    // A's suggestion and Apply pasted A's answer into B's composer. Clearing
++    // eagerly on an id change also stops a stale suggestion being visible
++    // during B's fetch, and `immediate` means the strip appears on entering a
++    // conversation rather than only after its next inbound message.
++    watch(
++      () => [
++        store.getters.getSelectedChat?.id,
++        store.getters.getSelectedChat?.messages?.length,
++      ],
++      ([newId], oldValue) => {
++        if (!oldValue || newId !== oldValue[0]) {
++          faqSuggestion.value = null;
++          dismissedFaqMessageId.value = null;
++        }
++        refreshFaqSuggestion();
++      },
++      { immediate: true }
      );
  
      const showCopilotMenu = ref(false);

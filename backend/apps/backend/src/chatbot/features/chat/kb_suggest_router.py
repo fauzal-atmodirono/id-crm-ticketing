@@ -55,6 +55,13 @@ def build_kb_suggest_router(
             {
                 "title": entry.question,
                 "snippet": entry.answer[:_SNIPPET],
+                # The full answer, for the fork's 1-click Apply button. `snippet`
+                # is a DISPLAY truncation -- pasting it into the composer sends a
+                # customer a warranty clause cut off mid-word, which is worse
+                # than no suggestion at all. Apply uses this field; the strip
+                # still renders `snippet`. Only ever set on live_faq hits,
+                # because they are the only source whose full text we hold.
+                "answer": entry.answer,
                 "url": None,
                 "source_type": "live_faq",
                 "score": round(score, 4),

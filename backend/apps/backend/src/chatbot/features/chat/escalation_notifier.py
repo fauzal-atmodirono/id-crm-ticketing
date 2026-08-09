@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import textwrap
 from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -23,7 +24,15 @@ import structlog
 from chatbot.features.chat.case_state import CHATWOOT_CASE_STATE_ATTR, CaseState
 from chatbot.features.chat.escalation_attachments import AttachmentFetcher
 from chatbot.features.chat.escalation_attachments import collect as collect_attachments
+from chatbot.features.chat.ports import AuditEntry
 from chatbot.features.chat.settings_facade import get_effective_value
+
+# Delivery outcomes recorded on each escalation leg. `delivered` means the SMTP
+# handoff succeeded -- NOT that the mail was accepted by the recipient's server.
+# Bounce/DSN handling needs a bounce mailbox (client question Q6) and is not
+# covered here; do not report §4.39 as fully closed on the strength of this.
+ESCALATION_DELIVERED = "delivered"
+ESCALATION_FAILED = "failed"
 
 if TYPE_CHECKING:
     from chatbot.features.chat.adapters.tenant_settings_store import TenantSettingsStorePort
@@ -101,6 +110,7 @@ class EscalationNotifier:
         tenant_settings_store: TenantSettingsStorePort | None = None,
         chatwoot_post_message: _CWPostMessage | None = None,
         attachment_fetcher: AttachmentFetcher | None = None,
+        audit: Any | None = None,
     ) -> None:
         self._settings = settings
         self._pic_registry = pic_registry
@@ -123,6 +133,10 @@ class EscalationNotifier:
         # P2: pulls the customer's photos/PDFs into the internal legs. None
         # means "not wired" -- no attachment work is attempted at all.
         self._attachment_fetcher = attachment_fetcher
+        # P2: records what each leg actually delivered. None = not wired, and
+        # the sends proceed regardless -- recording the escalation matters
+        # less than making it.
+        self._audit = audit
 
     async def notify(
         self,
@@ -189,6 +203,69 @@ class EscalationNotifier:
         key = department.removeprefix("dept_")
         return await self._pic_registry.lookup(key)
 
+    async def _record_delivery(
+        self,
+        conv_id: str,
+        *,
+        leg: str,
+        recipients: list[str],
+        transport: str,
+        ok: bool,
+        error: str = "",
+    ) -> None:
+        """Write one audit row per escalation leg, and warn the operator when
+        a leg failed.
+
+        Both halves are best-effort and independent. A dead audit store or an
+        unpostable note must never stop the remaining legs -- an escalation
+        that reached the dealer but was not logged is a reporting gap; one that
+        never left is the failure this package exists to prevent.
+        """
+        status = ESCALATION_DELIVERED if ok else ESCALATION_FAILED
+        if self._audit is not None:
+            try:
+                await self._audit.append(
+                    AuditEntry(
+                        ticket_id=conv_id,
+                        session_id=f"chatwoot-conv-{conv_id}",
+                        actor="escalation-notifier",
+                        from_state="OPEN",
+                        to_state=f"ESCALATION_{leg.upper()}",
+                        at=datetime.now(UTC).isoformat(),
+                        remark=error,
+                        recipients=list(recipients),
+                        transport=transport,
+                        delivery_status=status,
+                    )
+                )
+            except Exception as exc:
+                _log.warning(
+                    "escalation_audit_write_failed", conv_id=conv_id, error=str(exc)
+                )
+
+        if ok or not getattr(self._settings, "escalation_failure_note_enabled", False):
+            return
+        if self._post_message is None:
+            return
+        # Private: this is an internal delivery problem. The customer must
+        # never be told their escalation email bounced off our own SMTP.
+        try:
+            await self._post_message(
+                conv_id,
+                {
+                    "content": (
+                        f"⚠️ The {leg} escalation could not be delivered to "
+                        f"{', '.join(recipients)}. Please contact them directly. "
+                        f"({error})"
+                    ),
+                    "private": True,
+                },
+            )
+        except Exception as exc:
+            _log.warning(
+                "escalation_failure_note_failed", conv_id=conv_id, error=str(exc)
+            )
+
     async def _collect_attachments(self, conv_id: str) -> tuple[list, list[str]]:
         """The customer's evidence, for the internal legs only.
 
@@ -226,7 +303,7 @@ class EscalationNotifier:
         body: str,
         attachments: list | None = None,
         skipped: list[str] | None = None,
-    ) -> None:
+    ) -> tuple[bool, str]:
         reference = f"Chatwoot conversation #{conv_id}"
         # CC the department's configured "relevant personnel" (managers / DLs),
         # gated by escalation_cc_pic. Empty list = To-the-PIC only.
@@ -252,8 +329,10 @@ class EscalationNotifier:
                 attachments=list(attachments or []),
                 reply_to=self._reply_to_for(conv_id),
             )
+            return True, ""
         except Exception as exc:
             _log.warning("escalation_email_failed", pic_email=pic.pic_email, error=str(exc))
+            return False, str(exc)
 
     async def _send_wa(self, pic: PicEntry, *, conv_id: str, title: str) -> None:
         if self._twilio is None:
@@ -292,7 +371,17 @@ class EscalationNotifier:
         """
         if self._settings.email_escalation_ack_enabled:
             if ack_transport == "email" and customer_email:
-                await self._send_customer_ack(customer_email, conv_id=conv_id, title=title)
+                ok, error = await self._send_customer_ack(
+                    customer_email, conv_id=conv_id, title=title
+                )
+                await self._record_delivery(
+                    conv_id,
+                    leg="customer_ack",
+                    recipients=[customer_email],
+                    transport="email",
+                    ok=ok,
+                    error=error,
+                )
             elif ack_transport == "conversation":
                 await self._send_chat_ack(conv_id, title=title)
 
@@ -306,7 +395,7 @@ class EscalationNotifier:
         if self._settings.escalation_email_enabled:
             pic = await self._resolve_pic(department)
             if pic is not None:
-                self._send_email(
+                ok, error = self._send_email(
                     pic,
                     conv_id=conv_id,
                     title=title,
@@ -314,9 +403,17 @@ class EscalationNotifier:
                     attachments=attachments,
                     skipped=skipped,
                 )
+                await self._record_delivery(
+                    conv_id,
+                    leg="pic",
+                    recipients=[pic.pic_email],
+                    transport="email",
+                    ok=ok,
+                    error=error,
+                )
 
         if dealer:
-            await self._send_dealer_forward(
+            ok, error, dealer_emails = await self._send_dealer_forward(
                 dealer,
                 conv_id=conv_id,
                 title=title,
@@ -325,6 +422,15 @@ class EscalationNotifier:
                 attachments=attachments,
                 skipped=skipped,
             )
+            if dealer_emails:
+                await self._record_delivery(
+                    conv_id,
+                    leg="dealer",
+                    recipients=dealer_emails,
+                    transport="email",
+                    ok=ok,
+                    error=error,
+                )
 
     async def _resolve_ack_template(self) -> str:
         """Operator-edited template from the tenant store, else the env
@@ -346,7 +452,9 @@ class EscalationNotifier:
                 _log.warning("escalation_ack_template_resolve_failed", error=str(exc))
         return self._settings.email_escalation_ack_template
 
-    async def _send_customer_ack(self, to_email: str, *, conv_id: str, title: str) -> None:
+    async def _send_customer_ack(
+        self, to_email: str, *, conv_id: str, title: str
+    ) -> tuple[bool, str]:
         # No _case_tag here, deliberately: the customer thread must stay
         # clean -- only the invisible Reply-To carries the correlation token.
         try:
@@ -358,8 +466,10 @@ class EscalationNotifier:
                 attachments=[],
                 reply_to=self._reply_to_for(conv_id),
             )
+            return True, ""
         except Exception as exc:
             _log.warning("escalation_customer_ack_failed", to_email=to_email, error=str(exc))
+            return False, str(exc)
 
     async def _send_chat_ack(self, conv_id: str, *, title: str) -> None:
         """Acknowledge the customer in the conversation thread.
@@ -395,7 +505,7 @@ class EscalationNotifier:
         customer_email: str | None = None,
         attachments: list | None = None,
         skipped: list[str] | None = None,
-    ) -> None:
+    ) -> tuple[bool, str, list[str]]:
         emails: list[str] = []
         cc: list[str] = []
         if self._dealer_store is not None:
@@ -408,7 +518,7 @@ class EscalationNotifier:
             emails = list(self._dealer_email_map.get(dealer_slug.lower()) or [])
         if not emails:
             _log.info("escalation_dealer_unmapped", dealer=dealer_slug)
-            return
+            return False, "no dealer email configured", []
         email_body = textwrap.dedent(f"""\
             A case has been escalated and forwarded to your dealership.
 
@@ -444,8 +554,10 @@ class EscalationNotifier:
                 attachments=list(attachments or []),
                 reply_to=self._reply_to_for(conv_id),
             )
+            return True, "", emails
         except Exception as exc:
             _log.warning("escalation_dealer_forward_failed", dealer=dealer_slug, error=str(exc))
+            return False, str(exc), emails
 
     async def _write_case_state(self, conv_id: str) -> None:
         try:

@@ -735,6 +735,11 @@ class Settings(BaseSettings):
     # per file; newest attachments win when it cannot fit everything, and what
     # was left out is described in the body rather than silently dropped.
     escalation_attachment_budget_bytes: int = 0
+    # P2 (§4.39, SMTP half): post a private note on the conversation when an
+    # escalation leg fails to send, so the operator learns the PIC was never
+    # told instead of seeing an `escalate` label and assuming it worked.
+    # Private always -- the customer must never be shown our SMTP problems.
+    escalation_failure_note_enabled: bool = False
     escalation_level2_whatsapp: str = ""  # E.164, e.g. "+60112345678"
     escalation_tier2_hours: float = 4.0  # hours after first breach before level-2 alert
 

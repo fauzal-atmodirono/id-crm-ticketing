@@ -411,6 +411,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             attachment_fetcher=ChatwootAttachmentFetcher(
                 chatwoot_client._request  # type: ignore[arg-type]
             ),
+            # P2: one audit row per escalation leg, so "we escalated it" can be
+            # checked rather than assumed.
+            audit=audit_log,
         )
         chatwoot_client._escalation_notifier = escalation_notifier  # type: ignore[assignment]
         app.include_router(

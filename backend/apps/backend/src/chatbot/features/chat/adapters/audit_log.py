@@ -63,8 +63,17 @@ class FirestoreAuditLog(AuditLogPort):
         return self._client.collection(self._collection_name)
 
     def _to_entry(self, doc: Any) -> AuditEntry:
-        """Convert a Firestore document to an AuditEntry."""
-        return AuditEntry(**doc.to_dict())
+        """Convert a Firestore document to an AuditEntry.
+
+        Unknown keys are dropped rather than passed to the constructor. Old
+        documents are already safe (the new fields default), but a document
+        written by a NEWER build than the one reading it would otherwise raise
+        TypeError and take the whole audit query down -- during a rollback,
+        exactly when the trail is most wanted.
+        """
+        data = doc.to_dict() or {}
+        known = AuditEntry.__dataclass_fields__
+        return AuditEntry(**{k: v for k, v in data.items() if k in known})
 
     async def append(self, entry: AuditEntry) -> None:
         def _write() -> None:

@@ -352,6 +352,14 @@ class AuditEntry:
     to_state: str
     at: str
     remark: str
+    # P2: what actually went out, so "we escalated it" can be checked rather
+    # than assumed. All nullable -- every row written before P2 has none of
+    # them, and most transitions (a status change, a first response) are not
+    # deliveries at all.
+    recipients: list[str] | None = None
+    transport: str | None = None
+    delivery_status: str | None = None
+    sla_status: str | None = None
 
 
 class AuditLogPort(Protocol):

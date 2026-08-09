@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 AGENT_INSTRUCTION = (
     "You are a helpful customer support and sales conversational assistant for Proton "
     "(the Malaysian car manufacturer). Customers ask about Proton vehicles, "
@@ -74,3 +76,63 @@ SUMMARIZER_INSTRUCTION = (
     '  "language": "en"\n'
     "}\n"
 )
+
+# ---------------------------------------------------------------------------
+# Task 8 (P7): media diagnosis prompting.
+#
+# The bot is already sent whatever photo/video a customer attaches (see
+# service.py's image_base64/video_base64 handling) — nothing ever asked the
+# model to diagnose what it sees. `build_agent_instruction` appends this
+# instruction, but ONLY when `media_diagnosis_prompt_enabled` is True AND the
+# specific turn carries an image or video; flag off, or no media on this
+# turn, returns AGENT_INSTRUCTION completely unchanged (byte-identical) —
+# that equivalence is the safety argument for shipping this on a live tenant.
+#
+# Deliberately bounded to two rules: a confidence statement (an over-
+# confident wrong diagnosis of a mechanical fault is worse than an admitted
+# uncertainty) and AT MOST ONE follow-up question (a model told to "ask
+# follow-up questions" asks several; a customer who sent one photo of a
+# dented door must not be interrogated).
+# ---------------------------------------------------------------------------
+
+DEFAULT_MEDIA_DIAGNOSIS_INSTRUCTION = (
+    "## Media diagnosis\n"
+    "The customer has attached a photo or video relevant to their issue. "
+    "Look at it and, in your reply:\n"
+    "  • Describe the specific thing you observe that's relevant to their "
+    "issue (e.g. the part, the damage, the warning light).\n"
+    "  • State your diagnosis together with an explicit confidence level "
+    '(e.g. "I\'m fairly confident this is…" or "I can\'t be certain from the '
+    'photo, but this looks like…") — a confident-sounding wrong diagnosis of '
+    "a mechanical fault is worse than an admitted uncertainty.\n"
+    "  • Ask at most one follow-up question, and only if it is genuinely "
+    "necessary to narrow the diagnosis. Do not chain several questions — a "
+    "customer who sent one photo should not be interrogated.\n"
+)
+
+
+def build_agent_instruction(
+    *,
+    media_diagnosis_prompt_enabled: bool,
+    has_image: bool = False,
+    has_video: bool = False,
+    assistant: Any | None = None,
+) -> str:
+    """Compose the /chat/turn agent instruction for this turn.
+
+    AUGMENTS AGENT_INSTRUCTION; never replaces it — same rule
+    `chat_persona.compose_chat_agent_instruction` follows for the operator
+    persona. Returns AGENT_INSTRUCTION verbatim unless the flag is on AND
+    this turn actually carries an image or video.
+
+    The diagnostic instruction text itself is operator-editable via the
+    resolved assistant's `config.media_diagnosis_instruction` (same shape as
+    every other persona string on `AssistantConfig`); an empty/unset value
+    falls back to `DEFAULT_MEDIA_DIAGNOSIS_INSTRUCTION`.
+    """
+    if not media_diagnosis_prompt_enabled or not (has_image or has_video):
+        return AGENT_INSTRUCTION
+    config = getattr(assistant, "config", None)
+    override = (getattr(config, "media_diagnosis_instruction", "") or "").strip()
+    instruction = override or DEFAULT_MEDIA_DIAGNOSIS_INSTRUCTION
+    return f"{AGENT_INSTRUCTION}\n\n{instruction}"

@@ -79,6 +79,33 @@ rest have never been formally run.
 Set to `true` on proton and **never tested**. Needs a real WhatsApp voice note
 or image sent to the tenant.
 
+### 2.4 `MEDIA_DIAGNOSIS_PROMPT_ENABLED` (P7 task 8)
+
+Code is done and unit-tested against the composed instruction string
+(`build_agent_instruction` in `prompts.py`, `test_media_prompt.py`), but the
+prompt has never been in front of the real model with a real photo — this
+sandbox has no WhatsApp number and no real Gemini credentials, only
+`GOOGLE_API_KEY=test-key` against a stubbed client. A prompt change that has
+never run end to end is not a delivered feature.
+
+**What must be sent:** a real photo of a visible vehicle fault (e.g. a dented
+door, a dashboard warning light, a cracked bumper) through a real WhatsApp
+inbox on a tenant with `MEDIA_DIAGNOSIS_PROMPT_ENABLED=true` **and**
+`WHATSAPP_MEDIA_UNDERSTANDING_ENABLED=true` (§2.3 must be closed out on the
+same message, since both flags gate the same photo). One follow-up message
+of plain text should follow, to confirm nothing about the diagnostic
+instruction leaks into a turn without media (per
+`test_the_diagnosis_instruction_is_absent_when_no_media_is_attached`).
+
+**What would count as passing:** the bot's reply names something specific it
+observed in the photo (not a generic "please describe the issue"), states an
+explicit confidence level, and asks at most one follow-up question — never
+a checklist of several. Record the actual exchange (screenshots or the raw
+WhatsApp/Chatwoot transcript) in `docs/testing/`, dated, the same way
+`docs/testing/2026-08-06-escalation-email-e2e-scenario.md` records the email
+E2E cases. Until that exists, `docs/testing/2026-08-09-media-diagnosis-prompt-live-check.md`
+is a template awaiting that run, not a result.
+
 ---
 
 ## 3. Blocked on infrastructure I cannot reach

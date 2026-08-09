@@ -83,6 +83,9 @@ class AssistantConfig:
     survey_agent_message: str = ""
     thanks_message: str = ""
     assign_agent_message: str = ""
+    # Task 8 (P7) — operator override for the media-diagnosis instruction
+    # (prompts.py's DEFAULT_MEDIA_DIAGNOSIS_INSTRUCTION is the "" fallback).
+    media_diagnosis_instruction: str = ""
     feature_faq: bool = True
     feature_memory: bool = True
     feature_citations: bool = True
@@ -107,6 +110,7 @@ class AssistantConfig:
             "survey_agent_message": self.survey_agent_message,
             "thanks_message": self.thanks_message,
             "assign_agent_message": self.assign_agent_message,
+            "media_diagnosis_instruction": self.media_diagnosis_instruction,
             "feature_faq": self.feature_faq,
             "feature_memory": self.feature_memory,
             "feature_citations": self.feature_citations,
@@ -135,6 +139,7 @@ class AssistantConfig:
             survey_agent_message=str(data.get("survey_agent_message", "")),
             thanks_message=str(data.get("thanks_message", "")),
             assign_agent_message=str(data.get("assign_agent_message", "")),
+            media_diagnosis_instruction=str(data.get("media_diagnosis_instruction", "")),
             feature_faq=bool(data.get("feature_faq", True)),
             feature_memory=bool(data.get("feature_memory", True)),
             feature_citations=bool(data.get("feature_citations", True)),
@@ -461,7 +466,9 @@ class FirestoreAssistantsStore:
 # ---------------------------------------------------------------------------
 
 
-def build_assistants_store(settings: Settings) -> InMemoryAssistantsStore | FirestoreAssistantsStore:
+def build_assistants_store(
+    settings: Settings,
+) -> InMemoryAssistantsStore | FirestoreAssistantsStore:
     """Return a FirestoreAssistantsStore when firestore_project_id is set,
     else InMemoryAssistantsStore (tests / dev with no GCP credentials)."""
     if settings.firestore_project_id:

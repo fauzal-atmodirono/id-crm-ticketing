@@ -230,6 +230,11 @@ def ensure_views(settings: Settings) -> None:
         settings.bigquery_dataset,
         settings.bigquery_conversations_table,
         settings.resolution_sla_targets_json,
+        # P4: UTC unless the tenant deliberately changed it. Note this
+        # RE-CREATES every view -- switching the zone re-buckets all history
+        # on the next ensure_views() run, which is why it is an operator
+        # decision, not a deploy-time default.
+        settings.reporting_timezone,
     ).values():
         client.query(ddl).result()
 

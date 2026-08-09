@@ -753,6 +753,16 @@ class Settings(BaseSettings):
     # takes every real escalation down with it.
     email_blocked_recipients: str = ""
 
+    # P4: the calendar the report buckets use. Defaults to UTC, and that
+    # default is the IDENTITY TRANSFORM -- the emitted view DDL is
+    # byte-identical to pre-P4, so no existing dashboard number moves until an
+    # operator deliberately changes this. Switching it RE-BUCKETS EVERY
+    # HISTORICAL FIGURE on every chart in one deploy: run
+    # scripts/compare-reporting-timezone.py first and keep the output.
+    # Validated against an allowlist at view-creation time, so a typo fails
+    # where somebody is watching rather than at query time on a dashboard.
+    reporting_timezone: str = "UTC"
+
     # P3: the case-record panel in the conversation sidebar (case_detail,
     # vehicle plate/chassis, WIP notes...) and its GET/PATCH endpoints. Off
     # means the endpoints 404, so the fork panel simply does not render rather

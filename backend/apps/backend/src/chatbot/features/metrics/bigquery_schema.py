@@ -2,7 +2,7 @@
 
 **Time zone: every date bucket in this file is a UTC calendar day.**
 `created_at` is a TIMESTAMP (absolute time, no zone), and bare
-`DATE(created_at)` / `DATE_TRUNC(DATE(created_at), ...)` /
+`{d_created}` / `DATE_TRUNC({d_created}, ...)` /
 `EXTRACT(... FROM created_at)` all default to UTC in BigQuery -- none of
 them takes the server's or the reader's zone into account. See the
 day-grain views below for what that means for the period-scoped pages.
@@ -113,16 +113,57 @@ def _sla_bucket_case_sql(sla_targets_json: str) -> str:
     return "CASE " + " ".join(branches) + " ELSE NULL END"
 
 
+# Zones a tenant may report in. An allowlist, not a regex: this value is
+# interpolated into DDL, and config is not a trust boundary worth betting a
+# warehouse on. Add entries as tenants need them.
+SUPPORTED_REPORTING_TIMEZONES = frozenset(
+    {"UTC", "Asia/Kuala_Lumpur", "Asia/Jakarta", "Asia/Singapore", "Asia/Bangkok"}
+)
+
+
+def _validate_timezone(reporting_timezone: str) -> str:
+    """Return the zone, or raise. A typo must fail HERE -- at view creation,
+    where somebody is watching -- rather than becoming a view that errors at
+    query time on a dashboard in front of the client."""
+    zone = (reporting_timezone or "UTC").strip()
+    if zone not in SUPPORTED_REPORTING_TIMEZONES:
+        raise ValueError(
+            f"Unsupported REPORTING_TIMEZONE {zone!r}. Supported: "
+            f"{', '.join(sorted(SUPPORTED_REPORTING_TIMEZONES))}."
+        )
+    return zone
+
+
 def view_ddls(
-    project: str, dataset: str, table: str = "conversations", sla_targets_json: str = "{}"
+    project: str,
+    dataset: str,
+    table: str = "conversations",
+    sla_targets_json: str = "{}",
+    reporting_timezone: str = "UTC",
 ) -> dict[str, str]:
-    """The CREATE OR REPLACE VIEW statements for the Looker tiles."""
+    """The CREATE OR REPLACE VIEW statements for the Looker tiles.
+
+    ``reporting_timezone`` defaults to UTC, and that default is the IDENTITY
+    TRANSFORM: the emitted DDL is byte-identical to what shipped before this
+    parameter existed -- not merely equivalent. `DATE(x, 'UTC')` means the same
+    thing to BigQuery but is a different string, and "the string is unchanged"
+    is what proves no live tenant's numbers moved. See
+    test_bigquery_schema_timezone.py.
+    """
     fq = f"`{project}.{dataset}.{table}`"
     bucket_case = _sla_bucket_case_sql(sla_targets_json)
+
+    zone = _validate_timezone(reporting_timezone)
+    _tz = "" if zone == "UTC" else f", '{zone}'"
+    d_created = f"DATE(created_at{_tz})"
+    d_resolved = f"DATE(resolved_at{_tz})"
+    d_escalated = f"DATE(dealer_escalated_at{_tz})"
+    # EXTRACT takes the zone in a different position from DATE.
+    at_zone = "" if zone == "UTC" else f" AT TIME ZONE '{zone}'"
     return {
         "v_volume_by_month_channel": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_by_month_channel` AS "
-            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, channel, "
+            f"SELECT FORMAT_DATE('%Y-%m', {d_created}) AS month, channel, "
             f"COUNT(*) AS volume FROM {fq} GROUP BY month, channel"
         ),
         "v_resolution_split": (
@@ -162,7 +203,7 @@ def view_ddls(
         # have.
         "v_first_response_by_hours_split": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_first_response_by_hours_split` AS "
-            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, channel, "
+            f"SELECT FORMAT_DATE('%Y-%m', {d_created}) AS month, channel, "
             f"CASE WHEN received_in_business_hours IS NULL THEN 'unknown' "
             f"WHEN received_in_business_hours THEN 'in_hours' ELSE 'after_hours' END "
             f"AS arrival_window, "
@@ -174,8 +215,8 @@ def view_ddls(
         ),
         "v_volume_after_hours": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_after_hours` AS "
-            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, "
-            f"DATE(created_at) AS day, channel, "
+            f"SELECT FORMAT_DATE('%Y-%m', {d_created}) AS month, "
+            f"{d_created} AS day, channel, "
             f"CASE WHEN received_in_business_hours IS NULL THEN 'unknown' "
             f"WHEN received_in_business_hours THEN 'in_hours' ELSE 'after_hours' END "
             f"AS arrival_window, "
@@ -184,18 +225,19 @@ def view_ddls(
         ),
         "v_volume_by_division": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_by_division` AS "
-            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, "
+            f"SELECT FORMAT_DATE('%Y-%m', {d_created}) AS month, "
             f"COALESCE(division, 'Unknown') AS division, COUNT(*) AS volume "
             f"FROM {fq} GROUP BY month, division"
         ),
         "v_dept_pic_performance": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_dept_pic_performance` AS "
-            f"SELECT COALESCE(department, 'Unknown') AS department, "
+            f"SELECT {d_created} AS day, "
+            f"COALESCE(department, 'Unknown') AS department, "
             f"COALESCE(pic, 'Unassigned') AS pic, COUNT(*) AS cases, "
             f"AVG(TIMESTAMP_DIFF(first_response_at, created_at, MINUTE)) AS avg_first_response_min, "
             f"AVG(TIMESTAMP_DIFF(resolved_at, created_at, MINUTE)) AS avg_resolution_min, "
             f"SAFE_DIVIDE(COUNTIF(resolved_at IS NOT NULL), COUNT(*)) AS resolution_rate "
-            f"FROM {fq} GROUP BY department, pic ORDER BY cases DESC"
+            f"FROM {fq} GROUP BY day, department, pic ORDER BY cases DESC"
         ),
         "v_sla_achievement": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_sla_achievement` AS "
@@ -238,7 +280,7 @@ def view_ddls(
         # (`query_adapter._day_grain_block_for_period`, `WHERE day BETWEEN
         # @start AND @end`). Their `day` column, and therefore every week
         # and month bucket derived from it, is a **UTC calendar day**:
-        # `DATE(created_at)` on a TIMESTAMP defaults to UTC in BigQuery.
+        # `{d_created}` on a TIMESTAMP defaults to UTC in BigQuery.
         #
         # The Weekly Report picker builds its window from **browser-local**
         # dates and sends them as bare `from`/`to` date strings. For a
@@ -256,26 +298,32 @@ def view_ddls(
         # `DATE(created_at, 'Asia/Kuala_Lumpur')` would re-bucket every
         # historical figure on every existing dashboard in one deploy,
         # including the month-grain views patch 0020's live charts read.
-        # The right eventual fix is a tenant-configurable reporting time
-        # zone threaded through `view_ddls()` (a `Settings` field, defaulted
-        # to UTC so today's numbers are unchanged) -- recommended, not built
+        # P4 BUILT THAT FIX: `view_ddls(..., reporting_timezone=...)`, fed by
+        # the `REPORTING_TIMEZONE` setting and defaulted to UTC, where the
+        # default is the *identity transform* (byte-identical DDL, asserted in
+        # test_bigquery_schema_timezone.py). The paragraphs above still
+        # describe exactly what a tenant sees while it remains UTC, which is
+        # every tenant until someone changes it deliberately -- so this is
+        # updated rather than deleted. Before switching a live tenant, run
+        # scripts/compare-reporting-timezone.py and keep its output: the switch
+        # re-buckets every historical figure on every existing dashboard
         # here. Logged in the Package E spec's §11.4 discrepancy log so the
         # live reconciliation attributes any edge-of-window mismatch to this
         # rather than to a definitional difference. (Package E final fix,
         # finding I4.)
         "v_volume_daily": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_daily` AS "
-            f"SELECT DATE(created_at) AS day, channel, COUNT(*) AS volume "
+            f"SELECT {d_created} AS day, channel, COUNT(*) AS volume "
             f"FROM {fq} GROUP BY day, channel"
         ),
         "v_volume_weekly": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_weekly` AS "
-            f"SELECT DATE_TRUNC(DATE(created_at), WEEK) AS week, channel, COUNT(*) AS volume "
+            f"SELECT DATE_TRUNC({d_created}, WEEK) AS week, channel, COUNT(*) AS volume "
             f"FROM {fq} GROUP BY week, channel"
         ),
         "v_channel_anomaly": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_channel_anomaly` AS "
-            f"WITH daily AS (SELECT channel, DATE(created_at) AS d, COUNT(*) AS v "
+            f"WITH daily AS (SELECT channel, {d_created} AS d, COUNT(*) AS v "
             f"FROM {fq} WHERE created_at IS NOT NULL GROUP BY channel, d), "
             f"cur AS (SELECT channel, v AS current_volume FROM daily "
             f"WHERE d = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)), "
@@ -289,8 +337,8 @@ def view_ddls(
         # Phase-3 additions
         "v_peak_hours": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_peak_hours` AS "
-            f"SELECT EXTRACT(DAYOFWEEK FROM created_at) AS day_of_week, "
-            f"EXTRACT(HOUR FROM created_at) AS hour_of_day, "
+            f"SELECT EXTRACT(DAYOFWEEK FROM created_at{at_zone}) AS day_of_week, "
+            f"EXTRACT(HOUR FROM created_at{at_zone}) AS hour_of_day, "
             f"channel, COUNT(*) AS volume "
             f"FROM {fq} WHERE created_at IS NOT NULL "
             f"GROUP BY day_of_week, hour_of_day, channel "
@@ -340,14 +388,14 @@ def view_ddls(
         ),
         "v_state_trend": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_state_trend` AS "
-            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, "
+            f"SELECT FORMAT_DATE('%Y-%m', {d_created}) AS month, "
             # Task 2 (Package E): month_start widens the view with a real DATE
             # so range queries can filter with a named parameter instead of
             # string-matching `month`. Same (month, status, division) grain as
             # before -- one row per group, unchanged -- so this is additive:
             # existing `SELECT *` readers keep getting identical rows plus one
             # new column.
-            f"DATE_TRUNC(DATE(created_at), MONTH) AS month_start, "
+            f"DATE_TRUNC({d_created}, MONTH) AS month_start, "
             f"status, "
             f"COALESCE(division, 'Unknown') AS division, "
             f"COUNT(*) AS cases "
@@ -375,7 +423,7 @@ def view_ddls(
         # `v_volume_daily` for the tenant-timezone consequence.
         "v_state_trend_daily": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_state_trend_daily` AS "
-            f"SELECT DATE(created_at) AS day, status, "
+            f"SELECT {d_created} AS day, status, "
             f"COALESCE(division, 'Unknown') AS division, "
             f"COUNT(*) AS cases "
             f"FROM {fq} WHERE created_at IS NOT NULL "
@@ -383,22 +431,31 @@ def view_ddls(
         ),
         "v_resolution_sla_buckets": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_resolution_sla_buckets` AS "
-            f"SELECT COALESCE(case_type, 'Unknown') AS case_type, "
+            # P4: keyed on resolved_at. Grouping by creation date would put a
+            # January case resolved in March into January's attainment figure.
+            f"SELECT {d_resolved} AS day, "
+            f"COALESCE(case_type, 'Unknown') AS case_type, "
             f"{bucket_case} AS bucket_label, "
             f"COUNT(*) AS cases "
             f"FROM {fq} WHERE resolution_working_minutes IS NOT NULL "
-            f"GROUP BY case_type, bucket_label"
+            f"GROUP BY day, case_type, bucket_label"
         ),
         "v_dealer_escalation": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_dealer_escalation` AS "
-            f"SELECT COALESCE(dealer, 'Unknown') AS dealer, "
+            # P4: keyed on dealer_escalated_at, NOT created_at. A dealer's
+            # turnaround clock starts when the escalation reaches them, so a
+            # case created in May and escalated in June belongs to June's
+            # rows -- which is why this view's monthly total does not sum to
+            # that month's case count.
+            f"SELECT {d_escalated} AS day, "
+            f"COALESCE(dealer, 'Unknown') AS dealer, "
             f"COUNT(*) AS cases_escalated, "
             f"AVG(TIMESTAMP_DIFF(resolved_at, dealer_escalated_at, HOUR)) / 24.0 AS avg_turnaround_days, "
             f"APPROX_QUANTILES(TIMESTAMP_DIFF(resolved_at, dealer_escalated_at, HOUR), 100)[OFFSET(50)] "
             f"/ 24.0 AS p50_turnaround_days, "
             f"APPROX_QUANTILES(TIMESTAMP_DIFF(resolved_at, dealer_escalated_at, HOUR), 100)[OFFSET(90)] "
             f"/ 24.0 AS p90_turnaround_days "
-            f"FROM {fq} WHERE dealer_escalated_at IS NOT NULL GROUP BY dealer"
+            f"FROM {fq} WHERE dealer_escalated_at IS NOT NULL GROUP BY day, dealer"
         ),
         "v_dealer_escalation_slowest_cases": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_dealer_escalation_slowest_cases` AS "
@@ -413,6 +470,7 @@ def view_ddls(
             f"COALESCE(division, 'Unknown') AS division, COALESCE(dealer, 'Unknown') AS dealer, "
             f"COALESCE(pic, 'Unassigned') AS pic, status, "
             f"COALESCE(case_state, 'unknown') AS case_state, created_at, "
+            f"{d_created} AS day, "
             f"TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), created_at, HOUR) / 24.0 AS age_days, "
             f"CASE "
             f"WHEN TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), created_at, DAY) <= 3 THEN '1-3 days' "
@@ -423,10 +481,10 @@ def view_ddls(
         ),
         "v_volume_by_type_division": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_by_type_division` AS "
-            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, "
+            f"SELECT FORMAT_DATE('%Y-%m', {d_created}) AS month, "
             # Task 2 (Package E): same additive month_start widening as
             # v_state_trend -- see that view's comment.
-            f"DATE_TRUNC(DATE(created_at), MONTH) AS month_start, "
+            f"DATE_TRUNC({d_created}, MONTH) AS month_start, "
             f"channel, "
             f"COALESCE(case_type, 'Unknown') AS case_type, "
             f"COALESCE(division, 'Unknown') AS division, COUNT(*) AS volume "
@@ -444,7 +502,7 @@ def view_ddls(
         # `v_volume_daily` for the tenant-timezone consequence.
         "v_volume_by_type_division_daily": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_volume_by_type_division_daily` AS "
-            f"SELECT DATE(created_at) AS day, channel, "
+            f"SELECT {d_created} AS day, channel, "
             f"COALESCE(case_type, 'Unknown') AS case_type, "
             f"COALESCE(division, 'Unknown') AS division, COUNT(*) AS volume "
             f"FROM {fq} GROUP BY day, channel, case_type, division"
@@ -470,7 +528,7 @@ def view_ddls(
         # that problem is enough.
         "v_concern_pivot": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_concern_pivot` AS "
-            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, "
+            f"SELECT FORMAT_DATE('%Y-%m', {d_created}) AS month, "
             f"COALESCE(division, 'Unknown') AS division, "
             f"COALESCE(subcategory, 'Unspecified') AS concern_level_1, "
             f"COALESCE(case_detail, 'Unspecified') AS concern_level_2, "
@@ -488,8 +546,8 @@ def view_ddls(
         # them a state would invent a trend.
         "v_case_state_trend": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_case_state_trend` AS "
-            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, "
-            f"DATE(created_at) AS day, "
+            f"SELECT FORMAT_DATE('%Y-%m', {d_created}) AS month, "
+            f"{d_created} AS day, "
             f"CASE WHEN case_state IS NULL OR TRIM(case_state) = '' THEN 'unknown' "
             f"WHEN UPPER(case_state) = 'WIP' THEN 'wip' "
             f"WHEN UPPER(case_state) = 'TEMP_CLOSED' THEN 'temp_closed' "

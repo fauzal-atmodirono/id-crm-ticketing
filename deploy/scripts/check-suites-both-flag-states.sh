@@ -36,6 +36,8 @@ FLAGS_ON=(
   BOUNCE_HANDLING_ENABLED=true
   # P3 — case record extensions
   CASE_FIELDS_ENABLED=true
+  # P4 — reporting
+  REOPEN_TRACKING_ENABLED=true
 )
 
 failed=0

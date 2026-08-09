@@ -135,6 +135,12 @@ class Settings(BaseSettings):
     # and resolves the DSN conversation so it stops inflating the SLA backlog.
     bounce_handling_enabled: bool = False
 
+    # Count reopens (a resolved -> not-resolved transition) onto
+    # `reopen_count`/`last_reopened_at`. The warehouse column and the
+    # v_reopen_rate view have existed since Phase 3 with nothing writing them,
+    # so the reopen rate has been a chart of zeroes. Default off.
+    reopen_tracking_enabled: bool = False
+
     # Suggest-only AI escalation-department nudge (app/services/dept_suggestion.py):
     # on an incoming customer message to an Email-channel conversation with no
     # dept_* label yet, classify it against the departments that actually have

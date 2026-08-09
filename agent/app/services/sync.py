@@ -64,13 +64,95 @@ async def upsert_contact(payload: dict) -> None:
     return None
 
 
+def _previous_status(payload: dict) -> str | None:
+    """The status this conversation held before the change, or None.
+
+    Chatwoot reports it under `changed_attributes`, a list of single-key dicts.
+    None means we cannot tell what happened -- and without that, a reopen is
+    indistinguishable from a close, so the caller skips rather than guesses.
+    """
+    for change in payload.get("changed_attributes") or []:
+        if not isinstance(change, dict):
+            continue
+        status_change = change.get("status")
+        if isinstance(status_change, dict):
+            previous = status_change.get("previous_value")
+            return str(previous) if previous is not None else None
+    return None
+
+
+def _as_count(value: object) -> int:
+    """Stored reopen count as an int. Anything unparseable is 0.
+
+    Chatwoot round-trips custom attributes as strings often enough that "3"
+    is a real shape, and letting int() raise here would abort the whole task
+    and lose the increment.
+    """
+    try:
+        return max(0, int(str(value)))
+    except (TypeError, ValueError):
+        return 0
+
+
 async def record_conversation_status(payload: dict) -> None:
     """Handle a Chatwoot `conversation_status_changed`/`conversation_resolved`
     event.
 
-    No-op: see module docstring. Kept as the router's dispatch target.
+    Was a no-op stub, kept as the router's dispatch target "so a future
+    Chatwoot-side integration has a place to hook in" (see module docstring).
+    This is that integration.
+
+    Counts REOPENS. `reopen_count` has been a warehouse column and a
+    `v_reopen_rate` view since Phase 3, and nothing ever wrote it -- the mapper
+    reads it from `additional_attributes`, and no code put it there, so the
+    reopen rate has been a chart of zeroes that renders perfectly.
+
+    A reopen is a **resolved -> not-resolved** transition and nothing else:
+    open -> pending is an agent moving a live case around, open -> resolved is
+    the case being closed. Counting either would inflate a quality metric the
+    client reads.
+
+    Fail-open like every helper here. Duplicate webhook deliveries are already
+    dropped upstream by `claim_delivery`, which matters more than usual: a
+    reopen rate that drifts upward because a delivery arrived twice looks
+    exactly like a service getting worse.
     """
-    return None
+    settings = get_settings()
+    if not settings.reopen_tracking_enabled:
+        return
+
+    status = str(payload.get("status") or "")
+    previous = _previous_status(payload)
+    if previous is None:
+        logger.info(
+            "record_conversation_status: no previous status on conversation %s; "
+            "cannot distinguish a reopen from a close, skipping",
+            payload.get("id"),
+        )
+        return
+    if previous != "resolved" or status == "resolved":
+        return
+
+    conversation_id = payload.get("id")
+    if conversation_id is None:
+        return
+
+    try:
+        chatwoot = get_chatwoot_client()
+        conversation = await chatwoot.get_conversation(conversation_id)
+        existing = (conversation or {}).get("custom_attributes") or {}
+        await chatwoot.set_custom_attributes(
+            conversation_id,
+            {
+                "reopen_count": _as_count(existing.get("reopen_count")) + 1,
+                "last_reopened_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except Exception:
+        logger.exception(
+            "record_conversation_status: failed to record reopen on conversation %s",
+            conversation_id,
+        )
 
 
 async def _maybe_notify_escalation(conversation_id: int, labels: list[str]) -> None:

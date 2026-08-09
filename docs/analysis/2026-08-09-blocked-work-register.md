@@ -348,6 +348,48 @@ against a real dataset.** What is owed, per tenant:
    AI-vs-human measure, and now states that the two numbers are resolved and
    not-yet-resolved. The rename decision is still owed.
 
+8. **P9 task 4 adds a twelfth view to the same owed `ensure_views` run:
+   `v_channel_anomaly_hourly`.** Same D2 situation as everything above — authored
+   and asserted structurally, never executed. It is created by item 1's
+   `ensure_views(settings)` run and **only when `ANOMALY_HOURLY_ENABLED=true`**
+   for that tenant; off deliberately leaves the pre-P9 view set byte-identical.
+   Three things a structural test cannot check:
+   - `EXTRACT(HOUR FROM created_at AT TIME ZONE '<zone>')` in the `hourly` CTE
+     against `DATE(created_at, '<zone>')` — the two take the zone in different
+     positions and only a real query proves they agree on the same bucket.
+   - `TIMESTAMP_TRUNC(TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR), HOUR)`
+     resolving to the last **complete** hour in the reporting zone. Every zone in
+     `SUPPORTED_REPORTING_TIMEZONES` is a whole-hour offset, so this should hold,
+     but it has not been observed.
+   - `LEFT JOIN cur c USING (channel, hour_of_day)` returning a row per channel
+     when a channel had zero conversations in the reference hour (expected:
+     `current_volume` 0 via `COALESCE`, not a missing row).
+   Also owed on the first real run: confirm `baseline_days` is what a sparse hour
+   actually reports. An hour with no conversations produces no row in `hourly`, so
+   the baseline mean is over days-that-had-traffic and is biased upward for sparse
+   hours. That bias is conservative (a higher baseline suppresses rather than
+   invents detections) and `ANOMALY_HOURLY_MIN_BASELINE` covers the same hours, so
+   it is documented in `bigquery_schema.py` rather than corrected with a generated
+   day spine — but the size of it on real data is unmeasured.
+
+   Until that run, `GET /metrics/anomalies/hourly` answers
+   `{"status": "unavailable", "hours": []}` on a flag-on tenant, which is
+   deliberate: an empty list alone would read as "no anomalies in the last hour".
+
+9. **P9 task 5's `as_of` is process-local and will read `unknown` on any tenant
+   whose scheduler has not run a sync since the last restart.** The freshness
+   clock (`features/metrics/freshness.py`) is written by
+   `scheduler.run_sync_job` on success and held in memory, because nothing in
+   this system persists a last-sync time — `run_sync` stamps a `synced_at` column
+   on every loaded row and no code reads it back. So a restarted container, or a
+   replica with `METRICS_SYNC_ENABLED=false`, reports `as_of: null` /
+   `as_of_status: "unknown"` and the page shows a blank. That is the correct
+   behaviour for the contract (a stamp of `now` on data of unknown age is worse
+   than no stamp), not a defect — but the durable version is
+   `SELECT MAX(synced_at) FROM <dataset>.conversations`, and it is owed if a
+   tenant needs an as-of that survives a deploy. Nothing here can be verified
+   without a warehouse either.
+
 ## 3c-3. P8 tasks 2/3/7 — the surfaces that cannot be metered, and the QA table migration
 
 Sections 3c-1 and 3c-2 cover the `ai_actions` columns and the eleven views.

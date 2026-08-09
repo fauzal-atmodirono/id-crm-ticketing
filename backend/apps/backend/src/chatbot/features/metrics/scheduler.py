@@ -12,6 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from chatbot.features.metrics.anomaly import flag_anomalies
 from chatbot.features.metrics.export import render_pdf, render_xlsx
+from chatbot.features.metrics.freshness import record_sync_completed
 from chatbot.features.metrics.sync import ensure_views, run_sync
 
 if TYPE_CHECKING:
@@ -57,10 +58,19 @@ def run_sync_job(
     sync: Callable[[Settings], dict[str, int]] | None = None,
     ensure: Callable[[Settings], None] | None = None,
 ) -> dict[str, int]:
-    """Run the Chatwoot->BQ sync + refresh views. Best-effort: never raises."""
+    """Run the Chatwoot->BQ sync + refresh views. Best-effort: never raises.
+
+    P9 task 5: a successful run stamps the freshness clock, which is what makes
+    every BigQuery-backed response's `as_of` a real measurement rather than the
+    request time. It is recorded AFTER both the load and the view refresh and
+    only on the success path -- moving `as_of` forward for a run that failed
+    would make the data older and the stamp newer at the same time, which is the
+    exact misrepresentation the freshness contract exists to remove.
+    """
     try:
         result = (sync or run_sync)(settings)
         (ensure or ensure_views)(settings)
+        record_sync_completed()
         _log.info("metrics_sync_job_done", **result)
         return result
     except Exception as e:  # a failed scheduled run must never crash the app

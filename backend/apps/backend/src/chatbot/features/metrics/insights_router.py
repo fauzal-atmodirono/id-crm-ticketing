@@ -69,6 +69,7 @@ from chatbot.features.metrics.ai_cost import (
     build_ai_cost_usage_port,
 )
 from chatbot.features.metrics.filter_query import MetricFiltersQuery
+from chatbot.features.metrics.freshness import batch_freshness, stamp_freshness
 from chatbot.features.metrics.period import previous_period
 from chatbot.features.metrics.period_query import (
     PeriodQuery,
@@ -112,6 +113,38 @@ async def _ai_cost_payload(
     )
 
 
+def _stamp_batch_freshness(payload: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    """P9 task 5: every response here says what it is as-of and where it is from.
+
+    All ten of this router's endpoints read BigQuery views, so all ten are
+    `batch_6h` -- these are the §4.81 reporting surfaces the client's decks get
+    reconciled against, and a reconciliation that starts from "expected to differ
+    by up to one sync interval" is a different conversation from one that starts
+    from "the dashboard is wrong".
+
+    Off by default (`DASHBOARD_FRESHNESS_ENABLED`), and off returns the very same
+    dict object: these payloads are parsed by the deployed SPA on a schedule
+    nobody here controls, so "flag off is byte-identical to today" has to hold
+    literally, not approximately.
+
+    `getattr`, not attribute access, for the same reason
+    `ai_cost_reporting_enabled` uses it below: several of this router's own tests
+    pass a minimal settings stub rather than a real `Settings`, and a response
+    wrapper that raised `AttributeError` on those would turn a reporting stamp
+    into a 500 across nine endpoints. `test_freshness_contract.py` asserts the
+    keys ARE present against a real `Settings`, so a misspelt field name still
+    fails somewhere.
+
+    Module-level rather than a closure, like `_ai_cost_payload` above: the router
+    factory is already at ruff's statement limit.
+    """
+    return stamp_freshness(
+        payload,
+        batch_freshness(settings),
+        enabled=bool(getattr(settings, "dashboard_freshness_enabled", False)),
+    )
+
+
 def build_metrics_insights_router(
     port: MetricsQueryPort,
     settings: Settings,
@@ -144,7 +177,9 @@ def build_metrics_insights_router(
     ) -> dict[str, Any]:
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
-        return asdict(await port.fetch_departments(period, filters))
+        return _stamp_batch_freshness(
+            asdict(await port.fetch_departments(period, filters)), settings
+        )
 
     @router.get("/metrics/callcenter")
     async def callcenter(
@@ -154,7 +189,9 @@ def build_metrics_insights_router(
     ) -> dict[str, Any]:
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
-        return asdict(await port.fetch_callcenter(period, filters))
+        return _stamp_batch_freshness(
+            asdict(await port.fetch_callcenter(period, filters)), settings
+        )
 
     @router.get("/metrics/lifecycle")
     async def lifecycle(
@@ -164,12 +201,12 @@ def build_metrics_insights_router(
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
         if period is None:
-            return asdict(await port.fetch_lifecycle())
+            return _stamp_batch_freshness(asdict(await port.fetch_lifecycle()), settings)
         current, previous = await asyncio.gather(
             port.fetch_lifecycle(period), port.fetch_lifecycle(previous_period(period))
         )
         deltas = {"state_trend": block_delta(current, previous, "state_trend", "cases")}
-        return wrap_period_response(current, previous, deltas)
+        return _stamp_batch_freshness(wrap_period_response(current, previous, deltas), settings)
 
     @router.get("/metrics/dealer-escalation")
     async def dealer_escalation(
@@ -179,7 +216,9 @@ def build_metrics_insights_router(
     ) -> dict[str, Any]:
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
-        return asdict(await port.fetch_dealer_escalation(period, filters))
+        return _stamp_batch_freshness(
+            asdict(await port.fetch_dealer_escalation(period, filters)), settings
+        )
 
     @router.get("/metrics/sla-buckets")
     async def sla_buckets(
@@ -189,7 +228,9 @@ def build_metrics_insights_router(
     ) -> dict[str, Any]:
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
-        return asdict(await port.fetch_sla_buckets(period, filters))
+        return _stamp_batch_freshness(
+            asdict(await port.fetch_sla_buckets(period, filters)), settings
+        )
 
     @router.get("/metrics/case-aging")
     async def case_aging(
@@ -199,7 +240,9 @@ def build_metrics_insights_router(
     ) -> dict[str, Any]:
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
-        return asdict(await port.fetch_case_aging(period, filters))
+        return _stamp_batch_freshness(
+            asdict(await port.fetch_case_aging(period, filters)), settings
+        )
 
     @router.get("/metrics/after-hours")
     async def after_hours(
@@ -215,7 +258,7 @@ def build_metrics_insights_router(
         """
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
-        return asdict(await port.fetch_after_hours(period))
+        return _stamp_batch_freshness(asdict(await port.fetch_after_hours(period)), settings)
 
     @router.get("/metrics/by-tag")
     async def by_tag(
@@ -232,7 +275,7 @@ def build_metrics_insights_router(
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
         metrics = await port.fetch_by_tag(period, tag)
-        return {**asdict(metrics), "note": metrics.note}
+        return _stamp_batch_freshness({**asdict(metrics), "note": metrics.note}, settings)
 
     @router.get("/metrics/ai-cost")
     async def ai_cost(
@@ -267,7 +310,10 @@ def build_metrics_insights_router(
         # Raises UnsupportedFilter (400) for any supplied filter; a no-op when
         # none was.
         filters.predicates_for(AI_COST_VIEW)
-        return await _ai_cost_payload(settings, _cost_cache, ai_cost_port, price_table, period)
+        return _stamp_batch_freshness(
+            await _ai_cost_payload(settings, _cost_cache, ai_cost_port, price_table, period),
+            settings,
+        )
 
     @router.get("/metrics/volume-by-type")
     async def volume_by_type(
@@ -277,12 +323,14 @@ def build_metrics_insights_router(
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
         if period is None:
-            return asdict(await port.fetch_volume_by_type_division())
+            return _stamp_batch_freshness(
+                asdict(await port.fetch_volume_by_type_division()), settings
+            )
         current, previous = await asyncio.gather(
             port.fetch_volume_by_type_division(period),
             port.fetch_volume_by_type_division(previous_period(period)),
         )
         deltas = {"volume": block_delta(current, previous, "volume", "volume")}
-        return wrap_period_response(current, previous, deltas)
+        return _stamp_batch_freshness(wrap_period_response(current, previous, deltas), settings)
 
     return router

@@ -396,18 +396,23 @@ def _client(*, enabled: bool, k: float = K, floor: int = FLOOR, **extra: object)
     would be asserting the ambient environment, and it fails under the gate --
     which is exactly what happened while writing this file. Every value this
     test depends on is passed in.
+
+    `dashboard_freshness_enabled=False` for the same reason: the gate also sets
+    `DASHBOARD_FRESHNESS_ENABLED=true`, and P9 task 5 adds `as_of`/`source`/
+    `freshness` keys to both endpoints here when it is on. Nothing in this file
+    is about freshness, so it states the flag rather than inheriting it -- see
+    `test_freshness_contract.py` for the stamped shape.
     """
     app = FastAPI()
+    fields: dict[str, object] = {
+        "anomaly_hourly_enabled": enabled,
+        "anomaly_hourly_zscore_k": k,
+        "anomaly_hourly_min_baseline": floor,
+        "dashboard_freshness_enabled": False,
+    }
+    fields.update(extra)
     app.include_router(
-        build_metrics_anomaly_router(
-            MockMetricsQuery(),
-            Settings(
-                anomaly_hourly_enabled=enabled,
-                anomaly_hourly_zscore_k=k,
-                anomaly_hourly_min_baseline=floor,
-                **extra,  # type: ignore[arg-type]
-            ),
-        )
+        build_metrics_anomaly_router(MockMetricsQuery(), Settings(**fields))  # type: ignore[arg-type]
     )
     return TestClient(app)
 

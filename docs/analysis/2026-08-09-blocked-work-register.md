@@ -331,24 +331,48 @@ posts the summary as a private note through the mounted `/assist/summarize`
 logic, proven end to end through the real app in
 `backend/apps/backend/src/chatbot/test_p7_wiring.py`.
 
-## 3g. P7 `FAQ_SUGGESTION_POPUP_ENABLED` — a setting with no consumer
+## 3g. P7 `FAQ_SUGGESTION_POPUP_ENABLED` — now has a consumer, still not fully wired
 
-Found during the P7 wiring wave and recorded because a documented, defaulted
-setting reads as a working switch. **Nothing anywhere reads
-`faq_suggestion_popup_enabled`**: it appears once in `platform/config.py`, once in
-`deploy/tenants/example.env`, and in the flags-ON gate — and nowhere else in the
-backend, the `agent` service, or any fork patch. The composer suggestion strip it
-exists for is P7 task 7's fork patch (`00NN-faq-composer-apply.patch` with the
-1-click Apply button), and **that patch is not in
-`deploy/chatwoot-fork/patches/`** — the numbering stops at `0055`, and the task
-has no report in the P7 SDD folder. Setting the flag on a tenant therefore does
-nothing at all, in either state.
+Originally recorded during the P7 wiring wave as a setting with no consumer at
+all; task 7 (this row's update) closed that specific gap but left two others,
+so this row is updated rather than removed.
 
-Not blocked on anyone outside the repo: the task is simply not done, and pending
-is not blocked — it is here because the *setting* shipped without it, which is
-the part that misleads. The side-panel FAQ suggestions are a separate, older
-feature and are unaffected. The README's P7 section and the operator handbook
-both say so explicitly rather than listing the flag alongside the six that work.
+`deploy/chatwoot-fork/patches/0056-faq-composer-apply.patch` adds a
+dismissible FAQ-suggestion strip to the reply composer's top panel
+(`ReplyTopPanel.vue`, already extended by `0002` and `0055`). It fetches
+`GET /kb/suggest` (unchanged) for the conversation's latest customer message,
+shows only the single top hit when its `score` clears
+`FAQ_SUGGESTION_CONFIDENCE_THRESHOLD` (0.75 — Vertex hits never carry a
+`score` at all, so they never qualify by construction), and its Apply button
+re-uses `0002`'s existing `protonAssistResult` bridge (the same one
+`ReplyBox.vue`'s three Copilot actions already write the composer through) —
+so it does not fight the iframe sandbox the agent-app README describes; it
+supersedes that path for this one feature only. Dismissal is keyed by
+customer-message id, so a suggestion dismissed for one message cannot
+reappear for that same message.
+
+Two things remain genuinely unverified or incomplete, stated so the flag is
+not read as a finished feature:
+
+1. **The patch has never been through a Cloud Build or applied to a real
+   Chatwoot checkout** — this sandbox has no network access to clone
+   upstream, the same constraint recorded against `0053`/`0054`/`0055`. Its
+   own tests (`backend/apps/backend/src/chatbot/test_p7_task7_faq_composer_
+   patch.py`) prove the hunks apply cleanly to a synthetic reconstruction of
+   `0002`'s and `0055`'s own already-merged content and that the resulting
+   logic behaves as described — not that it applies to the real fork.
+2. **`FAQ_SUGGESTION_POPUP_ENABLED` and the frontend's actual gate are two
+   independent switches.** The strip's real client-side gate is
+   `hasFeature('faq_suggestion_popup')`, read from a tenant's `PROTON_FEATURES`
+   list — the same mechanism `ai_assist` already uses. Turning on the backend
+   setting does not populate that list; `deploy/tenants/*.env`,
+   `docker-compose.tenant.yml` and `main.py` were all off-limits for task 7, so
+   wiring the two together is a deploy-config task still owed, not something
+   task 7 could close by itself.
+
+The side-panel FAQ suggestions are a separate, older feature and are
+unaffected either way. The README's P7 section and the operator handbook have
+been updated to describe this state rather than "no consumer."
 
 ## 4. Deliberately not attempted
 

@@ -88,6 +88,23 @@ parent's composer is blocked by the browser same-origin policy.
 Therefore this app provides **Copy to clipboard** instead of one-click insert: the agent
 clicks **Copy** and pastes into their reply. This is a documented, intentional degradation.
 
+**Superseded for the FAQ-suggestion-strip feature (P7 task 7), not solved in
+general.** The limitation above is still real and this app still runs inside
+the sandboxed iframe it describes — nothing here changes that, and this app
+still ships with Copy-to-clipboard only. But it is not the only place in this
+codebase that surfaces `GET /kb/suggest` to an agent: fork patch
+`deploy/chatwoot-fork/patches/0056-faq-composer-apply.patch` adds a *second*,
+dismissible suggestion surface directly inside `ReplyTopPanel.vue` — the same
+Chatwoot frontend bundle `0002-ai-assist-backend.patch`'s Copilot actions
+already run in, not a cross-origin iframe — so its Apply button can call
+`emit('protonAssistResult', ...)` and have `ReplyBox.vue` write the composer
+directly, the same bridge those Copilot actions already use. That patch has
+not been through a Cloud Build or been applied to a real Chatwoot checkout at
+the time of writing (see `docs/analysis/2026-08-09-blocked-work-register.md`
+§3g); until it has, and until an operator adds `faq_suggestion_popup` to the
+tenant's `PROTON_FEATURES`, this dashboard app remains the only way an agent
+actually sees FAQ suggestions, Copy-to-clipboard included.
+
 ## Backend TODOs (required for a live run — NOT done here)
 
 > The backend under `apps/backend/` was intentionally **not modified**. The following changes

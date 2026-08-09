@@ -1,0 +1,227 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] P7 task 7: FAQ-suggestion strip with a one-click Apply
+
+Adds the missing consumer for `FAQ_SUGGESTION_POPUP_ENABLED`: a small,
+dismissible strip in the reply composer's top panel (the same file 0002 and
+0055 already extend) that shows the single best-matching FAQ suggestion for
+the conversation's latest customer message, with an "Apply" button.
+
+WHY THIS DOES NOT FIGHT THE IFRAME SANDBOX. The existing agent-assist FAQ
+panel (`backend/apps/chatwoot-agent-app/`) is a cross-origin Chatwoot
+Dashboard App iframe with no postMessage API for writing into the reply
+editor -- that limitation is real and is documented at length in that app's
+README, which this patch does NOT change or contradict. This patch instead
+reuses the mechanism 0002 already built for exactly this problem: the
+`protonAssistResult` event that `ReplyTopPanel.vue` already emits and
+`ReplyBox.vue` already handles (`onProtonAssistResult`), which runs inside
+Chatwoot's own frontend bundle rather than a sandboxed iframe, so it can set
+`this.message` directly. Applying a suggestion here calls the exact same
+`emit('protonAssistResult', { text, mode: 'reply' })` the three existing
+Copilot actions call -- no new bridge, no new event, and (this is the
+regression this patch must not cause) no change whatsoever to those three
+actions' own call of that same emit. The iframe path is superseded for this
+one feature, not replaced in general: the side panel keeps working exactly
+as before for agents who prefer to browse rather than accept a suggestion.
+
+WHAT IT FETCHES. `GET /kb/suggest?q=<latest customer message>&limit=1`
+(`kb_suggest_router.py`, unchanged by this patch) is called directly with
+`fetch()` -- not through `callAssist()`, which only knows `/assist/*` -- via
+`backendUrl`, now also destructured off `useProtonConfig()` alongside the
+`hasFeature` it already read. Confidence gating relies on a fact already
+true of that endpoint's response shape: only `live_faq` hits carry a numeric
+`score` (Vertex hits never do), so `FAQ_SUGGESTION_CONFIDENCE_THRESHOLD`
+(0.75) rejects anything without a `score` by construction -- there is no
+separate "is this a Vertex hit" branch to keep in sync.
+
+THREE GATES, in the order they run:
+1. `faqSuggestionPopupEnabled` reads `hasFeature('faq_suggestion_popup')` --
+   the client-visibility mechanism 0001/0002 already established via
+   `window.__PROTON_CONFIG__.features` (`PROTON_FEATURES` at the Rails
+   layer). This is a client-side convenience, exactly like `ai_assist`
+   already is for the Copilot button, NOT the authoritative switch.
+2. The confidence threshold above.
+3. `dismissedFaqMessageId`: once dismissed, a suggestion for that exact
+   message id never reopens, even if the component re-renders or the same
+   `/kb/suggest` result comes back again on a later poll. A *new* customer
+   message can surface a new suggestion.
+
+KNOWN GAP, stated rather than engineered around: `FAQ_SUGGESTION_POPUP_ENABLED`
+(the backend `Settings` field) and the tenant's `PROTON_FEATURES` list are
+two independent switches today. `deploy/tenants/*.env`, `docker-compose.
+tenant.yml` and `main.py` were all off-limits for this task, so nothing in
+this patch or its backing work wires the backend flag into the frontend
+runtime-config injection automatically -- an operator must add
+`faq_suggestion_popup` to a tenant's `PROTON_FEATURES` for this strip to be
+reachable at all, in addition to (not instead of) turning the backend
+setting on. Recorded in the register and the operator handbook; closing it
+is a deploy-config task, not a UI task, and was not invented here.
+
+NOTE: hand-constructed, and NOT verified with `git apply --check` against a
+real checkout -- this sandbox has no network access to clone upstream or the
+fork, the same constraint recorded for patches 0053/0054/0055. This patch
+stacks ON TOP OF 0002 AND 0055 (0055 itself stacks only on 0002): all five
+hunks anchor on `ReplyTopPanel.vue` content those two patches themselves
+already add (the `ref`/`computed` import, the `PROTON_ACTION_MODE` block,
+the `hasFeature`/`showAiButton` setup block, the returned-identifiers list,
+and the Translate button's closing `</div>`) -- never on unverified upstream
+lines. Every context line here was transcribed verbatim from 0002's and
+0055's own already-merged diffs (not from memory of unverified upstream
+Chatwoot source), and the cumulative line-number arithmetic across both
+parent patches plus this one was computed by a script, then verified for
+real: the five hunks were diffed out of a synthetic before/after pair built
+from that same transcribed content (padded with clearly-labelled filler for
+the unknown surrounding lines, the same technique 0053 used), and applied
+with a real `git apply` against a synthetic tree seeded with that base --
+it applies cleanly and produces byte-identical output to the intended
+after-file. That proves internal consistency and self-consistency with 0002
+and 0055's own already-merged text only -- it does NOT prove this patch
+applies to the real upstream-derived fork checkout, which this sandbox
+cannot reach. If 0002 or 0055's actually-shipped content differs from what
+is transcribed here, or a later patch also touches `ReplyTopPanel.vue`
+before this one in patch order, this patch will need a line-number fix-up
+once a real fork checkout is available. Flagged here and in a row in
+docs/analysis/2026-08-09-blocked-work-register.md beside 0053/0054/0055's.
+Build via Cloud Build for amd64 once merged; never on the prod VM, never
+from an arm64 Mac.
+---
+ .../widgets/WootWriter/ReplyTopPanel.vue          | 98 +++++++++++++++++++++-
+ 1 file changed, 96 insertions(+), 2 deletions(-)
+diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+index 7c1d2e3..9f4b6e1 100644
+--- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
++++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+@@ -1,5 +1,5 @@
+ <script>
+-import { ref, computed } from 'vue';
++import { ref, computed, watch } from 'vue';
+ import { useKeyboardEvents } from 'dashboard/composables/useKeyboardEvents';
+ import { useCaptain } from 'dashboard/composables/useCaptain';
+ import { useTrack } from 'dashboard/composables';
+@@ -27,6 +27,12 @@
+   summarize: 'note',
+   ask_copilot: 'reply',
+ };
++// Task 7 (P7): confidence threshold above which a live-FAQ suggestion is
++// promoted from the side panel into the composer's dismissible strip.
++// Only live_faq entries carry a `score` (kb_suggest_router.py's Vertex
++// items never do), so an undefined score always fails this check --
++// Vertex-only results are never shown as a popup, by construction.
++const FAQ_SUGGESTION_CONFIDENCE_THRESHOLD = 0.75;
+ 
+ export default {
+   name: 'ReplyTopPanel',
+@@ -97,11 +103,80 @@
+     };
+ 
+     const { captainTasksEnabled } = useCaptain();
+-    const { hasFeature } = useProtonConfig();
++    const { hasFeature, backendUrl } = useProtonConfig();
+     const store = useStore();
+     const protonEnabled = computed(() => hasFeature('ai_assist'));
+     const showAiButton = computed(
+       () => captainTasksEnabled.value || protonEnabled.value
++    );
++    const faqSuggestion = ref(null);
++    const dismissedFaqMessageId = ref(null);
++    const faqSuggestionPopupEnabled = computed(() =>
++      hasFeature('faq_suggestion_popup')
++    );
++    const faqSuggestionVisible = computed(
++      () =>
++        faqSuggestionPopupEnabled.value &&
++        !!faqSuggestion.value &&
++        faqSuggestion.value.messageId !== dismissedFaqMessageId.value
++    );
++
++    // Task 7 (P7): GET /kb/suggest for the latest customer message and
++    // keep only the top hit, and only when its confidence clears the
++    // threshold. This is the same endpoint the agent-assist side panel
++    // already calls; the strip is an additional, dismissible surface for
++    // the same data, gated independently by FAQ_SUGGESTION_POPUP_ENABLED
++    // via the 'faq_suggestion_popup' feature name.
++    const fetchFaqSuggestion = async message => {
++      if (!faqSuggestionPopupEnabled.value || !message?.content) return;
++      try {
++        const url = `${backendUrl}/kb/suggest?q=${encodeURIComponent(
++          message.content
++        )}&limit=1`;
++        const response = await fetch(url);
++        if (!response.ok) return;
++        const data = await response.json();
++        const top = (data.suggestions || [])[0];
++        if (
++          top &&
++          typeof top.score === 'number' &&
++          top.score >= FAQ_SUGGESTION_CONFIDENCE_THRESHOLD
++        ) {
++          faqSuggestion.value = { ...top, messageId: message.id };
++        } else {
++          faqSuggestion.value = null;
++        }
++      } catch (err) {
++        // eslint-disable-next-line no-console
++        console.error('[proton-assist]', 'kb-suggest', 'failed', err);
++        faqSuggestion.value = null;
++      }
++    };
++
++    const applyFaqSuggestion = () => {
++      if (!faqSuggestion.value) return;
++      emit('protonAssistResult', {
++        text: faqSuggestion.value.snippet,
++        mode: 'reply',
++      });
++    };
++
++    const dismissFaqSuggestion = () => {
++      if (faqSuggestion.value) {
++        dismissedFaqMessageId.value = faqSuggestion.value.messageId;
++      }
++    };
++
++    // Re-check whenever a new message arrives in the open conversation.
++    watch(
++      () => store.getters.getSelectedChat?.messages?.length,
++      () => {
++        const chat = store.getters.getSelectedChat;
++        const lastCustomerMessage = [...(chat?.messages || [])]
++          .reverse()
++          .find(m => m.content && m.message_type === 0);
++        if (lastCustomerMessage) fetchFaqSuggestion(lastCustomerMessage);
++      }
+     );
+ 
+     const showCopilotMenu = ref(false);
+@@ -210,6 +285,10 @@
+       captainTasksEnabled,
+       protonEnabled,
+       showAiButton,
++      faqSuggestion,
++      faqSuggestionVisible,
++      applyFaqSuggestion,
++      dismissFaqSuggestion,
+       translating,
+       handleTranslateLastCustomerMessage,
+       handleCopilotAction,
+@@ -270,6 +349,21 @@
+         {{ translating ? 'Translating…' : 'Translate' }}
+       </button>
+     </div>
++    <div
++      v-if="faqSuggestionVisible"
++      class="flex items-center gap-2 px-2 py-1 rounded-lg bg-n-alpha-2 border border-n-weak"
++    >
++      <span class="i-lucide-lightbulb text-n-slate-11" />
++      <span class="text-xs text-n-slate-11 truncate max-w-xs">
++        {{ faqSuggestion.title }}
++      </span>
++      <NextButton size="xs" variant="ghost" @click="applyFaqSuggestion">
++        Apply
++      </NextButton>
++      <NextButton size="xs" variant="ghost" @click="dismissFaqSuggestion">
++        Dismiss
++      </NextButton>
++    </div>
+     <div v-if="showAiButton" class="flex items-center gap-2">
+       <div class="relative">
+         <NextButton

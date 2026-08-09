@@ -923,22 +923,34 @@ What *is* visible in the CRM: the **Translate** button in the reply composer's
 Proton panel. Sentiment appears on the conversation's custom attributes.
 Resolved-case summaries appear as private notes in the conversation.
 
-A seventh setting exists in the configuration file — a dismissible FAQ
-suggestion strip above the composer — and is listed here only so it is not
-mistaken for something switched off by accident: **nothing reads it yet.** The
-strip itself has not been built, so enabling the setting changes nothing. FAQ
-suggestions in the agent-assist side panel are a separate, existing feature and
-are unaffected.
+A seventh setting, `FAQ_SUGGESTION_POPUP_ENABLED`, gates a dismissible FAQ
+suggestion strip above the composer — a single best-matching FAQ answer for
+the customer's last message, with an Apply button that writes it straight
+into the reply. It only appears when the suggestion's confidence clears a
+threshold, and dismissing it for a message keeps it dismissed for that
+message. Two things about it are not yet true in practice, and an
+administrator should know both before promising it to agents:
 
-> **Pending verification.** The Translate button ships as a fork patch that has
-> not yet been through a build at the time of writing, so its exact position in
-> the composer panel is what to expect rather than what has been confirmed on a
-> live tenant. The endpoint behind it is complete, mounted and tested. The
-> photo-diagnosis wording has also **not yet been tried against a real photo
-> through a real WhatsApp number** — that check is owed and is tracked in the
-> project's blocked-work register. Do not present either as demonstrated.
+- **It ships as an unbuilt fork patch.** Like the Translate button below, it
+  has not been through a Cloud Build or been seen on a live tenant.
+- **This setting alone does not turn it on.** The strip's visibility on the
+  screen is actually controlled by the tenant's separate `PROTON_FEATURES`
+  list, which an administrator must also update. Until both are set, enabling
+  this setting by itself changes nothing an agent can see.
 
-<!-- VERIFY-LIVE: confirm the Translate button's placement in the composer panel, and the resolved-case auto-summary note's appearance, on the live tenant once fork patch 0055 has gone through a Cloud Build -->
+FAQ suggestions in the agent-assist side panel are a separate, existing
+feature and are unaffected either way.
+
+> **Pending verification.** The Translate button and the FAQ suggestion strip
+> both ship as fork patches that have not yet been through a build at the time
+> of writing, so their exact position in the composer panel is what to expect
+> rather than what has been confirmed on a live tenant. The endpoints behind
+> them are complete, mounted and tested. The photo-diagnosis wording has also
+> **not yet been tried against a real photo through a real WhatsApp number**
+> — that check is owed and is tracked in the project's blocked-work register.
+> Do not present any of the three as demonstrated.
+
+<!-- VERIFY-LIVE: confirm the Translate button's and FAQ suggestion strip's placement in the composer panel, and the resolved-case auto-summary note's appearance, on the live tenant once fork patches 0055 and 0056 have gone through a Cloud Build -->
 
 ### How to use it
 

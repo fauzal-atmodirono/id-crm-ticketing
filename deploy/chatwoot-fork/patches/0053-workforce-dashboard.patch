@@ -1,0 +1,310 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] P6 task 9: the workforce dashboard admin page
+
+Adds the "Workforce" admin page (Sidebar entry + route + API call), gated
+by the `workforce.view` permission exactly like 0039's Escalation Routing
+page and 0041's Customer 360 page. Backs `GET /admin/workforce`
+(`workforce_router.py`). The last table column is deliberately titled
+"Availability history", never "Login/logout" -- it is derived from
+PresenceEvent transitions to/from Chatwoot's native `offline` status only,
+NOT a session record (see workforce_router.py's own module docstring and
+ProtonWorkforceDashboardPage.vue's header comment for the full reasoning).
+
+NOTE: this patch was hand-constructed against the last known state of these
+three files (as left by 0045-dms-integration-card.patch, the most recent
+patch to touch any of them -- 0046 through 0052 do not). This sandbox has
+no network access to clone upstream/the fork, so this patch could NOT be
+verified with `git apply --check` against a real checkout. The line numbers
+in each hunk are inferred from 0045's own diff and may be off if some
+later, unrelated patch touched these files in a way not visible from
+grepping the patches directory; the context lines themselves are
+transcribed verbatim from 0045's diff, which is what `git apply`'s own
+offset-search primarily relies on to still apply cleanly. Flagging this
+plainly per the task brief -- verify with a real `git apply --check` (or a
+full `docker build` of the fork image) before relying on this in staging.
+---
+ app/javascript/dashboard/api/protonAdmin.js       |  13 +
+ .../components-next/sidebar/Sidebar.vue           |  10 +
+ .../routes/dashboard/dashboard.routes.js          |   6 +
+ .../views/ProtonWorkforceDashboardPage.vue        | 213 +++++++++++++++++++++
+ 4 files changed, 242 insertions(+)
+ create mode 100644 app/javascript/dashboard/views/ProtonWorkforceDashboardPage.vue
+
+diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
+index 4b87c9f..1a2b3c4 100644
+--- a/app/javascript/dashboard/api/protonAdmin.js
++++ b/app/javascript/dashboard/api/protonAdmin.js
+@@ -238,3 +238,16 @@ export function getDmsIntegration() {
+ export function testDmsIntegration() {
+   return adminRequest('/admin/integrations/dms/test', { method: 'POST' });
+ }
++
++// ── Workforce dashboard ──────────────────────────────────────────────────
++// Backs workforce_router.py's single read endpoint (GET /admin/workforce),
++// gated by the `workforce.view` permission. The "Availability history"
++// column below is derived from PresenceEvent transitions to/from
++// Chatwoot's native `offline` status ONLY -- it is NOT a login/logout
++// session record (see the router's own module docstring for why). This
++// dashboard polls on a ~30s cadence (see the response's own `refresh`
++// block); it is not a streamed/pushed feed.
++
++export function getWorkforceDashboard() {
++  return adminRequest('/admin/workforce');
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 38a8b3b..7c6f2a1 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -637,6 +637,16 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
++    ...(protonHasPermission('workforce.view')
++      ? [
++          {
++            name: 'WorkforceDashboard',
++            icon: 'i-lucide-users',
++            label: 'Workforce',
++            to: accountScopedRoute('proton_workforce'),
++          },
++        ]
++      : []),
+     // RSA incident log — the backend /rsa/incidents* endpoints authorize by the
+     // shared x-api-key (like /kb + /metrics), NOT the RBAC require_permission
+     // used by SLA/Audit/Roles, so there is no dedicated `rsa.manage` permission
+diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+index fb94551..9d8e7f2 100644
+--- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+@@ -82,6 +82,12 @@ export default {
+           component: () => import('../../views/ProtonDmsIntegrationPage.vue'),
+           meta: { permissions: ['administrator'] },
+         },
++        {
++          path: 'proton/workforce',
++          name: 'proton_workforce',
++          component: () => import('../../views/ProtonWorkforceDashboardPage.vue'),
++          meta: { permissions: ['administrator'] },
++        },
+         {
+           path: 'proton/cases',
+           name: 'proton_cases',
+diff --git a/app/javascript/dashboard/views/ProtonWorkforceDashboardPage.vue b/app/javascript/dashboard/views/ProtonWorkforceDashboardPage.vue
+new file mode 100644
+index 0000000..a1b2c3d
+--- /dev/null
++++ b/app/javascript/dashboard/views/ProtonWorkforceDashboardPage.vue
+@@ -0,0 +1,213 @@
++<!-- ProtonWorkforceDashboardPage.vue — OUR file. The workforce dashboard:
++     one row per agent (current status + elapsed time, today's time per
++     status, an availability percentage computed over the WORKING DAY --
++     never a raw 24-hour fraction, see workforce_router.py's module
++     docstring point 1 -- assigned open cases, cases closed today, and an
++     "Availability history" column). Reads GET /admin/workforce, polled on
++     the interval the response itself recommends (see `refresh` below) --
++     this is a live poll, NOT a streamed/pushed feed, and the page shows
++     its own `generated_at` timestamp so that is never implied otherwise.
++
++     IMPORTANT — the last column is titled "Availability history", never
++     "Login/logout": it is derived from PresenceEvent transitions to/from
++     Chatwoot's native `offline` status only, and is explicitly NOT a
++     session record (an agent who closes their laptop without their
++     Chatwoot status changing keeps showing as available until their next
++     real transition). See `availabilityHistoryDisclaimer` below, rendered
++     on the page itself rather than left to a tooltip nobody opens.
++
++     "Cases closed today" renders as "—" (not "0") whenever the backend
++     returns null for it — a null is a statement about instrumentation,
++     a fabricated 0 would be a false claim about performance. -->
++<script>
++import { useAlert } from 'dashboard/composables';
++import { getWorkforceDashboard } from 'dashboard/api/protonAdmin';
++
++export default {
++  name: 'ProtonWorkforceDashboardPage',
++  data() {
++    return {
++      generatedAt: null,
++      refreshNote: '',
++      recommendedIntervalSeconds: 30,
++      availabilityHistoryDisclaimer: '',
++      casesClosedTodayCaveat: '',
++      agents: [],
++      loading: true,
++      errored: false,
++      pollHandle: null,
++    };
++  },
++  async mounted() {
++    await this.load();
++    this.schedulePoll();
++  },
++  beforeUnmount() {
++    if (this.pollHandle) {
++      clearTimeout(this.pollHandle);
++    }
++  },
++  methods: {
++    async load() {
++      this.errored = false;
++      try {
++        const data = await getWorkforceDashboard();
++        this.generatedAt = data.generated_at;
++        this.refreshNote = data.refresh?.note || '';
++        this.recommendedIntervalSeconds =
++          data.refresh?.recommended_interval_seconds || 30;
++        this.availabilityHistoryDisclaimer =
++          data.availability_history_disclaimer || '';
++        this.casesClosedTodayCaveat = data.cases_closed_today_caveat || '';
++        this.agents = Array.isArray(data.agents) ? data.agents : [];
++      } catch (err) {
++        this.errored = true;
++        useAlert(
++          'Failed to load the workforce dashboard: ' +
++            (err.message || String(err))
++        );
++      } finally {
++        this.loading = false;
++      }
++    },
++    schedulePoll() {
++      // A live poll, not a streamed feed -- see the module docstring.
++      // Rescheduled (not setInterval) so a slow request can't stack calls.
++      this.pollHandle = setTimeout(async () => {
++        await this.load();
++        this.schedulePoll();
++      }, this.recommendedIntervalSeconds * 1000);
++    },
++    formatMinutes(value) {
++      if (value === null || value === undefined) return '—';
++      return `${value} min`;
++    },
++    formatPercent(value) {
++      if (value === null || value === undefined) return '—';
++      return `${value}%`;
++    },
++    formatTimeInStatus(map) {
++      const entries = Object.entries(map || {});
++      if (!entries.length) return '—';
++      return entries
++        .map(([key, minutes]) => `${key}: ${minutes}m`)
++        .join(', ');
++    },
++    formatHistoryEntry(entry) {
++      const label = entry.direction === 'went_offline' ? 'Offline' : 'Online';
++      const at = new Date(entry.at);
++      return `${label} @ ${at.toLocaleTimeString()}`;
++    },
++    formatHistory(history) {
++      if (!Array.isArray(history) || !history.length) return '—';
++      return history.map(this.formatHistoryEntry).join(' → ');
++    },
++  },
++};
++</script>
++
++<template>
++  <div class="p-6">
++    <h1 class="mb-1 text-lg font-medium text-n-slate-12">
++      Workforce dashboard
++    </h1>
++    <p class="mb-2 text-sm text-n-slate-11">
++      Live working-day view: current status, today's time per status, an
++      availability percentage over the configured working day, assigned
++      open cases, and an availability history per agent.
++    </p>
++    <p v-if="generatedAt" class="mb-1 text-xs text-n-slate-11">
++      Last updated {{ new Date(generatedAt).toLocaleString() }} —
++      {{ refreshNote }}
++    </p>
++    <p
++      v-if="availabilityHistoryDisclaimer"
++      class="mb-1 text-xs text-n-slate-11"
++    >
++      Availability history: {{ availabilityHistoryDisclaimer }}
++    </p>
++    <p v-if="casesClosedTodayCaveat" class="mb-6 text-xs text-n-slate-11">
++      Cases closed today: {{ casesClosedTodayCaveat }}
++    </p>
++
++    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
++      Loading…
++    </div>
++    <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">
++      Could not load the workforce dashboard.
++    </div>
++    <div v-else class="overflow-x-auto border rounded-lg border-n-weak">
++      <table class="w-full text-sm border-collapse text-n-slate-11">
++        <thead>
++          <tr class="text-left border-b border-n-weak text-n-slate-12">
++            <th class="px-3 py-2 font-medium whitespace-nowrap">Agent</th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">
++              Current status
++            </th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">
++              Elapsed in status
++            </th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">
++              Time in status today
++            </th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">
++              Availability % (working day)
++            </th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">
++              Open cases
++            </th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">
++              Cases closed today
++            </th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">
++              Availability history
++            </th>
++          </tr>
++        </thead>
++        <tbody>
++          <tr
++            v-for="agent in agents"
++            :key="agent.agent_id"
++            class="border-b border-n-weak last:border-b-0"
++          >
++            <td class="px-3 py-2 whitespace-nowrap">{{ agent.name }}</td>
++            <td class="px-3 py-2 whitespace-nowrap">
++              <span
++                class="inline-block w-2 h-2 mr-1 rounded-full"
++                :style="{ backgroundColor: agent.current_status.color || '#94a3b8' }"
++              />
++              {{ agent.current_status.label }}
++            </td>
++            <td class="px-3 py-2 whitespace-nowrap">
++              {{ formatMinutes(agent.current_status.elapsed_minutes) }}
++            </td>
++            <td class="px-3 py-2 whitespace-nowrap">
++              {{ formatTimeInStatus(agent.time_in_status_today_minutes) }}
++            </td>
++            <td class="px-3 py-2 whitespace-nowrap">
++              {{ formatPercent(agent.availability_percent_of_working_day) }}
++            </td>
++            <td class="px-3 py-2 whitespace-nowrap">
++              {{ agent.open_case_count }}
++            </td>
++            <td class="px-3 py-2 whitespace-nowrap">
++              {{
++                agent.cases_closed_today === null
++                  ? '—'
++                  : agent.cases_closed_today
++              }}
++            </td>
++            <td class="px-3 py-2 whitespace-nowrap">
++              {{ formatHistory(agent.availability_history) }}
++            </td>
++          </tr>
++          <tr v-if="!agents.length">
++            <td colspan="8" class="px-3 py-6 text-center text-n-slate-11">
++              No agents found.
++            </td>
++          </tr>
++        </tbody>
++      </table>
++    </div>
++  </div>
++</template>

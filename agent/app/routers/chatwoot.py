@@ -55,6 +55,9 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks):
     elif event == "conversation_updated":
         background_tasks.add_task(sync.maybe_escalate, payload)
         background_tasks.add_task(sync.maybe_stamp_dealer_escalation, payload)
+        # P6 task 10: an agent-set follow_up_at custom attribute is validated
+        # here, the same event a custom-attribute edit fires on.
+        background_tasks.add_task(sync.maybe_validate_follow_up_date, payload)
     elif event == "conversation_created":
         if settings_flags.lifecycle_enabled:
             background_tasks.add_task(lifecycle.on_conversation_created, payload)

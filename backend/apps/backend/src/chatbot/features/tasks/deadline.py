@@ -10,6 +10,14 @@ Deadline sources (mirrors the SLA engine's logic in ``features/chat/sla.py``):
 - Resolution threshold: ``sla_<int>`` label minutes OR
   ``custom_attributes.sla_minutes`` OR ``settings.sla_resolution_hours * 3600``.
 - A RESOLVED conversation has no active deadlines.
+
+P6 task 10 adds a per-ticket follow-up REMINDER DATE
+(``custom_attributes.follow_up_at``, gated on ``settings.follow_up_date_enabled``).
+It is an agent's own note ("look at this again Thursday"), never a policy
+commitment, so it is deliberately surfaced on its own ``follow_up_at_iso`` /
+``follow_up_remaining_seconds`` fields rather than folded into
+``resolution_deadline_iso``/``breach_type``: a follow-up date going overdue
+must never read as an SLA breach.
 """
 
 from __future__ import annotations
@@ -38,6 +46,11 @@ class TaskItem:
     response_remaining_seconds: float | None
     resolution_remaining_seconds: float | None
     breach_type: str | None  # "NO_RESPONSE" | "UNRESOLVED" | None
+    # P6 task 10: an agent-set follow-up reminder date, entirely separate
+    # from the SLA fields above. `follow_up_remaining_seconds` going negative
+    # means the reminder is overdue -- it never sets breach_type.
+    follow_up_at_iso: str | None
+    follow_up_remaining_seconds: float | None
 
 
 def _labels(conv: dict[str, Any]) -> list[str]:
@@ -79,6 +92,39 @@ def _agent_id_from(conv: dict[str, Any]) -> str | None:
     return None
 
 
+def _follow_up_at_from_conv(conv: dict[str, Any], settings: Settings) -> datetime | None:
+    """Read the operator-set follow-up reminder date, if any.
+
+    Gated on ``settings.follow_up_date_enabled`` so the flag being off means
+    this always returns ``None`` -- today's ``TaskItem`` shape, byte-identical
+    -- even if a stray value already sits in Chatwoot's custom_attributes.
+
+    Deliberately separate from ``_sla_minutes_from_conv``: reads a different
+    key, never falls back to it, and never feeds the SLA fields. An empty
+    string or a missing key both mean "no reminder", matching the write-side
+    behaviour in ``agent/app/services/sync.py::maybe_validate_follow_up_date``.
+    An unparseable value is treated the same as absent -- the write boundary
+    already rejects those before they can reach here, so a value we do see
+    here has already passed validation, but a foreign write is still handled
+    gracefully rather than raising.
+    """
+    if not settings.follow_up_date_enabled:
+        return None
+    ca = conv.get("custom_attributes")
+    if not isinstance(ca, dict):
+        return None
+    raw = ca.get("follow_up_at")
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw).strip())
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
 def _subject_from(conv: dict[str, Any]) -> str:
     meta = conv.get("meta")
     if isinstance(meta, dict):
@@ -114,6 +160,8 @@ def compute_deadlines(
             response_remaining_seconds=None,
             resolution_remaining_seconds=None,
             breach_type=None,
+            follow_up_at_iso=None,
+            follow_up_remaining_seconds=None,
         )
 
     # --- Response deadline ---
@@ -138,6 +186,13 @@ def compute_deadlines(
     elif not has_first_reply and response_remaining < 0:
         breach_type = "NO_RESPONSE"
 
+    # --- Follow-up reminder (P6 task 10) --- computed independently of the
+    # SLA fields above and never allowed to influence breach_type: an
+    # overdue follow-up is a fired reminder, not a breach.
+    follow_up_dt = _follow_up_at_from_conv(conv, settings)
+    follow_up_at_iso = follow_up_dt.isoformat() if follow_up_dt else None
+    follow_up_remaining = (follow_up_dt - now).total_seconds() if follow_up_dt else None
+
     return TaskItem(
         conv_id=conv_id,
         subject=_subject_from(conv),
@@ -149,4 +204,6 @@ def compute_deadlines(
         response_remaining_seconds=response_remaining if not has_first_reply else None,
         resolution_remaining_seconds=resolution_remaining,
         breach_type=breach_type,
+        follow_up_at_iso=follow_up_at_iso,
+        follow_up_remaining_seconds=follow_up_remaining,
     )

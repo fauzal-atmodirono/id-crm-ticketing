@@ -47,12 +47,15 @@ def test_returns_tasks_for_agent() -> None:
     app = FastAPI()
     app.include_router(build_tasks_router(settings))
     client = TestClient(app)
-    with patch(
-        "chatbot.features.tasks.tasks_router.fetch_conversations",
-        return_value=[conv],
-    ), patch(
-        "chatbot.features.tasks.tasks_router._utcnow",
-        return_value=_NOW,
+    with (
+        patch(
+            "chatbot.features.tasks.tasks_router.fetch_conversations",
+            return_value=[conv],
+        ),
+        patch(
+            "chatbot.features.tasks.tasks_router._utcnow",
+            return_value=_NOW,
+        ),
     ):
         resp = client.get("/tasks/mine?agent_id=7", headers={"x-api-key": "test-key"})
     assert resp.status_code == 200
@@ -86,8 +89,10 @@ def test_filters_other_agents_conversations() -> None:
     app = FastAPI()
     app.include_router(build_tasks_router(settings))
     client = TestClient(app)
-    with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=convs), \
-         patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW):
+    with (
+        patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=convs),
+        patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW),
+    ):
         resp = client.get("/tasks/mine?agent_id=7", headers={"x-api-key": "test-key"})
     assert resp.status_code == 200
     assert len(resp.json()["tasks"]) == 1
@@ -96,15 +101,22 @@ def test_filters_other_agents_conversations() -> None:
 
 def test_no_agent_id_returns_all_open() -> None:
     convs = [
-        {"id": 300, "status": "open", "created_at": _epoch(1), "meta": {"assignee": None, "sender": {"name": "C"}}},
+        {
+            "id": 300,
+            "status": "open",
+            "created_at": _epoch(1),
+            "meta": {"assignee": None, "sender": {"name": "C"}},
+        },
         {"id": 301, "status": "resolved", "created_at": _epoch(2), "meta": {}},
     ]
     settings = _settings()
     app = FastAPI()
     app.include_router(build_tasks_router(settings))
     client = TestClient(app)
-    with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=convs), \
-         patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW):
+    with (
+        patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=convs),
+        patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW),
+    ):
         resp = client.get("/tasks/mine", headers={"x-api-key": "test-key"})
     assert resp.status_code == 200
     # Only open conversations
@@ -117,8 +129,10 @@ def test_generated_at_is_iso_string() -> None:
     app = FastAPI()
     app.include_router(build_tasks_router(settings))
     client = TestClient(app)
-    with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[]), \
-         patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW):
+    with (
+        patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[]),
+        patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW),
+    ):
         resp = client.get("/tasks/mine", headers={"x-api-key": "test-key"})
     assert resp.status_code == 200
     assert resp.json()["generatedAt"] == _NOW.isoformat()
@@ -136,8 +150,10 @@ def test_breach_conv_has_negative_remaining_and_breach_type() -> None:
     app = FastAPI()
     app.include_router(build_tasks_router(settings))
     client = TestClient(app)
-    with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[conv]), \
-         patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW):
+    with (
+        patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[conv]),
+        patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW),
+    ):
         resp = client.get("/tasks/mine", headers={"x-api-key": "test-key"})
     assert resp.status_code == 200
     tasks = resp.json()["tasks"]
@@ -162,8 +178,10 @@ def test_warning_conv_in_warning_window() -> None:
     app = FastAPI()
     app.include_router(build_tasks_router(settings))
     client = TestClient(app)
-    with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[conv]), \
-         patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW):
+    with (
+        patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[conv]),
+        patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW),
+    ):
         resp = client.get("/tasks/mine", headers={"x-api-key": "test-key"})
     t = resp.json()["tasks"][0]
     assert t["resolutionRemainingSeconds"] is not None
@@ -184,8 +202,10 @@ def test_sla_override_label_reflected_in_response() -> None:
     app = FastAPI()
     app.include_router(build_tasks_router(settings))
     client = TestClient(app)
-    with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[conv]), \
-         patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW):
+    with (
+        patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[conv]),
+        patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW),
+    ):
         resp = client.get("/tasks/mine", headers={"x-api-key": "test-key"})
     t = resp.json()["tasks"][0]
     # 480 min = 8h; conv just created → remaining ≈ 28800s
@@ -202,6 +222,35 @@ def test_get_my_tasks_no_key_returns_401() -> None:
     with patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[]):
         resp = client.get("/tasks/mine")
     assert resp.status_code == 401
+
+
+def test_the_follow_up_appears_in_tasks_mine() -> None:
+    """P6 task 10: with the flag on, a conversation carrying
+    `custom_attributes.follow_up_at` surfaces followUpAtIso/
+    followUpRemainingSeconds through GET /tasks/mine, and it never makes
+    breachType non-null -- a follow-up date is not an SLA breach."""
+    conv = {
+        "id": 555,
+        "status": "open",
+        "created_at": _epoch(1),
+        "custom_attributes": {"follow_up_at": (_NOW + timedelta(days=1)).isoformat()},
+        "meta": {"assignee": {"id": 4}, "sender": {"name": "FollowUpCustomer"}},
+    }
+    settings = _settings(follow_up_date_enabled=True)
+    app = FastAPI()
+    app.include_router(build_tasks_router(settings))
+    client = TestClient(app)
+    with (
+        patch("chatbot.features.tasks.tasks_router.fetch_conversations", return_value=[conv]),
+        patch("chatbot.features.tasks.tasks_router._utcnow", return_value=_NOW),
+    ):
+        resp = client.get("/tasks/mine", headers={"x-api-key": "test-key"})
+    assert resp.status_code == 200
+    t = resp.json()["tasks"][0]
+    assert t["followUpAtIso"] is not None
+    assert t["followUpRemainingSeconds"] is not None
+    assert t["followUpRemainingSeconds"] > 0
+    assert t["breachType"] is None
 
 
 def test_get_my_tasks_wrong_key_returns_401() -> None:

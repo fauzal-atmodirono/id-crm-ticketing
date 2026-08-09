@@ -5,6 +5,14 @@ ticketing backend).
     (`maybe_escalate` / `_maybe_notify_escalation`).
   - Dealer-label escalation timestamping for reporting
     (`maybe_stamp_dealer_escalation`).
+  - Per-ticket follow-up REMINDER DATE validation
+    (`maybe_validate_follow_up_date`) -- an agent's own note that a case
+    needs attention on some future date, stored as
+    `custom_attributes.follow_up_at`. Deliberately kept separate from
+    `custom_attributes.sla_minutes`: that is a policy-set *duration* read by
+    the backend's deadline engine; this is an agent-set *date* with no
+    bearing on any SLA. See `backend/apps/backend/src/chatbot/features/
+    tasks/deadline.py` for where the two are proven never to merge.
   - `upsert_contact` / `record_conversation_status`: no-op stubs kept as the
     Chatwoot router's dispatch targets for contact/status events, so the
     router doesn't need to change and a future Chatwoot-side integration has
@@ -39,6 +47,9 @@ _NOTIFIED_ATTR = "escalation_notified_at"
 
 # Once-per-conversation intake stamp. See `maybe_stamp_business_hours`.
 _BUSINESS_HOURS_ATTR = "received_in_business_hours"
+
+# Operator-set follow-up reminder DATE. See `maybe_validate_follow_up_date`.
+_FOLLOW_UP_ATTR = "follow_up_at"
 
 
 def _single_line(text: str, limit: int = 100) -> str:
@@ -462,4 +473,108 @@ async def maybe_stamp_dealer_escalation(payload: dict) -> None:
             "maybe_stamp_dealer_escalation: failed for conversation %s",
             conversation_id,
         )
+
+
+def _parse_follow_up_date(raw: str) -> datetime:
+    """Parse an operator-supplied ISO-8601 date or date-time.
+
+    A bare date (``2026-08-15``) is accepted and treated as midnight; a naive
+    date-time is treated as UTC. Raises ``ValueError`` on anything else --
+    callers turn that into an operator-facing message rather than letting it
+    propagate.
+    """
+    parsed = datetime.fromisoformat(raw.strip())
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+async def _reject_follow_up_date(conversation_id: int, message: str) -> None:
+    """Clear the just-rejected `follow_up_at` and tell the agent why.
+
+    Clearing (rather than leaving the bad value in place) matters: an
+    unparseable or past date left standing would silently never fire as a
+    reminder, which is worse than no reminder at all because nothing else
+    ever surfaces the mistake. The private note is the one channel
+    guaranteed visible on the case the agent is already looking at.
+    """
+    try:
+        chatwoot = get_chatwoot_client()
+        await chatwoot.set_custom_attributes(conversation_id, {_FOLLOW_UP_ATTR: None})
+        await chatwoot.create_message(conversation_id, message, private=True)
+    except Exception:
+        logger.exception(
+            "maybe_validate_follow_up_date: failed to reject invalid follow-up "
+            "date on conversation %s",
+            conversation_id,
+        )
+
+
+async def maybe_validate_follow_up_date(payload: dict) -> None:
+    """Handle a Chatwoot `conversation_updated` event: validate an
+    operator-set `follow_up_at` conversation custom attribute -- a per-ticket
+    reminder DATE an agent chooses, distinct from
+    `custom_attributes.sla_minutes` (a policy-set *duration* the backend's
+    deadline engine reads; see that module's docstring for why the two must
+    never merge).
+
+    Chatwoot writes whatever the CRM panel gives it straight through -- there
+    is no server-side validation on their end -- so this IS the write
+    boundary: an unparseable string or a date already in the past is
+    corrected back to cleared (never left standing, see
+    `_reject_follow_up_date`) rather than silently accepted or silently
+    dropped.
+
+    Liberal in what "cleared" means on the wire: an empty string, an
+    explicit null, or the key being absent from this event's
+    `custom_attributes` altogether all count as "nothing to validate" --
+    Chatwoot's custom-attribute API sends whatever the CRM panel's
+    date-picker clear action gives it, and that has been observed to vary.
+
+    Fail-open like every helper in this module: a Chatwoot API error here is
+    logged and swallowed, never raised out of the background task.
+    """
+    settings = get_settings()
+    if not settings.follow_up_date_enabled:
+        return
+
+    conversation_id = payload.get("id")
+    if conversation_id is None:
+        return
+
+    attrs = payload.get("custom_attributes")
+    if not isinstance(attrs, dict) or _FOLLOW_UP_ATTR not in attrs:
+        # Attribute wasn't part of this update, or the payload carries no
+        # custom_attributes at all -- nothing for us to validate.
+        return
+
+    raw = attrs.get(_FOLLOW_UP_ATTR)
+    if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+        return  # a deliberate clear -- valid, cancels the reminder
+
+    raw_str = raw if isinstance(raw, str) else str(raw)
+
+    try:
+        follow_up_dt = _parse_follow_up_date(raw_str)
+    except ValueError:
+        await _reject_follow_up_date(
+            conversation_id,
+            f'Follow-up date "{raw_str}" could not be understood. Use an '
+            "ISO-8601 date or date-time, for example 2026-08-15 or "
+            "2026-08-15T09:00:00+08:00.",
+        )
+        return
+
+    now = datetime.now(timezone.utc)
+    if follow_up_dt <= now:
+        await _reject_follow_up_date(
+            conversation_id,
+            f"Follow-up date {raw_str} is in the past (now is "
+            f"{now.isoformat(timespec='seconds')}). Choose a date/time after "
+            "now.",
+        )
+        return
+
+    # A valid future date -- already stored correctly by Chatwoot, nothing
+    # more to do.
 

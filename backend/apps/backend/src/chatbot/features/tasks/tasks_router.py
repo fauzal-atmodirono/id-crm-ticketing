@@ -21,7 +21,9 @@ Response (200):
         "resolutionDeadlineIso": "2026-07-20T02:00:00+00:00",
         "responseRemainingSeconds": 18000.0,  // negative = breached; null if replied
         "resolutionRemainingSeconds": 86400.0,  // negative = breached
-        "breachType": null  // "NO_RESPONSE" | "UNRESOLVED" | null
+        "breachType": null,  // "NO_RESPONSE" | "UNRESOLVED" | null
+        "followUpAtIso": null,  // P6 task 10: agent-set reminder date, or null
+        "followUpRemainingSeconds": null  // negative = reminder overdue; NEVER a breach
       }
     ],
     "generatedAt": "2026-07-18T10:00:00+00:00",
@@ -67,6 +69,8 @@ def _task_item_to_dict(item: TaskItem) -> dict[str, Any]:
         "responseRemainingSeconds": item.response_remaining_seconds,
         "resolutionRemainingSeconds": item.resolution_remaining_seconds,
         "breachType": item.breach_type,
+        "followUpAtIso": item.follow_up_at_iso,
+        "followUpRemainingSeconds": item.follow_up_remaining_seconds,
     }
 
 
@@ -109,7 +113,9 @@ def build_tasks_router(settings: Settings) -> APIRouter:
         tasks.sort(
             key=lambda t: (
                 t["breachType"] is None,  # breached items sort first (False < True)
-                t["resolutionRemainingSeconds"] if t["resolutionRemainingSeconds"] is not None else float("inf"),
+                t["resolutionRemainingSeconds"]
+                if t["resolutionRemainingSeconds"] is not None
+                else float("inf"),
             )
         )
 

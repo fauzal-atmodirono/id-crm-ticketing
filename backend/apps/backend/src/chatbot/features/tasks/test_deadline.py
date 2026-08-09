@@ -110,3 +110,103 @@ def test_task_item_is_dataclass_with_expected_fields() -> None:
     assert hasattr(item, "response_remaining_seconds")
     assert hasattr(item, "resolution_remaining_seconds")
     assert hasattr(item, "breach_type")
+
+
+# --- P6 task 10: per-ticket follow-up date -----------------------------
+#
+# A follow-up date is an agent's own reminder note ("look at this again
+# Thursday"), never a policy commitment. `sla_minutes`/`resolution_deadline_iso`/
+# `breach_type` are the SLA engine's; `follow_up_at_iso`/`follow_up_remaining_seconds`
+# are new, separate fields so the two can never be read as the same thing.
+
+
+def test_the_reminder_fires_at_the_follow_up_date() -> None:
+    """Once `now` passes `follow_up_at`, `follow_up_remaining_seconds` goes
+    negative -- that is the reminder having fired."""
+    conv = _conv(
+        20,
+        created_at=_epoch(1),
+        custom_attributes={"follow_up_at": (_NOW - timedelta(hours=1)).isoformat()},
+    )
+    item = compute_deadlines(conv, _settings(follow_up_date_enabled=True), _NOW)
+    assert item.follow_up_at_iso is not None
+    assert item.follow_up_remaining_seconds is not None
+    assert item.follow_up_remaining_seconds < 0
+
+
+def test_a_follow_up_date_is_not_treated_as_an_sla_deadline() -> None:
+    """A follow-up date well in the past on a conversation that is nowhere
+    near either SLA threshold must NOT become a breach, and the SLA fields
+    must compute identically to a conversation with no follow_up_at at all --
+    proving the two are read independently, not merged."""
+    conv_with_follow_up = _conv(
+        21,
+        created_at=_epoch(1),  # nowhere near the 8h/48h SLA thresholds
+        custom_attributes={"follow_up_at": (_NOW - timedelta(days=3)).isoformat()},
+    )
+    conv_without_follow_up = _conv(21, created_at=_epoch(1))
+
+    settings = _settings(follow_up_date_enabled=True)
+    item = compute_deadlines(conv_with_follow_up, settings, _NOW)
+    baseline = compute_deadlines(conv_without_follow_up, settings, _NOW)
+
+    assert item.follow_up_remaining_seconds is not None
+    assert item.follow_up_remaining_seconds < 0  # the reminder is overdue
+    assert item.breach_type is None  # but that is not an SLA breach
+    assert item.breach_type == baseline.breach_type
+    assert item.resolution_deadline_iso == baseline.resolution_deadline_iso
+    assert item.resolution_remaining_seconds == baseline.resolution_remaining_seconds
+    assert item.response_deadline_iso == baseline.response_deadline_iso
+
+
+def test_clearing_the_date_cancels_the_reminder() -> None:
+    """An empty string or an absent `follow_up_at` must both compute to no
+    active reminder -- clearing genuinely cancels it, it isn't just ignored
+    on write and left dangling in the computed view."""
+    cleared = _conv(22, created_at=_epoch(1), custom_attributes={"follow_up_at": ""})
+    absent = _conv(23, created_at=_epoch(1))
+
+    settings = _settings(follow_up_date_enabled=True)
+    item_cleared = compute_deadlines(cleared, settings, _NOW)
+    item_absent = compute_deadlines(absent, settings, _NOW)
+
+    assert item_cleared.follow_up_at_iso is None
+    assert item_cleared.follow_up_remaining_seconds is None
+    assert item_absent.follow_up_at_iso is None
+    assert item_absent.follow_up_remaining_seconds is None
+
+
+def test_sla_minutes_behaviour_is_completely_unchanged() -> None:
+    """`sla_minutes`-driven resolution deadline/breach must compute exactly
+    as before this feature existed, whether or not a `follow_up_at` also
+    happens to be present, and whether or not the flag is even on. This is
+    the regression baseline for the separation guarantee: adding a follow-up
+    date must never perturb SLA arithmetic by so much as a second."""
+    conv_with_follow_up = _conv(
+        24,
+        created_at=_epoch(7),
+        custom_attributes={
+            "sla_minutes": 480,
+            "follow_up_at": (_NOW + timedelta(days=2)).isoformat(),
+        },
+    )
+    conv_sla_only = _conv(24, created_at=_epoch(7), custom_attributes={"sla_minutes": 480})
+
+    item_on = compute_deadlines(conv_with_follow_up, _settings(follow_up_date_enabled=True), _NOW)
+    item_off = compute_deadlines(conv_with_follow_up, _settings(follow_up_date_enabled=False), _NOW)
+    baseline = compute_deadlines(conv_sla_only, _settings(), _NOW)
+
+    # sla_480 label/attr means 480 minutes (8h) resolution SLA; 7h elapsed ->
+    # 1h = 3600s remaining, exactly as before this feature existed.
+    assert item_on.resolution_remaining_seconds is not None
+    assert abs(item_on.resolution_remaining_seconds - 3600) < 5
+    assert item_on.resolution_remaining_seconds == baseline.resolution_remaining_seconds
+    assert item_on.resolution_deadline_iso == baseline.resolution_deadline_iso
+    assert item_on.breach_type == baseline.breach_type
+
+    # Flag off: no follow-up fields populated at all, everything else
+    # byte-for-byte identical to the flag being on.
+    assert item_off.follow_up_at_iso is None
+    assert item_off.follow_up_remaining_seconds is None
+    assert item_off.resolution_remaining_seconds == item_on.resolution_remaining_seconds
+    assert item_off.breach_type == item_on.breach_type

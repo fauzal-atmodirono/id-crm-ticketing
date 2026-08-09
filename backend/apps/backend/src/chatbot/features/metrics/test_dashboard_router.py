@@ -10,8 +10,14 @@ from chatbot.platform.server import create_app
 
 
 def _client() -> TestClient:
-    app = create_app(Settings())
-    app.include_router(build_metrics_query_router(MockMetricsQuery()))
+    # One Settings for both, which is what `main.py` does: the router needs it
+    # for the P9 freshness stamp. These tests assert which blocks are PRESENT,
+    # never the exact key set, so they hold with the stamp on or off -- the exact
+    # key set is pinned in test_dashboard_router_period.py (flag off) and
+    # test_freshness_contract.py (both).
+    settings = Settings()
+    app = create_app(settings)
+    app.include_router(build_metrics_query_router(MockMetricsQuery(), settings))
     return TestClient(app)
 
 

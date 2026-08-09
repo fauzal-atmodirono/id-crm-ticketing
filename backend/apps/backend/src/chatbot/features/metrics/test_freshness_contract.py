@@ -92,9 +92,10 @@ def _anomaly_client(settings: Settings) -> TestClient:
     return TestClient(app)
 
 
-# The endpoints stamped by this task, and the shape each needs to be called
-# with. `/metrics/dashboard` is deliberately absent -- see
-# `test_the_one_metrics_response_not_yet_stamped_is_named_not_hidden`.
+# The endpoints stamped by this task. `/metrics/dashboard` is absent from this
+# tuple because it is mounted by a different factory, not because it is
+# unstamped -- P9 task 7 stamped it, and
+# `test_the_executive_dashboard_response_is_stamped_too` covers it.
 _INSIGHTS_PATHS = (
     "/metrics/departments",
     "/metrics/callcenter",
@@ -369,14 +370,58 @@ def test_the_sync_job_is_what_records_the_clock() -> None:
     assert "finally" not in source
 
 
-def test_the_one_metrics_response_not_yet_stamped_is_named_not_hidden() -> None:
-    """`/metrics/dashboard` is the §2.2.3 executive dashboard and it is NOT
-    stamped, because `build_metrics_query_router` takes no `Settings` and
-    `main.py` was out of scope for this task. Recorded as a named gap rather
-    than papered over with an optional `settings=None` parameter that no call
-    site would ever pass -- an unreachable stamp is not a stamp.
+def test_the_executive_dashboard_response_is_stamped_too() -> None:
+    """`/metrics/dashboard` -- §2.2.3, the last metrics response to be stamped.
+
+    This test replaces task 5's `test_the_one_metrics_response_not_yet_stamped_
+    is_named_not_hidden`, which asserted `"settings" not in
+    inspect.signature(build_metrics_query_router).parameters` so that it would
+    FAIL the moment the signature changed. P9 task 7 changed it (`main.py` was
+    in scope there), so the assertion flips: the parameter is now required, and
+    both the no-period and period paths carry the stamp.
+
+    `settings` being *required* rather than `settings=None` is the load-bearing
+    half. An optional parameter would let a future call site drop it and silently
+    un-stamp the one dashboard figure most likely to be read out loud in a
+    reconciliation meeting; a required one makes that a TypeError at boot.
     """
     params = inspect.signature(build_metrics_query_router).parameters
-    assert "settings" not in params, (
-        "if dashboard_router now takes Settings, stamp its response and delete this test"
+    assert "settings" in params, "the dashboard router must take Settings to stamp its response"
+    assert params["settings"].default is inspect.Parameter.empty, (
+        "settings must be required: an optional one lets a call site un-stamp the dashboard"
     )
+
+    record_sync_completed(datetime(2026, 8, 9, 12, 0, tzinfo=UTC))
+    settings = _settings(freshness=True)
+    app = FastAPI()
+    app.include_router(build_metrics_query_router(MockMetricsQuery(), settings))
+    client = TestClient(app)
+
+    plain = client.get("/metrics/dashboard").json()
+    assert plain["as_of"] == "2026-08-09T12:00:00+00:00"
+    assert plain["source"] == SOURCE_BATCH
+    assert plain["freshness"]["as_of_status"] == AS_OF_MEASURED
+
+    # The period envelope too -- it is a different return statement, and the
+    # period path is the one a report page uses.
+    windowed = client.get(
+        "/metrics/dashboard",
+        params={"from": "2026-07-17", "to": "2026-07-23", "granularity": "week"},
+    ).json()
+    assert windowed["as_of"] == "2026-08-09T12:00:00+00:00"
+    assert windowed["source"] == SOURCE_BATCH
+
+
+def test_the_executive_dashboard_is_byte_identical_with_the_flag_off() -> None:
+    """The ship-dark half of the same change, and it matters more here than on
+    the insights endpoints: the deployed SPA's overview panel
+    (`0020-reports-native-merge.patch`) and `apps/frontend`'s dashboard view both
+    parse this exact payload, and neither passes a period. Off must add no key at
+    all -- not an empty one, not a null one."""
+    settings = _settings(freshness=False)
+    app = FastAPI()
+    app.include_router(build_metrics_query_router(MockMetricsQuery(), settings))
+    body = TestClient(app).get("/metrics/dashboard").json()
+    assert "as_of" not in body
+    assert "source" not in body
+    assert "freshness" not in body

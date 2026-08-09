@@ -297,7 +297,11 @@ def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
     app.include_router(build_qa_router(qa_port, settings))
 
     query_port = build_metrics_query_port(settings)
-    app.include_router(build_metrics_query_router(query_port))
+    # `settings` (P9 task 7): the §2.2.3 executive dashboard was the one metrics
+    # response with no freshness stamp, because this factory took no Settings.
+    # It reads the same BigQuery views the reporting endpoints do, so an unstamped
+    # figure here is the one most likely to be quoted as live in a meeting.
+    app.include_router(build_metrics_query_router(query_port, settings))
     app.include_router(build_metrics_export_router(query_port, settings))
     app.include_router(build_metrics_anomaly_router(query_port, settings))
     app.include_router(build_metrics_insights_router(query_port, settings))
@@ -1075,6 +1079,36 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         @app.on_event("shutdown")
         def _stop_routing_sweeper() -> None:
             routing_sweeper.shutdown(wait=False)
+
+    # --- P9: per-agent alert preferences (/alerts/rules) ---------------------
+    # Sits here, after the RBAC block, for the same reason the workforce and
+    # status routers do: both of its permissions go through `require_permission`,
+    # which needs that block's repo/validator when RBAC is on and falls back to
+    # the shared-secret x-api-key check when it is off. It is handed the SAME
+    # `authz_repo`/`authz_validator` instances built once above rather than
+    # constructing a second pair -- same convention as pic_store/dealer_store.
+    #
+    # **Mounted unconditionally, unlike the custom-status router**, and the
+    # difference is deliberate. `build_status_router` is gated on its flag so an
+    # unenabled tenant gets FastAPI's own 404 with no handler reachable. Here the
+    # consumer requires the opposite: the fork's preferences page
+    # (`ProtonAlertPreferencesPage.vue`, patch 0057) renders
+    # `rules_router.py`'s `{"disabled": true, "reason": ...}` body VERBATIM, and
+    # 404ing instead would leave the page unable to tell "this tenant has not
+    # enabled alert rules" apart from "the backend is the wrong version" -- it
+    # would guess, and the whole point of that body is that it does not have to.
+    # `alert_rules_enabled` is enforced inside every endpoint, so mounting costs
+    # nothing on an unenabled tenant: no Firestore client is constructed
+    # (`AlertRuleStore` builds one lazily per call) and no store read happens.
+    # The same precedent `/metrics/ai-cost` and `/assist/translate` set.
+    #
+    # Until this mount existed the five endpoints 404ed against a live backend
+    # and every agent silently got `BUILT_IN_DEFAULTS` -- the designed fallback,
+    # but it made the whole per-agent override layer unreachable by the people it
+    # exists for. `test_p9_wiring.py` drives the real app for exactly that.
+    from chatbot.features.alerts.rules_router import build_rules_router
+
+    app.include_router(build_rules_router(settings, authz_repo, authz_validator))
 
     # --- Proton AI-assist (rewired Captain AI) ---
     _assist_router = _wire_assist(

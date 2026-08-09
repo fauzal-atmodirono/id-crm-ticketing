@@ -8,6 +8,14 @@ two pre-existing collection errors. A test that never runs is not a guard
 undeclared while every port-level test made the feature look alive. These
 build a bare `FastAPI()` around the router only, same shape as
 `test_insights_router.py`, so they actually execute.
+
+P9 task 7 note: `build_metrics_query_router` now takes `Settings`, so it can
+stamp the freshness contract. Every client here is built with a stub whose
+`dashboard_freshness_enabled` is explicitly False -- **not** a bare
+`Settings()`, which reads `os.environ` and would pick up
+`DASHBOARD_FRESHNESS_ENABLED=true` from the both-flag-states gate and add
+`as_of`/`source`/`freshness` keys to the payloads whose exact key sets this file
+pins. The freshness stamp has its own coverage in `test_freshness_contract.py`.
 """
 
 from __future__ import annotations
@@ -75,9 +83,23 @@ class _PeriodAwarePort(MockMetricsQuery):
         return metrics
 
 
+class _NoFreshnessSettings:
+    """The minimum `build_metrics_query_router` reads, with the stamp off.
+
+    A stub rather than `Settings(dashboard_freshness_enabled=False)` because a
+    real `Settings` still reads the ambient environment for every other field,
+    and because the router only ever asks these two questions of it.
+    """
+
+    dashboard_freshness_enabled = False
+    metrics_sync_interval_hours = 6
+
+
 def _client(port: MetricsQueryPort | None = None) -> TestClient:
     app = FastAPI()
-    app.include_router(build_metrics_query_router(port or MockMetricsQuery()))
+    app.include_router(
+        build_metrics_query_router(port or MockMetricsQuery(), _NoFreshnessSettings())  # type: ignore[arg-type]
+    )
     return TestClient(app)
 
 

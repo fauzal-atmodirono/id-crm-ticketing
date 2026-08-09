@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -105,11 +106,79 @@ def _embed_text(entry: LiveFaqEntry) -> str:
     return f"{entry.question} {entry.answer}".strip()
 
 
+# Punctuation/whitespace stripped before comparing a keyword against the raw
+# query -- comparison-only, never applied to `query_text` itself or to any
+# value `_rank` returns (see `_keyword_hit` docstring).
+_KEYWORD_MATCH_STRIP_RE = re.compile(r"[^\w]")
+
+
+def _normalize_for_keyword_match(text: str) -> str:
+    return _KEYWORD_MATCH_STRIP_RE.sub("", text.lower())
+
+
+def _keyword_hit(query_text: str | None, keywords: list[str]) -> bool:
+    """True if any authored keyword appears in the query text.
+
+    Both sides are lower-cased and stripped of punctuation before comparing,
+    so an authored keyword like "E.MAS7" matches a customer's "e.mas7" or
+    "emas7" -- a real product code that embeds badly (poor cosine similarity)
+    but should still match exactly, regardless of case or stray punctuation.
+    This normalisation is scoped entirely to this comparison: it never
+    mutates `query_text` and nothing built from it is returned by `_rank` --
+    the retrieval query itself is a separate concern owned by a sibling
+    task's normaliser.
+    """
+    if not query_text or not keywords:
+        return False
+    normalized_query = _normalize_for_keyword_match(query_text)
+    if not normalized_query:
+        return False
+    return any(
+        (normalized_keyword := _normalize_for_keyword_match(keyword))
+        and normalized_keyword in normalized_query
+        for keyword in keywords
+    )
+
+
 def _rank(
-    entries: list[LiveFaqEntry], query_embedding: list[float], limit: int
+    entries: list[LiveFaqEntry],
+    query_embedding: list[float],
+    limit: int,
+    *,
+    query_text: str | None = None,
+    keyword_weight: float = 0.0,
 ) -> list[tuple[LiveFaqEntry, float]]:
-    """Score entries by cosine similarity, drop sub-floor hits, return top-N."""
-    scored = [(e, cosine_similarity(query_embedding, e.embedding)) for e in entries]
+    """Score entries by cosine similarity blended with a keyword-hit bonus,
+    drop sub-floor hits, return top-N.
+
+    Blend: `score = semantic + keyword_weight * (1.0 if hit else 0.0)`, an
+    additive bonus rather than an interpolation like
+    `semantic * (1 - w) + keyword * w`. That choice is load-bearing for two
+    properties the package treats as safety requirements:
+
+    - `keyword_weight=0.0` must reproduce today's score for every entry
+      exactly, and an additive `+ 0.0` leaves the cosine value bit-for-bit
+      untouched (an interpolation would too, at w=0, but see the next point).
+    - an entry with no authored `keywords` (so `_keyword_hit` is always
+      `False` for it) must be *completely* unaffected by the weight, at any
+      value. An additive bonus guarantees this: `keyword_weight * 0.0 == 0.0`
+      regardless of `keyword_weight`. An interpolated blend fails this --
+      `semantic * (1 - w)` shrinks a keyword-less entry's score as soon as
+      `w > 0`, even though that entry never engaged the keyword signal.
+
+    `query_text=None` (a caller with an embedding but no raw query string --
+    not every caller has one) degrades to pure semantic ranking: `_keyword_hit`
+    is `False` for every entry, so scores and ordering are identical to a bare
+    cosine rank regardless of `keyword_weight`.
+    """
+    scored = [
+        (
+            e,
+            cosine_similarity(query_embedding, e.embedding)
+            + (keyword_weight if _keyword_hit(query_text, e.keywords) else 0.0),
+        )
+        for e in entries
+    ]
     scored = [pair for pair in scored if pair[1] >= _SCORE_FLOOR]
     scored.sort(key=lambda pair: pair[1], reverse=True)
     return scored[: max(limit, 0)]
@@ -204,6 +273,7 @@ class FirestoreLiveFaqStore:
             database=settings.firestore_database_id,
         )
         self._collection_name = settings.live_faq_collection
+        self._keyword_weight = settings.faq_keyword_weight
         _log.info(
             "firestore_live_faq_store_initialized",
             project=settings.firestore_project_id,
@@ -320,7 +390,17 @@ class FirestoreLiveFaqStore:
     ) -> list[tuple[LiveFaqEntry, float]]:
         if not query_embedding:
             return []
-        return _rank(await self.list_active(), query_embedding, limit)
+        # `keyword_weight` is sourced from `settings.faq_keyword_weight` at
+        # construction time (see `__init__`) -- never hardcoded here. There's
+        # no raw query string available at this call site yet, so
+        # `query_text` stays unset and this degrades to pure semantic
+        # ranking until a caller further up has one to pass through.
+        return _rank(
+            await self.list_active(),
+            query_embedding,
+            limit,
+            keyword_weight=self._keyword_weight,
+        )
 
 
 def build_live_faq_store(settings: Settings, client: Client | None) -> Any:

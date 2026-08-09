@@ -2,7 +2,9 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 
-from chatbot.features.metrics.qa import QaLabel
+import pytest
+
+from chatbot.features.metrics.qa import CallQaRubric, QaLabel
 from chatbot.features.metrics.qa_adapter import BigQueryQaLabels, build_qa_label_port
 from chatbot.platform.config import Settings
 
@@ -60,7 +62,7 @@ def test_init_ensures_dataset_table_and_view() -> None:
     BigQueryQaLabels(_settings(), client=fake)
     assert fake.created_datasets == ["proj.ds"]
     assert fake.created_tables == ["proj.ds.qa_labels"]
-    assert len(fake.queries) == 1  # the v_quality view
+    assert len(fake.queries) == 2  # v_quality + v_call_qa (P8 task 7)
 
 
 async def test_record_label_inserts_row_with_all_fields() -> None:
@@ -77,6 +79,60 @@ async def test_record_label_inserts_row_with_all_fields() -> None:
     assert row["reviewer"] == "alice"
     assert row["notes"] == "ok"
     assert row["labeled_at"].startswith("2026-06-29T")
+    # P8 task 7: a channel-agnostic label (no channel, no rubric) sends the
+    # EXACT pre-P8 row -- no new keys at all, so a pre-migration table (see
+    # qa_schema.py's docstring) is never even asked for the new columns.
+    assert "channel" not in row
+    assert "rubric_greeting" not in row
+    assert "call_qa_percentage" not in row
+
+
+async def test_record_label_with_channel_and_rubric_writes_the_new_columns() -> None:
+    fake = _FakeBQ()
+    adapter = BigQueryQaLabels(_settings(), client=fake)
+    label = QaLabel(
+        conversation_id="T-9",
+        accuracy=88,
+        quality=92,
+        reviewer="alice",
+        notes="ok",
+        labeled_at=datetime(2026, 6, 29, tzinfo=UTC),
+        channel="Phone",
+        call_rubric=CallQaRubric(
+            greeting=True, identification=True, resolution=True, closing=False, compliance=True
+        ),
+    )
+    await adapter.record_label(label)
+    _table_id, rows = fake.inserted[0]
+    row = rows[0]
+    assert row["channel"] == "Phone"
+    assert row["rubric_greeting"] is True
+    assert row["rubric_closing"] is False
+    assert row["call_qa_percentage"] == pytest.approx(80.0)
+
+
+async def test_record_label_with_incomplete_rubric_omits_the_percentage() -> None:
+    """A partially-scored rubric writes the criteria it has, but no
+    call_qa_percentage -- there is nothing complete to report yet, and
+    `NULL` there would be indistinguishable from "reviewed, 0%"."""
+    fake = _FakeBQ()
+    adapter = BigQueryQaLabels(_settings(), client=fake)
+    label = QaLabel(
+        conversation_id="T-9",
+        accuracy=88,
+        quality=92,
+        reviewer="alice",
+        notes="ok",
+        labeled_at=datetime(2026, 6, 29, tzinfo=UTC),
+        channel="Phone",
+        call_rubric=CallQaRubric(greeting=True),
+    )
+    await adapter.record_label(label)
+    _table_id, rows = fake.inserted[0]
+    row = rows[0]
+    assert row["rubric_greeting"] is True
+    assert row["rubric_identification"] is None
+    assert "call_qa_percentage" not in row
 
 
 async def test_record_label_swallows_insert_errors() -> None:

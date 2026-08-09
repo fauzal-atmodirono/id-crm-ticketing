@@ -20,7 +20,8 @@ _log = structlog.get_logger(__name__)
 
 class BigQueryQaLabels:
     """Writes one row per manual QA label into BigQuery. Ensures the table +
-    v_quality view on init; record is best-effort, non-blocking, and never raises."""
+    v_quality/v_call_qa views on init; record is best-effort, non-blocking,
+    and never raises."""
 
     def __init__(self, settings: Settings, *, client: Any | None = None) -> None:
         self._project = settings.bigquery_project_id
@@ -43,7 +44,7 @@ class BigQueryQaLabels:
 
     async def record_label(self, label: QaLabel) -> None:
         try:
-            row = {
+            row: dict[str, Any] = {
                 "conversation_id": label.conversation_id,
                 "accuracy": label.accuracy,
                 "quality": label.quality,
@@ -51,6 +52,25 @@ class BigQueryQaLabels:
                 "notes": label.notes,
                 "labeled_at": label.labeled_at.isoformat(),
             }
+            # P8 task 7: these keys are only ever ADDED, never sent as an
+            # explicit null -- a tenant that never sets channel/a rubric
+            # (call_qa_enabled off, or a channel-agnostic label even with it
+            # on) sends the EXACT pre-P8 row, so it never hits the "no such
+            # field" error a pre-migration table would raise on these new
+            # columns (see qa_schema.py's module docstring for that
+            # migration). This is what makes "off is byte-identical" true
+            # all the way to the wire, not just at the dataclass layer.
+            if label.channel is not None:
+                row["channel"] = label.channel
+            if label.call_rubric is not None:
+                row["rubric_greeting"] = label.call_rubric.greeting
+                row["rubric_identification"] = label.call_rubric.identification
+                row["rubric_resolution"] = label.call_rubric.resolution
+                row["rubric_closing"] = label.call_rubric.closing
+                row["rubric_compliance"] = label.call_rubric.compliance
+                percentage = label.call_rubric.percentage()
+                if percentage is not None:
+                    row["call_qa_percentage"] = percentage
             errors = await asyncio.to_thread(self._client.insert_rows_json, self._table_id, [row])
             if errors:
                 _log.warning("qa_insert_returned_errors", errors=str(errors))

@@ -6,3 +6,4 @@ def test_qa_defaults() -> None:
     assert s.qa_provider == "noop"
     assert s.bigquery_qa_labels_table == "qa_labels"
     assert s.qa_api_key == ""
+    assert s.call_qa_enabled is False

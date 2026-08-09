@@ -88,3 +88,68 @@ def test_qa_label_rejects_non_ascii_key() -> None:
     res = client.post("/qa/label", json=_body(), headers={"X-API-Key": b"\xe9"})
     assert res.status_code == 401
     port.record_label.assert_not_awaited()
+
+
+# --- P8 task 7: channel + call rubric, gated on call_qa_enabled ------------
+
+
+def _client_with_settings(qa_port: Any, settings: Settings) -> TestClient:
+    app = create_app(settings)
+    app.include_router(build_qa_router(qa_port, settings))
+    return TestClient(app)
+
+
+def test_call_qa_disabled_drops_channel_and_rubric_fields() -> None:
+    """Off is byte-identical to today: a caller sending the new fields with
+    call_qa_enabled off gets the exact pre-P8 channel-agnostic label."""
+    port = AsyncMock()
+    settings = Settings(qa_api_key="secret", call_qa_enabled=False)
+    client = _client_with_settings(port, settings)
+    body = {**_body(), "channel": "Phone", "rubric_greeting": True}
+
+    res = client.post("/qa/label", json=body, headers={"X-API-Key": "secret"})
+
+    assert res.status_code == 200
+    label = port.record_label.await_args.args[0]
+    assert label.channel is None
+    assert label.call_rubric is None
+
+
+def test_call_qa_enabled_persists_channel_and_rubric() -> None:
+    port = AsyncMock()
+    settings = Settings(qa_api_key="secret", call_qa_enabled=True)
+    client = _client_with_settings(port, settings)
+    body = {
+        **_body(),
+        "channel": "Phone",
+        "rubric_greeting": True,
+        "rubric_identification": True,
+        "rubric_resolution": True,
+        "rubric_closing": False,
+        "rubric_compliance": True,
+    }
+
+    res = client.post("/qa/label", json=body, headers={"X-API-Key": "secret"})
+
+    assert res.status_code == 200
+    label = port.record_label.await_args.args[0]
+    assert label.channel == "Phone"
+    assert label.call_rubric is not None
+    assert label.call_rubric.percentage() == 80.0
+
+
+def test_call_qa_enabled_channel_only_label_carries_no_rubric() -> None:
+    """A channel-only label (tagging without scoring) must not manufacture a
+    five-None rubric -- that would read as `incomplete` rather than as
+    "no rubric was ever attempted", a different thing."""
+    port = AsyncMock()
+    settings = Settings(qa_api_key="secret", call_qa_enabled=True)
+    client = _client_with_settings(port, settings)
+    body = {**_body(), "channel": "WhatsApp"}
+
+    res = client.post("/qa/label", json=body, headers={"X-API-Key": "secret"})
+
+    assert res.status_code == 200
+    label = port.record_label.await_args.args[0]
+    assert label.channel == "WhatsApp"
+    assert label.call_rubric is None

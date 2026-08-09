@@ -331,14 +331,15 @@ TARGETS_SEED_ENABLED=true    # creates only; never overwrites an operator edit
 
 ### Agent presence, custom statuses & the workforce dashboard (P6)
 
-Seven independent flags, all default-off. With all seven off the backend
-registers no scheduler job at all — not a poller that ticks and finds nothing,
-which would still call Chatwoot once a minute on every tenant that never asked
-for any of this.
+Seven flags, all default-off — but **not seven independent ones**; see the
+dependency notes below before enabling any of them individually. With all seven
+off the backend registers no scheduler job at all — not a poller that ticks and
+finds nothing, which would still call Chatwoot once a minute on every tenant
+that never asked for any of this.
 
 ```bash
 PRESENCE_TRACKING_ENABLED=true          # the poller + the presence-event log
-PRESENCE_CUSTOM_STATUSES_ENABLED=true   # the nine-status catalogue + its seed
+PRESENCE_CUSTOM_STATUSES_ENABLED=true   # selecting/editing the ten-status catalogue
 PRESENCE_THRESHOLD_ALERTS_ENABLED=true  # the 10-minute / 1-hour alerts
 ACW_ENABLED=true                        # After-Call-Work as a presence state
 ROUTING_FAIR_SHARE_ENABLED=true         # least-loaded within a tier
@@ -352,6 +353,30 @@ presence-event log every other flag reads. `GET /admin/workforce` (permission
 with presence tracking off the dashboard would render a row per agent with
 every presence field blank, which is honest but indistinguishable from a broken
 page.
+
+**The status catalogue is a dependency of three of the others, in two different
+ways** — this is the one flag interaction worth reading twice, because the
+failure modes are silent:
+
+- **`PRESENCE_CUSTOM_STATUSES_ENABLED` is what makes the absence alerts able to
+  fire at all.** It gates *selecting* a status: the four `/routing/presence`
+  endpoints (and the "My status" page in fork patch `0054`) are only mounted
+  when it is on, and off means a plain 404 there. The alerts only ever fire for
+  the away-from-desk statuses an **agent picks** — Lunch, Break, Toilet, Prayer.
+  Chatwoot's own native Busy and Offline deliberately never count as an absence
+  (Busy is an agent working; Offline is an agent off shift — alerting on it would
+  page an administrator after every logoff, every evening, per agent). So
+  `PRESENCE_THRESHOLD_ALERTS_ENABLED=true` with this flag off correctly produces
+  **no alerts whatsoever**: there is no way for anyone to record an absence in
+  the first place. That is not a bug to go looking for.
+- **`ACW_ENABLED` and the fair-share `routable` filter do *not* need this flag.**
+  They read the catalogue rather than write to it, and a lookup falls back to the
+  shipped definitions when a tenant's Firestore document was never seeded — so
+  After-Call-Work works on an ACW-only tenant instead of logging
+  `custom_status_set_unknown_key` on every completed call, which is what it used
+  to do. A genuine store outage still resolves to "no extra information", and the
+  native Chatwoot status stays the only thing that can ever *exclude* an agent
+  from routing.
 
 **The one thing to understand before showing this to an operator:**
 
@@ -382,11 +407,16 @@ reader would otherwise assume:
   behaviour exist and are tested (a follow-up date provably never appears as an
   SLA breach), but the conversation-panel field needs P3's panel patch, which is
   not part of this work. `FOLLOW_UP_DATE_ENABLED` keeps it invisible until then.
-- **Patch `0053-workforce-dashboard.patch` was hand-built and could not be
-  verified against upstream Chatwoot** from the environment it was written in
-  (no network to github). Its hunks are internally consistent and it applies to
-  a synthetic tree; that is not proof it applies to the real fork. **Validate it
-  on the first Cloud Build**, before anyone plans a demo around the page.
+- **Patches `0053-workforce-dashboard.patch` and `0054-agent-status-selector.patch`
+  were hand-built and could not be verified against upstream Chatwoot** from the
+  environment they were written in (no network to github). Their hunks are
+  internally consistent and both apply to a synthetic tree; that is not proof
+  either applies to the real fork, and `0054`'s hunks sit *on top of* `0053`'s
+  own added lines, so if `0053` needs a line-number fix-up, `0054` needs the same
+  one. **Validate both on the first Cloud Build**, before anyone plans a demo
+  around the Workforce dashboard or the agent-facing "My status" page. Until that
+  build is green, `PRESENCE_CUSTOM_STATUSES_ENABLED` on a tenant buys a working
+  API with no UI in front of it.
 
 Requirement 4.69 asks for After-Call-Work **and** average handling time. P6
 delivers the ACW state only; AHT stays blocked on the missing call-queue

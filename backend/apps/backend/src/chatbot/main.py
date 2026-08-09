@@ -73,6 +73,7 @@ from chatbot.features.routing.presence_store import build_presence_event_store
 from chatbot.features.routing.presence_thresholds import start_presence_threshold_sweeper
 from chatbot.features.routing.router import build_routing_router
 from chatbot.features.routing.service import RoutingService
+from chatbot.features.routing.status_router import build_status_router
 from chatbot.features.routing.store import ChannelPriorityStore
 from chatbot.features.routing.sweeper import start_routing_sweeper
 from chatbot.features.routing.workforce_router import build_workforce_router
@@ -822,13 +823,54 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             )
         )
 
-    # Seeding the nine-status catalogue is create-only (an operator who
-    # re-tinted "Lunch" keeps their edit across restarts), the same discipline
-    # as TargetsStore.seed_from_settings -- so it is safe to run on every boot.
+    # The status-selection + catalogue router (review-final C1's other half).
+    # Without this mount `set_status` still has no HTTP caller, all four
+    # endpoints 404, and requirements 4.12/4.13/4.14/4.17 stay dark end to end
+    # no matter how green their unit tests are -- the poller would remain the
+    # only writer of presence events and would only ever write Chatwoot's three
+    # native values. It sits here, after the RBAC block, for the same reason
+    # the workforce router does: `require_permission` needs that block's
+    # repo/validator when RBAC is on, and both are None (shared-secret
+    # fallback) when it is off.
+    #
+    # It is handed the SAME `_custom_status_store`/`_presence_event_store`
+    # built at the top of this function rather than letting the factory
+    # construct its own -- same convention as the workforce router and
+    # pic_store/dealer_store above. Instance identity is not what makes this
+    # correct (Firestore is the shared state), but a second pair here would be
+    # two more objects to keep configured in step for no gain.
+    #
+    # Gated on `presence_custom_statuses_enabled` rather than mounted
+    # unconditionally, which is the `/webhooks/phone/dial-status` precedent in
+    # features/chat/router.py: a tenant that never enabled custom statuses gets
+    # FastAPI's own 404 with no handler code reachable at all, instead of an
+    # endpoint that answers 200 `{"disabled": true}` -- a shape a UI could
+    # mistake for a status change that worked. The router *also* self-gates on
+    # the same flag (see its module docstring); that guard is for direct
+    # in-process callers and is not made redundant by this one.
+    if settings.presence_custom_statuses_enabled:
+        app.include_router(
+            build_status_router(
+                settings,
+                authz_repo,
+                authz_validator,
+                status_store=_custom_status_store,
+                presence_store=_presence_event_store,
+            )
+        )
+
+    # Seeding the catalogue (the eight §4.17 names plus `acw` and `offline`,
+    # ten documents) is create-only -- an operator who re-tinted "Lunch" keeps
+    # their edit across restarts, the same discipline as
+    # TargetsStore.seed_from_settings -- so it is safe to run on every boot.
     # It is still gated on the custom-status flag, because seeding is a real
-    # Firestore write: with the flag off nothing reads the catalogue, and
-    # writing nine documents into every tenant's Firestore anyway would break
+    # Firestore write: with the flag off nothing SELECTS from the catalogue, and
+    # writing ten documents into every tenant's Firestore anyway would break
     # the "all flags off changes nothing" guarantee this package is sold on.
+    # Note what the gate does NOT withhold: `CustomStatusStore.get` falls back
+    # to the shipped definitions when a document is absent, so ACW and the
+    # threshold sweeper resolve their statuses on an unseeded tenant too (the
+    # I2 trap). This flag gates selecting and editing, not resolving.
     if settings.presence_custom_statuses_enabled:
 
         @app.on_event("startup")

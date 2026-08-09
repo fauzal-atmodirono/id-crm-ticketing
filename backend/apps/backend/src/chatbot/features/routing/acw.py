@@ -59,7 +59,6 @@ import structlog
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from chatbot.features.routing.custom_status import (
-    CustomStatus,
     build_custom_status_store,
 )
 from chatbot.features.routing.presence import AgentRecord, PresenceFetcher
@@ -95,9 +94,14 @@ class _AssigneeResolver(Protocol):
 
 
 class _StatusCatalogue(Protocol):
-    """The two `CustomStatusStore` methods this module depends on."""
+    """The one `CustomStatusStore` method this module depends on.
 
-    async def get(self, key: str) -> CustomStatus | None: ...
+    Deliberately does NOT include `get`: nothing here looks a status up
+    itself. Whether `acw`/`available` exist, and what happens when the
+    catalogue cannot be read, are decisions that belong inside the store (see
+    `CustomStatusStore.set_status`/`get`), and duplicating the lookup here
+    would mean two places to keep in step about what an absent document means.
+    """
 
     async def set_status(
         self, agent_id: int, key: str, *, source: str = "agent", now: datetime | None = None
@@ -187,6 +191,23 @@ class ACWController:
         block ordinary ACW entry -- worst case is one avoidable ACW entry
         for an agent who happened to already be offline, not a silently
         dropped wrap-up state for one who is still online.
+
+        **What a `False` means, since review-final I2.** `set_status` used to
+        answer `False` on a tenant that had ACW on but custom statuses off,
+        because the `acw` catalogue document only existed if the startup seed
+        (gated on `presence_custom_statuses_enabled`) had run -- so every
+        completed call logged `custom_status_set_unknown_key` then
+        `acw_enter_failed` and nothing else ever happened. `CustomStatusStore.get`
+        now answers from the shipped `SEED_STATUSES` definition when a document
+        is absent on a *successful* read, so `acw` resolves on an unseeded
+        tenant and ACW no longer depends on that flag at all. `False` therefore
+        now means what it says: the native Chatwoot write was refused, or the
+        catalogue genuinely could not be read (an outage still resolves to
+        `None`, which `set_status` still treats as "unknown key"). Either way
+        nothing has been written -- `set_status` appends only after the native
+        write lands -- so logging and returning is the correct, complete
+        response here: no presence event claims wrap-up, the agent stays
+        routable, and the next call ending tries again.
         """
         try:
             current = await self._presence_fetcher.fetch_agent_availability(agent_id)

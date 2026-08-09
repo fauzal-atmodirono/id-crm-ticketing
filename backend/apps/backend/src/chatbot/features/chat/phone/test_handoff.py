@@ -29,9 +29,12 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlencode
 
 import pytest
+from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 from structlog.testing import capture_logs
 
 import chatbot.features.chat.phone.bridge as bridge_module
@@ -51,7 +54,7 @@ from chatbot.features.chat.phone.handoff_target import (
 )
 from chatbot.features.chat.phone.live_events import LiveEvent, ToolCall
 from chatbot.features.chat.ports import ConversationLogResult
-from chatbot.features.chat.router import build_chat_router
+from chatbot.features.chat.router import ChatRouter, build_chat_router
 from chatbot.features.chat.service import OrchestratorService
 from chatbot.platform.config import Settings
 from chatbot.platform.server import create_app
@@ -913,3 +916,151 @@ def test_dial_status_unknown_call_is_ignored_rather_than_raising() -> None:
     assert "<Say " in res.text
     assert log.comments == []
     assert log.tags == []
+
+
+# --- P6 After-Call-Work entry on a completed dial (review-final I1) ----------
+
+
+class _FakeACWController:
+    """The one `ACWController` method the webhook calls, plus a record of when
+    it was called relative to the response."""
+
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    async def start_after_call(self, conversation_id: int, *, now: Any = None) -> int | None:
+        self.calls.append(conversation_id)
+        return 7
+
+
+def _acw_settings(**overrides: Any) -> Settings:
+    kwargs: dict[str, Any] = {
+        "phone_transcript_live_enabled": True,
+        "phone_handoff_enabled": True,
+        "twilio_auth_token": "test_token",
+        "twilio_account_sid": "AC1",
+        "acw_enabled": True,
+        "twilio_webhook_base_url": _BASE_URL,
+    }
+    kwargs.update(overrides)
+    return Settings(_env_file=None, **kwargs)
+
+
+def _orchestrator(log: _FakeLog, settings: Settings) -> OrchestratorService:
+    return OrchestratorService(
+        settings=settings,
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=InMemoryTicketingAdapter(),
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=MockVoiceAdapter(),
+        conversation_log_port=log,
+        runner_factory=lambda _agent: _FakeRunner(),
+    )
+
+
+def _dial_request(params: dict[str, str], signature: str) -> Request:
+    """A real Starlette Request carrying `params` as a signed Twilio form post,
+    so the handler can be called directly (with a BackgroundTasks of our own)
+    rather than through TestClient -- which is the only way to observe what has
+    and has not run at the moment the response object is handed back."""
+    body = urlencode(params).encode()
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "server": ("example.ngrok.app", 443),
+        "path": "/webhooks/phone/dial-status",
+        "query_string": b"",
+        "headers": [
+            (b"content-type", b"application/x-www-form-urlencoded"),
+            (b"content-length", str(len(body)).encode()),
+            (b"x-twilio-signature", signature.encode()),
+        ],
+    }
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(scope, receive)
+
+
+async def test_acw_entry_cannot_delay_the_twiml_on_a_completed_call() -> None:
+    """Review-final I1. ACW entry used to be `await`ed inside this handler.
+    The `Response` was *constructed* on the line above, which made it look
+    settled, but constructing is not sending: the await still sat in front of
+    the response, putting up to six sequential Chatwoot/Firestore calls (three
+    on a 10 s timeout) inside Twilio's ~15 s webhook budget -- so a degraded
+    Chatwoot made this callback answer in 25-35 s and Twilio abandoned it on a
+    still-live call.
+
+    Asserted where it can actually be seen: the handler is called directly with
+    our own BackgroundTasks, and at the moment it returns the TwiML the ACW
+    controller has NOT been touched -- work that has not started cannot delay
+    anything. It is queued, and running the queue (what Starlette does after
+    the response is sent) is what finally enters ACW.
+    """
+    log = _DialLog()
+    log.found = "42"
+    settings = _acw_settings()
+    acw = _FakeACWController()
+    router = ChatRouter(orchestrator=_orchestrator(log, settings), acw_controller=acw)
+    params = {"CallSid": "CA9", "DialCallStatus": "completed"}
+    sig = _sign("test_token", f"{_BASE_URL}/webhooks/phone/dial-status", params)
+    tasks = BackgroundTasks()
+
+    res = await router.phone_dial_status_webhook(_dial_request(params, sig), tasks)
+
+    assert res.status_code == 200
+    assert b"<Hangup/>" in res.body  # always valid TwiML: Twilio runs this next
+    assert acw.calls == [], "ACW ran before the TwiML was returned"
+    assert log.found_calls == [], "even the ticket lookup ran ahead of the response"
+    assert len(tasks.tasks) == 1
+
+    await tasks()  # what Starlette does once the response has been sent
+
+    assert acw.calls == [42]
+
+
+def test_a_completed_call_still_enters_acw_end_to_end() -> None:
+    """The deferral must not turn into a silent drop: driven through the real
+    app, a completed dial still puts the conversation's assignee into ACW."""
+    log = _DialLog()
+    log.found = "42"
+    settings = _acw_settings()
+    acw = _FakeACWController()
+    app = create_app(settings)
+    app.include_router(build_chat_router(_orchestrator(log, settings), acw_controller=acw))
+    params = {"CallSid": "CA9", "DialCallStatus": "completed"}
+    sig = _sign("test_token", f"{_BASE_URL}/webhooks/phone/dial-status", params)
+
+    res = TestClient(app).post(
+        "/webhooks/phone/dial-status", data=params, headers={"X-Twilio-Signature": sig}
+    )
+
+    assert res.status_code == 200
+    assert "<Hangup/>" in res.text
+    assert acw.calls == [42]
+
+
+async def test_acw_disabled_queues_nothing_on_a_completed_call() -> None:
+    """`acw_enabled` is checked at this call site, not only inside the
+    controller, so a tenant with the flag off makes zero extra calls at call
+    end -- not even the `find_conversation_ticket` lookup -- and queues no
+    background work at all."""
+    log = _DialLog()
+    log.found = "42"
+    settings = _acw_settings(acw_enabled=False)
+    acw = _FakeACWController()
+    router = ChatRouter(orchestrator=_orchestrator(log, settings), acw_controller=acw)
+    params = {"CallSid": "CA9", "DialCallStatus": "completed"}
+    sig = _sign("test_token", f"{_BASE_URL}/webhooks/phone/dial-status", params)
+    tasks = BackgroundTasks()
+
+    res = await router.phone_dial_status_webhook(_dial_request(params, sig), tasks)
+
+    assert res.status_code == 200
+    assert b"<Hangup/>" in res.body
+    assert tasks.tasks == []
+    assert acw.calls == []
+    assert log.found_calls == []

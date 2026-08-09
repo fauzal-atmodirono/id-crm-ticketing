@@ -71,15 +71,34 @@ class RoutingAssigner:
         channel_type = inbox.get("channel_type") if isinstance(inbox, dict) else None
         return canonical_channel(channel_type)
 
-    async def assign(self, conversation_id: int, agent_id: int) -> None:
-        """Assign an agent to a conversation.
+    async def assign(self, conversation_id: int, agent_id: int) -> bool:
+        """Assign an agent to a conversation. Returns whether Chatwoot took it.
 
         Calls POST /conversations/{id}/assignments with {"assignee_id": agent_id}.
-        Never raises; failures are logged and ignored.
+        Still never raises -- `_request` swallows every failure mode (non-2xx,
+        network error, timeout) and returns `None` -- so the two fail-open
+        callers (`sweeper.py`'s background sweep and `/routing/assign`'s
+        auto-pick branch) are unaffected by this signature: a Chatwoot blip
+        must not start raising out of a background sweep.
+
+        What changed, and why (review-final I5): the result used to be
+        discarded here, so a caller could not tell a completed assignment from
+        a refused one. The supervisor reassignment path writes an audit row
+        whose whole purpose is to say who moved a case to whom (spec §3.7), and
+        it was writing that row after a 422 -- an audit trail that records
+        actions which never happened is worse than none, because it will be
+        believed. Reporting the outcome is deliberately *additive* (an ignored
+        return value) rather than an exception, so that only the caller that
+        needs to care has to change.
+
+        `is not None` rather than a truth test: `_request` returns `{}` for a
+        successful response with an empty body, which is falsy but is a
+        success.
         """
-        await self._request(
+        res = await self._request(
             "POST", f"/conversations/{conversation_id}/assignments", {"assignee_id": agent_id}
         )
+        return res is not None
 
     async def resolve_assignee(self, conversation_id: int) -> int | None:
         """Resolve a conversation's CURRENT Chatwoot assignee id.

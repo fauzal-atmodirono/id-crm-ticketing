@@ -74,6 +74,8 @@ def _build(
     authz_repo=None,
     validator=None,
     fetch_agents_result: list[AgentRecord] | None = None,
+    assign_result: bool = True,
+    previous_assignee: int | None = None,
 ):
     store = AsyncMock()
     presence = AsyncMock()
@@ -84,7 +86,13 @@ def _build(
     routing_svc.pick_agent = AsyncMock(return_value=9)
     assigner = AsyncMock()
     assigner.resolve_channel = AsyncMock(return_value="whatsapp")
-    assigner.assign = AsyncMock()
+    # Both return values are pinned rather than left to AsyncMock's truthy
+    # auto-attribute: `assign` reports whether Chatwoot took the assignment
+    # (review finding I5) and `resolve_assignee` supplies the audit row's
+    # from_state (deferred Minor 7), so a test that cares must be able to say
+    # what each one answered instead of inheriting a MagicMock.
+    assigner.assign = AsyncMock(return_value=assign_result)
+    assigner.resolve_assignee = AsyncMock(return_value=previous_assignee)
 
     app = FastAPI()
     app.include_router(
@@ -358,3 +366,96 @@ async def test_a_routing_admin_key_only_tenant_can_reassign_without_rbac() -> No
     assert resp.status_code == 200
     assert resp.json()["assigned_agent_id"] == 1
     assigner.assign.assert_awaited_once_with(5, 1)
+
+
+async def test_a_chatwoot_rejected_reassignment_fails_and_is_not_audited() -> None:
+    """Review finding I5. `assigner.assign` swallowed every failure and
+    returned None, and this path neither checked nor propagated -- so a
+    Chatwoot 422 (the target is not a member of that inbox, say) answered
+    200 {"assigned_agent_id": 1} AND wrote an audit row asserting
+    `to_state="assigned:1"` for an assignment that never happened. Spec §3.7
+    makes the audit this endpoint's entire justification; a trail that records
+    unperformed actions is worse than no trail, because it gets believed.
+    """
+    settings = _settings()
+    audit = AsyncMock()
+    client, _presence, _routing_svc, assigner = _build(settings, audit=audit, assign_result=False)
+
+    resp = client.post(
+        "/routing/assign",
+        json={"conversation_id": 5, "agent_id": 1},
+        headers={"x-api-key": API_KEY},
+    )
+
+    assert resp.status_code == 502
+    assert "5" in resp.json()["detail"] and "1" in resp.json()["detail"]
+    assigner.assign.assert_awaited_once_with(5, 1)
+    audit.append.assert_not_awaited()
+
+
+async def test_the_audit_row_records_who_the_case_was_taken_from() -> None:
+    """Deferred Minor 7: `from_state` was hardcoded to `""`, so the row never
+    said who the case was reassigned AWAY from -- half of what a reassignment
+    audit answers. The previous assignee is read BEFORE the write, because
+    afterwards the same lookup returns the agent we just assigned.
+    """
+    settings = _settings()
+    audit = AsyncMock()
+    client, _presence, _routing_svc, assigner = _build(settings, audit=audit, previous_assignee=4)
+
+    resp = client.post(
+        "/routing/assign",
+        json={"conversation_id": 5, "agent_id": 1},
+        headers={"x-api-key": API_KEY},
+    )
+
+    assert resp.status_code == 200
+    entry = audit.append.await_args.args[0]
+    assert entry.from_state == "assigned:4"
+    assert entry.to_state == "assigned:1"
+    # Read before the write, not after -- otherwise it reports the new assignee.
+    assert assigner.resolve_assignee.await_args_list[0].args == (5,)
+
+
+async def test_an_unreadable_previous_assignee_is_labelled_honestly() -> None:
+    """`resolve_assignee` is fail-open: None means "unassigned" OR "the lookup
+    failed" and it cannot tell them apart, so the row must not claim nobody
+    held the case. It says so instead -- the same rule the actor label follows
+    on the non-RBAC path.
+    """
+    settings = _settings()
+    audit = AsyncMock()
+    client, _presence, _routing_svc, _assigner = _build(
+        settings, audit=audit, previous_assignee=None
+    )
+
+    resp = client.post(
+        "/routing/assign",
+        json={"conversation_id": 5, "agent_id": 1},
+        headers={"x-api-key": API_KEY},
+    )
+
+    assert resp.status_code == 200
+    entry = audit.append.await_args.args[0]
+    assert entry.from_state == "unassigned-or-unknown"
+
+
+async def test_the_auto_pick_path_stays_fail_open_when_chatwoot_refuses() -> None:
+    """The bool `assign` now returns is deliberately ADDITIVE: only the
+    supervisor reassignment path reads it. Auto-pick (and `sweeper.py`, which
+    shares the same collaborator) must keep answering exactly as before when
+    Chatwoot refuses -- a blip there is logged by the assigner and retried on
+    the next event/tick, never surfaced as a 502 to the live handoff path.
+    """
+    settings = _settings()
+    client, _presence, _routing_svc, assigner = _build(settings, assign_result=False)
+
+    resp = client.post(
+        "/routing/assign",
+        json={"conversation_id": 5},
+        headers={"x-api-key": API_KEY},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"assigned_agent_id": 9, "channel": "whatsapp"}
+    assigner.assign.assert_awaited_once_with(5, 9)

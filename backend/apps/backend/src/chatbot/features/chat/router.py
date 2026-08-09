@@ -14,6 +14,7 @@ from urllib.parse import quote
 import structlog
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     File,
     Form,
     Header,
@@ -1577,7 +1578,9 @@ class ChatRouter:
             _log.error("phone_recording_status_write_failed", call_sid=call_sid, error=str(e))
         return Response(status_code=200)
 
-    async def phone_dial_status_webhook(self, request: Request) -> Response:
+    async def phone_dial_status_webhook(
+        self, request: Request, background_tasks: BackgroundTasks
+    ) -> Response:
         """Twilio's `<Dial action>` callback (Package C Task 6): fires once
         the transferred leg of a live call ends, however it ended. This is
         the TwiML response Twilio runs NEXT on the same, still-live call --
@@ -1601,11 +1604,18 @@ class ChatRouter:
           ticket`` exactly like the branch below, then reads the resulting
           conversation's current Chatwoot assignee -- see ``acw.py``'s
           module docstring for why that, not a guess, is the only reliable
-          answer here. This is entirely best-effort: any failure (no
-          controller wired, no ticket found, no assignee, ``acw_enabled``
-          off, a Chatwoot error) is logged and swallowed, and NEVER changes
-          the TwiML below, which is decided first and is what Twilio runs
-          next on this still-live call.
+          answer here. It is **dispatched as a FastAPI background task, not
+          awaited** (review-final I1): the chain behind it is up to six
+          sequential Chatwoot/Firestore calls, three of them on a 10 s
+          timeout, and Twilio's webhook budget is about 15 s -- awaiting it
+          made a degraded Chatwoot answer this callback in 25-35 s, at which
+          point Twilio abandons it and falls back to its own error handling
+          on a call that is still up. Starlette runs background tasks after
+          the response has been sent, so ACW entry can neither delay nor
+          change the TwiML. It stays entirely best-effort besides: any
+          failure (no controller wired, no ticket found, no assignee,
+          ``acw_enabled`` off, a Chatwoot error) is logged and swallowed
+          inside ``_enter_acw_best_effort``.
         - ``"no-answer"`` / ``"busy"`` / ``"failed"`` / anything else
           (e.g. Twilio's ``"canceled"``): nobody actually took the call.
           Resolve the ticket via ``find_conversation_ticket`` -- which,
@@ -1651,16 +1661,23 @@ class ChatRouter:
 
         if status == "completed":
             _log.info("phone_dial_status_completed", call_sid=call_sid)
-            twiml = Response(content=_DIAL_HANGUP_TWIML, media_type="application/xml")
-            # P6 task 5: best-effort ACW entry, decided AFTER the TwiML
-            # above so a failure here can never change the response Twilio
-            # is about to run on this still-live call. `settings.acw_enabled`
-            # is checked here too (not just inside the controller) so that
-            # with the flag off, call-end handling makes zero extra calls --
-            # not even a `find_conversation_ticket` lookup.
+            # P6 task 5 + review-final I1: best-effort ACW entry, QUEUED here
+            # and executed by Starlette only after this response has been
+            # sent. It was previously `await`ed -- the `Response` object was
+            # constructed on the line above, which made the code *look* like
+            # the TwiML was already decided, but a construction is not a
+            # send: the await still sat in front of it, so up to six
+            # sequential Chatwoot/Firestore calls (three on a 10 s timeout)
+            # ran inside Twilio's ~15 s webhook budget on a still-live call.
+            # A background task cannot delay the response and cannot change
+            # it, which is the property this branch actually needs.
+            # `settings.acw_enabled` is checked here too (not just inside the
+            # controller) so that with the flag off, call-end handling
+            # queues nothing and makes zero extra calls -- not even a
+            # `find_conversation_ticket` lookup.
             if self._acw_controller is not None and settings.acw_enabled:
-                await self._enter_acw_best_effort(call_sid)
-            return twiml
+                background_tasks.add_task(self._enter_acw_best_effort, call_sid)
+            return Response(content=_DIAL_HANGUP_TWIML, media_type="application/xml")
 
         _log.info("phone_dial_status_unanswered", call_sid=call_sid, status=status)
         session_id = f"phone-{call_sid}"
@@ -1722,10 +1739,26 @@ class ChatRouter:
         which agent (if any) enters After-Call-Work.
 
         Called only from ``phone_dial_status_webhook``'s ``"completed"``
-        branch, and only AFTER that branch's TwiML response has already
-        been built -- every exception here is caught and logged, never
-        re-raised, so nothing in this method can affect the response
-        already sent to Twilio.
+        branch, and only as a FastAPI **background task** -- Starlette runs
+        it after that branch's TwiML has been sent, so nothing in here can
+        delay or alter the response Twilio is already running on the still-
+        live call (review-final I1; awaiting it put this whole chain inside
+        Twilio's ~15 s webhook budget).
+
+        Every exception is still caught and logged, never re-raised, and that
+        is not redundant with being a background task: an exception escaping
+        a Starlette background task propagates through the remaining ASGI
+        middleware stack after the response, which would turn a Chatwoot blip
+        into a noisy unhandled error rather than the one log line it is.
+
+        The ACW timeout does **not** depend on this task running promptly, or
+        at all. It is derived from the presence event's own timestamp on every
+        read (``acw.py``'s ``expire_if_due``), never from an in-process
+        sleeper, so deferring the *entry* by a moment cannot trap an agent
+        out of routing -- the worst case of this task being lost entirely (a
+        process killed between the response and the task) is that the agent
+        is simply never put into wrap-up, which is exactly what ``acw_enabled
+        = false`` does.
 
         Resolves the ticket via ``find_conversation_ticket`` -- same helper
         and reasoning as the unanswered branch below: this can run well

@@ -210,7 +210,38 @@ def build_routing_router(
                 availability_status=target.availability_status,
             )
 
-        await assigner.assign(conversation_id, agent_id)
+        # Read the OUTGOING assignee before the write, not after -- afterwards
+        # this same call returns the agent we just assigned. Deferred Minor 7:
+        # "reassigned away from whom" is half of what a reassignment audit
+        # answers, and it used to be recorded as `from_state=""`.
+        # `resolve_assignee` is fail-open (`None` on an unreachable Chatwoot, an
+        # unknown conversation, OR a genuinely unassigned one), so `None`
+        # conflates two different facts and the label below says so rather than
+        # asserting "nobody had it" on the strength of a failed lookup.
+        previous_assignee = await assigner.resolve_assignee(conversation_id)
+
+        # Review finding I5: `assign` used to return None unconditionally while
+        # `_request` swallowed every failure, so a Chatwoot 422 (e.g. the target
+        # is not a member of this conversation's inbox) produced a 200, a
+        # success in the fork UI, and an audit row asserting an assignment that
+        # never happened. It now reports the outcome; a failure must produce
+        # neither a success response nor an audit row, so this returns before
+        # the audit block below rather than after it. 502, not 500: the
+        # rejection came from an upstream this endpoint depends on, and a
+        # supervisor retrying is safe because nothing was written.
+        if not await assigner.assign(conversation_id, agent_id):
+            _log.error(
+                "routing_reassign_assign_failed",
+                conversation_id=conversation_id,
+                agent_id=agent_id,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Chatwoot rejected the assignment of conversation "
+                    f"{conversation_id} to agent {agent_id}; nothing was changed"
+                ),
+            )
 
         # Review finding 3: x-chatwoot-uid is a client-supplied header, not
         # by itself a verified identity. On the RBAC-off path (the
@@ -238,7 +269,11 @@ def build_routing_router(
                         ticket_id=str(conversation_id),
                         session_id=f"chatwoot-conv-{conversation_id}",
                         actor=actor,
-                        from_state="",
+                        from_state=(
+                            f"assigned:{previous_assignee}"
+                            if previous_assignee is not None
+                            else "unassigned-or-unknown"
+                        ),
                         to_state=f"assigned:{agent_id}",
                         at=datetime.now(UTC).isoformat(),
                         remark=remark,

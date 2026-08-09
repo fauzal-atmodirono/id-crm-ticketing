@@ -22,13 +22,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from structlog.testing import capture_logs
+
 from chatbot.features.routing.acw import (
     ACW_EXIT_STATUS_KEY,
     ACW_STATUS_KEY,
     ACWController,
     start_acw_sweeper,
 )
-from chatbot.features.routing.custom_status import SEED_STATUSES, CustomStatus
+from chatbot.features.routing.custom_status import (
+    SEED_STATUSES,
+    CustomStatus,
+    CustomStatusStore,
+)
 from chatbot.features.routing.presence import AgentRecord
 from chatbot.features.routing.presence_store import PresenceEvent
 from chatbot.platform.config import Settings
@@ -350,3 +356,133 @@ def test_the_acw_sweeper_ticks_on_the_presence_poll_cadence():
     assert len(sched.jobs) == 1
     assert sched.jobs[0]["id"] == "acw_timeout_sweep"
     assert sched.jobs[0]["seconds"] == settings.presence_poll_seconds
+
+
+# --- review-final I2, from THIS module's side of the boundary ----------------
+#
+# The fix lived in `CustomStatusStore.get`. These two tests do not take that on
+# trust: they drive `ACWController` against the REAL store, with only Firestore
+# and the Chatwoot availability PATCH faked at the edge, because the trap was
+# exactly a seam between the two modules that each one's own suite looked green
+# across.
+
+
+class _RecordingWriter:
+    """The Chatwoot `PATCH /agents/{id}` leg of `set_status`."""
+
+    def __init__(self) -> None:
+        self.writes: list[tuple[int, str]] = []
+
+    async def set_availability(self, agent_id: int, native: str) -> bool:
+        self.writes.append((agent_id, native))
+        return True
+
+
+class _CapturingSink:
+    """`PresenceEventStore`'s two methods, so an appended event is visible."""
+
+    def __init__(self) -> None:
+        self.events: list[PresenceEvent] = []
+
+    async def latest(self, agent_id: int) -> PresenceEvent | None:
+        matches = [e for e in self.events if e.agent_id == agent_id]
+        return matches[-1] if matches else None
+
+    async def append(self, event: PresenceEvent) -> None:
+        self.events.append(event)
+
+
+class _AbsentSnapshot:
+    """A document read that SUCCEEDED and found nothing -- the state of a
+    tenant that never ran the seed, i.e. one with ACW on and custom statuses
+    off."""
+
+    exists = False
+
+    def to_dict(self) -> dict[str, object] | None:
+        return None
+
+
+class _UnseededDocRef:
+    def get(self) -> _AbsentSnapshot:
+        return _AbsentSnapshot()
+
+
+class _UnseededFirestore:
+    def __init__(self, *a: object, **k: object) -> None:
+        pass
+
+    def collection(self, name: str) -> _UnseededFirestore:
+        return self
+
+    def document(self, key: str) -> _UnseededDocRef:
+        return _UnseededDocRef()
+
+
+class _UnreachableFirestore:
+    def __init__(self, *a: object, **k: object) -> None:
+        raise RuntimeError("firestore is unreachable")
+
+
+def _real_store(writer: _RecordingWriter, sink: _CapturingSink) -> CustomStatusStore:
+    return CustomStatusStore(_settings(), presence_store=sink, availability_writer=writer)
+
+
+async def test_acw_entry_works_on_a_tenant_that_never_seeded_the_catalogue(monkeypatch):
+    """`ACW_ENABLED=true` with `PRESENCE_CUSTOM_STATUSES_ENABLED=false` used to
+    log `custom_status_set_unknown_key` + `acw_enter_failed` on every completed
+    call, forever, because the `acw` document only existed if the flag-gated
+    startup seed had written it. Nothing about ACW should require that flag:
+    ACW is not a status an agent selects.
+    """
+    monkeypatch.setattr(
+        "chatbot.features.routing.custom_status.firestore.Client", _UnseededFirestore
+    )
+    writer, sink = _RecordingWriter(), _CapturingSink()
+    controller = ACWController(
+        _settings(),
+        _FakeAssigner(agent_id=42),
+        custom_status_store=_real_store(writer, sink),
+        presence_store=sink,
+        presence_fetcher=_FakePresenceFetcher(),
+    )
+
+    with capture_logs() as logs:
+        agent_id = await controller.start_after_call(conversation_id=101)
+
+    assert agent_id == 42
+    assert writer.writes == [(42, _catalogue_entry(ACW_STATUS_KEY).native)]
+    assert [(e.agent_id, e.status, e.source) for e in sink.events] == [
+        (42, ACW_STATUS_KEY, "system")
+    ]
+    logged = {entry.get("event") for entry in logs}
+    assert "custom_status_set_unknown_key" not in logged
+    assert "acw_enter_failed" not in logged
+
+
+async def test_a_catalogue_outage_records_nothing_and_never_raises(monkeypatch):
+    """The other half of the same boundary: an outage must still answer `None`
+    (fail-open), and this module must handle that answer by writing nothing at
+    all rather than by raising out of a call-end webhook. A presence event
+    claiming wrap-up with no matching native Chatwoot write is worse than no
+    wrap-up state, because `pick_agent` reads the native status.
+    """
+    monkeypatch.setattr(
+        "chatbot.features.routing.custom_status.firestore.Client", _UnreachableFirestore
+    )
+    writer, sink = _RecordingWriter(), _CapturingSink()
+    controller = ACWController(
+        _settings(),
+        _FakeAssigner(agent_id=42),
+        custom_status_store=_real_store(writer, sink),
+        presence_store=sink,
+        presence_fetcher=_FakePresenceFetcher(),
+    )
+
+    with capture_logs() as logs:
+        agent_id = await controller.start_after_call(conversation_id=101)
+
+    assert agent_id is None
+    assert writer.writes == []
+    assert sink.events == []
+    assert "acw_enter_failed" in {entry.get("event") for entry in logs}

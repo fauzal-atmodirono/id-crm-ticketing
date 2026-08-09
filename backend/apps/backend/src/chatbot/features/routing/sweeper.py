@@ -52,7 +52,16 @@ class _ConversationAssigner(Protocol):
 
     async def resolve_assignee(self, conversation_id: int) -> int | None: ...
 
-    async def assign(self, conversation_id: int, agent_id: int) -> None: ...
+    # Deliberately `-> object`, i.e. "this sweeper ignores whatever assign
+    # reports". `RoutingAssigner.assign` returns a bool since review-final I5
+    # (so the supervisor reassignment path can refuse to audit an assignment
+    # Chatwoot rejected), but a background sweep must stay fail-open: a
+    # Chatwoot blip on one conversation is logged by the assigner and picked up
+    # on the next tick, not surfaced as a failure here. Annotating the outcome
+    # as `object` states that indifference instead of forcing every
+    # implementation (including this suite's fakes) to return a bool nobody
+    # reads.
+    async def assign(self, conversation_id: int, agent_id: int) -> object: ...
 
 
 # Serializes overlapping sweep ticks within THIS process. Deliberately a

@@ -595,14 +595,14 @@ line showing what it was grounded in.
 
 ### Where to find it
 
-A "Suggest reply" action above the reply box.
+A "Suggest a reply" action above the reply box.
 
 <!-- VERIFY-LIVE: confirm the exact Suggest-a-reply button label on the live tenant -->
 
 ### How to use it
 
 1. Open the conversation.
-2. Click "Suggest reply" above the reply box.
+2. Click "Suggest a reply" above the reply box.
 3. Wait a moment for the draft to appear in the reply box.
 4. Check the Sources line underneath the draft for the knowledge-base
    articles it drew on.
@@ -613,7 +613,7 @@ A "Suggest reply" action above the reply box.
 ### Example scenario
 
 A customer asks about the cancellation policy for a service booking; the
-agent clicks Suggest reply, receives a draft citing the relevant FAQ
+agent clicks Suggest a reply, receives a draft citing the relevant FAQ
 article, adjusts the tone slightly, and sends it.
 
 ### Integrations & automation

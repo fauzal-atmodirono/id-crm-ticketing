@@ -335,7 +335,7 @@ Assistant Behaviour chapters.
 
 ### How to use it
 
-1. Use it indirectly through the Conversations chapter's Suggest reply,
+1. Use it indirectly through the Conversations chapter's Suggest a reply,
    Ask Copilot, and Summarize actions, or let it act automatically through
    AI auto-draft (see the AI Assistant Behaviour chapter).
 2. Administrators tune how it behaves — its persona, guardrails, and
@@ -352,7 +352,7 @@ Assistant Behaviour chapters.
 
 ### Example scenario
 
-An agent handling a charging-error question clicks **Suggest reply**;
+An agent handling a charging-error question clicks **Suggest a reply**;
 Gemini AI drafts an answer grounded in the knowledge base with a Sources
 line underneath, which the agent reviews before sending (see the
 Conversations chapter's Suggest-a-reply section).

@@ -30,13 +30,13 @@ than the underlying data can say:
   derived from the case's status alone, so the two numbers under those labels
   are, in fact, *resolved* and *not yet resolved*. The labels are left as they
   are because existing dashboards read them, but they must not be quoted as the
-  AI's share of the work. The AI performance reports that *do* attempt that
-  question, and the basis on which they infer it, are described under AI Cost &
-  Performance Measurement in the Administration chapter.
-- **The NPS tiles are empty until NPS surveying is switched on**, which is off by
-  default and is an administrator setting (see the same section). An empty NPS
-  tile means the question has never been asked, not that customers gave no
-  answer.
+  AI's share of the work. No report on this platform currently answers the
+  AI-versus-human question directly; ask us before quoting one that appears to.
+- **The NPS tiles are empty**, and will stay empty. The end-of-conversation NPS
+  survey is not running on this platform, so the question is never asked
+  automatically — a score can only reach the tile if someone submits one
+  through the API by hand. An empty NPS tile means the question was never
+  asked, not that customers declined to answer.
 
 ### Where to find it
 

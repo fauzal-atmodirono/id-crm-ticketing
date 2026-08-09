@@ -111,7 +111,7 @@ area of the CRM.
    where the message thread and reply box live.
 4. Check the **contact side panel** on the right for the customer's
    details and history alongside the conversation you're reading.
-5. Look for AI-assist buttons (Ask Copilot, Suggest reply, Summarize)
+5. Look for AI-assist buttons (Ask Copilot, Suggest a reply, Summarize)
    above the reply box when you need help drafting a response.
 
 [[SCREENSHOT: ch01-dashboard-layout | Main dashboard layout: sidebar, conversation list, reply box, contact panel]]

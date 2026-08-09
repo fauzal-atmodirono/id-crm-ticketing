@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """PROTON CRM Feature Guide — operator handbook builder.
 
-Renders the 13 hand-drafted markdown chapters in `feature-guide-src-v3/`
-(01-introduction.md ... 13-glossary.md) into the client's Google Docs
+Renders the 14 hand-drafted markdown chapters in `feature-guide-src-v3/`
+(01-introduction.md ... 14-glossary.md) into the client's Google Docs
 template (`Google Docs template - Short version.docx`), producing
 `PROTON - CRM Feature Guide v3.docx`.
 
@@ -448,7 +448,7 @@ def main():
 
     # --- Table of contents ---
     # Deliberately NOT "Heading 1"/"Heading 2": those are reserved for the
-    # 13 chapter titles and their sections, and the TOC field below (\o
+    # 14 chapter titles and their sections, and the TOC field below (\o
     # "1-2") would otherwise list this label as its own first entry.
     toc_heading = document.add_paragraph(style="normal")
     toc_run = toc_heading.add_run("Table of Contents")

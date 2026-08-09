@@ -181,9 +181,9 @@ Task 7 (their content is prescribed differently there):
 | Audit Log | `0026-audit-log-admin.patch` (permission `audit.view`) | ch09-audit-log |
 | Roles & Permissions | `0027-roles-permissions-admin.patch`, `0028-chatwoot-access-permissions.patch` (permission list), `0031-permissions-no-poison-retry.patch` | ch09-roles-permissions |
 | Escalation Routing | `0039-escalation-routing-admin.patch` (PIC per department, dealer directory, permission `escalation.manage`) | ch09-escalation-routing |
-| Agent Availability & Workforce Dashboard | `0053-workforce-dashboard.patch` (permission `workforce.view`) + `0054-agent-status-selector.patch` (the agent-facing "My status" page + catalogue editor; permissions `presence.set_own_status` / `workforce.manage`) + `features/routing/{custom_status,status_router,presence_store,presence_poller,presence_thresholds,acw,workforce_router}.py`. **Patches 0053 AND 0054 are unverified against upstream — validate on the first Cloud Build before this section is demonstrated.** The section carries a block-quoted "pending verification" note saying so rather than asserting the pages work. It also states that named statuses are chosen on their own page (never the CRM's top-bar control), the native-status mirroring, which statuses do and do not raise absence alerts (Busy = working, Offline = off shift), the availability-history-is-not-a-login-record caveat, the always-blank "cases closed today" column, the SLA-inbox scope of the 1-hour alert's WIP list, and that AHT (4.69's other half) is not delivered. | ch09-workforce |
-| AI Conversational Quality | `platform/config.py`'s nine P7 settings (all default-off/zero) + `features/assist/translate_router.py` (permission `translation.use`, mounted in `main.py`) + `0055-translate-action.patch` (the composer's Translate button) + `features/chat/{chat_persona,prompts,resolved_case_index,resolved_case_adapters}.py` + the keyword blend in `features/chat/adapters/live_faq.py`'s `_rank`. **Patch 0055 is unverified against upstream — validate on the first Cloud Build before the Translate button is demonstrated; the endpoint behind it is mounted and covered by `test_p7_wiring.py`.** The section states that everything is off by default, that tone selection is inert without the sentiment classifier and ignores a sentiment older than fifteen minutes, that Translate only ever writes a private note, that the FAQ keyword weight at 0.0 reproduces today's ordering and scores exactly, the outbound-Tamil block and why, the resolved-case summaries-not-transcripts and independent-purge properties, that a resolve can never be failed by the summary, and two things NOT delivered: no surface shows resolved-case suggestions to an agent yet, and no real before/after accuracy figures exist (the calibration runner ships unrun — stub percentages are a property of the harness). The photo-diagnosis wording's live WhatsApp check is recorded as owed. | ch09-ai-quality |
-| AI Cost & Performance Measurement | `platform/config.py`'s six P8 settings (all default-off/zero) + `platform/metered_genai.py` + `features/metrics/{token_usage,price_table,ai_cost,qa}.py` + `insights_router.py`'s `GET /metrics/ai-cost` + the eleven new views in `bigquery_schema.ai_cost_view_ddls` / `view_ddls` / `qa_schema.py` / `faq_schema.py`. **No fork patch and no CRM page: the deliverable is warehouse views plus one API endpoint, so the screenshot marker is present but explicitly DEFERRED — none of the views has been created on any tenant, and a capture taken today would show empty tables and read as the feature not working.** The section is written as much around what is NOT measured as what is, because every figure in it is meant to survive a monthly review: the `/chat/turn` conversational bot is unmeterable at our client boundary (google-adk builds its own `genai.Client` inside the installed package), `phone.live` reports usage in server messages, `embed` is visible but per-character-billed and so unpriceable, thinking-model token classes are billed but outside the three captured, there is deliberately **no total** (`priced_subtotal_usd` only, with a test asserting the absence of any `total` field), `resolved_by` cannot distinguish AI from human so all five AI-performance views are pinned off it, `v_resolution_split`'s `closed_by_bot`/`transfer_to_agent` names are misleading and left alone, there is no sentiment cut (P7's sentiment never reaches `ConversationRow`), `v_kb_staleness` returns nothing (its `faq_entries` base table does not exist — controller ruling D5 keeps it *because* it is declared unreachable), call QA is manual by design, and two `ALTER TABLE`s are owed (register 3c-1, 3c-2, 3c-3). Nothing was validated against real BigQuery, Gemini, Twilio or Postgres. | ch09-ai-measurement (deferred — see Evidence) |
+| ~~Agent Availability & Workforce Dashboard~~ | **Held back** — patches `0053`/`0054` not built; see `feature-guide-v3-pending.md` | — |
+| ~~AI Conversational Quality~~ | **Held back** — P7 not deployed (no `/assist/translate` on the tenant); see `feature-guide-v3-pending.md` | — |
+| ~~AI Cost & Performance Measurement~~ | **Held back** — P8 not deployed and its BigQuery views do not exist; see `feature-guide-v3-pending.md` | — |
 | Account settings | Native — `<!-- VERIFY-LIVE -->` | ch09-account-settings |
 
 ### 10-ai-behaviour.md
@@ -214,7 +214,30 @@ Task 7 (their content is prescribed differently there):
 | Scenario 13: The same limitation on a web chat case | Same guide §4.5 | ch11-scenario13-webchat-escalation-limit |
 | Scenario 14: An after-hours breakdown call, and an unanswered transfer | Same guide §6.3 (no RSA bypass; unanswered-handoff apology promises a callback nothing schedules) | ch11-scenario14-phone-unanswered-handoff |
 
-### 12-integrations.md
+### 12-channel-playbooks.md (per-channel walkthroughs — no 5-heading template)
+
+Reworked from `docs/analysis/2026-08-08-crm-channel-interaction-guide-v2.md`
+for this edition on 2026-08-09. Each channel follows: what the customer does →
+what happens before you see it → Scenario A (AI handles it) / B (customer wants
+a person) / C (needs a dealer or PIC) → what is not usable yet. Every claim is
+calibrated to the `proton` tenant's switch state as read from the running
+containers on 2026-08-09, not to the repository defaults — notably
+`LIFECYCLE_DISCLAIMER_ENABLED=false`, `LIFECYCLE_SURVEY_ENABLED=false`,
+`ROUTING_ENABLED=true`, `EMAIL_AUTOACK_ENABLED=false` (the Chatwoot inbox
+greeting does the acknowledgement instead), and every `PHONE_*` capability
+switch off. Content describing switched-off or undeployed behaviour was cut
+rather than hedged.
+
+| Section | Evidence | Screenshot |
+|---|---|---|
+| Channel map + shared toolkit | Live inbox list on the tenant; deployed JS bundle | — |
+| WhatsApp | `orchestrator.py`, live tenant flags | ch12-whatsapp-conversation |
+| Web chatbot | Same orchestrator path, `Channel::WebWidget` | — |
+| Voice bot / Phone | `features/chat/phone/`, `phone-channel-package-c-verification.md` | — |
+| Email | `2026-08-06-escalation-email-e2e-scenario.md` TC-01…TC-10; live TC-08/TC-09 run | ch12-escalation-labels |
+| Cross-channel, quick reference, limitations | Composite | — |
+
+### 13-integrations.md
 | `##` section | Evidence | Screenshot id(s) |
 |---|---|---|
 | WhatsApp | Native Chatwoot channel — `<!-- VERIFY-LIVE -->`; escalation limitation per `docs/analysis/2026-08-08-crm-channel-interaction-guide-v2.md` §3.5, §3.6 (media understanding untested) | ch12-whatsapp |
@@ -227,7 +250,7 @@ Task 7 (their content is prescribed differently there):
 | Knowledge base (Vertex corpus) | `backend/.../features/chat` KB retrieval; pgvector operator KB (`/kb/knowledge`) | ch12-knowledge-base |
 | BI / reporting exports | `backend/.../features/metrics/export_router.py`, `bigquery_schema.py` | ch12-bi-reporting |
 
-### 13-glossary.md (single term/definition table — no 5-heading template, no screenshot)
+### 14-glossary.md (single term/definition table — no 5-heading template, no screenshot)
 | `##` section | Evidence | Screenshot id(s) |
 |---|---|---|
 | Terms | Plan Task 7's ~20-term list, cross-referenced against chapters above | (none — reference table, not a feature) |

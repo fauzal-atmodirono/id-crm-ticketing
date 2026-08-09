@@ -1,0 +1,107 @@
+Escalation Routing admin: tier-2 manager contact field.
+
+The backend has accepted escalation_manager_email since P2 task 7, but the
+admin page had no field for it -- an operator could only set it by curling
+PUT /admin/escalation/pics/<dept>, which is not a workflow anyone will use.
+
+Adds the field to the create form, the inline edit row and the table, and
+shows "PIC (fallback)" when unset so the fallback behaviour is visible
+rather than looking like missing data.
+
+diff --git a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
+index 0659f03..7fc8c00 100644
+--- a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
++++ b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
+@@ -24,6 +24,9 @@ const EMPTY_PIC_FORM = {
+   pic_email: '',
+   pic_whatsapp: '',
+   cc_emails: '', // comma-separated in the UI; split to an array on submit
++  // Tier-2 goes here when the first alert went unanswered. Empty falls back
++  // to re-alerting the PIC -- better the same person twice than nobody.
++  escalation_manager_email: '',
+ };
+ 
+ const EMPTY_DEALER_FORM = {
+@@ -93,6 +96,7 @@ export default {
+           pic_email: this.picForm.pic_email,
+           pic_whatsapp: this.picForm.pic_whatsapp,
+           cc_emails: splitEmails(this.picForm.cc_emails),
++          escalation_manager_email: this.picForm.escalation_manager_email,
+         });
+         useAlert('PIC saved.');
+         this.picForm = { ...EMPTY_PIC_FORM };
+@@ -111,6 +115,7 @@ export default {
+         pic_email: pic.pic_email || '',
+         pic_whatsapp: pic.pic_whatsapp || '',
+         cc_emails: Array.isArray(pic.cc_emails) ? pic.cc_emails.join(', ') : '',
++        escalation_manager_email: pic.escalation_manager_email || '',
+       };
+     },
+     cancelEditPic() {
+@@ -125,6 +130,7 @@ export default {
+           pic_email: this.editPicForm.pic_email,
+           pic_whatsapp: this.editPicForm.pic_whatsapp,
+           cc_emails: splitEmails(this.editPicForm.cc_emails),
++          escalation_manager_email: this.editPicForm.escalation_manager_email,
+         });
+         useAlert('PIC updated.');
+         this.cancelEditPic();
+@@ -289,6 +295,21 @@ export default {
+             class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+           />
+         </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">
++            Tier-2 manager email
++          </label>
++          <input
++            v-model="picForm.escalation_manager_email"
++            type="text"
++            placeholder="manager@example.com"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++          <p class="mt-1 text-xs text-n-slate-10">
++            Alerted when an escalation goes unanswered past the tier-2 window.
++            Leave blank to re-alert the PIC instead.
++          </p>
++        </div>
+         <div class="md:col-span-2">
+           <label class="block mb-1 text-sm text-n-slate-11">
+             CC emails (comma-separated)
+@@ -325,6 +346,9 @@ export default {
+                 PIC WhatsApp
+               </th>
+               <th class="px-3 py-2 font-medium whitespace-nowrap">Members (CC)</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">
++                Tier-2 manager
++              </th>
+               <th class="px-3 py-2 font-medium whitespace-nowrap">Actions</th>
+             </tr>
+           </thead>
+@@ -366,6 +390,13 @@ export default {
+                     class="w-48 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
+                   />
+                 </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editPicForm.escalation_manager_email"
++                    type="text"
++                    class="w-48 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
+                 <td class="px-3 py-2 whitespace-nowrap">
+                   <button
+                     type="button"
+@@ -394,6 +425,12 @@ export default {
+                 <td class="px-3 py-2 whitespace-nowrap">
+                   {{ Array.isArray(pic.cc_emails) ? pic.cc_emails.join(', ') : '' }}
+                 </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  <span v-if="pic.escalation_manager_email">
++                    {{ pic.escalation_manager_email }}
++                  </span>
++                  <span v-else class="text-n-slate-10">PIC (fallback)</span>
++                </td>
+                 <td class="px-3 py-2 whitespace-nowrap">
+                   <button
+                     type="button"

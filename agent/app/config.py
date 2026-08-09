@@ -129,6 +129,12 @@ class Settings(BaseSettings):
     # byte-for-byte until a tenant opts in.
     escalation_all_channels_enabled: bool = False
 
+    # Notice when an escalation email BOUNCED (§4.39's other half). The DSN
+    # already arrives in the tenant's own Email inbox -- no bounce mailbox
+    # needed -- so this reads it, notes the failure on the case that caused it,
+    # and resolves the DSN conversation so it stops inflating the SLA backlog.
+    bounce_handling_enabled: bool = False
+
     # Suggest-only AI escalation-department nudge (app/services/dept_suggestion.py):
     # on an incoming customer message to an Email-channel conversation with no
     # dept_* label yet, classify it against the departments that actually have

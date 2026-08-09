@@ -13,7 +13,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from app.config import get_settings
 from app.security import verify_chatwoot_signature
-from app.services import dept_suggestion, escalation_replies, lifecycle, orchestrator, sync
+from app.services import bounce_handler, dept_suggestion, escalation_replies, lifecycle, orchestrator, sync
 from app.services.dedupe import claim_delivery
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,10 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks):
         # here rather than on conversation_updated because the requirement is
         # about ARRIVAL, and conversation_updated fires on every label write.
         background_tasks.add_task(sync.maybe_stamp_business_hours, payload)
+        # 4.39: a delivery-status notification means an escalation email never
+        # arrived. The DSN lands in this same Email inbox, so it is read here
+        # rather than needing a dedicated bounce mailbox.
+        background_tasks.add_task(bounce_handler.maybe_handle_bounce, payload)
     elif event in _STATUS_ONLY_EVENTS:
         background_tasks.add_task(sync.record_conversation_status, payload)
         if settings_flags.lifecycle_enabled and payload.get("status") == "resolved":

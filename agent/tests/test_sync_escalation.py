@@ -300,9 +300,15 @@ async def test_maybe_escalate_notify_falls_back_when_messages_fetch_fails(monkey
 
 @respx.mock
 async def test_maybe_escalate_skips_notify_for_non_email_channel(monkeypatch):
-    """A non-Email-channel conversation (e.g. SMS) must never trigger the
-    EM-7 two-thread email escalation -- it's a Chatwoot-native flow only."""
+    """With ESCALATION_ALL_CHANNELS_ENABLED off, a non-Email conversation
+    (e.g. SMS) must not trigger the EM-7 escalation -- the pre-P2 behaviour.
+
+    The flag is pinned rather than left to its default: this test asserts one
+    side of it, and an env var set in the shell would otherwise decide the
+    answer for it. P2's own suite covers the on-side.
+    """
     monkeypatch.setattr(get_settings(), "email_escalation_enabled", True)
+    monkeypatch.setattr(get_settings(), "escalation_all_channels_enabled", False)
     monkeypatch.setattr(get_settings(), "proton_backend_url", "http://proton-backend:8080")
     monkeypatch.setattr(get_settings(), "proton_backend_key", "k")
     get_proton_config_client.cache_clear()

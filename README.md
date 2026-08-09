@@ -576,6 +576,141 @@ patch rather than from unverified upstream lines, and it stacks on nothing.
 Validate it on the first Cloud Build before demonstrating the button. The
 backend endpoint is mounted and independently testable regardless.
 
+### AI & agent measurement (P8)
+
+Six settings on the **backend** service, four boolean and two tunable, all
+default-off or default-zero. With none of them set the platform behaves exactly
+as it did before P8: no Gemini call is metered, `GET /metrics/ai-cost` answers
+404, no NPS question is ever asked, CSAT stays channel-level only (`v_csat` is
+byte-for-byte unchanged, pinned as a literal string by a test), and QA stays
+today's channel-agnostic manual rubric.
+
+```bash
+TOKEN_METERING_ENABLED=true      # record a token_usage row per Gemini call
+AI_COST_REPORTING_ENABLED=true   # GET /metrics/ai-cost + the v_ai_cost views
+NPS_SAMPLE_RATE=1.0              # share of surveys asking NPS INSTEAD of CSAT; 0.0 = never
+CSAT_BY_AGENT_ENABLED=true       # mounts v_csat_by_agent beside the unchanged v_csat
+CSAT_RANKING_MIN_SAMPLES=10      # ratings needed before an agent is *ranked* (not listed)
+CALL_QA_ENABLED=true             # channel dimension + the five-criterion call rubric
+```
+
+All six are in `deploy/scripts/check-suites-both-flag-states.sh`'s all-on run
+and `src/chatbot/test_p8_flags.py` asserts they are, so the list is not
+maintained from memory. The two tunables are in that array at **non-default**
+values (`1.0`, `25`) on purpose — a tunable listed at its own default makes the
+on-run walk the identical path to the off-run. Adding this block turned that
+script red on five tests, four of them CSAT-path tests that had been reading
+`NPS_SAMPLE_RATE` from the ambient environment and one bare-`Settings()`
+defaults test; a sixth, `test_faq_hybrid_rank`'s default-weight test, had left
+the gate red since P7 for the same reason. All six are fixed.
+
+**Two migrations are owed before two of the flags can be switched on** — this
+repo has no Alembic and `create_table(exists_ok=True)` does not add columns to
+an existing table:
+
+```sql
+-- against each tenant's AGENT_DATABASE_URL, before TOKEN_METERING_ENABLED
+ALTER TABLE ai_actions ADD COLUMN IF NOT EXISTS output_tokens INTEGER;
+ALTER TABLE ai_actions ADD COLUMN IF NOT EXISTS cached_tokens INTEGER;
+-- against each tenant's BigQuery dataset, before CALL_QA_ENABLED
+-- (channel STRING, five rubric_* BOOL, call_qa_percentage FLOAT64 — the exact
+--  statement is in features/metrics/qa_schema.py's module docstring)
+```
+
+Then the eleven new warehouse views have to be created: `ensure_views(settings)`
+per tenant covers seven of them (`v_csat_by_agent` only when its flag is on),
+`ai_cost_view_ddls`' three have **no runtime caller** and must be created by hand
+*after* the `token_usage` table exists, and `v_kb_staleness` cannot be created at
+all (below). Task 7's `v_call_qa` is the exception — `qa_view_ddls` *is* called,
+by `BigQueryQaLabels` on init, so it appears on its own once the QA adapter runs. Until then
+`GET /metrics/ai-cost` returns `read_status: "unavailable"` rather than a
+confident `0.00`, which is deliberate: with no warehouse there is no evidence of
+zero spend. Full sequence in
+`docs/analysis/2026-08-09-blocked-work-register.md` §§3c-1, 3c-2, 3c-3.
+
+**What this package does not measure.** These figures exist to be defended in a
+monthly review, so the gaps are stated here rather than found later:
+
+- **`chat.turn` — the busiest AI surface in the product — is not metered at
+  all, and cannot be from where we stand.** google-adk takes a model *string*
+  and constructs its own `google.genai.Client` inside the installed package, so
+  no wrapper at our client boundary can see it. The `service.py` client that
+  *is* wrapped only transcribes, and its rows are labelled `chat.transcribe`
+  precisely so a transcription's token count is never read as the bot's. This is
+  an architectural limit of ADK, not an oversight, and it is the single reason
+  the cost report must not be read as a bill.
+- **`phone.live` is not metered**: the Live API reports usage in server
+  messages, not on a response. `connect_live` is routed through the wrapper for
+  the structural guarantee only.
+- **`embed` is visible but unpriceable.** Embeddings bill per character and
+  `EmbedContentResponse` carries no `usage_metadata`, so all three counts are
+  `None` by construction. The price table has a per-character class, but
+  `token_usage` has no character-count column, so an end-to-end embedding cost
+  is not computable even with a rate on file.
+- **Thinking-model tokens are billed and not captured.**
+  `thoughts_token_count` and `tool_use_prompt_token_count` fall outside the
+  three recorded classes, so those three sum to **less than**
+  `total_token_count` — the five priced surfaces are understated too, and
+  `completeness.excluded_token_classes` says so on the payload.
+- **There is deliberately no total.** The only money figure is
+  `priced_subtotal_usd`, and a test asserts the *absence* of `total`, `total_*`
+  and `*_total`, so a future tidy-up into a headline figure breaks the build.
+  Unmetered surfaces are rows with `cost_usd: null` **and** `calls: null` — a
+  `0` would claim the surface is free, and an absent row would claim the
+  inventory is complete.
+- **`resolved_by` cannot distinguish AI from human.** `mapping.py` derives it
+  from Chatwoot `status` alone, so `resolved_by='bot'` means "resolved". All
+  five AI-performance views are pinned off it by
+  `test_no_ai_report_is_built_on_resolved_by`; human involvement is inferred
+  instead from assignment, the `escalate` label and `escalated_to`, and each
+  view carries that basis as a column. What it still cannot see is a human who
+  replied without ever being assigned (`first_reply_created_at` is set by
+  agent-bot replies too). Consequently `v_resolution_split`'s live
+  `closed_by_bot` / `transfer_to_agent` column names are **misleading** — those
+  numbers are resolved and not-yet-resolved — and are left alone because
+  renaming them breaks existing dashboards. The client guide's Reports chapter
+  now says so as well; it previously described that tile as a bot-vs-agent
+  split, which it is not.
+- **Deflection means resolved with no agent message at all.** A conversation
+  the bot answered before a human took over is *not* deflected. The definition
+  travels as a column on `v_ai_deflection` because two reasonable definitions
+  differ by roughly a factor of two.
+- **No report cuts by sentiment.** P7's sentiment is a Chatwoot custom
+  attribute that `mapping.py` never reads into `ConversationRow`, and this
+  repo's own `test_every_schema_column_is_either_a_row_field_or_explicitly_sync_
+  only` correctly forbids a warehouse column nothing populates. Prerequisites in
+  order are in the register; when it lands, unclassified must be its own bucket
+  and **never** `neutral`.
+- **`v_kb_staleness` returns nothing.** It reads a `faq_entries` table that does
+  not exist and that nothing populates (`faq_feedback` records feedback, not
+  serves, and has no edit timestamp). It is kept deliberately — declared
+  unreachable in its module docstring, asserted by
+  `test_the_missing_faq_entries_loader_is_stated_not_implied`, and carried in
+  the register — because it becomes correct the moment a snapshot loader exists.
+  **The thing that must not happen is a dashboard built on it in the belief that
+  an empty result means a healthy KB.** Found alongside it: `faq_view_ddls` has
+  no runtime caller either, so `v_faq_quality` is not created by any deploy path
+  today (pre-existing).
+- **Call QA is manual by design, not by omission.** Nothing reads a transcript
+  or calls a model to score a call; every one of the five criteria traces to a
+  human-submitted field on `POST /qa/label`. The phone transcript path has never
+  run against a real Twilio call, so an automated scorer built on it would be
+  confident noise. A partly-scored rubric reports `incomplete`, never a low
+  percentage.
+- **⑦ AI Root Cause Analysis and ⑧ KB Improvement recommendations are not
+  built**, in code, docs or comments — a test greps every view for "root cause"
+  and "recommend". Both need a model to summarise failure patterns across many
+  cases: their own package. AI Accuracy is answered by P7's calibration baseline
+  as a measured figure, which is itself still `TBD — unmeasured`.
+- **The web live-chat widget's survey is left unsampled.** It calls
+  `/chat/csat` / `/chat/nps` from its own UI, so NPS sampling covers WhatsApp,
+  email and phone only. `should_survey_nps` is exported and ready for a frontend
+  wiring task.
+- **Nothing here was validated against real BigQuery, Gemini, Twilio or
+  Postgres** — no such credentials exist in the environment it was built in.
+  Every figure is produced by code unit-tested against recorded and synthetic
+  usage-metadata shapes and in-memory fakes.
+
 ## 7. Switching to a real domain later
 
 The nip.io setup is HTTP-only and meant to get you running fast. To move to

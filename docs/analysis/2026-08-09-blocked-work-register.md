@@ -341,6 +341,106 @@ against a real dataset.** What is owed, per tenant:
    `transfer_to_agent` labels are left alone because renaming them would break
    existing dashboards. Owed: a decision on whether to rename them, and a note
    to whoever reads them next that they mean resolved / not-yet-resolved.
+   **Task 10 supplied that note in the client-facing docs**, where the
+   overclaim was live: the feature guide's Reports chapter described the Bot
+   report's "bot-resolved %" and "bot-vs-agent resolution split" as an
+   AI-vs-human measure, and now states that the two numbers are resolved and
+   not-yet-resolved. The rename decision is still owed.
+
+## 3c-3. P8 tasks 2/3/7 — the surfaces that cannot be metered, and the QA table migration
+
+Sections 3c-1 and 3c-2 cover the `ai_actions` columns and the eleven views.
+This one covers the rest of what P8 cannot measure, so a cost or performance
+figure taken from this platform is never quoted without it. Added by task 10
+alongside the flags-ON gate entries.
+
+**1. A second `ALTER TABLE` is owed, this one in BigQuery** — same class of gap
+as 3c-1, different table. `create_table(..., exists_ok=True)` does not
+retroactively add columns, so a tenant with a pre-existing `qa_labels` table
+needs this once they turn `CALL_QA_ENABLED=true`:
+
+```sql
+ALTER TABLE `<project>.<dataset>.qa_labels`
+  ADD COLUMN IF NOT EXISTS channel STRING,
+  ADD COLUMN IF NOT EXISTS rubric_greeting BOOL,
+  ADD COLUMN IF NOT EXISTS rubric_identification BOOL,
+  ADD COLUMN IF NOT EXISTS rubric_resolution BOOL,
+  ADD COLUMN IF NOT EXISTS rubric_closing BOOL,
+  ADD COLUMN IF NOT EXISTS rubric_compliance BOOL,
+  ADD COLUMN IF NOT EXISTS call_qa_percentage FLOAT64;
+```
+
+`BigQueryQaLabels.record_label` only ever *adds* these keys when a label
+actually carries them (it never sends an explicit `null`), so a pre-migration
+table keeps working until a reviewer both has the flag on and submits a rubric.
+The statement is also in `features/metrics/qa_schema.py`'s module docstring.
+
+**2. `chat.turn` is unmeterable at our client boundary, and it is the largest
+line item.** google-adk takes a model *string* (`Agent(model=...)`) and
+constructs its own `google.genai.Client` **inside the installed package**, so no
+wrapper at our boundary can observe the call. `features/chat/service.py`'s
+wrapped client only *transcribes*, and its rows are therefore labelled
+`chat.transcribe`, never `chat.turn` — a `chat.turn` row carrying only a
+transcription's tokens would tell the cost report that the busiest surface in
+the product is nearly free. `SURFACE_CHAT_TURN` is kept defined-but-unused with
+the reason in a code comment. Unblocking this needs either an ADK hook that
+exposes usage, or our own client passed into `Agent`, i.e. an upstream change or
+a fork — not a wiring fix.
+
+**3. `phone.live` usage is uncapturable the same way.** The Live API reports
+usage in server messages rather than on a response object. `connect_live` is
+routed through the metering wrapper for the structural guarantee only; no token
+row is ever written for it. Unblocking: read usage off the server-message stream
+in the phone bridge, which is a feature, not a migration.
+
+**4. `embed` is visible but not priceable end to end.** Embeddings bill per
+*character* (`EmbedContentResponse` carries no `usage_metadata` at all, so all
+three token counts are `None` by construction). `price_table.py` has a
+per-character class (`TOKEN_CLASS_EMBEDDING_CHARS`) so a rate *can* be recorded,
+but `token_usage` has no character-count column, so no cost can be computed from
+it. Owed: a `billable_character_count` column on `token_usage` plus capture of
+`EmbedContentResponse.metadata.billable_character_count` in the wrapper.
+
+**5. Thinking-model token classes are billed and not captured.**
+`thoughts_token_count` and `tool_use_prompt_token_count` fall outside the three
+classes `TokenUsage` records, so the three sum to **less than**
+`total_token_count` and even the five priced surfaces are understated for a
+thinking-enabled model. `total_token_count` was never persisted upstream either,
+so there is nothing at this layer to reconcile against.
+`completeness.excluded_token_classes` names them on the payload. Owed by whoever
+next changes `TokenUsage`'s schema.
+
+**6. There is deliberately no total, and that must stay true.** The only money
+figure is `priced_subtotal_usd`; `test_the_report_emits_no_unqualified_total`
+fails the build on `total`, any `total_*` and any `*_total`. Unmetered surfaces
+are rows with `cost_usd: null` **and** `calls: null`, because `0` claims a
+surface is free and an absent row claims the inventory is complete. This is not
+an owed item — it is a constraint on future work, recorded here so a later
+"tidy-up into a headline figure" is recognised as a regression rather than an
+improvement.
+
+**7. Call QA is manual by design.** The five criteria are only ever set from
+explicit `POST /qa/label` request fields; there is no transcript reader, no
+Gemini call and no heuristic anywhere in `qa.py`/`qa_adapter.py`/`qa_router.py`.
+The reason is 2.x-shaped rather than 3.x-shaped: the phone transcript path has
+never run against a real Twilio call (see
+`docs/testing/phone-channel-package-c-verification.md`), so an automated scorer
+built on it would produce confident noise. Unblocking automated scoring requires
+that live-call verification first, not more code.
+
+**8. The web live-chat widget's survey is unsampled.** `should_survey_nps` is
+exported and ready, but the widget calls `/chat/csat` / `/chat/nps` from its own
+UI, so NPS sampling reaches WhatsApp, email and phone only. Owed: a frontend
+wiring task. Declared, not implied — a tenant reading "NPS sampling is on" should
+not expect widget conversations in the denominator.
+
+**9. No live validation of anything in P8.** No BigQuery, no real Gemini
+`usage_metadata`, no Twilio call, no live Postgres or Firestore in this
+environment (controller decisions D1/D2). Every figure P8 produces is generated
+by code unit-tested against recorded and synthetic usage-metadata shapes and
+in-memory fakes. The first live run is where a real
+`GenerateContentResponseUsageMetadata`, a real `RANK() ... OVER` inside a `CASE`,
+and a real price-table read get exercised for the first time.
 
 ## 3d. P6 follow-up date — built, and deliberately invisible
 

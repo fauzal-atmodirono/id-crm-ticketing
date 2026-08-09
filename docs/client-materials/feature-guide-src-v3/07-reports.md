@@ -22,6 +22,22 @@ combined, not just one inbox at a time) from the CRM's reporting warehouse:
   CSAT and NPS scores, CSAT by channel, NPS respondent split, and NPS by
   agent.
 
+Two of those tiles need reading precisely, because their labels promise more
+than the underlying data can say:
+
+- **The Bot report's "bot-resolved" percentage and "bot-vs-agent resolution
+  split" do not measure AI versus human.** The field they are built on is
+  derived from the case's status alone, so the two numbers under those labels
+  are, in fact, *resolved* and *not yet resolved*. The labels are left as they
+  are because existing dashboards read them, but they must not be quoted as the
+  AI's share of the work. The AI performance reports that *do* attempt that
+  question, and the basis on which they infer it, are described under AI Cost &
+  Performance Measurement in the Administration chapter.
+- **The NPS tiles are empty until NPS surveying is switched on**, which is off by
+  default and is an administrator setting (see the same section). An empty NPS
+  tile means the question has never been asked, not that customers gave no
+  answer.
+
 ### Where to find it
 
 **Reports** in the left sidebar. <!-- VERIFY-LIVE: confirm the exact set and order of native report tabs on the live tenant --> The Proton

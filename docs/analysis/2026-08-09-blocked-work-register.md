@@ -138,6 +138,33 @@ stays `False` — flipping it on the strength of the stub numbers this sandbox
 can produce would be exactly the "plausible wrong number" this register
 exists to prevent.
 
+### 2.6 The AI calibration baseline (P7 task 10)
+
+`docs/testing/2026-08-08-ai-calibration-baseline.md` and
+`backend/apps/backend/src/chatbot/features/chat/test_calibration.py` (four
+labelled sets, ≥30 cases each, covering intent classification, FAQ match,
+sentiment, and summary quality) are code-complete and green
+(`test_calibration.py -q -s`, 4/4 named tests), but — same root cause as
+§2.5 — **neither the pre-change nor the post-P7 baseline number exists**,
+because this sandbox has no real Gemini/Vertex credentials
+(`GOOGLE_API_KEY=test-key`, every model client stubbed). Every
+`CalibrationReport` this suite can produce here carries `mode == "stub"`,
+a named stub `model_identity`, and a disclaimer stating in plain language
+that the number is not the P7 calibration baseline — structurally, not as
+a comment someone could miss (same idiom as P7 task 5's `CorpusReport`).
+
+**What must happen before any acceptance threshold can be agreed with the
+client:** run the procedure in §5 of the baseline document — real
+`GOOGLE_API_KEY`/Vertex credentials, once against a pre-P7 checkout and
+once against the current one — and record both resulting scores per
+capability in that document's §3/§4 tables. The proposed thresholds in its
+§6 are exactly that, a proposal: they must not be presented to the client,
+in a slide or otherwise, as already met or already agreed. Until a real run
+exists, `docs/testing/2026-08-08-ai-calibration-baseline.md`'s baseline
+tables read `TBD — unmeasured`, deliberately, the same way
+`docs/testing/2026-08-09-media-diagnosis-prompt-live-check.md` is a
+template awaiting its own live run.
+
 ---
 
 ## 3. Blocked on infrastructure I cannot reach
@@ -149,7 +176,7 @@ exists to prevent.
 | **`provision_case_record_fields.py`** | P3's sidebar panel needs the custom-attribute definitions to exist. No fork patch needed. | One dry-run then live run per tenant. |
 | **The Power BI `.pbix` (§4.55)** | A proprietary binary only Power BI Desktop can author. `proton-crm.pbids` (the connection) and the page-by-page spec ship instead — those are the reviewable, diffable parts. | One Power BI Desktop session. **Evidence required before reporting it done:** every page rendering against a real dataset, refresh succeeding under the service account, and a screenshot of each page in `power-bi-runbook.md`. The client raised this at the 2026-07-28 demo (feedback item 5), so an unevidenced claim will be checked. |
 | **Cloud Build for fork patch 0053** | P6's Workforce dashboard page. **Hand-built and never verified against a real Chatwoot checkout** — context lines were transcribed from `0045`, the hunk arithmetic is script-verified, and it applies to a *synthetic* tree, which proves internal consistency only. If some unlisted patch also touches `protonAdmin.js` / `Sidebar` / `dashboard.routes.js`, or 0045's shipped content differs from what was transcribed, 0053 needs a line-number fix-up or a regenerated diff. | `gcloud builds submit deploy/chatwoot-fork/ …` — off-VM, amd64. **Do not schedule a demo of the Workforce page before this build has gone green.** |
-| **Cloud Build for fork patch 0054** | P6's agent-facing **My status** page (the availability-status picker + the administrator's status-catalogue editor). Same constraint as 0053 and the same evidence: hand-built, hunk arithmetic script-generated, applies to a *synthetic* tree reconstructing its context, **never checked against a real Chatwoot checkout**. Its three anchored hunks apply ON TOP OF 0053 and transcribe 0053's own added lines as context, so if 0053 needs a line-number fix-up, 0054 needs the same one. The backend behind it (`features/routing/status_router.py`, 15 tests) is complete and needs no build — but **`build_status_router` is not yet mounted in `main.py`**, deliberately left to a wiring step because a concurrent task owned that file. Until it is mounted the endpoints return 404 and the page cannot work even after a green build. | `gcloud builds submit deploy/chatwoot-fork/ …` — off-VM, amd64. **Do not promise agents the "My status" page, or demo the catalogue editor, before this build has gone green.** Until then `PRESENCE_CUSTOM_STATUSES_ENABLED` on a tenant buys an API with no UI. |
+| **Cloud Build for fork patch 0054** | P6's agent-facing **My status** page (the availability-status picker + the administrator's status-catalogue editor). Same constraint as 0053 and the same evidence: hand-built, hunk arithmetic script-generated, applies to a *synthetic* tree reconstructing its context, **never checked against a real Chatwoot checkout**. Its three anchored hunks apply ON TOP OF 0053 and transcribe 0053's own added lines as context, so if 0053 needs a line-number fix-up, 0054 needs the same one. The backend behind it (`features/routing/status_router.py`) is complete, needs no build, and **is now mounted** — `main.py` mounts `build_status_router` with the shared status/presence stores under `presence_custom_statuses_enabled`, and `test_p6_wiring.py` drives the endpoints through the real `bootstrap_application()` app to prove they answer rather than 404. So the API is live wherever that flag is on; only the page in front of it waits on this build. | `gcloud builds submit deploy/chatwoot-fork/ …` — off-VM, amd64. **Do not promise agents the "My status" page, or demo the catalogue editor, before this build has gone green.** Until then `PRESENCE_CUSTOM_STATUSES_ENABLED` on a tenant buys an API with no UI. |
 | **Upstream Chatwoot source** | This sandbox cannot reach github. | Only matters for files **upstream owns**. Files our own patches *created* can be reconstructed by replaying the patch history — that is how 0052 was authored. `CustomAttributes.vue` is upstream-owned and therefore genuinely out of reach. |
 
 ---

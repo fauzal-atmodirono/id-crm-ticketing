@@ -166,36 +166,88 @@ def add_left_border_and_shade(paragraph, color=BORDER_COLOR, fill=NOTE_SHADE):
     pPr.append(shd)
 
 
-def add_toc_field(document):
-    """Insert a real Word TOC field (complex field: begin/instrText/end)."""
-    paragraph = document.add_paragraph()
-    run = paragraph.add_run()
-    r = run._r
+def scan_headings(chapter_paths):
+    """Collect every chapter (#) and section (##) heading, in document order,
+    pairing each with the bookmark name the TOC will link to.
 
-    fld_begin = OxmlElement("w:fldChar")
-    fld_begin.set(qn("w:fldCharType"), "begin")
+    Deliberately a second read of the same files rather than a hook inside
+    process_chapter: the table of contents is written before any chapter is
+    rendered, so the full list has to exist first. Reading a handful of small
+    markdown files twice is cheaper than buffering the whole document.
 
-    instr = OxmlElement("w:instrText")
-    instr.set(qn("xml:space"), "preserve")
-    instr.text = 'TOC \\o "1-2" \\h \\z \\u'
+    Returns [(level, text, bookmark_name)]. Bookmark names use Word's reserved
+    `_Toc` prefix and are pure ASCII, because a heading's own text may contain
+    em dashes, ampersands and non-breaking punctuation that are not legal in a
+    bookmark name."""
+    entries = []
+    for path in chapter_paths:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = COMMENT_RE.sub("", raw).rstrip()
+                m = HEADING_RE.match(line)
+                if not m or len(m.group(1)) > 2:
+                    continue
+                entries.append(
+                    (len(m.group(1)), m.group(2).strip(), "_Toc%05d" % len(entries))
+                )
+    return entries
 
-    fld_separate = OxmlElement("w:fldChar")
-    fld_separate.set(qn("w:fldCharType"), "separate")
 
-    placeholder = OxmlElement("w:t")
-    placeholder.text = (
-        "Right-click here and choose “Update Field” "
-        "(or press F9) to generate the table of contents."
-    )
+def add_bookmark(paragraph, name, bookmark_id):
+    """Wrap a paragraph in a bookmarkStart/bookmarkEnd pair so a TOC entry can
+    link to it."""
+    start = OxmlElement("w:bookmarkStart")
+    start.set(qn("w:id"), str(bookmark_id))
+    start.set(qn("w:name"), name)
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), str(bookmark_id))
+    paragraph._p.insert(0, start)
+    paragraph._p.append(end)
 
-    fld_end = OxmlElement("w:fldChar")
-    fld_end.set(qn("w:fldCharType"), "end")
 
-    r.append(fld_begin)
-    r.append(instr)
-    r.append(fld_separate)
-    r.append(placeholder)
-    r.append(fld_end)
+def add_toc_entry(document, level, text, anchor):
+    """One line of the table of contents: an internal hyperlink to `anchor`.
+
+    A static, pre-rendered TOC rather than a Word `TOC` field. A field is only
+    text once an application evaluates it — Word does that on F9, but Google
+    Docs cannot evaluate Word fields at all, and on import it degrades the
+    field into raw heading anchors (`?tab=t.0#heading=...`), which is what the
+    reader then sees instead of a contents list. Real paragraphs with real
+    internal links render identically in Word, Google Docs, LibreOffice and
+    any PDF export, and need no "update field" step from the reader.
+
+    The trade is page numbers: computing them needs a layout engine, which
+    python-docx is not. Clickable entries are the better half of that trade
+    for a document read on screen."""
+    paragraph = document.add_paragraph(style="normal")
+    fmt = paragraph.paragraph_format
+    fmt.left_indent = Inches(0.0 if level == 1 else 0.35)
+    fmt.space_after = Pt(2)
+
+    link = OxmlElement("w:hyperlink")
+    link.set(qn("w:anchor"), anchor)
+
+    run = OxmlElement("w:r")
+    rPr = OxmlElement("w:rPr")
+    if level == 1:
+        bold = OxmlElement("w:b")
+        rPr.append(bold)
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "1155CC" if level == 2 else "000000")
+    rPr.append(color)
+    if level == 2:
+        underline = OxmlElement("w:u")
+        underline.set(qn("w:val"), "single")
+        rPr.append(underline)
+    run.append(rPr)
+
+    t = OxmlElement("w:t")
+    t.set(qn("xml:space"), "preserve")
+    t.text = text
+    run.append(t)
+
+    link.append(run)
+    paragraph._p.append(link)
     return paragraph
 
 
@@ -334,9 +386,19 @@ def classify_block(block):
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
-def render_heading(document, level, text):
+def render_heading(document, level, text, bookmarks=None):
     heading = document.add_paragraph(style="Heading %d" % level)
     add_inline_runs(heading, text)
+    # Anchor for the matching table-of-contents entry. Looked up by
+    # (level, text) and popped, rather than by position, so that a heading
+    # the block parser and the TOC pre-scan disagree about can only lose its
+    # link — never silently hand its bookmark to a different heading.
+    if bookmarks:
+        pending = bookmarks.get((level, text))
+        if pending:
+            name = pending.pop(0)
+            add_bookmark(heading, name, abs(hash(name)) % 900000 + 1000)
+    return heading
 
 
 def render_paragraph(document, text):
@@ -396,7 +458,8 @@ def render_table(document, rows):
 # ---------------------------------------------------------------------------
 # Chapter processing
 # ---------------------------------------------------------------------------
-def process_chapter(document, path, use_bullet_style, use_number_style, stats):
+def process_chapter(document, path, use_bullet_style, use_number_style, stats,
+                    bookmarks=None):
     with open(path, "r", encoding="utf-8") as f:
         text = f.read()
 
@@ -406,7 +469,7 @@ def process_chapter(document, path, use_bullet_style, use_number_style, stats):
         kind = block[0]
         if kind == "heading":
             _, level, heading_text = block
-            render_heading(document, level, heading_text)
+            render_heading(document, level, heading_text, bookmarks)
             if level == 2:
                 stats["sections"] += 1
         elif kind == "paragraph":
@@ -446,37 +509,37 @@ def main():
     subtitle_p = document.add_paragraph(COVER_SUBTITLE, style="Subtitle")
     document.add_page_break()
 
-    # --- Table of contents ---
-    # Deliberately NOT "Heading 1"/"Heading 2": those are reserved for the
-    # 14 chapter titles and their sections, and the TOC field below (\o
-    # "1-2") would otherwise list this label as its own first entry.
-    toc_heading = document.add_paragraph(style="normal")
-    toc_run = toc_heading.add_run("Table of Contents")
-    toc_run.bold = True
-    toc_run.font.size = Pt(20)
-    add_toc_field(document)
-    note = document.add_paragraph(style="normal")
-    note_run = note.add_run(
-        "(This table of contents is a live Word field. If it appears empty "
-        "or out of date, right-click it and choose “Update Field”, "
-        "or select the whole document and press F9.)"
-    )
-    note_run.italic = True
-    document.add_page_break()
-
-    # --- Chapters ---
+    # --- Chapters (resolved first: the TOC is written before them) ---
     chapter_paths = sorted(
         p
         for p in glob.glob(os.path.join(SRC_DIR, "*.md"))
         if re.match(r"^\d{2}-.*\.md$", os.path.basename(p))
     )
+    toc_entries = scan_headings(chapter_paths)
+    bookmarks = {}
+    for level, text, name in toc_entries:
+        bookmarks.setdefault((level, text), []).append(name)
+
+    # --- Table of contents ---
+    # Deliberately NOT "Heading 1"/"Heading 2": those are reserved for the
+    # 14 chapter titles and their sections, and this label would otherwise
+    # appear as an entry in its own list.
+    toc_heading = document.add_paragraph(style="normal")
+    toc_run = toc_heading.add_run("Table of Contents")
+    toc_run.bold = True
+    toc_run.font.size = Pt(20)
+    for level, text, name in toc_entries:
+        add_toc_entry(document, level, text, name)
+    document.add_page_break()
 
     stats = {"sections": 0, "tables": 0, "found": [], "missing": []}
 
     for i, path in enumerate(chapter_paths):
         if i > 0:
             document.add_page_break()
-        process_chapter(document, path, use_bullet_style, use_number_style, stats)
+        process_chapter(
+            document, path, use_bullet_style, use_number_style, stats, bookmarks
+        )
 
     document.save(OUT)
 
@@ -486,6 +549,9 @@ def main():
     for path in chapter_paths:
         print("  - %s" % os.path.basename(path))
     print("Sections (##)      : %d" % stats["sections"])
+    print("TOC entries        : %d" % len(toc_entries))
+    unlinked = sum(len(v) for v in bookmarks.values())
+    print("TOC entries unlinked: %d" % unlinked)
     print("Tables rendered    : %d" % stats["tables"])
     print(
         "Screenshots found  : %d/%d"

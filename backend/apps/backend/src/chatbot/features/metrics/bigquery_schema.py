@@ -49,6 +49,19 @@ CONVERSATIONS_SCHEMA: list[bigquery.SchemaField] = [
     # either side.
     bigquery.SchemaField("received_in_business_hours", "BOOLEAN", mode="NULLABLE"),
     bigquery.SchemaField("received_at_local", "TIMESTAMP", mode="NULLABLE"),
+    # P3: the case columns the client's report decks print. Every one NULLABLE
+    # -- the sync reloads historical rows on every run, and a REQUIRED column
+    # would fail the whole load job on the first pre-P3 conversation.
+    bigquery.SchemaField("case_detail", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("case_state", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("escalated_to", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("vehicle_plate", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("vehicle_chassis", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("purchased_from_dealer", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("delay_reason", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("wip_issue", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("wip_action_taken", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("wip_next_action", "STRING", mode="NULLABLE"),
 ]
 
 
@@ -398,7 +411,8 @@ def view_ddls(
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_case_aging` AS "
             f"SELECT conversation_id, COALESCE(case_type, 'Unknown') AS case_type, "
             f"COALESCE(division, 'Unknown') AS division, COALESCE(dealer, 'Unknown') AS dealer, "
-            f"COALESCE(pic, 'Unassigned') AS pic, status, created_at, "
+            f"COALESCE(pic, 'Unassigned') AS pic, status, "
+            f"COALESCE(case_state, 'unknown') AS case_state, created_at, "
             f"TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), created_at, HOUR) / 24.0 AS age_days, "
             f"CASE "
             f"WHEN TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), created_at, DAY) <= 3 THEN '1-3 days' "
@@ -440,8 +454,49 @@ def view_ddls(
             f"SELECT COALESCE(category, 'Unknown') AS category, "
             f"COALESCE(subcategory, 'Unknown') AS subcategory, "
             f"COALESCE(vehicle_model, 'Unknown') AS vehicle_model, "
-            f"COALESCE(case_type, 'Unknown') AS case_type, COUNT(*) AS cases "
-            f"FROM {fq} GROUP BY category, subcategory, vehicle_model, case_type "
+            f"COALESCE(case_type, 'Unknown') AS case_type, "
+            f"COALESCE(case_detail, 'Unspecified') AS case_detail, COUNT(*) AS cases "
+            f"FROM {fq} "
+            f"GROUP BY category, subcategory, vehicle_model, case_type, case_detail "
             f"ORDER BY cases DESC"
+        ),
+        # P3: the client's concern pivot -- Level 1 (subcategory) nested under
+        # its division, drilling into Level 2 (case_detail), with a grand total.
+        #
+        # `case_detail` is COALESCEd to 'Unspecified' rather than filtered out.
+        # Dropping null-detail rows would make this pivot's total disagree with
+        # the headline case count -- which is exactly the C2 297-vs-264
+        # discrepancy the gap analysis raised as question Q8. One instance of
+        # that problem is enough.
+        "v_concern_pivot": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_concern_pivot` AS "
+            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, "
+            f"COALESCE(division, 'Unknown') AS division, "
+            f"COALESCE(subcategory, 'Unspecified') AS concern_level_1, "
+            f"COALESCE(case_detail, 'Unspecified') AS concern_level_2, "
+            f"COUNT(*) AS cases "
+            f"FROM {fq} "
+            f"GROUP BY ROLLUP(month, division, concern_level_1, concern_level_2)"
+        ),
+        # P3: the four series the client's status slide asks for, from the
+        # real case_state -- not inferred from Chatwoot's `status`, which
+        # cannot distinguish WIP from temp-closed. `v_state_trend` above still
+        # reads `status` and is deliberately untouched.
+        #
+        # A NULL case_state reports as 'unknown', never folded into 'closed' or
+        # 'open': every row synced before P3 has none, and quietly assigning
+        # them a state would invent a trend.
+        "v_case_state_trend": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_case_state_trend` AS "
+            f"SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month, "
+            f"DATE(created_at) AS day, "
+            f"CASE WHEN case_state IS NULL OR TRIM(case_state) = '' THEN 'unknown' "
+            f"WHEN UPPER(case_state) = 'WIP' THEN 'wip' "
+            f"WHEN UPPER(case_state) = 'TEMP_CLOSED' THEN 'temp_closed' "
+            f"WHEN UPPER(case_state) IN ('SOLVED', 'CLOSED') THEN 'closed' "
+            f"ELSE LOWER(case_state) END AS case_state, "
+            f"COALESCE(escalated_to, 'none') AS escalated_to, "
+            f"COUNT(*) AS cases "
+            f"FROM {fq} GROUP BY month, day, case_state, escalated_to"
         ),
     }

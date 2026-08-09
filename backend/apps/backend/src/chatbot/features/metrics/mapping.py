@@ -11,7 +11,13 @@ import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
+import structlog
+
+from chatbot.features.chat.case_fields import InvalidCaseField
+from chatbot.features.chat.case_fields import validate as validate_case_field
 from chatbot.features.metrics.business_hours import working_minutes_between
+
+_log = structlog.get_logger(__name__)
 
 _CHANNEL_BY_PREFIX = {
     "whatsapp": "WhatsApp",
@@ -85,6 +91,18 @@ class ConversationRow:
     # reclassify the whole history as after-hours.
     received_in_business_hours: bool | None = None
     received_at_local: str | None = None
+    # P3: the columns PRO-NET's report decks print. All optional -- every row
+    # synced before P3 has none of them, and absent must stay absent.
+    case_detail: str | None = None
+    case_state: str | None = None
+    escalated_to: str | None = None
+    vehicle_plate: str | None = None
+    vehicle_chassis: str | None = None
+    purchased_from_dealer: str | None = None
+    delay_reason: str | None = None
+    wip_issue: str | None = None
+    wip_action_taken: str | None = None
+    wip_next_action: str | None = None
 
 
 def channel_from_external_id(external_id: str | None) -> str:
@@ -290,6 +308,24 @@ def _chatwoot_sla_minutes(conv: dict[str, object], labels: list[str]) -> int | N
     return None
 
 
+def _case_field(custom_attrs: dict, name: str) -> str | None:
+    """One new case attribute, normalised, or None.
+
+    A value the validator rejects maps to None rather than raising. The sync
+    loads thousands of rows per run; letting one malformed attribute abort the
+    row would drop every conversation after it in the batch, which is a far
+    worse outcome than one missing cell.
+    """
+    raw = custom_attrs.get(name)
+    if raw is None:
+        return None
+    try:
+        return validate_case_field(name, raw)
+    except InvalidCaseField as exc:
+        _log.info("case_field_dropped", field=name, error=str(exc))
+        return None
+
+
 def _optional_bool(value: object) -> bool | None:
     """Coerce a Chatwoot custom-attribute value to bool, preserving absence.
 
@@ -408,6 +444,19 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
             if custom_attrs.get("received_at_local")
             else None
         ),
+        case_detail=_case_field(custom_attrs, "case_detail"),
+        case_state=_case_field(custom_attrs, "case_state"),
+        # Derived from the label, not read from an attribute: the dealer label
+        # is what actually routed the escalation, so it cannot disagree with
+        # itself. "hq" is unreachable by construction until Q5 is answered.
+        escalated_to="dealer" if dealer else "none",
+        vehicle_plate=_case_field(custom_attrs, "vehicle_plate"),
+        vehicle_chassis=_case_field(custom_attrs, "vehicle_chassis"),
+        purchased_from_dealer=_case_field(custom_attrs, "purchased_from_dealer"),
+        delay_reason=_case_field(custom_attrs, "delay_reason"),
+        wip_issue=_case_field(custom_attrs, "wip_issue"),
+        wip_action_taken=_case_field(custom_attrs, "wip_action_taken"),
+        wip_next_action=_case_field(custom_attrs, "wip_next_action"),
     )
 
 

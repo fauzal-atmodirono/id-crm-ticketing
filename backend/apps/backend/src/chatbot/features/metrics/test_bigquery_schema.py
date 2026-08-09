@@ -34,6 +34,17 @@ def test_schema_has_expected_fields() -> None:
         # P1: intake stamp, NULLABLE so pre-P1 history stays unclassified
         "received_in_business_hours",
         "received_at_local",
+        # P3: the case columns the report decks print
+        "case_detail",
+        "case_state",
+        "escalated_to",
+        "vehicle_plate",
+        "vehicle_chassis",
+        "purchased_from_dealer",
+        "delay_reason",
+        "wip_issue",
+        "wip_action_taken",
+        "wip_next_action",
     }
 
 
@@ -77,6 +88,9 @@ def test_view_ddls_keys_and_targets() -> None:
         # P1: the after-hours split
         "v_first_response_by_hours_split",
         "v_volume_after_hours",
+        # P3: case_detail pivot + the real case-state trend
+        "v_concern_pivot",
+        "v_case_state_trend",
     }
     assert "`proj.ds.v_volume_by_month_channel`" in ddls["v_volume_by_month_channel"]
     assert "`proj.ds.conversations`" in ddls["v_volume_by_month_channel"]

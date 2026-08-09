@@ -48,8 +48,11 @@ def test_permissions_endpoint_returns_callers_own_permissions(client):
     # P6's status-selection endpoint would be unusable gated on anything admin-only
     # (see features/authz/seed.py's comment on the two new keys). `translation.use`
     # (P7 task 3) is the fifth: reading a customer's message in translation is
-    # likewise an agent's ordinary job, not an admin action.
+    # likewise an agent's ordinary job, not an admin action. `alerts.set_own_preferences`
+    # (P9 task 1) is the sixth, for the same reason: how loudly YOUR OWN alerts fire
+    # is your own call, not an admin one.
     assert res.json()["permissions"] == [
+        "alerts.set_own_preferences",
         "cases.manage",
         "cases.view",
         "knowledge.edit",

@@ -87,6 +87,23 @@ PERMISSION_REGISTRY: dict[str, str] = {
     # unusable by the people it exists for (the same mistake ruling D5 and
     # the presence.set_own_status decision both had to correct).
     "translation.use": "Translate a customer message for reading",
+    # P9 task 1/6: the alert-rule store's two write paths
+    # (features/alerts/rules_router.py). Same two-key split as
+    # presence.set_own_status/workforce.manage above, for the same reason.
+    #
+    # alerts.set_own_preferences is granted to "agent" below -- choosing how
+    # loudly YOUR OWN new-inbound/SLA/escalation alerts fire is the agent's
+    # own call (tolerance for interruption genuinely varies by person), and
+    # gating it admin-only would leave the per-agent override half of this
+    # store unreachable by anyone, the same mistake ruling D5 and the
+    # presence.set_own_status/translation.use decisions already corrected.
+    #
+    # alerts.manage is the admin counterpart: editing the ACCOUNT-level
+    # defaults every agent inherits from. Withheld from "agent" like
+    # workforce.manage -- one agent turning down the account-wide
+    # sla_breach default would go unnoticed until the whole team missed one.
+    "alerts.set_own_preferences": "Set your own alert-rule preferences",
+    "alerts.manage": "Manage account-level alert-rule defaults",
 }
 
 _AGENT_PERMISSIONS = {
@@ -95,6 +112,7 @@ _AGENT_PERMISSIONS = {
     "cases.manage",
     "presence.set_own_status",
     "translation.use",
+    "alerts.set_own_preferences",
 }
 
 # Native Chatwoot conversation/inbox visibility, mirrored into Chatwoot's own

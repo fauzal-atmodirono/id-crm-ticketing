@@ -20,7 +20,10 @@ change, which is what makes the event log trustworthy as history. The single
 exception is `stamp_alert`, which patches only the `alerts_sent` marker on
 the latest event so a threshold alert (task 4) does not re-fire every poll
 for the same continuous unavailable period. It cannot touch `status`, `at`,
-or `previous`.
+or `previous`, and it takes the event the caller actually decided about
+(`expected_event`) as an identity guard: if a new transition has landed
+between the caller's decision and this call, the stamp is a no-op (logged),
+never a mis-attributed write onto the new period.
 """
 
 from __future__ import annotations
@@ -96,6 +99,25 @@ def _from_document(doc: Any) -> PresenceEvent | None:
     except (KeyError, TypeError, ValueError):
         _log.warning("presence_store_unreadable_document", doc=getattr(doc, "id", None))
         return None
+
+
+def _same_period(a: PresenceEvent, b: PresenceEvent) -> bool:
+    """Whether `a` and `b` identify the same continuous-status period --
+    deliberately excluding `alerts_sent`, which `stamp_alert` itself may
+    have already mutated between when a caller captured its
+    `expected_event` and when it calls back in (the threshold sweeper reads
+    `latest()` once and reuses that same object for both its warn and
+    escalate checks, stamping the warn key first). Comparing every other
+    field is what lets `stamp_alert` tell "this is still the period I
+    decided about" apart from "a new transition landed underneath me".
+    """
+    return (
+        a.agent_id == b.agent_id
+        and a.status == b.status
+        and a.at == b.at
+        and a.previous == b.previous
+        and a.source == b.source
+    )
 
 
 class PresenceEventStore:
@@ -180,6 +202,32 @@ class PresenceEventStore:
             return None
         return now - latest_event.at
 
+    async def _latest_at_or_before(self, agent_id: int, at: datetime) -> PresenceEvent | None:
+        """The latest event for `agent_id` with `at` at or before the given
+        instant, or `None` if there is none.
+
+        Used only by `time_in_status_since` to find the status the agent was
+        *already* in when a reporting window opens -- `since()` filters
+        `at >= window_start`, which on its own would silently drop the event
+        that established the carried-forward status and leave that segment
+        uncounted. Fails open (logged, `None`) the same way every other read
+        on this store does.
+        """
+        try:
+
+            def _query() -> PresenceEvent | None:
+                docs = self._collection().where("agent_id", "==", agent_id).stream()
+                events = [e for e in (_from_document(d) for d in docs) if e is not None]
+                events = [e for e in events if e.at <= at]
+                if not events:
+                    return None
+                return max(events, key=lambda e: e.at)
+
+            return await asyncio.to_thread(_query)
+        except Exception as e:
+            _log.error("presence_store_latest_at_or_before_failed", agent_id=agent_id, error=str(e))
+            return None
+
     async def time_in_status_since(
         self, agent_id: int, since: datetime, now: datetime
     ) -> dict[str, timedelta]:
@@ -188,12 +236,32 @@ class PresenceEventStore:
         Derived purely from the event list, nothing stored: each event opens
         a segment that runs until the next event's `at`, or, for the last
         event, until `now`. Consumed by the workforce dashboard (task 9) for
-        "today's time per status". An agent with no events in the window
-        yields `{}`, consistent with `latest`/`elapsed_in_current_status`
-        never fabricating a duration.
+        "today's time per status". An agent with no events at all -- in or
+        before the window -- yields `{}`, consistent with
+        `latest`/`elapsed_in_current_status` never fabricating a duration.
+
+        The window's *first* segment needs special handling: `since()` only
+        returns events with `at >= since`, so the event that put the agent
+        into whatever status it was already in when the window opened is not
+        among them, and no segment would ever be opened for it -- an agent
+        who has been `available` since 08:55 would report `{}`, not one hour
+        forty-five, for a 09:00-10:45 window. `_latest_at_or_before` finds
+        that carried-forward status (if any) and, when the in-window events
+        don't already start exactly at `since`, credits it for the gap from
+        `since` up to the first in-window event's `at` (or all the way to
+        `now` if there are no in-window events at all).
         """
         events = await self.since(agent_id, since)
         totals: dict[str, timedelta] = {}
+
+        if not events or events[0].at > since:
+            carried = await self._latest_at_or_before(agent_id, since)
+            if carried is not None:
+                end = events[0].at if events else now
+                duration = end - since
+                if duration.total_seconds() > 0:
+                    totals[carried.status] = totals.get(carried.status, timedelta()) + duration
+
         for i, event in enumerate(events):
             end = events[i + 1].at if i + 1 < len(events) else now
             duration = end - event.at
@@ -202,9 +270,12 @@ class PresenceEventStore:
             totals[event.status] = totals.get(event.status, timedelta()) + duration
         return totals
 
-    async def stamp_alert(self, agent_id: int, alert_key: str) -> None:
+    async def stamp_alert(
+        self, agent_id: int, alert_key: str, expected_event: PresenceEvent
+    ) -> None:
         """Record that the `alert_key` threshold alert fired for the agent's
-        current (latest) continuous-status period.
+        current (latest) continuous-status period -- but only if that period
+        is still `expected_event`.
 
         This is the one sanctioned exception to append-only -- see the module
         docstring. It patches *only* the `alerts_sent` field of the latest
@@ -213,6 +284,20 @@ class PresenceEventStore:
         `update`/`set_status` method on this store; this method exists
         solely so task 4's threshold alert does not re-fire on every poll of
         the same unavailable period.
+
+        `expected_event` closes a race the original implementation had: a
+        caller decides an alert is due by reading `latest()`, sends the
+        alert, then calls back in here to stamp it. If a new presence event
+        (e.g. from the poller) lands in between, resolving "the latest
+        event" *again* at write time would patch the **new** event instead
+        of the one the alert was actually about -- silently losing the old
+        period's stamp (so it re-fires) while wrongly pre-arming the new
+        period's alert (so its own genuine alert never fires). The caller
+        must pass the exact event it decided about; if the store's current
+        latest event no longer matches it (by `_same_period` -- every field
+        except `alerts_sent`, which this method itself is free to have
+        already mutated), the stamp is skipped and logged rather than
+        applied to the wrong period.
         """
         try:
 
@@ -223,7 +308,14 @@ class PresenceEventStore:
                 ]
                 if not candidates:
                     return
-                doc, _event = max(candidates, key=lambda pair: pair[1].at)
+                doc, latest_event = max(candidates, key=lambda pair: pair[1].at)
+                if not _same_period(latest_event, expected_event):
+                    _log.info(
+                        "presence_store_stamp_alert_skipped_stale_event",
+                        agent_id=agent_id,
+                        alert_key=alert_key,
+                    )
+                    return
                 data = doc.to_dict() or {}
                 alerts = set(data.get("alerts_sent") or [])
                 alerts.add(alert_key)

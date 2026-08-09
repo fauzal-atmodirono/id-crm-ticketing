@@ -7,12 +7,16 @@ collaborator here is a purpose-built in-memory fake, the same style
 `test_custom_status.py` uses for its own injected `presence_store`/
 `availability_writer` collaborators.
 
-`_FakePresenceLog` is written to mirror the ONE behaviour that matters most
-for this suite: `stamp_alert` mutates `alerts_sent` on whatever event is
-currently "latest", and a brand-new event (e.g. an agent returning to
-Available and leaving again) starts with an empty `alerts_sent`. That is
-what makes `test_returning_to_available_and_leaving_again_re_arms_both_thresholds`
-a fair test of the real store's contract, not just of the fake.
+`_FakePresenceLog` is written to mirror the behaviours that matter most for
+this suite: `stamp_alert` mutates `alerts_sent` on whatever event is
+currently "latest" -- but only when the caller's `expected_event` still
+identifies that same period, the same expected-event guard the real store
+enforces -- and a brand-new event (e.g. an agent returning to Available and
+leaving again) starts with an empty `alerts_sent`. That is what makes
+`test_returning_to_available_and_leaving_again_re_arms_both_thresholds` a
+fair test of the real store's contract, not just of the fake, and what
+would catch `_check_agent` if it ever stopped passing the same `latest`
+object it read into both `stamp_alert` calls.
 """
 
 from __future__ import annotations
@@ -70,11 +74,24 @@ class _FakeAgents:
         return list(self._agents)
 
 
+def _same_period(a: PresenceEvent, b: PresenceEvent) -> bool:
+    """Mirrors `presence_store._same_period`: identity for `stamp_alert`'s
+    guard, deliberately excluding `alerts_sent`."""
+    return (
+        a.agent_id == b.agent_id
+        and a.status == b.status
+        and a.at == b.at
+        and a.previous == b.previous
+        and a.source == b.source
+    )
+
+
 class _FakePresenceLog:
-    """Mirrors the one contract this module relies on from
+    """Mirrors the contract this module relies on from
     `PresenceEventStore`: `stamp_alert` patches `alerts_sent` on whatever
-    event is currently latest, and a freshly-appended event starts with an
-    empty `alerts_sent`."""
+    event is currently latest -- but only if the caller's `expected_event`
+    still identifies that period (the real store's expected-event guard) --
+    and a freshly-appended event starts with an empty `alerts_sent`."""
 
     def __init__(self, event: PresenceEvent | None) -> None:
         self._event = event
@@ -88,10 +105,13 @@ class _FakePresenceLog:
             return None
         return now - self._event.at
 
-    async def stamp_alert(self, agent_id: int, alert_key: str) -> None:
+    async def stamp_alert(
+        self, agent_id: int, alert_key: str, expected_event: PresenceEvent
+    ) -> None:
+        if self._event is None or not _same_period(self._event, expected_event):
+            return
         self.stamped.append(alert_key)
-        if self._event is not None:
-            self._event = replace(self._event, alerts_sent=self._event.alerts_sent | {alert_key})
+        self._event = replace(self._event, alerts_sent=self._event.alerts_sent | {alert_key})
 
     def set_event(self, event: PresenceEvent | None) -> None:
         """Test-only helper simulating a NEW presence event landing (e.g.

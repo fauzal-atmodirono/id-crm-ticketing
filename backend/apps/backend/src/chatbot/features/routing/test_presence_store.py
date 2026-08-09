@@ -251,7 +251,9 @@ async def test_stamp_alert_only_touches_alerts_sent_on_the_latest_event():
         await store.append(_event("available", _dt(8), previous=None))
         await store.append(_event("unavailable", _dt(9), previous="available"))
 
-        await store.stamp_alert(AGENT, "10min_unavailable")
+        current = await store.latest(AGENT)
+        assert current is not None
+        await store.stamp_alert(AGENT, "10min_unavailable", current)
         latest = await store.latest(AGENT)
 
         assert latest is not None
@@ -261,11 +263,79 @@ async def test_stamp_alert_only_touches_alerts_sent_on_the_latest_event():
         assert "10min_unavailable" in latest.alerts_sent
 
         # Stamping is idempotent under a repeat fire, and never rewrites the
-        # earlier event's status/at/previous.
-        await store.stamp_alert(AGENT, "10min_unavailable")
+        # earlier event's status/at/previous. Re-using `current` (captured
+        # before the first stamp, so its own `alerts_sent` is still empty)
+        # must still match -- `stamp_alert`'s identity guard ignores
+        # `alerts_sent` precisely so a caller can hold one `latest()` read
+        # across more than one stamp.
+        await store.stamp_alert(AGENT, "10min_unavailable", current)
         events = await store.since(AGENT, _dt(0))
         assert events[0].status == "available"
         assert events[0].alerts_sent == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_stamp_alert_is_a_no_op_when_a_newer_event_has_landed():
+    """The expected-event guard closes the race task 1's own report flagged:
+    a caller decides an alert is due from a `latest()` read, but if a new
+    transition (e.g. from the presence poller) lands before the caller
+    calls back in to stamp it, the stamp must not land on that new event --
+    doing so would both lose the record that the old period's alert fired
+    (so it re-fires) and wrongly pre-arm the new period's alert (so it
+    never fires)."""
+    with patch("chatbot.features.routing.presence_store.firestore.Client", autospec=True) as C:
+        C.return_value = _FakeFirestoreClient()
+        store = _store()
+
+        await store.append(_event("unavailable", _dt(9), previous="available"))
+        stale = await store.latest(AGENT)
+        assert stale is not None
+
+        # A poll appends a new transition between the caller's decision and
+        # its `stamp_alert` call.
+        await store.append(_event("available", _dt(9, 5), previous="unavailable"))
+
+        await store.stamp_alert(AGENT, "10min_unavailable", stale)
+
+        events = await store.since(AGENT, _dt(0))
+        assert all("10min_unavailable" not in e.alerts_sent for e in events)
+
+
+@pytest.mark.asyncio
+async def test_time_in_status_since_counts_the_segment_already_open_when_the_window_starts():
+    """`since()` filters `at >= window_start`, which on its own drops the
+    event that established the agent's status *before* the window opened --
+    an agent who has been `available` since 08:55 must still show time in
+    `available` for a 09:00-17:00 window, not `{}`. This is the scenario
+    the brief's own boundary-blind test (start-of-day 00:00, first event at
+    08:00) never exercised."""
+    with patch("chatbot.features.routing.presence_store.firestore.Client", autospec=True) as C:
+        C.return_value = _FakeFirestoreClient()
+        store = _store()
+
+        await store.append(_event("available", _dt(8, 55), previous=None))
+
+        totals = await store.time_in_status_since(AGENT, _dt(9), _dt(17))
+
+        assert totals == {"available": timedelta(hours=8)}
+
+
+@pytest.mark.asyncio
+async def test_time_in_status_since_ends_the_carried_segment_at_the_first_in_window_event():
+    """The carried-forward segment must stop exactly at the next event's
+    `at`, not spill into it -- otherwise the boundary fix would double-count
+    time into the following status."""
+    with patch("chatbot.features.routing.presence_store.firestore.Client", autospec=True) as C:
+        C.return_value = _FakeFirestoreClient()
+        store = _store()
+
+        await store.append(_event("available", _dt(8, 55), previous=None))
+        await store.append(_event("on_call", _dt(9, 30), previous="available"))
+
+        totals = await store.time_in_status_since(AGENT, _dt(9), _dt(10))
+
+        assert totals["available"] == timedelta(minutes=30)
+        assert totals["on_call"] == timedelta(minutes=30)
 
 
 @pytest.mark.asyncio
@@ -280,4 +350,4 @@ async def test_a_store_outage_fails_open_rather_than_raising():
         assert await store.time_in_status_since(AGENT, _dt(0), _dt(1)) == {}
         # None of these may raise, including the write path and the alert stamp.
         await store.append(_event("available", _dt(8), previous=None))
-        await store.stamp_alert(AGENT, "x")
+        await store.stamp_alert(AGENT, "x", _event("available", _dt(8), previous=None))

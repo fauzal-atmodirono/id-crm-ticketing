@@ -41,17 +41,17 @@ missed alert into an alert-storm the moment it recovers (every sweep in
 between would have kept retrying and failing). A single missed
 notification is judged the safer failure mode than that storm.
 
-**The race the store's author flagged.** ``PresenceEventStore.stamp_alert``
-patches "whatever event is latest at write time" -- if a transition landed
-between this sweep's ``latest()`` read and its ``stamp_alert()`` call, the
-stamp could land on a newer event than the one the alert was actually
-about. At this module's cadence (``presence_poll_seconds``, 60s by
-default, driven by human/system-paced status changes measured in minutes)
-the window between those two calls is a handful of milliseconds of this
-function's own execution, not the full 60s poll period -- so a collision
-requires a status change to land in that handful of milliseconds, which is
-not a scenario this module tightens for. If a future change makes the
-sweep cadence sub-second, this needs revisiting.
+**The race the store's author flagged -- now closed.** The original
+``PresenceEventStore.stamp_alert`` resolved "the latest event" a second
+time at write time, so a transition landing between this sweep's
+``latest()`` read and its ``stamp_alert()`` call could land the stamp on a
+newer event than the one the alert was actually about (old period's stamp
+lost and re-fires; new period wrongly pre-armed). ``stamp_alert`` now takes
+the exact event this module decided about (``expected_event``) and is a
+no-op, logged, if the store's current latest event no longer matches it.
+``_check_agent`` reads ``latest`` once and passes that same object into
+both the warn and escalate ``stamp_alert`` calls below, which is exactly
+the identity the guard checks against.
 
 **Who "the agent" and "the admin" are, and which setting drives which
 leg** (mirrors ``chatbot.features.chat.sla._build_pic_alert``'s
@@ -165,7 +165,9 @@ class _PresenceLog(Protocol):
 
     async def elapsed_in_current_status(self, agent_id: int, now: datetime) -> timedelta | None: ...
 
-    async def stamp_alert(self, agent_id: int, alert_key: str) -> None: ...
+    async def stamp_alert(
+        self, agent_id: int, alert_key: str, expected_event: PresenceEvent
+    ) -> None: ...
 
 
 class _StatusCatalogue(Protocol):
@@ -336,15 +338,15 @@ async def _check_agent(
         return
     elapsed_minutes = elapsed.total_seconds() / 60
 
-    # See the module docstring's "race the store's author flagged" section:
-    # `latest` was read once above and is reused for both the warn and
-    # escalate checks below (and for `stamp_alert`'s dedup guard) rather
-    # than re-read per threshold, which is itself what keeps the two checks
-    # consistent with each other within this one sweep. Checked in
-    # warn-then-escalate order so that a sweep landing after both
-    # thresholds have already elapsed (e.g. the very first sweep after a
-    # long, uninterrupted absence) still reports them in the order they
-    # would chronologically have fired.
+    # See the module docstring's "race the store's author flagged -- now
+    # closed" section: `latest` was read once above and is reused for both
+    # the warn and escalate checks below -- as the `alerts_sent` dedup guard
+    # AND as the `expected_event` passed into `stamp_alert`, which is what
+    # lets the store detect a transition that lands underneath this sweep
+    # and refuse to mis-stamp it. Checked in warn-then-escalate order so
+    # that a sweep landing after both thresholds have already elapsed (e.g.
+    # the very first sweep after a long, uninterrupted absence) still
+    # reports them in the order they would chronologically have fired.
     if (
         elapsed_minutes >= settings.presence_warn_minutes
         and WARN_ALERT_KEY not in latest.alerts_sent
@@ -358,7 +360,7 @@ async def _check_agent(
                 # alert into an alert-storm the moment it recovers -- a
                 # single missed notification is the safer failure mode.
                 _log.warning("presence_warn_alert_failed", agent_id=agent.id, error=str(e))
-        await presence_store.stamp_alert(agent.id, WARN_ALERT_KEY)
+        await presence_store.stamp_alert(agent.id, WARN_ALERT_KEY, latest)
 
     if (
         elapsed_minutes >= settings.presence_escalate_minutes
@@ -371,7 +373,7 @@ async def _check_agent(
             except Exception as e:
                 # Same reasoning as the warn branch above.
                 _log.warning("presence_escalate_alert_failed", agent_id=agent.id, error=str(e))
-        await presence_store.stamp_alert(agent.id, ESCALATE_ALERT_KEY)
+        await presence_store.stamp_alert(agent.id, ESCALATE_ALERT_KEY, latest)
 
 
 async def sweep_presence_thresholds(

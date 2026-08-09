@@ -935,6 +935,67 @@ class Settings(BaseSettings):
     # handler, not a dependency.
     auto_summary_on_resolve_enabled: bool = False
 
+    # --- P8: AI & agent measurement -----------------------------------------
+    # Six settings, all default-off/default-zero, so a tenant that sets none
+    # of them gets byte-identical behaviour to before P8: no Gemini call here
+    # is metered, no cost view exists, no NPS question is ever asked, CSAT
+    # stays channel-level only, and QA stays the existing channel-agnostic
+    # human rubric.
+
+    # Task 2: master switch for the metering wrapper every backend Gemini
+    # call site is routed through (the client-boundary wrapper, not a
+    # per-call-site change -- see metered_genai.py). Off = the wrapper
+    # records nothing and adds no latency; the backend keeps recording zero
+    # token counts, exactly as today. On = every wrapped call writes a
+    # TokenUsage row.
+    #
+    # MISSING USAGE METADATA RECORDS None, NEVER 0. A zero-token call is a
+    # real, observed thing; "we did not capture it" is a different thing, and
+    # a cost report that conflates the two UNDERSTATES SPEND, silently, in
+    # the direction that looks good. Every reader of token_usage.py or
+    # ai_actions' output_tokens/cached_tokens columns must preserve this
+    # distinction -- do not "simplify" a missing value to 0.
+    token_metering_enabled: bool = False
+    # Task 4: mounts GET /metrics/ai-cost and the v_ai_cost view (day x
+    # service x surface x model). Off = no cost endpoint, no view. Meaningful
+    # only once token_metering_enabled has been on long enough to have rows
+    # to report on; an unpriced model is reported as "unpriced", never as
+    # free, so a new model never silently shows a $0 cost.
+    ai_cost_reporting_enabled: bool = False
+    # Task 5: fraction (0.0-1.0) of end-of-conversation surveys that ask NPS
+    # ("how likely are you to recommend") INSTEAD OF CSAT, for the sampled
+    # fraction -- never both, since asking both halves the response rate for
+    # each. 0.0 (default) = no NPS question is ever asked, exactly as today;
+    # v_nps_by_agent stays correctly empty rather than sparse. Attribution is
+    # to the agent assigned at the moment the survey is answered, recorded
+    # then and never re-derived from a later reassignment.
+    nps_sample_rate: float = 0.0
+    # Task 6: mounts v_csat_by_agent, a sibling of v_csat (which this does
+    # NOT change -- existing dashboards read it). Off = CSAT stays
+    # channel-level only, byte-identical to today.
+    #
+    # EVERY RATE METRIC RETURNS ITS DENOMINATOR, NO EXCEPTIONS. A per-agent
+    # score without a sample-size count is how a measurement becomes an
+    # industrial-relations grievance -- v_csat_by_agent always returns the
+    # rating count alongside the average, flag on or off.
+    csat_by_agent_enabled: bool = False
+    # Task 6: an agent with fewer ratings than this is excluded from ranked
+    # league-table views (but still appears, with their count, in the
+    # unranked listing -- suppressed from rankings, never from existence).
+    # 10 is arbitrary but non-zero on purpose: a bare Settings() must not
+    # silently produce n=1 "rankings". Inert while csat_by_agent_enabled is
+    # off.
+    csat_ranking_min_samples: int = 10
+    # Task 7: adds a `channel` dimension to QA records and, for calls, the
+    # five-criterion rubric (greeting, identification, resolution, closing,
+    # compliance) scored as a percentage against P5's targets-store 85%
+    # value. Off = today's channel-agnostic manual qa_labels mechanism,
+    # unchanged; v_quality is unaffected. Manual only, deliberately -- the
+    # phone transcript path has never run against a real Twilio call, so
+    # automated scoring on it would be confident noise (see
+    # docs/testing/phone-channel-package-c-verification.md).
+    call_qa_enabled: bool = False
+
     # Settings configurations
     model_config = SettingsConfigDict(
         env_file=".env",

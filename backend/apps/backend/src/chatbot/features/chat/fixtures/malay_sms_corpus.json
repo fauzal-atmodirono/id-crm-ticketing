@@ -1,0 +1,510 @@
+{
+  "schema_version": 1,
+  "note": "P7 task 5 (NLU robustness measurement). Real Malaysian SMS-register Malay/Manglish enquiries, hand-written for this corpus -- not scraped from real customers. expected_intent.category_slug/subcategory are the exact slug + subcategory pair the LLM-facing classify_ticket_tool contract expects; they resolve against config.py Settings.case_taxonomy_json's shipped default (RFP 2026_028 Appendix A: Sales/Product/Network/Charging/Apps/After Sales/Others/Marketing), not an invented taxonomy. expected_faq ids resolve against a small stub FAQ set defined in test_malay_sms_corpus.py, not a production FAQ store. vehicle_models referenced (e.MAS 5, e.MAS 7, e.MAS 7 PHEV) are config.py's real default vehicle_models_json values -- no invented product names.",
+  "cases": [
+    {
+      "id": "rfp-example-brp-lama-siap-nk-service",
+      "text": "brp lama siap? nk service",
+      "gloss_en": "how long until it's ready? want to service (my car)",
+      "domain": "service_booking",
+      "phenomena": ["dropped_vowel", "abbreviation"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Service Operation"},
+      "expected_faq": "faq-service-duration"
+    },
+    {
+      "id": "svc-002",
+      "text": "nk book service utk keta sy esok blh x",
+      "gloss_en": "want to book a service for my car tomorrow, is that possible",
+      "domain": "service_booking",
+      "phenomena": ["abbreviation", "dropped_vowel", "missing_punctuation"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Service Operation"},
+      "expected_faq": "faq-service-booking"
+    },
+    {
+      "id": "svc-003",
+      "text": "servis dh 3000km blm buat lg, ade slot ptg ni x",
+      "gloss_en": "the 3000km service hasn't been done yet, any slot this evening?",
+      "domain": "service_booking",
+      "phenomena": ["abbreviation", "number_substitution", "typo"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Service Operation"},
+      "expected_faq": "faq-service-booking"
+    },
+    {
+      "id": "svc-004",
+      "text": "hi bro need to service my e.mas7 dis week, any slot available?",
+      "gloss_en": "need to service my e.MAS 7 this week, any slot available?",
+      "domain": "service_booking",
+      "phenomena": ["code_switch", "typo"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Service Operation"},
+      "expected_faq": "faq-service-booking"
+    },
+    {
+      "id": "svc-005",
+      "text": "sevis kete plg lmbt bila leh siap?",
+      "gloss_en": "car service, at the very latest when can it be ready?",
+      "domain": "service_booking",
+      "phenomena": ["typo", "dropped_vowel", "abbreviation"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Service Operation"},
+      "expected_faq": "faq-service-duration"
+    },
+    {
+      "id": "svc-006",
+      "text": "brooo servisssss lamaaaa sgttt tak abis abis",
+      "gloss_en": "bro the service is taking soooo long, never finishes",
+      "domain": "service_booking",
+      "phenomena": ["repeated_char", "abbreviation", "missing_punctuation"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Service Operation"},
+      "expected_faq": null
+    },
+    {
+      "id": "svc-007",
+      "text": "wanna schedule maintenance utk x70 my next tuesday pls",
+      "gloss_en": "want to schedule maintenance for my X70 next Tuesday please",
+      "domain": "service_booking",
+      "phenomena": ["code_switch", "abbreviation"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Service Operation"},
+      "expected_faq": "faq-service-booking"
+    },
+    {
+      "id": "svc-008",
+      "text": "1st service free ke? brp caj kalau lepas warranty",
+      "gloss_en": "is the 1st service free? how much is the charge once past warranty",
+      "domain": "service_booking",
+      "phenomena": ["number_substitution", "abbreviation"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Service Operation"},
+      "expected_faq": null
+    },
+    {
+      "id": "rsa-001",
+      "text": "keta i mogok kt tepi highway, tlg hantar tow truck skrg!!",
+      "gloss_en": "my car broke down by the highway, please send a tow truck now",
+      "domain": "roadside_assistance",
+      "phenomena": ["abbreviation", "missing_punctuation"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Roadside Assistance"},
+      "expected_faq": "faq-roadside-tow"
+    },
+    {
+      "id": "rsa-002",
+      "text": "accident kt jln kluang kete xleh gerak need towing asap",
+      "gloss_en": "accident on the Kluang road, car can't move, need towing asap",
+      "domain": "roadside_assistance",
+      "phenomena": ["code_switch", "abbreviation", "missing_punctuation"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Roadside Assistance"},
+      "expected_faq": "faq-roadside-tow"
+    },
+    {
+      "id": "rsa-003",
+      "text": "battery flat kt parking, ade roadside assist x?",
+      "gloss_en": "battery flat at the parking lot, is there roadside assist or not?",
+      "domain": "roadside_assistance",
+      "phenomena": ["code_switch", "abbreviation"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Roadside Assistance"},
+      "expected_faq": "faq-roadside-tow"
+    },
+    {
+      "id": "rsa-004",
+      "text": "kereta rosak time hujan lebat sy dekat mana nak call emergency",
+      "gloss_en": "car broke down during heavy rain, where should I call for emergency",
+      "domain": "roadside_assistance",
+      "phenomena": ["code_switch", "missing_punctuation"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Roadside Assistance"},
+      "expected_faq": null
+    },
+    {
+      "id": "rsa-005",
+      "text": "help!! kete pancit tayar tgh jln, xde spare, mcm mana ni",
+      "gloss_en": "help, tyre punctured in the middle of the road, no spare, what do I do",
+      "domain": "roadside_assistance",
+      "phenomena": ["abbreviation", "dropped_vowel"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Roadside Assistance"},
+      "expected_faq": "faq-roadside-tow"
+    },
+    {
+      "id": "rsa-006",
+      "text": "tolonggg towing sy dh 1 jam tggu still xsampai",
+      "gloss_en": "please, towing, I've waited 1 hour and it still hasn't arrived",
+      "domain": "roadside_assistance",
+      "phenomena": ["repeated_char", "abbreviation", "number_substitution"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Roadside Assistance"},
+      "expected_faq": "faq-roadside-tow"
+    },
+    {
+      "id": "rsa-007",
+      "text": "my car broke down near toll plaza, pls send rsa team fast",
+      "gloss_en": "my car broke down near the toll plaza, please send the RSA team fast",
+      "domain": "roadside_assistance",
+      "phenomena": ["code_switch"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Roadside Assistance"},
+      "expected_faq": null
+    },
+    {
+      "id": "rsa-008",
+      "text": "enjin xleh start pagi ni, kt umah je, boleh hantar mekanik x",
+      "gloss_en": "engine won't start this morning, just at home, can you send a mechanic",
+      "domain": "roadside_assistance",
+      "phenomena": ["abbreviation", "dropped_vowel"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Roadside Assistance"},
+      "expected_faq": null
+    },
+    {
+      "id": "prt-001",
+      "text": "nk tanya, spare part utk bampar depan e.mas5 ade stok x",
+      "gloss_en": "want to ask, is there stock of a front bumper spare part for the e.MAS 5",
+      "domain": "parts",
+      "phenomena": ["abbreviation", "typo"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Spare Part"},
+      "expected_faq": "faq-spare-parts"
+    },
+    {
+      "id": "prt-002",
+      "text": "brp harga windscreen wiper utk x50, part original ke",
+      "gloss_en": "how much is a windscreen wiper for the X50, is the part original",
+      "domain": "parts",
+      "phenomena": ["number_substitution", "abbreviation", "code_switch"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Spare Part"},
+      "expected_faq": "faq-spare-parts"
+    },
+    {
+      "id": "prt-003",
+      "text": "cari part alternator kete rosak outlet mana ade",
+      "gloss_en": "looking for an alternator part, car is broken, which outlet has one",
+      "domain": "parts",
+      "phenomena": ["dropped_vowel", "missing_punctuation"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Spare Part"},
+      "expected_faq": "faq-spare-parts"
+    },
+    {
+      "id": "prt-004",
+      "text": "need to order sparepart for my car aircond compressor pls advise price",
+      "gloss_en": "need to order a spare part for my car's aircond compressor, please advise price",
+      "domain": "parts",
+      "phenomena": ["code_switch"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Spare Part"},
+      "expected_faq": "faq-spare-parts"
+    },
+    {
+      "id": "prt-005",
+      "text": "prt tu original ke tiruan, sy risau kualiti",
+      "gloss_en": "is that part original or counterfeit, I'm worried about quality",
+      "domain": "parts",
+      "phenomena": ["abbreviation", "typo"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Spare Part"},
+      "expected_faq": null
+    },
+    {
+      "id": "prt-006",
+      "text": "brake pad dh haus, blh order part x, brp lama sampai",
+      "gloss_en": "brake pads are worn out, can I order a part, how long until it arrives",
+      "domain": "parts",
+      "phenomena": ["abbreviation", "number_substitution", "code_switch"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Spare Part"},
+      "expected_faq": "faq-spare-parts"
+    },
+    {
+      "id": "prt-007",
+      "text": "sy nk tuka headlamp kete tp xtau kdai spare part dkt sy",
+      "gloss_en": "I want to change a headlamp but don't know a spare parts shop near me",
+      "domain": "parts",
+      "phenomena": ["abbreviation", "dropped_vowel", "code_switch"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Spare Part"},
+      "expected_faq": "faq-spare-parts"
+    },
+    {
+      "id": "prt-008",
+      "text": "any genuine parts available for e.mas7 phev battery cover?",
+      "gloss_en": "any genuine parts available for e.MAS 7 PHEV battery cover?",
+      "domain": "parts",
+      "phenomena": ["code_switch"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Spare Part"},
+      "expected_faq": "faq-spare-parts"
+    },
+    {
+      "id": "war-001",
+      "text": "keta sy still dlm warranty x, beli 2023",
+      "gloss_en": "is my car still under warranty, I bought it in 2023",
+      "domain": "warranty",
+      "phenomena": ["abbreviation", "number_substitution", "code_switch"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Warranty"},
+      "expected_faq": "faq-warranty-coverage"
+    },
+    {
+      "id": "war-002",
+      "text": "waranti cover part electrical ke, ac saya rosak",
+      "gloss_en": "does the warranty cover electrical parts, my aircond is broken",
+      "domain": "warranty",
+      "phenomena": ["typo"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Warranty"},
+      "expected_faq": "faq-warranty-coverage"
+    },
+    {
+      "id": "war-003",
+      "text": "how long is the warranty period for e.mas 7, sy beli bln lepas",
+      "gloss_en": "how long is the warranty period for the e.MAS 7, I bought it last month",
+      "domain": "warranty",
+      "phenomena": ["code_switch", "abbreviation"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Warranty"},
+      "expected_faq": "faq-warranty-coverage"
+    },
+    {
+      "id": "war-004",
+      "text": "garranty dh nk abis, patut buat apa before expire",
+      "gloss_en": "the warranty is about to end, what should I do before it expires",
+      "domain": "warranty",
+      "phenomena": ["typo", "abbreviation", "code_switch"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Warranty"},
+      "expected_faq": "faq-warranty-coverage"
+    },
+    {
+      "id": "war-005",
+      "text": "sy nk claim warranty utk masalah gearbox, camne prosedurnya",
+      "gloss_en": "I want to claim warranty for a gearbox problem, what's the procedure",
+      "domain": "warranty",
+      "phenomena": ["abbreviation", "dropped_vowel"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Warranty"},
+      "expected_faq": "faq-warranty-coverage"
+    },
+    {
+      "id": "war-006",
+      "text": "warranty tak cover accident kan just nk confirm",
+      "gloss_en": "warranty doesn't cover accidents right, just want to confirm",
+      "domain": "warranty",
+      "phenomena": ["code_switch", "abbreviation", "missing_punctuation"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Warranty"},
+      "expected_faq": "faq-warranty-coverage"
+    },
+    {
+      "id": "war-007",
+      "text": "kete under warranty tp kene bayar service ke free",
+      "gloss_en": "car is under warranty but do I have to pay for service or is it free",
+      "domain": "warranty",
+      "phenomena": ["abbreviation", "code_switch"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Warranty"},
+      "expected_faq": null
+    },
+    {
+      "id": "war-008",
+      "text": "does warranty transfer if i sell my car secondhand",
+      "gloss_en": "does warranty transfer if I sell my car secondhand",
+      "domain": "warranty",
+      "phenomena": ["code_switch"],
+      "expected_intent": {"category_slug": "aftersales", "subcategory": "Warranty"},
+      "expected_faq": "faq-warranty-coverage"
+    },
+    {
+      "id": "cmp-001",
+      "text": "staff kt outlet sgt xsopan, sy kecewa sgt dgn layanan",
+      "gloss_en": "staff at the outlet were very rude, I'm very disappointed with the treatment",
+      "domain": "complaints",
+      "phenomena": ["abbreviation"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Customer Experience"},
+      "expected_faq": null
+    },
+    {
+      "id": "cmp-002",
+      "text": "dh 3 kali call xde org angkat teruk sgt customer service ni",
+      "gloss_en": "already called 3 times, nobody picked up, this customer service is really bad",
+      "domain": "complaints",
+      "phenomena": ["number_substitution", "abbreviation", "missing_punctuation"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Customer Experience"},
+      "expected_faq": null
+    },
+    {
+      "id": "cmp-003",
+      "text": "very disappointed with the service, nobody replied for 2 days",
+      "gloss_en": "very disappointed with the service, nobody replied for 2 days",
+      "domain": "complaints",
+      "phenomena": ["code_switch", "number_substitution"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Customer Experience"},
+      "expected_faq": null
+    },
+    {
+      "id": "cmp-004",
+      "text": "sy komplen pasal delivery lmbt, dh lebih sebulan tunggu",
+      "gloss_en": "I'm complaining about a late delivery, already waited more than a month",
+      "domain": "complaints",
+      "phenomena": ["abbreviation", "typo"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Customer Experience"},
+      "expected_faq": null
+    },
+    {
+      "id": "cmp-005",
+      "text": "salesperson x professional langsung, buat sy rasa xselesa",
+      "gloss_en": "the salesperson was completely unprofessional, made me feel uncomfortable",
+      "domain": "complaints",
+      "phenomena": ["abbreviation", "code_switch"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Customer Experience"},
+      "expected_faq": null
+    },
+    {
+      "id": "cmp-006",
+      "text": "why nobody follow up my complaint from last wik???",
+      "gloss_en": "why has nobody followed up on my complaint from last week?",
+      "domain": "complaints",
+      "phenomena": ["typo", "code_switch"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Customer Experience"},
+      "expected_faq": null
+    },
+    {
+      "id": "cmp-007",
+      "text": "outlet tu kotor sgt n staff xde manners tak puas hati",
+      "gloss_en": "that outlet is very dirty and staff have no manners, I'm dissatisfied",
+      "domain": "complaints",
+      "phenomena": ["abbreviation", "code_switch", "missing_punctuation"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Customer Experience"},
+      "expected_faq": null
+    },
+    {
+      "id": "cmp-008",
+      "text": "dah la lmbt reply bila nk settle isu sy ni",
+      "gloss_en": "it's already late replying, when will my issue be settled",
+      "domain": "complaints",
+      "phenomena": ["abbreviation", "typo", "missing_punctuation"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Customer Experience"},
+      "expected_faq": null
+    },
+    {
+      "id": "dlr-001",
+      "text": "outlet paling dkt dgn shah alam kt mana ye",
+      "gloss_en": "which outlet is closest to Shah Alam",
+      "domain": "dealer_location",
+      "phenomena": ["abbreviation"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Outlet"},
+      "expected_faq": "faq-dealer-locations"
+    },
+    {
+      "id": "dlr-002",
+      "text": "ade branch kt johor bahru x, nk tgk kete",
+      "gloss_en": "is there a branch in Johor Bahru, want to look at a car",
+      "domain": "dealer_location",
+      "phenomena": ["abbreviation", "code_switch", "dropped_vowel"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Outlet"},
+      "expected_faq": "faq-dealer-locations"
+    },
+    {
+      "id": "dlr-003",
+      "text": "where's the nearest e.mas showroom from puchong",
+      "gloss_en": "where's the nearest e.MAS showroom from Puchong",
+      "domain": "dealer_location",
+      "phenomena": ["code_switch"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Outlet"},
+      "expected_faq": "faq-dealer-locations"
+    },
+    {
+      "id": "dlr-004",
+      "text": "showroom bukak ke hari ahad, sy nk singgah ptg ni",
+      "gloss_en": "is the showroom open on Sunday, I want to drop by this evening",
+      "domain": "dealer_location",
+      "phenomena": ["abbreviation"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Outlet"},
+      "expected_faq": "faq-dealer-locations"
+    },
+    {
+      "id": "dlr-005",
+      "text": "cawangan proton kt melaka still beroperasi ke dh tutup",
+      "gloss_en": "is the Proton branch in Melaka still operating or already closed",
+      "domain": "dealer_location",
+      "phenomena": ["dropped_vowel", "abbreviation", "missing_punctuation"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Outlet"},
+      "expected_faq": null
+    },
+    {
+      "id": "dlr-006",
+      "text": "nk tau lokasi outlet paling dkt dgn umah sy kt cheras",
+      "gloss_en": "want to know the outlet location closest to my house in Cheras",
+      "domain": "dealer_location",
+      "phenomena": ["abbreviation"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Outlet"},
+      "expected_faq": "faq-dealer-locations"
+    },
+    {
+      "id": "dlr-007",
+      "text": "any dealer near klang area yg de test drive unit",
+      "gloss_en": "any dealer near the Klang area that has a test drive unit",
+      "domain": "dealer_location",
+      "phenomena": ["code_switch", "abbreviation"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Outlet"},
+      "expected_faq": "faq-dealer-locations"
+    },
+    {
+      "id": "dlr-008",
+      "text": "outlet kt mana yg ade service centre skali",
+      "gloss_en": "which outlet also has a service centre",
+      "domain": "dealer_location",
+      "phenomena": ["abbreviation"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Outlet"},
+      "expected_faq": null
+    },
+    {
+      "id": "gen-001",
+      "text": "mana leh cari charging station awam yg dkt dgn sy skrg",
+      "gloss_en": "where can I find a public charging station near me right now",
+      "domain": "charging",
+      "phenomena": ["abbreviation", "dropped_vowel"],
+      "expected_intent": {"category_slug": "charging", "subcategory": "Public Charging"},
+      "expected_faq": "faq-charging-public"
+    },
+    {
+      "id": "gen-002",
+      "text": "public charging kt mana available 24 jam",
+      "gloss_en": "where is public charging available 24 hours",
+      "domain": "charging",
+      "phenomena": ["code_switch", "abbreviation", "number_substitution"],
+      "expected_intent": {"category_slug": "charging", "subcategory": "Public Charging"},
+      "expected_faq": "faq-charging-public"
+    },
+    {
+      "id": "gen-003",
+      "text": "sy nk booking test drive utk e.mas7 phev hujung minggu ni",
+      "gloss_en": "I want to book a test drive for the e.MAS 7 PHEV this weekend",
+      "domain": "test_drive",
+      "phenomena": ["abbreviation"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Test Drive"},
+      "expected_faq": "faq-test-drive"
+    },
+    {
+      "id": "gen-004",
+      "text": "2 org nk test drive petang ni, blh x tanpa appointment",
+      "gloss_en": "2 people want a test drive this evening, is that possible without an appointment",
+      "domain": "test_drive",
+      "phenomena": ["number_substitution", "abbreviation"],
+      "expected_intent": {"category_slug": "sales", "subcategory": "Test Drive"},
+      "expected_faq": "faq-test-drive"
+    },
+    {
+      "id": "gen-005",
+      "text": "app xleh log in dh 2 hari asik error je",
+      "gloss_en": "can't log in to the app for 2 days already, keeps erroring",
+      "domain": "apps",
+      "phenomena": ["abbreviation", "number_substitution", "missing_punctuation"],
+      "expected_intent": {"category_slug": "apps", "subcategory": "User ID"},
+      "expected_faq": null
+    },
+    {
+      "id": "gen-006",
+      "text": "notification xkeluar bila kete servis, patutnye reminder kan",
+      "gloss_en": "no notification comes out when the car is due for service, there should be a reminder right",
+      "domain": "apps",
+      "phenomena": ["abbreviation", "typo"],
+      "expected_intent": {"category_slug": "apps", "subcategory": "Notification"},
+      "expected_faq": null
+    },
+    {
+      "id": "gen-007",
+      "text": "app ni asyik lag time nk check charging status kete",
+      "gloss_en": "this app keeps lagging when I want to check the car's charging status",
+      "domain": "apps",
+      "phenomena": ["abbreviation", "code_switch"],
+      "expected_intent": {"category_slug": "apps", "subcategory": "Function"},
+      "expected_faq": null
+    },
+    {
+      "id": "gen-008",
+      "text": "app xtunjuk dealer terdekat, macam mana nk update lokasi",
+      "gloss_en": "the app doesn't show the nearest dealer, how do I update the location",
+      "domain": "apps",
+      "phenomena": ["abbreviation"],
+      "expected_intent": {"category_slug": "apps", "subcategory": "Dealer Information"},
+      "expected_faq": null
+    }
+  ]
+}

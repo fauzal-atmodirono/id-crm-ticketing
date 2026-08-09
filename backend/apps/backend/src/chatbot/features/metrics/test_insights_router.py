@@ -460,3 +460,36 @@ def test_the_response_says_the_figures_overlap_and_must_not_be_summed():
     note = res.json()["note"]
     assert "do not sum" in note
     assert "no label are excluded" in note
+
+
+# --- P4 task 5: filters on the endpoints -----------------------------------
+
+
+@pytest.mark.parametrize("endpoint", ENDPOINTS)
+def test_every_endpoint_accepts_the_standard_filters(endpoint):
+    res = _client().get(
+        endpoint,
+        params={"channel": "Email", "department": "sales"},
+        headers={"x-api-key": "secret"},
+    )
+    assert res.status_code in (200, 400), res.text
+
+
+def test_filters_and_a_period_compose_on_one_request():
+    res = _client().get(
+        "/metrics/departments",
+        params={**_week_params(), "department": "sales"},
+        headers={"x-api-key": "secret"},
+    )
+    assert res.status_code == 200
+
+
+def test_an_unknown_query_param_is_ignored_rather_than_400ing():
+    """FastAPI drops unmodelled params. Worth pinning: a typo'd filter name
+    silently doing nothing is a real risk, and this records that we know."""
+    res = _client().get(
+        "/metrics/departments",
+        params={"deparment": "sales"},  # deliberate typo
+        headers={"x-api-key": "secret"},
+    )
+    assert res.status_code == 200

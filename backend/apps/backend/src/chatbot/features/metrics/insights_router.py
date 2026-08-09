@@ -61,6 +61,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Header, HTTPException
 
+from chatbot.features.metrics.filter_query import MetricFiltersQuery
 from chatbot.features.metrics.period import previous_period
 from chatbot.features.metrics.period_query import (
     PeriodQuery,
@@ -89,20 +90,22 @@ def build_metrics_insights_router(port: MetricsQueryPort, settings: Settings) ->
     @router.get("/metrics/departments")
     async def departments(
         period_query: PeriodQuery,
+        filters: MetricFiltersQuery,
         x_api_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
-        return asdict(await port.fetch_departments(period))
+        return asdict(await port.fetch_departments(period, filters))
 
     @router.get("/metrics/callcenter")
     async def callcenter(
         period_query: PeriodQuery,
+        filters: MetricFiltersQuery,
         x_api_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
-        return asdict(await port.fetch_callcenter(period))
+        return asdict(await port.fetch_callcenter(period, filters))
 
     @router.get("/metrics/lifecycle")
     async def lifecycle(
@@ -122,29 +125,32 @@ def build_metrics_insights_router(port: MetricsQueryPort, settings: Settings) ->
     @router.get("/metrics/dealer-escalation")
     async def dealer_escalation(
         period_query: PeriodQuery,
+        filters: MetricFiltersQuery,
         x_api_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
-        return asdict(await port.fetch_dealer_escalation(period))
+        return asdict(await port.fetch_dealer_escalation(period, filters))
 
     @router.get("/metrics/sla-buckets")
     async def sla_buckets(
         period_query: PeriodQuery,
+        filters: MetricFiltersQuery,
         x_api_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
-        return asdict(await port.fetch_sla_buckets(period))
+        return asdict(await port.fetch_sla_buckets(period, filters))
 
     @router.get("/metrics/case-aging")
     async def case_aging(
         period_query: PeriodQuery,
+        filters: MetricFiltersQuery,
         x_api_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
-        return asdict(await port.fetch_case_aging(period))
+        return asdict(await port.fetch_case_aging(period, filters))
 
     @router.get("/metrics/after-hours")
     async def after_hours(

@@ -72,6 +72,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import structlog
+from fastapi import HTTPException
 from google.cloud import bigquery
 
 from chatbot.features.metrics.query_port import (
@@ -174,7 +175,12 @@ class BigQueryMetricsQuery:
             ]
         )
 
-    def _query_block(self, view: str, row_type: Callable[..., _T]) -> tuple[list[_T], bool]:
+    def _query_block(
+        self,
+        view: str,
+        row_type: Callable[..., _T],
+        filters: Any | None = None,
+    ) -> tuple[list[_T], bool]:
         """SELECT a view into `row_type` rows, unfiltered. Returns `(rows, ok)`.
 
         `ok=False` only on a genuine query failure (drifted view, a column
@@ -204,17 +210,39 @@ class BigQueryMetricsQuery:
         """
         try:
             sql = f"SELECT * FROM `{self._prefix}.{view}`"  # noqa: S608
-            job = self._client.query(sql)
+            job_config = None
+            if filters is not None:
+                # `fragment` contains placeholders only; the values are bound.
+                # An UnsupportedFilter raised here is a 400 and propagates --
+                # a filter the view cannot honour must not degrade to an
+                # unfiltered answer under a filtered header.
+                fragment, params = filters.predicates_for(view)
+                if fragment:
+                    sql = f"{sql} WHERE {fragment}"
+                    job_config = bigquery.QueryJobConfig(
+                        query_parameters=[
+                            bigquery.ScalarQueryParameter(name, "STRING", value)
+                            for name, value in params.items()
+                        ]
+                    )
+            job = self._client.query(sql, job_config=job_config)
             return [row_type(**dict(r)) for r in job.result()], True
+        except HTTPException:
+            raise
         except (
             Exception
         ) as e:  # one bad/drifted view degrades to an empty block, never 500s the page
             _log.error("metrics_view_query_failed", view=view, error=str(e))
             return [], False
 
-    def _block(self, view: str, row_type: Callable[..., _T]) -> list[_T]:
+    def _block(
+        self,
+        view: str,
+        row_type: Callable[..., _T],
+        filters: Any | None = None,
+    ) -> list[_T]:
         """Rows only, for callers that don't need the ok/failed distinction."""
-        rows, _ok = self._query_block(view, row_type)
+        rows, _ok = self._query_block(view, row_type, filters)
         return rows
 
     def _day_grain_block_for_period(
@@ -224,6 +252,7 @@ class BigQueryMetricsQuery:
         period: PeriodRange,
         group_columns: tuple[str, ...],
         value_column: str,
+        filters: Any | None = None,
     ) -> tuple[list[_T], bool]:
         """Bucket a day-grain view (columns: `day`, *`group_columns`,
         `value_column`) at `period.granularity`, filtered by named
@@ -251,15 +280,28 @@ class BigQueryMetricsQuery:
         """
         bucket_format = _BUCKET_FORMAT.get(period.granularity, "%Y-%m")
         group_sql = ", ".join(group_columns)
+        # Filters narrow the same query the period already scopes -- one pass,
+        # not a post-filter, so a filtered week costs no more than a plain one.
+        filter_sql = ""
+        job_config = self._range_job_config(period)
+        if filters is not None:
+            fragment, params = filters.predicates_for(view)
+            if fragment:
+                filter_sql = f" AND {fragment}"
+                job_config.query_parameters = list(job_config.query_parameters) + [
+                    bigquery.ScalarQueryParameter(name, "STRING", value)
+                    for name, value in params.items()
+                ]
+
         sql = (
             f"SELECT FORMAT_DATE('{bucket_format}', day) AS month, "  # noqa: S608
             f"{group_sql}, SUM({value_column}) AS {value_column} "
             f"FROM `{self._prefix}.{view}` "
-            f"WHERE day BETWEEN @start AND @end "
+            f"WHERE day BETWEEN @start AND @end{filter_sql} "
             f"GROUP BY month, {group_sql}"
         )
         try:
-            job = self._client.query(sql, job_config=self._range_job_config(period))
+            job = self._client.query(sql, job_config=job_config)
             rows: list[_T] = []
             for r in job.result():
                 row = dict(r)
@@ -349,7 +391,9 @@ class BigQueryMetricsQuery:
     async def fetch_anomalies(self) -> list[AnomalyRow]:
         return await asyncio.to_thread(self._fetch_anomalies_sync)
 
-    def _dated_block(self, view, row_type, period, group_columns, value_column):
+    def _dated_block(
+        self, view, row_type, period, group_columns, value_column, filters=None
+    ):
         """One block of a now-dated view, filtered when a period is given.
 
         P4: these views gained a `day` column precisely so this is possible.
@@ -358,9 +402,9 @@ class BigQueryMetricsQuery:
         header.
         """
         if period is None:
-            return self._block(view, row_type), _UNFILTERED_SCOPE
+            return self._block(view, row_type, filters), _UNFILTERED_SCOPE
         rows, ok = self._day_grain_block_for_period(
-            view, row_type, period, group_columns, value_column
+            view, row_type, period, group_columns, value_column, filters
         )
         return rows, BlockScope(
             status="ok" if ok else "unavailable",
@@ -369,13 +413,15 @@ class BigQueryMetricsQuery:
         )
 
     def _fetch_departments_sync(
-        self, period: PeriodRange | None = None
+        self, period: PeriodRange | None = None, filters: Any | None = None
     ) -> DepartmentsMetrics:
         dept_rows, dept_scope = self._dated_block(
-            "v_dept_pic_performance", DeptPicRow, period, ("department", "pic"), "cases"
+            "v_dept_pic_performance", DeptPicRow, period, ("department", "pic"), "cases",
+            filters,
         )
         reopen_rows, reopen_scope = self._dated_block(
-            "v_reopen_rate", ReopenRow, period, ("dealer", "department", "pic"), "reopened"
+            "v_reopen_rate", ReopenRow, period, ("dealer", "department", "pic"), "reopened",
+            filters,
         )
         # v_category_by_vehicle_model has no day column (it is a taxonomy
         # breakdown, not a time series), so it stays unfiltered and SAYS so
@@ -395,15 +441,15 @@ class BigQueryMetricsQuery:
         return metrics
 
     async def fetch_departments(
-        self, period: PeriodRange | None = None
+        self, period: PeriodRange | None = None, filters: Any | None = None
     ) -> DepartmentsMetrics:
-        return await asyncio.to_thread(self._fetch_departments_sync, period)
+        return await asyncio.to_thread(self._fetch_departments_sync, period, filters)
 
     def _fetch_callcenter_sync(
-        self, period: PeriodRange | None = None
+        self, period: PeriodRange | None = None, filters: Any | None = None
     ) -> CallCentreMetrics:
         if period is not None:
-            return self._callcenter_for_period(period)
+            return self._callcenter_for_period(period, filters)
         return CallCentreMetrics(
             sla=self._block("v_sla_achievement", SlaAchievementRow),
             tasks_per_agent=self._block("v_tasks_per_agent", TasksPerAgentRow),
@@ -414,7 +460,9 @@ class BigQueryMetricsQuery:
             nps_by_agent=self._block("v_nps_by_agent", NpsByAgentRow),
         )
 
-    def _callcenter_for_period(self, period: PeriodRange) -> CallCentreMetrics:
+    def _callcenter_for_period(
+        self, period: PeriodRange, filters: Any | None = None
+    ) -> CallCentreMetrics:
         """Every callcenter view gained a `day` column in P4, so all five
         blocks are genuinely period-scoped rather than all-time figures under
         a week header."""
@@ -436,16 +484,16 @@ class BigQueryMetricsQuery:
         scopes: dict[str, BlockScope] = {}
         for name, (view, row_type, group_columns, value_column) in blocks.items():
             rows[name], scopes[name] = self._dated_block(
-                view, row_type, period, group_columns, value_column
+                view, row_type, period, group_columns, value_column, filters
             )
         metrics = CallCentreMetrics(**rows)
         metrics.attach_scopes(scopes)
         return metrics
 
     async def fetch_callcenter(
-        self, period: PeriodRange | None = None
+        self, period: PeriodRange | None = None, filters: Any | None = None
     ) -> CallCentreMetrics:
-        return await asyncio.to_thread(self._fetch_callcenter_sync, period)
+        return await asyncio.to_thread(self._fetch_callcenter_sync, period, filters)
 
     def _lifecycle_cases_block(
         self, period: PeriodRange | None
@@ -496,14 +544,14 @@ class BigQueryMetricsQuery:
         return await asyncio.to_thread(self._fetch_lifecycle_sync, period)
 
     def _fetch_dealer_escalation_sync(
-        self, period: PeriodRange | None = None
+        self, period: PeriodRange | None = None, filters: Any | None = None
     ) -> DealerEscalationMetrics:
         # NOTE the period here filters on `dealer_escalated_at`, not
         # `created_at` -- see v_dealer_escalation in bigquery_schema.py. A case
         # created in May and escalated in June is a JUNE row.
         by_dealer, dealer_scope = self._dated_block(
             "v_dealer_escalation", DealerEscalationRow, period, ("dealer",),
-            "cases_escalated",
+            "cases_escalated", filters,
         )
         metrics = DealerEscalationMetrics(
             by_dealer=by_dealer,
@@ -517,32 +565,32 @@ class BigQueryMetricsQuery:
         return metrics
 
     async def fetch_dealer_escalation(
-        self, period: PeriodRange | None = None
+        self, period: PeriodRange | None = None, filters: Any | None = None
     ) -> DealerEscalationMetrics:
-        return await asyncio.to_thread(self._fetch_dealer_escalation_sync, period)
+        return await asyncio.to_thread(self._fetch_dealer_escalation_sync, period, filters)
 
     def _fetch_sla_buckets_sync(
-        self, period: PeriodRange | None = None
+        self, period: PeriodRange | None = None, filters: Any | None = None
     ) -> SlaBucketMetrics:
         rows, scope = self._dated_block(
             "v_resolution_sla_buckets", SlaBucketRow, period,
-            ("case_type", "bucket_label"), "cases",
+            ("case_type", "bucket_label"), "cases", filters,
         )
         metrics = SlaBucketMetrics(buckets=rows)
         metrics.attach_scopes({"buckets": scope})
         return metrics
 
     async def fetch_sla_buckets(
-        self, period: PeriodRange | None = None
+        self, period: PeriodRange | None = None, filters: Any | None = None
     ) -> SlaBucketMetrics:
-        return await asyncio.to_thread(self._fetch_sla_buckets_sync, period)
+        return await asyncio.to_thread(self._fetch_sla_buckets_sync, period, filters)
 
     def _fetch_case_aging_sync(
-        self, period: PeriodRange | None = None
+        self, period: PeriodRange | None = None, filters: Any | None = None
     ) -> CaseAgingMetrics:
         # Row-per-case, not an aggregate: filtered by date directly rather
         # than re-bucketed, since there is nothing to re-aggregate.
-        rows = self._block("v_case_aging", CaseAgingRow)
+        rows = self._block("v_case_aging", CaseAgingRow, filters)
         scope = _UNFILTERED_SCOPE
         if period is not None:
             rows = [r for r in rows if _in_period(getattr(r, "day", None), period)]
@@ -552,9 +600,9 @@ class BigQueryMetricsQuery:
         return metrics
 
     async def fetch_case_aging(
-        self, period: PeriodRange | None = None
+        self, period: PeriodRange | None = None, filters: Any | None = None
     ) -> CaseAgingMetrics:
-        return await asyncio.to_thread(self._fetch_case_aging_sync, period)
+        return await asyncio.to_thread(self._fetch_case_aging_sync, period, filters)
 
     def _fetch_volume_by_type_division_sync(
         self, period: PeriodRange | None = None

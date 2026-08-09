@@ -1017,9 +1017,19 @@ def test_query_block_no_longer_accepts_a_period_or_date_column() -> None:
     future task pointing that branch at a month-grain view reintroduces the
     round-2 4x over-count -- a window containing any 1st of a month returns
     that whole month -- and nothing would fail. There must be no way to ask
-    `_query_block` for a filtered read at all."""
-    params = inspect.signature(BigQueryMetricsQuery._query_block).parameters
-    assert set(params) == {"self", "view", "row_type"}
+    `_query_block` for a DATE-filtered read.
+
+    P4 narrowed this from "exactly these three parameters" to "no date
+    parameters". `_query_block` now takes a `filters` argument for DIMENSION
+    filters (agent/team/channel/dealer), which carry none of the over-counting
+    risk: they add an equality predicate, not a range, and cannot pull in rows
+    outside the requested window. The behavioural guard below -- that no
+    emitted SQL ever filters a month-grain view by date -- is the one that
+    actually protects against M1, and it is unchanged."""
+    params = set(inspect.signature(BigQueryMetricsQuery._query_block).parameters)
+    assert "period" not in params
+    assert "date_column" not in params
+    assert {"self", "view", "row_type"} <= params
 
 
 @pytest.mark.asyncio

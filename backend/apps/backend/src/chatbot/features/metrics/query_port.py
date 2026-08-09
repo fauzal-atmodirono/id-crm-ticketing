@@ -560,20 +560,20 @@ class MetricsQueryPort(Protocol):
     async def fetch_dashboard(self, period: PeriodRange | None = None) -> DashboardMetrics: ...
     async def fetch_anomalies(self) -> list[AnomalyRow]: ...
     async def fetch_departments(
-        self, period: PeriodRange | None = None
+        self, period: PeriodRange | None = None, filters: object | None = None
     ) -> DepartmentsMetrics: ...
     async def fetch_callcenter(
-        self, period: PeriodRange | None = None
+        self, period: PeriodRange | None = None, filters: object | None = None
     ) -> CallCentreMetrics: ...
     async def fetch_lifecycle(self, period: PeriodRange | None = None) -> LifecycleMetrics: ...
     async def fetch_dealer_escalation(
-        self, period: PeriodRange | None = None
+        self, period: PeriodRange | None = None, filters: object | None = None
     ) -> DealerEscalationMetrics: ...
     async def fetch_sla_buckets(
-        self, period: PeriodRange | None = None
+        self, period: PeriodRange | None = None, filters: object | None = None
     ) -> SlaBucketMetrics: ...
     async def fetch_case_aging(
-        self, period: PeriodRange | None = None
+        self, period: PeriodRange | None = None, filters: object | None = None
     ) -> CaseAgingMetrics: ...
     async def fetch_volume_by_type_division(
         self, period: PeriodRange | None = None
@@ -638,7 +638,7 @@ class MockMetricsQuery:
             AnomalyRow("whatsapp", current_volume=260, baseline_mean=90.0, baseline_stddev=15.0),
         ]
 
-    async def fetch_departments(self, period: PeriodRange | None = None) -> DepartmentsMetrics:
+    async def fetch_departments(self, period: PeriodRange | None = None, filters: object | None = None) -> DepartmentsMetrics:
         if self._degraded:
             return DepartmentsMetrics(dept_pic=[], reopen=[], category_by_vehicle_model=[])
         return DepartmentsMetrics(
@@ -649,7 +649,7 @@ class MockMetricsQuery:
             ],
         )
 
-    async def fetch_callcenter(self, period: PeriodRange | None = None) -> CallCentreMetrics:
+    async def fetch_callcenter(self, period: PeriodRange | None = None, filters: object | None = None) -> CallCentreMetrics:
         if self._degraded:
             return CallCentreMetrics(
                 sla=[],
@@ -758,7 +758,7 @@ class MockMetricsQuery:
         metrics.attach_scopes({"cases": self._scope, "state_trend": self._scope})
         return metrics
 
-    async def fetch_dealer_escalation(self, period: PeriodRange | None = None) -> DealerEscalationMetrics:
+    async def fetch_dealer_escalation(self, period: PeriodRange | None = None, filters: object | None = None) -> DealerEscalationMetrics:
         if self._degraded:
             return DealerEscalationMetrics(by_dealer=[], slowest_cases=[])
         return DealerEscalationMetrics(
@@ -766,7 +766,7 @@ class MockMetricsQuery:
             slowest_cases=[DealerSlowCaseRow("CONV042", "Dealer KL", 12.0)],
         )
 
-    async def fetch_sla_buckets(self, period: PeriodRange | None = None) -> SlaBucketMetrics:
+    async def fetch_sla_buckets(self, period: PeriodRange | None = None, filters: object | None = None) -> SlaBucketMetrics:
         if self._degraded:
             return SlaBucketMetrics(buckets=[])
         return SlaBucketMetrics(
@@ -778,7 +778,7 @@ class MockMetricsQuery:
             ]
         )
 
-    async def fetch_case_aging(self, period: PeriodRange | None = None) -> CaseAgingMetrics:
+    async def fetch_case_aging(self, period: PeriodRange | None = None, filters: object | None = None) -> CaseAgingMetrics:
         if self._degraded:
             return CaseAgingMetrics(cases=[])
         return CaseAgingMetrics(

@@ -232,6 +232,17 @@ def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
     app.include_router(build_metrics_anomaly_router(query_port, settings))
     app.include_router(build_metrics_insights_router(query_port, settings))
 
+    # P5: the fourteen-row control-item slide. The actuals provider is
+    # deliberately not wired yet -- every row then reports `no_data` with its
+    # reason, which is the honest state until the per-row queries land, and is
+    # never rendered as a missed target.
+    from chatbot.features.metrics.control_items_router import build_control_items_router
+    from chatbot.features.metrics.targets_store import build_targets_store
+
+    app.include_router(
+        build_control_items_router(build_targets_store(settings), settings)
+    )
+
     report_scheduler = start_report_scheduler(
         settings, query_port, build_email_report_port(settings)
     )

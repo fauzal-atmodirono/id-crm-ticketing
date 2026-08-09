@@ -86,6 +86,16 @@ class AssistantConfig:
     # Task 8 (P7) — operator override for the media-diagnosis instruction
     # (prompts.py's DEFAULT_MEDIA_DIAGNOSIS_INSTRUCTION is the "" fallback).
     media_diagnosis_instruction: str = ""
+    # Task 2 (P7) — sentiment-adjusted tone overrides. One slot per level of
+    # chatbot.features.chat.models.Sentiment
+    # ("positive"/"neutral"/"negative"/"urgent"). "" (the default) does NOT
+    # mean "no tone guidance" -- it means "use chat_persona.py's built-in
+    # default wording for that level"; see chat_persona.select_tone_block,
+    # which is the only reader of these four fields.
+    tone_negative: str = ""
+    tone_neutral: str = ""
+    tone_urgent: str = ""
+    tone_positive: str = ""
     feature_faq: bool = True
     feature_memory: bool = True
     feature_citations: bool = True
@@ -111,6 +121,10 @@ class AssistantConfig:
             "thanks_message": self.thanks_message,
             "assign_agent_message": self.assign_agent_message,
             "media_diagnosis_instruction": self.media_diagnosis_instruction,
+            "tone_negative": self.tone_negative,
+            "tone_neutral": self.tone_neutral,
+            "tone_urgent": self.tone_urgent,
+            "tone_positive": self.tone_positive,
             "feature_faq": self.feature_faq,
             "feature_memory": self.feature_memory,
             "feature_citations": self.feature_citations,
@@ -140,6 +154,11 @@ class AssistantConfig:
             thanks_message=str(data.get("thanks_message", "")),
             assign_agent_message=str(data.get("assign_agent_message", "")),
             media_diagnosis_instruction=str(data.get("media_diagnosis_instruction", "")),
+            # Missing keys fall back to "" -- old stored docs won't have these.
+            tone_negative=str(data.get("tone_negative", "")),
+            tone_neutral=str(data.get("tone_neutral", "")),
+            tone_urgent=str(data.get("tone_urgent", "")),
+            tone_positive=str(data.get("tone_positive", "")),
             feature_faq=bool(data.get("feature_faq", True)),
             feature_memory=bool(data.get("feature_memory", True)),
             feature_citations=bool(data.get("feature_citations", True)),

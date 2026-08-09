@@ -57,6 +57,7 @@ from chatbot.features.chat.sla import FIRST_RESPONSE_STATE
 from chatbot.features.chat.twilio_signature import verify_twilio_signature
 
 if TYPE_CHECKING:
+    from chatbot.features.chat.resolved_case_index import ResolvedCaseIndexer
     from chatbot.features.routing.acw import ACWController
 
 _log = structlog.get_logger(__name__)
@@ -332,6 +333,7 @@ class ChatRouter:
         live_session_factory: _LiveFactory | None = None,
         audit_log: AuditLogPort | None = None,
         acw_controller: ACWController | None = None,
+        resolved_case_index: ResolvedCaseIndexer | None = None,
     ) -> None:
         self.orchestrator = orchestrator
         self._handoff_bridge = handoff_bridge
@@ -343,6 +345,13 @@ class ChatRouter:
         # every pre-existing test) is untouched until a later wiring wave
         # passes one in -- see `_enter_acw_best_effort`.
         self._acw_controller = acw_controller
+        # P7 task 9: same None-defaulted pattern as `acw_controller` above --
+        # a later wiring wave constructs the real ResolvedCaseIndexer (with a
+        # real summariser/transcript/repository/embedder) and passes it in;
+        # until then this is a no-op collaborator so main.py and every
+        # existing test are untouched. See `resolved_case_index.py`'s module
+        # docstring for what it does and its PII caveat.
+        self._resolved_case_index = resolved_case_index
         self._phone_token_limiter = RateLimiter(
             orchestrator._settings.phone_token_rate_limit,
             orchestrator._settings.phone_token_rate_window_seconds,
@@ -491,6 +500,16 @@ class ChatRouter:
                 if self._handoff_bridge is not None:
                     await self._handoff_bridge.unregister(session_id)
                 _log.info("chatwoot_resolved_unpaused", session_id=session_id)
+            # P7 task 9: fire the auto-summary / resolved-case index add-on.
+            # This is the single point that both branches above (a genuine
+            # `conversation_resolved` event, and a `conversation_status_changed`
+            # that lands on "resolved") funnel through, so an agent re-opening a
+            # case (status not in (None, "resolved")) already returned above and
+            # never reaches this call -- only an actual resolve does.
+            # `handle_resolved` never raises (see resolved_case_index.py), so
+            # this is safe to await inline without a wrapping try/except here.
+            if self._resolved_case_index is not None:
+                await self._resolved_case_index.handle_resolved(conversation_id=conv_id)
             return {"status": "resolved"}
 
         if payload.event != "message_created":
@@ -1752,6 +1771,7 @@ def build_chat_router(
     live_session_factory: _LiveFactory | None = None,
     audit_log: AuditLogPort | None = None,
     acw_controller: ACWController | None = None,
+    resolved_case_index: ResolvedCaseIndexer | None = None,
 ) -> APIRouter:
     """Builds and returns the configured FastAPI router instance."""
     return ChatRouter(
@@ -1762,4 +1782,5 @@ def build_chat_router(
         live_session_factory=live_session_factory,
         audit_log=audit_log,
         acw_controller=acw_controller,
+        resolved_case_index=resolved_case_index,
     ).router

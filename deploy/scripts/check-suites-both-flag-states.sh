@@ -80,6 +80,20 @@ FLAGS_ON=(
   CSAT_BY_AGENT_ENABLED=true
   CSAT_RANKING_MIN_SAMPLES=25
   CALL_QA_ENABLED=true
+
+  # --- P9: notification & alerting ---------------------------------------
+  # ANOMALY_HOURLY_ZSCORE_K and ANOMALY_HOURLY_MIN_BASELINE are set to
+  # NON-DEFAULT values on purpose, for the same reason
+  # CSAT_RANKING_MIN_SAMPLES is: a tunable left at its own default makes this
+  # run walk the identical path to the flags-OFF run, so it catches nothing.
+  # These values catch a consumer that reads the threshold from settings and
+  # then asserts a hardcoded 3.5 or 5.
+  INBOUND_ALERTS_ENABLED=true
+  ALERT_RULES_ENABLED=true
+  ANOMALY_HOURLY_ENABLED=true
+  ANOMALY_HOURLY_ZSCORE_K=2.5
+  ANOMALY_HOURLY_MIN_BASELINE=8
+  DASHBOARD_FRESHNESS_ENABLED=true
 )
 
 failed=0

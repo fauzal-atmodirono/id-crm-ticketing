@@ -612,9 +612,7 @@ class Settings(BaseSettings):
     # client's exact RFP 2026_028 Appendix A "Case Category" values (note
     # "Compliment & Feedback", not "Feedback"), but stays
     # configurable/overridable per tenant like every other dimension here.
-    case_type_options_json: str = (
-        '{"options": ["Inquiry", "Complaint", "Compliment & Feedback"]}'
-    )
+    case_type_options_json: str = '{"options": ["Inquiry", "Complaint", "Compliment & Feedback"]}'
 
     # Level-2 (+ folded Level 3/4) case detail — RFP 2026_028 Appendix A's
     # fourth taxonomy tier stored in a THIRD custom attribute, "case_detail"
@@ -995,6 +993,50 @@ class Settings(BaseSettings):
     # automated scoring on it would be confident noise (see
     # docs/testing/phone-channel-package-c-verification.md).
     call_qa_enabled: bool = False
+
+    # --- P9: notification & alerting UX --------------------------------------
+    # All default-off/default-inert, so a tenant that sets none of these gets
+    # byte-identical behaviour to before P9: no new alert surface, no hourly
+    # detector, no freshness banner.
+    #
+    # Task 2/3: moves the three working alert primitives (toast, sound, desktop
+    # notification) out of the my-tasks iframe and into the Chatwoot fork,
+    # subscribed to the ActionCable stream the SPA already uses. Off = my-tasks
+    # keeps its SLA alerts and nothing else changes -- this is an ADDITION, and
+    # breaking my-tasks would trade a working alert surface for a new one.
+    inbound_alerts_enabled: bool = False
+    # Task 1/6: the per-agent alert-rule store and the preferences UI behind it.
+    # Off = no rules exist and no preferences page is mounted, so every agent
+    # gets the built-in defaults.
+    alert_rules_enabled: bool = False
+    # Task 4: the hourly channel-volume anomaly detector.
+    #
+    # Two properties are load-bearing and easy to "simplify" into uselessness.
+    # First, the baseline is SAME-HOUR-ACROSS-DAYS (this Tuesday 14:00 against
+    # recent 14:00s), never trailing hours -- a trailing-hours baseline flags
+    # every lunchtime dip as an anomaly. Second, the minimum-volume floor below
+    # is mandatory, not a refinement: without it the detector alerts every night
+    # at 03:00, when two messages instead of the usual one is a 100% deviation.
+    anomaly_hourly_enabled: bool = False
+    # Deliberately LOOSER than the daily detector's anomaly_zscore_k (3.0):
+    # hourly buckets are smaller and noisier, so reusing the daily threshold
+    # would produce alerts nobody can act on. Tuned for signal an operator will
+    # actually respond to rather than for statistical purity.
+    anomaly_hourly_zscore_k: float = 3.5
+    # The mandatory floor. An hour with fewer than this many conversations is
+    # never flagged, however large its deviation looks -- see anomaly_hourly_
+    # enabled above for why 03:00 makes this non-optional. Lower than the daily
+    # anomaly_min_baseline (20) because an hour legitimately carries far less
+    # volume than a day.
+    anomaly_hourly_min_baseline: int = 5
+    # Task 5: the shared as-of/source freshness contract on every report page.
+    # Off = pages render exactly as today, with no freshness line. On, a page
+    # states what its numbers are as-of and where they came from: alerting and
+    # the anomaly page are live, while BigQuery-backed dashboards are a batch
+    # sync (metrics_sync_interval_hours, default 6) and say so. The point is
+    # that a difference between a dashboard figure and the live CRM is EXPECTED,
+    # and its size becomes visible instead of being read as a bug.
+    dashboard_freshness_enabled: bool = False
 
     # Settings configurations
     model_config = SettingsConfigDict(

@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from chatbot.features.chat.case_state import CHATWOOT_CASE_STATE_ATTR, CaseState
+from chatbot.features.chat.escalation_attachments import AttachmentFetcher
+from chatbot.features.chat.escalation_attachments import collect as collect_attachments
 from chatbot.features.chat.settings_facade import get_effective_value
 
 if TYPE_CHECKING:
@@ -98,6 +100,7 @@ class EscalationNotifier:
         dealer_store: DealerStore | None = None,
         tenant_settings_store: TenantSettingsStorePort | None = None,
         chatwoot_post_message: _CWPostMessage | None = None,
+        attachment_fetcher: AttachmentFetcher | None = None,
     ) -> None:
         self._settings = settings
         self._pic_registry = pic_registry
@@ -117,6 +120,9 @@ class EscalationNotifier:
         # on every non-Email channel. None means "not wired" -- a composition
         # root that predates P2 simply sends no chat ack, rather than raising.
         self._post_message = chatwoot_post_message
+        # P2: pulls the customer's photos/PDFs into the internal legs. None
+        # means "not wired" -- no attachment work is attempted at all.
+        self._attachment_fetcher = attachment_fetcher
 
     async def notify(
         self,
@@ -183,6 +189,34 @@ class EscalationNotifier:
         key = department.removeprefix("dept_")
         return await self._pic_registry.lookup(key)
 
+    async def _collect_attachments(self, conv_id: str) -> tuple[list, list[str]]:
+        """The customer's evidence, for the internal legs only.
+
+        Returns empty lists when the feature is off or no fetcher is wired --
+        and in the off case `collect` short-circuits before any HTTP call, so
+        a tenant that has not opted in pays nothing.
+        """
+        if self._attachment_fetcher is None:
+            return [], []
+        return await collect_attachments(
+            self._attachment_fetcher,
+            conv_id,
+            budget_bytes=int(
+                getattr(self._settings, "escalation_attachment_budget_bytes", 0) or 0
+            ),
+        )
+
+    @staticmethod
+    def _with_skip_notes(body: str, skipped: list[str]) -> str:
+        """Tell the reader what they did NOT receive.
+
+        A PIC who can see that a photo exists but did not arrive can go and
+        look at it. One who is told nothing does not know to."""
+        if not skipped:
+            return body
+        lines = "\n".join(f"  - {note}" for note in skipped)
+        return f"{body}\n\n--- Attachments not included ---\n{lines}\n"
+
     def _send_email(
         self,
         pic: PicEntry,
@@ -190,6 +224,8 @@ class EscalationNotifier:
         conv_id: str,
         title: str,
         body: str,
+        attachments: list | None = None,
+        skipped: list[str] | None = None,
     ) -> None:
         reference = f"Chatwoot conversation #{conv_id}"
         # CC the department's configured "relevant personnel" (managers / DLs),
@@ -206,13 +242,14 @@ class EscalationNotifier:
 
             Please action this case promptly.
         """)
+        email_body = self._with_skip_notes(email_body, skipped or [])
         try:
             self._email_sender.send(
                 to=[pic.pic_email],
                 cc=cc,
                 subject=f"[Escalation] {self._case_tag(conv_id)}{title}",
                 body=email_body,
-                attachments=[],
+                attachments=list(attachments or []),
                 reply_to=self._reply_to_for(conv_id),
             )
         except Exception as exc:
@@ -259,10 +296,24 @@ class EscalationNotifier:
             elif ack_transport == "conversation":
                 await self._send_chat_ack(conv_id, title=title)
 
+        # Collected ONCE for both internal legs -- two fetches of the same
+        # files would double the download cost for no benefit. Never passed to
+        # the customer ack: they sent these files, and mailing them back is at
+        # best noise and at worst a privacy surprise when a case has been
+        # touched by several people.
+        attachments, skipped = await self._collect_attachments(conv_id)
+
         if self._settings.escalation_email_enabled:
             pic = await self._resolve_pic(department)
             if pic is not None:
-                self._send_email(pic, conv_id=conv_id, title=title, body=body)
+                self._send_email(
+                    pic,
+                    conv_id=conv_id,
+                    title=title,
+                    body=body,
+                    attachments=attachments,
+                    skipped=skipped,
+                )
 
         if dealer:
             await self._send_dealer_forward(
@@ -271,6 +322,8 @@ class EscalationNotifier:
                 title=title,
                 body=body,
                 customer_email=customer_email,
+                attachments=attachments,
+                skipped=skipped,
             )
 
     async def _resolve_ack_template(self) -> str:
@@ -340,6 +393,8 @@ class EscalationNotifier:
     async def _send_dealer_forward(
         self, dealer_slug: str, *, conv_id: str, title: str, body: str,
         customer_email: str | None = None,
+        attachments: list | None = None,
+        skipped: list[str] | None = None,
     ) -> None:
         emails: list[str] = []
         cc: list[str] = []
@@ -365,6 +420,7 @@ class EscalationNotifier:
 
             Please action this case promptly.
         """)
+        email_body = self._with_skip_notes(email_body, skipped or [])
         # This mail carries the full transcript. If the dealer's CC list happens
         # to hold the customer's own address, that transcript would go straight
         # back to them -- drop it rather than trust the routing config.
@@ -385,7 +441,7 @@ class EscalationNotifier:
                 cc=cc,
                 subject=f"[Escalation - Dealer Forward] {self._case_tag(conv_id)}{title}",
                 body=email_body,
-                attachments=[],
+                attachments=list(attachments or []),
                 reply_to=self._reply_to_for(conv_id),
             )
         except Exception as exc:

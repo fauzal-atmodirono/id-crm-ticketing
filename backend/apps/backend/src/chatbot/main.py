@@ -28,6 +28,7 @@ from chatbot.features.chat.adapters.zendesk import ZendeskAdapter
 from chatbot.features.chat.dms_client import DmsClient, MockDmsClient
 from chatbot.features.chat.dms_config_store import DmsConfigStore
 from chatbot.features.chat.escalation_notifier import EscalationNotifier, build_dealer_email_map
+from chatbot.features.chat.escalation_attachments import ChatwootAttachmentFetcher
 from chatbot.features.chat.escalation_router import build_escalation_router
 from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.handoff_bridge import HandoffBridge
@@ -404,6 +405,11 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             # stays free of Chatwoot URL knowledge.
             chatwoot_post_message=lambda conv_id, payload: chatwoot_client._request(
                 "POST", f"/conversations/{conv_id}/messages", payload
+            ),
+            # P2: carries the customer's photos/PDFs into the PIC and dealer
+            # mail. Inert until escalation_attachment_budget_bytes is non-zero.
+            attachment_fetcher=ChatwootAttachmentFetcher(
+                chatwoot_client._request  # type: ignore[arg-type]
             ),
         )
         chatwoot_client._escalation_notifier = escalation_notifier  # type: ignore[assignment]

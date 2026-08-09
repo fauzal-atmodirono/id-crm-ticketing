@@ -729,6 +729,12 @@ class Settings(BaseSettings):
     # transcript to an address outside the company, so widening its recipient
     # list has to be a deliberate act.
     escalation_cc_dealer: bool = False
+    # P2: byte budget for attachments carried into the PIC/dealer escalation
+    # mail (photos of the damaged part, PDFs). 0 (default) disables the feature
+    # entirely and costs not even an API call. Applies to the whole mail, not
+    # per file; newest attachments win when it cannot fit everything, and what
+    # was left out is described in the body rather than silently dropped.
+    escalation_attachment_budget_bytes: int = 0
     escalation_level2_whatsapp: str = ""  # E.164, e.g. "+60112345678"
     escalation_tier2_hours: float = 4.0  # hours after first breach before level-2 alert
 

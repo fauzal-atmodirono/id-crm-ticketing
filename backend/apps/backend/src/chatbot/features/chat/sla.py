@@ -436,10 +436,8 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
                         "sla_tier2_escalation_recorded", ticket_id=ticket_id
                     )
                     try:
-                        result = level2_alert(
-                            ticket_id,
-                            TIER2_ESCALATION,
-                            remark,
+                        result = _call_level2(
+                            level2_alert, ticket_id, remark, _labels(conv)
                         )
                         if asyncio.iscoroutine(result):
                             await result
@@ -551,7 +549,9 @@ def run_sla_scan_job(
         email_sender=email_sender,
         note_poster=note_poster,
     )
-    level2_alert = _build_level2_alert(settings, twilio_adapter)
+    level2_alert = _build_level2_alert(
+        settings, twilio_adapter, pic_registry=pic_registry, email_sender=email_sender
+    )
     try:
         return asyncio.run(
             scan_conversations(
@@ -665,24 +665,104 @@ def _build_pic_alert(
     return _alert
 
 
-def _build_level2_alert(
-    settings: Settings, twilio_adapter: TwilioChannelAdapter | None
-) -> Callable[[str, str, str], Any] | None:
-    """Build the optional level-2 WhatsApp alert callback.
+def _call_level2(
+    level2_alert: Callable[..., Any], ticket_id: str, remark: str, labels: list[str]
+) -> Any:
+    """Invoke the level-2 callback, passing labels only if it accepts them.
 
-    Uses ``escalation_level2_whatsapp`` for the target number. Returns None
-    when no level-2 number or Twilio adapter is configured.
+    P2 task 7 made tier-2 department-aware, but the callback is injectable and
+    older callers (and every existing test) pass a three-argument function.
+    Sniffing the signature keeps those working rather than making a
+    department-routing feature a breaking change for anyone who never wanted
+    it.
+    """
+    try:
+        import inspect  # noqa: PLC0415 - only on the tier-2 path
+
+        accepts_labels = len(inspect.signature(level2_alert).parameters) >= 4
+    except (TypeError, ValueError):
+        accepts_labels = False
+    if accepts_labels:
+        return level2_alert(ticket_id, TIER2_ESCALATION, remark, labels)
+    return level2_alert(ticket_id, TIER2_ESCALATION, remark)
+
+
+def _build_level2_alert(
+    settings: Settings,
+    twilio_adapter: TwilioChannelAdapter | None,
+    *,
+    pic_registry: PicRegistry | None = None,
+    email_sender: SmtpEmailSender | None = None,
+) -> Callable[..., Any] | None:
+    """Build the level-2 alert callback.
+
+    Tier-2 exists because the first alert went unanswered, so sending it to the
+    same person again is the one thing it must not do. When the department has
+    an ``escalation_manager_email`` configured (Escalation Routing admin), the
+    alert goes there. Without one it falls back to the global
+    ``escalation_level2_whatsapp`` number and logs the department, so an
+    unconfigured department is visible rather than silently re-pinging the PIC.
+
+    Returns None only when neither leg is available at all.
     """
     target = settings.escalation_level2_whatsapp
-    if not target or twilio_adapter is None:
+    wa_to = "whatsapp:" + target.removeprefix("whatsapp:") if target else ""
+    want_wa = bool(wa_to) and twilio_adapter is not None
+    want_manager = pic_registry is not None and email_sender is not None
+    if not (want_wa or want_manager):
         return None
-    to = "whatsapp:" + target.removeprefix("whatsapp:")
 
-    async def _alert(ticket_id: str, to_state: str, remark: str) -> None:  # noqa: ARG001
-        await twilio_adapter.send_message(
-            conversation_id=to,
-            text=f"⚠️ TIER-2 escalation on case {ticket_id}. {remark}",
-        )
+    async def _alert(
+        ticket_id: str, to_state: str, remark: str, labels: list[str] | None = None
+    ) -> None:  # noqa: ARG001
+        text = f"⚠️ TIER-2 escalation on case {ticket_id}. {remark}"
+
+        if want_manager:
+            department = next(
+                (
+                    lbl[len(_DEPT_LABEL_PREFIX) :]
+                    for lbl in (labels or [])
+                    if lbl.startswith(_DEPT_LABEL_PREFIX)
+                ),
+                None,
+            )
+            manager = ""
+            if department:
+                try:
+                    assert pic_registry is not None  # want_manager implies this
+                    entry = await pic_registry.lookup(department)
+                    manager = getattr(entry, "escalation_manager_email", "") or ""
+                except Exception as exc:
+                    _log.warning(
+                        "tier2_manager_lookup_failed", ticket_id=ticket_id, error=str(exc)
+                    )
+            if manager:
+                try:
+                    assert email_sender is not None  # want_manager implies this
+                    email_sender.send(
+                        to=[manager],
+                        cc=[],
+                        subject=f"[TIER-2] Unanswered escalation on case {ticket_id}",
+                        body=f"{remark}\n\nReference: Chatwoot conversation #{ticket_id}",
+                        attachments=[],
+                    )
+                except Exception as exc:
+                    _log.warning(
+                        "tier2_manager_email_failed", ticket_id=ticket_id, error=str(exc)
+                    )
+            else:
+                _log.info(
+                    "tier2_no_manager_for_dept",
+                    ticket_id=ticket_id,
+                    department=department,
+                )
+
+        if want_wa:
+            try:
+                assert twilio_adapter is not None  # want_wa implies this
+                await twilio_adapter.send_message(conversation_id=wa_to, text=text)
+            except Exception as exc:
+                _log.warning("tier2_wa_failed", ticket_id=ticket_id, error=str(exc))
 
     return _alert
 

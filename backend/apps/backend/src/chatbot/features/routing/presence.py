@@ -16,6 +16,9 @@ class AgentRecord:
     id: int
     name: str
     availability_status: str  # "online" | "busy" | "offline"
+    # P2: PIC records key on email, not Chatwoot agent id, so joining presence
+    # to a PIC needs this. Defaulted for every existing construction site.
+    email: str = ""
 
 
 class PresenceFetcher:
@@ -78,7 +81,14 @@ class PresenceFetcher:
             status = item.get("availability_status") or "offline"
             if agent_id is None:
                 continue
-            agents.append(AgentRecord(id=int(agent_id), name=name, availability_status=status))
+            agents.append(
+                AgentRecord(
+                    id=int(agent_id),
+                    name=name,
+                    availability_status=status,
+                    email=str(item.get("email") or ""),
+                )
+            )
         return agents
 
     async def fetch_agent_availability(self, agent_id: int) -> str:

@@ -25,6 +25,10 @@ class PicUpsertBody(BaseModel):
     pic_email: str = Field(min_length=1)
     pic_whatsapp: str = ""
     cc_emails: list[str] = Field(default_factory=list)
+    # P2 task 7: who tier-2 wakes up when the first alert went unanswered.
+    # Optional -- an unset manager falls back to the PIC themselves.
+    escalation_manager_email: str = ""
+    escalation_manager_whatsapp: str = ""
 
 
 class DealerUpsertBody(BaseModel):
@@ -80,6 +84,8 @@ def build_pic_admin_router(
             pic_email=body.pic_email,
             pic_whatsapp=body.pic_whatsapp,
             cc_emails=body.cc_emails,
+            escalation_manager_email=body.escalation_manager_email,
+            escalation_manager_whatsapp=body.escalation_manager_whatsapp,
         )
         return {"department": department, "status": "ok"}
 

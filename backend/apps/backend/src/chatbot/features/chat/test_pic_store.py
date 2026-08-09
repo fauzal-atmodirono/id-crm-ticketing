@@ -99,6 +99,10 @@ async def test_pic_set_writes_document() -> None:
             "pic_email": "jane@example.com",
             "pic_whatsapp": "+1987654321",
             "cc_emails": ["cc@example.com"],
+            # P2 task 7: always written, empty when the department has no
+            # manager configured.
+            "escalation_manager_email": "",
+            "escalation_manager_whatsapp": "",
         }
     )
 

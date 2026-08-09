@@ -29,6 +29,11 @@ class PicRecord:
     pic_email: str
     pic_whatsapp: str
     cc_emails: list[str] = field(default_factory=list)
+    # P2 task 7: who tier-2 wakes up when the first alert went unanswered.
+    # Empty (every record written before P2) falls back to the PIC themselves
+    # -- better the same people twice than nobody.
+    escalation_manager_email: str = ""
+    escalation_manager_whatsapp: str = ""
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, PicRecord):
@@ -113,6 +118,8 @@ class PicStore:
                 pic_email=str(data.get("pic_email", "")),
                 pic_whatsapp=str(data.get("pic_whatsapp", "")),
                 cc_emails=list(data.get("cc_emails") or []),
+                escalation_manager_email=str(data.get("escalation_manager_email", "")),
+                escalation_manager_whatsapp=str(data.get("escalation_manager_whatsapp", "")),
             )
         except Exception as e:
             _log.error("pic_store_get_failed", department=department, error=str(e))
@@ -125,6 +132,8 @@ class PicStore:
         pic_email: str,
         pic_whatsapp: str,
         cc_emails: list[str] | None = None,
+        escalation_manager_email: str = "",
+        escalation_manager_whatsapp: str = "",
     ) -> None:
         try:
             await asyncio.to_thread(
@@ -135,6 +144,8 @@ class PicStore:
                     "pic_email": pic_email,
                     "pic_whatsapp": pic_whatsapp,
                     "cc_emails": cc_emails or [],
+                    "escalation_manager_email": escalation_manager_email,
+                    "escalation_manager_whatsapp": escalation_manager_whatsapp,
                 },
             )
         except Exception as e:
@@ -165,6 +176,12 @@ class PicStore:
                         pic_email=str(data.get("pic_email", "")),
                         pic_whatsapp=str(data.get("pic_whatsapp", "")),
                         cc_emails=list(data.get("cc_emails") or []),
+                        escalation_manager_email=str(
+                            data.get("escalation_manager_email", "")
+                        ),
+                        escalation_manager_whatsapp=str(
+                            data.get("escalation_manager_whatsapp", "")
+                        ),
                     )
                 )
             return results

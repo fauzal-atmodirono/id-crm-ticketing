@@ -37,14 +37,16 @@ rather than duplicated (see that module's docstring for why):
   worse than an absent one -- it looks trustworthy while silently comparing
   against wrong or missing data -- so it comes back `null` instead, the same
   suppression `delta_pct` already applies to a zero-previous denominator.
-- A period given on an endpoint whose method takes no period at all
-  (departments, callcenter, dealer-escalation, sla-buckets, case-aging --
-  none of their underlying views have a date dimension, see
-  `MetricsQueryPort`'s docstring) is a 400, not a silently-ignored filter.
-  Accepting `from`/`to`/`granularity` and then serving an all-time answer
-  under a caller-supplied week header is the exact failure this guards
-  against: better a loud rejection than a number that looks period-scoped
-  but isn't.
+- P4: departments, callcenter, dealer-escalation, sla-buckets and case-aging
+  now HONOUR a period. They used to 400 (`reject_period`, since deleted)
+  because their views had no date dimension, so a period could only have been
+  ignored -- and an all-time answer under a caller-supplied week header is a
+  lie with a header on it, which made a loud rejection the honest option. P4
+  added the `day` columns, so the real answer is now available and the
+  rejection is gone. Blocks that STILL have no date dimension
+  (`category_by_vehicle_model`, dealer `slowest_cases`) stay unfiltered and
+  say so via their `BlockScope` rather than being quietly served inside a
+  period-labelled response.
 - Any `ValueError` out of `parse_period` (inverted range, unknown
   granularity, a partial from/to/granularity set) becomes a 400 naming what
   was wrong -- never a 500, never a fallback to unfiltered data.
@@ -64,7 +66,6 @@ from chatbot.features.metrics.period_query import (
     PeriodQuery,
     block_delta,
     parse_period_or_400,
-    reject_period,
     wrap_period_response,
 )
 
@@ -91,8 +92,8 @@ def build_metrics_insights_router(port: MetricsQueryPort, settings: Settings) ->
         x_api_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_key(x_api_key)
-        reject_period("departments", parse_period_or_400(period_query))
-        return asdict(await port.fetch_departments())
+        period = parse_period_or_400(period_query)
+        return asdict(await port.fetch_departments(period))
 
     @router.get("/metrics/callcenter")
     async def callcenter(
@@ -100,8 +101,8 @@ def build_metrics_insights_router(port: MetricsQueryPort, settings: Settings) ->
         x_api_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_key(x_api_key)
-        reject_period("callcenter", parse_period_or_400(period_query))
-        return asdict(await port.fetch_callcenter())
+        period = parse_period_or_400(period_query)
+        return asdict(await port.fetch_callcenter(period))
 
     @router.get("/metrics/lifecycle")
     async def lifecycle(
@@ -124,8 +125,8 @@ def build_metrics_insights_router(port: MetricsQueryPort, settings: Settings) ->
         x_api_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_key(x_api_key)
-        reject_period("dealer-escalation", parse_period_or_400(period_query))
-        return asdict(await port.fetch_dealer_escalation())
+        period = parse_period_or_400(period_query)
+        return asdict(await port.fetch_dealer_escalation(period))
 
     @router.get("/metrics/sla-buckets")
     async def sla_buckets(
@@ -133,8 +134,8 @@ def build_metrics_insights_router(port: MetricsQueryPort, settings: Settings) ->
         x_api_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_key(x_api_key)
-        reject_period("sla-buckets", parse_period_or_400(period_query))
-        return asdict(await port.fetch_sla_buckets())
+        period = parse_period_or_400(period_query)
+        return asdict(await port.fetch_sla_buckets(period))
 
     @router.get("/metrics/case-aging")
     async def case_aging(
@@ -142,8 +143,8 @@ def build_metrics_insights_router(port: MetricsQueryPort, settings: Settings) ->
         x_api_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_key(x_api_key)
-        reject_period("case-aging", parse_period_or_400(period_query))
-        return asdict(await port.fetch_case_aging())
+        period = parse_period_or_400(period_query)
+        return asdict(await port.fetch_case_aging(period))
 
     @router.get("/metrics/after-hours")
     async def after_hours(

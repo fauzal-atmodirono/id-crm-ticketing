@@ -135,6 +135,23 @@ _BUCKET_FORMAT = {
     "month": "%Y-%m",
 }
 
+def _in_period(day: Any, period: PeriodRange) -> bool:
+    """Is a row's `day` inside the requested window?
+
+    Applied in Python for `v_case_aging` alone: it is row-per-case with no
+    aggregate to re-bucket, so there is nothing for the day-grain SQL path to
+    group. A row with no day is kept -- dropping it would silently shrink the
+    aging list, and an aging report that hides cases is worse than one showing
+    a few extra.
+    """
+    if day is None:
+        return True
+    try:
+        return period.start <= day <= period.end
+    except TypeError:
+        return True
+
+
 _UNFILTERED_SCOPE = BlockScope(status="unfiltered", period=None, supported_granularity=None)
 
 
@@ -330,19 +347,61 @@ class BigQueryMetricsQuery:
     async def fetch_anomalies(self) -> list[AnomalyRow]:
         return await asyncio.to_thread(self._fetch_anomalies_sync)
 
-    def _fetch_departments_sync(self) -> DepartmentsMetrics:
-        return DepartmentsMetrics(
-            dept_pic=self._block("v_dept_pic_performance", DeptPicRow),
-            reopen=self._block("v_reopen_rate", ReopenRow),
+    def _dated_block(self, view, row_type, period, group_columns, value_column):
+        """One block of a now-dated view, filtered when a period is given.
+
+        P4: these views gained a `day` column precisely so this is possible.
+        Before that they could only answer all-time, which is why the
+        endpoints 400'd rather than serve an all-time number under a week
+        header.
+        """
+        if period is None:
+            return self._block(view, row_type), _UNFILTERED_SCOPE
+        rows, ok = self._day_grain_block_for_period(
+            view, row_type, period, group_columns, value_column
+        )
+        return rows, BlockScope(
+            status="ok" if ok else "unavailable",
+            period=period,
+            supported_granularity=None,
+        )
+
+    def _fetch_departments_sync(
+        self, period: PeriodRange | None = None
+    ) -> DepartmentsMetrics:
+        dept_rows, dept_scope = self._dated_block(
+            "v_dept_pic_performance", DeptPicRow, period, ("department", "pic"), "cases"
+        )
+        reopen_rows, reopen_scope = self._dated_block(
+            "v_reopen_rate", ReopenRow, period, ("dealer", "department", "pic"), "reopened"
+        )
+        # v_category_by_vehicle_model has no day column (it is a taxonomy
+        # breakdown, not a time series), so it stays unfiltered and SAYS so
+        # rather than being quietly served inside a period-labelled response.
+        metrics = DepartmentsMetrics(
+            dept_pic=dept_rows,
+            reopen=reopen_rows,
             category_by_vehicle_model=self._block(
                 "v_category_by_vehicle_model", CategoryByVehicleModelRow
             ),
         )
+        metrics.attach_scopes({
+            "dept_pic": dept_scope,
+            "reopen": reopen_scope,
+            "category_by_vehicle_model": _UNFILTERED_SCOPE,
+        })
+        return metrics
 
-    async def fetch_departments(self) -> DepartmentsMetrics:
-        return await asyncio.to_thread(self._fetch_departments_sync)
+    async def fetch_departments(
+        self, period: PeriodRange | None = None
+    ) -> DepartmentsMetrics:
+        return await asyncio.to_thread(self._fetch_departments_sync, period)
 
-    def _fetch_callcenter_sync(self) -> CallCentreMetrics:
+    def _fetch_callcenter_sync(
+        self, period: PeriodRange | None = None
+    ) -> CallCentreMetrics:
+        if period is not None:
+            return self._callcenter_for_period(period)
         return CallCentreMetrics(
             sla=self._block("v_sla_achievement", SlaAchievementRow),
             tasks_per_agent=self._block("v_tasks_per_agent", TasksPerAgentRow),
@@ -353,8 +412,38 @@ class BigQueryMetricsQuery:
             nps_by_agent=self._block("v_nps_by_agent", NpsByAgentRow),
         )
 
-    async def fetch_callcenter(self) -> CallCentreMetrics:
-        return await asyncio.to_thread(self._fetch_callcenter_sync)
+    def _callcenter_for_period(self, period: PeriodRange) -> CallCentreMetrics:
+        """Every callcenter view gained a `day` column in P4, so all five
+        blocks are genuinely period-scoped rather than all-time figures under
+        a week header."""
+        blocks = {
+            "sla": ("v_sla_achievement", SlaAchievementRow, ("channel", "division"), "with_sla"),
+            "tasks_per_agent": ("v_tasks_per_agent", TasksPerAgentRow, ("agent_id", "pic"), "cases"),
+            "first_response": (
+                "v_first_response_by_channel", FirstResponseRow, ("channel",),
+                "with_first_response",
+            ),
+            "resolution_time": (
+                "v_resolution_time", ResolutionTimeRow, ("channel", "division"), "resolved",
+            ),
+            "nps_by_agent": (
+                "v_nps_by_agent", NpsByAgentRow, ("agent_id", "channel"), "respondents",
+            ),
+        }
+        rows: dict[str, Any] = {}
+        scopes: dict[str, BlockScope] = {}
+        for name, (view, row_type, group_columns, value_column) in blocks.items():
+            rows[name], scopes[name] = self._dated_block(
+                view, row_type, period, group_columns, value_column
+            )
+        metrics = CallCentreMetrics(**rows)
+        metrics.attach_scopes(scopes)
+        return metrics
+
+    async def fetch_callcenter(
+        self, period: PeriodRange | None = None
+    ) -> CallCentreMetrics:
+        return await asyncio.to_thread(self._fetch_callcenter_sync, period)
 
     def _lifecycle_cases_block(
         self, period: PeriodRange | None
@@ -404,26 +493,66 @@ class BigQueryMetricsQuery:
     async def fetch_lifecycle(self, period: PeriodRange | None = None) -> LifecycleMetrics:
         return await asyncio.to_thread(self._fetch_lifecycle_sync, period)
 
-    def _fetch_dealer_escalation_sync(self) -> DealerEscalationMetrics:
-        return DealerEscalationMetrics(
-            by_dealer=self._block("v_dealer_escalation", DealerEscalationRow),
+    def _fetch_dealer_escalation_sync(
+        self, period: PeriodRange | None = None
+    ) -> DealerEscalationMetrics:
+        # NOTE the period here filters on `dealer_escalated_at`, not
+        # `created_at` -- see v_dealer_escalation in bigquery_schema.py. A case
+        # created in May and escalated in June is a JUNE row.
+        by_dealer, dealer_scope = self._dated_block(
+            "v_dealer_escalation", DealerEscalationRow, period, ("dealer",),
+            "cases_escalated",
+        )
+        metrics = DealerEscalationMetrics(
+            by_dealer=by_dealer,
             slowest_cases=self._block("v_dealer_escalation_slowest_cases", DealerSlowCaseRow),
         )
+        metrics.attach_scopes({
+            "by_dealer": dealer_scope,
+            # A worst-offenders list is a ranking, not a time series.
+            "slowest_cases": _UNFILTERED_SCOPE,
+        })
+        return metrics
 
-    async def fetch_dealer_escalation(self) -> DealerEscalationMetrics:
-        return await asyncio.to_thread(self._fetch_dealer_escalation_sync)
+    async def fetch_dealer_escalation(
+        self, period: PeriodRange | None = None
+    ) -> DealerEscalationMetrics:
+        return await asyncio.to_thread(self._fetch_dealer_escalation_sync, period)
 
-    def _fetch_sla_buckets_sync(self) -> SlaBucketMetrics:
-        return SlaBucketMetrics(buckets=self._block("v_resolution_sla_buckets", SlaBucketRow))
+    def _fetch_sla_buckets_sync(
+        self, period: PeriodRange | None = None
+    ) -> SlaBucketMetrics:
+        rows, scope = self._dated_block(
+            "v_resolution_sla_buckets", SlaBucketRow, period,
+            ("case_type", "bucket_label"), "cases",
+        )
+        metrics = SlaBucketMetrics(buckets=rows)
+        metrics.attach_scopes({"buckets": scope})
+        return metrics
 
-    async def fetch_sla_buckets(self) -> SlaBucketMetrics:
-        return await asyncio.to_thread(self._fetch_sla_buckets_sync)
+    async def fetch_sla_buckets(
+        self, period: PeriodRange | None = None
+    ) -> SlaBucketMetrics:
+        return await asyncio.to_thread(self._fetch_sla_buckets_sync, period)
 
-    def _fetch_case_aging_sync(self) -> CaseAgingMetrics:
-        return CaseAgingMetrics(cases=self._block("v_case_aging", CaseAgingRow))
+    def _fetch_case_aging_sync(
+        self, period: PeriodRange | None = None
+    ) -> CaseAgingMetrics:
+        # Row-per-case, not an aggregate: filtered by date directly rather
+        # than re-bucketed, since there is nothing to re-aggregate.
+        rows = self._block("v_case_aging", CaseAgingRow)
+        scope = _UNFILTERED_SCOPE
+        if period is not None:
+            rows = [r for r in rows if _in_period(getattr(r, "day", None), period)]
+            scope = BlockScope(status="ok", period=period, supported_granularity=None)
+        metrics = CaseAgingMetrics(cases=rows)
+        metrics.attach_scopes({"cases": scope})
+        return metrics
 
-    async def fetch_case_aging(self) -> CaseAgingMetrics:
-        return await asyncio.to_thread(self._fetch_case_aging_sync)
+    async def fetch_case_aging(
+        self, period: PeriodRange | None = None
+    ) -> CaseAgingMetrics:
+        return await asyncio.to_thread(self._fetch_case_aging_sync, period)
 
     def _fetch_volume_by_type_division_sync(
         self, period: PeriodRange | None = None

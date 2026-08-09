@@ -241,38 +241,38 @@ def view_ddls(
         ),
         "v_sla_achievement": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_sla_achievement` AS "
-            f"SELECT channel, COALESCE(division, 'Unknown') AS division, "
+            f"SELECT {d_created} AS day, channel, COALESCE(division, 'Unknown') AS division, "
             f"COUNTIF(sla_deadline IS NOT NULL) AS with_sla, "
             f"COUNTIF(resolved_at IS NOT NULL AND resolved_at <= sla_deadline) AS met, "
             f"SAFE_DIVIDE(COUNTIF(resolved_at IS NOT NULL AND resolved_at <= sla_deadline), "
             f"COUNTIF(sla_deadline IS NOT NULL)) AS sla_achievement_rate "
-            f"FROM {fq} GROUP BY channel, division"
+            f"FROM {fq} GROUP BY day, channel, division"
         ),
         "v_reopen_rate": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_reopen_rate` AS "
-            f"SELECT COALESCE(dealer, 'Unknown') AS dealer, "
+            f"SELECT {d_created} AS day, COALESCE(dealer, 'Unknown') AS dealer, "
             f"COALESCE(department, 'Unknown') AS department, "
             f"COALESCE(pic, 'Unassigned') AS pic, COUNT(*) AS cases, "
             f"COUNTIF(reopen_count > 0) AS reopened, "
             f"SAFE_DIVIDE(COUNTIF(reopen_count > 0), COUNT(*)) AS reopen_rate "
-            f"FROM {fq} GROUP BY dealer, department, pic"
+            f"FROM {fq} GROUP BY day, dealer, department, pic"
         ),
         "v_resolution_time": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_resolution_time` AS "
-            f"SELECT channel, COALESCE(division, 'Unknown') AS division, "
+            f"SELECT {d_resolved} AS day, channel, COALESCE(division, 'Unknown') AS division, "
             f"AVG(TIMESTAMP_DIFF(resolved_at, created_at, MINUTE)) AS avg_min, "
             f"APPROX_QUANTILES(TIMESTAMP_DIFF(resolved_at, created_at, MINUTE), 100)[OFFSET(50)] AS p50_min, "
             f"APPROX_QUANTILES(TIMESTAMP_DIFF(resolved_at, created_at, MINUTE), 100)[OFFSET(90)] AS p90_min "
-            f"FROM {fq} WHERE resolved_at IS NOT NULL GROUP BY channel, division"
+            f"FROM {fq} WHERE resolved_at IS NOT NULL GROUP BY day, channel, division"
         ),
         "v_nps_by_agent": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_nps_by_agent` AS "
-            f"SELECT COALESCE(agent_id, 'Unassigned') AS agent_id, channel, "
+            f"SELECT {d_created} AS day, COALESCE(agent_id, 'Unassigned') AS agent_id, channel, "
             f"COUNTIF(nps_score IS NOT NULL) AS respondents, "
             f"SAFE_DIVIDE("
             f"COUNTIF(nps_score >= 9) - COUNTIF(nps_score IS NOT NULL AND nps_score <= 6), "
             f"COUNTIF(nps_score IS NOT NULL)) * 100 AS nps "
-            f"FROM {fq} WHERE channel IN ('Phone', 'WhatsApp') GROUP BY agent_id, channel"
+            f"FROM {fq} WHERE channel IN ('Phone', 'WhatsApp') GROUP BY day, agent_id, channel"
         ),
         # ── The three day-grain views (`v_volume_daily`,
         # `v_state_trend_daily`, `v_volume_by_type_division_daily`) are the
@@ -357,22 +357,22 @@ def view_ddls(
         ),
         "v_tasks_per_agent": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_tasks_per_agent` AS "
-            f"SELECT COALESCE(agent_id, 'Unassigned') AS agent_id, "
+            f"SELECT {d_created} AS day, COALESCE(agent_id, 'Unassigned') AS agent_id, "
             f"COALESCE(pic, 'Unassigned') AS pic, "
             f"COUNT(*) AS cases, "
             f"AVG(TIMESTAMP_DIFF(first_response_at, created_at, MINUTE)) AS avg_first_response_min, "
             f"AVG(TIMESTAMP_DIFF(resolved_at, created_at, MINUTE)) AS avg_resolution_min, "
             f"COUNTIF(status = 'resolved') AS resolved_cases "
-            f"FROM {fq} GROUP BY agent_id, pic ORDER BY cases DESC"
+            f"FROM {fq} GROUP BY day, agent_id, pic ORDER BY cases DESC"
         ),
         "v_first_response_by_channel": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_first_response_by_channel` AS "
-            f"SELECT channel, "
+            f"SELECT {d_created} AS day, channel, "
             f"AVG(TIMESTAMP_DIFF(first_response_at, created_at, MINUTE)) AS avg_first_response_min, "
             f"APPROX_QUANTILES(TIMESTAMP_DIFF(first_response_at, created_at, MINUTE), 100)[OFFSET(50)] AS p50_first_response_min, "
             f"APPROX_QUANTILES(TIMESTAMP_DIFF(first_response_at, created_at, MINUTE), 100)[OFFSET(90)] AS p90_first_response_min, "
             f"COUNT(*) AS with_first_response "
-            f"FROM {fq} WHERE first_response_at IS NOT NULL GROUP BY channel"
+            f"FROM {fq} WHERE first_response_at IS NOT NULL GROUP BY day, channel"
         ),
         "v_case_lifecycle": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_case_lifecycle` AS "

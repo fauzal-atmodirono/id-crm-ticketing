@@ -66,19 +66,6 @@ def parse_period_or_400(query: PeriodQuery) -> PeriodRange | None:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-def reject_period(endpoint: str, period: PeriodRange | None) -> None:
-    """Requirement 6: a method with no period support 400s rather than
-    silently serving an all-time answer under a period-scoped header."""
-    if period is not None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"/metrics/{endpoint} does not support period filtering "
-                "(its underlying view has no date dimension)"
-            ),
-        )
-
-
 def _sum_field(rows: list[Any], field_name: str) -> float:
     return float(sum(getattr(row, field_name) for row in rows))
 

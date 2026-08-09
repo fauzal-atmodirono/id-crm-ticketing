@@ -1,5 +1,6 @@
 from datetime import date
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -336,40 +337,47 @@ def test_volume_by_type_rejects_invalid_range():
 # one -- all four assert both the status and the message, consistently. ---
 
 
-def test_departments_rejects_period_params_rather_than_ignoring_them():
+# --- P4: the five endpoints that used to 400 on a period now honour it -----
+#
+# These tests are the inverse of the ones they replace. Until P4 the underlying
+# views had no date column, so a period could only have been ignored -- and an
+# all-time number under a caller-supplied week header is a lie with a header on
+# it, so the endpoints rejected it instead. P4 added the `day` columns, so the
+# honest answer is now available and `reject_period` is gone.
+
+
+ENDPOINTS = (
+    "/metrics/departments",
+    "/metrics/callcenter",
+    "/metrics/dealer-escalation",
+    "/metrics/sla-buckets",
+    "/metrics/case-aging",
+)
+
+
+@pytest.mark.parametrize("endpoint", ENDPOINTS)
+def test_every_previously_rejecting_endpoint_now_accepts_a_period(endpoint):
+    r = _client().get(endpoint, params=_week_params(), headers={"x-api-key": "secret"})
+    assert r.status_code == 200
+
+
+@pytest.mark.parametrize("endpoint", ENDPOINTS)
+def test_an_invalid_range_still_400s_on_each_of_them(endpoint):
+    """Accepting a period is not the same as accepting any period."""
     r = _client().get(
-        "/metrics/departments", params=_week_params(), headers={"x-api-key": "secret"}
+        endpoint,
+        params=_week_params(start="2026-07-23", end="2026-07-17"),
+        headers={"x-api-key": "secret"},
     )
     assert r.status_code == 400
-    assert "period" in r.json()["detail"].lower()
 
 
-def test_callcenter_rejects_period_params():
-    r = _client().get("/metrics/callcenter", params=_week_params(), headers={"x-api-key": "secret"})
-    assert r.status_code == 400
-    assert "period" in r.json()["detail"].lower()
-
-
-def test_dealer_escalation_rejects_period_params():
-    r = _client().get(
-        "/metrics/dealer-escalation", params=_week_params(), headers={"x-api-key": "secret"}
-    )
-    assert r.status_code == 400
-    assert "period" in r.json()["detail"].lower()
-
-
-def test_sla_buckets_rejects_period_params():
-    r = _client().get(
-        "/metrics/sla-buckets", params=_week_params(), headers={"x-api-key": "secret"}
-    )
-    assert r.status_code == 400
-    assert "period" in r.json()["detail"].lower()
-
-
-def test_case_aging_rejects_period_params():
-    r = _client().get("/metrics/case-aging", params=_week_params(), headers={"x-api-key": "secret"})
-    assert r.status_code == 400
-    assert "period" in r.json()["detail"].lower()
+@pytest.mark.parametrize("endpoint", ENDPOINTS)
+def test_the_no_period_shape_is_unchanged(endpoint):
+    """The SPA reads these on a schedule we do not control."""
+    r = _client().get(endpoint, headers={"x-api-key": "secret"})
+    assert r.status_code == 200
+    assert "current" not in r.json(), "bare shape must not become a wrapped envelope"
 
 
 def test_period_incapable_endpoint_400_takes_priority_over_missing_key():

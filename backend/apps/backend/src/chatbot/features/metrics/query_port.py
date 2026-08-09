@@ -44,6 +44,33 @@ class BlockScope:
     supported_granularity: str | None  # set on "unsupported_granularity"; the grain that would work
 
 
+class _ScopedMetrics:
+    """Per-block `BlockScope`, attached after construction.
+
+    Deliberately NOT a dataclass field. `dataclasses.asdict()` walks only
+    *declared* fields, and every `/metrics/*` route serialises its result with
+    a bare `asdict(...)` and no response model. A declared `scopes` field would
+    therefore add a new top-level key to every response the moment it existed
+    -- including on the unfiltered path, breaking "period=None is byte-identical
+    to today". Rebinding `_scopes` via `object.__setattr__` keeps that promise
+    while still working on a frozen dataclass.
+
+    Extracted in P4 task 2 rather than copied a fifth time: four more metric
+    shapes needed exactly this, and the reasoning above is the part worth
+    having in one place.
+    """
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_scopes", {})
+
+    @property
+    def scopes(self) -> dict[str, BlockScope]:
+        return self._scopes  # type: ignore[attr-defined,no-any-return]
+
+    def attach_scopes(self, scopes: dict[str, BlockScope]) -> None:
+        object.__setattr__(self, "_scopes", scopes)
+
+
 @dataclass(frozen=True)
 class VolumeRow:
     # NOT renamed to a granularity-neutral name despite holding a week key
@@ -260,7 +287,7 @@ class NpsByAgentRow:
 
 
 @dataclass(frozen=True)
-class CallCentreMetrics:
+class CallCentreMetrics(_ScopedMetrics):
     sla: list[SlaAchievementRow]
     tasks_per_agent: list[TasksPerAgentRow]
     first_response: list[FirstResponseRow]
@@ -365,7 +392,7 @@ class DealerSlowCaseRow:
 
 
 @dataclass(frozen=True)
-class DealerEscalationMetrics:
+class DealerEscalationMetrics(_ScopedMetrics):
     by_dealer: list[DealerEscalationRow]
     slowest_cases: list[DealerSlowCaseRow]
 
@@ -378,7 +405,7 @@ class SlaBucketRow:
 
 
 @dataclass(frozen=True)
-class SlaBucketMetrics:
+class SlaBucketMetrics(_ScopedMetrics):
     buckets: list[SlaBucketRow]
 
 
@@ -396,7 +423,7 @@ class CaseAgingRow:
 
 
 @dataclass(frozen=True)
-class CaseAgingMetrics:
+class CaseAgingMetrics(_ScopedMetrics):
     cases: list[CaseAgingRow]
 
 
@@ -487,7 +514,7 @@ class CategoryByVehicleModelRow:
 
 
 @dataclass(frozen=True)
-class DepartmentsMetrics:
+class DepartmentsMetrics(_ScopedMetrics):
     dept_pic: list[DeptPicRow]
     reopen: list[ReopenRow]
     category_by_vehicle_model: list[CategoryByVehicleModelRow]
@@ -503,12 +530,22 @@ class MetricsQueryPort(Protocol):
     # them would be a dishonest API surface rather than a real capability.
     async def fetch_dashboard(self, period: PeriodRange | None = None) -> DashboardMetrics: ...
     async def fetch_anomalies(self) -> list[AnomalyRow]: ...
-    async def fetch_departments(self) -> DepartmentsMetrics: ...
-    async def fetch_callcenter(self) -> CallCentreMetrics: ...
+    async def fetch_departments(
+        self, period: PeriodRange | None = None
+    ) -> DepartmentsMetrics: ...
+    async def fetch_callcenter(
+        self, period: PeriodRange | None = None
+    ) -> CallCentreMetrics: ...
     async def fetch_lifecycle(self, period: PeriodRange | None = None) -> LifecycleMetrics: ...
-    async def fetch_dealer_escalation(self) -> DealerEscalationMetrics: ...
-    async def fetch_sla_buckets(self) -> SlaBucketMetrics: ...
-    async def fetch_case_aging(self) -> CaseAgingMetrics: ...
+    async def fetch_dealer_escalation(
+        self, period: PeriodRange | None = None
+    ) -> DealerEscalationMetrics: ...
+    async def fetch_sla_buckets(
+        self, period: PeriodRange | None = None
+    ) -> SlaBucketMetrics: ...
+    async def fetch_case_aging(
+        self, period: PeriodRange | None = None
+    ) -> CaseAgingMetrics: ...
     async def fetch_volume_by_type_division(
         self, period: PeriodRange | None = None
     ) -> VolumeByTypeDivisionMetrics: ...
@@ -569,7 +606,7 @@ class MockMetricsQuery:
             AnomalyRow("whatsapp", current_volume=260, baseline_mean=90.0, baseline_stddev=15.0),
         ]
 
-    async def fetch_departments(self) -> DepartmentsMetrics:
+    async def fetch_departments(self, period: PeriodRange | None = None) -> DepartmentsMetrics:
         if self._degraded:
             return DepartmentsMetrics(dept_pic=[], reopen=[], category_by_vehicle_model=[])
         return DepartmentsMetrics(
@@ -580,7 +617,7 @@ class MockMetricsQuery:
             ],
         )
 
-    async def fetch_callcenter(self) -> CallCentreMetrics:
+    async def fetch_callcenter(self, period: PeriodRange | None = None) -> CallCentreMetrics:
         if self._degraded:
             return CallCentreMetrics(
                 sla=[],
@@ -689,7 +726,7 @@ class MockMetricsQuery:
         metrics.attach_scopes({"cases": self._scope, "state_trend": self._scope})
         return metrics
 
-    async def fetch_dealer_escalation(self) -> DealerEscalationMetrics:
+    async def fetch_dealer_escalation(self, period: PeriodRange | None = None) -> DealerEscalationMetrics:
         if self._degraded:
             return DealerEscalationMetrics(by_dealer=[], slowest_cases=[])
         return DealerEscalationMetrics(
@@ -697,7 +734,7 @@ class MockMetricsQuery:
             slowest_cases=[DealerSlowCaseRow("CONV042", "Dealer KL", 12.0)],
         )
 
-    async def fetch_sla_buckets(self) -> SlaBucketMetrics:
+    async def fetch_sla_buckets(self, period: PeriodRange | None = None) -> SlaBucketMetrics:
         if self._degraded:
             return SlaBucketMetrics(buckets=[])
         return SlaBucketMetrics(
@@ -709,7 +746,7 @@ class MockMetricsQuery:
             ]
         )
 
-    async def fetch_case_aging(self) -> CaseAgingMetrics:
+    async def fetch_case_aging(self, period: PeriodRange | None = None) -> CaseAgingMetrics:
         if self._degraded:
             return CaseAgingMetrics(cases=[])
         return CaseAgingMetrics(

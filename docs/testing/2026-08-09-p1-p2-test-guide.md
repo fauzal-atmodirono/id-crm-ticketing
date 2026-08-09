@@ -4,7 +4,8 @@ Everything here is **committed to `dev-yuda` and off by default**. With every
 new flag unset, the platform behaves exactly as it did before — that is
 asserted, not assumed. Nothing below has been enabled on a live tenant.
 
-Branch state: `33df8ef..HEAD`, ten commits. Suites: agent **389 passed**,
+Branch state: `33df8ef..HEAD`, thirteen commits. **Wave 1 (P1, P2, P3) is
+complete.** Suites: agent **389 passed**,
 backend **1981 passed / 1 skipped** — green with every new flag off *and* with
 all of them forced on.
 
@@ -29,6 +30,18 @@ to see what was tidied.
 ---
 
 ## 1. Run the suites (2 minutes, no infrastructure needed)
+
+One command does both suites in both flag states:
+
+```bash
+./deploy/scripts/check-suites-both-flag-states.sh
+```
+
+The **flags-ON** half is the one that finds bugs — the on-path is code nobody
+exercises until a tenant opts in. It has already caught two. Add every new
+default-off flag to `FLAGS_ON` in that script, or its on-path is untested.
+
+Manually, if you prefer:
 
 ```bash
 cd agent && .venv/bin/python -m pytest -q
@@ -223,7 +236,35 @@ docker compose -p proton -f docker-compose.tenant.yml \
 - **`WHATSAPP_MEDIA_UNDERSTANDING_ENABLED=true`** is set on proton and has
   never been tested.
 - **BigQuery `ensure_views()`** has never been run against real GCP.
-- **P2 is now complete** (all 11 tasks). **Packages P3–P14** are not built.
-- The **Escalation Routing admin page** has no field for the tier-2 manager
-  contact; the REST API accepts it. Needs a Chatwoot fork patch, which cannot
-  be generated in this environment.
+- **Wave 1 is complete**: P1, P2 and P3, all 29 tasks. **P4–P14** are not built.
+- Fork patch **0052** (tier-2 manager field on the Escalation Routing page) is
+  written and verified but **not yet built into an image** — it needs a Cloud
+  Build run, off-VM and for amd64.
+
+## 6. P3 — the case-record fields
+
+Ten new case columns reach the warehouse. Two things to know before enabling:
+
+```bash
+CASE_FIELDS_ENABLED=true          # backend; off = the endpoints 404
+```
+
+**The sidebar panel needs no fork patch.** Run this once per tenant and
+Chatwoot renders the panel natively:
+
+```bash
+python3 chatwoot-config/provision_case_record_fields.py --dry-run \
+  --chatwoot-url https://<tenant-crm> --account-id 1 --api-token <token>
+# then re-run without --dry-run
+```
+
+**What to check:** open any conversation, and the sidebar should show Vehicle
+Plate, Vehicle Chassis No., Purchased From, Escalated To, Reason for Delay and
+the three WIP fields. Type `wxy 1234` into the plate and confirm it stores as
+`WXY1234` — that normalisation is what keeps the vehicle dimension from
+splitting one car into three.
+
+**Escalated To offers only `dealer` and `none`.** There is no `hq` option and
+that is deliberate: what counts as an HQ escalation is client question Q5. The
+HQ column on C1-07 will report zero until Q5 is answered, and it must be
+captioned "not yet classified", never read as "no HQ escalations happened".

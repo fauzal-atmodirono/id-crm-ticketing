@@ -30,13 +30,27 @@ class FakeLiveStore:
         self.entry = entry
 
     async def search(
-        self, query_embedding: list[float], limit: int
+        self,
+        query_embedding: list[float],
+        limit: int,
+        *,
+        query_text: str | None = None,
     ) -> list[tuple[LiveFaqEntry, float]]:
+        # `query_text` carries the raw query for the authored-keywords signal.
+        # Recorded so a caller that stops forwarding it is visible here rather
+        # than silently degrading to pure semantic ranking.
+        self.last_query_text = query_text
         return [(self.entry, 0.92)] if self.entry else []
 
 
 class FailingLiveStore:
-    async def search(self, query_embedding: list[float], limit: int) -> list[object]:
+    async def search(
+        self,
+        query_embedding: list[float],
+        limit: int,
+        *,
+        query_text: str | None = None,
+    ) -> list[object]:
         raise RuntimeError("firestore down")
 
 

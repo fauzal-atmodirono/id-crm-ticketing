@@ -386,19 +386,30 @@ class FirestoreLiveFaqStore:
             return []
 
     async def search(
-        self, query_embedding: list[float], limit: int
+        self,
+        query_embedding: list[float],
+        limit: int,
+        *,
+        query_text: str | None = None,
     ) -> list[tuple[LiveFaqEntry, float]]:
         if not query_embedding:
             return []
         # `keyword_weight` is sourced from `settings.faq_keyword_weight` at
-        # construction time (see `__init__`) -- never hardcoded here. There's
-        # no raw query string available at this call site yet, so
-        # `query_text` stays unset and this degrades to pure semantic
-        # ranking until a caller further up has one to pass through.
+        # construction time (see `__init__`) -- never hardcoded here.
+        #
+        # `query_text` must be threaded from the caller or the whole tunable is
+        # inert: `_rank` can only score the authored `keywords` field against a
+        # real string, so an unset `query_text` makes `_keyword_hit` False for
+        # every entry at every weight, and raising `FAQ_KEYWORD_WEIGHT` changes
+        # nothing at all. That was the shipped state until the P7 final review
+        # caught it -- the unit test passed the weight into `_rank` directly and
+        # so never exercised this path. Callers pass the RAW query here; see the
+        # port docstring for why it must not be the normalised copy.
         return _rank(
             await self.list_active(),
             query_embedding,
             limit,
+            query_text=query_text,
             keyword_weight=self._keyword_weight,
         )
 

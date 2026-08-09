@@ -129,10 +129,24 @@ class LiveFaqPort(Protocol):
         ...
 
     async def search(
-        self, query_embedding: list[float], limit: int
+        self,
+        query_embedding: list[float],
+        limit: int,
+        *,
+        query_text: str | None = None,
     ) -> list[tuple[LiveFaqEntry, float]]:
         """Cosine-similarity search over active entries. Returns top-`limit`
-        `(entry, score)` pairs above a small score floor, best first."""
+        `(entry, score)` pairs above a small score floor, best first.
+
+        `query_text` is the **raw, un-normalised** customer query, used only for
+        the authored-`keywords` signal that `faq_keyword_weight` blends in. It is
+        deliberately separate from `query_embedding` because the two want
+        different inputs: the embedding may be fed a normalised copy (see
+        `MergedKnowledgeAdapter.search_kb`), whereas keyword matching must see the
+        original — normalising "e.MAS7" is exactly how an exact product-code match
+        stops matching. `None` (the default) degrades to pure semantic ranking,
+        which is also what `faq_keyword_weight=0.0` produces.
+        """
         ...
 
 
@@ -324,6 +338,21 @@ class ConversationLogPort(Protocol):
         (not append), so a retried callback delivery is naturally
         idempotent. Must never raise -- callers treat this as fire-and-
         forget, same as the rest of this port's surface."""
+        ...
+
+    async def get_conversation_assignee(self, ticket_id: str) -> str | None:
+        """Return the id of the agent CURRENTLY assigned to this
+        conversation, or None when unassigned, unresolvable, or on any
+        failure -- must never raise.
+
+        Used to attribute an NPS/CSAT score to the agent handling the case
+        AT THE MOMENT the customer answers the survey (P8 task 5): callers
+        must resolve this once, at answer time, and record it immediately
+        (e.g. via ``features.chat.nps.record_nps_agent_attribution``) rather
+        than letting a later reader re-derive attribution from a live
+        lookup -- a conversation reassigned after the survey would otherwise
+        silently re-attribute the score to its new owner.
+        """
         ...
 
     async def get_inbox_working_hours(self, inbox_id: int) -> dict[str, Any] | None:

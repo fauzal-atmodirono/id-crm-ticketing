@@ -47,7 +47,11 @@ class FakeLiveFaqStore:
         return [e for e in self.entries.values() if e.active]
 
     async def search(
-        self, query_embedding: list[float], limit: int
+        self,
+        query_embedding: list[float],
+        limit: int,
+        *,
+        query_text: str | None = None,
     ) -> list[tuple[LiveFaqEntry, float]]:
         return []
 

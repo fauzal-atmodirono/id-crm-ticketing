@@ -43,7 +43,11 @@ def build_kb_suggest_router(
             query_embedding = await embedder.embed(query)
             if not query_embedding:
                 return []
-            hits = await live_faq_store.search(query_embedding, limit)
+            # `query` is passed raw for the authored-keywords signal that
+            # `faq_keyword_weight` blends in; without it the tunable is inert.
+            # This path is not normalised at all (see the register's note on the
+            # second retrieval path), so raw is all there is here.
+            hits = await live_faq_store.search(query_embedding, limit, query_text=query)
         except Exception as e:
             _log.error("live_faq_suggest_failed", query=query, error=str(e))
             return []

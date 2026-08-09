@@ -111,8 +111,15 @@ class _CapturingSearchKb:
 
 class _EmptyLiveStore:
     async def search(
-        self, query_embedding: list[float], limit: int
+        self,
+        query_embedding: list[float],
+        limit: int,
+        *,
+        query_text: str | None = None,
     ) -> list[tuple[LiveFaqEntry, float]]:
+        # The embedding may be normalised; `query_text` must stay RAW, because
+        # normalising an exact product code is how it stops matching.
+        self.last_query_text = query_text
         return []
 
 
@@ -346,3 +353,35 @@ async def test_the_corpus_pass_rate_improves_or_the_normaliser_is_not_shipped() 
     # regardless of what this stub comparison shows, because the stub result
     # is explicitly not the real evidence the brief's gate requires.
     assert NORMALISE_RETRIEVAL_QUERY_ENABLED is False
+
+
+async def test_the_keyword_signal_gets_the_raw_query_even_when_the_embedding_is_normalised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The authored-`keywords` signal must never see the normalised copy.
+
+    Normalisation exists to help the *embedding* match FAQs written in standard
+    Malay. Keyword matching wants the opposite: an exact product code like
+    "e.MAS7" is precisely the thing normalisation would mangle, and it is the
+    case the keyword signal exists for. So `search_kb` must hand the live store a
+    normalised `query_embedding` and a RAW `query_text` in the same call.
+
+    Regression guard for the P7 final review's C1: the store used to receive no
+    `query_text` at all, which made `FAQ_KEYWORD_WEIGHT` inert at every value.
+    """
+    raw_text = "brp lama siap? nk service e.MAS7"
+    normalised_text = normalise(raw_text)
+    assert normalised_text != raw_text  # sanity: the fixture exercises expansion
+
+    live = _EmptyLiveStore()
+    embedder = _CapturingEmbedder()
+    adapter = MergedKnowledgeAdapter(_CapturingSearchKb(), live, embedder)
+
+    monkeypatch.setattr(
+        "chatbot.features.chat.adapters.merged_knowledge.NORMALISE_RETRIEVAL_QUERY_ENABLED",
+        True,
+    )
+    await adapter.search_kb(raw_text, limit=2)
+
+    assert embedder.calls == [normalised_text], "the embedding should get the normalised copy"
+    assert live.last_query_text == raw_text, "the keyword signal must get the RAW query"

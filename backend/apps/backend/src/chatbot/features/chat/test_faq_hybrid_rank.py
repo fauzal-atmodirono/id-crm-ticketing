@@ -203,3 +203,59 @@ def test_query_text_none_degrades_to_pure_semantic_ranking() -> None:
     assert [entry.id for entry, _ in result] == _BASELINE_ORDER
     for entry, score in result:
         assert score == _BASELINE_SCORES[entry.id]
+
+
+# --- The reachability regression the P7 final review caught ---------------
+#
+# Every test above calls `_rank` directly and passes `query_text` by hand. That
+# is why the shipped code could leave `FirestoreLiveFaqStore.search` never
+# forwarding a query string at all: `_keyword_hit` was False for every entry at
+# every weight, so raising `FAQ_KEYWORD_WEIGHT` did nothing, and no unit test
+# noticed. These two drive the store's own `search` instead, so the tunable is
+# asserted end to end rather than one layer below where it is consumed.
+
+
+class _StubStore:
+    """`FirestoreLiveFaqStore.search` with Firestore removed.
+
+    Subclasses the real class and stubs only `list_active`, so `search`'s own
+    body -- including whether it forwards `query_text` -- is the code under test.
+    """
+
+    def __init__(self, weight: float) -> None:
+        from chatbot.features.chat.adapters.live_faq import FirestoreLiveFaqStore
+
+        self._impl = FirestoreLiveFaqStore.__new__(FirestoreLiveFaqStore)
+        self._impl._keyword_weight = weight  # type: ignore[attr-defined]
+        self._impl.list_active = self._list_active  # type: ignore[method-assign]
+
+    async def _list_active(self) -> list[LiveFaqEntry]:
+        return _entries()
+
+    async def search(self, *args, **kwargs):
+        return await self._impl.search(*args, **kwargs)
+
+
+async def test_the_store_forwards_query_text_so_the_weight_is_not_inert() -> None:
+    store = _StubStore(weight=0.5)
+
+    without = await store.search(_QUERY_EMBEDDING, 10)
+    with_text = await store.search(_QUERY_EMBEDDING, 10, query_text="stok e.MAS7 ada?")
+
+    # The exact-code entry ranks last on semantics alone; the authored keyword
+    # must lift it once the raw query reaches the store.
+    assert [e.id for e, _ in without] == _BASELINE_ORDER
+    assert [e.id for e, _ in with_text] != _BASELINE_ORDER
+    assert {e.id: s for e, s in with_text}["emas7-exact"] > _BASELINE_SCORES["emas7-exact"]
+
+
+async def test_the_stores_default_weight_of_zero_still_reproduces_the_baseline() -> None:
+    # Flag-off safety: a store built with the default 0.0 weight must be
+    # byte-identical to pre-P7 even when a query string IS forwarded.
+    store = _StubStore(weight=Settings().faq_keyword_weight)
+
+    result = await store.search(_QUERY_EMBEDDING, 10, query_text="stok e.MAS7 ada?")
+
+    assert [e.id for e, _ in result] == _BASELINE_ORDER
+    for entry, score in result:
+        assert score == _BASELINE_SCORES[entry.id]

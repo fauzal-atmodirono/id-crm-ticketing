@@ -35,14 +35,23 @@ class MergedKnowledgeAdapter:
             _log.error("merged_pgvector_search_failed", error=str(e))
             return []
 
-    async def _live_articles(self, query: str, limit: int) -> list[KbArticle]:
+    async def _live_articles(
+        self, query: str, limit: int, *, keyword_query: str | None = None
+    ) -> list[KbArticle]:
+        """`query` is embedded; `keyword_query` is matched against authored
+        keywords. They differ when normalisation is on — see `search_kb`, and the
+        `LiveFaqPort.search` docstring for why keyword matching must see the raw
+        string rather than the normalised one.
+        """
         if self._live is None or self._embedder is None:
             return []
         try:
             emb = await self._embedder.embed(query)
             if not emb:
                 return []
-            hits = await self._live.search(emb, limit)
+            hits = await self._live.search(
+                emb, limit, query_text=keyword_query if keyword_query is not None else query
+            )
         except Exception as e:  # never raise into grounding
             _log.error("merged_live_faq_search_failed", error=str(e))
             return []
@@ -66,7 +75,11 @@ class MergedKnowledgeAdapter:
         # docs/analysis/2026-08-09-blocked-work-register.md.
         retrieval_query = normalise(query) if NORMALISE_RETRIEVAL_QUERY_ENABLED else query
         pg = await self._pg_articles(retrieval_query, limit)
-        live = await self._live_articles(retrieval_query, limit)
+        # The embedding gets the (possibly normalised) retrieval copy; the
+        # authored-keywords signal gets the untouched `query`, for the same
+        # reason `base` does — normalising "e.MAS7" is how an exact product-code
+        # match stops matching.
+        live = await self._live_articles(retrieval_query, limit, keyword_query=query)
         base = await self._base.search_kb(query, limit)
 
         # pg/live intentionally rank first (freshly operator-authored

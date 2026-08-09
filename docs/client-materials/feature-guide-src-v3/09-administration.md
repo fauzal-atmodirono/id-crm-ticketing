@@ -923,10 +923,17 @@ What *is* visible in the CRM: the **Translate** button in the reply composer's
 Proton panel. Sentiment appears on the conversation's custom attributes.
 Resolved-case summaries appear as private notes in the conversation.
 
-A seventh setting, `FAQ_SUGGESTION_POPUP_ENABLED`, gates a dismissible FAQ
-suggestion strip above the composer — a single best-matching FAQ answer for
-the customer's last message, with an Apply button that writes it straight
-into the reply. It only appears when the suggestion's confidence clears a
+A seventh setting, `FAQ_SUGGESTION_POPUP_ENABLED`, is **not yet connected to
+anything and setting it has no effect.** The dismissible FAQ suggestion strip it
+was intended to gate is built, but the only switch that actually shows it is the
+CRM front-end's own `PROTON_FEATURES` list (it must contain
+`faq_suggestion_popup`). Ask us before relying on either: the two switches are
+independent today, so setting the back-end one alone changes nothing, and setting
+the front-end one alone turns the strip on regardless of the back-end setting.
+
+When the strip is shown it offers a single best-matching FAQ answer for
+the customer's last message, with an Apply button that writes it into
+the reply. It only appears when the suggestion's confidence clears a
 threshold, and dismissing it for a message keeps it dismissed for that
 message. Two things about it are not yet true in practice, and an
 administrator should know both before promising it to agents:
@@ -956,8 +963,15 @@ feature and are unaffected either way.
 
 1. **Switch sentiment on before tone.** Tone selection does nothing on its own:
    with no sentiment recorded there is nothing to choose a tone from, and the
-   bot keeps its standard wording. Enabling sentiment alone is a safe first
-   step — it records the reading without changing a single reply.
+   bot keeps its standard wording.
+
+   **Enabling sentiment alone does change one thing, though, so it is not a
+   pure no-op:** a case whose customer sounded negative or urgent is mirrored
+   into the CRM as **open** rather than resolved, and the reading is not
+   time-bounded — so one angry turn keeps later turns in the same conversation
+   mirroring as open, including a closing "thanks, all sorted". Replies
+   themselves are unchanged. Expect the effect on case status and tell us if it
+   is unwanted, rather than discovering it in a report.
 2. **Leave the FAQ keyword weight at zero until you have a measurement.** Zero
    reproduces today's ordering and today's scores exactly. A large weight would
    damage the common case (ordinary questions, which already match well) in
@@ -976,10 +990,13 @@ feature and are unaffected either way.
 6. **A resolved case that is reopened and resolved again gets a second
    summary**, appended rather than overwriting the first, because the first
    summary is a true record of the first resolution.
-7. **The resolved-case store can be emptied without touching your authored
-   FAQs.** They live in separate tables with nothing shared between them, so
-   clearing machine-generated summaries cannot remove curated content. That
-   containment is what makes enabling the store reversible.
+7. **The resolved-case store is separated from your authored FAQs, so clearing
+   it cannot remove curated content** — they live in separate tables with
+   nothing shared between them. That containment is what makes enabling the
+   store reversible in principle. **In practice there is no button or command
+   for it yet:** the purge is implemented in code but nothing calls it, so
+   emptying the store today means asking us to run a statement against the
+   database. Ask before you need it in a hurry.
 
 [[SCREENSHOT: ch09-ai-quality | The reply composer's Proton panel showing the Translate action, with the resulting translation as a private note in the conversation]]
 

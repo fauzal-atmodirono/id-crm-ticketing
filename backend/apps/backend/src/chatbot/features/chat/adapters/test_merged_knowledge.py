@@ -1,4 +1,5 @@
 """Tests for MergedKnowledgeAdapter — TDD: write test first, then implement."""
+
 from __future__ import annotations
 
 import pytest
@@ -27,14 +28,23 @@ class _FakeLiveStore:
         self._results = results
 
     async def search(
-        self, query_embedding: list[float], limit: int  # noqa: ARG002
+        self,
+        query_embedding: list[float],  # noqa: ARG002
+        limit: int,  # noqa: ARG002
+        *,
+        query_text: str | None = None,
     ) -> list[tuple[LiveFaqEntry, float]]:
+        self.last_query_text = query_text
         return self._results
 
 
 class _RaisingLiveStore:
     async def search(
-        self, query_embedding: list[float], limit: int
+        self,
+        query_embedding: list[float],
+        limit: int,
+        *,
+        query_text: str | None = None,
     ) -> list[tuple[LiveFaqEntry, float]]:
         raise RuntimeError("store exploded")
 
@@ -70,9 +80,7 @@ async def test_live_faq_ranks_first_and_dedups() -> None:
         answer="duplicate content",
     )
 
-    fake_live = _FakeLiveStore(
-        [(live_entry, 0.9), (dup_entry, 0.8)]
-    )
+    fake_live = _FakeLiveStore([(live_entry, 0.9), (dup_entry, 0.8)])
     base_article = KbArticle(title="Vertex Doc", content="c", url="http://v/1")
     fake_base = _FakeBase([base_article])
     embedder = _FakeEmbedder()
@@ -150,9 +158,7 @@ async def test_base_result_survives_when_priority_sources_would_fill_limit() -> 
             (LiveFaqEntry(id="e2", question="Q2", answer="A2"), 0.6),
         ]
     )
-    fake_base = _FakeBase(
-        [KbArticle(title="iMAS 5 specs", content="...", source_type="vertex")]
-    )
+    fake_base = _FakeBase([KbArticle(title="iMAS 5 specs", content="...", source_type="vertex")])
     embedder = _FakeEmbedder()
 
     adapter = MergedKnowledgeAdapter(fake_base, fake_live, embedder, pg_port=None)

@@ -441,17 +441,34 @@ SENTIMENT_TONE_ADJUSTMENT_ENABLED=true  # pick the reply's tone from that sentim
 TRANSLATION_ENABLED=true                # POST /assist/translate (inbound, private note)
 TRANSLATION_OUTBOUND_TAMIL_ENABLED=false  # leave this alone — see below
 FAQ_KEYWORD_WEIGHT=0.0                  # hybrid FAQ rank; 0.0 reproduces today exactly
-FAQ_SUGGESTION_POPUP_ENABLED=true       # composer strip; also needs PROTON_FEATURES — see below
+FAQ_SUGGESTION_POPUP_ENABLED=true       # NO-OP today: nothing reads it — see below
 MEDIA_DIAGNOSIS_PROMPT_ENABLED=true     # diagnostic instruction when a photo/video arrives
 RESOLVED_CASE_INDEX_ENABLED=true        # index resolved-case SUMMARIES into pgvector
 AUTO_SUMMARY_ON_RESOLVE_ENABLED=true    # post that summary as a private note
 ```
+
+**Before any of the sentiment/tone/media settings above do anything at all, the
+tenant needs `CHAT_AGENT_ENABLED=true`** (default false), and the media
+instruction additionally needs `WHATSAPP_MEDIA_UNDERSTANDING_ENABLED`. Sentiment,
+tone and media diagnosis all reach production through the backend `/chat/turn`
+agent; a tenant with all eight P7 settings on and `CHAT_AGENT_ENABLED` off gets
+none of them and no warning. This dependency is easy to miss because
+`CHAT_AGENT_ENABLED` predates P7 and is not listed in the P7 block above.
 
 `FAQ_KEYWORD_WEIGHT` is the one that is not a switch. **`0.0` is not merely
 "off": it is the value that reproduces today's FAQ ordering *and today's scores*,
 entry for entry**, which is the whole safety argument for shipping hybrid
 ranking onto a live tenant. Raise it only on the strength of a calibration run —
 and see the caveat below about what has not been measured.
+
+A correction worth recording, because it is the shape of bug this programme kept
+finding: **for its first several commits this tunable did nothing at any value.**
+`FirestoreLiveFaqStore.search` passed the weight down but never the query string,
+so the keyword signal had nothing to match and every weight produced today's
+ranking. The unit tests missed it because they called the ranking function
+directly and supplied the query themselves — a layer below the bug. It is fixed,
+and there are now two tests that drive `search` itself rather than the ranker, so
+the tunable is asserted where it is actually consumed.
 
 Two dependencies rather than nine independent switches:
 
@@ -505,8 +522,12 @@ defaults off for exactly this reason.
 Five things this work does **not** deliver, each of which reads as delivered if
 nobody says otherwise:
 
-- **`FAQ_SUGGESTION_POPUP_ENABLED` now has a consumer, but it is not fully
-  wired.** Fork patch `0056-faq-composer-apply.patch` adds a dismissible FAQ
+- **`FAQ_SUGGESTION_POPUP_ENABLED` still has no consumer — setting it does
+  nothing.** The P7 final review checked: the strip's only gate is the
+  front-end's `hasFeature('faq_suggestion_popup')`, read from `PROTON_FEATURES`.
+  So the back-end flag and the real switch are independent, and an earlier
+  version of this section claiming otherwise was wrong. Fork patch
+  `0056-faq-composer-apply.patch` does add a dismissible FAQ
   suggestion strip to the reply composer's top panel, gated on a confidence
   threshold (0.75, only `live_faq` hits from `GET /kb/suggest` carry a score)
   and re-using 0002's `protonAssistResult` bridge for its Apply button — the

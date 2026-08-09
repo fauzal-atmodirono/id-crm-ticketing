@@ -141,6 +141,151 @@ async def test_suggest_mode_send_reply_posts_private_note_and_reopens(monkeypatc
 
 
 @respx.mock
+async def test_log_decision_persists_all_three_token_counts(monkeypatch):
+    """P8 task 1 added output_tokens/cached_tokens to gemini.Decision and to
+    the ai_actions schema, but nothing wired the two new fields into a written
+    row. This asserts against the persisted row, not the Decision object, so
+    it fails the way the original gap did: a real column left NULL forever."""
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json={"id": 999})
+    )
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+
+    monkeypatch.setattr(
+        gemini,
+        "decide",
+        _stub_decide(
+            gemini.Decision(
+                "send_reply", {"text": "Try restarting the app."}, None,
+                prompt_tokens=100, output_tokens=42, cached_tokens=7,
+            )
+        ),
+    )
+
+    task = await orchestrator.handle_bot_event(_payload())
+    await task
+
+    rows = await _ai_action_rows("chatwoot:42")
+    assert len(rows) == 1
+    assert rows[0].prompt_tokens == 100
+    assert rows[0].output_tokens == 42
+    assert rows[0].cached_tokens == 7
+
+
+@respx.mock
+async def test_log_decision_persists_none_not_zero_when_usage_metadata_absent(monkeypatch):
+    """A Decision with no usage metadata at all (e.g. the retry-exhausted
+    handoff fallback, which never had a response object) must persist NULL
+    on all three token columns -- not 0, which would misreport a call that
+    was never measured as a call that cost nothing."""
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+
+    monkeypatch.setattr(
+        gemini,
+        "decide",
+        _stub_decide(
+            gemini.Decision(
+                "handoff_to_human", {"reason": "n/a"}, None,
+                prompt_tokens=None, output_tokens=None, cached_tokens=None,
+            )
+        ),
+    )
+
+    task = await orchestrator.handle_bot_event(_payload())
+    await task
+
+    rows = await _ai_action_rows("chatwoot:42")
+    assert len(rows) == 1
+    assert rows[0].prompt_tokens is None
+    assert rows[0].output_tokens is None
+    assert rows[0].cached_tokens is None
+
+
+@respx.mock
+async def test_log_decision_persists_a_genuine_zero_as_zero_not_none(monkeypatch):
+    """A field the SDK actually reported as 0 (e.g. no cached content on this
+    call) must persist as 0, staying distinguishable from 'not captured'."""
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json={"id": 999})
+    )
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+
+    monkeypatch.setattr(
+        gemini,
+        "decide",
+        _stub_decide(
+            gemini.Decision(
+                "send_reply", {"text": "Sure."}, None,
+                prompt_tokens=50, output_tokens=10, cached_tokens=0,
+            )
+        ),
+    )
+
+    task = await orchestrator.handle_bot_event(_payload())
+    await task
+
+    rows = await _ai_action_rows("chatwoot:42")
+    assert len(rows) == 1
+    assert rows[0].prompt_tokens == 50
+    assert rows[0].output_tokens == 10
+    assert rows[0].cached_tokens == 0
+    assert rows[0].cached_tokens is not None
+
+
+@respx.mock
+async def test_decision_logged_before_a_failing_execution_still_records_tokens(monkeypatch, caplog):
+    """Every decision is logged to ai_actions BEFORE it's executed. When
+    execution then fails (a Chatwoot 500), the row logged beforehand must
+    still carry the token counts the decision actually knew -- the failure
+    path must not leave a partially-written audit row."""
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(500, json={"error": "boom"})
+    )
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+
+    monkeypatch.setattr(
+        gemini,
+        "decide",
+        _stub_decide(
+            gemini.Decision(
+                "send_reply", {"text": "Hi."}, None,
+                prompt_tokens=20, output_tokens=8, cached_tokens=None,
+            )
+        ),
+    )
+
+    task = await orchestrator.handle_bot_event(_payload())
+    await task  # must not raise
+
+    assert "failed executing decision" in caplog.text
+    rows = await _ai_action_rows("chatwoot:42")
+    assert len(rows) == 1
+    assert rows[0].prompt_tokens == 20
+    assert rows[0].output_tokens == 8
+    assert rows[0].cached_tokens is None
+
+
+@respx.mock
 async def test_auto_mode_send_reply_sends_public_message_via_bot_token_and_stays_pending(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "agent_mode", "auto")

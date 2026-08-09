@@ -319,6 +319,15 @@ async def _log_decision(conversation_id: int, decision: gemini.Decision) -> None
                     decision=decision.action,
                     model=settings.gemini_model,
                     prompt_tokens=decision.prompt_tokens,
+                    # output_tokens/cached_tokens (P8 task 1 added the columns and
+                    # the extraction in gemini.py; nothing wired them into a
+                    # written row until this fix). Pass `decision`'s values
+                    # through as-is -- None means "not captured" (e.g. no
+                    # response object on the retry-exhausted fallback path) and
+                    # must stay None, not become 0, or a real zero-token call
+                    # becomes indistinguishable from one we never measured.
+                    output_tokens=decision.output_tokens,
+                    cached_tokens=decision.cached_tokens,
                     output=output,
                 )
             )
@@ -518,7 +527,14 @@ async def _log_chat_action(conversation_id: int, decision: str, output: str) -> 
                     conversation_ref=f"chatwoot:{conversation_id}",
                     decision=decision,
                     model=settings.gemini_model,
+                    # This path drives the backend's ADK agent via /chat/turn,
+                    # not app.ai.gemini.decide() -- ProtonConfigClient.chat_turn's
+                    # response has no usage_metadata to report, so all three
+                    # token fields are genuinely unknown here, explicitly None
+                    # (not 0) same as prompt_tokens above.
                     prompt_tokens=None,
+                    output_tokens=None,
+                    cached_tokens=None,
                     output=output[:2000],
                 )
             )

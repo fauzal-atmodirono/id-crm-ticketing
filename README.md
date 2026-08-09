@@ -427,6 +427,124 @@ An agent can never be trapped out of routing by a status: ACW auto-exits after
 timestamp rather than an in-process timer, so it survives a restart. The sweeper
 that enforces it only bounds *how long detection takes*, not whether it happens.
 
+### AI conversational quality (P7)
+
+Nine settings on the **backend** service, eight boolean and one weight, all
+default-off or default-zero. With none of them set the platform behaves exactly
+as it did before P7: sentiment stays unclassified, FAQ ranking is pure semantic
+search, an attached photo gets today's generic instruction, and nothing is
+auto-summarised or indexed when a case is resolved.
+
+```bash
+SENTIMENT_CLASSIFIER_ENABLED=true       # classify sentiment on the turn's existing call
+SENTIMENT_TONE_ADJUSTMENT_ENABLED=true  # pick the reply's tone from that sentiment
+TRANSLATION_ENABLED=true                # POST /assist/translate (inbound, private note)
+TRANSLATION_OUTBOUND_TAMIL_ENABLED=false  # leave this alone — see below
+FAQ_KEYWORD_WEIGHT=0.0                  # hybrid FAQ rank; 0.0 reproduces today exactly
+FAQ_SUGGESTION_POPUP_ENABLED=true       # NO CONSUMER YET — see below
+MEDIA_DIAGNOSIS_PROMPT_ENABLED=true     # diagnostic instruction when a photo/video arrives
+RESOLVED_CASE_INDEX_ENABLED=true        # index resolved-case SUMMARIES into pgvector
+AUTO_SUMMARY_ON_RESOLVE_ENABLED=true    # post that summary as a private note
+```
+
+`FAQ_KEYWORD_WEIGHT` is the one that is not a switch. **`0.0` is not merely
+"off": it is the value that reproduces today's FAQ ordering *and today's scores*,
+entry for entry**, which is the whole safety argument for shipping hybrid
+ranking onto a live tenant. Raise it only on the strength of a calibration run —
+and see the caveat below about what has not been measured.
+
+Two dependencies rather than nine independent switches:
+
+- `SENTIMENT_TONE_ADJUSTMENT_ENABLED` does nothing without
+  `SENTIMENT_CLASSIFIER_ENABLED`: with no classifier there is no sentiment to
+  select a tone from, and the bot keeps its static tone paragraph. Tone is
+  re-composed per turn (not once per session), so the customer's *first* angry
+  message is already answered in the measured register whenever the model
+  classified that turn; a sentiment older than fifteen minutes is treated as
+  stale, so an hour-old complaint does not make "thanks, all sorted" come back
+  apologetic.
+- `RESOLVED_CASE_INDEX_ENABLED` needs the pgvector KB (`KNOWLEDGE_PG_ENABLED` +
+  `KNOWLEDGE_DATABASE_URL`), because the index is a table in that database. With
+  the index on and the KB unconfigured, the backend logs
+  `resolved_case_index_enabled_but_kb_not_configured` at boot and every resolve
+  logs `resolved_case_index_no_repository` — it never fails the resolve.
+  Resolving a case is the agent's action; the summary is an add-on.
+  `AUTO_SUMMARY_ON_RESOLVE_ENABLED` is *independent* of it: the private note
+  works without any database, and either flag can be on with the other off.
+
+**Tamil.** Inbound Tamil translation — so an agent can read a Tamil message — is
+enabled with `TRANSLATION_ENABLED`. **Outbound Tamil replies to customers remain
+disabled** pending an evaluation of 30 real Tamil enquiries scored by a Tamil
+speaker. Enabling `TRANSLATION_OUTBOUND_TAMIL_ENABLED` before that evaluation
+sends unverified machine translation to customers. It is deliberately excluded
+even from `deploy/scripts/check-suites-both-flag-states.sh`'s all-flags-on run,
+and a test asserts it stays excluded — do not "complete" that list.
+
+**Resolved-case suggestions** are generated from summaries of previously
+resolved cases and are not approved guidance: a resolved-case summary is what a
+colleague did last month. The index stores summaries rather than transcripts —
+structurally, the stored record has no transcript field — and the summariser
+prompt asks the model to omit customer names, phone numbers, email and home
+addresses and plate numbers. **That mitigation is weaker than it sounds, in two
+specific ways, and both matter before anyone calls it a PII control:**
+
+- Nothing inspects, redacts or validates the summary before it is stored or
+  posted. An instruction to a model is a request, not a mechanism, and a summary
+  can still carry a name or a plate number if the model includes one.
+- An operator's own persona **guardrails** are prepended *ahead* of that
+  instruction in the same prompt, so a guardrail saying the opposite ("always
+  include the customer's full name") is text the model may well prefer. Anyone
+  with persona-edit access can therefore weaken the mitigation without touching
+  code — not by deleting the sentence (nothing in the wiring removes it; the
+  persona prefix is prepended and the summariser prompt survives verbatim) but by
+  arguing with it.
+
+Full PII masking is gap R16 and is blocked on Q7. `RESOLVED_CASE_INDEX_ENABLED`
+defaults off for exactly this reason.
+
+Five things this work does **not** deliver, each of which reads as delivered if
+nobody says otherwise:
+
+- **`FAQ_SUGGESTION_POPUP_ENABLED` has no consumer.** Setting it changes nothing
+  anywhere: no backend code reads it, and the composer suggestion strip it was
+  added for is a Chatwoot fork patch that does not exist in
+  `deploy/chatwoot-fork/patches/` at the time of writing. The setting is
+  documented and defaulted off; the feature behind it is not built. Agent-assist
+  FAQ suggestions in the side panel are unaffected — they predate this and work
+  as before.
+
+- **The index is written and nothing reads it yet.** Summaries are stored and
+  labelled `resolved_case` (distinct from the curated KB's own label), and a
+  purge of the namespace provably cannot touch authored FAQs — but no suggestion
+  panel queries it, so an agent sees no resolved-case suggestions today. The
+  labelling machinery exists so that whichever surface adds them cannot present
+  them with the curated KB's authority.
+- **No calibration or corpus baseline was measured.** There are no real
+  Gemini/Vertex credentials in the environment this was built in, so the four
+  calibration sets, the Malay SMS corpus and their runners all ship with their
+  numbers recorded as `TBD — unmeasured` rather than invented. The stub runs
+  score 97–100%, and that figure means nothing: the same author wrote both the
+  ground-truth labels and the naive keyword stub being scored. Never quote it.
+- **The Malay query normaliser ships switched off**
+  (`NORMALISE_RETRIEVAL_QUERY_ENABLED`, a module constant in
+  `nlu_normalise.py`, not an env var). Its acceptance gate is "only ship it if
+  it measurably improves the corpus pass rate", and that rate has never been
+  measured for real. Note also that `kb_suggest_router.py` has a second,
+  pre-existing live-FAQ retrieval path that bypasses the normaliser entirely, so
+  even switched on it would not cover every query.
+- **The media-diagnosis prompt has never been in front of the real model with a
+  real photo.** No WhatsApp number and no real credentials here.
+  `docs/testing/2026-08-09-media-diagnosis-prompt-live-check.md` is a template
+  awaiting that run, not a result.
+
+Fork patch `0055-translate-action.patch` adds the agent-facing **Translate**
+button and, like `0053`/`0054`, was **hand-built and never verified against
+upstream Chatwoot** (no network to github from the build environment). It is the
+lower-risk of the three: every context line comes from the already-merged `0002`
+patch rather than from unverified upstream lines, and it stacks on nothing.
+Validate it on the first Cloud Build before demonstrating the button. The
+backend endpoint is mounted and independently testable regardless.
+
 ## 7. Switching to a real domain later
 
 The nip.io setup is HTTP-only and meant to get you running fast. To move to

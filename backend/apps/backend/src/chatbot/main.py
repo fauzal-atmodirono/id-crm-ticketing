@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 
-from fastapi import FastAPI
+import structlog
+from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from chatbot.features.assist.copilot_router import build_copilot_router
 from chatbot.features.assist.router import build_assist_router
+from chatbot.features.assist.translate_router import build_translate_router
 from chatbot.features.chat.adapters.assistants_store import build_assistants_store
 from chatbot.features.chat.adapters.audit_log import build_audit_log
 from chatbot.features.chat.adapters.bigquery_metrics import build_metrics_port
@@ -33,6 +35,8 @@ from chatbot.features.chat.escalation_router import build_escalation_router
 from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.kb_assistants_router import build_kb_assistants_router
+from chatbot.features.chat.kb_db import build_engine as build_kb_engine
+from chatbot.features.chat.kb_db import build_session_maker as build_kb_session_maker
 from chatbot.features.chat.kb_documents_router import build_kb_documents_router
 from chatbot.features.chat.kb_inboxes_router import build_kb_inboxes_router
 from chatbot.features.chat.kb_scenarios_router import build_kb_scenarios_router
@@ -48,6 +52,16 @@ from chatbot.features.chat.ports import (
     KnowledgePort,
     TextToSpeechPort,
     TicketingPort,
+)
+from chatbot.features.chat.resolved_case_adapters import (
+    AssistSummarizeAdapter,
+    ChatwootTranscriptAdapter,
+    find_summarize_endpoint,
+)
+from chatbot.features.chat.resolved_case_index import (
+    PgResolvedCaseRepository,
+    ResolvedCaseIndexer,
+    init_resolved_case_index_db,
 )
 from chatbot.features.chat.router import build_chat_router
 from chatbot.features.chat.service import OrchestratorService
@@ -82,6 +96,10 @@ from chatbot.platform.config import Settings, get_settings
 from chatbot.platform.logger import configure_logging
 from chatbot.platform.server import create_app
 
+# Module-level logger. The lazy `import structlog as _sl` blocks elsewhere in
+# this file predate it and are left alone; new wiring uses this.
+_log = structlog.get_logger(__name__)
+
 
 def _build_genai_client(settings: Settings) -> object | None:
     """Build a google-genai client for embeddings (ADC / Vertex), mirroring the
@@ -107,18 +125,25 @@ def _wire_assist(
     settings: Settings,
     assistants_store: object | None = None,
     tenant_settings_store: object | None = None,
-) -> None:
-    """Wire the three /assist/* endpoints and add Chatwoot origins to CORS."""
+) -> APIRouter:
+    """Wire the three /assist/* endpoints and add Chatwoot origins to CORS.
+
+    Returns the built router. The caller needs the router object itself, not
+    just the mount: P7's resolved-case summariser runs `/assist/summarize`'s own
+    endpoint function in-process rather than standing up a second summarisation
+    prompt, and `find_summarize_endpoint` locates that function on this object.
+    See `features/chat/resolved_case_adapters.py` for why the alternative --
+    extracting the closure out of `features/assist/router.py` -- was rejected.
+    """
     genai_client = _build_genai_client(settings)
-    app.include_router(
-        build_assist_router(
-            settings,
-            knowledge_port,
-            genai_client,
-            assistants_store=assistants_store,  # type: ignore[arg-type]
-            tenant_settings_store=tenant_settings_store,  # type: ignore[arg-type]
-        )
+    assist_router = build_assist_router(
+        settings,
+        knowledge_port,
+        genai_client,
+        assistants_store=assistants_store,  # type: ignore[arg-type]
+        tenant_settings_store=tenant_settings_store,  # type: ignore[arg-type]
     )
+    app.include_router(assist_router)
 
     # Extend the existing CORS middleware to allow Chatwoot origins to call
     # /assist/* cross-origin. The CORSMiddleware is already added with
@@ -147,6 +172,8 @@ def _wire_assist(
             allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=["x-api-key", "content-type"],
         )
+
+    return assist_router
 
 
 def _wire_copilot(
@@ -503,6 +530,103 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # `start_acw_sweeper` below needs the same instance to sweep.
     _acw_controller = build_acw_controller(settings, _routing_assigner)
 
+    # --- P7 task 9: auto-summary on resolve + the resolved-case index ---------
+    # Built here, like the ACW controller above, because the resolve hook that
+    # drives it lives in the chat router mounted immediately below.
+    #
+    # The summariser deliberately does NOT own a prompt. It runs
+    # `/assist/summarize`'s own endpoint function in-process, so there is exactly
+    # one summariser prompt in this codebase and the automatic path cannot drift
+    # from the agent-triggered one -- including the PII-omission sentence the
+    # index's stated mitigation rests on. That endpoint does not exist yet at
+    # this point in the boot (the assist router is built much further down, after
+    # the RBAC block it needs), so the route is bound to this adapter afterwards.
+    # Post-construction injection is safe for the same reason the
+    # EscalationNotifier assignment above is: nothing calls it until an async
+    # request handler runs, long after bootstrap_application() has returned. Left
+    # unbound it returns "" and the indexer stores nothing, which is the flag-off
+    # behaviour rather than an error.
+    _resolved_case_summarizer = AssistSummarizeAdapter(settings)
+    # Reads GET /conversations/{id}/messages through the adapter's own fail-open
+    # `_request`, the same injection ChatwootAttachmentFetcher takes. None on the
+    # zendesk crm_provider path, which has no equivalent read: the indexer then
+    # summarises an empty transcript, which the summariser declines, so nothing
+    # is posted or stored.
+    _resolved_case_transcript = (
+        ChatwootTranscriptAdapter(chatwoot_client._request) if chatwoot_client is not None else None
+    )
+    _resolved_case_repo = None
+    _resolved_case_embedder = None
+    if settings.resolved_case_index_enabled:
+        # The index is a table in the operator-KB database, so it inherits that
+        # subsystem's configuration -- and `knowledge_pg_enabled` /
+        # `knowledge_database_url` are independently default-off. "Index enabled,
+        # KB never configured" is therefore a real operator state, not a
+        # misconfiguration worth failing a boot over: log it plainly and leave
+        # the repository None, which makes the index a logged no-op per resolve.
+        # Resolving a case is the agent's action; our summarisation is an add-on
+        # and must never be able to turn a successful resolve into an error.
+        if settings.knowledge_pg_enabled and settings.knowledge_database_url:
+            _resolved_genai = _build_genai_client(settings)
+            _resolved_case_embedder = (
+                VertexEmbedder(_resolved_genai, settings.embedding_model)  # type: ignore[arg-type]
+                if _resolved_genai is not None
+                else None
+            )
+            if _resolved_case_embedder is not None:
+                # Its own engine rather than the KB block's below: that block is
+                # built later and only when `knowledge_pg_enabled` is on, and a
+                # second engine against the same URL is the cheaper of the two
+                # ways to avoid a forward reference. The TABLE is the shared
+                # state, and it has its own declarative Base -- see
+                # resolved_case_index.py on why a purge here cannot reach
+                # kb_documents/kb_chunks.
+                _resolved_case_engine = build_kb_engine(settings.knowledge_database_url)
+                _resolved_case_repo = PgResolvedCaseRepository(
+                    build_kb_session_maker(_resolved_case_engine)
+                )
+                app.state.resolved_case_engine = _resolved_case_engine
+            else:
+                _log.warning(
+                    "resolved_case_index_enabled_but_no_embedder",
+                    detail=(
+                        "RESOLVED_CASE_INDEX_ENABLED is true but the genai client is "
+                        "unavailable, so summaries cannot be embedded; nothing will be "
+                        "indexed. Auto-summary notes are unaffected."
+                    ),
+                )
+        else:
+            _log.warning(
+                "resolved_case_index_enabled_but_kb_not_configured",
+                detail=(
+                    "RESOLVED_CASE_INDEX_ENABLED is true but KNOWLEDGE_PG_ENABLED / "
+                    "KNOWLEDGE_DATABASE_URL are not set; the index has nowhere to "
+                    "write and every resolve will log resolved_case_index_no_repository. "
+                    "Auto-summary notes are unaffected."
+                ),
+                knowledge_pg_enabled=settings.knowledge_pg_enabled,
+                knowledge_database_url_set=bool(settings.knowledge_database_url),
+            )
+
+    # Passed in unconditionally, same reasoning as the ACW controller above:
+    # `handle_resolved` returns before touching a single collaborator when both
+    # of its flags are off, so with them off this is an unreachable object rather
+    # than an inert code path.
+    _resolved_case_index = ResolvedCaseIndexer(
+        settings=settings,
+        ticketing_port=ticketing_port,
+        summarizer=_resolved_case_summarizer,
+        transcript_port=_resolved_case_transcript,
+        repository=_resolved_case_repo,
+        embedder=_resolved_case_embedder,
+    )
+
+    @app.on_event("startup")
+    async def _init_resolved_case_db() -> None:
+        engine = getattr(app.state, "resolved_case_engine", None)
+        if engine is not None:
+            await init_resolved_case_index_db(engine)
+
     app.include_router(
         build_chat_router(
             orchestrator=orchestrator,
@@ -511,6 +635,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             twilio_adapter=twilio_adapter,
             audit_log=audit_log,
             acw_controller=_acw_controller,
+            resolved_case_index=_resolved_case_index,
         )
     )
 
@@ -919,12 +1044,61 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             routing_sweeper.shutdown(wait=False)
 
     # --- Proton AI-assist (rewired Captain AI) ---
-    _wire_assist(
+    _assist_router = _wire_assist(
         app,
         assist_knowledge_port,
         settings,
         assistants_store=_shared_assistants_store,
         tenant_settings_store=_shared_tenant_settings_store,
+    )
+
+    # P7 task 9/11: bind the resolved-case summariser to the route just built.
+    # This is the whole reason `_wire_assist` returns its router -- see the
+    # summariser's construction above, and `resolved_case_adapters.py` for why
+    # the automatic path executes this endpoint rather than a copy of its prompt.
+    # A missing route logs once at boot instead of once per resolve, because
+    # "the summariser was never wired" is a deployment fact, not an event.
+    if not _resolved_case_summarizer.bind(find_summarize_endpoint(_assist_router)):
+        _log.warning(
+            "resolved_case_summarizer_not_bound",
+            detail=(
+                "POST /assist/summarize was not found on the assist router, so "
+                "auto-summary on resolve and the resolved-case index will both "
+                "no-op. Resolving a conversation is unaffected."
+            ),
+        )
+
+    # P7 task 3: POST /assist/translate, the agent-facing translate action.
+    # Mounted here rather than with the other RBAC-gated routers because it is an
+    # /assist endpoint and belongs beside them, and because by this point
+    # `authz_repo`/`authz_validator` exist: it gates on the `translation.use`
+    # permission, and `require_permission` needs that pair when RBAC is on. Both
+    # are the SAME instances the RBAC block built (never a second copy, same
+    # convention as pic_store/dealer_store), and both are None with RBAC off,
+    # which `require_permission` already treats as today's shared-secret check.
+    #
+    # It reuses `_assist_genai` rather than building a fifth client: the same
+    # Gemini client the merged-knowledge assist path already holds, and None (SDK
+    # or credentials unavailable) surfaces as this endpoint's own 502 with no note
+    # posted, which is its documented model-failure path.
+    #
+    # Mounted UNCONDITIONALLY, unlike P6's status router which is gated on its
+    # flag. The difference is what a disabled call returns: the status router
+    # would have answered 200 `{"disabled": true}` to a status *write*, a shape a
+    # UI could read as a change that worked. A disabled translate returns
+    # `{"disabled": true, "reason": ...}` with no `translation` field at all --
+    # there is nothing there to mistake for a successful translation -- and the
+    # fork's Translate button (patch 0055) then reports a legible refusal instead
+    # of a 404 that reads as a broken deployment. No Gemini call and no note
+    # happen on that path; see translate_router.py's module docstring.
+    app.include_router(
+        build_translate_router(
+            settings,
+            _assist_genai,
+            ticketing_port,
+            authz_repo,
+            authz_validator,
+        )
     )
 
     # --- Ask Copilot (multi-turn) ---

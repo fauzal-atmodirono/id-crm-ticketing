@@ -853,6 +853,164 @@ colleague as being on Lunch — that would take the colleague out of routing and
 start an absence clock against their name. Who may reassign a conversation to
 a named agent is a fourth, separate permission.
 
+## AI Conversational Quality
+
+### What it is
+
+Six adjustments to how the AI reads and answers customers, each switched on or
+off per tenant by your administrator rather than by anyone inside the CRM:
+
+1. **Sentiment on every conversation.** The AI records how the customer sounds
+   — positive, neutral, negative or urgent — on the conversation itself, using
+   the same request it already makes to answer the message. There is no extra
+   AI call and no extra delay.
+2. **Tone matched to that sentiment.** With sentiment recorded, the reply's
+   tone is chosen from it: a measured, apologetic register for an angry
+   customer, a brisk one for an urgent safety issue. It applies from the
+   customer's *first* angry message, not from the following one. A sentiment
+   older than fifteen minutes is ignored, so an hour-old complaint does not
+   make a cheerful "thanks, all sorted" come back apologetic.
+3. **Translate, for the agent.** A **Translate** action in the reply composer
+   renders the customer's latest message in English as a **private note** on
+   the conversation. The translation is never sent to the customer — the only
+   thing the platform can do with it is add a note.
+4. **FAQ matching that also counts keywords.** Product codes and model names
+   (e.MAS7, for instance) match poorly on meaning alone. A keyword-overlap
+   score can be blended into FAQ ranking to fix that. It ships at zero weight,
+   which reproduces today's suggestions exactly.
+5. **Photo and video diagnosis.** When a customer sends a photo, the AI is
+   asked to describe what is actually visible, name the likely fault, state how
+   confident it is and ask at most one follow-up question — instead of a
+   generic "please describe the issue". Voice notes are deliberately excluded:
+   there is nothing to look at.
+6. **Resolved-case summaries.** When a case is resolved, the AI can post a
+   summary of it as a private note, and can add that summary to a searchable
+   store of previously resolved cases.
+
+**Everything in this list is off until an administrator switches it on.** With
+none of it enabled the platform behaves exactly as it did before: no sentiment
+is recorded, FAQ suggestions are unchanged, a photo gets the old generic
+instruction, and nothing is summarised on resolve.
+
+Two of the six carry limits that must be read before they are switched on.
+
+> **Tamil.** Inbound Tamil translation — so an agent can read a Tamil message —
+> is enabled with `TRANSLATION_ENABLED`. **Outbound Tamil replies to customers
+> remain disabled** pending an evaluation of 30 real Tamil enquiries scored by a
+> Tamil speaker. Enabling `TRANSLATION_OUTBOUND_TAMIL_ENABLED` before that
+> evaluation sends unverified machine translation to customers.
+>
+> **Resolved-case suggestions** are generated from summaries of previously
+> resolved cases, and are labelled as such wherever they are shown. They are not
+> approved guidance — a resolved-case summary is what a colleague did last
+> month. The store holds summaries rather than transcripts, and the summariser
+> is instructed to omit customer identifiers, but **this is a mitigation and not
+> PII masking** — that is gap R16. Two things about the mitigation are worth
+> knowing precisely: nothing checks or edits the summary before it is stored, and
+> an operator's own persona **guardrails** are placed ahead of that instruction
+> in the same request, so a guardrail saying the opposite ("always include the
+> customer's full name") is text the AI may prefer. Anyone who can edit the
+> persona can weaken the mitigation without touching software.
+
+### Where to find it
+
+All six are **backend settings in the tenant's configuration**, not pages in
+the CRM: there is no admin screen that toggles them, which is deliberate —
+each one changes what customers receive, so switching it on is a deployment
+decision with a record, not a checkbox. Ask your administrator to change them.
+
+What *is* visible in the CRM: the **Translate** button in the reply composer's
+Proton panel. Sentiment appears on the conversation's custom attributes.
+Resolved-case summaries appear as private notes in the conversation.
+
+A seventh setting exists in the configuration file — a dismissible FAQ
+suggestion strip above the composer — and is listed here only so it is not
+mistaken for something switched off by accident: **nothing reads it yet.** The
+strip itself has not been built, so enabling the setting changes nothing. FAQ
+suggestions in the agent-assist side panel are a separate, existing feature and
+are unaffected.
+
+> **Pending verification.** The Translate button ships as a fork patch that has
+> not yet been through a build at the time of writing, so its exact position in
+> the composer panel is what to expect rather than what has been confirmed on a
+> live tenant. The endpoint behind it is complete, mounted and tested. The
+> photo-diagnosis wording has also **not yet been tried against a real photo
+> through a real WhatsApp number** — that check is owed and is tracked in the
+> project's blocked-work register. Do not present either as demonstrated.
+
+<!-- VERIFY-LIVE: confirm the Translate button's placement in the composer panel, and the resolved-case auto-summary note's appearance, on the live tenant once fork patch 0055 has gone through a Cloud Build -->
+
+### How to use it
+
+1. **Switch sentiment on before tone.** Tone selection does nothing on its own:
+   with no sentiment recorded there is nothing to choose a tone from, and the
+   bot keeps its standard wording. Enabling sentiment alone is a safe first
+   step — it records the reading without changing a single reply.
+2. **Leave the FAQ keyword weight at zero until you have a measurement.** Zero
+   reproduces today's ordering and today's scores exactly. A large weight would
+   damage the common case (ordinary questions, which already match well) in
+   order to fix the rare one (exact product codes).
+3. **Use Translate to read, not to reply.** It posts a private note. To answer a
+   Malay or Chinese customer, write the reply as you normally would — the AI
+   already answers in the language the customer wrote in.
+4. **Do not enable outbound Tamil.** See the note above. It is the one setting
+   deliberately excluded even from the platform's own all-features-on test run.
+5. **The two resolve settings are independent.** The private-note summary needs
+   no database and can be used on its own. The searchable store of resolved
+   cases needs the platform's knowledge database to be configured; if it is not,
+   the summary note still posts, the store is skipped, and — importantly —
+   **resolving the case always succeeds either way.** Resolving is the agent's
+   action; the summary is an addition to it and can never fail it.
+6. **A resolved case that is reopened and resolved again gets a second
+   summary**, appended rather than overwriting the first, because the first
+   summary is a true record of the first resolution.
+7. **The resolved-case store can be emptied without touching your authored
+   FAQs.** They live in separate tables with nothing shared between them, so
+   clearing machine-generated summaries cannot remove curated content. That
+   containment is what makes enabling the store reversible.
+
+[[SCREENSHOT: ch09-ai-quality | The reply composer's Proton panel showing the Translate action, with the resulting translation as a private note in the conversation]]
+
+### Example scenario
+
+A customer messages in Tamil about a warning light. The agent, who does not
+read Tamil, clicks **Translate**: a private note appears in the conversation
+with the English text, and the customer sees nothing. The customer then sends a
+photo of the dashboard; because photo diagnosis is enabled, the AI's suggested
+reply names the specific warning symbol, says how confident it is, and asks one
+question rather than five. Sentiment is recorded as *urgent*, so the drafted
+wording is brisk rather than chatty. When the case is closed the next morning, a
+private note summarising it appears at the end of the thread — the agent who
+picks up the follow-up call reads three bullet points instead of forty messages.
+
+### Integrations & automation
+
+Sentiment is written to the conversation's own custom attributes, so it is
+available to automation rules and to the Reports chapter exactly like any other
+case field — no new integration surface. The resolved-case summary is produced by
+the same summariser the **Summarise** button in the composer already uses, so
+there is one summariser and one set of wording to review, not two that can drift
+apart. The summary is posted through the same private-note mechanism as
+escalation notes.
+
+**Translate is governed by its own permission** ("use translation"), granted to
+the default Agent role rather than kept administrator-only: reading a customer's
+own message is part of an ordinary agent's job on every conversation they handle.
+
+Two limits on what has actually been delivered, recorded here rather than only
+in the engineering notes because both read as delivered if nobody says so:
+
+- **Nothing yet shows resolved-case suggestions to an agent.** Summaries are
+  stored and labelled, and the labelling exists so that whichever panel adds
+  them cannot present them with a curated FAQ's authority — but no panel queries
+  the store today. Enabling it builds the corpus; it does not yet surface it.
+- **No before-and-after accuracy figures exist.** The evaluation sets and the
+  runner for them are built and are part of the delivery, but they have never
+  been run against the real AI service, so the accuracy tables in
+  `docs/testing/2026-08-08-ai-calibration-baseline.md` read "unmeasured". Any
+  percentage produced by the test harness in its current form is a property of
+  the harness, not of the model, and must not be quoted as a result.
+
 ## Account settings
 
 ### What it is

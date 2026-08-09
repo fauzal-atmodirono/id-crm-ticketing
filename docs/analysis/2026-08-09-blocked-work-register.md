@@ -138,6 +138,16 @@ stays `False` — flipping it on the strength of the stub numbers this sandbox
 can produce would be exactly the "plausible wrong number" this register
 exists to prevent.
 
+**And a coverage limit that survives the flag being flipped:** the normaliser is
+wired into one retrieval call site (`MergedKnowledgeAdapter.search_kb`), but
+`kb_suggest_router.py` has a **second, pre-existing live-FAQ retrieval path**
+(`_live_faq_suggestions`) that embeds the agent's query directly and bypasses
+the merged adapter entirely. So even switched on, the normaliser would not cover
+every query the agent-assist panel makes. The task was scoped to the single call
+site deliberately; whoever runs the comparison above should decide at the same
+time whether the second path is in scope, because a measured improvement on one
+path is not an improvement on the surface as a whole.
+
 ### 2.6 The AI calibration baseline (P7 task 10)
 
 `docs/testing/2026-08-08-ai-calibration-baseline.md` and
@@ -164,6 +174,16 @@ exists, `docs/testing/2026-08-08-ai-calibration-baseline.md`'s baseline
 tables read `TBD — unmeasured`, deliberately, the same way
 `docs/testing/2026-08-09-media-diagnosis-prompt-live-check.md` is a
 template awaiting its own live run.
+
+**One more reason the stub numbers must never be quoted**, stated because they
+*look* like excellent results: the stub runs score **97–100% across all four
+capabilities**, and both P7 task 5's corpus and task 10's calibration sets show
+the same effect for the same reason — **the same author wrote both the
+ground-truth labels and the naive keyword rules being scored against them.**
+That is not a hard baseline, it is a harness agreeing with itself. The
+`mode == "stub"` labelling keeps it honest in the data; this note keeps it honest
+in prose, because a 98% in a status update is exactly the kind of figure that
+gets repeated without its qualifier.
 
 ---
 
@@ -286,6 +306,50 @@ and `test_offline_is_catalogued_and_does_not_count_as_unavailable`.
 `PRESENCE_CUSTOM_STATUSES_ENABLED` will correctly see **no alerts at all** —
 it has no way for an agent to record an absence in the first place.
 
+## 3f. P7 resolved-case index — written, and nothing reads it yet
+
+Same category as §3d: not blocked on anyone outside this repo, recorded so it is
+not mistaken for shipped. With `RESOLVED_CASE_INDEX_ENABLED` on (and the
+pgvector KB configured), a resolved conversation's **summary** is embedded and
+stored in its own `resolved_case_summaries` table, each hit labelled
+`resolved_case` and purgeable without touching a single authored FAQ. **No
+surface queries it.** `kb_suggest_router.py`, the copilot and `/assist/suggest`
+all ground on the curated KB only, so an agent sees no resolved-case
+suggestions today — enabling the flag builds the corpus and nothing more.
+
+Whoever adds that surface inherits two constraints already built for them, and
+both are the point of the containment work: every hit carries
+`RESOLVED_CASE_SOURCE_LABEL` and a `RESOLVED_CASE_DISCLAIMER` string, and they
+must be rendered — machine-generated content shown unlabelled beside curated
+FAQs silently acquires the curated corpus's authority. **Until the surface
+exists, no client-facing material may describe agents as receiving
+resolved-case suggestions.** The operator handbook's AI Conversational Quality
+section says so explicitly.
+
+The other half of the same wiring **is** live: `AUTO_SUMMARY_ON_RESOLVE_ENABLED`
+posts the summary as a private note through the mounted `/assist/summarize`
+logic, proven end to end through the real app in
+`backend/apps/backend/src/chatbot/test_p7_wiring.py`.
+
+## 3g. P7 `FAQ_SUGGESTION_POPUP_ENABLED` — a setting with no consumer
+
+Found during the P7 wiring wave and recorded because a documented, defaulted
+setting reads as a working switch. **Nothing anywhere reads
+`faq_suggestion_popup_enabled`**: it appears once in `platform/config.py`, once in
+`deploy/tenants/example.env`, and in the flags-ON gate — and nowhere else in the
+backend, the `agent` service, or any fork patch. The composer suggestion strip it
+exists for is P7 task 7's fork patch (`00NN-faq-composer-apply.patch` with the
+1-click Apply button), and **that patch is not in
+`deploy/chatwoot-fork/patches/`** — the numbering stops at `0055`, and the task
+has no report in the P7 SDD folder. Setting the flag on a tenant therefore does
+nothing at all, in either state.
+
+Not blocked on anyone outside the repo: the task is simply not done, and pending
+is not blocked — it is here because the *setting* shipped without it, which is
+the part that misleads. The side-panel FAQ suggestions are a separate, older
+feature and are unaffected. The README's P7 section and the operator handbook
+both say so explicitly rather than listing the flag alongside the six that work.
+
 ## 4. Deliberately not attempted
 
 Recorded so they are not mistaken for oversights.
@@ -321,11 +385,50 @@ monthly total deliberately does not sum to that month's case count. Someone
 will file that as a bug. It is asserted as a named test so the answer is
 findable.
 
+**The summariser's PII-omission instruction is a request, and an operator can
+argue with it.** `/assist/summarize`'s prompt now asks the model to leave out the
+customer's name, phone number, email, home address and plate number — the
+mitigation the P7 design claims, and it did not exist as a prompt line until
+commit `f4d6258`. What it is **not**: nothing in `assist/router.py`, and nothing
+in `resolved_case_index.py` (which stores the output into pgvector) inspects,
+strips or validates the returned text, so a summary can still carry an identifier
+if the model includes one. And because `_apply_persona` **prepends** an operator
+persona prefix (product name, guardrails, preferred language) ahead of the task
+prompt, a tenant whose guardrails say the opposite — "always include the
+customer's full name" — puts that instruction *earlier in the same request*, and
+the model may prefer it. **Anyone with persona-edit access can therefore weaken
+the mitigation without touching code.** The real fix is R16 (full PII masking),
+blocked on **Q7**; this is a prompt, not a control, and should not be presented as
+one in any privacy discussion.
+
+> **Correction, recorded so it is not re-propagated:** this run's SDD ledger
+> (`.superpowers/sdd/2026-08-08-rfp-p7-ai-conversational-quality/progress.md`)
+> states as a "critical follow-up" that `_apply_persona` **replaces**
+> `_SUMMARIZE_SYSTEM` wholesale when a tenant has persona `instructions` set, so
+> that the omission sentence "disappears entirely" for those tenants. **That is
+> not what the code does.** `_apply_persona`
+> (`features/assist/router.py:245`) has one branch — `return prefix + "\n\n" +
+> task_system` — and `_resolve_persona_prefix` reads `product_name`,
+> `guardrails` and `language` only; it never reads the persona's `instructions`
+> field at all. The same is true of `compose_chat_agent_instruction`
+> (`features/chat/chat_persona.py`), which appends an `## Operator persona`
+> section rather than replacing its base. P7 task 3's own report reached this
+> conclusion first and correctly; the ledger entry overstated it. The residual
+> risk is the model-instruction-following one described above, which is real but
+> weaker, and no code change is owed for the stronger claim because the stronger
+> claim is false. Verified 2026-08-09 during the P7 wiring wave.
+
 **The flags-on test run.** `deploy/scripts/check-suites-both-flag-states.sh`
 runs both suites with every feature flag forced ON. That run has already caught
 two defects the flags-off run could not — the on-path is code nobody exercises
 until a tenant opts in. **Every new default-off flag must be added to
 `FLAGS_ON`**, or its on-path is untested.
+
+P7 added eight of its nine settings, with `TRANSLATION_OUTBOUND_TAMIL_ENABLED`
+deliberately excluded (see §2.4's neighbours and the Tamil note in the README) —
+and `backend/.../test_p7_flags.py` now *asserts* both halves of that: every P7
+setting present in `FLAGS_ON`, and outbound Tamil absent from it. The list is no
+longer maintained by memory.
 
 P6 added its seven flags **and P5's two, which had been omitted**. Adding them
 immediately caught a third class of defect the flags-off run cannot see: three

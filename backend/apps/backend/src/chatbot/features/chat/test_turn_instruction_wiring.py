@@ -194,8 +194,25 @@ def _svc(settings: Any, runner_holder: dict[str, Any], **runner_kwargs: Any) -> 
     return svc
 
 
+# The three P7 flags this file exercises, forced OFF as the baseline before any
+# override is applied. `get_settings()` reads the real process environment, and
+# `deploy/scripts/check-suites-both-flag-states.sh` runs this suite a second time
+# with all three exported as `true` -- so a bare `_settings()` meaning "the
+# pre-P7 state" is only true on the flags-off run. It is not a subtle failure
+# either way: with them ambient-on, the byte-identical assertions in this file
+# compare an instruction that legitimately carries a tone block against one that
+# does not. Pinning them here means every test in this file states the flag
+# state it is actually testing, and an override still wins because it is merged
+# last.
+_P7_FLAGS_OFF = {
+    "sentiment_classifier_enabled": False,
+    "sentiment_tone_adjustment_enabled": False,
+    "media_diagnosis_prompt_enabled": False,
+}
+
+
 def _settings(**overrides: Any) -> Any:
-    return get_settings().model_copy(update=overrides)
+    return get_settings().model_copy(update={**_P7_FLAGS_OFF, **overrides})
 
 
 def _tone_on() -> Any:

@@ -83,9 +83,12 @@ async def test_a_follow_up_date_can_be_set_on_a_conversation(enabled):
 
     await _run(_payload(custom_attributes={"follow_up_at": future}), client)
 
-    # A valid future date is left exactly as the agent set it: no correction
-    # written back, no note posted.
-    assert client.written == {}
+    # A valid future date is left exactly as the agent set it: no correction,
+    # no note posted. The only write is the internal "already validated"
+    # bookmark (see `sync._FOLLOW_UP_VALIDATED_ATTR`) that lets a later event
+    # echoing this same value back -- even after it comes due -- be told
+    # apart from an operator setting a new one.
+    assert client.written == {sync._FOLLOW_UP_VALIDATED_ATTR: future}
     assert client.messages == []
 
 
@@ -106,6 +109,97 @@ async def test_a_past_date_is_rejected_with_a_usable_message(enabled):
     assert message not in ("invalid date", "Invalid date")
     assert "past" in message.lower()
     assert "future" in message.lower() or "after" in message.lower()
+
+
+async def test_a_follow_up_date_that_has_come_due_is_left_intact_when_merely_echoed(
+    enabled,
+):
+    """Regression test for the Critical finding: Chatwoot resends the WHOLE
+    `custom_attributes` set on every `conversation_updated` (established by
+    `_rearm_escalation_guard`'s own docstring in sync.py). So the first such
+    event to land after a correctly-set follow-up date has come due --a
+    customer reply, a label change, the platform's own
+    `dealer_escalated_at`/`lifecycle_state` write, anything-- carries that
+    same now-past value back completely unchanged.
+
+    Before the fix, `maybe_validate_follow_up_date` re-validated that echoed
+    value on every single event, saw `follow_up_dt <= now`, and cleared it
+    plus posted the "is in the past" note -- destroying the reminder at
+    exactly the moment `/tasks/mine` was supposed to surface it as due. This
+    must not happen: a value that matches what this module already validated
+    and stamped (`sync._FOLLOW_UP_VALIDATED_ATTR`) is left alone, due or not.
+    """
+    due = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    client = _Chatwoot()
+
+    # Models the SECOND (and every later) `conversation_updated` for this
+    # conversation: `follow_up_at` is the same value an earlier event already
+    # validated and had stamped, per `test_a_follow_up_date_can_be_set_on_a_
+    # conversation` above -- now merely echoed back by Chatwoot, after real
+    # time has carried it past "now".
+    await _run(
+        _payload(
+            custom_attributes={
+                "follow_up_at": due,
+                sync._FOLLOW_UP_VALIDATED_ATTR: due,
+            }
+        ),
+        client,
+    )
+
+    # No correction, no rejection note: this is the reminder firing as
+    # designed, not an operator mistake to correct.
+    assert client.written == {}
+    assert client.messages == []
+
+
+async def test_a_genuinely_new_past_date_is_still_rejected(enabled):
+    """The regression fix must not weaken the original guarantee: an operator
+    who changes `follow_up_at` to an actually-new value that happens to be in
+    the past is still corrected, even though some OTHER, already-validated
+    value is sitting in `_FOLLOW_UP_VALIDATED_ATTR` from an earlier edit."""
+    stale_validated = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    new_past = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    client = _Chatwoot()
+
+    await _run(
+        _payload(
+            custom_attributes={
+                "follow_up_at": new_past,
+                sync._FOLLOW_UP_VALIDATED_ATTR: stale_validated,
+            }
+        ),
+        client,
+    )
+
+    assert client.written == {"follow_up_at": None}
+    assert len(client.messages) == 1
+    message = client.messages[0]["content"]
+    assert client.messages[0]["private"] is True
+    assert "past" in message.lower()
+
+
+async def test_an_unparseable_value_is_still_rejected_even_with_a_stale_stamp(enabled):
+    """An unparseable value must be handled distinctly from a past date (a
+    format problem, not a timing problem) even when a different, previously
+    validated value is sitting in `_FOLLOW_UP_VALIDATED_ATTR` -- i.e. the
+    stamp comparison must not accidentally swallow this case either."""
+    client = _Chatwoot()
+
+    await _run(
+        _payload(
+            custom_attributes={
+                "follow_up_at": "next thursday",
+                sync._FOLLOW_UP_VALIDATED_ATTR: "some earlier value",
+            }
+        ),
+        client,
+    )
+
+    assert client.written == {"follow_up_at": None}
+    message = client.messages[0]["content"]
+    assert "understood" in message.lower() or "iso" in message.lower()
+    assert "past" not in message.lower()
 
 
 async def test_an_unparseable_date_is_rejected_with_a_distinct_message(enabled):

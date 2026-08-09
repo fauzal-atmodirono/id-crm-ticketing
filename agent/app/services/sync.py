@@ -51,6 +51,25 @@ _BUSINESS_HOURS_ATTR = "received_in_business_hours"
 # Operator-set follow-up reminder DATE. See `maybe_validate_follow_up_date`.
 _FOLLOW_UP_ATTR = "follow_up_at"
 
+# Bookmark of the last `follow_up_at` value this module has already validated
+# and accepted. Chatwoot resends the FULL `custom_attributes` set on every
+# `conversation_updated` event (see `_rearm_escalation_guard`'s docstring
+# above for where this is established), so a `follow_up_at` an operator set
+# last week arrives again, unchanged, on every later event for that
+# conversation -- a customer reply, a label change, our own
+# `dealer_escalated_at` write, anything. Without something to tell "changed
+# by an operator" apart from "echoed back by Chatwoot", the first such event
+# to land *after* the date comes due looks identical, on the wire, to an
+# operator just having typed in a stale date -- and gets rejected, which
+# destroys the reminder at exactly the moment it was supposed to fire.
+#
+# This stamp is that memory, following the same once-per-value pattern as
+# `_NOTIFIED_ATTR` above: written back to the conversation only when a
+# genuinely new value is accepted, and read straight off the SAME event's
+# `custom_attributes` (Chatwoot echoes the stamp back too), so recognising
+# "nothing changed" costs zero extra API calls and converges in one step.
+_FOLLOW_UP_VALIDATED_ATTR = "follow_up_at_validated_value"
+
 
 def _single_line(text: str, limit: int = 100) -> str:
     """Collapse *text* onto one line, for use as an email Subject header.
@@ -525,11 +544,29 @@ async def maybe_validate_follow_up_date(payload: dict) -> None:
     `_reject_follow_up_date`) rather than silently accepted or silently
     dropped.
 
+    Validation only ever runs against an operator EDIT, never against an
+    echo. Chatwoot resends the whole `custom_attributes` set on every
+    `conversation_updated` (see `_FOLLOW_UP_VALIDATED_ATTR` above), so a
+    `follow_up_at` that was valid when chosen and has since come due arrives
+    again unchanged on the very next unrelated event -- and "the date is now
+    in the past" is true of it, exactly as true as it is of a stale value an
+    operator just typed in. Only the value's presence in this event tells
+    those apart, and `_FOLLOW_UP_VALIDATED_ATTR` supplies that: a value that
+    matches the last one this module accepted is left alone, due or not --
+    that is the reminder working, not a mistake to correct. A value that
+    doesn't match (first time seen, or genuinely changed) is validated fresh.
+
     Liberal in what "cleared" means on the wire: an empty string, an
     explicit null, or the key being absent from this event's
     `custom_attributes` altogether all count as "nothing to validate" --
     Chatwoot's custom-attribute API sends whatever the CRM panel's
     date-picker clear action gives it, and that has been observed to vary.
+    A deliberate clear does not scrub `_FOLLOW_UP_VALIDATED_ATTR`: the only
+    way the stale stamp could then wrongly suppress validation is if an
+    operator later retypes, character for character, the exact same string
+    that was previously accepted -- a narrower failure mode than the one
+    this fix closes, and one a genuinely different value (even one second
+    off) never hits.
 
     Fail-open like every helper in this module: a Chatwoot API error here is
     logged and swallowed, never raised out of the background task.
@@ -554,6 +591,12 @@ async def maybe_validate_follow_up_date(payload: dict) -> None:
 
     raw_str = raw if isinstance(raw, str) else str(raw)
 
+    if attrs.get(_FOLLOW_UP_VALIDATED_ATTR) == raw_str:
+        # Chatwoot echoing back a value we already validated -- not a new
+        # instruction from an operator. See the docstring above; this is the
+        # fix for the "reminder deleted the moment it comes due" finding.
+        return
+
     try:
         follow_up_dt = _parse_follow_up_date(raw_str)
     except ValueError:
@@ -575,6 +618,19 @@ async def maybe_validate_follow_up_date(payload: dict) -> None:
         )
         return
 
-    # A valid future date -- already stored correctly by Chatwoot, nothing
-    # more to do.
+    # A valid, genuinely new future date -- already stored correctly by
+    # Chatwoot, nothing to correct. Stamp it as validated so a later
+    # `conversation_updated` that merely echoes this same value back
+    # (including one delivered after the date has come due) is recognised
+    # as an echo rather than re-validated and wrongly rejected.
+    try:
+        await get_chatwoot_client().set_custom_attributes(
+            conversation_id, {_FOLLOW_UP_VALIDATED_ATTR: raw_str}
+        )
+    except Exception:
+        logger.exception(
+            "maybe_validate_follow_up_date: failed to stamp validated "
+            "follow-up date on conversation %s",
+            conversation_id,
+        )
 

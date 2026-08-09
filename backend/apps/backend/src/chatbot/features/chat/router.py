@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 import structlog
@@ -55,6 +55,9 @@ from chatbot.features.chat.schemas import (
 from chatbot.features.chat.service import OrchestratorService
 from chatbot.features.chat.sla import FIRST_RESPONSE_STATE
 from chatbot.features.chat.twilio_signature import verify_twilio_signature
+
+if TYPE_CHECKING:
+    from chatbot.features.routing.acw import ACWController
 
 _log = structlog.get_logger(__name__)
 
@@ -328,6 +331,7 @@ class ChatRouter:
         twilio_adapter: TwilioChannelAdapter | None = None,
         live_session_factory: _LiveFactory | None = None,
         audit_log: AuditLogPort | None = None,
+        acw_controller: ACWController | None = None,
     ) -> None:
         self.orchestrator = orchestrator
         self._handoff_bridge = handoff_bridge
@@ -335,6 +339,10 @@ class ChatRouter:
         self._twilio_adapter = twilio_adapter
         self._live_session_factory: _LiveFactory = live_session_factory or connect_live
         self._audit_log = audit_log
+        # P6 task 5: None-defaulted so every existing caller (main.py,
+        # every pre-existing test) is untouched until a later wiring wave
+        # passes one in -- see `_enter_acw_best_effort`.
+        self._acw_controller = acw_controller
         self._phone_token_limiter = RateLimiter(
             orchestrator._settings.phone_token_rate_limit,
             orchestrator._settings.phone_token_rate_window_seconds,
@@ -1567,6 +1575,18 @@ class ChatRouter:
           the transfer was dialled (redirecting the call ends the Media
           Stream, which is what drives finalize()); nothing further is
           knowable here about how the human resolved it. TwiML: hang up.
+          P6 task 5: this is also the one place a completed call can enter
+          After-Call-Work, via the optional ``acw_controller`` collaborator
+          (``None`` by default, wired only once a later wave passes one in).
+          Resolving which agent goes into ACW reuses ``find_conversation_
+          ticket`` exactly like the branch below, then reads the resulting
+          conversation's current Chatwoot assignee -- see ``acw.py``'s
+          module docstring for why that, not a guess, is the only reliable
+          answer here. This is entirely best-effort: any failure (no
+          controller wired, no ticket found, no assignee, ``acw_enabled``
+          off, a Chatwoot error) is logged and swallowed, and NEVER changes
+          the TwiML below, which is decided first and is what Twilio runs
+          next on this still-live call.
         - ``"no-answer"`` / ``"busy"`` / ``"failed"`` / anything else
           (e.g. Twilio's ``"canceled"``): nobody actually took the call.
           Resolve the ticket via ``find_conversation_ticket`` -- which,
@@ -1612,7 +1632,16 @@ class ChatRouter:
 
         if status == "completed":
             _log.info("phone_dial_status_completed", call_sid=call_sid)
-            return Response(content=_DIAL_HANGUP_TWIML, media_type="application/xml")
+            twiml = Response(content=_DIAL_HANGUP_TWIML, media_type="application/xml")
+            # P6 task 5: best-effort ACW entry, decided AFTER the TwiML
+            # above so a failure here can never change the response Twilio
+            # is about to run on this still-live call. `settings.acw_enabled`
+            # is checked here too (not just inside the controller) so that
+            # with the flag off, call-end handling makes zero extra calls --
+            # not even a `find_conversation_ticket` lookup.
+            if self._acw_controller is not None and settings.acw_enabled:
+                await self._enter_acw_best_effort(call_sid)
+            return twiml
 
         _log.info("phone_dial_status_unanswered", call_sid=call_sid, status=status)
         session_id = f"phone-{call_sid}"
@@ -1668,6 +1697,52 @@ class ChatRouter:
             media_type="application/xml",
         )
 
+    async def _enter_acw_best_effort(self, call_sid: str) -> None:
+        """P6 task 5: resolve the call's conversation and hand it to
+        ``ACWController.start_after_call`` -- the only place that decides
+        which agent (if any) enters After-Call-Work.
+
+        Called only from ``phone_dial_status_webhook``'s ``"completed"``
+        branch, and only AFTER that branch's TwiML response has already
+        been built -- every exception here is caught and logged, never
+        re-raised, so nothing in this method can affect the response
+        already sent to Twilio.
+
+        Resolves the ticket via ``find_conversation_ticket`` -- same helper
+        and reasoning as the unanswered branch below: this can run well
+        after the call (and the ``PhoneBridge`` that handled it) is gone,
+        on a different process, and must never create a conversation.
+        ``find_conversation_ticket`` returning ``None`` (no ticket ever
+        existed, or it can't be found) is a normal, silent skip here, not
+        an error -- unlike the unanswered branch, there is no promised
+        callback riding on this lookup succeeding.
+        """
+        if self._acw_controller is None:
+            return
+        session_id = f"phone-{call_sid}"
+        port = self.orchestrator._conversation_log_port
+        try:
+            ticket_id = await port.find_conversation_ticket(session_id)
+        except Exception as e:
+            _log.error(
+                "phone_dial_status_acw_ticket_resolve_failed", call_sid=call_sid, error=str(e)
+            )
+            return
+        if ticket_id is None:
+            _log.info("phone_dial_status_acw_no_ticket", call_sid=call_sid)
+            return
+        try:
+            conversation_id = int(ticket_id)
+        except (TypeError, ValueError):
+            _log.error(
+                "phone_dial_status_acw_non_numeric_ticket", call_sid=call_sid, ticket_id=ticket_id
+            )
+            return
+        try:
+            await self._acw_controller.start_after_call(conversation_id)
+        except Exception as e:
+            _log.error("phone_dial_status_acw_failed", call_sid=call_sid, error=str(e))
+
 
 def build_chat_router(
     orchestrator: OrchestratorService,
@@ -1676,6 +1751,7 @@ def build_chat_router(
     twilio_adapter: TwilioChannelAdapter | None = None,
     live_session_factory: _LiveFactory | None = None,
     audit_log: AuditLogPort | None = None,
+    acw_controller: ACWController | None = None,
 ) -> APIRouter:
     """Builds and returns the configured FastAPI router instance."""
     return ChatRouter(
@@ -1685,4 +1761,5 @@ def build_chat_router(
         twilio_adapter=twilio_adapter,
         live_session_factory=live_session_factory,
         audit_log=audit_log,
+        acw_controller=acw_controller,
     ).router

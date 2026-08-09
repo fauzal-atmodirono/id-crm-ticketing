@@ -34,9 +34,7 @@ class RoutingAssigner:
             f"/api/v1/accounts/{self._settings.chatwoot_account_id}"
         )
 
-    async def _request(
-        self, method: str, path: str, payload: dict[str, Any] | None = None
-    ) -> Any:
+    async def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
         # Deferred import avoids a circular dependency between the routing
         # package and the chat adapter package.
         import httpx  # noqa: PLC0415
@@ -50,9 +48,7 @@ class RoutingAssigner:
         url = f"{self._base()}{path}"
         try:
             async with httpx.AsyncClient() as client:
-                res = await client.request(
-                    method, url, json=payload, headers=headers, timeout=10.0
-                )
+                res = await client.request(method, url, json=payload, headers=headers, timeout=10.0)
                 res.raise_for_status()
                 return res.json() if res.content else {}
         except Exception as e:
@@ -84,3 +80,31 @@ class RoutingAssigner:
         await self._request(
             "POST", f"/conversations/{conversation_id}/assignments", {"assignee_id": agent_id}
         )
+
+    async def resolve_assignee(self, conversation_id: int) -> int | None:
+        """Resolve a conversation's CURRENT Chatwoot assignee id.
+
+        P6 task 5 (After-Call-Work) needs "which agent do I put into
+        wrap-up" at call-end time, when nothing about the call itself
+        (a static hunt-group `<Dial>`, no per-agent identity) can answer
+        that. The conversation's live assignee is the one place that
+        answer actually lives.
+
+        Calls GET /conversations/{id} -- the same single-conversation
+        fetch `resolve_channel` already uses -- and reads
+        ``meta.assignee.id``, the exact path
+        `PresenceFetcher.fetch_agent_open_counts`'s docstring documents
+        (verified against a live Chatwoot) for a conversation object of
+        this shape. Fails open to `None` on every failure mode: an
+        unreachable Chatwoot, an unknown conversation, or a conversation
+        with no assignee -- never a guess, per this task's explicit
+        instruction not to invent an agent id.
+        """
+        conv = await self._request("GET", f"/conversations/{conversation_id}")
+        if not isinstance(conv, dict):
+            return None
+        assignee = (conv.get("meta") or {}).get("assignee") or {}
+        if not isinstance(assignee, dict):
+            return None
+        agent_id = assignee.get("id")
+        return int(agent_id) if agent_id is not None else None

@@ -94,6 +94,14 @@ from chatbot.features.routing.workforce_router import build_workforce_router
 from chatbot.features.tasks.tasks_router import build_tasks_router
 from chatbot.platform.config import Settings, get_settings
 from chatbot.platform.logger import configure_logging
+from chatbot.platform.metered_genai import (
+    SURFACE_ASSIST_COPILOT,
+    SURFACE_ASSIST_SUGGEST,
+    SURFACE_ASSIST_TRANSLATE,
+    SURFACE_EMBED,
+    build_metered_genai_client,
+    with_surface,
+)
 from chatbot.platform.server import create_app
 
 # Module-level logger. The lazy `import structlog as _sl` blocks elsewhere in
@@ -102,21 +110,41 @@ _log = structlog.get_logger(__name__)
 
 
 def _build_genai_client(settings: Settings) -> object | None:
-    """Build a google-genai client for embeddings (ADC / Vertex), mirroring the
-    orchestrator. Returns None if the SDK/credentials are unavailable so live-FAQ
-    wiring falls back to Vertex-Search-only suggestions and boot never breaks."""
-    try:
-        from google.genai import Client  # noqa: PLC0415 — lazy: boot without the SDK
+    """Build a google-genai client (ADC / Vertex), **routed through the token
+    metering wrapper**. Returns None if the SDK/credentials are unavailable so
+    live-FAQ wiring falls back to Vertex-Search-only suggestions and boot never
+    breaks -- unchanged from before metering.
 
-        if settings.google_genai_use_vertexai:
-            return Client(
-                vertexai=True,
-                project=settings.vertex_project_id,
-                location=settings.vertex_location,
-            )
-        return Client()
-    except Exception:
-        return None
+    This one function feeds several subsystems, so three things about its new
+    behaviour are load-bearing for anyone editing this file:
+
+    1. **The returned object is not always a `google.genai.Client`.** With
+       `token_metering_enabled` on it is a `MeteredGenaiClient` proxy that
+       forwards every attribute it does not intercept. With the flag off
+       (the default) it is the raw SDK client *by identity* -- no proxy exists,
+       so the model path is byte-identical to pre-P8 with no added latency and
+       no extra I/O. Nothing downstream may `isinstance`-check the SDK type.
+    2. **The surface label is applied at hand-over, not here.** Every consumer
+       of this function shares one client, and the cost report groups spend by
+       surface, so a single construction-time label would flatten three assist
+       products and the embedder into one indistinguishable line. The base
+       label is therefore `embed` -- correct for the majority of consumers,
+       all of which are `VertexEmbedder`/live-FAQ -- and each generative
+       consumer re-labels its own view with `with_surface(...)` **at the point
+       the client is handed to it**. `with_surface` returns a view over the
+       *same* SDK client (no second connection) and is a no-op on an unmetered
+       client, so no call site needs a flag branch. Order matters only in that
+       direction: re-label at hand-over, never mutate the shared client.
+    3. **Ordering/cost at boot.** With the flag on, each call here also builds
+       its own `TokenUsageSink`; for a tenant on the BigQuery metrics provider
+       that means one idempotent `create_table(exists_ok=True)` per call. This
+       mirrors the pre-existing structure of this file, which already builds a
+       separate raw client per wiring block; consolidating to a single shared
+       client (and sink) is a worthwhile but separate refactor. With the flag
+       off no sink is built at all -- the flag is checked before the sink is
+       constructed.
+    """
+    return build_metered_genai_client(settings, surface=SURFACE_EMBED)
 
 
 def _wire_assist(
@@ -139,7 +167,12 @@ def _wire_assist(
     assist_router = build_assist_router(
         settings,
         knowledge_port,
-        genai_client,
+        # /assist/suggest, /assist/summarize and /assist/ask share this router
+        # and therefore this one label; the router does not hand its client on
+        # per endpoint. Their spend rolls up under `assist.suggest`, which
+        # includes P7's resolved-case summariser (it runs /assist/summarize's
+        # own endpoint function in-process).
+        with_surface(genai_client, SURFACE_ASSIST_SUGGEST),
         assistants_store=assistants_store,  # type: ignore[arg-type]
         tenant_settings_store=tenant_settings_store,  # type: ignore[arg-type]
     )
@@ -192,7 +225,7 @@ def _wire_copilot(
         build_copilot_router(
             settings,
             knowledge_port,
-            genai_client,
+            with_surface(genai_client, SURFACE_ASSIST_COPILOT),
             assistants_store,  # type: ignore[arg-type]
             tenant_settings_store,  # type: ignore[arg-type]
             tools_store=tools_store,  # type: ignore[arg-type]
@@ -1094,7 +1127,11 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     app.include_router(
         build_translate_router(
             settings,
-            _assist_genai,
+            # Re-labelled at hand-over: `_assist_genai` is shared with the
+            # merged-knowledge embedders, and `embed_content` self-labels
+            # `embed` regardless, so the two consumers of this one client keep
+            # their spend apart in the cost report.
+            with_surface(_assist_genai, SURFACE_ASSIST_TRANSLATE),
             ticketing_port,
             authz_repo,
             authz_validator,

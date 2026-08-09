@@ -2,7 +2,8 @@
 
 Uses the full bootstrap to ensure the router is wired; mocks GCP so no credentials needed.
 """
-from unittest.mock import MagicMock, patch, AsyncMock
+
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -19,7 +20,14 @@ def _patched_app() -> object:
     mock_genai.aio.models.generate_content = AsyncMock(return_value=MagicMock(text="reply"))
 
     with (
-        patch("chatbot.features.chat.service.Client", MagicMock(return_value=mock_genai)),
+        # Both construction sites now go through the metering wrapper, so the
+        # stub goes there rather than at `google.genai.Client`. `main.py`'s seam
+        # is patched separately below because it is the function tests have
+        # always reached for.
+        patch(
+            "chatbot.features.chat.service.build_metered_genai_client",
+            MagicMock(return_value=mock_genai),
+        ),
         patch("chatbot.main._build_genai_client", return_value=mock_genai),
         patch("chatbot.main.VertexAISearchAdapter", MagicMock()),
         patch("chatbot.main.build_handoff_store", MagicMock()),
@@ -30,6 +38,7 @@ def _patched_app() -> object:
         patch("chatbot.main.start_report_scheduler", return_value=None),
     ):
         from chatbot.main import bootstrap_application
+
         return bootstrap_application()
 
 

@@ -22,6 +22,7 @@ from chatbot.platform.config import Settings
 from chatbot.platform.metered_genai import (
     SURFACE_ASSIST_SUGGEST,
     SURFACE_ASSIST_TRANSLATE,
+    SURFACE_CHAT_TRANSCRIBE,
     SURFACE_EMBED,
     MeteredGenaiClient,
     build_metered_genai_client,
@@ -403,25 +404,24 @@ async def test_the_wrapper_forwards_everything_it_does_not_meter() -> None:
 # --------------------------------------------------------------------------
 
 # Files that still construct `google.genai.Client` directly instead of going
-# through `build_metered_genai_client`. Their Gemini calls are UNMETERED: their
-# spend is missing from `v_ai_cost` entirely, which understates the total.
+# through `build_metered_genai_client`. Their Gemini calls would be UNMETERED:
+# their spend missing from `v_ai_cost` entirely, which understates the total.
 #
-# Both are owned by in-flight sibling agents at the time this wrapper landed,
-# so Task 2 was barred from editing them; routing them is the wiring wave's
-# job. The assertion below is deliberately TWO-SIDED -- the set of direct
-# constructions must equal this set exactly -- so that:
+# **This set is now EMPTY, and that is the point.** It held two entries while
+# Task 2 was barred from editing `main.py` and `features/chat/service.py`
+# (in-flight siblings owned them); the wiring wave routed both and deleted both
+# lines, which it could not avoid doing because the assertion below is
+# TWO-SIDED -- the set of direct constructions must equal this set exactly -- so
+# that:
 #   * adding a new unmetered call site anywhere fails this test, and
-#   * routing one of these two through the wrapper ALSO fails this test, until
-#     whoever did it deletes the line here. An allowlist that only ever grows
-#     is how "temporarily unmetered" becomes permanent.
-_UNMETERED_PENDING_WIRING = {
-    # main.py's `_build_genai_client`: the shared client behind the three
-    # /assist/* routers, VertexEmbedder (live-FAQ + resolved-case index) and
-    # the KB paths.
-    "main.py",
-    # ChatService's raw client for transcription/STT.
-    "features/chat/service.py",
-}
+#   * routing a pending site ALSO fails this test until whoever did it deletes
+#     the line. An allowlist that only ever grows is how "temporarily
+#     unmetered" becomes permanent.
+#
+# Do not add an entry here to make a failure go away. An entry is a declaration
+# that a known slice of Gemini spend is invisible to the cost report, and it
+# needs the same sign-off as shipping a cost figure known to be wrong.
+_UNMETERED_PENDING_WIRING: set[str] = set()
 
 # The only module allowed to construct the raw client.
 _WRAPPER = "platform/metered_genai.py"
@@ -467,8 +467,9 @@ async def test_no_gemini_client_is_constructed_outside_the_wrapper() -> None:
 
     If this test fails with an unexpected extra file: route that call site
     through `build_metered_genai_client(settings, surface=...)`. Do not add it
-    to `_UNMETERED_PENDING_WIRING` -- that set is for the two files this task
-    was contractually barred from editing, not a suppression list.
+    to `_UNMETERED_PENDING_WIRING` -- with that set now empty, the assertion
+    says what the package always meant it to say: **no Gemini client is built
+    outside the wrapper**, full stop.
     """
     sites = _direct_genai_construction_sites()
 
@@ -488,16 +489,44 @@ async def test_no_gemini_client_is_constructed_outside_the_wrapper() -> None:
     )
 
 
-def test_the_metered_phone_call_sites_are_actually_routed() -> None:
-    """Reachability, not just absence: the two sites this task *could* edit
-    must genuinely call the wrapper, not merely have stopped calling
-    `Client(...)`."""
+def test_every_call_site_is_actually_routed() -> None:
+    """Reachability, not just absence: each site must genuinely call the
+    wrapper, not merely have stopped calling `Client(...)`.
+
+    The guard above proves nothing was left constructing a client directly. It
+    cannot prove a site still builds one at all -- deleting the construction
+    outright would satisfy it too -- so this pins the positive statement for
+    every site the backend has.
+    """
     for module in (
+        "chatbot/main.py",
+        "chatbot/features/chat/service.py",
         "chatbot/features/chat/phone/bridge.py",
         "chatbot/features/chat/phone/gemini_live.py",
     ):
         source = (Path(__file__).resolve().parents[2] / module).read_text(encoding="utf-8")
         assert "build_metered_genai_client" in source, module
+
+
+def test_the_shared_main_client_is_relabelled_per_assist_surface() -> None:
+    """`main.py` builds one client per wiring block and shares it, so the
+    surface has to be applied where the client is handed to a consumer.
+
+    Without this, all three assist products and the embedder would land on one
+    surface and the cost report could not attribute spend to a product -- a
+    report that is present and useless rather than absent and obviously so.
+    Asserted against the source because the alternative is booting the whole
+    app with credentials, which this suite cannot do.
+    """
+    source = (Path(__file__).resolve().parents[2] / "chatbot/main.py").read_text(encoding="utf-8")
+    for surface_constant in (
+        "SURFACE_ASSIST_SUGGEST",
+        "SURFACE_ASSIST_TRANSLATE",
+        "SURFACE_ASSIST_COPILOT",
+    ):
+        assert f"with_surface(genai_client, {surface_constant})" in source or (
+            f"with_surface(_assist_genai, {surface_constant})" in source
+        ), surface_constant
 
 
 # --------------------------------------------------------------------------
@@ -518,8 +547,12 @@ async def test_the_flag_off_records_nothing_and_adds_no_latency() -> None:
 
     client = _build(raw, sink, metering=False)
 
-    assert client is raw
+    # The isinstance check comes first deliberately: `assert client is raw`
+    # narrows the type, after which mypy --strict (warn_unreachable) rejects the
+    # isinstance as provably dead. Both assertions still earn their place --
+    # identity, and "no proxy of any labelling".
     assert not isinstance(client, MeteredGenaiClient)
+    assert client is raw
     await client.aio.models.generate_content(model="m", contents="x")
     await _in_worker_thread(lambda: client.models.embed_content(model="m", contents="x"))
     assert sink.rows == []
@@ -539,7 +572,7 @@ async def test_a_client_that_cannot_be_constructed_fails_open_to_none(
     previous per-site code returned None and so does the wrapper, flag on or
     off. `_construct_raw_client` itself swallows the SDK's exception; here we
     assert the factory above it does not then wrap a None."""
-    monkeypatch.setattr(metered_genai, "_construct_raw_client", lambda _s: None)
+    monkeypatch.setattr(metered_genai, "_construct_raw_client", lambda _s, **_kw: None)
     assert build_metered_genai_client(_settings(), surface=SURFACE_ASSIST_SUGGEST) is None
     assert (
         build_metered_genai_client(_settings(metering=False), surface=SURFACE_ASSIST_SUGGEST)
@@ -562,3 +595,57 @@ async def test_the_raw_constructor_swallows_sdk_failures() -> None:
         assert metered_genai._construct_raw_client(_settings()) is None
     finally:
         google.genai.Client = original  # type: ignore[misc]
+
+
+async def test_fail_open_false_propagates_the_sdks_own_construction_error() -> None:
+    """`OrchestratorService` raised at construction before P8 and must keep
+    doing so.
+
+    Missing Gemini credentials there is a deploy-time configuration error that
+    fails the boot loudly. If metering converted it into a `None` client, the
+    failure would move to every voice turn, where `_transcribe_audio` catches
+    everything and returns `""` -- a customer getting a silently empty
+    transcription instead of an operator getting a failed deploy. Asserted by
+    identity so it is the SDK's own exception object, not a re-wrap.
+    """
+    boom = RuntimeError("no credentials")
+
+    class _Raising:
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            raise boom
+
+    original = google.genai.Client
+    try:
+        google.genai.Client = _Raising  # type: ignore[misc, assignment]
+        with pytest.raises(RuntimeError) as excinfo:
+            metered_genai._construct_raw_client(_settings(), fail_open=False)
+        assert excinfo.value is boom
+
+        # ...and through the public factory, in both flag states, since the
+        # construction happens before the flag is consulted.
+        for metering in (True, False):
+            with pytest.raises(RuntimeError) as excinfo:
+                build_metered_genai_client(
+                    _settings(metering=metering),
+                    surface=SURFACE_CHAT_TRANSCRIBE,
+                    fail_open=False,
+                )
+            assert excinfo.value is boom
+    finally:
+        google.genai.Client = original  # type: ignore[misc]
+
+
+async def test_fail_open_false_is_ignored_when_a_client_is_injected() -> None:
+    """There is nothing to construct, so nothing to raise: an injected client
+    comes back metered exactly as it would with the default."""
+    raw = _FakeRawClient()
+    client: Any = build_metered_genai_client(
+        _settings(),
+        surface=SURFACE_CHAT_TRANSCRIBE,
+        client=raw,
+        sink=_FakeSink(),
+        fail_open=False,
+    )
+    assert isinstance(client, MeteredGenaiClient)
+    assert client.raw is raw
+    assert client.surface == SURFACE_CHAT_TRANSCRIBE

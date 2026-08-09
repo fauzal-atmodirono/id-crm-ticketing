@@ -38,6 +38,11 @@ def _setup() -> tuple[TestClient, OrchestratorService, AsyncMock]:
     settings.twilio_account_sid = "AC1"
     settings.twilio_whatsapp_number = "whatsapp:+60111"
     settings.twilio_webhook_base_url = ""
+    # Every survey test in this file asserts the CSAT path, so pin the NPS
+    # sampling rate off rather than inheriting whatever the environment says:
+    # the all-flags-ON gate run exports NPS_SAMPLE_RATE=1.0, under which the
+    # survey question becomes NPS and record_csat is correctly never called.
+    settings.nps_sample_rate = 0.0
     orch = OrchestratorService(
         settings=settings,
         chat_port=InMemoryChatAdapter(),

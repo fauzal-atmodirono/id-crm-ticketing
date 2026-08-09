@@ -15,6 +15,12 @@ def _orch() -> MagicMock:
     orch = MagicMock()
     orch._settings = get_settings()
     orch._settings.zendesk_support_webhook_secret = ""
+    # This file asserts the email CSAT path; pin NPS sampling off rather than
+    # inheriting the environment. The all-flags-ON gate run exports
+    # NPS_SAMPLE_RATE=1.0, under which the reply is parsed as an NPS score and
+    # record_csat is correctly never called. NPS's own coverage is in
+    # test_nps_wiring.py, which builds its own Settings with an explicit rate.
+    orch._settings.nps_sample_rate = 0.0
     orch._conversation_log_port = MagicMock()
     orch._conversation_log_port.post_public_reply = AsyncMock()
     orch._conversation_log_port.get_latest_public_comment = AsyncMock(return_value=("", None, None))

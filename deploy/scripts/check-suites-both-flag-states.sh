@@ -66,6 +66,20 @@ FLAGS_ON=(
   MEDIA_DIAGNOSIS_PROMPT_ENABLED=true
   RESOLVED_CASE_INDEX_ENABLED=true
   AUTO_SUMMARY_ON_RESOLVE_ENABLED=true
+  # P8 — AI & agent measurement. NPS_SAMPLE_RATE=1.0 and
+  # CSAT_RANKING_MIN_SAMPLES=25 are concrete non-default values rather than
+  # booleans, chosen the same way FAQ_KEYWORD_WEIGHT=0.5 above was: 1.0
+  # deterministically forces the NPS question on every sampled survey, and 25
+  # is not the default 10, so a test that reads the ranking floor from
+  # settings and then asserts a hardcoded 10 fails here instead of passing
+  # forever. `src/chatbot/test_p8_flags.py` asserts all six lines are present,
+  # so this block stops being maintained from memory.
+  TOKEN_METERING_ENABLED=true
+  AI_COST_REPORTING_ENABLED=true
+  NPS_SAMPLE_RATE=1.0
+  CSAT_BY_AGENT_ENABLED=true
+  CSAT_RANKING_MIN_SAMPLES=25
+  CALL_QA_ENABLED=true
 )
 
 failed=0

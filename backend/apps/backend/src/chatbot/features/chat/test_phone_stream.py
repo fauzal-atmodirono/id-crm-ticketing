@@ -28,6 +28,12 @@ class _FakeLive:
 def _orch() -> MagicMock:
     orch = MagicMock()
     orch._settings = get_settings()
+    # The `submit_csat` assertion below is about the CSAT tool set, so pin NPS
+    # sampling off rather than inheriting the environment: the all-flags-ON
+    # gate run exports NPS_SAMPLE_RATE=1.0, under which the call is correctly
+    # offered `submit_nps` INSTEAD of `submit_csat` (never both). The sampled
+    # phone path has its own coverage in test_nps_wiring.py.
+    orch._settings.nps_sample_rate = 0.0
     orch._knowledge_port = MagicMock()
     orch._knowledge_port.search_kb = lambda _q, _limit=2: []
     orch._conversation_log_port = MagicMock()

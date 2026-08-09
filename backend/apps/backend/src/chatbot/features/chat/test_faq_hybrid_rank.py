@@ -25,6 +25,8 @@ to catch.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from chatbot.features.chat.adapters.live_faq import _rank
@@ -249,9 +251,20 @@ async def test_the_store_forwards_query_text_so_the_weight_is_not_inert() -> Non
     assert {e.id: s for e, s in with_text}["emas7-exact"] > _BASELINE_SCORES["emas7-exact"]
 
 
-async def test_the_stores_default_weight_of_zero_still_reproduces_the_baseline() -> None:
+async def test_the_stores_default_weight_of_zero_still_reproduces_the_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Flag-off safety: a store built with the default 0.0 weight must be
     # byte-identical to pre-P7 even when a query string IS forwarded.
+    #
+    # The delenv is load-bearing, not tidiness: `Settings()` reads os.environ,
+    # and deploy/scripts/check-suites-both-flag-states.sh's all-flags-ON run
+    # exports FAQ_KEYWORD_WEIGHT=0.5 -- under which this test built a store at
+    # 0.5, ranked `emas7-exact` first and failed, i.e. the flags-ON gate was red
+    # on this test alone from the moment 3ac2d49 made the weight actually bite.
+    # Found and fixed while adding P8's flags to that script (P8 task 10).
+    monkeypatch.delenv("FAQ_KEYWORD_WEIGHT", raising=False)
+    assert "FAQ_KEYWORD_WEIGHT" not in os.environ
     store = _StubStore(weight=Settings().faq_keyword_weight)
 
     result = await store.search(_QUERY_EMBEDDING, 10, query_text="stok e.MAS7 ada?")

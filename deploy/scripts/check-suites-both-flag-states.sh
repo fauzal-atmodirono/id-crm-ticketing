@@ -94,6 +94,14 @@ FLAGS_ON=(
   ANOMALY_HOURLY_ZSCORE_K=2.5
   ANOMALY_HOURLY_MIN_BASELINE=8
   DASHBOARD_FRESHNESS_ENABLED=true
+
+  # --- P10: self-service taxonomy admin, category->department, data-scoped
+  # RBAC -- all three settings are booleans, so there is no non-default
+  # tunable value to pick here (unlike CSAT_RANKING_MIN_SAMPLES/
+  # ANOMALY_HOURLY_ZSCORE_K above) -- true is the only "on" a boolean has.
+  TAXONOMY_ADMIN_ENABLED=true
+  CATEGORY_DEPARTMENT_MAPPING_ENABLED=true
+  DATA_SCOPED_RBAC_ENABLED=true
 )
 
 failed=0

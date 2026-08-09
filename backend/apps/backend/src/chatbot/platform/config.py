@@ -999,11 +999,22 @@ class Settings(BaseSettings):
     # byte-identical behaviour to before P9: no new alert surface, no hourly
     # detector, no freshness banner.
     #
-    # Task 2/3: moves the three working alert primitives (toast, sound, desktop
-    # notification) out of the my-tasks iframe and into the Chatwoot fork,
-    # subscribed to the ActionCable stream the SPA already uses. Off = my-tasks
-    # keeps its SLA alerts and nothing else changes -- this is an ADDITION, and
-    # breaking my-tasks would trade a working alert surface for a new one.
+    # Task 2/3. **This setting does not currently gate anything.** The alert
+    # module ships in fork patch 0057 and the only switch its client reads is
+    # `hasFeature('inbound_alerts')`, from the fork's PROTON_FEATURES list; this
+    # setting does not populate that and no endpoint reports it to the frontend,
+    # so the two are independent switches. Same gap as
+    # faq_suggestion_popup_enabled -- blocked-work register 3g/3h. Kept because
+    # unifying them is the recorded fix (it needs main.py + tenant env +
+    # compose), and deleting it would lose the only backend-side record that the
+    # feature exists.
+    #
+    # What the module does once PROTON_FEATURES enables it: moves the three
+    # working alert primitives (toast, sound, desktop notification) out of the
+    # my-tasks iframe and into the Chatwoot fork, subscribed to the ActionCable
+    # stream the SPA already uses. my-tasks keeps its SLA alerts either way --
+    # this is an ADDITION, and breaking my-tasks would trade a working alert
+    # surface for a new one.
     inbound_alerts_enabled: bool = False
     # Task 1/6: the per-agent alert-rule store and the preferences UI behind it.
     # Off = no rules exist and no preferences page is mounted, so every agent
@@ -1037,6 +1048,87 @@ class Settings(BaseSettings):
     # that a difference between a dashboard figure and the live CRM is EXPECTED,
     # and its size becomes visible instead of being read as a bug.
     dashboard_freshness_enabled: bool = False
+
+    # --- P10: self-service taxonomy admin, category->department, data-scoped
+    # RBAC -------------------------------------------------------------------
+    # Three settings, all default-off, so a tenant that sets none of them is
+    # byte-identical to today: no taxonomy admin store is consulted (the
+    # CASE_TAXONOMY_JSON/CASE_TYPE_OPTIONS_JSON/CASE_DETAIL_OPTIONS_JSON env
+    # vars stay the live source, exactly as before this package), no
+    # department is ever suggested from a category, and every role resolves
+    # to the account-wide scope it has always had.
+    #
+    # Task 1/2/3/4: mounts the Firestore-backed taxonomy store's admin CRUD
+    # endpoints (features/taxonomy/router.py) and the Chatwoot
+    # attribute-definition sync that removes the "restart to add a category"
+    # step. Off = those endpoints 404 (so the fork's admin page does not
+    # render) and CASE_TAXONOMY_JSON/CASE_TYPE_OPTIONS_JSON/
+    # CASE_DETAIL_OPTIONS_JSON remain the only source, read exactly as before
+    # -- this flag does not stop them being read.
+    #
+    # ON DOES NOT MEAN "SWITCH SOURCE": once a tenant's store has been seeded
+    # (task 2's seed.py, non-destructive), those three env vars become the
+    # SEED only -- editing them afterwards has no further effect. An operator
+    # edits the taxonomy through the admin endpoints/page instead.
+    #
+    # RETIRE, NEVER DELETE. There is deliberately no delete method on the
+    # store (see features/taxonomy/store.py) -- a category attached to
+    # historical cases must stay resolvable forever, or reports grouped by
+    # category silently lose rows and a case's own category field stops
+    # resolving. "Retire" hides a node from the active tree/picker and keeps
+    # it readable by key. This is a constraint a later "simplification" could
+    # easily remove by re-adding delete; don't.
+    #
+    # THE STORE IS AUTHORITATIVE; THE CHATWOOT SYNC IS DOWNSTREAM. A write
+    # lands in the store first and always succeeds or fails atomically on its
+    # own; the push into Chatwoot's custom-attribute definition happens after,
+    # and if IT fails the store is NOT rolled back -- the operator's edit is
+    # never silently discarded by a transient Chatwoot API error. A failed
+    # sync instead surfaces an explicit out-of-sync/retry state. Do not
+    # "simplify" this into a single transactional write that undoes the store
+    # change on sync failure -- that trades a visible retry for a silent data
+    # loss.
+    taxonomy_admin_enabled: bool = False
+    # Task 5: TaxonomyNode.department maps a case category to an escalation
+    # department, pre-filling (never applying) the dept_<slug> suggestion an
+    # agent would otherwise have to know from a separate taxonomy, and mounts
+    # GET /admin/taxonomy/coverage (active categories with no mapped
+    # department; dept_* slugs no category maps to). Off = no suggestion is
+    # ever made and the coverage report is not mounted -- category and
+    # escalation-department stay the two disconnected taxonomies they are
+    # today.
+    #
+    # SUGGEST-ONLY, matching the existing AI-suggested escalation department
+    # (dept_suggestion.py, da6c335): the mapping pre-fills a value the agent
+    # can override, and the override is recorded. Auto-applying it would
+    # misroute exactly the exceptional cases that get escalated -- the ones
+    # where the category is right and the department genuinely isn't the
+    # mapped default. Never wire this to apply the label without a human
+    # confirming it.
+    category_department_mapping_enabled: bool = False
+    # Task 6/7: resolves each caller's roles to a DataScope (inboxes / teams /
+    # dealers / own_only) and enforces it in the metrics and admin query
+    # layers (composing with P4's MetricFilters) plus Chatwoot-native inbox
+    # membership via chatwoot_role_mirror.py. Off = every endpoint stays
+    # account-wide, exactly as today -- require_permission's existing
+    # function-level checks are completely unaffected either way.
+    #
+    # `None` ON EVERY SCOPE FIELD MEANS ACCOUNT-WIDE, so every role that
+    # exists before this package keeps behaving exactly as it does today even
+    # once this is flipped on -- turning this on never narrows or widens an
+    # existing role that was never given a scope.
+    #
+    # SCOPES ARE INTERSECTIVE, NEVER ADDITIVE. Two scopes on one caller
+    # (e.g. two roles) narrow to their intersection, never their union, and
+    # an EMPTY intersection means access to NOTHING, not to everything --
+    # this is the security-relevant half of this package: a bug here is data
+    # exposure (a caller sees rows they should not), not a reporting
+    # inconvenience. Enforced in the query layer, never by hiding UI, so a
+    # caller hitting the API directly (bypassing any front end) is scoped
+    # exactly the same as one going through it. Do not "simplify" an empty
+    # intersection into "no filter" -- that grants everything to precisely
+    # the most restricted caller.
+    data_scoped_rbac_enabled: bool = False
 
     # Settings configurations
     model_config = SettingsConfigDict(

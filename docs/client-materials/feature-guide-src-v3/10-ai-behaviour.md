@@ -230,23 +230,36 @@ how long to wait before warning or closing an idle conversation — is set
 per inbox under **Administration → Inboxes** (see the Administration
 chapter), which can also override the wording for that inbox specifically.
 
-### How to use it
+Each message in that sequence is switched on or off independently, so which
+of them a customer actually receives differs per tenant. **Read the list
+above as what the platform can send, and the note below as what it sends
+today.**
 
-1. Expect a new conversation to open with a welcome/disclaimer message
-   (or an acknowledgement, on email) — this happens automatically, before
-   an agent even looks at it.
-2. If a customer stops replying mid-conversation, expect an idle-warning
+> **What is running on this tenant, as configured.** The idle warning, the
+> automatic close and the "is your case resolved?" prompt are on. The
+> opening welcome/disclaimer message is **off** — a new chat conversation
+> begins with the assistant's answer, not a disclaimer. The assistant's own
+> satisfaction surveys are **off**, both the AI-handled and the
+> agent-handled variants. Ratings still reach the CSAT report, because the
+> CRM's own native satisfaction survey is enabled on every inbox — that is
+> a separate mechanism, configured per inbox rather than per assistant.
+> On the Email inbox the acknowledgement of receipt is sent by
+> the inbox's own greeting rather than by the platform, which means it goes
+> to **every** new email thread — including a dealer replying to an
+> escalation. Ask your administrator before telling a customer that any of
+> these will reach them.
+
+1. If a customer stops replying mid-conversation, expect an idle-warning
    message once the configured wait time passes, followed by an automatic
    close if they still don't respond within the grace period.
-3. When the assistant or an agent resolves the customer's issue, expect a
-   "is your case resolved?" prompt; a "yes" answer leads to a satisfaction
-   rating request, then a thank-you; a "no" (or an unclear) answer reopens
-   the conversation for a human instead.
-4. When a human agent resolves a conversation directly (without going
-   through that prompt), the customer instead receives the agent-specific
-   satisfaction survey afterward.
-5. Treat all of these messages as normal, expected parts of the flow —
-   they don't need an agent to trigger them.
+2. When the customer's issue looks resolved, expect an "is your case
+   resolved?" prompt. A "yes" closes the case; a "no", or an unclear
+   answer, reopens it for a human instead.
+3. With the surveys switched on, a "yes" would also bring a satisfaction
+   rating request and a thank-you, and a human resolving a case directly
+   would bring the agent-specific survey. Neither happens today.
+4. Treat these messages as normal, expected parts of the flow — they don't
+   need an agent to trigger them.
 
 [[SCREENSHOT: ch10-lifecycle-messages | The set of customer lifecycle messages in the assistant settings]]
 

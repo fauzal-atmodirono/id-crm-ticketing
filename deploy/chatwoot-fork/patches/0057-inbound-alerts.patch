@@ -1,0 +1,1418 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] P9 tasks 2/3/6: new-inbound alerting in the main Chatwoot UI
+
+Moves the three working alert primitives (toast, sound, desktop notification)
+out of the my-tasks dashboard-app iframe and into the Chatwoot bundle, wires
+them to new inbound customer messages, and adds the per-agent preferences page
+that makes them configurable. Backs features/alerts/rules_store.py and
+features/alerts/rules_router.py.
+
+NOTHING IS REIMPLEMENTED, AND THE my-tasks APP IS NOT TOUCHED.
+backend/apps/chatwoot-my-tasks/index.html already contains a working beep()
+(Web Audio), Notification.requestPermission() flow, toast() and 60-second
+poll. helper/protonAlerts.js is that code, transcribed, with two changes the
+new host requires: the toast container is created on demand rather than
+relying on a static <div id="toasts">, and the notification helpers take an
+options object. The my-tasks app keeps its own copies and its own SLA alerts
+and is not modified by this patch or by anything backing it -- this is an
+ADDITION. It fires on SLA warn/breach for a task list; this fires on new
+inbound in the window the agent is actually working in. Trading a working
+alert surface for a new one would be a net loss.
+
+WHY THE FORK RATHER THAN THE IFRAME. A dashboard-app iframe is cross-origin
+and sandboxed, is loaded only while the agent has that panel open, and cannot
+know what the agent is looking at. Sidebar.vue is mounted on every dashboard
+page, so installing from there makes alerting live wherever Chatwoot is. The
+module renders into document.body (its own toast container and status strip)
+rather than into Sidebar's template, which is why this patch adds no markup to
+an upstream template at all.
+
+THE EVENT SOURCE, AND WHY IT IS NOT A POLL. Chatwoot's ActionCable connector
+writes pushed conversation/message events into the Vuex store -- that is how
+the SPA's own conversation list updates without a refresh -- so watching the
+store IS subscribing to the stream, with no second socket and no second
+subscription to authenticate. A 60-second poll as the PRIMARY path would
+notify an agent up to a minute after the customer's message is already visible
+in their list, which is worse than no alert because it trains agents to ignore
+it.
+
+Only one store getter is verified by this repo's own already-merged patches
+(`getSelectedChat`, used by 0055). The conversation-list getter is therefore a
+CANDIDATE LIST (`CONVERSATION_GETTER_CANDIDATES`), and readConversations()
+reports which one it found. If none matches, coverage is 'none', the module
+goes to poll mode and SHOWS THE DEGRADED INDICATOR -- so a wrong guess here
+degrades to a visibly-degraded 60-second poll, never to silence, and is fixed
+by editing one array. That is stated here rather than hidden because it is the
+single most likely thing about this patch to need a fix-up on the first real
+build.
+
+NEVER GO SILENT (task 3). Fallback is Chatwoot's own conversations API
+(same-origin, the same devise_token_auth headers the SPA's own axios client
+sends), polled on the same 60 s cadence the my-tasks app uses, plus a
+degraded-mode strip at the bottom-left of the window. Two properties are
+load-bearing:
+
+  * Stream loss is concluded from EVIDENCE, never from silence. A quiet shift
+    produces no evidence either way, and inventing a degraded state from
+    silence would put a red strip on every quiet morning. The proof is the
+    poll finding an inbound message older than STREAM_GRACE_MS (90 s) that the
+    stream never delivered.
+  * NO ALERT FIRES TWICE ON RECONNECT. Both paths claim message ids in one
+    shared Set (claimAlert), so when the poll fires and the stream reconnects
+    and both see the same message, whichever gets there first alerts and the
+    other silently drops. A duplicate-alert storm on reconnect teaches agents
+    to ignore alerts exactly as effectively as a beep every few seconds does.
+
+NEW_INBOUND IS TOAST-ONLY BY DEFAULT, DELIBERATELY. Sound and desktop
+notification exist for the event and are off. On a tenant where WhatsApp
+carries most of the volume an audible alert per inbound message is a beep
+every few seconds, and the first thing every agent does is switch off ALL
+alerting -- including the sla_breach alerts that actually matter. The
+requirement is met by the capability being present and per-agent
+configurable, not by the loudest default. DEFAULT_ALERT_RULES matches
+rules_store.py's seeded defaults, and the patch's tests assert this specific
+default so that "improving" it to sound fails a test and makes the improver
+read the reasoning.
+
+AN AGENT'S OWN REPLY RAISES NOTHING, checked three ways in
+isAlertableCustomerMessage: `private === true` (a private note),
+`message_type !== 0` (1 is outgoing -- the agent's own reply and the bot's --
+2 activity, 3 template), and `sender_type === 'User'` (a Chatwoot agent rather
+than a contact). The third is DELIBERATELY REDUNDANT with the second: an
+agent's own reply arriving back down the same stream is the classic
+self-notification bug, and a redundant guard is what stops it if a future
+channel ever delivers an agent-authored message with message_type 0.
+
+DENIED NOTIFICATION PERMISSION IS SURFACED. A browser that has denied the
+permission drops desktop alerts forever and silently, and Chrome will not
+re-prompt after a denial. So when a rule asks for 'desktop' and the permission
+is 'denied', the status strip appears with an "Enable notifications" button
+that re-requests (which works from 'default') and, when the answer is still
+'denied', says the only thing that can actually fix it: allow notifications
+for the site in browser settings.
+
+TASK 6, THE PREFERENCES PAGE. views/ProtonAlertPreferencesPage.vue carries
+both halves of rules_router.py's permission split: every agent edits their own
+six rows (`alerts.set_own_preferences`, granted to the default `agent` role),
+and only `alerts.manage` can change an account default. Reset per row calls
+DELETE /alerts/rules/mine/:event and repaints from the rule the router returns
+after the reset, so an agent can get back to the inherited value without
+guessing what it was. The nav entry is gated on
+`alerts.set_own_preferences` rather than on an admin permission, because a
+preferences page an agent cannot open leaves the per-agent override layer
+unreachable by anyone -- the mistake ruling D5 and the
+presence.set_own_status/translation.use decisions already had to correct.
+
+api/protonAlerts.js reuses adminRequest() from protonAdmin.js rather than
+adding a sixth request helper: adminRequest is the one that already forwards
+the devise_token_auth access-token/client/uid triplet require_permission
+needs (patch 0030 fixed exactly this for the earlier admin pages). agent_id is
+sent on every /mine call because the router ignores it when RBAC is on and
+400s without it when RBAC is off -- one form that works in both modes, and it
+grants nothing in the mode that matters, since the router has no
+"set another agent's preferences" capability at all.
+
+TWO INDEPENDENT SWITCHES, STATED RATHER THAN ENGINEERED AROUND. The backend
+setting `INBOUND_ALERTS_ENABLED` and this module's actual client-side gate are
+NOT the same switch. The gate is `hasFeature('inbound_alerts')`, read from
+window.__PROTON_CONFIG__.features -- a tenant's `PROTON_FEATURES` list, the
+mechanism 0001/0002 established for `ai_assist`. There is no backend endpoint
+that reports `inbound_alerts_enabled` to the frontend, and
+deploy/tenants/*.env, docker-compose.tenant.yml and main.py were all
+off-limits for these tasks, so an operator must add `inbound_alerts` to a
+tenant's PROTON_FEATURES in addition to (not instead of) turning the backend
+setting on. This is the same gap recorded for `FAQ_SUGGESTION_POPUP_ENABLED`
+in register section 3g, and closing it is a deploy-config task.
+
+The PREFERENCES PAGE is different and does have a single real switch: it is
+gated by RBAC (a real backend-derived permission) and reports
+`ALERT_RULES_ENABLED` honestly, because rules_router.py answers
+{"disabled": true, "reason": ...} on every endpoint when that setting is off
+and the page renders that reason instead of an empty table.
+
+KNOWN NARROWING GAP. `my_inbox` and `my_team` scopes FAIL OPEN when the
+viewer's membership lists are unknown: every conversation reaching this code
+has already passed Chatwoot's own inbox-visibility rules, so "an inbox I can
+see" is the wider filter, and alerting nothing because a membership lookup came
+back empty is precisely the failure this package exists to avoid. `teamIds` is
+always empty today (no verified store getter for it), so `my_team` currently
+behaves as `all` for a given agent. `mine` and `all` are exact. An
+UNRECOGNISED scope alerts NOTHING -- a typo must not quietly widen a rule.
+
+DEPENDENCIES / STACKING. This patch stacks on 0025 (Sidebar.vue's
+`useProtonPermissions` import at line 15 and its `protonHasPermission` setup
+line at 68 are 0025's own added lines, transcribed verbatim from its merged
+diff) and on 0043 (the Cases nav block, whose tail is the nav hunk's leading
+context) and 0003 (`...inboxRoutes,` in dashboard.routes.js). It anchors on
+0043's content rather than on 0053's or 0054's DELIBERATELY: 0053/0054 are the
+two least-verified patches in the series, and anchoring below their insertions
+means a change to their CONTENT cannot break this patch's context lines --
+only their line counts shift, which git apply absorbs as an offset. Line
+numbers were computed from 0054's post-image (its Sidebar hunk at old line 647
+adding 16 new lines, and its routes hunk at old line 85 adding 15) forward
+through 0035's, 0041's and 0043's known block lengths; if 0053/0054 need a
+line-number fix-up this patch may need the same offset, but not a content
+change.
+
+NOTE: hand-authored, and NOT verified with `git apply --check` against a real
+checkout -- this sandbox has no network access to clone upstream or the fork,
+the same constraint recorded for patches 0053/0054/0055/0056. The two
+modified files' hunks were GENERATED BY `git diff` against a synthetic
+pre-image reconstructed only from lines transcribed verbatim from 0003's,
+0025's, 0035's, 0041's, 0043's, 0053's and 0054's own already-merged diffs
+(padded with clearly-labelled filler for the unknown surrounding lines, the
+same technique 0053 and 0056 used), so the @@ arithmetic was computed by git
+rather than by hand, and re-verified by applying this patch with a real
+`git apply` to a freshly built copy of that pre-image. That proves internal
+consistency and self-consistency with those patches' own text only. It does
+NOT prove this patch applies to the real upstream-derived fork checkout, and
+it proves nothing at all about the two unverified guesses this patch makes
+about upstream APIs it could not read: the conversation-list store getter
+names and the /api/v1/accounts/:id/conversations response shape. Both fail
+toward a visible degraded indicator rather than toward silence. Build via
+Cloud Build for amd64 once merged; never on the prod VM, never from an arm64
+Mac. A row in docs/analysis/2026-08-09-blocked-work-register.md records this
+and the manual screenshot verification that is also still owed.
+---
+ app/javascript/dashboard/api/protonAlerts.js       |  59 +++
+ .../dashboard/components-next/sidebar/Sidebar.vue  |  22 +
+ .../composables/useProtonInboundAlerts.js          | 246 +++++++++++
+ app/javascript/dashboard/helper/protonAlerts.js    | 486 +++++++++++++++++++++
+ .../dashboard/routes/dashboard/dashboard.routes.js |   6 +
+ .../dashboard/views/ProtonAlertPreferencesPage.vue | 352 +++++++++++++++
+ 6 files changed, 1171 insertions(+)
+ create mode 100644 app/javascript/dashboard/api/protonAlerts.js
+ create mode 100644 app/javascript/dashboard/composables/useProtonInboundAlerts.js
+ create mode 100644 app/javascript/dashboard/helper/protonAlerts.js
+ create mode 100644 app/javascript/dashboard/views/ProtonAlertPreferencesPage.vue
+diff --git a/app/javascript/dashboard/api/protonAlerts.js b/app/javascript/dashboard/api/protonAlerts.js
+new file mode 100644
+index 0000000..aa3f73e
+--- /dev/null
++++ b/app/javascript/dashboard/api/protonAlerts.js
+@@ -0,0 +1,59 @@
++// protonAlerts.js (api) — OUR file. The five /alerts/rules endpoints
++// features/alerts/rules_router.py exposes.
++//
++// It reuses `adminRequest` from protonAdmin.js rather than adding a sixth
++// request helper: these endpoints are gated by require_permission
++// (`alerts.set_own_preferences` for the /mine* paths, `alerts.manage` for the
++// defaults) and adminRequest is the one helper that already forwards the
++// devise_token_auth access-token/client/uid triplet those checks need — see
++// patch 0030, which fixed exactly this for the earlier admin pages.
++//
++// WHY agent_id IS ALWAYS SENT. With RBAC on, the router resolves the caller
++// from their own Chatwoot session and IGNORES this parameter entirely — there
++// is no way to point a /mine call at a colleague. With RBAC off there is no
++// verifiable caller identity at all, and the router returns 400 unless
++// agent_id is supplied. Sending it unconditionally is therefore the only form
++// that works in both modes, and it grants nothing in the mode that matters.
++import { adminRequest } from 'dashboard/api/protonAdmin';
++
++function withAgent(path, agentId) {
++  if (agentId === null || agentId === undefined || agentId === '') return path;
++  const separator = path.includes('?') ? '&' : '?';
++  return `${path}${separator}agent_id=${encodeURIComponent(agentId)}`;
++}
++
++// What will actually fire for me, per event: my override, else the account
++// default, else the built-in default — already resolved by the backend.
++export function getMyAlertRules(agentId) {
++  return adminRequest(withAgent('/alerts/rules/mine', agentId));
++}
++
++export function putMyAlertRule(event, rule, agentId) {
++  return adminRequest(withAgent(`/alerts/rules/mine/${encodeURIComponent(event)}`, agentId), {
++    method: 'PUT',
++    body: rule,
++  });
++}
++
++// Delete MY override for one event, reverting me to the account default. The
++// router answers with the rule that resolves after the reset, so the caller
++// repaints the row without a second round trip.
++export function resetMyAlertRule(event, agentId) {
++  return adminRequest(withAgent(`/alerts/rules/mine/${encodeURIComponent(event)}`, agentId), {
++    method: 'DELETE',
++  });
++}
++
++// Readable by any agent — knowing what you inherit is not privileged.
++export function getAlertDefaults() {
++  return adminRequest('/alerts/rules/defaults');
++}
++
++// `alerts.manage` only. One agent quietly turning down the account-wide
++// sla_breach default would go unnoticed until the whole team missed one.
++export function putAlertDefault(event, rule) {
++  return adminRequest(`/alerts/rules/defaults/${encodeURIComponent(event)}`, {
++    method: 'PUT',
++    body: rule,
++  });
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index b0a810f..b20e4c4 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -13,6 +13,7 @@
+ import { useWindowSize, useEventListener } from '@vueuse/core';
+ import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
+ import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';
++import { useProtonInboundAlerts } from 'dashboard/composables/useProtonInboundAlerts';
+ 
+ import Button from 'dashboard/components-next/button/Button.vue';
+ import SidebarGroup from './SidebarGroup.vue';
+@@ -66,6 +67,12 @@
+ const { hasFeature: protonHasFeature } = useProtonConfig();
+ const protonAiAssistEnabled = computed(() => protonHasFeature('ai_assist'));
+ const { hasPermission: protonHasPermission } = useProtonPermissions();
++// P9 tasks 2/3: alert on a new inbound customer message in the window the
++// agent is actually looking at. Installed from the sidebar because the sidebar
++// is mounted on every dashboard page; no-ops unless `inbound_alerts` is in
++// PROTON_FEATURES. Never renders into this component's template -- it owns its
++// own body-level toast container and degraded-mode strip.
++useProtonInboundAlerts();
+ 
+ const hasAdvancedAssignment = computed(() => {
+   return isFeatureEnabledonAccount.value(
+@@ -697,6 +704,21 @@
+           },
+         ]
+       : []),
++    // Alert preferences — every agent, not just administrators. The nav gate
++    // is `alerts.set_own_preferences`, which features/authz/seed.py grants to
++    // the default `agent` role, because choosing how loudly your own alerts
++    // fire is the agent's own call; the ACCOUNT-default half of the page is
++    // gated separately on `alerts.manage` inside the page itself.
++    ...(protonHasPermission('alerts.set_own_preferences')
++      ? [
++          {
++            name: 'ProtonAlertPreferences',
++            icon: 'i-lucide-bell-ring',
++            label: 'Alert preferences',
++            to: accountScopedRoute('proton_alert_preferences'),
++          },
++        ]
++      : []),
+     {
+       name: 'Contacts',
+       label: t('SIDEBAR.CONTACTS'),
+diff --git a/app/javascript/dashboard/composables/useProtonInboundAlerts.js b/app/javascript/dashboard/composables/useProtonInboundAlerts.js
+new file mode 100644
+index 0000000..ec15f64
+--- /dev/null
++++ b/app/javascript/dashboard/composables/useProtonInboundAlerts.js
+@@ -0,0 +1,246 @@
++// useProtonInboundAlerts.js — OUR file. Subscribes the alert primitives in
++// helper/protonAlerts.js to new inbound customer messages, from inside the
++// Chatwoot bundle.
++//
++// WHY HERE AND NOT IN THE my-tasks IFRAME. A dashboard-app iframe is
++// cross-origin and sandboxed, is only loaded while the agent has that panel
++// open, and cannot know what the agent is looking at. This composable is
++// called from Sidebar.vue, which is mounted on every dashboard page, so
++// alerting is live wherever Chatwoot is.
++//
++// THE EVENT SOURCE. Chatwoot's ActionCable connector writes pushed
++// conversation/message events into the Vuex store — that is how the SPA's own
++// conversation list updates without a refresh — so watching the store IS
++// subscribing to the stream, with no second socket and no second subscription
++// to authenticate.
++//
++// NEVER GO SILENT. If that store path yields nothing, or yields it too late, a
++// 60 s poll of Chatwoot's own conversations API takes over AND a degraded
++// indicator appears. Both paths deduplicate through one shared set keyed on
++// message id, so their overlap on reconnect raises nothing twice. See
++// nextAlertMode/claimAlert in helper/protonAlerts.js for the reasoning; the
++// mechanics are here.
++import { onScopeDispose, ref, watch } from 'vue';
++import { useMapGetter, useStore } from 'dashboard/composables/store';
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++import Auth from 'dashboard/api/auth';
++import { getMyAlertRules } from 'dashboard/api/protonAlerts';
++import {
++  DEFAULT_ALERT_RULES,
++  STREAM_GRACE_MS,
++  STREAM_WATCHDOG_MS,
++  alertKey,
++  claimAlert,
++  conversationSignature,
++  degradedReason,
++  hideAlertStatus,
++  isAlertableCustomerMessage,
++  isConversationInScope,
++  mergeAlertRules,
++  messageCreatedAtMs,
++  messagesOf,
++  nextAlertMode,
++  raiseAlert,
++  readConversations,
++  readInboxIds,
++  resolveModalities,
++  showAlertStatus,
++} from 'dashboard/helper/protonAlerts';
++
++// Sidebar.vue can be re-created (route changes, hot reload). Installing twice
++// would double every alert, which is the same failure as the reconnection race
++// and is prevented the same way: once only, at module scope.
++let installed = false;
++
++const NEW_INBOUND = 'new_inbound';
++
++export function useProtonInboundAlerts() {
++  const { hasFeature } = useProtonConfig();
++  // The fork's real client-side gate. See this patch's header: it is NOT the
++  // same switch as the backend's INBOUND_ALERTS_ENABLED, and nothing here
++  // pretends otherwise. Off → this composable does nothing at all and the
++  // page behaves exactly as it did before this patch.
++  if (!hasFeature('inbound_alerts')) return { enabled: false, mode: ref('off') };
++  if (installed) return { enabled: true, mode: ref('installed-elsewhere') };
++  installed = true;
++
++  const store = useStore();
++  const currentUser = useMapGetter('getCurrentUser');
++  const currentAccountId = useMapGetter('getCurrentAccountId');
++
++  const rules = ref({ ...DEFAULT_ALERT_RULES });
++  const mode = ref('stream');
++  const streamCoverage = ref('none');
++  // Messages that existed before this page loaded are not news. Without this,
++  // every reload replays the morning's backlog as a burst of toasts.
++  const startedAtMs = Date.now();
++  const seen = new Set();
++  let watchdogTimer = null;
++
++  const viewer = () => ({
++    id: currentUser.value && currentUser.value.id,
++    inboxIds: readInboxIds(store),
++    teamIds: [],
++  });
++
++  const paintIndicator = () => {
++    const reason = degradedReason(mode.value, streamCoverage.value === 'list');
++    if (reason) showAlertStatus({ reason });
++    else hideAlertStatus();
++  };
++
++  // Load the agent's resolved rules once. A failure (or ALERT_RULES_ENABLED
++  // off, which answers {disabled:true}) leaves `rules` on the built-in
++  // defaults — mergeAlertRules' whole contract — so alerting works before and
++  // regardless of this call.
++  const loadRules = async () => {
++    try {
++      const agentId = currentUser.value && currentUser.value.id;
++      rules.value = mergeAlertRules(await getMyAlertRules(agentId));
++    } catch (err) {
++      // eslint-disable-next-line no-console
++      console.warn('[proton-alerts]', 'rule fetch failed; using built-in defaults', err);
++      rules.value = mergeAlertRules(null);
++    }
++  };
++
++  // Decide about one message. Returns true only when an alert actually fired.
++  //
++  // The key is claimed BEFORE the modality/scope checks, so "this module has
++  // handled this message" and "this module alerted about it" stay distinct: a
++  // message the rules deliberately ignore must not be re-examined by the poll
++  // for ever, and must not be counted as stream-loss evidence.
++  const consider = (conversation, message) => {
++    if (!isAlertableCustomerMessage(message)) return false;
++    const key = alertKey(NEW_INBOUND, conversation.id, message.id);
++    if (!claimAlert(seen, key)) return false;
++    const rule = rules.value[NEW_INBOUND];
++    const modalities = resolveModalities(rules.value, NEW_INBOUND);
++    if (!modalities.length) return false;
++    if (!isConversationInScope(rule.scope, conversation, viewer())) return false;
++    const meta = conversation.meta || {};
++    const who = (meta.sender && meta.sender.name) || 'Customer';
++    raiseAlert({
++      modalities,
++      title: `New message from ${who}`,
++      body: String(message.content).slice(0, 160),
++      kind: 'info',
++    });
++    return true;
++  };
++
++  // ---- the stream path ----------------------------------------------------
++  const scanStream = () => {
++    const { conversations, coverage } = readConversations(store);
++    streamCoverage.value = coverage;
++    let delivered = false;
++    for (const conversation of conversations) {
++      if (!conversation || !conversation.id) continue;
++      for (const message of messagesOf(conversation)) {
++        if (messageCreatedAtMs(message, Date.now()) < startedAtMs) {
++          // Pre-existing: claim it so the poll does not later mistake it for
++          // evidence the stream is broken, but never alert on it.
++          claimAlert(seen, alertKey(NEW_INBOUND, conversation.id, message && message.id));
++          continue;
++        }
++        if (consider(conversation, message)) delivered = true;
++      }
++    }
++    mode.value = nextAlertMode(mode.value, {
++      streamSourceAvailable: coverage === 'list',
++      streamDelivered: delivered,
++      staleFoundByPoll: false,
++    });
++    paintIndicator();
++  };
++
++  // ---- the fallback poll --------------------------------------------------
++  const authHeaders = () => {
++    const data = Auth.hasAuthCookie() ? Auth.getAuthData() : null;
++    return data
++      ? {
++          'access-token': data['access-token'],
++          'token-type': 'Bearer',
++          client: data.client,
++          uid: data.uid,
++        }
++      : {};
++  };
++
++  // Chatwoot's own conversations API, same-origin, with the same auth headers
++  // the SPA's own axios client sends. No new backend endpoint, and it works
++  // when the socket does not — which is the entire point of a fallback.
++  const fetchOpenConversations = async () => {
++    const accountId = currentAccountId.value;
++    if (!accountId) return null;
++    try {
++      const response = await fetch(
++        `/api/v1/accounts/${accountId}/conversations?status=open&sort_by=last_activity_at`,
++        { headers: authHeaders() }
++      );
++      if (!response.ok) return null;
++      const body = await response.json();
++      const payload =
++        (body && body.data && body.data.payload) || (body && body.payload) || null;
++      return Array.isArray(payload) ? payload : null;
++    } catch (_e) {
++      return null;
++    }
++  };
++
++  const runWatchdog = async () => {
++    // Re-probe the store first: it may have populated after this composable
++    // ran, and a coverage change on its own can end degraded mode.
++    streamCoverage.value = readConversations(store).coverage;
++    const conversations = await fetchOpenConversations();
++    if (conversations === null) {
++      // The poll itself failed. Say nothing new about the stream — but if
++      // there is no stream path either, the indicator must still be up.
++      mode.value = nextAlertMode(mode.value, {
++        streamSourceAvailable: streamCoverage.value === 'list',
++        streamDelivered: false,
++        staleFoundByPoll: false,
++      });
++      paintIndicator();
++      return;
++    }
++    const now = Date.now();
++    let stale = false;
++    for (const conversation of conversations) {
++      if (!conversation || !conversation.id) continue;
++      for (const message of messagesOf(conversation)) {
++        if (!isAlertableCustomerMessage(message)) continue;
++        const createdAt = messageCreatedAtMs(message, now);
++        if (createdAt < startedAtMs) continue;
++        const key = alertKey(NEW_INBOUND, conversation.id, message.id);
++        if (seen.has(key)) continue;
++        // Proof, not inference: this message is old enough that the stream
++        // should have delivered it, and it did not.
++        if (now - createdAt > STREAM_GRACE_MS) stale = true;
++        consider(conversation, message);
++      }
++    }
++    mode.value = nextAlertMode(mode.value, {
++      streamSourceAvailable: streamCoverage.value === 'list',
++      streamDelivered: false,
++      staleFoundByPoll: stale,
++    });
++    paintIndicator();
++  };
++
++  // ---- boot ---------------------------------------------------------------
++  loadRules();
++  scanStream();
++  watch(
++    () => conversationSignature(readConversations(store).conversations),
++    () => scanStream()
++  );
++  watchdogTimer = setInterval(runWatchdog, STREAM_WATCHDOG_MS);
++  onScopeDispose(() => {
++    if (watchdogTimer) clearInterval(watchdogTimer);
++    watchdogTimer = null;
++    installed = false;
++  });
++
++  return { enabled: true, mode, rules, streamCoverage };
++}
+diff --git a/app/javascript/dashboard/helper/protonAlerts.js b/app/javascript/dashboard/helper/protonAlerts.js
+new file mode 100644
+index 0000000..20053fb
+--- /dev/null
++++ b/app/javascript/dashboard/helper/protonAlerts.js
+@@ -0,0 +1,486 @@
++// protonAlerts.js — OUR file. The three alert primitives (toast, sound,
++// desktop notification), extracted from backend/apps/chatwoot-my-tasks/
++// index.html and moved into the Chatwoot bundle so they fire in the window an
++// agent is actually looking at, plus the decision logic that chooses between
++// them.
++//
++// NOTHING HERE IS A REIMPLEMENTATION. beep(), requestNotificationPermission(),
++// sendDesktopNotification() and toast() are the my-tasks app's own working
++// code, transcribed with only the two changes the new host requires: the toast
++// container is created on demand instead of relying on a static
++// <div id="toasts">, and the notification helpers take an options object. The
++// my-tasks app is NOT modified and keeps its own copies and its own SLA
++// alerts — this is an ADDITION. Trading a working alert surface for a new one
++// would be a net loss.
++//
++// Every decision function below is deliberately PURE — no Vue, no DOM, no
++// network — so it can be executed directly by this patch's tests. The DOM
++// primitives touch `document`/`window` only inside a function body, never at
++// module scope, so importing this file in a non-browser context is safe.
++
++// ---------------------------------------------------------------------------
++// Rules
++// ---------------------------------------------------------------------------
++
++// The six events features/alerts/rules_store.py knows about, in its order.
++export const ALERT_EVENTS = [
++  'assigned_to_me',
++  'new_inbound',
++  'sla_warn',
++  'sla_breach',
++  'escalated',
++  'anomaly',
++];
++
++// The built-in defaults. These MUST match features/alerts/rules_store.py's
++// seeded defaults: they are what fires when the rule store is off, unreachable
++// or has never been configured, and a divergence would mean an agent's
++// preferences page showed one thing while their browser did another.
++//
++// NEW_INBOUND IS TOAST-ONLY, DELIBERATELY. Sound and desktop notification
++// exist for the event and are off. On a tenant where WhatsApp carries most of
++// the volume an audible alert per inbound message is a beep every few seconds,
++// and the first thing every agent does is switch off ALL alerting — including
++// the sla_breach alerts that actually matter. The requirement is met by the
++// capability being present and per-agent configurable, not by the loudest
++// default. If someone later "improves" this to include sound, the patch's
++// tests fail and they have to read this paragraph.
++export const DEFAULT_ALERT_RULES = {
++  assigned_to_me: { scope: 'mine', modalities: ['sound', 'desktop', 'toast'], enabled: true },
++  new_inbound: { scope: 'my_inbox', modalities: ['toast'], enabled: true },
++  sla_warn: { scope: 'mine', modalities: ['toast'], enabled: true },
++  sla_breach: { scope: 'mine', modalities: ['sound', 'desktop', 'toast'], enabled: true },
++  escalated: { scope: 'my_team', modalities: ['toast'], enabled: true },
++  anomaly: { scope: 'all', modalities: ['desktop'], enabled: true },
++};
++
++export const MODALITIES = ['sound', 'desktop', 'toast'];
++export const SCOPES = ['mine', 'my_inbox', 'my_team', 'all'];
++
++// The fallback poll's cadence — the same 60 s the my-tasks app already uses.
++export const STREAM_WATCHDOG_MS = 60000;
++// How late a message may be before its absence from the stream is treated as
++// proof the stream is not delivering. Deliberately larger than a plausible
++// render delay and far smaller than the poll interval.
++export const STREAM_GRACE_MS = 90000;
++export const ALERT_SOUND_HZ = 440;
++export const ALERT_SOUND_MS = 300;
++// Bound on the dedupe set, so a long shift cannot grow it without limit.
++export const MAX_REMEMBERED_ALERT_KEYS = 500;
++
++// ---------------------------------------------------------------------------
++// Pure decision logic
++// ---------------------------------------------------------------------------
++
++// Whether a message is one an agent should be alerted about.
++//
++// THE THREE EXCLUSIONS ARE THE POINT OF THIS FUNCTION. An agent's own reply
++// arrives back down the same stream as the customer's message, and alerting an
++// agent about their own send — their machine beeping at them the instant they
++// hit send — is the fastest way to make this feature contemptible. So:
++//   - `private === true`  → a private note (agent-authored) alerts nobody.
++//   - `message_type !== 0` → 0 is incoming; 1 outgoing (this is the agent's
++//     own reply, and the bot's), 2 activity, 3 template. Only 0 alerts.
++//   - `sender_type === 'User'` → a second, DELIBERATELY REDUNDANT guard. A
++//     User sender is a Chatwoot agent; a Contact sender is the customer. If a
++//     future channel ever delivered an agent-authored message with
++//     message_type 0, the redundant check is what stops the self-notification
++//     bug rather than a code review noticing it.
++export function isAlertableCustomerMessage(message) {
++  if (!message || typeof message !== 'object') return false;
++  if (message.private === true) return false;
++  if (message.message_type !== 0) return false;
++  if (message.sender_type === 'User') return false;
++  return Boolean(message.content);
++}
++
++// Whether a conversation falls inside a rule's scope for this viewer.
++//
++// `my_inbox` and `my_team` FAIL OPEN when the viewer's membership lists are
++// unknown (empty), and that is a decision rather than an oversight: every
++// conversation that reaches this code has already passed Chatwoot's own
++// inbox-visibility rules, so "an inbox I can see" is the wider of the two
++// filters, and silently alerting nothing because a membership lookup came back
++// empty is the failure mode this whole package exists to avoid. An
++// UNRECOGNISED scope, by contrast, alerts NOTHING — a typo in a rule must not
++// quietly widen it to everything.
++export function isConversationInScope(scope, conversation, viewer) {
++  const v = viewer || {};
++  const conv = conversation || {};
++  const meta = conv.meta || {};
++  switch (scope) {
++    case 'all':
++      return true;
++    case 'mine':
++      return Boolean(v.id) && Boolean(meta.assignee) && meta.assignee.id === v.id;
++    case 'my_inbox': {
++      const ids = Array.isArray(v.inboxIds) ? v.inboxIds : [];
++      return ids.length ? ids.includes(conv.inbox_id) : true;
++    }
++    case 'my_team': {
++      const ids = Array.isArray(v.teamIds) ? v.teamIds : [];
++      if (!ids.length) return true;
++      return Boolean(meta.team) && ids.includes(meta.team.id);
++    }
++    default:
++      return false;
++  }
++}
++
++// The modalities that should actually fire for an event. A disabled rule, an
++// unknown event and a rule with no recognised modality all resolve to [] —
++// i.e. to silence for that event only, never to a default.
++export function resolveModalities(rules, event) {
++  const rule = rules && rules[event];
++  if (!rule || rule.enabled === false) return [];
++  const modalities = Array.isArray(rule.modalities) ? rule.modalities : [];
++  return modalities.filter(m => MODALITIES.includes(m));
++}
++
++// Fold GET /alerts/rules/mine's answer onto the built-in defaults.
++//
++// A `{disabled: true}` body (ALERT_RULES_ENABLED off on the tenant), a network
++// failure (caller passes null), or a malformed payload must all leave alerting
++// WORKING on the defaults — never silent. That is the same fail-open position
++// features/alerts/rules_store.py takes for a store outage, for the same
++// reason: an alerting system whose configuration lookup failed must still
++// alert.
++export function mergeAlertRules(payload) {
++  const merged = {};
++  for (const event of ALERT_EVENTS) {
++    merged[event] = { ...DEFAULT_ALERT_RULES[event] };
++  }
++  const rules = payload && !payload.disabled ? payload.rules : null;
++  if (!rules || typeof rules !== 'object') return merged;
++  for (const event of ALERT_EVENTS) {
++    const rule = rules[event];
++    if (!rule || typeof rule !== 'object') continue;
++    merged[event] = {
++      scope: SCOPES.includes(rule.scope) ? rule.scope : merged[event].scope,
++      modalities: Array.isArray(rule.modalities) ? rule.modalities : merged[event].modalities,
++      enabled: rule.enabled !== false,
++    };
++  }
++  return merged;
++}
++
++// ---------------------------------------------------------------------------
++// Stream / poll mode
++// ---------------------------------------------------------------------------
++
++// The mode machine. Two properties matter and both are evidence-based rather
++// than guessed:
++//
++//   - We NEVER conclude "the stream is down" from a quiet period. A shift with
++//     no inbound messages produces no evidence either way, and inventing a
++//     degraded state from silence would put a red strip on every quiet
++//     morning.
++//   - We DO conclude it from the poll finding an inbound message older than
++//     STREAM_GRACE_MS that the stream never delivered. That is proof, not
++//     inference.
++//
++// `streamSourceAvailable === false` (the SPA store exposes no conversation
++// list this module can read) goes straight to poll mode, because in that state
++// there is no stream path at all — visibly degraded and still alerting beats
++// looking healthy and being silent.
++export function nextAlertMode(current, evidence) {
++  const e = evidence || {};
++  if (!e.streamSourceAvailable) return 'poll';
++  if (e.staleFoundByPoll) return 'poll';
++  if (e.streamDelivered) return 'stream';
++  return current;
++}
++
++// What the degraded indicator should say, or null when it should not be shown.
++export function degradedReason(mode, streamSourceAvailable) {
++  if (mode !== 'poll') return null;
++  return streamSourceAvailable ? 'stream-stale' : 'no-stream-source';
++}
++
++export const DEGRADED_TEXT = {
++  'stream-stale': 'Live alerts interrupted — checking every 60s',
++  'no-stream-source': 'Live alerts unavailable — checking every 60s',
++};
++
++// ---------------------------------------------------------------------------
++// Deduplication
++// ---------------------------------------------------------------------------
++
++export function alertKey(event, conversationId, messageId) {
++  return `${event}:${conversationId}:${messageId}`;
++}
++
++// Returns true exactly ONCE per key.
++//
++// THIS IS WHAT MAKES THE RECONNECTION RACE HARMLESS. The stream path and the
++// poll path share one set, so when they briefly overlap — the poll fires, the
++// stream reconnects, and both see the same message — whichever arrives first
++// alerts and the other silently drops. A duplicate-alert storm on reconnect
++// teaches agents to ignore alerts exactly as effectively as a beep every few
++// seconds does, so this is not an optimisation.
++//
++// Keying on the MESSAGE id (not the conversation) is deliberate: a second
++// inbound message on the same conversation is a new thing to know about.
++export function claimAlert(seen, key) {
++  if (!seen || seen.has(key)) return false;
++  seen.add(key);
++  if (seen.size > MAX_REMEMBERED_ALERT_KEYS) {
++    // Sets iterate in insertion order, so this evicts the oldest key.
++    seen.delete(seen.values().next().value);
++  }
++  return true;
++}
++
++// ---------------------------------------------------------------------------
++// Reading the SPA's own conversation state
++// ---------------------------------------------------------------------------
++
++// Candidate Vuex getters for the conversation list, tried in order.
++//
++// Chatwoot's ActionCable connector writes pushed conversation/message events
++// into the Vuex store — watching the store IS subscribing to the stream, and
++// it is how the SPA's own conversation list updates without a refresh. Only
++// ONE store getter is verified by this repo's own already-merged patches
++// (`getSelectedChat`, used by 0055), so the list getters below are candidates
++// rather than certainties, and this function reports which one it found.
++// `coverage: 'none'` is handled as "no stream path" (see nextAlertMode) rather
++// than pretended away, so a wrong guess here degrades to a visible 60 s poll
++// instead of to silence, and is fixable by editing this one array.
++export const CONVERSATION_GETTER_CANDIDATES = [
++  'getAllConversations',
++  'conversations/getAllConversations',
++];
++
++export const INBOX_GETTER_CANDIDATES = ['inboxes/getInboxes', 'getInboxes'];
++
++export function readConversations(store) {
++  const getters = (store && store.getters) || {};
++  for (const name of CONVERSATION_GETTER_CANDIDATES) {
++    if (Array.isArray(getters[name])) {
++      return { conversations: getters[name], coverage: 'list' };
++    }
++  }
++  // Last resort: the one getter this repo's own patches prove exists. It
++  // covers only the open conversation, which is NOT the whole surface an
++  // agent needs alerting on, so it counts as 'selected' — degraded, not
++  // healthy.
++  const selected = getters.getSelectedChat;
++  if (selected && selected.id) return { conversations: [selected], coverage: 'selected' };
++  return { conversations: [], coverage: 'none' };
++}
++
++export function readInboxIds(store) {
++  const getters = (store && store.getters) || {};
++  for (const name of INBOX_GETTER_CANDIDATES) {
++    const value = getters[name];
++    if (Array.isArray(value)) {
++      return value.map(inbox => inbox && inbox.id).filter(id => typeof id === 'number');
++    }
++  }
++  return [];
++}
++
++export function messagesOf(conversation) {
++  if (!conversation) return [];
++  if (Array.isArray(conversation.messages)) return conversation.messages;
++  const last = conversation.last_non_activity_message;
++  return last ? [last] : [];
++}
++
++// A cheap string that changes whenever any watched conversation gains a
++// message. Watching this instead of deep-watching the conversation array keeps
++// the watcher off the hot path of every unrelated store mutation.
++export function conversationSignature(conversations) {
++  if (!Array.isArray(conversations)) return '';
++  return conversations
++    .map(conversation => {
++      const messages = messagesOf(conversation);
++      const last = messages.length ? messages[messages.length - 1] : null;
++      return `${conversation && conversation.id}:${messages.length}:${last ? last.id : 0}`;
++    })
++    .join(',');
++}
++
++// Chatwoot serialises message timestamps as epoch SECONDS (`created_at`), and
++// occasionally as an ISO string. A message with no usable timestamp is treated
++// as NEW rather than old: the alternative is dropping a real alert.
++export function messageCreatedAtMs(message, nowMs) {
++  const raw = message && message.created_at;
++  if (typeof raw === 'number' && Number.isFinite(raw)) {
++    return raw > 1e11 ? raw : raw * 1000;
++  }
++  if (typeof raw === 'string') {
++    const parsed = Date.parse(raw);
++    if (!Number.isNaN(parsed)) return parsed;
++  }
++  return nowMs;
++}
++
++// ---------------------------------------------------------------------------
++// The primitives, transcribed from apps/chatwoot-my-tasks/index.html
++// ---------------------------------------------------------------------------
++
++const TOAST_CONTAINER_ID = 'proton-alert-toasts';
++const STATUS_STRIP_ID = 'proton-alert-status';
++
++// Web Audio API — no external file needed. Verbatim from the my-tasks app.
++export function beep(freq, durationMs) {
++  try {
++    const ctx = new (window.AudioContext || window.webkitAudioContext)();
++    const osc = ctx.createOscillator();
++    const gain = ctx.createGain();
++    osc.connect(gain);
++    gain.connect(ctx.destination);
++    osc.frequency.value = freq;
++    osc.type = 'sine';
++    gain.gain.setValueAtTime(0.3, ctx.currentTime);
++    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + durationMs / 1000);
++    osc.start(ctx.currentTime);
++    osc.stop(ctx.currentTime + durationMs / 1000);
++  } catch (_e) {
++    /* audio not available */
++  }
++}
++
++export function notificationPermission() {
++  if (typeof Notification === 'undefined') return 'unsupported';
++  return Notification.permission;
++}
++
++export function sendDesktopNotification(title, body) {
++  if (notificationPermission() !== 'granted') return false;
++  try {
++    const notification = new Notification(title, { body, icon: '' });
++    notification.onclick = () => window.focus();
++    return true;
++  } catch (_e) {
++    return false;
++  }
++}
++
++// A browser that has denied notification permission drops desktop alerts
++// FOREVER and silently. Chrome will not re-prompt after a denial either, so
++// this both re-requests (which works from 'default') and, when the answer is
++// still 'denied', tells the agent the only thing that can actually fix it.
++export function requestNotificationPermission() {
++  if (typeof Notification === 'undefined') {
++    toast('warning', 'This browser does not support desktop notifications.');
++    return Promise.resolve('unsupported');
++  }
++  return Notification.requestPermission().then(permission => {
++    if (permission === 'granted') {
++      toast('success', 'Desktop notifications enabled.');
++      hideAlertStatus();
++    } else {
++      toast(
++        'warning',
++        'Notification permission is blocked. Allow notifications for this site in your browser settings.'
++      );
++    }
++    return permission;
++  });
++}
++
++function ensureStyles() {
++  if (document.getElementById('proton-alert-styles')) return;
++  const style = document.createElement('style');
++  style.id = 'proton-alert-styles';
++  style.textContent = [
++    `#${TOAST_CONTAINER_ID}{position:fixed;top:14px;right:14px;display:flex;`,
++    'flex-direction:column;gap:6px;z-index:9999;max-width:320px;}',
++    `#${TOAST_CONTAINER_ID} .proton-toast{padding:9px 12px;border-radius:4px;`,
++    'font-size:12px;color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.15);}',
++    `#${TOAST_CONTAINER_ID} .proton-toast.success{background:#34a853;}`,
++    `#${TOAST_CONTAINER_ID} .proton-toast.error{background:#ea4335;}`,
++    `#${TOAST_CONTAINER_ID} .proton-toast.warning{background:#f9ab00;color:#333;}`,
++    `#${TOAST_CONTAINER_ID} .proton-toast.info{background:#1a73e8;}`,
++    `#${STATUS_STRIP_ID}{position:fixed;bottom:12px;left:12px;z-index:9999;`,
++    'display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:4px;',
++    'font-size:11px;background:#fef7e0;border:1px solid #f9ab00;color:#7a4f01;}',
++    `#${STATUS_STRIP_ID} button{font-size:11px;padding:2px 8px;cursor:pointer;`,
++    'border:1px solid #b06000;border-radius:3px;background:#fff;color:#7a4f01;}',
++  ].join('');
++  document.head.appendChild(style);
++}
++
++function toastContainer() {
++  ensureStyles();
++  let container = document.getElementById(TOAST_CONTAINER_ID);
++  if (!container) {
++    container = document.createElement('div');
++    container.id = TOAST_CONTAINER_ID;
++    document.body.appendChild(container);
++  }
++  return container;
++}
++
++export function toast(kind, message) {
++  const el = document.createElement('div');
++  el.className = `proton-toast ${kind}`;
++  el.textContent = message;
++  toastContainer().appendChild(el);
++  setTimeout(() => el.remove(), 6000);
++  return el;
++}
++
++// The degraded indicator AND the denied-permission affordance share one strip,
++// because they are the same message to the agent: "alerting is not doing
++// everything you think it is doing, and here is the fix." Silent failure in an
++// alerting system is the worst outcome available, so this strip is the one
++// piece of UI in this patch that must never be optional.
++export function showAlertStatus({ reason = null, permissionDenied = false } = {}) {
++  if (!reason && !permissionDenied) return hideAlertStatus();
++  ensureStyles();
++  let strip = document.getElementById(STATUS_STRIP_ID);
++  if (!strip) {
++    strip = document.createElement('div');
++    strip.id = STATUS_STRIP_ID;
++    document.body.appendChild(strip);
++  }
++  strip.textContent = '';
++  const label = document.createElement('span');
++  const parts = [];
++  if (reason) parts.push(DEGRADED_TEXT[reason] || DEGRADED_TEXT['no-stream-source']);
++  if (permissionDenied) parts.push('Desktop notifications are blocked');
++  label.textContent = parts.join(' · ');
++  strip.appendChild(label);
++  if (permissionDenied) {
++    const button = document.createElement('button');
++    button.type = 'button';
++    button.textContent = 'Enable notifications';
++    button.addEventListener('click', () => requestNotificationPermission());
++    strip.appendChild(button);
++  }
++  return strip;
++}
++
++export function hideAlertStatus() {
++  const strip = document.getElementById(STATUS_STRIP_ID);
++  if (strip) strip.remove();
++  return null;
++}
++
++// The single entry point every event goes through. Returns the modalities that
++// actually fired, so the caller can log what happened rather than what it
++// asked for.
++export function raiseAlert({ modalities = [], title = '', body = '', kind = 'info' } = {}) {
++  const fired = [];
++  if (modalities.includes('toast')) {
++    toast(kind, title ? `${title} — ${body}` : body);
++    fired.push('toast');
++  }
++  if (modalities.includes('sound')) {
++    beep(ALERT_SOUND_HZ, ALERT_SOUND_MS);
++    fired.push('sound');
++  }
++  if (modalities.includes('desktop')) {
++    if (sendDesktopNotification(title, body)) {
++      fired.push('desktop');
++    } else if (notificationPermission() === 'denied') {
++      // Configured for desktop, permanently blocked by the browser: surface
++      // it with the re-request affordance rather than dropping it forever.
++      showAlertStatus({ permissionDenied: true });
++    }
++  }
++  return fired;
++}
+diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+index 75b1cc6..142933b 100644
+--- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+@@ -100,6 +100,12 @@
+           component: () => import('../../views/ProtonCasesPage.vue'),
+           meta: { permissions: ['administrator'] },
+         },
++        {
++          path: 'proton/alert-preferences',
++          name: 'proton_alert_preferences',
++          component: () => import('../../views/ProtonAlertPreferencesPage.vue'),
++          meta: { permissions: ['administrator', 'agent'] },
++        },
+         ...inboxRoutes,
+         ...conversation.routes,
+         ...settings.routes,
+diff --git a/app/javascript/dashboard/views/ProtonAlertPreferencesPage.vue b/app/javascript/dashboard/views/ProtonAlertPreferencesPage.vue
+new file mode 100644
+index 0000000..cce2181
+--- /dev/null
++++ b/app/javascript/dashboard/views/ProtonAlertPreferencesPage.vue
+@@ -0,0 +1,352 @@
++<!-- ProtonAlertPreferencesPage.vue — OUR file. Two audiences on one page,
++     matching the two permissions features/alerts/rules_router.py splits on:
++
++       My alerts        (every agent — alerts.set_own_preferences)
++         GET    /alerts/rules/mine
++         PUT    /alerts/rules/mine/:event
++         DELETE /alerts/rules/mine/:event   ← back to the account default
++
++       Account defaults (administrators — alerts.manage)
++         GET /alerts/rules/defaults
++         PUT /alerts/rules/defaults/:event
++
++     WHY AN AGENT EDITS THEIR OWN ROW AT ALL. Tolerance for interruption
++     genuinely varies by person, and a single account-wide setting produces a
++     workaround rather than compliance: the agent who cannot work with a beep
++     every few seconds turns off ALL alerting, including the sla_breach alert
++     that actually matters. That is the whole reason the store has a per-agent
++     override layer, and this page is the only thing that makes it reachable.
++
++     NEW-INBOUND IS TOAST-ONLY BY DEFAULT and the page says so in the row
++     itself, not in a tooltip, because the next person to look at this screen
++     and think "why is sound off?" needs the answer in front of them.
++
++     `alerts.manage` is deliberately NOT required to VIEW the defaults — the
++     GET is agent-readable, and knowing what you inherit is not privileged
++     information. It is required to change one. -->
++<script>
++import { useAlert } from 'dashboard/composables';
++import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';
++import { DEFAULT_ALERT_RULES, MODALITIES, SCOPES } from 'dashboard/helper/protonAlerts';
++import {
++  getAlertDefaults,
++  getMyAlertRules,
++  putAlertDefault,
++  putMyAlertRule,
++  resetMyAlertRule,
++} from 'dashboard/api/protonAlerts';
++
++const { hasPermission: protonHasPermission } = useProtonPermissions();
++
++// Why each event exists, in the agent's language. Shown per row so the
++// preferences page explains the alert rather than just toggling it.
++const EVENT_LABELS = {
++  assigned_to_me: 'A conversation is assigned to me',
++  new_inbound: 'A customer sends a new message',
++  sla_warn: 'An SLA deadline is approaching',
++  sla_breach: 'An SLA deadline has been missed',
++  escalated: 'A conversation is escalated',
++  anomaly: 'A channel volume anomaly is detected',
++};
++
++const EVENT_NOTES = {
++  new_inbound:
++    'Toast only by default. Sound and desktop notification are available here — on a busy WhatsApp shift they fire every few seconds, so they are off unless you turn them on.',
++  anomaly: 'Supervisors only in practice: it fires on account-wide volume, not on your own queue.',
++};
++
++const SCOPE_LABELS = {
++  mine: 'Only conversations assigned to me',
++  my_inbox: 'Any conversation in my inboxes',
++  my_team: 'Any conversation in my team',
++  all: 'Every conversation on this account',
++};
++
++const MODALITY_LABELS = {
++  toast: 'On-screen',
++  sound: 'Sound',
++  desktop: 'Desktop notification',
++};
++
++export default {
++  name: 'ProtonAlertPreferencesPage',
++  data() {
++    return {
++      events: Object.keys(DEFAULT_ALERT_RULES),
++      scopes: SCOPES,
++      modalities: MODALITIES,
++      eventLabels: EVENT_LABELS,
++      eventNotes: EVENT_NOTES,
++      scopeLabels: SCOPE_LABELS,
++      modalityLabels: MODALITY_LABELS,
++      mine: {},
++      defaults: {},
++      loading: true,
++      saving: '',
++      disabled: false,
++      disabledReason: '',
++    };
++  },
++  computed: {
++    // A computed rather than a data field: useProtonPermissions resolves the
++    // caller's permission set asynchronously, so a value snapshotted in data()
++    // would be false on first render and never correct itself — the exact bug
++    // ProtonMyStatusPage.vue documents for canManage.
++    canManageDefaults() {
++      return protonHasPermission('alerts.manage');
++    },
++    // Read through `this.$store` rather than useMapGetter: this is an Options
++    // API component, and a composable called from a computed (or from module
++    // scope, as useProtonPermissions safely can be) has no active setup
++    // context to inject the store from.
++    //
++    // The id is only needed for the RBAC-OFF case, where the router has no
++    // verifiable caller identity to infer it from and 400s without it. With
++    // RBAC on it is ignored — see api/protonAlerts.js.
++    agentId() {
++      const getters = this.$store && this.$store.getters;
++      const user = getters && getters.getCurrentUser;
++      return (user && user.id) || null;
++    },
++  },
++  async mounted() {
++    await this.load();
++  },
++  methods: {
++    async load() {
++      this.loading = true;
++      try {
++        const [mine, defaults] = await Promise.all([
++          getMyAlertRules(this.agentId),
++          getAlertDefaults(),
++        ]);
++        // ALERT_RULES_ENABLED off: the router answers {disabled:true} on every
++        // endpoint. Say so plainly — an empty page would read as "you have no
++        // alerts", which is the opposite of the truth (everyone gets the
++        // built-in defaults).
++        if (mine.disabled) {
++          this.disabled = true;
++          this.disabledReason = mine.reason || 'Alert rules are not enabled on this account.';
++        }
++        this.mine = this.hydrate(mine.rules);
++        this.defaults = this.hydrate(defaults.defaults);
++      } catch (err) {
++        useAlert(`Could not load alert preferences: ${err.message}`);
++        this.mine = this.hydrate(null);
++        this.defaults = this.hydrate(null);
++      } finally {
++        this.loading = false;
++      }
++    },
++    // Always render six rows. A row missing from the response falls back to
++    // the built-in default, which is what would actually fire, so the page
++    // never shows a blank where an alert exists.
++    hydrate(rules) {
++      const out = {};
++      for (const event of this.events) {
++        const source = (rules && rules[event]) || DEFAULT_ALERT_RULES[event];
++        out[event] = {
++          scope: source.scope,
++          modalities: [...(source.modalities || [])],
++          enabled: source.enabled !== false,
++        };
++      }
++      return out;
++    },
++    toggleModality(row, modality) {
++      const index = row.modalities.indexOf(modality);
++      if (index === -1) row.modalities.push(modality);
++      else row.modalities.splice(index, 1);
++    },
++    body(row) {
++      return { scope: row.scope, modalities: row.modalities, enabled: row.enabled };
++    },
++    async saveMine(event) {
++      this.saving = `mine:${event}`;
++      try {
++        const result = await putMyAlertRule(event, this.body(this.mine[event]), this.agentId);
++        if (result.disabled) useAlert(result.reason || 'Alert rules are not enabled.');
++        else useAlert('Saved. This applies to you only.');
++      } catch (err) {
++        useAlert(`Could not save: ${err.message}`);
++      } finally {
++        this.saving = '';
++      }
++    },
++    async resetMine(event) {
++      this.saving = `reset:${event}`;
++      try {
++        const result = await resetMyAlertRule(event, this.agentId);
++        if (result.disabled) {
++          useAlert(result.reason || 'Alert rules are not enabled.');
++        } else if (result.rule) {
++          // The router returns the rule that resolves AFTER the reset, so the
++          // row repaints with the inherited value rather than with a guess.
++          this.mine[event] = {
++            scope: result.rule.scope,
++            modalities: [...(result.rule.modalities || [])],
++            enabled: result.rule.enabled !== false,
++          };
++          useAlert('Reset. You now follow the account default for this event.');
++        }
++      } catch (err) {
++        useAlert(`Could not reset: ${err.message}`);
++      } finally {
++        this.saving = '';
++      }
++    },
++    async saveDefault(event) {
++      this.saving = `default:${event}`;
++      try {
++        const result = await putAlertDefault(event, this.body(this.defaults[event]));
++        if (result.disabled) useAlert(result.reason || 'Alert rules are not enabled.');
++        else useAlert('Account default saved. Agents with their own override keep it.');
++      } catch (err) {
++        useAlert(`Could not save the account default: ${err.message}`);
++      } finally {
++        this.saving = '';
++      }
++    },
++  },
++};
++</script>
++
++<template>
++  <div class="flex flex-col h-full overflow-y-auto">
++    <div class="p-6 mx-auto w-full max-w-5xl">
++      <h1 class="text-xl font-medium text-n-slate-12">Alert preferences</h1>
++      <p class="mt-1 mb-4 text-sm text-n-slate-11">
++        Choose which events alert you, and how loudly. These settings apply to you only.
++      </p>
++
++      <div
++        v-if="disabled"
++        class="p-3 mb-4 text-sm rounded-lg border border-amber-300 bg-amber-50 text-amber-900"
++      >
++        {{ disabledReason }} Every agent currently gets the built-in defaults shown below, and
++        changes on this page will not be stored until it is enabled.
++      </div>
++
++      <div v-if="loading" class="text-sm text-n-slate-11">Loading…</div>
++
++      <template v-else>
++        <div
++          v-for="event in events"
++          :key="event"
++          class="p-4 mb-3 rounded-lg border border-n-weak"
++        >
++          <div class="flex justify-between items-center gap-3">
++            <label class="flex items-center gap-2 text-sm font-medium text-n-slate-12">
++              <input v-model="mine[event].enabled" type="checkbox" />
++              {{ eventLabels[event] }}
++            </label>
++            <span class="font-mono text-xs text-n-slate-10">{{ event }}</span>
++          </div>
++          <p v-if="eventNotes[event]" class="mt-1 text-xs text-n-slate-11">
++            {{ eventNotes[event] }}
++          </p>
++          <div class="flex flex-wrap gap-4 items-center mt-3">
++            <label class="text-xs text-n-slate-11">
++              Which conversations
++              <select
++                v-model="mine[event].scope"
++                class="block mt-1 text-sm rounded-lg border-n-weak"
++              >
++                <option v-for="scope in scopes" :key="scope" :value="scope">
++                  {{ scopeLabels[scope] }}
++                </option>
++              </select>
++            </label>
++            <div class="flex gap-3 items-center">
++              <label
++                v-for="modality in modalities"
++                :key="modality"
++                class="flex items-center gap-1 text-xs text-n-slate-11"
++              >
++                <input
++                  type="checkbox"
++                  :checked="mine[event].modalities.includes(modality)"
++                  @change="toggleModality(mine[event], modality)"
++                />
++                {{ modalityLabels[modality] }}
++              </label>
++            </div>
++            <div class="flex gap-2 items-center ml-auto">
++              <button
++                type="button"
++                class="px-3 py-1 text-xs rounded-lg border border-n-weak text-n-slate-11"
++                :disabled="saving === `reset:${event}`"
++                @click="resetMine(event)"
++              >
++                Reset to account default
++              </button>
++              <button
++                type="button"
++                class="px-3 py-1 text-xs text-white rounded-lg bg-n-brand"
++                :disabled="saving === `mine:${event}`"
++                @click="saveMine(event)"
++              >
++                {{ saving === `mine:${event}` ? 'Saving…' : 'Save' }}
++              </button>
++            </div>
++          </div>
++        </div>
++
++        <h2 class="mt-8 text-lg font-medium text-n-slate-12">Account defaults</h2>
++        <p class="mt-1 mb-4 text-sm text-n-slate-11">
++          What an agent who has not set their own preference gets. Changing a default does not
++          overwrite an agent who has already chosen for themselves.
++        </p>
++        <p v-if="!canManageDefaults" class="mb-4 text-xs text-n-slate-10">
++          Read-only: changing an account default needs the
++          <span class="font-mono">alerts.manage</span> permission.
++        </p>
++        <div
++          v-for="event in events"
++          :key="`default-${event}`"
++          class="flex flex-wrap gap-4 items-center p-3 mb-2 rounded-lg border border-n-weak"
++        >
++          <label class="flex items-center gap-2 text-sm text-n-slate-12">
++            <input
++              v-model="defaults[event].enabled"
++              type="checkbox"
++              :disabled="!canManageDefaults"
++            />
++            <span class="font-mono text-xs">{{ event }}</span>
++          </label>
++          <select
++            v-model="defaults[event].scope"
++            :disabled="!canManageDefaults"
++            class="text-sm rounded-lg border-n-weak"
++          >
++            <option v-for="scope in scopes" :key="scope" :value="scope">
++              {{ scopeLabels[scope] }}
++            </option>
++          </select>
++          <label
++            v-for="modality in modalities"
++            :key="`default-${event}-${modality}`"
++            class="flex items-center gap-1 text-xs text-n-slate-11"
++          >
++            <input
++              type="checkbox"
++              :checked="defaults[event].modalities.includes(modality)"
++              :disabled="!canManageDefaults"
++              @change="toggleModality(defaults[event], modality)"
++            />
++            {{ modalityLabels[modality] }}
++          </label>
++          <button
++            v-if="canManageDefaults"
++            type="button"
++            class="px-3 py-1 ml-auto text-xs rounded-lg border border-n-weak text-n-slate-11"
++            :disabled="saving === `default:${event}`"
++            @click="saveDefault(event)"
++          >
++            {{ saving === `default:${event}` ? 'Saving…' : 'Save default' }}
++          </button>
++        </div>
++      </template>
++    </div>
++  </div>
++</template>

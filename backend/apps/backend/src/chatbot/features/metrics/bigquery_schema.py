@@ -198,6 +198,24 @@ AI_HANDOFF_REASON_BASIS = (
 )
 
 
+def kb_coverage_basis(kb_score_floor: float) -> str:
+    """What `v_kb_coverage`'s numbers actually measure, as a report column.
+
+    Takes the floor so the string names the value that was in force. A coverage
+    figure compared across a floor change without noticing is a trend that is
+    entirely an artefact of configuration.
+    """
+    return (
+        f"Coverage is the share of enquiries NOT classified "
+        f"Subcategory='Unresolved Query'. The KB match score floor "
+        f"(KB_SCORE_FLOOR={kb_score_floor}) is applied upstream inside the "
+        f"live-FAQ search and the per-enquiry score is not persisted, so the "
+        f"below-floor case is measured by the classification the bot writes "
+        f"before handing off. Unresolved Query counts AGAINST coverage; "
+        f"excluding it would make coverage rise as the KB got worse."
+    )
+
+
 SUPPORTED_REPORTING_TIMEZONES = frozenset(
     {"UTC", "Asia/Kuala_Lumpur", "Asia/Jakarta", "Asia/Singapore", "Asia/Bangkok"}
 )
@@ -225,6 +243,7 @@ def view_ddls(
     first_response_target_minutes: int = 120,
     csat_by_agent_enabled: bool = False,
     csat_ranking_min_samples: int = 10,
+    kb_score_floor: float = 0.55,
 ) -> dict[str, str]:
     """The CREATE OR REPLACE VIEW statements for the Looker tiles.
 
@@ -763,6 +782,36 @@ def view_ddls(
             f"AS satisfied_rate, "
             f"{_sql_string(AI_RESOLUTION_BASIS)} AS resolution_basis "
             f"FROM {fq} GROUP BY day, channel, resolution_path, resolution_basis"
+        ),
+        # ── P8 task 9: KB coverage.
+        #
+        # The score floor (`KB_SCORE_FLOOR`, default 0.55) is applied UPSTREAM,
+        # inside the live-FAQ search, and the per-enquiry match score is not
+        # persisted anywhere the warehouse can see. What IS observable is the
+        # consequence: an enquiry the KB could not answer above the floor is
+        # the one the bot classified `Subcategory='Unresolved Query'` before
+        # handing off (see `features/chat/prompts.py`). So coverage is measured
+        # from that classification, and `coverage_basis` says which floor was
+        # in force so a coverage figure cannot be compared across a floor
+        # change without noticing.
+        #
+        # An `Unresolved Query` counts AGAINST coverage rather than being
+        # excluded, which is the whole point -- excluding the failures would
+        # make coverage rise as the KB got worse.
+        "v_kb_coverage": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_kb_coverage` AS "
+            f"SELECT {d_created} AS day, channel, "
+            f"COALESCE(division, 'Unknown') AS division, "
+            f"COUNT(*) AS enquiries, "
+            f"COUNTIF(LOWER(TRIM(COALESCE(subcategory, ''))) = 'unresolved query') "
+            f"AS unresolved_queries, "
+            f"COUNTIF(LOWER(TRIM(COALESCE(subcategory, ''))) != 'unresolved query') "
+            f"AS matched_enquiries, "
+            f"SAFE_DIVIDE("
+            f"COUNTIF(LOWER(TRIM(COALESCE(subcategory, ''))) != 'unresolved query'), "
+            f"COUNT(*)) AS coverage_rate, "
+            f"{_sql_string(kb_coverage_basis(kb_score_floor))} AS coverage_basis "
+            f"FROM {fq} GROUP BY day, channel, division, coverage_basis"
         ),
     }
 

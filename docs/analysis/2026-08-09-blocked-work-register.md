@@ -269,6 +269,79 @@ consumer of these columns (P8 task 4's cost pricing) reading directly against
 that tenant's Postgres will fail on the missing columns rather than silently
 return wrong numbers, which is the correct failure mode for a schema gap.
 
+## 3c-2. P8 tasks 4/6/8/9 — eleven new BigQuery views, none of them created yet
+
+No BigQuery project or credentials exist in this sandbox (controller decision
+D2), so every view added by P8 tasks 4, 6, 8 and 9 is authored and asserted
+structurally, exactly as P4 and P5 did, and **not one of them has been run
+against a real dataset.** What is owed, per tenant:
+
+1. **Run `ensure_views(settings)`.** This creates the six new
+   `conversations`-based views: `v_ai_resolution`, `v_ai_vs_human`,
+   `v_ai_escalation_reasons`, `v_ai_deflection`, `v_csat_by_resolution`
+   (task 8) and `v_kb_coverage` (task 9) — plus `v_csat_by_agent` (task 6)
+   **only if `CSAT_BY_AGENT_ENABLED=true` for that tenant**, since a
+   flags-off tenant deliberately gets the pre-P8 view set unchanged. Watch for
+   two things a structural test cannot check: `RANK() OVER (PARTITION BY day,
+   channel, respondents >= N)` inside a `CASE` in `v_csat_by_agent`, and the
+   `SUM(COUNT(*)) OVER (PARTITION BY ...)` window-over-aggregate in
+   `v_ai_vs_human` / `v_ai_escalation_reasons`.
+
+2. **Create the three `token_usage` views.** `bigquery_schema.ai_cost_view_ddls`
+   (`v_ai_token_usage`, `v_ai_cost_surface_coverage`, `v_ai_cost`) has **no
+   runtime caller** — `ensure_views` only runs `view_ddls`, whose base table is
+   `conversations`. They must be created by hand or by a follow-up wiring
+   change, and `v_ai_token_usage` requires the `token_usage` table to exist
+   first (`BigQueryTokenUsageSink` creates it on init, so it appears the first
+   time a tenant runs with `TOKEN_METERING_ENABLED=true` and
+   `METRICS_PROVIDER=bigquery`). Creating `v_ai_cost` before then fails:
+   BigQuery resolves a view's base tables at creation time.
+
+3. **`GET /metrics/ai-cost` returns `read_status: "unavailable"` until both of
+   the above are done**, which is deliberate — with no warehouse there is no
+   evidence of zero spend, so the endpoint must not render a confident 0.00.
+
+4. **`v_kb_staleness` (task 9) cannot be created at all yet**, and this is the
+   larger gap. It reads a `faq_entries` table that does not exist and that
+   nothing populates. Owed: create the table from
+   `faq_schema.FAQ_ENTRIES_SCHEMA`, then build a snapshot job that writes one
+   row per FAQ entry with `updated_at` (the operator's last edit) and
+   `serve_count` (how often live-FAQ search served it) — neither of which is
+   recorded anywhere today; `faq_feedback` records user feedback, not serves,
+   and has no edit timestamp. Note `faq_schema.faq_view_ddls` has **no runtime
+   caller either**, so `v_faq_quality` is also not created by any deploy path
+   today — a pre-existing gap this task found rather than introduced.
+   `v_kb_staleness` is deliberately left out of `ensure_views` because a
+   `CREATE VIEW` over the missing `faq_entries` table would raise partway
+   through the loop and abort creation of every view after it.
+
+5. **The `agent` service's token counts never reach the warehouse.** They are
+   written to `ai_actions` in Postgres (P8 task 1 + the D4 fix). `v_ai_cost`
+   therefore reports the `agent` service as `cost_status='unmetered'` with a
+   reason, not as zero spend. Owed: an export from `ai_actions` into
+   `token_usage`, or an equivalent read path.
+
+6. **No sentiment cut exists on the AI performance reports.** P7's sentiment is
+   a Chatwoot custom attribute that `features/metrics/mapping.py` does not read
+   into `ConversationRow`, so there is no `sentiment` column in
+   `CONVERSATIONS_SCHEMA` — and this repo's own
+   `test_every_schema_column_is_either_a_row_field_or_explicitly_sync_only`
+   correctly forbids adding a column nothing populates. Owed, in order:
+   `mapping.py` reads the attribute, `ConversationRow` gains the field, the BQ
+   schema gains the column, then the reports can cut by it. When they do, an
+   unclassified case must bucket as its own level and **never** as `neutral` —
+   P7's sentiment is `None` whenever `SENTIMENT_CLASSIFIER_ENABLED` is off, and
+   folding that into `neutral` would report the whole pre-flag history as
+   neutral sentiment.
+
+7. **`resolved_by` is not an AI-vs-human column and `v_resolution_split`'s
+   column names still imply it is.** `mapping.py` derives it from Chatwoot
+   `status` alone, so `resolved_by='bot'` means "resolved". Task 8's views
+   deliberately do not read it; `v_resolution_split`'s live `closed_by_bot` /
+   `transfer_to_agent` labels are left alone because renaming them would break
+   existing dashboards. Owed: a decision on whether to rename them, and a note
+   to whoever reads them next that they mean resolved / not-yet-resolved.
+
 ## 3d. P6 follow-up date — built, and deliberately invisible
 
 Not blocked on anyone outside this repo, recorded here so it is not mistaken

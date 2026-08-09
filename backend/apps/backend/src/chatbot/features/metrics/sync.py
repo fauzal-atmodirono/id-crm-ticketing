@@ -232,6 +232,10 @@ def ensure_views(settings: Settings) -> None:
         # keeps its 120-minute default rather than being invented here.
         csat_by_agent_enabled=settings.csat_by_agent_enabled,
         csat_ranking_min_samples=settings.csat_ranking_min_samples,
+        # P8 task 9: `v_kb_coverage` prints the floor that was in force in its
+        # `coverage_basis` column, so a coverage trend cannot be read across a
+        # floor change without noticing.
+        kb_score_floor=settings.kb_score_floor,
     ).values():
         client.query(ddl).result()
 

@@ -5,7 +5,12 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 Language = Literal["en", "ms", "zh", "unknown"]
-Sentiment = Literal["positive", "neutral", "negative"]
+# P7 task 1 widened this from three levels to four ("urgent" added) so the
+# classifier can distinguish a safety-critical/needs-immediate-attention
+# message from a merely negative one. `detection.py`'s `_NEGATIVE_SENTIMENTS`
+# gained "urgent" to match, so the existing ticket-creation gate stays valid
+# for the old three values and gets stricter, never different, for the new one.
+Sentiment = Literal["positive", "neutral", "negative", "urgent"]
 HandoffReason = Literal[
     "negative_sentiment", "keyword", "help_request", "unknown_retry_limit", "sales_lead"
 ]

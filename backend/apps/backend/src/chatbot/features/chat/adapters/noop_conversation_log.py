@@ -72,6 +72,7 @@ class NoOpConversationLog(ConversationLogPort):
         case_type: str | None = None,  # noqa: ARG002
         division: str | None = None,  # noqa: ARG002
         concern: str | None = None,  # noqa: ARG002
+        sentiment: str | None = None,  # noqa: ARG002
     ) -> None:
         return None
 

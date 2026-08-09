@@ -66,6 +66,7 @@ def build_ai_agent(  # noqa: PLR0915 — one builder, many tool closures
         sla_minutes: int,
         case_type: str,
         vehicle_model: str,
+        sentiment: str = "neutral",
     ) -> str:
         """Classify the current ticket details.
 
@@ -77,7 +78,20 @@ def build_ai_agent(  # noqa: PLR0915 — one builder, many tool closures
             sla_minutes: Targeted SLA duration in minutes.
             case_type: Whether this is an Inquiry, Complaint, or Feedback.
             vehicle_model: The customer's vehicle model, if mentioned.
+            sentiment: The customer's emotional tone this turn -- one of
+                "positive", "neutral", "negative", or "urgent" (safety-critical
+                or otherwise needing immediate human attention). Defaults to
+                "neutral" when omitted.
         """
+        # P7 task 1: rides the EXISTING per-turn tool call rather than a second
+        # Gemini round-trip -- see module docstring reasoning at the call site
+        # (service.py's _resolve_sentiment). Gated on the flag so a tenant that
+        # hasn't opted in gets a session_state that never contains "sentiment"
+        # at all, matching pre-P7 behaviour byte-for-byte (rather than just
+        # gating what's later read back out of it).
+        if settings.sentiment_classifier_enabled:
+            tool_context.state["sentiment"] = sentiment
+
         tool_context.state["priority"] = priority
         tool_context.state["sla_minutes"] = sla_minutes
 
@@ -185,6 +199,10 @@ def build_ai_agent(  # noqa: PLR0915 — one builder, many tool closures
                 if not vehicle_model_options.is_empty()
                 else ""
             )
+            + "\n    sentiment: The customer's emotional tone this turn -- one of "
+            '"positive", "neutral", "negative", or "urgent" (safety-critical or '
+            'otherwise needing immediate human attention). Defaults to "neutral" '
+            "when omitted."
         )
 
     async def book_test_drive_tool(

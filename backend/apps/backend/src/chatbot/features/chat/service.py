@@ -29,6 +29,7 @@ from chatbot.features.chat.models import (
     HandoffPayload,
     Message,
     ProductCard,
+    Sentiment,
     TurnResult,
 )
 from chatbot.features.chat.nps import record_nps_on_ticket
@@ -101,6 +102,12 @@ _TECH_ERROR_FALLBACK = "Maaf, terjadi kendala teknis. Mohon coba beberapa saat l
 # A turn counts as a fallback when the bot produced one of these canned replies
 # (no real answer) rather than a genuine response.
 _FALLBACK_REPLIES = frozenset({_EMPTY_REPLY_FALLBACK, _TECH_ERROR_FALLBACK})
+
+# P7 task 1: the four sentiment levels a turn may resolve to once the
+# classifier is enabled. Matches models.Sentiment verbatim -- kept as its own
+# tuple (rather than typing.get_args(Sentiment)) so this stays a plain runtime
+# membership check with no typing-introspection surprises.
+_VALID_SENTIMENTS: tuple[Sentiment, ...] = ("positive", "neutral", "negative", "urgent")
 
 
 class OrchestratorService:
@@ -414,6 +421,31 @@ class OrchestratorService:
         except Exception as e:  # instrumentation must never break the turn
             _log.error("emit_turn_metrics_failed", session_id=session_id, error=str(e))
 
+    def _resolve_sentiment(self, session_state: dict[str, Any]) -> Sentiment | None:
+        """Resolve the turn's reportable sentiment from raw session state.
+
+        Off (`sentiment_classifier_enabled=False`): always `None`, regardless
+        of what (if anything) happens to be in `session_state["sentiment"]` --
+        matches pre-P7 behaviour byte-for-byte, since nothing ever wrote this
+        key before this package.
+
+        On: one of the four valid levels passes through unchanged. Anything
+        else -- the key is absent (the model omitted the tool argument),
+        `None`, or an unrecognised value -- falls back to "neutral", never
+        `None`. `None` used to mean "never classified", which reads
+        identically to "we looked and it was fine"; once a classifier exists
+        that reading is no longer honest, and "neutral" is the safe
+        interpretation because it never trips the `detection.py` escalation
+        gate the way a stale/garbage value could if left unrecognised there
+        instead of normalised here.
+        """
+        if not self._settings.sentiment_classifier_enabled:
+            return None
+        raw = session_state.get("sentiment")
+        if raw in _VALID_SENTIMENTS:
+            return raw  # type: ignore[no-any-return]  # narrowed by the membership check above
+        return "neutral"
+
     async def handle_turn(
         self,
         session_id: str,
@@ -594,7 +626,7 @@ class OrchestratorService:
         return TurnResult(
             reply=reply_text,
             language=session_state.get("language", "unknown"),
-            sentiment=session_state.get("sentiment"),
+            sentiment=self._resolve_sentiment(session_state),
             handoff=handoff_payload,
             products=products,
         )
@@ -664,6 +696,31 @@ class OrchestratorService:
             # logged when the append actually landed — a transient failure leaves
             # the count unadvanced so the next capture retries these messages.
             state["conversation_ticket_id"] = ticket_id
+
+            # P7 task 1: stamp sentiment as a conversation custom attribute so
+            # it reaches BigQuery via the existing mapping (a sentiment nobody
+            # can report is half a feature). Reuses set_ticket_classification
+            # -- the SAME merge-safe custom-attributes path case_type/division
+            # already go through -- rather than adding new Chatwoot API
+            # surface. None (flag off, or nothing resolved yet) means skip:
+            # no call at all, so a disabled tenant's Fake/adapter never even
+            # sees the new kwarg. Its own try/except keeps a Chatwoot write
+            # failure from undoing the comment mirroring that already
+            # succeeded above -- fail-open, must never break the turn.
+            sentiment_value = self._resolve_sentiment(state)
+            if sentiment_value is not None:
+                try:
+                    await self._conversation_log_port.set_ticket_classification(
+                        ticket_id, sentiment=sentiment_value
+                    )
+                except Exception as e:
+                    _log.warning(
+                        "sentiment_custom_attribute_write_failed",
+                        session_id=session_id,
+                        ticket_id=ticket_id,
+                        error=str(e),
+                    )
+
             if result == ConversationLogResult.OK:
                 state["conversation_logged_count"] = len(history)
             else:
@@ -1142,7 +1199,7 @@ class OrchestratorService:
         turn_result = TurnResult(
             reply=reply_text,
             language=session_state.get("language", "unknown"),
-            sentiment=session_state.get("sentiment"),
+            sentiment=self._resolve_sentiment(session_state),
             handoff=handoff_payload,
             user_transcription=transcription or None,
         )

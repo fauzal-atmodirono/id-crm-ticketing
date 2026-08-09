@@ -975,6 +975,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         case_type: str | None = None,
         division: str | None = None,
         concern: str | None = None,
+        sentiment: str | None = None,
     ) -> None:
         # Package C Task 4 (review fix): `division` alone is NOT enough for
         # Package E's reporting to pick this conversation up --
@@ -1006,6 +1007,12 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             custom_attrs["case_category"] = division
         if concern:
             custom_attrs["concern"] = concern
+        if sentiment:
+            # P7 task 1: its own attribute, not folded into `concern` --
+            # features.metrics.mapping and any future reporting need "sentiment"
+            # to mean exactly the classified level, not share a key with an
+            # unrelated free-text field.
+            custom_attrs["sentiment"] = sentiment
         if custom_attrs:
             await self._merge_custom_attributes(ticket_id, custom_attrs)
         if division:

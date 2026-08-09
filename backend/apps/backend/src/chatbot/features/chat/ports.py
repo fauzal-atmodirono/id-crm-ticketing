@@ -284,13 +284,21 @@ class ConversationLogPort(Protocol):
         case_type: str | None = None,
         division: str | None = None,
         concern: str | None = None,
+        sentiment: str | None = None,
     ) -> None:
-        """Best-effort: write AI-derived case_type/division/concern as
-        conversation custom attributes, using the exact field names the
+        """Best-effort: write AI-derived case_type/division/concern/sentiment
+        as conversation custom attributes, using the exact field names the
         Cases List UI and ``features.metrics.mapping`` already read. Only
         the provided (non-None) values are written; must never raise --
         callers treat this as fire-and-forget, same as the rest of this
-        port's surface."""
+        port's surface.
+
+        ``sentiment`` (P7 task 1): the per-turn classified level (positive/
+        neutral/negative/urgent), so it reaches BigQuery via the existing
+        mapping. Written by ``OrchestratorService.capture_conversation``,
+        distinct from the case_type/division/concern trio's phone-bridge
+        caller -- share the method rather than adding new Chatwoot API
+        surface for a single extra attribute."""
         ...
 
     async def get_latest_public_comment(self, ticket_id: str) -> tuple[str, str | None, str | None]:

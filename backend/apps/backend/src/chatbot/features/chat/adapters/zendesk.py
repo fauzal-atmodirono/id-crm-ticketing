@@ -370,6 +370,7 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
         case_type: str | None = None,  # noqa: ARG002
         division: str | None = None,  # noqa: ARG002
         concern: str | None = None,  # noqa: ARG002
+        sentiment: str | None = None,  # noqa: ARG002
     ) -> None:
         # Package C Task 4 targets the phone channel, which is Chatwoot-only
         # (see CLAUDE.md: "Escalations/handoffs stay entirely in Chatwoot").

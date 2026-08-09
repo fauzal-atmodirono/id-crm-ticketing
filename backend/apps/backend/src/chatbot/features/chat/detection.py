@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-_NEGATIVE_SENTIMENTS = {"negative", "very_negative", "angry", "frustrated"}
+_NEGATIVE_SENTIMENTS = {"negative", "very_negative", "angry", "frustrated", "urgent"}
 
 
 def should_open_ticket(state: dict[str, Any]) -> bool:
@@ -11,6 +11,10 @@ def should_open_ticket(state: dict[str, Any]) -> bool:
     Hybrid gate: the AI's `flag_for_ticket_tool`, a handoff, or strongly negative
     sentiment all open a ticket. Everything else is a routine conversation that is
     still logged to Zendesk, but as a solved record.
+
+    "urgent" (P7 task 1's fourth sentiment level, safety-critical / needs
+    immediate attention) joins this set alongside "negative" -- the gate gets
+    stricter, never different: every case that tripped it before still does.
     """
     if state.get("ticket_flagged") is True:
         return True

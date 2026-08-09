@@ -55,3 +55,23 @@ def test_an_unsupported_timezone_is_caught_before_any_view_is_created():
 
     with pytest.raises(ValueError):
         view_ddls("p", "d", reporting_timezone="Mars/Olympus_Mons")
+
+
+# --- P5 settings ----------------------------------------------------------
+
+
+def test_the_p5_settings_are_documented_in_example_env():
+    assert "CONTROL_ITEMS_ENABLED=false" in EXAMPLE_ENV
+    assert "TARGETS_SEED_ENABLED=false" in EXAMPLE_ENV
+
+
+def test_the_p5_settings_default_to_false():
+    settings = _settings()
+    assert settings.control_items_enabled is False
+    assert settings.targets_seed_enabled is False
+
+
+def test_the_env_template_states_that_blank_rows_are_not_zeros():
+    """The sentence that stops someone 'tidying' the slide before a meeting."""
+    assert "never zero" in EXAMPLE_ENV
+    assert "claim about performance" in EXAMPLE_ENV

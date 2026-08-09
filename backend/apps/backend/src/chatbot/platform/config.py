@@ -763,6 +763,14 @@ class Settings(BaseSettings):
     # where somebody is watching rather than at query time on a dashboard.
     reporting_timezone: str = "UTC"
 
+    # P5: the control-item slide (14 metrics vs 14 targets) and its
+    # operator-editable targets store. Off = the endpoint is not mounted.
+    control_items_enabled: bool = False
+    # Seed the targets store from RESOLUTION_SLA_TARGETS_JSON at startup.
+    # Creates only; never overwrites an operator edit, so it is safe to leave
+    # on -- but off by default so a first deploy changes nothing.
+    targets_seed_enabled: bool = False
+
     # P3: the case-record panel in the conversation sidebar (case_detail,
     # vehicle plate/chassis, WIP notes...) and its GET/PATCH endpoints. Off
     # means the endpoints 404, so the fork panel simply does not render rather

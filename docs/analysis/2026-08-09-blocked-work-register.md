@@ -93,6 +93,30 @@ or image sent to the tenant.
 
 ---
 
+## 3b. P5 control items — five rows that cannot be measured
+
+The control-item slide (C1 p48) renders **nine of fourteen** rows from real
+data. The other five report `no_data` with a client-facing reason. They are
+**blank on purpose**, and the distinction is the point of the package:
+
+> **A zero would be a claim about performance; a blank is a statement about
+> instrumentation.**
+
+| Row | Why it cannot be measured | Unblocked by |
+|---|---|---|
+| 10 Call abandon rate | No call queue is instrumented — nothing to abandon, nothing to count | R9 (4–6 weeks) |
+| 11 Average speed of answer | Queue measurement, same gap | R9 |
+| 12 Service level | Queue measurement, same gap | R9 |
+| 13 Calls offered | Comes from telephony queue statistics, not integrated | R9 |
+| 14 Escalations to HQ | "HQ escalation" is undefined in the case model | **Q5** |
+
+**If anyone "tidies" these to 0 before a client meeting**, the slide begins
+asserting a 0% abandon rate on a platform with no call queue. That is the
+single most likely way this work gets undone, and it will look like an
+improvement to whoever does it.
+
+---
+
 ## 4. Deliberately not attempted
 
 Recorded so they are not mistaken for oversights.

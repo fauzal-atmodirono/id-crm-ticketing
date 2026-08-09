@@ -309,6 +309,26 @@ series falls at a natural break, and **tell the reporting team before, not
 after**. They are the people who will otherwise spend a morning reconciling a
 discrepancy that we created on purpose.
 
+### Presenting the control-item slide
+
+Nine of the fourteen control items render from real data. Five report
+**"not measured"** with a stated reason: four need call-queue instrumentation
+that does not exist (gap R9, 4-6 weeks), and the HQ-escalation row needs the
+client to define what an HQ escalation is (question Q5).
+
+**Those rows are deliberately blank rather than zero.** A zero would be a claim
+about performance; a blank is a statement about instrumentation. If anyone
+"tidies" them to 0 before a client meeting, the slide starts asserting a 0%
+abandon rate on a platform with no call queue.
+
+The endpoint returns all fourteen rows either way -- the client counts them
+against the printed page -- and carries a note saying how many are measurable.
+
+```bash
+CONTROL_ITEMS_ENABLED=true
+TARGETS_SEED_ENABLED=true    # creates only; never overwrites an operator edit
+```
+
 ## 7. Switching to a real domain later
 
 The nip.io setup is HTTP-only and meant to get you running fast. To move to

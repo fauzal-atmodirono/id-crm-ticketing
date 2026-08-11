@@ -30,15 +30,21 @@ Each artefact therefore states three things:
 | 02 | [Test plan](02-test-plan.md) | `../qa-plan.md` | Yes |
 | 03 | [Test report](03-test-report.md) | Suite output + the SIT report | **No** — the SIT has not run |
 | 04 | [Deployment checklist](04-deployment-checklist.md) | `README.md` + the deploy runbooks | Yes, with the fork-build caveat |
-| 05 | [Training manual](05-training-manual.md) | The v3 feature guide | **No** — role-differentiated curricula do not exist |
+| 05 | [Training manual](05-training-manual.md) | The v3 feature guide, filtered by audience into `../../training/` (generated) | Yes as a manual; **no exercise has been dry-run** |
 | 06 | [Configuration document](06-configuration-document.md) | `../../handover/configuration.md` (generated) | Yes |
 | 07 | [Architecture document](07-architecture-document.md) | `../../handover/architecture.md` | **No** — the required outside review has not happened |
 | 08 | [User acceptance sign-off](08-user-acceptance-sign-off.md) | Template + UAT script | **No** — UAT has not been run |
 | 09 | [Handover checklist](09-handover-checklist.md) | New | Yes, as a checklist; items within it are open |
 | 10 | [Support handover](10-support-handover.md) | P13 runbooks + the support model | Partly — the support model is undefined |
 
-**Six of ten are ready; four are not, and the four are not a paperwork problem.**
-The SIT has not been executed, role-differentiated training does not exist, the
-architecture map has not been reviewed by an outsider, and no UAT has been run.
-Presenting any of those four as signable would be the failure this programme has
-already had to correct four times in client-facing text.
+**Seven of ten are ready; 03, 07 and 08 are not, and they are not a paperwork
+problem.** The SIT has not been executed, the architecture map has not been
+reviewed by an outsider, and no UAT has been run. Presenting any of those three
+as signable would be the failure this programme has already had to correct four
+times in client-facing text.
+
+**05 moved from "does not exist" to "signable as a manual"** when the three role
+curricula landed as renderings of the one handbook source. Its remaining gap is
+delivery, not documentation: no sandbox tenant has been provisioned, so no
+exercise has been dry-run, and nine topics are untaught because the fork patches
+behind them have never been built.

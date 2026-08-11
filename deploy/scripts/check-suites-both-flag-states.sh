@@ -101,7 +101,10 @@ FLAGS_ON=(
   # ANOMALY_HOURLY_ZSCORE_K above) -- true is the only "on" a boolean has.
   TAXONOMY_ADMIN_ENABLED=true
   CATEGORY_DEPARTMENT_MAPPING_ENABLED=true
-  DATA_SCOPED_RBAC_ENABLED=true
+  # DATA_SCOPED_RBAC_ENABLED is deliberately ABSENT: the flag now refuses to boot
+  # (config.py::_refuse_unimplemented_data_scoping) because the scope model exists
+  # and nothing enforces it, so enabling it would restrict no data while appearing
+  # to. Add it here in the same commit that wires enforcement.
 
   # --- P13: retention jobs. AUDIT_LOG_RETENTION_DAYS is non-default on purpose,
   # the same way CSAT_RANKING_MIN_SAMPLES is: a tunable left at its own default

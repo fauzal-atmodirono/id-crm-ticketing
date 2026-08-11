@@ -1259,6 +1259,39 @@ class Settings(BaseSettings):
     )
 
     @model_validator(mode="after")
+    def _refuse_unimplemented_data_scoping(self) -> Settings:
+        """`DATA_SCOPED_RBAC_ENABLED` restricts nothing, so refuse to boot with it on.
+
+        P10 built the scope model (`features/authz/data_scope.py`) and never wired
+        it: `apply_scope_to_filters` and `resolve_user_data_scope` have no callers,
+        the query adapter is untouched, and `_ROLE_DATA_SCOPES` is a module dict
+        with no persistence and no admin surface. Wiring it means first deciding
+        where a role's scope is stored and who edits it, which is a design decision
+        rather than a missing line.
+
+        A silent no-op is the dangerous shape here, and this is a data-access flag:
+        an operator switches it on, configures a dealer-scoped franchise role,
+        reasonably believes that user is now confined to their own dealer, and that
+        user's `/metrics/*` keeps returning every dealer's volumes and every agent's
+        CSAT. Nothing in the product would say otherwise. Refusing to boot converts
+        a false assurance about data confinement into an obvious failure at deploy
+        time, which is the trade this codebase already makes in
+        `_phone_flag_dependencies` below.
+
+        Delete this validator in the same commit that wires enforcement -- its
+        existence is the record that the flag is not yet real.
+        """
+        if self.data_scoped_rbac_enabled:
+            raise ValueError(
+                "DATA_SCOPED_RBAC_ENABLED is not implemented and must stay false. "
+                "The scope model exists but nothing enforces it, so enabling this "
+                "would restrict no data while appearing to. See "
+                "docs/analysis/2026-08-09-blocked-work-register.md (data-scoped "
+                "RBAC) for what wiring it requires."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _phone_flag_dependencies(self) -> Settings:
         """Package C whole-branch review fix (Important 10): recording and
         handoff DEPEND on phone_transcript_live_enabled -- fail fast rather

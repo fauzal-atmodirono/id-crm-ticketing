@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from typing import Any, ClassVar
-from unittest.mock import patch
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 
 
 class _FakeSnapshot:
@@ -86,7 +85,9 @@ def _boot(monkeypatch: pytest.MonkeyPatch, **env: str) -> Any:
     return bootstrap_application()
 
 
-def test_taxonomy_router_is_mounted_and_reachable_through_real_app(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_taxonomy_router_is_mounted_and_reachable_through_real_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app = _boot(monkeypatch, TAXONOMY_ADMIN_ENABLED="true")
     client = TestClient(app)
 
@@ -143,3 +144,48 @@ def test_the_coverage_report_404s_when_only_the_taxonomy_admin_flag_is_on(
     res = client.get("/admin/taxonomy/coverage")
     assert res.status_code == 404
     assert "CATEGORY_DEPARTMENT_MAPPING_ENABLED" in res.json()["detail"]
+
+
+def test_data_scoped_rbac_refuses_to_boot_because_nothing_enforces_it() -> None:
+    """The flag restricts no data, so it must not be quietly settable.
+
+    `features/authz/data_scope.py` is built and unwired: no caller for
+    `apply_scope_to_filters`, an untouched query adapter, and `_ROLE_DATA_SCOPES`
+    with no persistence or admin surface. A data-access flag that silently
+    restricts nothing is the worst shape available -- an operator configures a
+    dealer-scoped role and that user still reads every dealer's volumes.
+
+    This test is the tripwire for the fix: when enforcement lands, the validator
+    goes and this test fails, which is the point. Replace it then with one that
+    proves scoping actually filters.
+    """
+    import pytest  # noqa: PLC0415
+
+    from chatbot.platform.config import Settings  # noqa: PLC0415
+
+    with pytest.raises(ValueError, match="DATA_SCOPED_RBAC_ENABLED is not implemented"):
+        Settings(data_scoped_rbac_enabled=True)
+
+
+def test_the_flag_is_absent_from_the_flags_on_gate() -> None:
+    """Belt to the braces above: the gate must not try to enable it.
+
+    If someone adds it back to FLAGS_ON, every bootstrap test in the flags-ON half
+    fails to boot -- correct, but confusing. This says why in one place.
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    gate = (
+        Path(__file__).resolve().parents[5]
+        / "deploy"
+        / "scripts"
+        / "check-suites-both-flag-states.sh"
+    ).read_text(encoding="utf-8")
+
+    enabled_lines = [
+        ln.strip() for ln in gate.splitlines() if ln.strip().startswith("DATA_SCOPED_RBAC_ENABLED=")
+    ]
+    assert not enabled_lines, (
+        "DATA_SCOPED_RBAC_ENABLED is in FLAGS_ON but refuses to boot; "
+        f"remove it until enforcement is wired. Found: {enabled_lines}"
+    )

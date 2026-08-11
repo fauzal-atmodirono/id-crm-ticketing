@@ -6,6 +6,7 @@ import structlog
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from chatbot.features.assist.chatwoot_context import ChatwootContextClient
 from chatbot.features.assist.copilot_router import build_copilot_router
 from chatbot.features.assist.router import build_assist_router
 from chatbot.features.assist.translate_router import build_translate_router
@@ -179,6 +180,12 @@ def _wire_assist(
         with_surface(genai_client, SURFACE_ASSIST_SUGGEST),
         assistants_store=assistants_store,  # type: ignore[arg-type]
         tenant_settings_store=tenant_settings_store,  # type: ignore[arg-type]
+        # Read-only Chatwoot client the media path uses to look up the
+        # conversation's attachments. Always wired: the endpoints gate on
+        # `assist_media_understanding_enabled` themselves and make no Chatwoot
+        # call at all when it is off, so passing the client costs nothing and
+        # keeps the flag as the single switch.
+        chatwoot_context=ChatwootContextClient(settings),
     )
     app.include_router(assist_router)
 

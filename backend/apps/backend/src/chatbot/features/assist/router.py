@@ -41,7 +41,17 @@ import structlog
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from chatbot.features.assist.assist_media import (
+    AssistMessage,
+    collect_media_parts,
+    customer_texts,
+    render_transcript,
+)
+
 if TYPE_CHECKING:
+    from google.genai import types
+
+    from chatbot.features.assist.chatwoot_context import ChatwootContextClient
     from chatbot.features.chat.adapters.assistants_store import AssistantsStorePort
     from chatbot.features.chat.adapters.tenant_settings_store import TenantSettingsStorePort
     from chatbot.features.chat.ports import KnowledgePort
@@ -109,12 +119,34 @@ _ASK_SYSTEM = (
     "FAQ context:\n{faq_context}"
 )
 
+# Appended to the task system prompt ONLY on requests that actually carry
+# media, so a text-only call produces a byte-identical prompt to today's.
+#
+# Load-bearing for the bug this feature exists to fix: with the video attached
+# but no instruction, the model still hedged and asked the customer to explain
+# what they had just sent. The transcript marker ("[sent a video]") tells it
+# something exists; this tells it to look.
+_MEDIA_INSTRUCTION = (
+    "The customer's attachments referenced in the transcript "
+    "(photo, video, voice note, or document) are attached to this request. "
+    "Use what they actually show or say. Never ask the customer to describe, "
+    "explain, or re-send something they have already sent — if their message "
+    "refers to an attachment (\"this one\", \"like this\", \"see photo\"), the "
+    "referent is attached, so answer about it directly."
+)
+
 _SNIPPET = 300
 
 
 class AssistBase(BaseModel):
     conversation_id: str = Field(min_length=1)
-    messages: list[str] = Field(min_length=1)
+    # Two accepted shapes. `list[AssistMessage]` is what the Chatwoot fork now
+    # posts: structured, so the backend owns all transcript rendering from one
+    # registry and the SPA holds no label vocabulary to drift from it.
+    # `list[str]` is the legacy pre-rendered shape and still renders
+    # byte-identically, so an un-upgraded Chatwoot image keeps working exactly
+    # as it does today rather than 422-ing.
+    messages: list[AssistMessage] | list[str] = Field(min_length=1)
     assistant_id: str | None = None
 
 
@@ -151,25 +183,24 @@ def _build_persona_prefix(product_name: str, guardrails: list[str], language: st
     return "\n".join(parts)
 
 
-def _retrieval_query(messages: list[str], max_turns: int = 6) -> str:
+def _retrieval_query(
+    messages: list[AssistMessage] | list[str], max_turns: int = 6
+) -> str:
     """Build the KB query from the customer's turns, not just the last line.
 
-    ``messages`` are ``"Customer: ..."`` / ``"Agent: ..."`` strings (see the
-    Chatwoot composer). Grounding on the whole customer intent keeps retrieval
-    from being derailed by a one-word last turn like "bangsar". Falls back to
-    the last message when no customer-labelled turn is present, so callers that
-    pass unlabelled messages behave exactly as before.
+    Grounding on the whole customer intent keeps retrieval from being derailed
+    by a one-word last turn like "bangsar". Falls back to the last rendered
+    line when no customer turn is present, so callers passing unlabelled
+    strings behave exactly as before.
+
+    Attachment markers never enter the query: `customer_texts` reads `content`
+    off structured messages rather than un-rendering markers back out of
+    strings, so "a video" cannot become a search term.
     """
-    customer: list[str] = []
-    for m in messages:
-        label, sep, body = m.partition(":")
-        if not sep or label.strip().lower() != "customer":
-            continue
-        body = body.strip()
-        if body:
-            customer.append(body)
+    customer = customer_texts(messages)
     if not customer:
-        return messages[-1]
+        rendered = render_transcript(messages)
+        return rendered[-1] if rendered else ""
     return "\n".join(customer[-max_turns:])
 
 
@@ -179,6 +210,7 @@ def build_assist_router(
     genai_client: Any,
     assistants_store: AssistantsStorePort | None = None,
     tenant_settings_store: TenantSettingsStorePort | None = None,
+    chatwoot_context: ChatwootContextClient | None = None,
 ) -> APIRouter:
     """Return a FastAPI router with three /assist/* endpoints.
 
@@ -191,6 +223,10 @@ def build_assist_router(
         tenant_settings_store: optional store for tenant setting overrides.
             When None, settings.assist_gemini_model is used directly (unchanged
             fallback — existing test call-sites remain unaffected).
+        chatwoot_context: optional read-only Chatwoot client used to fetch the
+            conversation's attachments.  When None (every pre-existing
+            call-site), no request ever carries media and the endpoints behave
+            exactly as they did before — the media path is additive.
     """
     router = APIRouter(prefix="/assist", tags=["assist"])
 
@@ -217,17 +253,44 @@ def build_assist_router(
         language = getattr(assistant.config, "language", "") or ""
         return _build_persona_prefix(assistant.product_name, assistant.config.guardrails, language)
 
-    async def _generate(system: str, user_prompt: str) -> str:
+    async def _collect_media(conversation_id: str) -> list[types.Part]:
+        return await collect_media_parts(
+            chatwoot_context,
+            conversation_id,
+            enabled=settings.assist_media_understanding_enabled,
+            max_bytes=settings.assist_media_max_bytes,
+        )
+
+    async def _generate(
+        system: str, user_prompt: str, media_parts: list[types.Part] | None = None
+    ) -> str:
+        """One Gemini call. `media_parts` is additive and optional.
+
+        With no media the call is made exactly as before — `contents` stays a
+        plain string rather than a one-element `Content`. That is not
+        cosmetic: it keeps the no-media path byte-identical for every existing
+        caller, including P7's resolved-case summariser which invokes
+        `/assist/summarize`'s endpoint function in-process.
+        """
         model = await _resolve_model()
+        contents: Any = user_prompt
+        if media_parts:
+            from google.genai import types as _types  # noqa: PLC0415
+
+            contents = _types.Content(
+                role="user",
+                parts=[_types.Part.from_text(text=user_prompt), *media_parts],
+            )
+            system = f"{system}\n\n{_MEDIA_INSTRUCTION}"
         response = await genai_client.aio.models.generate_content(
             model=model,
-            contents=user_prompt,
+            contents=contents,
             config={"system_instruction": system},
         )
         return (response.text or "").strip()
 
-    def _format_messages(messages: list[str]) -> str:
-        return "\n".join(f"[{i + 1}] {m}" for i, m in enumerate(messages))
+    def _format_messages(messages: list[AssistMessage] | list[str]) -> str:
+        return "\n".join(f"[{i + 1}] {m}" for i, m in enumerate(render_transcript(messages)))
 
     async def _kb_context(query: str, limit: int) -> tuple[str, list[dict[str, Any]]]:
         articles = await knowledge_port.search_kb(query, limit)
@@ -264,7 +327,8 @@ def build_assist_router(
         task_system = _SUGGEST_SYSTEM.format(faq_context=faq_context or "(none)")
         system = await _apply_persona(task_system, req.assistant_id)
         user_prompt = _format_messages(req.messages)
-        draft = await _generate(system, user_prompt)
+        media_parts = await _collect_media(req.conversation_id)
+        draft = await _generate(system, user_prompt, media_parts)
         return {"draft": draft, "sources": sources}
 
     @router.post("/summarize")
@@ -276,7 +340,8 @@ def build_assist_router(
         _log.info("assist_summarize", conv_id=req.conversation_id)
         user_prompt = _format_messages(req.messages)
         system = await _apply_persona(_SUMMARIZE_SYSTEM, req.assistant_id)
-        summary = await _generate(system, user_prompt)
+        media_parts = await _collect_media(req.conversation_id)
+        summary = await _generate(system, user_prompt, media_parts)
         return {"summary": summary}
 
     @router.post("/ask")
@@ -292,7 +357,8 @@ def build_assist_router(
         user_prompt = (
             f"Conversation:\n{_format_messages(req.messages)}\n\nAgent question: {req.question}"
         )
-        answer = await _generate(system, user_prompt)
+        media_parts = await _collect_media(req.conversation_id)
+        answer = await _generate(system, user_prompt, media_parts)
         return {"answer": answer}
 
     return router

@@ -14,6 +14,11 @@ A plain, unauthenticated client is used deliberately, NOT ChatwootClient, so the
 account API token is never sent to an external host — which is also why
 following the redirect is safe here: there is no credential to leak onto the
 redirect target.
+
+Mime resolution lives in `media_registry`, shared by specification with the
+backend's assist media path so a voice note is understood identically whether
+the bot answers automatically or an agent clicks "Suggest a reply". A parity
+test asserts the two registries stay identical.
 """
 
 from __future__ import annotations
@@ -22,27 +27,15 @@ import logging
 
 import httpx
 
+from app.services.media_registry import resolve_mime
+
 logger = logging.getLogger(__name__)
 
+# Preserved as the last-resort mime for a kind the registry has no default for.
+# Reached only when Content-Type is missing/generic AND the registry declines to
+# guess; sending *something* keeps the pre-registry behaviour of never dropping
+# an attachment purely for want of a mime type.
 _DEFAULT_MIME_TYPE = "application/octet-stream"
-
-# Generic/unhelpful Content-Type values that don't actually tell us anything
-# about the attachment — treated the same as a missing header so the
-# file_type_hint fallback kicks in.
-_GENERIC_CONTENT_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
-
-# file_type ("audio"/"image"/"video", as reported by Chatwoot) -> sensible
-# default mime type, used only when Content-Type is missing/generic. "audio/ogg"
-# matches WhatsApp/Twilio's actual voice-note format — the same default
-# handle_voice_turn already uses for the voice channel (see
-# backend/apps/backend/src/chatbot/features/chat/service.py).
-_FILE_TYPE_MIME_DEFAULTS = {
-    "audio": "audio/ogg",
-    "image": "image/jpeg",
-    # WhatsApp/Twilio deliver customer videos as MP4; used only when the
-    # response Content-Type is missing or generic.
-    "video": "video/mp4",
-}
 
 
 async def fetch_attachment_bytes(
@@ -59,12 +52,8 @@ async def fetch_attachment_bytes(
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             response = await client.get(data_url)
             response.raise_for_status()
-            content_type = response.headers.get("content-type", "").split(";")[0].strip()
-            if content_type not in _GENERIC_CONTENT_TYPES:
-                mime_type = content_type
-            else:
-                mime_type = _FILE_TYPE_MIME_DEFAULTS.get(file_type_hint or "", _DEFAULT_MIME_TYPE)
-            return response.content, mime_type
+            mime_type = resolve_mime(file_type_hint, response.headers.get("content-type"))
+            return response.content, mime_type or _DEFAULT_MIME_TYPE
     except Exception:
         logger.warning("media: failed to fetch attachment %s", data_url, exc_info=True)
         return None

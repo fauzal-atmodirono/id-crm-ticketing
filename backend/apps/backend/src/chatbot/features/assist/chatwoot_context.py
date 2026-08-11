@@ -74,6 +74,27 @@ class ChatwootContextClient:
             )
         return turns
 
+    async def get_messages(self, conversation_id: str) -> list[dict[str, Any]]:
+        """Raw message dicts, oldest first, exactly as Chatwoot returns them.
+
+        Unlike `get_transcript` this keeps empty-content messages, private
+        notes, and the `attachments` array — an attachment-only message (a
+        voice note with no caption) is precisely what the media pipeline needs
+        to see, and `get_transcript` drops it.
+
+        The `data_url`s in the result are the only attachment URLs the assist
+        media path is allowed to fetch: they come from Chatwoot, not from a
+        request body, which is what keeps the fetcher from being an SSRF gadget.
+
+        Returns `[]` when Chatwoot is disabled or unreachable — `_get` already
+        swallows and logs, so this never raises into an assist request.
+        """
+        data = await self._get(f"/conversations/{conversation_id}/messages")
+        if isinstance(data, dict):
+            payload = data.get("payload")
+            return payload if isinstance(payload, list) else []
+        return data if isinstance(data, list) else []
+
     async def get_contact(self, conversation_id: str) -> dict[str, Any]:
         sender_id = await self._sender_id(conversation_id)
         if sender_id is None:

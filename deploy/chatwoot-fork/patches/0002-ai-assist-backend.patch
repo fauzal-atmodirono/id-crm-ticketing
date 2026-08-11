@@ -109,7 +109,7 @@ index bf45cdc..0a6cec2 100644
    setup(props, { emit }) {
      const setReplyMode = mode => {
        emit('setReplyMode', mode);
-@@ -79,17 +96,48 @@ export default {
+@@ -79,17 +96,61 @@ export default {
      };
  
      const { captainTasksEnabled } = useCaptain();
@@ -131,9 +131,22 @@ index bf45cdc..0a6cec2 100644
 +      if (protonEnabled.value && PROTON_ACTIONS[actionKey]) {
 +        const protonAction = PROTON_ACTIONS[actionKey];
 +        const chat = store.getters.getSelectedChat;
++        // Structured, NOT pre-rendered: the backend owns transcript wording
++        // and attachment markers from one registry. Keeping a label table
++        // here too would be a second registry to drift. Note the second
++        // filter keeps caption-less messages -- a voice note or photo sent
++        // with no text used to be dropped here, so the AI was never told it
++        // existed and asked the customer to explain "this one".
 +        const messages = (chat?.messages || [])
-+          .filter(m => m.content && [0, 1].includes(m.message_type))
-+          .map(m => `${m.message_type === 0 ? 'Customer' : 'Agent'}: ${m.content}`);
++          .filter(m => [0, 1].includes(m.message_type))
++          .filter(m => m.content || (m.attachments || []).length)
++          .map(m => ({
++            role: m.message_type === 0 ? 'customer' : 'agent',
++            content: m.content || '',
++            attachments: (m.attachments || []).map(a => ({
++              file_type: a.file_type || 'file',
++            })),
++          }));
 +        const payload = {
 +          conversation_id: String(props.conversationId),
 +          messages,
@@ -161,7 +174,7 @@ index bf45cdc..0a6cec2 100644
          useTrack(CAPTAIN_EVENTS.EDITOR_AI_MENU_OPENED, {
            conversationId: props.conversationId,
            entryPoint: 'top_panel',
-@@ -120,6 +168,8 @@ export default {
+@@ -120,6 +181,8 @@ export default {
        handleNoteClick,
        REPLY_EDITOR_MODES,
        captainTasksEnabled,
@@ -170,7 +183,7 @@ index bf45cdc..0a6cec2 100644
        handleCopilotAction,
        showCopilotMenu,
        copilotToggleRef,
-@@ -167,7 +217,7 @@ export default {
+@@ -167,7 +230,7 @@ export default {
          </span>
        </div>
      </div>

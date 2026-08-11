@@ -32,6 +32,7 @@ from app.db.models import AiAction
 from app.db.session import async_session_maker
 from app.services import lifecycle, lifecycle_store, whatsapp_format
 from app.services.media import fetch_attachment_bytes
+from app.services.media_registry import drop_order
 
 logger = logging.getLogger(__name__)
 
@@ -577,13 +578,14 @@ async def _format_reply_for_channel(
 
 # Chatwoot attachment `file_type`s the chat-agent path understands. One of
 # each per turn (YAGNI); a second attachment of the same kind is ignored.
+#
+# This is deliberately NARROWER than `media_registry.REGISTRY`, which also
+# covers documents: `/chat/turn`'s request contract has exactly three media
+# slots (audio_base64/image_base64/video_base64), so a PDF has nowhere to go
+# on this path even though the registry can classify one. Widening this tuple
+# without widening that contract would silently drop the extra kind. The
+# agent-facing assist path has no such limit and does handle documents.
 _MEDIA_KINDS = ("audio", "image", "video")
-
-# Order media is dropped in when a turn's combined payload blows the budget:
-# video first (biggest by far, and the least likely to be the whole message),
-# then image, then audio last — a voice note usually IS the message, so losing
-# it costs the turn more than losing an illustrating photo or clip.
-_MEDIA_DROP_ORDER = ("video", "image", "audio")
 
 
 def _encoded(fetched: tuple[bytes, str] | None) -> tuple[str | None, str | None]:
@@ -604,9 +606,10 @@ def _apply_media_budget(
     JSON body, so guarding each attachment on its own still produces a request
     Gemini rejects. An oversized single video is dropped first (its own
     dedicated log line), then whole attachments are dropped in
-    `_MEDIA_DROP_ORDER` until the total fits. Never raises and never truncates
-    a payload mid-stream: the turn proceeds on whatever media survives, text
-    only if nothing does.
+    the registry's drop priority (video first — biggest, and least often the
+    whole message; audio last — a voice note usually IS the message) until the
+    total fits. Never raises and never truncates a payload mid-stream: the turn
+    proceeds on whatever media survives, text only if nothing does.
     """
     oversized_video = media.get("video")
     if oversized_video is not None and len(oversized_video[0]) > max_bytes:
@@ -620,7 +623,7 @@ def _apply_media_budget(
         media.pop("video")
 
     total = sum(len(data) for data, _ in media.values())
-    for kind in _MEDIA_DROP_ORDER:
+    for kind in drop_order(list(media)):
         if total <= max_bytes:
             return
         dropped = media.pop(kind, None)

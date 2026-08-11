@@ -553,6 +553,24 @@ class Settings(BaseSettings):
     # Chatwoot origins allowed to call /assist/* cross-origin. Add each tenant's
     # Chatwoot URL (e.g. http://crm.<IP>.nip.io and proton.crm.<IP>.nip.io).
     assist_cors_origins: list[str] = []
+    # When True, /assist/* downloads the conversation's customer attachments
+    # (photo/video/voice note/PDF) from the Chatwoot API and sends them to
+    # Gemini as inline parts, so "Suggest a reply" can answer about a video
+    # instead of asking the customer what they meant. Off = today's text-only
+    # behaviour, and not one Chatwoot call is made.
+    #
+    # Transcript MARKERS ("[sent a video]") are NOT gated on this — a
+    # caption-less attachment vanishing from the transcript is a bug under
+    # every configuration, so that half always runs. This flag governs only the
+    # expensive half: the Chatwoot round trip, the blob download, and the
+    # (substantial) video token cost.
+    assist_media_understanding_enabled: bool = False
+    # Byte budget for the WHOLE assist request, not per attachment: several
+    # attachments are base64'd into one JSON body, so guarding each alone still
+    # produces a request Gemini rejects. Oversized single files are rejected on
+    # their Content-Length before the body is transferred; the rest are dropped
+    # whole, video first and voice notes last (see assist/media_registry.py).
+    assist_media_max_bytes: int = 14 * 1024 * 1024
 
     # --- Ask Copilot (multi-turn agent) ------------------------------------
     # Model for the copilot tool-calling loop; defaults to the assist model.

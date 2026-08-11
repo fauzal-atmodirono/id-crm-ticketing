@@ -102,6 +102,16 @@ FLAGS_ON=(
   TAXONOMY_ADMIN_ENABLED=true
   CATEGORY_DEPARTMENT_MAPPING_ENABLED=true
   DATA_SCOPED_RBAC_ENABLED=true
+
+  # --- P13: retention jobs. AUDIT_LOG_RETENTION_DAYS is non-default on purpose,
+  # the same way CSAT_RANKING_MIN_SAMPLES is: a tunable left at its own default
+  # makes this run walk the identical path to the flags-OFF run, so it catches
+  # nothing. Neither purge deletes anything yet -- both report a measured gap
+  # rather than acting -- so switching them on here exercises the scheduling and
+  # the dry-run accounting, which is exactly what is verifiable today.
+  AUDIT_PURGE_JOB_ENABLED=true
+  AUDIT_LOG_RETENTION_DAYS=30
+  PHONE_RETENTION_JOB_ENABLED=true
 )
 
 failed=0

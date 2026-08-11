@@ -1,0 +1,53 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] give the priorities table the full page width
+
+0063 tightened the table and it was still cramped, because the constraint is
+not in the table -- it is in the wrapper. `SettingsFieldSection` is a
+`lg:grid-cols-8` layout that spends 2 columns on the label and leaves 6 for its
+slot. That is right for a toggle or a single input, and wrong for a five-column
+table: it capped the table at 75% of the page and forced the channel chips to
+wrap however narrow the remainder got.
+
+The section is replaced with a plain full-width block and the label moved above
+the table, so the table gets the whole content width. Every other section on
+the page keeps the two-column layout -- this is the one that needed to differ,
+and the comment says why so nobody "restores consistency" later.
+
+The editor renders its own explanatory paragraph, so the section's `help-text`
+is dropped rather than duplicated above it. `SettingsFieldSection` is still
+imported and used by the other sections on this page.
+
+Real `git diff` against the component as extracted from the patched image.
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue b/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue
+index c38e69f..f5c46a6 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue
+@@ -662,13 +662,21 @@ onMounted(() => {
+       </SettingsToggleSection>
+     </SettingsAccordion>
+ 
+-    <SettingsFieldSection
+-      label="Agent Channel Priorities"
+-      help-text="Set each agent's primary channel and any additional channels they handle."
+-      class="[&>div]:!items-start"
+-    >
+-      <AgentPrioritiesEditor />
+-    </SettingsFieldSection>
++    <!-- Full width on purpose, unlike every other section on this page.
++         SettingsFieldSection is a lg:grid-cols-8 layout that spends 2 columns
++         on the label and leaves 6 for the slot -- fine for a toggle or a single
++         input, but it squeezed this table into 75% of the page and forced the
++         five channel chips to wrap. The label moves above the table so the
++         table gets the whole width. The editor renders its own explanatory
++         paragraph, so the section's help-text is not duplicated here. -->
++    <div class="w-full py-2 mb-2">
++      <label class="text-heading-3 text-n-slate-12">
++        Agent Channel Priorities
++      </label>
++      <div class="mt-2">
++        <AgentPrioritiesEditor />
++      </div>
++    </div>
+ 
+     <woot-modal
+       v-if="showDeleteConfirmModal"

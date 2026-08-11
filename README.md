@@ -7,6 +7,25 @@ small FastAPI **agent** service that adds a Gemini-powered AI layer on top
 
 Each customer gets its own isolated Chatwoot + agent stack on its own subdomains; a shared Caddy, Postgres, and Mailpit back them all, running as Docker Compose on a single GCE VM.
 
+> ### Architecture scope — read before quoting an availability figure
+>
+> This platform runs on a **single GCE VM with Docker Compose**. There is no high
+> availability, no failover and no second zone. **The 99.9% availability and P1
+> `<2h` commitments in the RFP are not supportable on this architecture**; they
+> require multi-zone HA (gap R17) and a 24/7 on-call rota, both of which are
+> commercial decisions rather than engineering tasks.
+>
+> A restore script and an offsite backup copy now exist
+> (`docs/runbooks/disaster-recovery.md`), but **no restore has been drilled and
+> the RTO is unmeasured**, and the offsite copy is off until
+> `BACKUP_GCS_BUCKET` is set — see §8. Recovery is not availability.
+>
+> **Operations runbooks:**
+> [disaster recovery](docs/runbooks/disaster-recovery.md) ·
+> [monitoring & alerts](docs/runbooks/monitoring-alerts.md) ·
+> [data retention](docs/runbooks/data-retention.md) ·
+> [environments & promotion](docs/runbooks/environments.md)
+
 ## 1. Architecture
 
 ```
@@ -64,11 +83,20 @@ deploy/                 Runtime (this is what you copy to the VM)
     bootstrap-vm.sh       install Docker, swap, generate infra.env, bring infra up
     add-tenant.sh         provision one customer end to end
     remove-tenant.sh      decommission one customer
-    backup.sh              per-tenant DB dumps + storage volume archives
+    backup.sh              per-tenant DB dumps + storage volume archives, + offsite copy
+    restore.sh             verify-then-restore one tenant, dry-run by default
+    archive-old-data.sh    archive+purge agent rows past the hot window
+  gcs/                       GCS lifecycle policies (not applied to anything yet)
+  monitoring/                Cloud Monitoring alert policies (not applied yet)
+  chatwoot-fork/             patches + rebase.sh + PATCH-INVENTORY.md
 agent/                  FastAPI integration + AI service (built by compose)
-crm/                    Upstream Chatwoot clone — reference only, do not edit
-docs/                   Design/planning docs
+backend/                Vendored AI-assist conversational backend
+docs/                   Design/planning docs; docs/runbooks/ = ops runbooks
 ```
+
+Chatwoot itself is **not vendored here** — it is pulled as a Docker image and
+patched at build time from `deploy/chatwoot-fork/patches/`. There is no `crm/`
+directory in this checkout, so Chatwoot's own source cannot be read from it.
 
 ## 3. Local quickstart
 
@@ -733,31 +761,79 @@ a real domain with TLS:
 
 ## 8. Backups & restore
 
-`deploy/scripts/backup.sh` iterates over every tenant in `deploy/tenants/*.env` and, for each, dumps its `chatwoot_<tenant>`, `zammad_<tenant>`, and `agent_<tenant>` Postgres databases (`pg_dump -Fc`) and archives its `<tenant>_chatwoot_storage` and `<tenant>_zammad_storage` volumes into `/backups/YYYY-MM-DD/`, then prunes backup
-directories older than 7 days.
+**Full procedure, including the disaster case:
+[`docs/runbooks/disaster-recovery.md`](docs/runbooks/disaster-recovery.md).**
+This section is the summary.
 
-Install as a nightly cron job (as root, or a user with docker access):
+`deploy/scripts/backup.sh` iterates over every tenant in `deploy/tenants/*.env`
+and, for each, dumps its `chatwoot_<tenant>`, `agent_<tenant>` and
+`backend_<tenant>` Postgres databases (`pg_dump -Fc`), archives its
+`<tenant>_chatwoot_storage` volume into `/backups/YYYY-MM-DD/`, writes a
+`SHA256SUMS` manifest plus a per-tenant row-count file, prunes backup directories
+older than 7 days, and — **only if `BACKUP_GCS_BUCKET` is set** — syncs the
+night's directory to GCS and verifies the copy.
+
+> **Two things this section used to claim and should not have.** It listed
+> `zammad_<tenant>` and `<tenant>_zammad_storage`; Zammad was fully removed in
+> 2026-08 and `backup.sh` has not touched either for some time, so the restore
+> loop below would have failed on a database that does not exist. And
+> `backend_<tenant>` — the operator-authored knowledge base and the RBAC tables —
+> was created by `add-tenant.sh` but **never dumped** until 2026-08-11, so
+> **archives older than that cannot restore it.**
+
+Install as a nightly cron job (as root, or a user with docker access). Set the
+bucket **in the cron line**; cron does not inherit a variable you exported in a
+shell:
 
 ```
-0 3 * * * /opt/platform/deploy/scripts/backup.sh >> /var/log/platform-backup.log 2>&1
+0 3 * * * BACKUP_GCS_BUCKET=<bucket> /opt/platform/deploy/scripts/backup.sh >> /var/log/platform-backup.log 2>&1
 ```
+
+**With `BACKUP_GCS_BUCKET` unset, backups exist only on the VM they protect** —
+losing the VM loses the data and its backups together. Creating the bucket is §2
+of the DR runbook, and **it has not been created**.
 
 ### Restore
 
+Use `deploy/scripts/restore.sh` rather than a hand-typed `pg_restore` loop. It
+verifies the archive before it drops anything, can restore **into a different
+tenant** (which is what makes a drill possible without touching production), and
+is a **dry run unless you pass `--apply`**:
+
 ```bash
 cd /opt/platform/deploy
-DATE=2026-07-01     # backup date to restore
-T=proton            # tenant to restore
 
-# Databases (dumps are named <tenant>-<app>.dump)
-for app in chatwoot zammad agent; do
-  docker compose -p platform-infra -f docker-compose.infra.yml exec -T postgres \
-    pg_restore -U postgres -d "${app}_${T}" --clean --if-exists < /backups/$DATE/$T-$app.dump
-done
+# Dry run: verifies checksums and that every dump parses. Changes nothing.
+./scripts/restore.sh --tenant proton --date 2026-08-10
 
-# Storage volumes (stop the tenant's consuming services first)
-docker compose -p $T -f docker-compose.tenant.yml --env-file tenants/$T.env stop chatwoot-rails chatwoot-sidekiq
-docker run --rm -v ${T}_chatwoot_storage:/dest -v /backups/$DATE:/src alpine \
-  sh -c "rm -rf /dest/* && tar xzf /src/$T-chatwoot_storage.tar.gz -C /dest"
-docker compose -p $T -f docker-compose.tenant.yml --env-file tenants/$T.env start chatwoot-rails chatwoot-sidekiq
+# Do it (you will be asked to type the destination tenant name back):
+./scripts/restore.sh --tenant proton --date 2026-08-10 --apply
+
+# Restore production's backup into a scratch tenant, from the offsite copy —
+# this is the drill, and the only safe way to practise:
+./scripts/restore.sh --tenant proton --date 2026-08-10 --into drill --from-gcs --apply
 ```
+
+`./scripts/restore.sh --help` lists every flag. The script's header states
+exactly what `--apply` overwrites.
+
+> **No restore has ever been executed and the RTO is unmeasured.** The script was
+> exercised only against stub `docker`/`gsutil` commands. Treat the first real run
+> as a first run — see the DR runbook §7, and
+> `docs/analysis/2026-08-09-blocked-work-register.md` §3c-4.
+
+### Retention and archival
+
+`deploy/scripts/archive-old-data.sh` moves `ai_actions` and
+`processed_deliveries` rows past `ARCHIVE_HOT_WINDOW_DAYS` (default 730) into GCS
+as NDJSON plus a manifest, then purges them — dry run unless `--apply`. What is
+and is not retained, and the recordings-versus-7-years conflict that is still an
+open question with the client, is in
+[`docs/runbooks/data-retention.md`](docs/runbooks/data-retention.md).
+
+### Monitoring
+
+**There is no monitoring stack and no alert reaches a human today**; the first
+indication of a problem is a customer complaint. What can be observed now, and
+what an operator has to add, is in
+[`docs/runbooks/monitoring-alerts.md`](docs/runbooks/monitoring-alerts.md).

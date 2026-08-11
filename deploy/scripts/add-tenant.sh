@@ -125,7 +125,16 @@ cat > "caddy/tenants/${TENANT}.caddy" <<CADDY
 http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io {
 	# Proton AI backend paths proxied same-origin so the Chatwoot SPA reaches the
 	# backend without CORS or a browser-unreachable internal host.
-	@proton_backend path /metrics/* /kb/* /assist/* /routing/* /authz/* /admin/* /rsa/*
+	#
+	# EVERY backend prefix the fork calls must be listed here. A missing prefix
+	# does not fail loudly: the request falls through to the Chatwoot handler
+	# below, which answers with its own HTML 404 page, so the SPA reports
+	# "404: <!DOCTYPE html>..." and the feature looks broken in the frontend
+	# while the backend route is mounted and healthy. That is exactly what
+	# happened to /alerts/* on 2026-08-11 -- patch 0057's preferences page was
+	# unreachable for that reason alone. Rule of thumb: if you add a router in
+	# main.py that the fork calls, add its prefix here in the same change.
+	@proton_backend path /metrics/* /kb/* /assist/* /routing/* /authz/* /admin/* /rsa/* /voice/* /alerts/* /calls/*
 	reverse_proxy @proton_backend ${TENANT}-backend:8080
 	reverse_proxy ${TENANT}-chatwoot-rails:3000
 }

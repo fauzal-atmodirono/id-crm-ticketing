@@ -9,25 +9,34 @@ no webhook route, no Chatwoot client, and no contact lookup here. Specifically, 
 tracked in `docs/analysis/2026-08-09-blocked-work-register.md`:
 
 - The returned `conversation` dict is **not** posted to Chatwoot. No conversation
-  is created, no audio is attached, no contact is matched or created.
-- `attend_after` is `now + 12 hours`, **not** P1's `next_working_instant`. A
-  voicemail left on a Friday evening therefore promises a Saturday-morning
-  callback, which is the opposite of what the after-hours message commits to. This
-  is the single field the plan called out as making that promise true, so treat
-  the current value as a placeholder rather than a policy.
+  is created, no audio is attached, no contact is matched or created. Re-verified
+  by search at the time of writing: this module's only exports are
+  `process_voicemail_webhook` and `reset_processed_voicemails`, and nothing in the
+  codebase calls either outside its own tests.
 - `from_number` falls back to a hardcoded `+60120000000` when the payload has no
   `From`. That is a fixture value, not a real caller, and it must not survive into
   anything that writes a contact.
+
+`attend_after` **is** now P1's `next_working_instant` (it was `now + 12 hours`,
+which promised a Saturday-morning callback for a Friday-evening voicemail --
+the opposite of what the after-hours message commits to, and this is the single
+field the plan named as making that promise true). It reads the working-hours
+rows the caller passes in; with none, `next_working_instant` returns `now`,
+i.e. "attend immediately". That is the deliberate fail-open direction: a
+voicemail surfacing sooner than policy is a nuisance, a voicemail stamped for a
+day nobody is rostered ages against SLA over a weekend unnoticed.
 
 The dedupe set is in-process, so it does not survive a restart or span replicas.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
+
+from chatbot.features.metrics.business_hours import next_working_instant
 
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
@@ -43,9 +52,19 @@ def reset_processed_voicemails() -> None:
 
 
 async def process_voicemail_webhook(
-    payload: dict[str, Any], settings: Settings, transcriber_func: Any = None
+    payload: dict[str, Any],
+    settings: Settings,
+    transcriber_func: Any = None,
+    inbox_working_hours: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Process incoming Twilio voicemail webhook idempotently."""
+    """Process incoming Twilio voicemail webhook idempotently.
+
+    `inbox_working_hours` is the Chatwoot `GET /inboxes/{id}` body (the same row
+    shape `features/metrics/business_hours.py` parses everywhere else in this
+    codebase) and is what makes `attend_after` mean the next business day. It is
+    optional because there is no webhook route yet to fetch it -- see the module
+    docstring; omitting it means "attend now", never a later fabricated time.
+    """
     if not settings.phone_voicemail_ingest_enabled:
         return {"status": "skipped", "reason": "phone_voicemail_ingest_disabled"}
 
@@ -74,9 +93,14 @@ async def process_voicemail_webhook(
     else:
         transcript_text = "Voicemail recording attached."
 
-    # Calculate next working instant
+    # The after-hours message promises "our team will reach out on the next
+    # business day", so this field has to be the next instant the team is
+    # actually rostered -- not a flat offset. `next_working_instant` is P1's
+    # helper and the one the rest of the codebase uses for exactly this; it
+    # returns `now` unchanged when no hours are configured, and it fails open
+    # the same way rather than walking forever on a pathological calendar.
     now = datetime.now(UTC)
-    attend_after = (now + timedelta(hours=12)).isoformat()
+    attend_after = next_working_instant(now, inbox_working_hours or {}).isoformat()
 
     conversation = {
         "id": f"conv_vm_{recording_sid}",

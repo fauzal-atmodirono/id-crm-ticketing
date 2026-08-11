@@ -1,0 +1,227 @@
+# Cloud Monitoring alert policies for the platform VM.
+#
+# HOW TO APPLY — and what has to exist first
+# ------------------------------------------------------------------------------
+# These are NOT applied anywhere. No monitoring stack exists on any VM and no
+# GCP credentials existed in the environment they were written in, so **none of
+# these policies has ever been created and none of them has ever fired.** Treat
+# them as reviewed starting points, not as live configuration.
+#
+# Prerequisites, in order (see docs/runbooks/monitoring-alerts.md section 2):
+#   1. The Google Cloud Ops Agent installed on the VM. Without it there are no
+#      agent.googleapis.com metrics and every policy below except the uptime one
+#      will match nothing — silently. A policy that can never fire looks
+#      identical to a system that is healthy.
+#   2. A notification channel that a human actually watches.
+#   3. `gcloud alpha monitoring policies create --policy-from-file=<one policy>
+#        --notification-channels=<channel>`
+#
+# Each document is one policy. Split on `---` before applying; the CLI takes one
+# policy per file.
+#
+# WHY CLOUD MONITORING AND NOT PROMETHEUS ON THE VM
+# ------------------------------------------------------------------------------
+# A monitoring stack on the VM it monitors goes down with it, and being told the
+# host has a problem is the entire point.
+#
+# EVERY POLICY NAMES AN OWNER AND A FIRST ACTION in its documentation field. An
+# alert with no owner is a log line. The `${VM_NAME}` and `${PROJECT}`
+# placeholders must be substituted before applying.
+
+# ==============================================================================
+# HOST — disk. The highest-value host alert on this architecture: backups,
+# Postgres, Docker images and Chatwoot storage share one disk and backup.sh
+# writes to it nightly. Disk exhaustion is the most likely single-VM failure and
+# it takes everything down at once.
+# ==============================================================================
+displayName: "Platform VM — disk above 80%"
+combiner: OR
+conditions:
+  - displayName: "root filesystem > 80% for 5 minutes"
+    conditionThreshold:
+      filter: >-
+        metric.type="agent.googleapis.com/disk/percent_used"
+        AND resource.type="gce_instance"
+        AND metric.labels.device="/dev/sda1"
+        AND metric.labels.state="used"
+      comparison: COMPARISON_GT
+      thresholdValue: 80
+      duration: 300s
+      aggregations:
+        - alignmentPeriod: 60s
+          perSeriesAligner: ALIGN_MEAN
+alertStrategy:
+  autoClose: 604800s
+documentation:
+  mimeType: text/markdown
+  content: |
+    **Owner:** platform engineer on duty
+
+    **First action:** `df -h /`, then `du -sh /backups/* | sort -h | tail`, then
+    `docker system df`. `/backups` is usually the biggest movable thing.
+
+    **Before deleting anything from /backups**, confirm the offsite copy
+    succeeded: `grep 'Offsite copy verified' /var/log/platform-backup.log`.
+
+    Full procedure: `docs/runbooks/disaster-recovery.md` section 6.
+
+    **Note the device label.** `/dev/sda1` is the boot disk on the Debian 12
+    images this platform uses; check it against
+    `gcloud monitoring time-series list` before trusting this policy, because a
+    wrong device label makes it match nothing and fail silently.
+---
+# ==============================================================================
+# HOST — memory. The VM has a 4 GB swapfile with vm.swappiness=10, so pressure
+# shows as sustained swap use well before an OOM kill.
+# ==============================================================================
+displayName: "Platform VM — sustained memory pressure"
+combiner: OR
+conditions:
+  - displayName: "memory used > 90% for 15 minutes"
+    conditionThreshold:
+      filter: >-
+        metric.type="agent.googleapis.com/memory/percent_used"
+        AND resource.type="gce_instance"
+        AND metric.labels.state="used"
+      comparison: COMPARISON_GT
+      thresholdValue: 90
+      duration: 900s
+      aggregations:
+        - alignmentPeriod: 60s
+          perSeriesAligner: ALIGN_MEAN
+documentation:
+  mimeType: text/markdown
+  content: |
+    **Owner:** platform engineer on duty
+
+    **First action:** `free -m` and `vmstat 1 5`. Sustained swap-in (not just
+    swap allocated) means a service needs its `mem_limit` raised in
+    `docker-compose.tenant.yml` or the VM needs resizing.
+
+    15 minutes rather than 5 on purpose: this VM swaps by design during a
+    Sidekiq burst, and a 5-minute window would page someone nightly.
+---
+# ==============================================================================
+# APPLICATION — the agent health endpoint. This one is worth alerting on because
+# it can genuinely fail: /healthz executes SELECT 1 against the agent database
+# and returns 503 on any error, so a 200 means the process AND its database
+# connection are alive.
+#
+# Deliberately NOT paired with an equivalent for the backend: the backend's
+# health endpoint returns a static dict and cannot fail while the web server is
+# up, so alerting on it would only detect the process being gone — and the
+# container-down policy already does that, more directly. See
+# docs/runbooks/monitoring-alerts.md section 5.
+# ==============================================================================
+displayName: "agent /healthz failing"
+combiner: OR
+conditions:
+  - displayName: "uptime check failing for 2 minutes"
+    conditionThreshold:
+      filter: >-
+        metric.type="monitoring.googleapis.com/uptime_check/check_passed"
+        AND resource.type="uptime_url"
+        AND metric.labels.check_id="agent-healthz"
+      comparison: COMPARISON_LT
+      thresholdValue: 1
+      duration: 120s
+      aggregations:
+        - alignmentPeriod: 60s
+          perSeriesAligner: ALIGN_FRACTION_TRUE
+documentation:
+  mimeType: text/markdown
+  content: |
+    **Owner:** platform engineer on duty
+
+    **First action:** /healthz fails on a database error, so check Postgres
+    before the agent:
+    `docker compose -p platform-infra -f docker-compose.infra.yml ps postgres`
+    then `docker logs <tenant>-agent --tail=200`.
+
+    **Requires an uptime check named `agent-healthz`** pointing at
+    `http://<tenant>.agent.<ip>.nip.io/healthz`. It does not exist yet; create it
+    before applying this policy, or the condition matches nothing.
+
+    Per tenant: one uptime check each, or this only watches whichever tenant you
+    happened to configure.
+---
+# ==============================================================================
+# CONTAINER — any tenant service down. Covers the case a health endpoint cannot:
+# the process being gone entirely.
+# ==============================================================================
+displayName: "Platform container down"
+combiner: OR
+conditions:
+  - displayName: "a container has been down for 2 minutes"
+    conditionThreshold:
+      filter: >-
+        metric.type="agent.googleapis.com/processes/count_by_state"
+        AND resource.type="gce_instance"
+      comparison: COMPARISON_LT
+      thresholdValue: 1
+      duration: 120s
+      aggregations:
+        - alignmentPeriod: 60s
+          perSeriesAligner: ALIGN_MEAN
+documentation:
+  mimeType: text/markdown
+  content: |
+    **Owner:** platform engineer on duty
+
+    **First action:**
+    `docker compose -p <tenant> -f docker-compose.tenant.yml --env-file tenants/<t>.env ps`
+    then `logs --tail=200` on the dead service, then `up -d`.
+
+    A Rails container that keeps dying usually means Postgres or Redis is
+    unreachable, not that Rails is broken.
+
+    **This filter is a placeholder and will not work as written.** The Ops Agent
+    does not report Docker container state as a metric out of the box; getting a
+    real per-service up/down signal needs either the Ops Agent's Docker receiver
+    configured, or a small script writing a custom metric per service from
+    `docker compose ps`. Decide which before applying — do not apply this one and
+    assume it is watching, because a policy matching no time series never fires.
+---
+# ==============================================================================
+# BUSINESS — the nightly backup did not run.
+#
+# The highest-value alert on the whole list, because it is silent: nothing looks
+# broken, backups simply stop, and the first symptom is a restore that cannot
+# happen. Requires a log-based metric over the backup log; see the doc field.
+# ==============================================================================
+displayName: "Nightly backup did not complete"
+combiner: OR
+conditions:
+  - displayName: "no successful backup in 26 hours"
+    conditionAbsent:
+      filter: >-
+        metric.type="logging.googleapis.com/user/platform_backup_complete"
+        AND resource.type="gce_instance"
+      duration: 93600s
+      aggregations:
+        - alignmentPeriod: 3600s
+          perSeriesAligner: ALIGN_COUNT
+documentation:
+  mimeType: text/markdown
+  content: |
+    **Owner:** platform engineer on duty
+
+    **First action:** `grep -E 'Backup complete|ALERT' /var/log/platform-backup.log`.
+    If there is no line for last night, run
+    `/opt/platform/deploy/scripts/backup.sh` by hand and watch it. Then `df -h /`
+    — a full disk is the most common cause, and a missing backup plus the
+    disk alert is one incident, not two.
+
+    If the log says `ALERT: offsite sync ... FAILED`, the local backup exists but
+    is not offsite: check the bucket's IAM and the VM service account. Until it
+    is fixed, backups exist only on the machine they protect.
+
+    **Requires two things that do not exist yet.**
+    1. The backup cron line must log somewhere the Ops Agent ships, i.e.
+       `>> /var/log/platform-backup.log` plus a logging config that tails it, or
+       change the redirect to `| logger -t platform-backup`.
+    2. A log-based counter metric `platform_backup_complete` matching
+       `textPayload:"Backup complete"`, and a second one on `"ALERT:"` for the
+       offsite-failure alert.
+
+    26 hours, not 24, so a slow night does not page anyone.

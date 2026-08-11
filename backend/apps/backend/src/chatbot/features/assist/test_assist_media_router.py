@@ -185,6 +185,40 @@ def test_video_bytes_reach_gemini_as_an_inline_part() -> None:
 
 
 @respx.mock
+def test_legacy_string_payload_still_gets_the_video() -> None:
+    """THE BACKEND-ONLY DEPLOY CASE. Media collection is keyed on
+    conversation_id and reads the Chatwoot API directly, so it does NOT depend
+    on the frontend sending attachment metadata.
+
+    That means a backend deploy against an UNREBUILT Chatwoot image — which
+    still posts the legacy pre-rendered `list[str]` — already fixes the
+    reported bug: the video reaches Gemini even though the transcript has no
+    "[sent a video]" marker. Ship the SPA later for the marker; the answer
+    stops being "what do you mean by 'this one'?" today.
+    """
+    _mock_video_download()
+    client, mock_genai, _ = _build(context=_FakeContext())
+    r = client.post(
+        "/assist/suggest",
+        json={
+            "conversation_id": "42",
+            "messages": ["Customer: warranty for X50?", "Customer: this one"],
+        },
+        headers=_HEADERS,
+    )
+    assert r.status_code == 200
+    contents = _call_kwargs(mock_genai)["contents"]
+    inline = [p for p in contents.parts if p.inline_data is not None]
+    assert len(inline) == 1
+    assert inline[0].inline_data.mime_type == "video/mp4"
+    # the legacy transcript is preserved verbatim as the leading text part
+    parts_text = contents.parts[0].text
+    assert "[1] Customer: warranty for X50?" in parts_text
+    assert "[sent a video]" not in parts_text  # no marker without the new SPA
+    assert _MEDIA_INSTRUCTION in _call_kwargs(mock_genai)["config"]["system_instruction"]
+
+
+@respx.mock
 def test_transcript_still_leads_the_parts_list() -> None:
     _mock_video_download()
     client, mock_genai, _ = _build(context=_FakeContext())

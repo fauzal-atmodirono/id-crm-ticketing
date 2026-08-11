@@ -29,6 +29,15 @@ Four changes, all from clicking the pages rather than reading them.
    purchase an operator cannot make. The divider above it goes too, since it
    existed only to separate the prompt from the rules list.
 
+NOTE ON THE `import Modal` PLACEMENT. It sits immediately above
+`export default`, not with the other imports at the top, and that is
+deliberate. The first cut of this patch inserted it after "the last line
+matching ^import", which in both files is the OPENING line of a multi-line
+`import { … } from …` statement -- so the new import landed INSIDE it and the
+SFC compiler failed with `Unexpected keyword 'import'`. Cloud Build caught it
+(`✓ 2155 modules transformed` then `error during build`). Anchoring on
+`export default` cannot land inside a statement.
+
 Hunks are a real `git diff` against the files as extracted from the patched
 upstream image -- no hand-computed @@ counts.
 diff --git a/app/javascript/dashboard/helper/protonError.js b/app/javascript/dashboard/helper/protonError.js
@@ -88,19 +97,14 @@ index a002228..c38e69f 100644
                </div>
              </div>
 diff --git a/app/javascript/dashboard/views/ProtonMyStatusPage.vue b/app/javascript/dashboard/views/ProtonMyStatusPage.vue
-index acfac86..d87ff4f 100644
+index acfac86..595b114 100644
 --- a/app/javascript/dashboard/views/ProtonMyStatusPage.vue
 +++ b/app/javascript/dashboard/views/ProtonMyStatusPage.vue
-@@ -28,6 +28,7 @@
- import { useAlert } from 'dashboard/composables';
- import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';
- import {
-+import Modal from 'dashboard/components/Modal.vue';
-   getPresenceStatuses,
-   getMyPresenceStatus,
-   setMyPresenceStatus,
-@@ -38,9 +39,11 @@ const { hasPermission: protonHasPermission } = useProtonPermissions();
+@@ -36,11 +36,14 @@ import {
  
+ const { hasPermission: protonHasPermission } = useProtonPermissions();
+ 
++import Modal from 'dashboard/components/Modal.vue';
  export default {
    name: 'ProtonMyStatusPage',
 +  components: { Modal },
@@ -202,19 +206,14 @@ index acfac86..d87ff4f 100644
      </div>
    </div>
 diff --git a/app/javascript/dashboard/views/ProtonTaxonomyPage.vue b/app/javascript/dashboard/views/ProtonTaxonomyPage.vue
-index dd6ad36..04817b8 100644
+index dd6ad36..95bdf0a 100644
 --- a/app/javascript/dashboard/views/ProtonTaxonomyPage.vue
 +++ b/app/javascript/dashboard/views/ProtonTaxonomyPage.vue
-@@ -38,6 +38,7 @@
- import { useAlert } from 'dashboard/composables';
- import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';
- import {
-+import Modal from 'dashboard/components/Modal.vue';
-   getTaxonomyTree,
-   saveTaxonomyNode,
-   retireTaxonomyNode,
-@@ -76,12 +77,14 @@ function flatten(nodes, depth = 0, out = []) {
+@@ -74,14 +74,17 @@ function flatten(nodes, depth = 0, out = []) {
+   return out;
+ }
  
++import Modal from 'dashboard/components/Modal.vue';
  export default {
    name: 'ProtonTaxonomyPage',
 +  components: { Modal },

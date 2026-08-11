@@ -184,7 +184,13 @@ def dial_twiml(target: HandoffTarget, action_url: str, timeout: int, caller_id: 
     caller_id_attr = f" callerId={quoteattr(caller_id)}" if caller_id else ""
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        f'<Response><Dial action={quoteattr(action_url)} timeout="{timeout}"'
+        # `int(...)` is load-bearing, not decoration: `timeout` reaches here from
+        # `settings.phone_handoff_dial_timeout_seconds`, and pydantic will happily
+        # hand back a float for a value written `15.0` in a tenant env. Twilio
+        # rejects a non-integer `<Dial timeout>` attribute, which fails the dial
+        # -- i.e. the handoff silently does not connect. P11 dropped this coercion
+        # while touching an unrelated line; restored, with the test below.
+        f'<Response><Dial action={quoteattr(action_url)} timeout="{int(timeout)}"'
         f"{caller_id_attr}>"
         f"{noun}</Dial></Response>"
     )

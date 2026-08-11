@@ -1107,10 +1107,29 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # but it made the whole per-agent override layer unreachable by the people it
     # exists for. `test_p9_wiring.py` drives the real app for exactly that.
     from chatbot.features.alerts.rules_router import build_rules_router
+    from chatbot.features.chat.phone.recording_router import build_recording_router
     from chatbot.features.taxonomy.router import build_taxonomy_admin_router
 
     app.include_router(build_rules_router(settings, authz_repo, authz_validator))
     app.include_router(build_taxonomy_admin_router(settings))
+
+    # P11 task 1: `GET /calls/{conversation_id}/recording`. Mounted here for the
+    # same reason the two above are: the router was written, unit-tested against
+    # its own throwaway `FastAPI()` and never mounted, so on a live backend the
+    # endpoint 404ed and `call_recording_retrieval_enabled` had no consumer that
+    # any deployment could reach. Mounting is free on an unenabled tenant --
+    # every route is `require_permission("call_recording.listen")`-gated and
+    # `call_recording_retrieval_enabled` is re-checked inside the handler, so an
+    # unauthenticated caller gets 401 and a permitted caller on a tenant with the
+    # flag off gets 404. `test_p11_wiring.py` drives the real app for exactly
+    # that, the way `test_p10_wiring.py`/`test_p6_wiring.py` do.
+    #
+    # What this does NOT yet do: the handler reads an in-process registry that
+    # nothing in production writes to (see `recording_router.py`'s docstring), so
+    # against a real conversation it answers the "no recording exists" state. The
+    # mount makes the endpoint and its permission gate real; the Chatwoot
+    # custom-attribute read that would populate it is still owed.
+    app.include_router(build_recording_router(settings))
 
     # --- Proton AI-assist (rewired Captain AI) ---
     _assist_router = _wire_assist(

@@ -1089,29 +1089,47 @@ class Settings(BaseSettings):
     # change on sync failure -- that trades a visible retry for a silent data
     # loss.
     taxonomy_admin_enabled: bool = False
-    # Task 5: TaxonomyNode.department maps a case category to an escalation
-    # department, pre-filling (never applying) the dept_<slug> suggestion an
-    # agent would otherwise have to know from a separate taxonomy, and mounts
-    # GET /admin/taxonomy/coverage (active categories with no mapped
-    # department; dept_* slugs no category maps to). Off = no suggestion is
-    # ever made and the coverage report is not mounted -- category and
-    # escalation-department stay the two disconnected taxonomies they are
-    # today.
+    # Task 5: gates GET /admin/taxonomy/coverage (active categories with no
+    # mapped department; dept_* slugs no category maps to). Off = that endpoint
+    # 404s. Also requires taxonomy_admin_enabled, since the store is what the
+    # report reads. `taxonomy/router.py::_check_coverage_enabled` is the
+    # consumer; test_p10_wiring.py drives both states through the real app.
     #
-    # SUGGEST-ONLY, matching the existing AI-suggested escalation department
-    # (dept_suggestion.py, da6c335): the mapping pre-fills a value the agent
-    # can override, and the override is recorded. Auto-applying it would
-    # misroute exactly the exceptional cases that get escalated -- the ones
-    # where the category is right and the department genuinely isn't the
-    # mapped default. Never wire this to apply the label without a human
-    # confirming it.
+    # WHAT THIS DOES NOT DO YET: `TaxonomyNode.department` exists and the
+    # coverage report reads it, but nothing suggests a dept_<slug> label to an
+    # agent from it -- the escalation suggestion path was never wired, so
+    # category and escalation-department remain the two disconnected taxonomies
+    # they are today. The half that shipped is the operationally valuable half:
+    # the report that makes a correctly-categorised-but-unroutable case visible
+    # before it fails silently at escalation time.
+    #
+    # When the suggestion is built it must be SUGGEST-ONLY, matching the
+    # existing AI-suggested escalation department (dept_suggestion.py, da6c335):
+    # pre-fill a value the agent can override, and record the override.
+    # Auto-applying it would misroute exactly the exceptional cases that get
+    # escalated -- the ones where the category is right and the department
+    # genuinely isn't the mapped default. Never wire this to apply the label
+    # without a human confirming it.
     category_department_mapping_enabled: bool = False
-    # Task 6/7: resolves each caller's roles to a DataScope (inboxes / teams /
-    # dealers / own_only) and enforces it in the metrics and admin query
+    # Task 6/7. **THIS SETTING DOES NOT CURRENTLY GATE ANYTHING.** No code
+    # reads it -- not `features/authz/data_scope.py`, which never takes a
+    # `Settings` at all -- so flipping it on has no effect whatsoever.
+    #
+    # The intent was: resolve each caller's roles to a DataScope (inboxes /
+    # teams / dealers / own_only) and enforce it in the metrics and admin query
     # layers (composing with P4's MetricFilters) plus Chatwoot-native inbox
-    # membership via chatwoot_role_mirror.py. Off = every endpoint stays
-    # account-wide, exactly as today -- require_permission's existing
-    # function-level checks are completely unaffected either way.
+    # membership via chatwoot_role_mirror.py. Task 6's intersection logic
+    # shipped and is genuinely proven by test_data_scope.py; task 7's
+    # enforcement did not. `apply_scope_to_filters` and
+    # `resolve_user_data_scope` have no callers, there is no FastAPI dependency,
+    # role scopes live in a module-level dict with no admin surface, and
+    # query_adapter.py / chatwoot_role_mirror.py were never modified. Kept
+    # rather than deleted because wiring the enforcement is the recorded fix and
+    # this is the only backend-side record that the scope model exists; see
+    # data_scope.py's docstring and the blocked-work register.
+    #
+    # Everything below is the contract enforcement must honour when it lands,
+    # not a description of current behaviour.
     #
     # `None` ON EVERY SCOPE FIELD MEANS ACCOUNT-WIDE, so every role that
     # exists before this package keeps behaving exactly as it does today even
@@ -1130,13 +1148,58 @@ class Settings(BaseSettings):
     # the most restricted caller.
     data_scoped_rbac_enabled: bool = False
 
-    # P11: Voice Partials flags
+    # --- P11: voice partials (DTMF menu, after-hours, voicemail, retention) ---
+    # Six default-off and one deliberately default-ON. NOTE UP FRONT: no real
+    # Twilio call has ever reached any of this code, so nothing in this block may
+    # be reported as MET on the strength of the suite alone -- see
+    # docs/testing/phone-channel-package-c-verification.md and the blocked-work
+    # register. Three of the seven currently have no consumer; each says so.
+    #
+    # Gates GET /calls/{conversation_id}/recording
+    # (features/chat/phone/recording_router.py, mounted in main.py, permission
+    # call_recording.listen). Off = 404 for a permitted caller. Read that
+    # module's docstring before describing this to a client: the handler reads an
+    # in-process registry nothing writes, logs rather than writing an audit-log
+    # row, and returns a placeholder rather than a cryptographically signed URL.
     call_recording_retrieval_enabled: bool = False
+    # **DOES NOT CURRENTLY GATE ANYTHING.** `dtmf_menu.py` exists and its prompts
+    # are verbatim from deploy/twilio/ivr-studio-flow.json, but `twiml.py` was
+    # never modified, so no <Gather> is emitted on any call path and nothing reads
+    # this flag -- `build_dtmf_twiml(enabled=...)` takes the switch as an argument
+    # no caller supplies. Turning this on has no effect.
     phone_dtmf_menu_enabled: bool = False
+    # Read by `after_hours.py::evaluate_after_hours_call`, which is itself called
+    # by nothing: the after-hours branch is not wired into the call path. Off is
+    # therefore indistinguishable from on today. The flag has a consumer; the
+    # consumer has no caller.
     phone_after_hours_enabled: bool = False
-    phone_rsa_after_hours_bypass: bool = True  # DEFAULT ON: §8.1.6 requires RSA 24/7
+    # DEFAULT ON -- the only default-on flag in this programme, and deliberately
+    # so. §8.1.6 requires roadside assistance 24/7, so when the after-hours path
+    # does run, an out-of-hours RSA caller must reach help rather than a
+    # closed-for-the-day message: a stranded motorist at 2 a.m. hitting a
+    # voicemail box is the one failure in this package with a safety dimension
+    # rather than a reporting one. It takes effect only in combination with
+    # phone_after_hours_enabled. Turning it OFF is a deliberate act and is logged
+    # as one (`after_hours_bypass_disabled_by_config`). Do not "tidy" this to
+    # False for consistency with its neighbours.
+    phone_rsa_after_hours_bypass: bool = True
+    # Read by `voicemail_ingest.py::process_voicemail_webhook`, which has no
+    # caller: there is no Twilio RecordingUrl webhook route, and the function
+    # creates no Chatwoot conversation even when called. See its docstring --
+    # notably that attend_after is now+12h, not P1's next_working_instant.
     phone_voicemail_ingest_enabled: bool = False
+    # **DOES NOT CURRENTLY GATE ANYTHING.** Task 6 (per-utterance transcript
+    # flush when a human agent is on the call, vs today's fifteen-second cadence
+    # for an AI-only call) was not implemented: `transcript_sink.py` is unchanged
+    # and no code reads this. Note the existing, separate
+    # `phone_transcript_live_enabled` is what actually controls today's live
+    # transcript -- do not confuse the two.
     phone_live_transcript_enabled: bool = False
+    # Read by `retention.py::run_retention_purge_job`, which has no scheduler:
+    # nothing invokes the job, so PHONE_RECORDING_RETENTION_DAYS still enforces
+    # nothing in a running deployment. The job itself is correct and tested; it
+    # needs a caller. Until then the declared retention policy remains a written
+    # commitment the system does not keep.
     phone_retention_job_enabled: bool = False
 
     # Settings configurations

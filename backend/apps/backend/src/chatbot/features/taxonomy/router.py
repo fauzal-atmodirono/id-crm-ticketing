@@ -88,10 +88,29 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
                 status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
             ) from exc
 
+    _COVERAGE_DISABLED = (
+        "Category-to-department coverage report is disabled on this tenant "
+        "(CATEGORY_DEPARTMENT_MAPPING_ENABLED=false)"
+    )
+
     @router.get("/coverage")
     async def get_taxonomy_coverage() -> dict[str, Any]:
-        """Coverage report: active categories with no department, and departments not mapped."""
+        """Coverage report: active categories with no department, and departments not mapped.
+
+        `retired_department_categories` is always `[]`: flagging a category whose
+        mapped department has been retired needs a retired/active distinction the
+        `PicStore` read below does not currently expose. The key is present so
+        the shape is stable, and it is empty because nothing measured it -- not
+        because nothing was found.
+        """
+        # Two gates, both required. The taxonomy admin has to be on for the store
+        # to be the source of anything, and CATEGORY_DEPARTMENT_MAPPING_ENABLED is
+        # what example.env documents as mounting this report. Before this second
+        # check that flag had no consumer anywhere in the codebase -- an operator
+        # flipping the documented switch got exactly nothing.
         _check_enabled()
+        if not settings.category_department_mapping_enabled:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=_COVERAGE_DISABLED)
         all_active = await store.list_nodes(active_only=True)
 
         unmapped_categories: list[dict[str, Any]] = []

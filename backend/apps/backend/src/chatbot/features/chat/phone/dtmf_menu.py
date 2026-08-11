@@ -15,18 +15,30 @@ if TYPE_CHECKING:
 
 _log = structlog.get_logger(__name__)
 
+# Copied VERBATIM from `deploy/twilio/ivr-studio-flow.json`'s `main_menu_en` /
+# `main_menu_ms` / `language_gather` `say` properties, which is where Appendix B's
+# wording actually lives. `test_dtmf_menu.py` reads that JSON and compares, so
+# these cannot drift from it silently.
+#
+# They were previously hand-written approximations that got the menu wrong: option
+# 2 read "Sales" and option 3 "Service and Product Enquiries", where Appendix B
+# has 2 = Inquiry and 3 = Complaint. A caller with a complaint pressing 3 was
+# being labelled a service enquiry, and the Malay string contained the English
+# word "for". Both were asserted by tests named "matches appendix b verbatim".
 PROMPT_EN = (
-    "Press 1 for Roadside Assistance. "
-    "Press 2 for Sales. "
-    "Press 3 for Service and Product Enquiries. "
-    "Press 0 to repeat options."
+    "For Roadside Assistance, press 1. For Inquiry, press 2. "
+    "For Complaint, press 3. To repeat, please press zero."
 )
 
 PROMPT_MS = (
-    "Tekan 1 untuk Bantuan Tunda dan Bantuan Tepi Jalan. "
-    "Tekan 2 untuk Jualan. "
-    "Tekan 3 for Pertanyaan Perkhidmatan dan Produk. "
-    "Tekan 0 untuk ulang."
+    "Untuk Bantuan Kerosakan, tekan 1. Untuk Pertanyaan, tekan 2. "
+    "Untuk Aduan, tekan 3. Untuk Ulangan, sila tekan sifar."
+)
+
+LANGUAGE_GATHER_PROMPT = (
+    "Welcome to Proton e.MAS service centre. "
+    "Selamat datang ke Pusat Perkhidmatan Proton e.MAS. "
+    "For English, press 1. Untuk Bahasa Melayu, tekan 2."
 )
 
 
@@ -67,9 +79,9 @@ def handle_dtmf_digit(
     if digit == "1":
         return {"target": "rsa", "action": "route_rsa", "context": "Roadside Assistance"}
     elif digit == "2":
-        return {"target": "bridge", "action": "context_sales", "context": "Sales Inquiry"}
+        return {"target": "bridge", "action": "context_inquiry", "context": "Inquiry"}
     elif digit == "3":
-        return {"target": "bridge", "action": "context_service", "context": "Service Enquiry"}
+        return {"target": "bridge", "action": "context_complaint", "context": "Complaint"}
     elif digit == "0":
         if repeat_count < 1:
             return {"target": "repeat_menu", "action": "repeat", "repeat_count": repeat_count + 1}

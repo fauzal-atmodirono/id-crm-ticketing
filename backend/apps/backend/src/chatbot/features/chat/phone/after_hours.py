@@ -16,16 +16,35 @@ if TYPE_CHECKING:
 
 _log = structlog.get_logger(__name__)
 
+# Copied VERBATIM from `deploy/twilio/ivr-studio-flow.json`'s `after_hours_en` /
+# `after_hours_ms` / `vm_prompt` `say` properties -- the actual home of Appendix
+# B's wording. `test_phone_after_hours.py` reads that JSON and compares, so these
+# cannot drift from it silently.
+#
+# The previous strings were hand-written and **told the customer the wrong
+# operating hours**: "8 AM to 6 PM Monday through Friday", with no mention of the
+# Saturday/Sunday/Public Holiday window Appendix B has. A weekend caller was
+# being told the business is closed for the day when the published hours say
+# 9:00 AM to 5:00 PM. A test named "matches appendix b verbatim" asserted the
+# wrong text.
 AFTER_HOURS_PROMPT_EN = (
-    "Thank you for calling. Our offices are currently closed. "
-    "Our operating hours are 8 AM to 6 PM Monday through Friday. "
-    "Please leave a message after the tone and our customer service team will contact you on the next business day."
+    "Thank you for calling Proton e.MAS. Our operating hours are Monday to "
+    "Friday, 8:30 AM to 5:30 PM, and Saturday, Sunday and Public Holidays, "
+    "9:00 AM to 5:00 PM. Please leave your message and contact details. Our "
+    "customer support team will reach out on the next business day."
 )
 
 AFTER_HOURS_PROMPT_MS = (
-    "Terima kasih kerana menghubungi kami. Pejabat kami kini ditutup. "
-    "Waktu operasi kami adalah dari 8 pagi hingga 6 petang, Isnin hingga Jumaat. "
-    "Sila tinggalkan mesej selepas bunyi nada dan pasukan kami akan menghubungi anda pada hari bekerja seterusnya."
+    "Terima kasih kerana menghubungi Proton e.MAS. Waktu operasi kami adalah "
+    "Isnin hingga Jumaat, 8.30 pagi hingga 5.30 petang, dan Sabtu, Ahad dan "
+    "Cuti Umum, 9.00 pagi hingga 5.00 petang. Sila tinggalkan mesej dan "
+    "maklumat perhubungan anda. Pasukan khidmat pelanggan kami akan menghubungi "
+    "anda pada hari bekerja berikutnya."
+)
+
+VOICEMAIL_PROMPT = (
+    "Please leave your message and contact details after the tone. "
+    "Sila tinggalkan mesej dan maklumat perhubungan anda selepas nada."
 )
 
 

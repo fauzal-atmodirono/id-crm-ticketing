@@ -299,6 +299,24 @@ def test_dial_twiml_client_target() -> None:
     assert "<Number>" not in xml
 
 
+def test_dial_twiml_renders_an_integer_timeout_for_a_float_setting() -> None:
+    """Twilio rejects a non-integer `<Dial timeout>`, so the dial never connects.
+
+    `phone_handoff_dial_timeout_seconds` is an env-sourced number: a tenant that
+    writes `15.0` yields a float here. P11 removed the `int()` coercion from this
+    builder while editing an adjacent line and no test noticed, because every
+    existing case passes an int literal.
+    """
+    xml = dial_twiml(
+        HandoffTarget(kind="pstn", value="+60123456789"),
+        "https://x/y",
+        15.0,  # type: ignore[arg-type]
+        _CALLER_ID,
+    )
+    assert 'timeout="15"' in xml
+    assert 'timeout="15.0"' not in xml
+
+
 def test_dial_twiml_omits_caller_id_attr_when_empty() -> None:
     """The pure builder degrades gracefully (Twilio's own default
     behaviour) rather than raising if ever called with an empty caller id

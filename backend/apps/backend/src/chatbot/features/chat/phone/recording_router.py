@@ -1,7 +1,28 @@
 """P11 Task 1 -- Recording retrieval router.
 
-Provides permission-gated (call_recording.listen) signed URL access to call recordings,
-writing an audit log entry for every retrieval.
+`GET /calls/{conversation_id}/recording`, gated on `call_recording.listen` and on
+`CALL_RECORDING_RETRIEVAL_ENABLED`. Mounted in `main.py`; `test_p11_wiring.py`
+asserts the route answers 401-rather-than-404 through the real app.
+
+What this does **not** do yet, stated plainly because the plan asked for both and a
+reader would otherwise assume them (tracked in
+`docs/analysis/2026-08-09-blocked-work-register.md`):
+
+1. **It does not read Chatwoot.** The plan's interface is the stored
+   `recording_sid` / `recording_url` custom attributes; this module instead reads
+   `_RECORDING_RETENTIONS`, an in-process dict that only `register_recording()`
+   writes and which nothing in production calls. Against a real conversation the
+   endpoint therefore answers the "no recording exists" state.
+2. **It does not write an audit-log record.** Every retrieval emits a structured
+   `call_recording_accessed` log line naming the caller, which is not the same
+   thing as a row in the audit log `features/chat/audit_router.py` serves. The
+   plan's `call_recording.listen` comment in `authz/seed.py` asks for the audit
+   trail; that remains owed.
+3. **The URL is not cryptographically signed.** `?signature=signed_token` is a
+   fixed literal with an `expires` timestamp appended. It carries no secret and
+   nothing validates it, so it is a placeholder for a signing step, not a
+   short-lived credential. Do not describe this endpoint to a client as returning
+   signed URLs until a real signer is wired in.
 """
 
 from __future__ import annotations

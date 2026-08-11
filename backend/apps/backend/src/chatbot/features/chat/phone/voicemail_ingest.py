@@ -1,8 +1,25 @@
 """P11 Task 4 -- Voicemail ingestion processor.
 
-Processes Twilio RecordingUrl webhooks, creating a Chatwoot conversation with the
-audio attached, transcribed, contact matched, and attend_after stamped to the next
-working instant.
+Deduplicates Twilio `RecordingUrl` webhook payloads by `RecordingSid` and builds
+the conversation record a voicemail should become.
+
+**It does not yet create anything.** Stated up front because the previous version
+of this docstring claimed it did, and because nothing calls this function: there is
+no webhook route, no Chatwoot client, and no contact lookup here. Specifically, and
+tracked in `docs/analysis/2026-08-09-blocked-work-register.md`:
+
+- The returned `conversation` dict is **not** posted to Chatwoot. No conversation
+  is created, no audio is attached, no contact is matched or created.
+- `attend_after` is `now + 12 hours`, **not** P1's `next_working_instant`. A
+  voicemail left on a Friday evening therefore promises a Saturday-morning
+  callback, which is the opposite of what the after-hours message commits to. This
+  is the single field the plan called out as making that promise true, so treat
+  the current value as a placeholder rather than a policy.
+- `from_number` falls back to a hardcoded `+60120000000` when the payload has no
+  `From`. That is a fixture value, not a real caller, and it must not survive into
+  anything that writes a contact.
+
+The dedupe set is in-process, so it does not survive a restart or span replicas.
 """
 
 from __future__ import annotations

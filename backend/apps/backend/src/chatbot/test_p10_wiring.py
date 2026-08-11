@@ -101,3 +101,45 @@ def test_taxonomy_router_returns_404_when_flag_is_off(monkeypatch: pytest.Monkey
 
     res = client.get("/admin/taxonomy/tree")
     assert res.status_code == 404
+
+
+def test_the_coverage_report_answers_when_the_category_department_flag_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`CATEGORY_DEPARTMENT_MAPPING_ENABLED` had no consumer anywhere.
+
+    `example.env` documents it as the switch that "mounts GET
+    /admin/taxonomy/coverage", but nothing read it -- the endpoint answered on
+    `TAXONOMY_ADMIN_ENABLED` alone, so an operator who turned the documented flag
+    on saw no change and an operator who left it off still got the report. This
+    pair drives the real app so a future refactor cannot quietly disconnect the
+    flag again.
+    """
+    app = _boot(
+        monkeypatch,
+        TAXONOMY_ADMIN_ENABLED="true",
+        CATEGORY_DEPARTMENT_MAPPING_ENABLED="true",
+    )
+    client = TestClient(app)
+
+    res = client.get("/admin/taxonomy/coverage")
+    assert res.status_code == 200
+    assert "unmapped_categories" in res.json()
+
+
+def test_the_coverage_report_404s_when_only_the_taxonomy_admin_flag_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _boot(
+        monkeypatch,
+        TAXONOMY_ADMIN_ENABLED="true",
+        CATEGORY_DEPARTMENT_MAPPING_ENABLED="false",
+    )
+    client = TestClient(app)
+
+    # The taxonomy admin itself is on, so this is not the admin gate answering.
+    assert client.get("/admin/taxonomy/tree").status_code == 200
+
+    res = client.get("/admin/taxonomy/coverage")
+    assert res.status_code == 404
+    assert "CATEGORY_DEPARTMENT_MAPPING_ENABLED" in res.json()["detail"]

@@ -10,6 +10,31 @@ CRITICAL SECURITY INVARIANTS:
    None means unrestricted account-wide access. An empty tuple () means ZERO
    access (fail closed). An empty scope intersection yields () and fails closed,
    preventing half-configured roles from leaking data.
+
+## NOT ENFORCED ANYWHERE YET -- read this before citing this module
+
+This is task 6 (the logic) without task 7 (the enforcement). Nothing outside this
+file and its own tests imports it, so as shipped it changes no endpoint's
+behaviour. Concretely, and tracked in
+`docs/analysis/2026-08-09-blocked-work-register.md`:
+
+- `apply_scope_to_filters()` has **no caller**. `features/metrics/query_adapter.py`
+  and the admin routers were never modified, so no query is narrowed by a scope and
+  the `_fail_closed` marker it sets is read by nobody.
+- `resolve_user_data_scope()` has **no caller**, and there is no FastAPI dependency
+  here despite the plan's interface naming one.
+- `DATA_SCOPED_RBAC_ENABLED` has **no consumer at all** -- not in this module,
+  which never takes a `Settings`. Flipping it on does nothing at present.
+- Role scopes live in `_ROLE_DATA_SCOPES`, a module-level dict with no persistence
+  and no admin surface, so an operator has no way to configure one.
+- `features/authz/chatwoot_role_mirror.py` was not modified; inbox scope is not
+  mirrored into a Chatwoot custom role.
+
+The invariants above are genuinely proven by `test_data_scope.py`, which exercises
+`intersect_scopes` directly. `test_scope_enforcement.py`'s names claim more than it
+checks -- it calls `apply_scope_to_filters` by hand, so it cannot detect that no
+request path reaches it. Do not report data-scoped RBAC as delivered on the
+strength of either file.
 """
 
 from __future__ import annotations

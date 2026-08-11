@@ -1,4 +1,5 @@
 # Campaigns & Help Center
+<!-- TRAINING: audience=admin -->
 
 ## Campaigns
 

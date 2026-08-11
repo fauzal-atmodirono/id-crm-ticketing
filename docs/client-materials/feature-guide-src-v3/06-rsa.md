@@ -1,6 +1,8 @@
 # RSA Incident Log
+<!-- TRAINING: audience=supervisor -->
 
 ## Logging an RSA incident
+<!-- TRAINING: audience=supervisor, exercise -->
 
 ### What it is
 

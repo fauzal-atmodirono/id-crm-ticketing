@@ -1,4 +1,5 @@
 # Reports
+<!-- TRAINING: audience=supervisor -->
 
 ## Standard reports (Overview, Conversation, CSAT, Agent, Label, Inbox, Bot)
 
@@ -76,6 +77,7 @@ on — the extra sections simply fail to load quietly (rather than break the
 page) if that warehouse is briefly unreachable.
 
 ## Anomaly report
+<!-- TRAINING: audience=supervisor, exercise -->
 
 ### What it is
 
@@ -207,6 +209,7 @@ conversations day to day (see Cases and RSA); this report has no separate
 setup of its own.
 
 ## Weekly Report
+<!-- TRAINING: audience=supervisor, exercise -->
 
 ### What it is
 
@@ -268,6 +271,7 @@ pulled in bulk via BI/reporting exports for a larger dataset (see the
 Integrations chapter).
 
 ## SLA reports
+<!-- TRAINING: audience=supervisor, exercise -->
 
 ### What it is
 

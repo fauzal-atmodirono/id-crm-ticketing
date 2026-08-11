@@ -1,4 +1,5 @@
 # Channel Playbooks
+<!-- TRAINING: audience=agent -->
 
 Every channel funnels into the same conversation list, and the toolbar you
 work with is the same one everywhere. What differs is **what already happened
@@ -58,6 +59,7 @@ not a fault.
 ---
 
 ## WhatsApp
+<!-- TRAINING: audience=agent -->
 
 The most complete channel: the assistant answers, hands off, and closes cases
 on its own.
@@ -272,6 +274,7 @@ move the case to email.
 ---
 
 ## Email
+<!-- TRAINING: audience=agent -->
 
 The channel with the most automation behind it, and the only one where the
 `escalate` label actually sends something.

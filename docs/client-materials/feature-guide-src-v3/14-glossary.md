@@ -1,4 +1,5 @@
 # Glossary
+<!-- TRAINING: audience=agent -->
 
 ## Terms
 

@@ -1,6 +1,8 @@
 # Contacts
+<!-- TRAINING: audience=agent -->
 
 ## Contacts list & search
+<!-- TRAINING: audience=agent, exercise -->
 
 ### What it is
 
@@ -118,6 +120,7 @@ Notes and segments are contact-level only — they don't feed the AI
 assistant's replies or any of the reports in the Reports chapter.
 
 ## Customer 360
+<!-- TRAINING: audience=supervisor -->
 
 ### What it is
 

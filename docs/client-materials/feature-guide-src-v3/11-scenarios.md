@@ -1,6 +1,8 @@
 # End-to-End Scenarios
+<!-- TRAINING: audience=agent -->
 
 ## Scenario 1: WhatsApp inquiry to resolution
+<!-- TRAINING: audience=agent, exercise -->
 
 1. A customer messages Proton's WhatsApp number asking about the price and
    availability of a test drive for the e.MAS 7. Chatwoot creates a new
@@ -27,6 +29,7 @@
 [[SCREENSHOT: ch11-scenario1-whatsapp | A WhatsApp inquiry resolved with an AI-suggested reply]]
 
 ## Scenario 2: Complaint escalation, the dealer's reply, and the turnaround report
+<!-- TRAINING: audience=agent, exercise -->
 
 1. A customer emails in about a recurring charging fault that wasn't fixed
    at their last service visit. The conversation lands on the Email inbox
@@ -61,6 +64,7 @@
 [[SCREENSHOT: ch11-scenario2-escalation | A complaint tracked from escalation label, through the dealer's reply, to the turnaround report]]
 
 ## Scenario 3: RSA call to Customer 360 follow-up
+<!-- TRAINING: audience=supervisor -->
 
 1. A customer calls Proton's support line reporting a breakdown on the
    toll road. The call is answered by the AI assistant, and the
@@ -88,6 +92,7 @@
 [[SCREENSHOT: ch11-scenario3-rsa | An RSA incident followed up through Customer 360]]
 
 ## Scenario 4: FAQ batch import to live bot answer
+<!-- TRAINING: audience=admin, exercise -->
 
 1. Ahead of an e.MAS 7 launch event, Proton's service team compiles a
    spreadsheet of 40 frequently asked warranty questions.
@@ -111,6 +116,7 @@
 [[SCREENSHOT: ch11-scenario4-faq-csv | A newly imported FAQ answered live by the bot after Playground testing]]
 
 ## Scenario 5: Weekly reporting routine
+<!-- TRAINING: audience=supervisor, exercise -->
 
 1. Every Friday afternoon, Proton's operations lead opens **Reports →
    Weekly Report** and sets the week picker to the period just finishing
@@ -134,6 +140,7 @@
 [[SCREENSHOT: ch11-scenario5-weekly-report | Using the Weekly Report page for the weekly client meeting]]
 
 ## Scenario 6: New agent onboarding
+<!-- TRAINING: audience=admin, exercise -->
 
 1. Proton hires a new customer-service agent, Dian, to cover the
    After-Sales WhatsApp and email inboxes.
@@ -187,6 +194,7 @@
 [[SCREENSHOT: ch11-scenario7-customer-reply | A customer's reply to their acknowledgement email, linked back as a private note, not an inline message]]
 
 ## Scenario 8: Maintaining a dealer group
+<!-- TRAINING: audience=admin, exercise -->
 
 1. Dealer Kelapa Gading adds a second service advisor, Pak Rudi, who
    should also see escalated cases forwarded to that dealer, alongside the
@@ -208,6 +216,7 @@
 [[SCREENSHOT: ch11-scenario8-dealer-group | Editing a dealer group's member list under Escalation Routing]]
 
 ## Scenario 9: An SLA breach reaches the PIC group and the case
+<!-- TRAINING: audience=supervisor -->
 
 1. An email case sits open overnight with no first agent reply, past the
    Email inbox's configured Response window (see the Administration
@@ -228,6 +237,7 @@
 [[SCREENSHOT: ch11-scenario9-sla-breach | An SLA breach private note and the matching PIC-group email]]
 
 ## Scenario 10: Adjusting SLA thresholds ahead of a launch event
+<!-- TRAINING: audience=supervisor, exercise -->
 
 1. Ahead of an e.MAS 7 launch event, Proton expects a spike in email
    inquiries and wants a tighter response target on the Email inbox for
@@ -250,6 +260,7 @@
 [[SCREENSHOT: ch11-scenario10-sla-threshold | Tightening the Email inbox's SLA response window and warning threshold]]
 
 ## Scenario 11: Editing a customer-facing email template
+<!-- TRAINING: audience=admin -->
 
 1. Proton's brand team wants the escalation acknowledgement email to
    sound warmer than the built-in default wording.
@@ -345,6 +356,7 @@
 [[SCREENSHOT: ch11-scenario14-phone-unanswered-handoff | A tagged unanswered-transfer conversation, and an after-hours breakdown call logged manually]]
 
 ## Scenario 15: Categorising a case through all five taxonomy dropdowns
+<!-- TRAINING: audience=agent, exercise -->
 
 1. A customer emails complaining that their new e.MAS 5's delivery has no
    estimated date. The agent opens the conversation's custom attributes
@@ -393,6 +405,7 @@
 [[SCREENSHOT: ch11-scenario16-dept-suggestion | An AI-suggested escalation department note, one accepted and one overridden by the agent's own judgement]]
 
 ## Scenario 17: Verifying escalation now reaches all six departments and a dealer group
+<!-- TRAINING: audience=admin -->
 
 1. Ahead of relying on escalation routing for a live launch event, a
    supervisor with the escalation-routing permission opens

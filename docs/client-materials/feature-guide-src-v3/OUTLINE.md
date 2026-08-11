@@ -24,6 +24,49 @@ Task 7 (their content is prescribed differently there):
 - **13-glossary.md** — a single `##` holding a term/definition table; not a
   feature, so no 5-heading template and no screenshot marker.
 
+## Audience tagging rule (the three training curricula, §2.3.3)
+
+Every `#` chapter heading carries a chapter-level default and every `##`
+section may override it:
+
+```markdown
+## Labels
+<!-- TRAINING: audience=agent, exercise -->
+```
+
+`audience=` names the **most junior** cohort that needs the section; the three
+are cumulative (`agent` < `supervisor` < `admin`), matching the design's "the
+above, plus …" role table. `exercise` (per-section only) marks a section whose
+*How to use it* steps become a hands-on lab task.
+
+**When you add a `##`, add its marker in the same edit.** A section with no
+marker of its own inherits its chapter's; with neither, it falls back to
+`admin` and is named in `../training/tag-coverage.md`. A misspelled audience
+name aborts the build. The markers are HTML comments, so they do not appear
+in the rendered handbook and cannot change it.
+
+Deliberate decisions worth not re-litigating by accident:
+
+- **Customer 360 is `supervisor`, not `agent`.** It is permission-gated
+  (`customer360.view`) and Ch1 lists it among the pages an agent does not
+  see, so teaching it to a frontline cohort teaches a page they cannot open.
+- **RSA and SLA Policies are `supervisor`.** Both sit behind the same
+  permission, and the design's supervisor row names SLA policies explicitly.
+- **The Cases *page* is `supervisor`; case *categorisation* is `agent`.**
+  Categorising happens on the conversation; the Cases list is an admin-side
+  page. The design's agent row asks for categorisation, not the page.
+- **Ch12 (channel playbooks) is `agent`, Ch13 (integrations) is `admin`.**
+  Same channels, different question: what an agent sees happen, versus how
+  the integration is wired.
+- **Ch12 sections carry no `exercise` flag.** Their `###` sub-scenarios
+  describe what the assistant does, not steps a trainee performs; flagging
+  them produced a lab task whose first instruction was "the assistant
+  replies".
+- **Ch11 scenario exercises are role-plays**, derived automatically because
+  their steps come from the section body rather than a *How to use it* block.
+  The narratives are told from the customer's side as much as the agent's, so
+  they need a facilitator.
+
 ## Corrections vs. the design spec draft (found during Step 1 research)
 
 - **"DMS integration card" on the conversation view (spec Ch2) does not

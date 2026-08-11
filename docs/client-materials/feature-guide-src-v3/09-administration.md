@@ -1,4 +1,5 @@
 # Administration (Settings)
+<!-- TRAINING: audience=admin -->
 
 This chapter covers the pages an administrator uses to configure the CRM
 itself, rather than to handle a customer conversation. Most of these pages
@@ -10,6 +11,7 @@ ask an administrator to grant you the matching permission from **Roles &
 Permissions**.
 
 ## Agents
+<!-- TRAINING: audience=admin, exercise -->
 
 ### What it is
 
@@ -89,6 +91,7 @@ Teams are used as assignment targets in **Automation** rules below, and as a
 grouping in reports (see the Reports chapter's Departments & PIC report).
 
 ## Inboxes (incl. inactivity timing)
+<!-- TRAINING: audience=admin, exercise -->
 
 ### What it is
 
@@ -182,6 +185,7 @@ Labels drive automation rules (below), the escalation email flow, and
 dealer-turnaround reporting (see the Reports chapter).
 
 ## Custom Attributes
+<!-- TRAINING: audience=admin, exercise -->
 
 ### What it is
 
@@ -427,6 +431,7 @@ service-history section of the Customer 360 lookup (see the Contacts
 chapter). It has no effect anywhere else in the CRM until it is enabled.
 
 ## SLA Policies
+<!-- TRAINING: audience=supervisor, exercise -->
 
 ### What it is
 
@@ -489,6 +494,7 @@ notifies the PIC group and posts a private note about, on the Email
 inbox today.
 
 ## Audit Log
+<!-- TRAINING: audience=admin, exercise -->
 
 ### What it is
 
@@ -528,6 +534,7 @@ Cases and RSA chapters — it is the historical trail behind those features,
 not a separate data source.
 
 ## Roles & Permissions
+<!-- TRAINING: audience=admin, exercise -->
 
 ### What it is
 
@@ -580,6 +587,7 @@ only appears in the navigation for a user whose role has been granted the
 matching permission here.
 
 ## Escalation Routing
+<!-- TRAINING: audience=admin, exercise -->
 
 ### What it is
 

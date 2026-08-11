@@ -1,4 +1,5 @@
 # Introduction
+<!-- TRAINING: audience=agent -->
 
 ## What is Proton e.MAS CRM
 

@@ -1,6 +1,8 @@
 # Conversations
+<!-- TRAINING: audience=agent -->
 
 ## Conversation inbox & views
+<!-- TRAINING: audience=agent, exercise -->
 
 ### What it is
 
@@ -84,6 +86,7 @@ each agent handles first, to steer that automatic assignment — see the
 Administration chapter's Inboxes section.
 
 ## Labels
+<!-- TRAINING: audience=agent, exercise -->
 
 ### What it is
 
@@ -390,6 +393,7 @@ Administration → Inboxes, which decides which agent gets auto-assigned
 first for a given channel.
 
 ## Private notes
+<!-- TRAINING: audience=agent, exercise -->
 
 ### What it is
 
@@ -428,6 +432,7 @@ assistant is running in suggest mode (see AI auto-draft below), and where
 Ask Copilot answers land when inserted into the conversation.
 
 ## Canned responses
+<!-- TRAINING: audience=agent, exercise -->
 
 ### What it is
 
@@ -538,6 +543,7 @@ Mentions only work inside private notes, so a mentioned teammate is
 notified without the customer ever seeing it.
 
 ## Ask Copilot panel
+<!-- TRAINING: audience=agent, exercise -->
 
 ### What it is
 
@@ -585,6 +591,7 @@ behaviour chapter; it's a feature an administrator can turn on or off per
 tenant.
 
 ## Suggest-a-reply
+<!-- TRAINING: audience=agent, exercise -->
 
 ### What it is
 
@@ -740,6 +747,7 @@ The contact panel is the entry point to the fuller contact profile and
 Customer 360 lookup tools covered in the Contacts chapter.
 
 ## Resolving, snoozing & transcripts
+<!-- TRAINING: audience=agent, exercise -->
 
 ### What it is
 

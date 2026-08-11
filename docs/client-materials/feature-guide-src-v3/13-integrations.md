@@ -1,4 +1,5 @@
 # Integration Overview
+<!-- TRAINING: audience=admin -->
 
 This chapter is a quick-reference map of every outside system the CRM
 connects to, what each one is for, and what you see inside the CRM as a

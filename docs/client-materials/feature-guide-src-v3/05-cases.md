@@ -1,6 +1,8 @@
 # Cases
+<!-- TRAINING: audience=supervisor -->
 
 ## Case list
+<!-- TRAINING: audience=supervisor, exercise -->
 
 ### What it is
 
@@ -60,6 +62,7 @@ Conversations inbox view, so if you need to see who owns a case at a
 glance outside of Cases, open the conversation itself.
 
 ## Case categorisation (five fields)
+<!-- TRAINING: audience=agent, exercise -->
 
 ### What it is
 
@@ -179,6 +182,7 @@ five values feed the Cases list (above) and the Departments & PIC and
 Case Lifecycle reports (see the Reports chapter).
 
 ## Case lifecycle & status
+<!-- TRAINING: audience=agent -->
 
 ### What it is
 
@@ -224,6 +228,7 @@ reflected here automatically, with nothing to configure specifically for
 Cases.
 
 ## How cases relate to conversations
+<!-- TRAINING: audience=agent -->
 
 ### What it is
 
@@ -269,6 +274,7 @@ the Conversations and AI Assistant Behaviour chapters) — applies to its
 case as well, with no separate synchronization step between the two.
 
 ## Escalation status on a case
+<!-- TRAINING: audience=agent -->
 
 ### What it is
 

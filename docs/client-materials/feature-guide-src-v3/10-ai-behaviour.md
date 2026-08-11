@@ -1,4 +1,5 @@
 # AI Assistant Behaviour
+<!-- TRAINING: audience=agent -->
 
 ## When the AI replies vs. hands off to a human
 

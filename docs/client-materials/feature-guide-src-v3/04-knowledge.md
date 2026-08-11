@@ -1,4 +1,5 @@
 # Knowledge
+<!-- TRAINING: audience=admin -->
 
 The **Knowledge** area is where administrators and agents manage everything
 that shapes how the AI assistant answers customers: the facts it can quote
@@ -11,6 +12,7 @@ administrators, though any agent with access can browse it to understand why
 the assistant answered the way it did.
 
 ## FAQs
+<!-- TRAINING: audience=admin, exercise -->
 
 ### What it is
 
@@ -76,6 +78,7 @@ Conversations and AI Behaviour). Toggling an entry's **Active** flag off
 removes it from grounding immediately, without deleting it.
 
 ## Documents
+<!-- TRAINING: audience=admin, exercise -->
 
 ### What it is
 
@@ -238,6 +241,7 @@ Disabling a scenario removes its instructions immediately without deleting
 it, so it can be re-enabled later.
 
 ## Playground
+<!-- TRAINING: audience=admin, exercise -->
 
 ### What it is
 

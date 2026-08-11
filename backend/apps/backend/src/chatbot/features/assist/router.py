@@ -131,9 +131,27 @@ _MEDIA_INSTRUCTION = (
     "(photo, video, voice note, or document) are attached to this request. "
     "Use what they actually show or say. Never ask the customer to describe, "
     "explain, or re-send something they have already sent — if their message "
-    "refers to an attachment (\"this one\", \"like this\", \"see photo\"), the "
+    'refers to an attachment ("this one", "like this", "see photo"), the '
     "referent is attached, so answer about it directly."
 )
+
+# Extraction prompt for the retrieval fallback (see `_kb_context`). Asks for
+# keywords rather than a description on purpose: the output goes straight into
+# a KB similarity search, where "The customer has sent a video showing..."
+# is mostly noise around the two or three words that matter.
+_MEDIA_QUERY_SYSTEM = (
+    "You extract search keywords from customer-supplied media for a car "
+    "support knowledge-base lookup.\n"
+    "Look at the attachment(s) and reply with a SHORT comma-separated list of "
+    "concrete, searchable things you can see or hear: the vehicle model if it "
+    "is identifiable, the part or component in view, any warning light, error "
+    "message, visible damage, or audible symptom.\n"
+    "No sentences, no preamble, no explanation. Do not guess: if nothing "
+    "concrete is identifiable, reply with nothing at all."
+)
+
+# Ceiling on the extracted keyword string before it becomes a search query.
+_MEDIA_TERMS_MAX_CHARS = 200
 
 _SNIPPET = 300
 
@@ -183,9 +201,7 @@ def _build_persona_prefix(product_name: str, guardrails: list[str], language: st
     return "\n".join(parts)
 
 
-def _retrieval_query(
-    messages: list[AssistMessage] | list[str], max_turns: int = 6
-) -> str:
+def _retrieval_query(messages: list[AssistMessage] | list[str], max_turns: int = 6) -> str:
     """Build the KB query from the customer's turns, not just the last line.
 
     Grounding on the whole customer intent keeps retrieval from being derailed
@@ -292,8 +308,66 @@ def build_assist_router(
     def _format_messages(messages: list[AssistMessage] | list[str]) -> str:
         return "\n".join(f"[{i + 1}] {m}" for i, m in enumerate(render_transcript(messages)))
 
-    async def _kb_context(query: str, limit: int) -> tuple[str, list[dict[str, Any]]]:
+    async def _media_search_terms(media_parts: list[types.Part]) -> str:
+        """Ask Gemini what the attachments actually show, as search keywords.
+
+        One extra call, so it is made only where it can pay for itself — see
+        `_kb_context`. Returns "" on any failure, which simply leaves retrieval
+        where it already was.
+        """
+        if not media_parts:
+            return ""
+        try:
+            from google.genai import types as _types  # noqa: PLC0415
+
+            model = await _resolve_model()
+            response = await genai_client.aio.models.generate_content(
+                model=model,
+                contents=_types.Content(
+                    role="user",
+                    parts=[
+                        _types.Part.from_text(text="What is in this media?"),
+                        *media_parts,
+                    ],
+                ),
+                config={"system_instruction": _MEDIA_QUERY_SYSTEM},
+            )
+            # Capped: a model that ignores "short list" and narrates a paragraph
+            # would otherwise become the entire retrieval query and bury the
+            # real terms.
+            return (response.text or "").strip()[:_MEDIA_TERMS_MAX_CHARS]
+        except Exception:
+            _log.warning("assist_media_terms_failed", exc_info=True)
+            return ""
+
+    async def _kb_context(
+        query: str, limit: int, media_parts: list[types.Part] | None = None
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """KB articles for the query, falling back to the media when text fails.
+
+        A customer whose entire question is the attachment ("this one", a photo
+        of a warning light) gives us nothing to search on, so the text query
+        returns zero articles and the reply becomes "I have no information about
+        that" — even though the model can plainly see a Proton X50. When that
+        happens AND media is attached, we ask what the media shows and search
+        again on those terms.
+
+        The trigger is the ZERO-RESULT OUTCOME, not a guess about which
+        questions look vague. That matters for two reasons: no heuristic to
+        mis-tune across English/Malay/Manglish, and no extra Gemini call on the
+        overwhelming majority of requests, where text retrieval already works.
+
+        The retry query leads with the media terms and keeps the original text
+        after it: the text has already been shown not to retrieve anything, but
+        it can still carry intent ("warranty") worth blending into a similarity
+        search.
+        """
         articles = await knowledge_port.search_kb(query, limit)
+        if not articles and media_parts:
+            terms = await _media_search_terms(media_parts)
+            if terms:
+                _log.info("assist_media_retrieval_retry", terms=terms)
+                articles = await knowledge_port.search_kb(f"{terms}\n{query}".strip(), limit)
         sources = [
             {
                 "title": a.title,
@@ -322,12 +396,14 @@ def build_assist_router(
     ) -> dict[str, Any]:
         _authorize(x_api_key)
         _log.info("assist_suggest", conv_id=req.conversation_id)
+        # Media is collected BEFORE retrieval, not after: _kb_context needs it
+        # on hand to fall back to when the text query finds nothing.
+        media_parts = await _collect_media(req.conversation_id)
         query = _retrieval_query(req.messages)
-        faq_context, sources = await _kb_context(query, req.limit)
+        faq_context, sources = await _kb_context(query, req.limit, media_parts)
         task_system = _SUGGEST_SYSTEM.format(faq_context=faq_context or "(none)")
         system = await _apply_persona(task_system, req.assistant_id)
         user_prompt = _format_messages(req.messages)
-        media_parts = await _collect_media(req.conversation_id)
         draft = await _generate(system, user_prompt, media_parts)
         return {"draft": draft, "sources": sources}
 
@@ -351,13 +427,15 @@ def build_assist_router(
     ) -> dict[str, Any]:
         _authorize(x_api_key)
         _log.info("assist_ask", conv_id=req.conversation_id, question=req.question)
-        faq_context, _ = await _kb_context(req.question, limit=3)
+        # Same ordering as /suggest: an agent can ask "what's wrong with this?"
+        # about a photo, which retrieves nothing on the words alone.
+        media_parts = await _collect_media(req.conversation_id)
+        faq_context, _ = await _kb_context(req.question, 3, media_parts)
         task_system = _ASK_SYSTEM.format(faq_context=faq_context or "(none)")
         system = await _apply_persona(task_system, req.assistant_id)
         user_prompt = (
             f"Conversation:\n{_format_messages(req.messages)}\n\nAgent question: {req.question}"
         )
-        media_parts = await _collect_media(req.conversation_id)
         answer = await _generate(system, user_prompt, media_parts)
         return {"answer": answer}
 

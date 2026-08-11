@@ -31,6 +31,9 @@ need a caller-supplied URL here, it needs a host allowlist first.
 
 from __future__ import annotations
 
+import time
+from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -82,6 +85,54 @@ class FetchedMedia:
     file_type: str
     data: bytes
     mime: str
+
+
+class MediaTermsCache:
+    """Per-conversation cache of keywords extracted from a conversation's media.
+
+    Exists because the extraction call carries the media a second time, and an
+    agent working a case clicks Suggest, then Ask, then Suggest again on the
+    SAME conversation — without this, each click re-uploads the same video to
+    describe the same car.
+
+    Empty results are cached too, and deliberately: a conversation whose media
+    yields nothing concrete is exactly the one that would otherwise re-extract
+    on every single click, paying full media cost forever to learn "nothing"
+    again. `get` therefore returns `None` for "not cached" and `""` for
+    "cached, and there was nothing" — callers must distinguish the two.
+
+    Bounded and TTL'd so a long-lived process cannot accumulate one entry per
+    conversation ever seen. `time_fn` is injectable so expiry is testable
+    without sleeping.
+    """
+
+    def __init__(
+        self,
+        ttl_seconds: float = 300.0,
+        max_entries: int = 256,
+        time_fn: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._ttl = ttl_seconds
+        self._max = max_entries
+        self._now = time_fn
+        self._entries: OrderedDict[str, tuple[str, float]] = OrderedDict()
+
+    def get(self, key: str) -> str | None:
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        value, stamp = entry
+        if self._now() - stamp > self._ttl:
+            del self._entries[key]
+            return None
+        self._entries.move_to_end(key)
+        return value
+
+    def put(self, key: str, value: str) -> None:
+        self._entries[key] = (value, self._now())
+        self._entries.move_to_end(key)
+        while len(self._entries) > self._max:
+            self._entries.popitem(last=False)
 
 
 # ---------------------------------------------------------------------------

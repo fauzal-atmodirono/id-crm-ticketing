@@ -43,6 +43,7 @@ from pydantic import BaseModel, Field
 
 from chatbot.features.assist.assist_media import (
     AssistMessage,
+    MediaTermsCache,
     collect_media_parts,
     customer_texts,
     render_transcript,
@@ -245,6 +246,9 @@ def build_assist_router(
             exactly as they did before — the media path is additive.
     """
     router = APIRouter(prefix="/assist", tags=["assist"])
+    # Per-router, not module-global: two apps in one process (and every test
+    # call-site) get their own, so cached terms can never leak across tenants.
+    _terms_cache = MediaTermsCache()
 
     def _authorize(x_api_key: str | None) -> None:
         key = settings.proton_backend_key
@@ -340,34 +344,55 @@ def build_assist_router(
             _log.warning("assist_media_terms_failed", exc_info=True)
             return ""
 
+    async def _media_terms(conversation_id: str, media_parts: list[types.Part]) -> str:
+        """Cached keywords for this conversation's media. `""` if none/failed."""
+        cached = _terms_cache.get(conversation_id)
+        if cached is not None:
+            return cached
+        terms = await _media_search_terms(media_parts)
+        _terms_cache.put(conversation_id, terms)
+        if terms:
+            _log.info("assist_media_terms", conv_id=conversation_id, terms=terms)
+        return terms
+
     async def _kb_context(
-        query: str, limit: int, media_parts: list[types.Part] | None = None
+        query: str,
+        limit: int,
+        media_parts: list[types.Part] | None = None,
+        conversation_id: str = "",
     ) -> tuple[str, list[dict[str, Any]]]:
-        """KB articles for the query, falling back to the media when text fails.
+        """KB articles for the query, grounded on the media when there is any.
 
         A customer whose entire question is the attachment ("this one", a photo
-        of a warning light) gives us nothing to search on, so the text query
-        returns zero articles and the reply becomes "I have no information about
-        that" — even though the model can plainly see a Proton X50. When that
-        happens AND media is attached, we ask what the media shows and search
-        again on those terms.
+        of a warning light) gives us nothing to search on, so the query retrieves
+        whatever the index thinks is nearest and the reply becomes "I have no
+        information about that" — while the model sits next to a video it can
+        plainly read. So when media is attached we ask what it shows and put
+        those keywords at the FRONT of the search query.
 
-        The trigger is the ZERO-RESULT OUTCOME, not a guess about which
-        questions look vague. That matters for two reasons: no heuristic to
-        mis-tune across English/Malay/Manglish, and no extra Gemini call on the
-        overwhelming majority of requests, where text retrieval already works.
+        Why this fires on every media request rather than only when retrieval
+        looks bad: it was originally gated on the text search returning ZERO
+        articles, and in production that never happened. The KB is a similarity
+        search — it always returns nearest neighbours, so a meaningless query
+        yields confidently irrelevant hits rather than nothing. Retrieval here
+        fails IRRELEVANT, not EMPTY, and `KbArticle` carries no score to tell
+        the two apart. The gate was unfireable, so it is gone. (Surfacing a
+        relevance score through `KnowledgePort` would let this be precise again;
+        that is a five-adapter contract change, deliberately not done here.)
 
-        The retry query leads with the media terms and keeps the original text
-        after it: the text has already been shown not to retrieve anything, but
-        it can still carry intent ("warranty") worth blending into a similarity
-        search.
+        The cost of firing always is blunted by `_terms_cache`, not by guessing:
+        an agent clicking Suggest, then Ask, then Suggest on one conversation
+        pays for a single extraction.
+
+        The customer's own text stays in the query after the terms — it has not
+        been shown to be useless, and it can carry intent ("warranty") worth
+        blending into a similarity search.
         """
-        articles = await knowledge_port.search_kb(query, limit)
-        if not articles and media_parts:
-            terms = await _media_search_terms(media_parts)
+        if media_parts:
+            terms = await _media_terms(conversation_id, media_parts)
             if terms:
-                _log.info("assist_media_retrieval_retry", terms=terms)
-                articles = await knowledge_port.search_kb(f"{terms}\n{query}".strip(), limit)
+                query = f"{terms}\n{query}".strip()
+        articles = await knowledge_port.search_kb(query, limit)
         sources = [
             {
                 "title": a.title,
@@ -400,7 +425,7 @@ def build_assist_router(
         # on hand to fall back to when the text query finds nothing.
         media_parts = await _collect_media(req.conversation_id)
         query = _retrieval_query(req.messages)
-        faq_context, sources = await _kb_context(query, req.limit, media_parts)
+        faq_context, sources = await _kb_context(query, req.limit, media_parts, req.conversation_id)
         task_system = _SUGGEST_SYSTEM.format(faq_context=faq_context or "(none)")
         system = await _apply_persona(task_system, req.assistant_id)
         user_prompt = _format_messages(req.messages)
@@ -430,7 +455,7 @@ def build_assist_router(
         # Same ordering as /suggest: an agent can ask "what's wrong with this?"
         # about a photo, which retrieves nothing on the words alone.
         media_parts = await _collect_media(req.conversation_id)
-        faq_context, _ = await _kb_context(req.question, 3, media_parts)
+        faq_context, _ = await _kb_context(req.question, 3, media_parts, req.conversation_id)
         task_system = _ASK_SYSTEM.format(faq_context=faq_context or "(none)")
         system = await _apply_persona(task_system, req.assistant_id)
         user_prompt = (

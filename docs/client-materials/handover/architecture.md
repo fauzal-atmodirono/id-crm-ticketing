@@ -90,7 +90,7 @@ Provisioned by `deploy/scripts/add-tenant.sh <name>`.
 
 | Component | Role | Notes |
 |---|---|---|
-| **chatwoot-rails** | The CRM and agent workspace | **The SPA is forked.** 58 patch files are `git apply`-ed onto upstream at image-build time — this is where the custom Knowledge, Cases, Workforce, Escalation Routing, Customer 360, Alert Preferences and Roles & Permissions pages live |
+| **chatwoot-rails** | The CRM and agent workspace | **The SPA is forked.** 59 patch files are `git apply`-ed onto upstream at image-build time — this is where the custom Knowledge, Cases, Workforce, Escalation Routing, Customer 360, Alert Preferences and Roles & Permissions pages live |
 | **chatwoot-sidekiq** | Chatwoot's background jobs | Shares the Rails image and environment |
 | **redis** | Chatwoot's queue and cache | Per tenant |
 | **memcached** | Chatwoot's cache | Per tenant |
@@ -119,11 +119,11 @@ deliveries to time out and retry.
 Chatwoot is upstream software. This matters for two reasons a reviewer will care
 about:
 
-1. **Customisation is delivered as patches, not as configuration.** 58 of them,
+1. **Customisation is delivered as patches, not as configuration.** 59 of them,
    growing with every feature. Every upstream version bump — including one taken
    purely for a CVE — requires re-applying and re-verifying all 58. This is risk
    register **R2** and it must be priced as recurring effort.
-2. **Eight of those patches (0052–0059) have never been applied to a real
+2. **Nine of those patches (0052–0060) have never been applied to a real
    Chatwoot checkout and no built image contains any of them.** Every UI feature
    they deliver does not exist yet on any running tenant. Risk register **R7**.
 

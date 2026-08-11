@@ -81,7 +81,7 @@ It has caught defects plain `pytest` could not, in three distinct classes:
 
 **Standing gap (risk register R17):** P11, P12 and P13's flags are **not** in
 `FLAGS_ON`, because those packages never reached the step that adds them. The
-on-path of all sixteen `PHONE_*` settings has therefore never been executed.
+on-path of 14 of the 16 `PHONE_*` settings has therefore never been executed.
 
 **And the gate itself was silently red for several commits**, because plain
 `pytest` was run in its place and plain `pytest` cannot reveal it. A test that
@@ -234,7 +234,7 @@ The concrete consequences, each of which is a risk-register row:
    (R13).
 3. **No voice path has run.** Inbound calls, DTMF, handoff, recording and
    voicemail are all unit-tested against fakes (R10).
-4. **No UI has been seen.** Eight fork patches (0052–0059) have never been applied
+4. **No UI has been seen.** Nine fork patches (0052–0060) have never been applied
    to real upstream, and several stack on each other, so a line-number fix to a
    lower patch cascades upward (R7).
 5. **No restore has been rehearsed.** A backup that has never been restored is a

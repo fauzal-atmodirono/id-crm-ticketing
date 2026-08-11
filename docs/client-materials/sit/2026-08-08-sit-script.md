@@ -49,7 +49,7 @@ no existing test can reach.** See `../governance/qa-plan.md` §5.
 | # | Prerequisite | Why |
 |---|---|---|
 | P-1 | A scratch tenant provisioned via `deploy/scripts/add-tenant.sh`, isolated from `proton` and `default` | Several cases send real customer-facing messages |
-| P-2 | Chatwoot image built from the current fork, **including patches 0052–0059** | Eight patches have never been in an image; every UI case depends on this |
+| P-2 | Chatwoot image built from the current fork, **including patches 0052–0060** | Nine patches have never been in an image; every UI case depends on this |
 | P-3 | Real Gemini/Vertex credentials | Every AI case |
 | P-4 | A BigQuery project and dataset, with `ensure_views()` run once | The 33 views have never been created |
 | P-5 | A Twilio account, a voice number and a WhatsApp sender | Every phone and WhatsApp case |
@@ -59,7 +59,7 @@ no existing test can reach.** See `../governance/qa-plan.md` §5.
 | P-9 | RBAC enabled with at least three test users: administrator, supervisor, agent | Every permission case |
 
 **P-2 is the prerequisite most likely to be skipped and least able to be.**
-Patches 0052–0059 have never been applied to a real Chatwoot checkout, and
+Patches 0052–0060 have never been applied to a real Chatwoot checkout, and
 several stack on each other, so the build may fail and need line-number fix-ups
 before the SIT can start at all. **Budget time for that before scheduling the
 SIT, not during it.**
@@ -362,7 +362,7 @@ criteria all queue behind it.
 
 Two further limitations that are not integration points but will affect the run:
 
-- **Patches 0052–0059 have never been applied to a real Chatwoot checkout.** If
+- **Patches 0052–0060 have never been applied to a real Chatwoot checkout.** If
   the P-2 build fails, every case marked P-2 is `BLOCKED` rather than `FAIL`, and
   the SIT cannot start.
 - **Automated call-QA scoring does not exist and is deliberately not tested.** The

@@ -30,30 +30,49 @@ have listed all four as available. So:
 
 | Verified fact | Value |
 |---|---|
-| Backend endpoints reachable, default configuration | **80 paths** |
-| Backend endpoints reachable with the dependency-gated features on | **111 paths** |
+| Backend endpoints reachable, default configuration | **81 paths** |
+| Backend endpoints reachable with the dependency-gated features on | **112 paths** |
 | Endpoints gated by a `require_permission` route dependency | **39** |
 | Agent-service endpoints | **3** |
-| Routers found written but mounted nowhere | **1** (see below) |
+| Router files inspected | **37** |
+| Routers currently mounted nowhere | **0** |
+| Routers found unmounted during this verification, since fixed | **1** (see below) |
 
-### The one unmounted router, and one that only looks unmounted
+### The one router this verification found unmounted
 
-- **`features/chat/phone/recording_router.py`** — `GET /calls/{conversation_id}/recording`,
-  P11 task 1. At the commit this document was verified against, `main.py`
-  included it nowhere; its only `include_router` calls were inside its own test
-  module. An in-flight P11 wiring change adds the mount. **Two things remain
-  true either way:** confirm the mount in `main.py` before promising the
-  endpoint, and note that the handler reads an in-process registry
-  (`_RECORDING_RETENTIONS`) that nothing in production writes to, so against a
-  real conversation it answers the "no recording" state regardless of
-  `CALL_RECORDING_RETRIEVAL_ENABLED`. The Chatwoot custom-attribute read that
-  would populate it is owed.
-- **`features/metrics/freshness_router.py`** — `GET /metrics/freshness` appears
-  nowhere in `main.py` and is nevertheless **reachable**, because
-  `build_metrics_anomaly_router` includes it as a sub-router and `main.py`
-  mounts that. Confirmed present in the live route table. Recorded because a
-  grep of `main.py` alone would have reported it as a fifth unmounted router,
-  and a false positive in this document is as damaging as a false negative.
+**`features/chat/phone/recording_router.py`** — `GET /calls/{conversation_id}/recording`,
+P11 task 1. When this document was first verified, `main.py` included it
+nowhere; its only `include_router` calls were inside its own test module, which
+builds a throwaway `FastAPI()`. So its tests passed while the endpoint 404ed on
+every real deployment and `CALL_RECORDING_RETRIEVAL_ENABLED` had no consumer any
+operator could reach.
+
+**It is now mounted** (review fix `1fc11a2`), and `test_p11_wiring.py` proves it
+through the real app by asserting the discriminating pair: **401 rather than 404
+unauthenticated**, and the flag's own 404 for a caller who *would* be permitted —
+which is the only way to tell "flag off" apart from "unmounted". A re-verification
+against the current tree confirms `/calls/{conversation_id}/recording` in the live
+route table, and that **all 37 router files are now reachable**.
+
+**One limitation survives the mount, and it is the substantive one:** the handler
+reads an in-process registry (`_RECORDING_RETENTIONS`) that nothing in production
+writes to, so against a real conversation it answers the "no recording" state
+regardless of the setting. The Chatwoot custom-attribute read that would populate
+it is owed. **A mounted endpoint is not a working feature**, and this row is the
+clearest example in the platform.
+
+### One router that only looks unmounted
+
+**`features/metrics/freshness_router.py`** — `GET /metrics/freshness` appears
+nowhere in `main.py` and is nevertheless **reachable**, because
+`build_metrics_anomaly_router` includes it as a sub-router and `main.py` mounts
+that. Confirmed present in the live route table.
+
+Recorded because a grep of `main.py` alone would have reported it as a second
+unmounted router, and **a false positive in this document is as damaging as a
+false negative** — it would send someone to fix something that works, and it
+would undermine the true finding sitting next to it. It is the reason the
+verification boots the app instead of reading the source.
 
 ### One permission a dependency scan cannot see
 
@@ -297,7 +316,8 @@ state rather than coercing it to `0`.
 | `GET /admin/escalation/dealers` · `PUT,DELETE /admin/escalation/dealers/{dealer}` | `escalation.manage` | same |
 | `GET,PUT /admin/integrations/dms` · `POST /admin/integrations/dms/test` | `integration.manage` | same |
 | `GET /admin/customer360/search` | `customer360.view` | **GATED**: RBAC + a Chatwoot client **+ `rsa_repo`** |
-| `GET /admin/taxonomy/tree` · `GET /admin/taxonomy/coverage` | x-api-key | always |
+| `GET /admin/taxonomy/tree` | x-api-key | always |
+| `GET /admin/taxonomy/coverage` | x-api-key | always — but answers only when **both** `TAXONOMY_ADMIN_ENABLED` **and** `CATEGORY_DEPARTMENT_MAPPING_ENABLED` are on |
 | `POST /admin/taxonomy/node` · `POST /admin/taxonomy/node/{key}/retire` | `taxonomy.manage` | always |
 | `GET /alerts/rules/defaults` · `GET /alerts/rules/mine` · `PUT,DELETE /alerts/rules/mine/{event}` | `alerts.set_own_preferences` | always |
 | `PUT /alerts/rules/defaults/{event}` | `alerts.manage` | always |
@@ -313,6 +333,15 @@ in that case rather than failing silently, but the endpoint 404s.
 **The taxonomy read endpoints are not permission-gated while the write endpoints
 are.** That is intentional (the tree is not privileged information) and is the
 same boundary `/alerts/rules/defaults` and the status catalogue read draw.
+
+**`/admin/taxonomy/coverage` needs two flags, and until recently needed only
+one.** `CATEGORY_DEPARTMENT_MAPPING_ENABLED` had **no consumer anywhere** —
+`example.env` documented it as the switch that mounts this endpoint, nothing read
+it, and the report answered on `TAXONOMY_ADMIN_ENABLED` alone, so an operator
+flipping the documented flag saw no change in either direction. Fixed in
+`1fc11a2` with a real-app test on each state. Recorded here because it is the
+third instance in this programme of a documented switch that did nothing, and the
+first two were `FAQ_SUGGESTION_POPUP_ENABLED` and `INBOUND_ALERTS_ENABLED`.
 
 ---
 

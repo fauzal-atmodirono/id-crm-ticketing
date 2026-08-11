@@ -1,0 +1,330 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] dialogs for taxonomy/status editing, and drop the plan upsell
+
+Four changes, all from clicking the pages rather than reading them.
+
+1. CASE TAXONOMY and MY STATUS edit in a dialog now, not inline. Both pages put
+   a multi-field form permanently above the thing an operator came to read --
+   on the taxonomy page a six-field form pushed the tree itself below the fold,
+   and "Edit" on a row scrolled that row out of sight to reach the form. Both
+   forms move into `components/Modal.vue` (the same dialog the canned-response
+   and agent settings pages use) behind an explicit "Add node"/"Add status"
+   button. Opening the dialog for a NEW record resets the draft first: on the
+   status page the store upserts on key, so a stale key would silently
+   overwrite the status that was edited a moment earlier, and on the taxonomy
+   page the key field is readonly while editing, which makes a stale value look
+   like a bug in the key rather than in the state.
+
+2. `Failed to load the workforce dashboard: Not Found` -- Starlette fills
+   `detail` with the bare status phrase when a route is not mounted, and 0061
+   faithfully passed it through. "Not Found" tells an operator nothing and hides
+   the real cause: the router is behind a flag (`presence_tracking_enabled` for
+   that page). Generic phrases are now treated as no detail, so the
+   status-specific sentence wins.
+
+3. The upstream "Custom assignment policies are available on the Business plan
+   / Upgrade to Business" block is removed from the inbox Collaborators tab, the
+   same way 0008 strips the rest of the hosted-plan cruft. This is a self-hosted
+   deployment: there is no Business plan to buy, so the prompt advertises a
+   purchase an operator cannot make. The divider above it goes too, since it
+   existed only to separate the prompt from the rules list.
+
+Hunks are a real `git diff` against the files as extracted from the patched
+upstream image -- no hand-computed @@ counts.
+diff --git a/app/javascript/dashboard/helper/protonError.js b/app/javascript/dashboard/helper/protonError.js
+index 276c540..975b424 100644
+--- a/app/javascript/dashboard/helper/protonError.js
++++ b/app/javascript/dashboard/helper/protonError.js
+@@ -33,8 +33,16 @@ function jsonDetail(text) {
+     const parsed = JSON.parse(text);
+     if (!parsed || typeof parsed !== 'object') return null;
+     const value = parsed.detail ?? parsed.reason ?? parsed.message;
+-    if (typeof value === 'string' && value.trim()) return value.trim();
+-    return null;
++    if (typeof value !== 'string' || !value.trim()) return null;
++    // Starlette/FastAPI fill `detail` with the bare status phrase when a route
++    // simply is not mounted -- "Not Found", "Internal Server Error". Passing
++    // those through produced "Failed to load the workforce dashboard: Not
++    // Found", which tells an operator nothing and hides the real cause (the
++    // router is gated behind a flag). Treat them as no detail at all so the
++    // status-specific sentence below wins.
++    const GENERIC = ['not found', 'internal server error', 'unauthorized', 'forbidden', 'bad request'];
++    if (GENERIC.includes(value.trim().toLowerCase())) return null;
++    return value.trim();
+   } catch (_e) {
+     return null;
+   }
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue b/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue
+index a002228..c38e69f 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue
+@@ -617,21 +617,14 @@ onMounted(() => {
+                     </li>
+                   </ul>
+ 
+-                  <div class="w-full h-px bg-n-weak my-4" />
++                  <!-- The upstream "Custom assignment policies are available on the
++                       Business plan / Upgrade to Business" block is removed here, the
++                       same way 0008 strips the rest of the hosted-plan cruft. This is a
++                       self-hosted deployment: there is no Business plan to upgrade to,
++                       so the prompt advertises a purchase an operator cannot make and
++                       the link leads nowhere useful. The divider above it went too --
++                       it existed only to separate the prompt from the rules list. -->
+ 
+-                  <!-- Upgrade prompt when advanced_assignment is not enabled -->
+-                  <div v-if="!hasAdvancedAssignment">
+-                    <p class="text-body-main text-n-slate-11 mb-1">
+-                      {{ $t('INBOX_MGMT.ASSIGNMENT.UPGRADE_PROMPT') }}
+-                    </p>
+-                    <NextButton
+-                      :label="$t('INBOX_MGMT.ASSIGNMENT.UPGRADE_TO_BUSINESS')"
+-                      icon="i-lucide-arrow-right"
+-                      trailing-icon
+-                      link
+-                      @click="navigateToBilling"
+-                    />
+-                  </div>
+                 </div>
+               </div>
+             </div>
+diff --git a/app/javascript/dashboard/views/ProtonMyStatusPage.vue b/app/javascript/dashboard/views/ProtonMyStatusPage.vue
+index acfac86..d87ff4f 100644
+--- a/app/javascript/dashboard/views/ProtonMyStatusPage.vue
++++ b/app/javascript/dashboard/views/ProtonMyStatusPage.vue
+@@ -28,6 +28,7 @@
+ import { useAlert } from 'dashboard/composables';
+ import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';
+ import {
++import Modal from 'dashboard/components/Modal.vue';
+   getPresenceStatuses,
+   getMyPresenceStatus,
+   setMyPresenceStatus,
+@@ -38,9 +39,11 @@ const { hasPermission: protonHasPermission } = useProtonPermissions();
+ 
+ export default {
+   name: 'ProtonMyStatusPage',
++  components: { Modal },
+   data() {
+     return {
+       statuses: [],
++      showEditor: false,
+       current: null,
+       loading: true,
+       saving: '',
+@@ -112,7 +115,24 @@ export default {
+         this.saving = '';
+       }
+     },
++    // A blank draft every time Add is used: reusing the previous status's
++    // key would silently overwrite it, because the store upserts on key.
++    openAdd() {
++      this.draft = {
++        key: '',
++        label: '',
++        color: '#6b7280',
++        native: 'online',
++        routable: true,
++        counts_as_unavailable: false,
++      };
++      this.showEditor = true;
++    },
++    closeEditor() {
++      this.showEditor = false;
++    },
+     editEntry(entry) {
++      this.showEditor = true;
+       this.draft = {
+         key: entry.key,
+         label: entry.label,
+@@ -136,6 +156,7 @@ export default {
+           counts_as_unavailable: this.draft.counts_as_unavailable,
+         });
+         await this.load();
++        this.showEditor = false;
+         useAlert('Status saved.');
+       } catch (err) {
+         useAlert('Failed to save status: ' + (err.message || String(err)));
+@@ -250,7 +271,23 @@ export default {
+           </tbody>
+         </table>
+ 
+-        <div class="flex flex-wrap items-end gap-3">
++        <button
++          type="button"
++          class="px-3 py-2 mt-2 text-sm rounded-lg w-fit bg-n-brand text-white"
++          @click="openAdd"
++        >
++          Add status
++        </button>
++
++        <!-- The catalogue editor is a dialog: inline, its seven controls
++             competed with the table above them, and 'Edit' scrolled the row
++             out of sight to reach the form. -->
++        <Modal v-model:show="showEditor" :on-close="closeEditor">
++          <div class="flex flex-col h-auto overflow-auto">
++            <woot-modal-header
++              :header-title="draft.key ? 'Edit status' : 'Add a status'"
++            />
++            <div class="flex flex-col gap-4 p-8 pt-4">
+           <label class="flex flex-col gap-1 text-xs text-n-slate-11">
+             Key
+             <input
+@@ -292,13 +329,24 @@ export default {
+             <input v-model="draft.counts_as_unavailable" type="checkbox" />
+             Counts as unavailable
+           </label>
+-          <button
+-            class="px-3 py-2 text-sm rounded-lg bg-n-brand text-white"
+-            @click="saveEntry"
+-          >
+-            Save status
+-          </button>
+-        </div>
++          <div class="flex items-center gap-3">
++            <button
++              class="px-3 py-2 text-sm rounded-lg bg-n-brand text-white"
++              @click="saveEntry"
++            >
++              Save status
++            </button>
++            <button
++              type="button"
++              class="px-3 py-2 text-sm border rounded-lg border-n-weak text-n-slate-12"
++              @click="closeEditor"
++            >
++              Cancel
++            </button>
++          </div>
++            </div>
++          </div>
++        </Modal>
+       </div>
+     </div>
+   </div>
+diff --git a/app/javascript/dashboard/views/ProtonTaxonomyPage.vue b/app/javascript/dashboard/views/ProtonTaxonomyPage.vue
+index dd6ad36..04817b8 100644
+--- a/app/javascript/dashboard/views/ProtonTaxonomyPage.vue
++++ b/app/javascript/dashboard/views/ProtonTaxonomyPage.vue
+@@ -38,6 +38,7 @@
+ import { useAlert } from 'dashboard/composables';
+ import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';
+ import {
++import Modal from 'dashboard/components/Modal.vue';
+   getTaxonomyTree,
+   saveTaxonomyNode,
+   retireTaxonomyNode,
+@@ -76,12 +77,14 @@ function flatten(nodes, depth = 0, out = []) {
+ 
+ export default {
+   name: 'ProtonTaxonomyPage',
++  components: { Modal },
+   data() {
+     return {
+       tree: [],
+       coverage: null,
+       form: { ...EMPTY_FORM },
+       editingKey: null,
++      showEditor: false,
+       loading: true,
+       saving: false,
+       errored: false,
+@@ -171,7 +174,16 @@ export default {
+         }
+       }
+     },
++    // Opening the dialog for a NEW node reuses cancelEdit so the form is
++    // always reset to EMPTY_FORM first -- otherwise 'Add' after an edit
++    // silently pre-fills the previous node's values and the readonly key
++    // field makes that look like a bug in the key, not in the state.
++    openAdd() {
++      this.cancelEdit();
++      this.showEditor = true;
++    },
+     startEdit(node) {
++      this.showEditor = true;
+       this.editingKey = node.key;
+       this.form = {
+         level: node.level,
+@@ -197,6 +209,7 @@ export default {
+       return walk(this.tree, null);
+     },
+     cancelEdit() {
++      this.showEditor = false;
+       this.editingKey = null;
+       this.form = { ...EMPTY_FORM };
+     },
+@@ -393,15 +406,26 @@ export default {
+         <span class="font-mono text-xs">taxonomy.manage</span> permission.
+       </p>
+ 
+-      <!-- Editor -->
++      <!-- Editor. Lives in a dialog rather than inline: this page's real
++           content is the tree, and a six-field form sitting permanently above
++           it pushed the thing an operator came to read below the fold. -->
+       <template v-if="canManage">
+-        <h2 class="mb-3 text-base font-medium text-n-slate-12">
+-          {{ editingKey ? 'Edit node' : 'Add a node' }}
+-        </h2>
+-        <form
+-          class="grid max-w-3xl grid-cols-1 gap-4 mb-8 md:grid-cols-2"
+-          @submit.prevent="submit"
++        <button
++          type="button"
++          class="px-4 py-2 mb-6 text-sm font-medium rounded-lg w-fit bg-n-brand text-white hover:opacity-90"
++          @click="openAdd"
+         >
++          Add node
++        </button>
++        <Modal v-model:show="showEditor" :on-close="closeEditor">
++          <div class="flex flex-col h-auto overflow-auto">
++            <woot-modal-header
++              :header-title="editingKey ? 'Edit node' : 'Add a node'"
++            />
++            <form
++              class="grid grid-cols-1 gap-4 p-8 pt-4 md:grid-cols-2"
++              @submit.prevent="submit"
++            >
+           <div>
+             <label class="block mb-1 text-sm text-n-slate-11">Level *</label>
+             <select
+@@ -478,23 +502,24 @@ export default {
+             />
+           </div>
+           <div class="flex items-center gap-3 md:col-span-2">
+-            <button
+-              type="submit"
+-              :disabled="saving"
+-              class="px-4 py-2 text-sm font-medium rounded-lg w-fit bg-n-brand text-white hover:opacity-90 disabled:opacity-50"
+-            >
+-              {{ editingKey ? 'Save changes' : 'Add node' }}
+-            </button>
+-            <button
+-              v-if="editingKey"
+-              type="button"
+-              class="px-4 py-2 text-sm rounded-lg border border-n-weak text-n-slate-12"
+-              @click="cancelEdit"
+-            >
+-              Cancel
+-            </button>
++                <button
++                  type="submit"
++                  :disabled="saving"
++                  class="px-4 py-2 text-sm font-medium rounded-lg w-fit bg-n-brand text-white hover:opacity-90 disabled:opacity-50"
++                >
++                  {{ editingKey ? 'Save changes' : 'Add node' }}
++                </button>
++                <button
++                  type="button"
++                  class="px-4 py-2 text-sm rounded-lg border border-n-weak text-n-slate-12"
++                  @click="closeEditor"
++                >
++                  Cancel
++                </button>
++              </div>
++            </form>
+           </div>
+-        </form>
++        </Modal>
+       </template>
+ 
+       <!-- The tree -->

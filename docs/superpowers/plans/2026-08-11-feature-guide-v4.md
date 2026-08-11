@@ -209,9 +209,9 @@ def test_no_placeholders_emits_nothing_for_a_missing_screenshot(tmp_path):
     assert "Screenshot:" not in clean, "no 'Screenshot:' label may survive"
 
     # Relative, not absolute: the cover and TOC are paragraphs today, but
-    # asserting `"<w:tbl" not in xml` would start failing the day either
+    # asserting `"<w:tbl>" not in xml` would start failing the day either
     # grows a table for reasons that have nothing to do with screenshots.
-    assert clean.count("<w:tbl") == document_xml(default_out).count("<w:tbl") - 1, (
+    assert clean.count("<w:tbl>") == document_xml(default_out).count("<w:tbl>") - 1, (
         "suppressing the placeholder should remove exactly one table"
     )
 

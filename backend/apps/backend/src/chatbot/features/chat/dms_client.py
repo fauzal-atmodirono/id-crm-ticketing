@@ -109,16 +109,14 @@ class NullDmsClient:
 
 
 class MockDmsClient:
-    """Fixed, plausible-looking records for demos. Never wired in by any
-    default config -- a caller has to deliberately construct this class.
-    Every string field carries a "(Demo data)" marker so a UI rendering a
-    record verbatim cannot present it as a live DMS response; our frozen
-    record types have no separate "source"/"is_mock" field to flag this
-    structurally, so the marker lives in the values themselves. Callers
-    (e.g. the Customer 360 response) should still label the block as mock
-    independently wherever it's assembled -- this is a second layer, not a
-    substitute for that.
-    """
+    """Fixed, plausible-looking records for demos. Refuses activation outside sandbox."""
+
+    def __init__(self, environment: str = "sandbox") -> None:
+        if environment.lower() not in ("sandbox", "test", "development"):
+            _log.warning("mock_dms_client_activation_refused", environment=environment)
+            raise ValueError(
+                f"MockDmsClient refused activation outside sandbox environment (got {environment!r})."
+            )
 
     _CUSTOMER = DmsCustomer(
         ref="DEMO-CUST-001",

@@ -91,6 +91,47 @@ async def test_fetch_attachment_bytes_real_content_type_wins_over_hint():
 
 
 @respx.mock
+async def test_fetch_attachment_bytes_follows_active_storage_redirect():
+    """Chatwoot's own `data_url` for a locally-stored blob is the Active Storage
+    *redirect* route: it answers 302 and points at the real disk-service URL.
+    httpx does NOT follow redirects by default, so without follow_redirects the
+    302 reached raise_for_status() and every WhatsApp voice note was dropped."""
+    respx.get("http://cw/rails/active_storage/blobs/redirect/tok/voice.ogg").mock(
+        return_value=httpx.Response(
+            302, headers={"Location": "http://cw/rails/active_storage/disk/tok/voice.ogg"}
+        )
+    )
+    respx.get("http://cw/rails/active_storage/disk/tok/voice.ogg").mock(
+        return_value=httpx.Response(
+            200, content=b"fake-audio-bytes", headers={"Content-Type": "audio/ogg"}
+        )
+    )
+    result = await fetch_attachment_bytes(
+        "http://cw/rails/active_storage/blobs/redirect/tok/voice.ogg", file_type_hint="audio"
+    )
+    assert result == (b"fake-audio-bytes", "audio/ogg")
+
+
+@respx.mock
+async def test_fetch_attachment_bytes_redirect_to_missing_blob_returns_none():
+    """A redirect that lands on a 404 is still a failed fetch, not a crash."""
+    respx.get("http://cw/rails/active_storage/blobs/redirect/tok/gone.ogg").mock(
+        return_value=httpx.Response(
+            302, headers={"Location": "http://cw/rails/active_storage/disk/tok/gone.ogg"}
+        )
+    )
+    respx.get("http://cw/rails/active_storage/disk/tok/gone.ogg").mock(
+        return_value=httpx.Response(404)
+    )
+    assert (
+        await fetch_attachment_bytes(
+            "http://cw/rails/active_storage/blobs/redirect/tok/gone.ogg", file_type_hint="audio"
+        )
+        is None
+    )
+
+
+@respx.mock
 async def test_fetch_video_falls_back_to_mp4_when_content_type_generic():
     respx.get("http://cw/v.bin").mock(
         return_value=httpx.Response(

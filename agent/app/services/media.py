@@ -1,9 +1,19 @@
 """Fetch inbound Chatwoot message attachment bytes for multimodal AI turns.
 
-Chatwoot attachment data_urls are absolute, directly-fetchable URLs (either
-pre-signed cloud storage or Chatwoot's own served asset route) — a plain,
-unauthenticated client is used deliberately, NOT ChatwootClient, so the
-account API token is never sent to an external host.
+Chatwoot attachment data_urls are absolute and unauthenticated, but they are
+NOT always a direct 200: with local disk storage (ACTIVE_STORAGE_SERVICE=local,
+what the tenant stacks run) Chatwoot hands out the Active Storage
+`/rails/active_storage/blobs/redirect/...` route, which answers **302** and
+points at the real `/disk/...` URL. httpx does not follow redirects by default,
+so `follow_redirects=True` below is load-bearing, not a nicety — without it
+`raise_for_status()` raised on the 302 and every WhatsApp voice note was
+silently dropped (the agent-bot then never replied at all). Cloud-storage
+tenants get a pre-signed URL and 200 directly; both must work.
+
+A plain, unauthenticated client is used deliberately, NOT ChatwootClient, so the
+account API token is never sent to an external host — which is also why
+following the redirect is safe here: there is no credential to leak onto the
+redirect target.
 """
 
 from __future__ import annotations
@@ -46,7 +56,7 @@ async def fetch_attachment_bytes(
     missing or generic — a real Content-Type header always wins.
     """
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             response = await client.get(data_url)
             response.raise_for_status()
             content_type = response.headers.get("content-type", "").split(";")[0].strip()

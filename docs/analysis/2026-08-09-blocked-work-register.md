@@ -485,6 +485,43 @@ in-memory fakes. The first live run is where a real
 `GenerateContentResponseUsageMetadata`, a real `RANK() ... OVER` inside a `CASE`,
 and a real price-table read get exercised for the first time.
 
+## 3c-4. P13 ops hardening — scripts and runbooks written, none of it exercised against real infrastructure
+
+P13 is the package where "written and unverified" is most dangerous, because
+each artefact is something someone reaches for during an incident. Every item
+below was exercised against **stub `docker` and `gsutil` commands on a laptop**
+— argument parsing, refusals, dry-run plans, the corrupt-archive rejection, the
+GCS fallback, the archive round-tripping through `jq` — and **none of it against
+a GCE VM, a live Postgres, a GCS bucket or GCP credentials**, because none of
+those exists in this environment.
+
+| Owed | Why it matters | Unblocked by |
+|---|---|---|
+| **A restore rehearsal against a real backup.** `deploy/scripts/restore.sh` has never loaded a single dump. | **The highest-priority item in this table.** A backup whose restore path has never been run is not a backup you can rely on, and an untested restore documented as tested is worse than an obvious gap. Procedure: `docs/runbooks/disaster-recovery.md` §7 — scratch tenant, scratch VM, restored **from GCS** because the local copy is exactly what a real disaster removes. | One drill: a scratch VM, a real nightly archive, and someone timing it |
+| **The measured RTO.** There is no RTO number anywhere in the runbook, on purpose. | §9 commits to P1 resolution in under two hours. If a full restore takes three, that is a finding for the commercial conversation, **not a number to round down**. Nobody can honour or refute the commitment until the drill produces a figure. | The same drill |
+| **The offsite backup bucket.** `BACKUP_GCS_BUCKET` is unset everywhere, so backups today exist **only on the VM they protect**. | This is the one genuinely unrecoverable case: VM deleted with no offsite copy loses the data and the backups together. The code path is written and off by default; the bucket, the versioning, the lifecycle rule and the cron line all still have to be created. `docs/runbooks/disaster-recovery.md` §2. | One `gsutil mb` + `versioning set on` + `lifecycle set` + a cron edit |
+| **Every Cloud Monitoring alert.** No monitoring stack exists on any VM: no Ops Agent, no notification channel, no uptime check, no policy. | **No alert reaches a human today, so the first indication of a problem is a customer complaint.** Two of the five policies in `deploy/monitoring/alert-policies.yaml` also carry a filter that will match nothing until a prerequisite is built (the container-down one needs a real per-service signal; the health one needs an uptime check to exist) — and **a policy matching no time series never fires and looks identical to a healthy system**, which is why each says so in its own documentation field. | Ops Agent install, a channel, then firing each one deliberately on a scratch VM — the record table in `docs/runbooks/monitoring-alerts.md` §2.4 is empty and stays empty until then |
+| **BigQuery 7-year expirations.** Not configured; nothing deletes anything, which is not the same as a policy. | §4.84. Note `--default_table_expiration` applies only to tables created *after* it is set, so every existing table needs its own `bq update`. | One live `bq` run — same unblocker as §3c-2's eleven views |
+| **The recording-retention and audit-purge jobs have no scheduler.** Both exist, both are unit-tested, **neither has any caller** in the codebase. | So no tenant is purging call recordings at 90 days or audit rows at 365, and the documented policies are not in force. Worse for the audit one: `audit_log_retention_days` and `audit_purge_job_enabled` are read via `getattr` defaults and **are not `Settings` fields**, so no environment variable can configure or disable it — and its own test asserts the disable path with `model_copy(update=...)` on an attribute pydantic never declared, so the test passes while the flag does not exist as configuration. | A scheduler plus the two settings actually added to `Settings` and `example.env`. Until then, do not describe audit-log retention as configurable. |
+| **A non-production VM, and production not building in place.** Neither exists. | Production deploys still run `docker compose up -d --build` on the host serving customers, which is also the only test a change gets. Blocked on one concrete thing beyond the VM: `docker-compose.tenant.yml` pins `platform-agent:latest` / `platform-backend:latest`, so until those are variables an in-place build is the only way to update them and rollback stays a rebuild. `docs/runbooks/environments.md`. | One `provision-gce.sh` run with `VM_NAME=crm-nonprod`, plus the compose image-tag change |
+| **A real fork rebase.** `deploy/chatwoot-fork/rebase.sh` has never applied the series to a real upstream tree. | This sandbox cannot reach github.com, so no Chatwoot checkout exists here. The apply loop, the all-failures report and the cascade marking were proven against a **synthetic** repo and a synthetic patch series, which proves the control flow and nothing about the 58 real patches. `PATCH-INVENTORY.md` needs no checkout — it is generated from the patch files — and is accurate. | One machine with a Chatwoot clone |
+| **The MFA/2FA question on a running instance.** Whether Chatwoot v4.15.1 offers agent 2FA, and whether it is enabled. | §7.3. The code audit settled that *we* implement no MFA and no SSO, but Chatwoot is an upstream image with no source in this checkout, so the product question needs a login. Five minutes for anyone with CRM admin access. `docs/analysis/2026-08-08-auth-verification.md` §6. | One login |
+| **`features/health_enrichment.py` has no caller.** `main.py`'s `health_check()` still returns a static dict. | The deep health check is unreachable, so the backend's health endpoint cannot report a broken dependency — it cannot fail while the web server is up. Mounting it is a one-line change in a file outside P13's scope. Note that as written it also reports every subsystem `ok` unconditionally (it names the configured provider rather than probing it), so mounting it as-is yields a health check that still cannot fail; it needs real probes before an alert should trust it. | A one-line mount plus real probes |
+
+Two things P13 **did** change on disk that are worth knowing, because they alter
+what an archive contains:
+
+1. **`backup.sh` now dumps `backend_<tenant>`.** `add-tenant.sh` has always
+   created that database — it holds the operator-authored pgvector knowledge base
+   and the RBAC tables — and the dump loop never covered it. **Every archive taken
+   before 2026-08-11 therefore contains no `backend_<tenant>` dump**, and
+   restoring one of them cannot bring the knowledge base back. `restore.sh` says
+   so rather than reporting a complete restore.
+2. **`remove-tenant.sh` does not drop `backend_<tenant>` or its role**, so
+   removing and re-adding a tenant of the same name will fail on
+   `CREATE DATABASE`. Not fixed here (out of scope), recorded so it is found
+   before someone hits it during a recovery.
+
 ## 3d. P6 follow-up date — built, and deliberately invisible
 
 Not blocked on anyone outside this repo, recorded here so it is not mistaken

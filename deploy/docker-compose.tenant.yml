@@ -48,6 +48,25 @@ x-chatwoot-env: &chatwoot-env
   PROTON_BACKEND_URL: ${PROTON_BACKEND_PUBLIC_URL:-http://crm.localhost}
   PROTON_BACKEND_KEY: ${PROTON_BACKEND_KEY:-}
   PROTON_FEATURES: ${PROTON_FEATURES:-ai_assist,nav_menu,copilot,knowledge}
+  # ONE SWITCH PER FEATURE. These are the SAME variables the `backend` service
+  # reads out of tenants/<tenant>.env (it takes that file wholesale via
+  # `env_file:`), forwarded here so the Rails layout can turn each one into the
+  # PROTON_FEATURES entry the SPA's own gate reads — see fork patch
+  # 0058-feature-flag-unification.patch.
+  #
+  # Without this, each of these features has TWO switches: the documented backend
+  # flag, and `PROTON_FEATURES` — and an operator who flips only the documented
+  # one gets nothing, with no way to tell a mis-set tenant from a broken feature.
+  # That happened twice (blocked-work register 3g and 3h), which is why the fix is
+  # this passthrough rather than another paragraph of documentation.
+  #
+  # Additive and still default-off: `false` (the default here) contributes no
+  # feature name, so a tenant that sets neither renders the identical feature list
+  # it does today, and a tenant that already listed a name in PROTON_FEATURES by
+  # hand keeps it either way. Add a line here for every future flag whose feature
+  # also has a `hasFeature(...)` gate in the fork.
+  INBOUND_ALERTS_ENABLED: ${INBOUND_ALERTS_ENABLED:-false}
+  FAQ_SUGGESTION_POPUP_ENABLED: ${FAQ_SUGGESTION_POPUP_ENABLED:-false}
 
 networks:
   platform:

@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy import text
 
 from chatbot.features.chat.sla_policy_db import (
     build_engine,
@@ -149,3 +150,17 @@ async def test_every_existing_stored_policy_resolves_unchanged(repo):
     assert resolved.resolution_hours == 48
     assert resolved.tier2_hours == 4
     assert resolved.engine_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_init_sla_policy_db_adds_missing_columns_to_existing_table(tmp_path):
+    engine = build_engine(f"sqlite+aiosqlite:///{tmp_path}/sla_policy_old.db")
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE sla_policies (id INTEGER PRIMARY KEY, inbox_id INTEGER, response_hours REAL)"))
+    await init_sla_policy_db(engine)
+    repo = SlaPolicyRepository(build_session_maker(engine))
+    await repo.upsert_tenant_default(response_hours=2.0, working_hours_enabled=True)
+    val = await repo.get_tenant_default()
+    assert val is not None
+    assert val.response_hours == 2.0
+    assert val.working_hours_enabled is True

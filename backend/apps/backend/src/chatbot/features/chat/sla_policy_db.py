@@ -13,10 +13,11 @@ NULL row."
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, Integer, Text, UniqueConstraint, func, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -79,3 +80,22 @@ def build_session_maker(engine: AsyncEngine) -> async_sessionmaker:
 async def init_sla_policy_db(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        columns_to_ensure = [
+            ("inbox_id", "INTEGER", "INTEGER"),
+            ("response_hours", "DOUBLE PRECISION", "REAL"),
+            ("resolution_hours", "DOUBLE PRECISION", "REAL"),
+            ("tier2_hours", "DOUBLE PRECISION", "REAL"),
+            ("reminder_warning_minutes", "DOUBLE PRECISION", "REAL"),
+            ("ack_minutes_by_channel_json", "TEXT", "TEXT"),
+            ("pic_whatsapp", "TEXT", "TEXT"),
+            ("engine_enabled", "BOOLEAN", "BOOLEAN"),
+            ("working_hours_enabled", "BOOLEAN", "BOOLEAN"),
+            ("updated_at", "TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+        ]
+        is_sqlite = engine.dialect.name == "sqlite"
+        for col_name, pg_type, sqlite_type in columns_to_ensure:
+            if is_sqlite:
+                with suppress(Exception):
+                    await conn.execute(text(f"ALTER TABLE sla_policies ADD COLUMN {col_name} {sqlite_type}"))
+            else:
+                await conn.execute(text(f"ALTER TABLE sla_policies ADD COLUMN IF NOT EXISTS {col_name} {pg_type}"))

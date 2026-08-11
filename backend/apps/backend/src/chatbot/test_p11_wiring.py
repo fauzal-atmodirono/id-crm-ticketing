@@ -33,9 +33,19 @@ from chatbot.features.chat.phone.recording_router import register_recording, res
 
 @pytest.fixture(autouse=True)
 def _clean_state() -> Any:
+    from chatbot.platform.config import get_settings
+
     reset_recordings()
+    get_settings.cache_clear()
     yield
     reset_recordings()
+    # Leave no cached `Settings` behind. `chatbot.main` ends with a module-level
+    # `app = bootstrap_application()`, so the first import of it in a process
+    # boots the app against whatever is cached; a test here that left a
+    # placeholder handoff number cached would make an unrelated file's *import*
+    # raise, and a failed import is not kept in `sys.modules`, so every later
+    # importer would pay for it too.
+    get_settings.cache_clear()
 
 
 def _boot(monkeypatch: pytest.MonkeyPatch, **env: str) -> Any:

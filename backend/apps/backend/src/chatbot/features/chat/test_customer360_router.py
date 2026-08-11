@@ -440,7 +440,7 @@ async def test_response_is_unchanged_when_config_store_says_disabled(tmp_path, r
         validator,
         settings,
         dms_config_store=_StubDmsConfigStore(_dms_config(enabled=False)),
-        dms_client=MockDmsClient(),  # even wired, must never be consulted while disabled
+        dms_client=MockDmsClient(environment="sandbox"),  # even wired, must never be consulted while disabled
     )
     client = _app_with_router(router)
 
@@ -462,7 +462,7 @@ async def test_response_is_unchanged_when_no_config_is_stored_yet(tmp_path, resp
         validator,
         settings,
         dms_config_store=_StubDmsConfigStore(None),
-        dms_client=MockDmsClient(),
+        dms_client=MockDmsClient(environment="sandbox"),
     )
     client = _app_with_router(router)
 
@@ -484,7 +484,7 @@ async def test_mock_client_enabled_shows_dms_block_labeled_as_mock(tmp_path, res
         validator,
         settings,
         dms_config_store=_StubDmsConfigStore(_dms_config(enabled=True)),
-        dms_client=MockDmsClient(),
+        dms_client=MockDmsClient(environment="sandbox"),
     )
     client = _app_with_router(router)
 
@@ -623,7 +623,7 @@ async def test_dms_config_store_failure_omits_the_block_rather_than_guessing(tmp
         validator,
         settings,
         dms_config_store=_RaisingDmsConfigStore(),
-        dms_client=MockDmsClient(),
+        dms_client=MockDmsClient(environment="sandbox"),
     )
     client = _app_with_router(router)
 
@@ -751,7 +751,7 @@ async def _budget_for(monkeypatch, timeout_seconds: float) -> list[float]:
     seen = _budget_spy(monkeypatch)
     await _build_dms_block(
         _StubDmsConfigStore(_dms_config(enabled=True, timeout_seconds=timeout_seconds)),
-        MockDmsClient(),
+        MockDmsClient(environment="sandbox"),
         phone="0123456789",
         vehicle_no=None,
     )

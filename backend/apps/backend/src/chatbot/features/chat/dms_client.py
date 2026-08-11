@@ -109,9 +109,24 @@ class NullDmsClient:
 
 
 class MockDmsClient:
-    """Fixed, plausible-looking records for demos. Refuses activation outside sandbox."""
+    """Fixed, plausible-looking records for demos. Refuses activation outside sandbox.
 
-    def __init__(self, environment: str = "sandbox") -> None:
+    `environment` is **required and keyword-only**, with no default. It used to
+    default to `"sandbox"`, and the only real call site -- `main.py` -- passed no
+    argument at all, so the refusal below never ran on any tenant: a production
+    deployment that set `DMS_MOCK_CLIENT_ENABLED=true`, to demo the card or by
+    copying a sandbox env, put "Proton X50 (Demo data)" and a fabricated 20,000
+    km service record on a *real* customer's panel. The plan calls this refusal
+    "the load-bearing guard" precisely because the per-field "(Demo data)"
+    suffixes are a convention that can be cropped out of a screenshot or read
+    past by an agent quoting the history back to the customer.
+
+    Having no default is the point: omitting the argument is now a `TypeError`
+    at the call site rather than a silent pass. `main.py` supplies
+    `settings.app_environment`, which itself defaults to `"production"`.
+    """
+
+    def __init__(self, *, environment: str) -> None:
         if environment.lower() not in ("sandbox", "test", "development"):
             _log.warning("mock_dms_client_activation_refused", environment=environment)
             raise ValueError(

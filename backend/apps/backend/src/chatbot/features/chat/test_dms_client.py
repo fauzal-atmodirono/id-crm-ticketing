@@ -67,7 +67,7 @@ async def test_null_client_list_service_history_returns_empty_list() -> None:
 
 
 async def test_mock_client_find_customer_returns_our_dataclass_shape() -> None:
-    client: DmsClient = MockDmsClient()
+    client: DmsClient = MockDmsClient(environment="sandbox")
     customer = await client.find_customer(phone="0123456789", vehicle_no=None)
     assert isinstance(customer, DmsCustomer)
     assert customer.ref and customer.name and customer.phone
@@ -76,12 +76,12 @@ async def test_mock_client_find_customer_returns_our_dataclass_shape() -> None:
 
 
 async def test_mock_client_find_customer_returns_none_with_no_identifiers() -> None:
-    client: DmsClient = MockDmsClient()
+    client: DmsClient = MockDmsClient(environment="sandbox")
     assert await client.find_customer(phone=None, vehicle_no=None) is None
 
 
 async def test_mock_client_list_vehicles_returns_our_dataclass_shape() -> None:
-    client: DmsClient = MockDmsClient()
+    client: DmsClient = MockDmsClient(environment="sandbox")
     vehicles = await client.list_vehicles("DEMO-CUST-001")
     assert vehicles
     assert all(isinstance(v, DmsVehicle) for v in vehicles)
@@ -89,7 +89,7 @@ async def test_mock_client_list_vehicles_returns_our_dataclass_shape() -> None:
 
 
 async def test_mock_client_list_service_history_returns_our_dataclass_shape() -> None:
-    client: DmsClient = MockDmsClient()
+    client: DmsClient = MockDmsClient(environment="sandbox")
     records = await client.list_service_history("B1234ABC")
     assert records
     assert all(isinstance(r, DmsServiceRecord) for r in records)
@@ -100,7 +100,7 @@ async def test_mock_client_records_are_visibly_marked_as_demo_data() -> None:
     """A shell mistaken for a live integration is the failure this package
     must avoid -- every record must be unmistakably fake at a glance.
     """
-    client = MockDmsClient()
+    client = MockDmsClient(environment="sandbox")
     customer = await client.find_customer(phone="0123456789", vehicle_no=None)
     vehicles = await client.list_vehicles("DEMO-CUST-001")
     history = await client.list_service_history("B1234ABC")

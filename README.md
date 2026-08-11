@@ -92,11 +92,49 @@ deploy/                 Runtime (this is what you copy to the VM)
 agent/                  FastAPI integration + AI service (built by compose)
 backend/                Vendored AI-assist conversational backend
 docs/                   Design/planning docs; docs/runbooks/ = ops runbooks
+scripts/
+  generate-config-doc.py     Settings -> docs/client-materials/handover/configuration.md
+  test_generate_config_doc.py  its tests, incl. the config.py/example.env drift check
+  compare-reporting-timezone.py
 ```
 
 Chatwoot itself is **not vendored here** — it is pulled as a Docker image and
 patched at build time from `deploy/chatwoot-fork/patches/`. There is no `crm/`
 directory in this checkout, so Chatwoot's own source cannot be read from it.
+
+### Handover, governance and client-facing documentation
+
+Start at **`docs/client-materials/HANDOVER-INDEX.md`** — every handover artefact
+mapped to its RFP requirement, which artefacts are generated, and what is still
+owed.
+
+| Document | What it is |
+|---|---|
+| `docs/analysis/2026-08-09-blocked-work-register.md` | **Read this before taking a support ticket.** Everything built-but-unreachable, deliberately blank, or owed. It pre-answers most "is this a bug?" questions |
+| `docs/client-materials/handover/configuration.md` | **Generated** reference for all 256 settings — default, blast radius, and whether an operator can discover it at all |
+| `docs/client-materials/handover/api-schema.md` | Every endpoint, verified by booting the app rather than by reading routers, with its permission |
+| `docs/client-materials/handover/architecture.md` | Trust boundaries and the data that crosses them — where the customer's phone number goes |
+| `docs/client-materials/governance/qa-plan.md` | Test levels and conventions; **§5 states what the suites cannot prove** |
+| `docs/client-materials/governance/risk-register.md` | 19 risks, drawn from the engineering record |
+| `docs/client-materials/governance/milestone-artefacts/` | The ten §6.3.2 sign-off documents, each with a traceability line |
+| `docs/client-materials/sit/` | The SIT script and report. **The script is not yet agreed and the SIT has not been executed** |
+
+**`configuration.md` is generated and must be regenerated whenever a setting
+changes**, in either `agent/app/config.py` or
+`backend/apps/backend/src/chatbot/platform/config.py`:
+
+```bash
+cd backend/apps/backend
+GOOGLE_API_KEY=test-key uv run python ../../../scripts/generate-config-doc.py
+GOOGLE_API_KEY=test-key uv run pytest ../../../scripts/test_generate_config_doc.py -q
+```
+
+Do not hand-edit it — the next run overwrites the edit, and the test fails the
+build while the committed copy is stale. That test is also the only automated
+enforcement of this repo's rule that a new setting must appear in **both**
+`config.py` and `deploy/tenants/example.env`; it currently reports **90 of 256
+settings set in neither `example.env` nor either compose file**, including all
+eight Twilio credentials.
 
 ## 3. Local quickstart
 

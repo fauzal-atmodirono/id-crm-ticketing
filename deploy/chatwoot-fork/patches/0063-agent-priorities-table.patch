@@ -1,0 +1,187 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] make Agent Channel Priorities readable, and Save mean something
+
+The table was correct and hard to use. Three problems, all visible in a
+screenshot of a five-agent account:
+
+1. EVERY ROW HAD AN ACTIVE SAVE BUTTON. A column of identical blue buttons
+   tells an operator nothing about which rows they actually touched, and
+   invites saving rows they never edited. Each row now remembers what the
+   backend last returned (`saved`), and Save only appears when the row differs
+   from it. A saved row shows a quiet "Saved" tick; an untouched row shows a
+   dash. The wall of blue is gone and unsaved work is now the thing that stands
+   out.
+
+2. "ALSO HANDLES" WRAPPED INTO THREE RAGGED LINES, which is what made the rows
+   tall and the table hard to scan. The Status column is folded into the Agent
+   cell -- name and availability are one fact about the agent, and separating
+   them spent a whole column of width that the five channel chips needed more.
+   Chips are tighter (px-2/py-0.5, gap-1.5) with a `min-w-[15rem]` floor so
+   they hold their line instead of collapsing one chip per row in a narrow
+   viewport.
+
+3. THE PRIMARY CHANNEL WAS ALSO TOGGLEABLE AS AN EXTRA. Primary is always
+   first in the priority list, so a channel that is primary is implicitly
+   handled; showing it selectable in both places reads as a double-count. The
+   chip for the current primary is now disabled, with a title explaining why.
+   No behaviour change on save -- `save()` already filtered the primary out of
+   the extras, so this only stops the UI implying otherwise.
+
+Row density drops from py-3 to py-2.5 with a hover highlight, and the Saving…
+state is now visible on the button itself rather than only as a disabled
+control.
+
+Hunks are a real `git diff` against the component as extracted from the patched
+upstream image. The `import` placement trap from 0062 does not apply here --
+nothing new is imported.
+diff --git a/app/javascript/dashboard/components/proton/AgentPrioritiesEditor.vue b/app/javascript/dashboard/components/proton/AgentPrioritiesEditor.vue
+index 1f5592e..a1b2dd8 100644
+--- a/app/javascript/dashboard/components/proton/AgentPrioritiesEditor.vue
++++ b/app/javascript/dashboard/components/proton/AgentPrioritiesEditor.vue
+@@ -58,6 +58,12 @@ export default {
+             availability_status: a.availability_status || '',
+             primary: cp[0] || '',
+             also: cp.slice(1),
++            // What the backend last told us. `isDirty` compares against this so
++            // Save is only offered when there is something to save -- a table of
++            // permanently-enabled Save buttons gives an operator no way to tell
++            // which rows they actually changed.
++            saved: cp.join(','),
++            justSaved: false,
+           };
+         });
+       } catch (err) {
+@@ -74,7 +80,20 @@ export default {
+       }
+     },
+ 
++    // Primary is always first in the priority list, so a channel that is
++    // primary is implicitly handled and must not also appear as an extra --
++    // the backend de-duplicates on save anyway, and showing it selected in
++    // both places reads as a double-count.
++    orderedFor(row) {
++      return [row.primary, ...row.also.filter(c => c !== row.primary)].filter(Boolean);
++    },
++
++    isDirty(row) {
++      return this.orderedFor(row).join(',') !== row.saved;
++    },
++
+     toggleAlso(row, channel) {
++      row.justSaved = false;
+       if (row.also.includes(channel)) {
+         row.also = row.also.filter(c => c !== channel);
+       } else {
+@@ -94,6 +113,8 @@ export default {
+       this.savingRows = new Set([...this.savingRows, row.id]);
+       try {
+         await setRoutingPriority(row.id, channelPriorities);
++        row.saved = channelPriorities.join(',');
++        row.justSaved = true;
+         useAlert('Agent "' + row.name + '" priorities saved.');
+       } catch (err) {
+         useAlert('Failed to save "' + row.name + '": ' + (err.message || String(err)));
+@@ -122,46 +143,56 @@ export default {
+     <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">Loading agents…</div>
+     <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">Could not load agent priorities.</div>
+     <div v-else-if="!rows.length" class="py-10 text-sm text-center text-n-slate-11">No agents in this inbox yet.</div>
+-    <table v-else class="min-w-full table-auto outline outline-1 -outline-offset-1 outline-n-weak rounded-xl">
++    <table v-else class="min-w-full outline outline-1 -outline-offset-1 outline-n-weak rounded-xl">
+       <thead>
+         <tr class="border-b border-n-weak">
+-          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Agent</th>
+-          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Status</th>
+-          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Primary channel</th>
+-          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Also handles</th>
+-          <th class="py-3 px-4"></th>
++          <th class="py-2.5 px-4 text-start text-heading-3 text-n-slate-12">Agent</th>
++          <th class="py-2.5 px-4 text-start text-heading-3 text-n-slate-12">Primary channel</th>
++          <th class="py-2.5 px-4 text-start text-heading-3 text-n-slate-12">
++            Also handles
++          </th>
++          <th class="py-2.5 px-4 w-px"></th>
+         </tr>
+       </thead>
+       <tbody class="divide-y divide-n-weak">
+-        <tr v-for="row in rows" :key="row.id" class="align-middle">
+-          <td class="py-3 px-4 text-sm font-medium text-n-slate-12 whitespace-nowrap">{{ row.name }}</td>
+-          <td class="py-3 px-4 whitespace-nowrap">
+-            <span class="inline-flex items-center gap-1.5 text-sm text-n-slate-11">
++        <tr
++          v-for="row in rows"
++          :key="row.id"
++          class="align-middle transition-colors hover:bg-n-alpha-black1"
++        >
++          <!-- Name and availability share a cell: they are one fact about the
++               agent, and splitting them cost a whole column of width that the
++               channel chips needed far more. -->
++          <td class="py-2.5 px-4 whitespace-nowrap">
++            <div class="text-sm font-medium text-n-slate-12">{{ row.name }}</div>
++            <span class="inline-flex items-center gap-1.5 text-xs text-n-slate-11">
+               <span
+-                class="w-2 h-2 rounded-full"
++                class="w-1.5 h-1.5 rounded-full"
+                 :class="row.availability_status === 'online' ? 'bg-n-teal-9' : 'bg-n-slate-8'"
+               />
+               {{ statusLabel(row.availability_status) }}
+             </span>
+           </td>
+-          <td class="py-3 px-4">
++          <td class="py-2.5 px-4">
+             <select
+               v-model="row.primary"
+               :disabled="savingRows.has(row.id)"
+-              class="w-40 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12 focus:outline-none disabled:opacity-50"
++              class="w-36 px-2.5 py-1.5 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12 focus:outline-none disabled:opacity-50"
++              @change="row.justSaved = false"
+             >
+               <option value="">Select…</option>
+               <option v-for="ch in channels" :key="ch" :value="ch">{{ channelLabel(ch) }}</option>
+             </select>
+           </td>
+-          <td class="py-3 px-4">
+-            <div class="flex flex-wrap gap-2">
++          <td class="py-2.5 px-4">
++            <div class="flex flex-wrap gap-1.5 min-w-[15rem]">
+               <button
+                 v-for="ch in channels"
+                 :key="ch"
+                 type="button"
+-                :disabled="savingRows.has(row.id)"
+-                class="px-2.5 py-1 text-xs font-medium border rounded-full transition-colors disabled:opacity-50"
++                :disabled="savingRows.has(row.id) || ch === row.primary"
++                :title="ch === row.primary ? channelLabel(ch) + ' is already this agent\'s primary channel' : ''"
++                class="px-2 py-0.5 text-xs font-medium border rounded-full transition-colors disabled:opacity-40"
+                 :class="row.also.includes(ch)
+                   ? 'border-n-brand bg-n-alpha-black2 text-n-brand'
+                   : 'border-n-weak text-n-slate-11 hover:bg-n-alpha-black1'"
+@@ -171,15 +202,27 @@ export default {
+               </button>
+             </div>
+           </td>
+-          <td class="py-3 px-4 text-end whitespace-nowrap">
++          <!-- Save appears only when the row actually differs from what the
++               backend holds. Everything else is a quiet confirmation, so the
++               operator can see at a glance which rows are still unsaved. -->
++          <td class="py-2.5 px-4 text-end whitespace-nowrap">
+             <button
++              v-if="isDirty(row)"
+               type="button"
+               :disabled="savingRows.has(row.id)"
+               class="px-3 py-1.5 text-sm font-medium rounded-lg bg-n-brand text-white hover:opacity-90 disabled:opacity-50"
+               @click="save(row)"
+             >
+-              Save
++              {{ savingRows.has(row.id) ? 'Saving…' : 'Save' }}
+             </button>
++            <span
++              v-else-if="row.justSaved"
++              class="inline-flex items-center gap-1 text-xs text-n-teal-11"
++            >
++              <span class="i-lucide-check" />
++              Saved
++            </span>
++            <span v-else class="text-xs text-n-slate-10">—</span>
+           </td>
+         </tr>
+       </tbody>

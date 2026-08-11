@@ -860,6 +860,48 @@ Task 1 (phone-number normalisation) **is** implemented and genuinely tested —
 `None` rather than a guess. It has **no caller**: `customer360_router.py` still
 matches on its own `_digits()` helper, so the screen-pop lookup does not use it.
 
+## 3m. P10 task 4's admin page — built as patch 0060, owed a Cloud Build
+
+Recorded because for a while this was the tenth instance of the run's recurring
+failure, and the register said nothing about it. Task 4's brief names three files;
+two landed in `56c3755` (`features/taxonomy/router.py`, mounted in `main.py`, and
+`taxonomy.manage` in `authz/seed.py`) and the third, its fork patch, did not. Four
+endpoints were mounted, permission-gated and green, and **no operator could reach
+any of them.**
+
+**`deploy/chatwoot-fork/patches/0060-taxonomy-admin.patch` closes that.** It adds
+`api/protonTaxonomy.js` and `views/ProtonTaxonomyPage.vue`, a `proton/taxonomy`
+route, and a nav entry gated on `protonHasPermission('taxonomy.manage')` — the same
+key the router requires and `seed.py` grants only to `administrator`. It stacks on
+**0057** for both modified files (`Sidebar.vue`, `dashboard.routes.js`) and inserts
+directly after 0057's own added blocks, so a line-number fixup at or below 0057
+cascades into it. Numbered 0060 because 0059 was taken by the Roles & Permissions
+redesign while this was being written.
+
+**One backend behaviour the page exists to compensate for, and it is worth knowing
+independently of the UI.** `retire_node` marks only the node it is given and returns
+that node's still-active children; `tree()` attaches a child only to an active
+parent. So **retiring a parent leaves live children that no surface shows** — not
+retired, not visible, not editable. The page renders that returned list as a
+blocking panel with a Retire action per orphan, warns before retiring, and makes
+dismissing it an explicit choice. `test_p10_task4_taxonomy_admin_patch.py` proves
+the store behaviour against the real store rather than describing it.
+
+**What was actually run:** `git apply` of 0057 then 0060 onto the transcribed
+reconstruction (rc 0); the shipped JavaScript executed in node (the four call paths,
+their methods, percent-encoding of the retire key, and the disabled-vs-broken 404
+predicate); and `@vue/compiler-sfc` parse + `compileScript` + `compileTemplate` of
+the resulting SFC with zero errors. That last one **skips** in the repo's own suite,
+because `@vue/compiler-sfc` is not on node's resolution path from a Python project —
+the skip message says how to make it run.
+
+**Owed:** a Cloud Build (amd64, off-VM) and the manual verification. Nothing here
+has been seen rendering in a browser and no retire has run against a real
+Firestore. Two related P10 gaps remain open and are NOT closed by this patch: the
+`/coverage` endpoint's own flag (§3j's sibling work) and the fact that **nothing
+suggests a `dept_*` label from a category's department mapping** — the page says so
+in the field's own help text rather than implying routing that does not exist.
+
 ## 4. Deliberately not attempted
 
 Recorded so they are not mistaken for oversights.

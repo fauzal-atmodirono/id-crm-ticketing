@@ -24,7 +24,8 @@ what the chapter files use, no more:
   - `> ` blockquotes -> a left-bordered, lightly shaded, italic paragraph
   - `[[SCREENSHOT: id | caption]]` on its own line -> the PNG at
     feature-guide-assets/<id>.png if present, else a bordered placeholder
-    box, so the build never fails on a missing screenshot
+    box, so the build never fails on a missing screenshot. Pass
+    `--no-placeholders` (the v4 edition) to emit nothing at all instead.
   - `<!-- ... -->` HTML comments (including inline trailing ones) are
     stripped entirely, whether they sit on their own line or trail real
     content
@@ -350,7 +351,16 @@ def add_inline_runs(paragraph, text, base_italic=False, base_bold=False):
 # ---------------------------------------------------------------------------
 # Screenshots
 # ---------------------------------------------------------------------------
-def add_screenshot(document, shot_id, caption, found, missing):
+def add_screenshot(document, shot_id, caption, found, missing, placeholders=True):
+    """Render the PNG for `shot_id`, or account for its absence.
+
+    `placeholders=False` (the `--no-placeholders` build) emits *nothing* for
+    a missing shot -- not the box, not the caption, and not the trailing
+    spacer either, so the section reads as if the marker were never written.
+    The default keeps the box, because v3 was delivered with it and has to
+    stay reproducible. Either way the id lands in `missing`, so the build
+    still reports what it could not find.
+    """
     png_path = os.path.join(ASSETS_DIR, "%s.png" % shot_id)
     if os.path.exists(png_path):
         found.append(shot_id)
@@ -362,6 +372,8 @@ def add_screenshot(document, shot_id, caption, found, missing):
         run.italic = True
     else:
         missing.append(shot_id)
+        if not placeholders:
+            return
         table = document.add_table(rows=1, cols=1)
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
         set_table_borders(table, sz=8)
@@ -525,7 +537,7 @@ def render_table(document, rows):
 # Chapter processing
 # ---------------------------------------------------------------------------
 def process_chapter(document, text, use_bullet_style, use_number_style, stats,
-                    bookmarks=None):
+                    bookmarks=None, placeholders=True):
     blocks = [classify_block(b) for b in split_into_blocks(text)]
 
     for block in blocks:
@@ -546,7 +558,8 @@ def process_chapter(document, text, use_bullet_style, use_number_style, stats,
             stats["tables"] += 1
         elif kind == "screenshot":
             _, shot_id, caption = block
-            add_screenshot(document, shot_id, caption, stats["found"], stats["missing"])
+            add_screenshot(document, shot_id, caption, stats["found"],
+                           stats["missing"], placeholders=placeholders)
 
 
 # ---------------------------------------------------------------------------
@@ -1494,7 +1507,7 @@ def chapter_source_paths():
     )
 
 
-def build_handbook(audience=None):
+def build_handbook(audience=None, placeholders=True):
     os.makedirs(ASSETS_DIR, exist_ok=True)
     gitkeep = os.path.join(ASSETS_DIR, ".gitkeep")
     if not os.path.exists(gitkeep):
@@ -1547,7 +1560,8 @@ def build_handbook(audience=None):
         if i > 0:
             document.add_page_break()
         process_chapter(
-            document, text, use_bullet_style, use_number_style, stats, bookmarks
+            document, text, use_bullet_style, use_number_style, stats, bookmarks,
+            placeholders=placeholders,
         )
 
     document.save(OUT)
@@ -1569,7 +1583,10 @@ def build_handbook(audience=None):
         % (len(stats["found"]), len(stats["found"]) + len(stats["missing"]))
     )
     if stats["missing"]:
-        print("Screenshots missing (rendered as placeholders):")
+        print(
+            "Screenshots missing (%s):"
+            % ("rendered as placeholders" if placeholders else "omitted entirely")
+        )
         for shot_id in stats["missing"]:
             print("  - %s" % shot_id)
     print("Output: %s" % OUT)
@@ -1609,6 +1626,13 @@ def main(argv=None):
         help="exit 1 if any committed file under training/ differs from what "
         "would be generated",
     )
+    parser.add_argument(
+        "--no-placeholders",
+        action="store_true",
+        help="emit nothing at all where a screenshot's PNG is missing, "
+        "instead of the bordered caption box. Used for the v4 edition; the "
+        "default is left alone so a v3 rebuild stays reproducible.",
+    )
     args = parser.parse_args(argv)
 
     # One try around everything, so a marker problem is reported the same way
@@ -1619,7 +1643,9 @@ def main(argv=None):
             return write_curricula(check=True)
         if args.curricula:
             return write_curricula()
-        return build_handbook(audience=args.audience)
+        return build_handbook(
+            audience=args.audience, placeholders=not args.no_placeholders
+        )
     except TrainingTagError as exc:
         print("TRAINING marker error: %s" % exc, file=sys.stderr)
         return 2

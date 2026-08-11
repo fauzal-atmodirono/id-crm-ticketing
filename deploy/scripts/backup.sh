@@ -43,7 +43,11 @@ DEPLOY_DIR="${DEPLOY_DIR:-/opt/platform/deploy}"
 INFRA_PROJECT="${INFRA_PROJECT:-platform-infra}"
 INFRA_FILE="${INFRA_FILE:-docker-compose.infra.yml}"
 BACKUP_ROOT="${BACKUP_ROOT:-/backups}"
-RETENTION_DAYS="${RETENTION_DAYS:-7}"
+# BACKUP_RETENTION_DAYS is the name the P13 design and the runbooks use;
+# RETENTION_DAYS is what this script has always read and may already be set in
+# someone's crontab. Both work, the documented one wins, so neither a new reader
+# following the runbook nor an existing cron line silently does nothing.
+RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-${RETENTION_DAYS:-7}}"
 # Offsite copy. Unset bucket = local-only, i.e. exactly today's behaviour.
 BACKUP_GCS_BUCKET="${BACKUP_GCS_BUCKET:-}"
 BACKUP_GCS_PREFIX="${BACKUP_GCS_PREFIX:-platform-backups}"

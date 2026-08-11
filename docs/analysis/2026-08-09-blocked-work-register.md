@@ -1030,3 +1030,46 @@ or adding its flag to `FLAGS_ON` turns the test into a lie rather than a check.
 `ROUTING_ENABLED` is deliberately *not* in `FLAGS_ON`: it is a Phase-5 switch,
 and the one P6 component gated on it (the assignment sweeper) has its on-path
 covered by `features/routing/test_p6_wiring.py` instead.
+
+### 3n — What the training curricula and the retention jobs still owe (P13, P14)
+
+Added by the controller at the close of the P6–P14 run, from two agents' reports.
+
+**Training (P14 task 4).** The three curricula are generated from one tagged source
+via an audience filter, not hand-authored — so the "one source, three filters"
+requirement is met rather than merely its checklist. What is still owed:
+
+- **No sandbox tenant exists**, so no exercise has ever been dry-run and
+  `training/reset-sandbox.sh` has never executed. Every exercise set says so.
+- **Nine topics are untaught.** Seven because the feature depends on a fork patch
+  (0053–0060) or on BigQuery views that were never built; data scopes are
+  *deliberately* untaught pending R16. No operator content was invented to fill them.
+- **Every curriculum runs 2–3× the spec's target** (5h31 / 7h49 / 12h29 against
+  2 / 3 / 4h). The generator prints the difference rather than scaling into
+  agreement. If the target is contractual, that is a scope conversation, not a
+  formatting one.
+- The reset script sits under `training/` rather than `deploy/scripts/` only because
+  of concurrent write scopes; it belongs in the latter.
+- The committed 12 MB handbook is not byte-reproducible (hash-randomised bookmark
+  ids). Left alone deliberately: fixing it changes the shipped .docx, which the
+  audience-filter change was specifically built not to do.
+
+**Retention (P13).** Both jobs are now scheduled, reachable and proven through the
+real app — and **neither deletes anything**, by design rather than omission:
+
+- `AuditLogPort` has no delete and `AuditEntry` carries no document id, so the audit
+  tick reports `dry_run` with a real eligible count.
+- There is no Twilio recording-delete adapter and nothing lists recordings by age, so
+  the recording tick reports `not_executable` with **null** counts — not zero, because
+  zero would claim nothing is eligible.
+- The previous behaviour of marking a recording `is_deleted` with no deleter was
+  REMOVED: it made the retrieval endpoint say "deleted under the retention policy"
+  about audio still sitting at the provider.
+- **So the 7-year audit policy and the 90-day recording policy are still not in
+  force.** What changed is that the gap is measured daily instead of assumed.
+- `/healthz` is not routed through Caddy (the tenant snippets proxy only
+  `/metrics /kb /assist /routing /authz /admin`), so an external uptime check cannot
+  reach the deep health probe yet — only the compose healthcheck can. Publishing it
+  is a monitoring-design decision, not a mounting side effect.
+- `docs/runbooks/data-retention.md` (§2/§3/§8) and `monitoring-alerts.md` (§3/§4/§5)
+  now understate what exists and need a pass.

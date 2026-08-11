@@ -1130,6 +1130,15 @@ class Settings(BaseSettings):
     # the most restricted caller.
     data_scoped_rbac_enabled: bool = False
 
+    # P11: Voice Partials flags
+    call_recording_retrieval_enabled: bool = False
+    phone_dtmf_menu_enabled: bool = False
+    phone_after_hours_enabled: bool = False
+    phone_rsa_after_hours_bypass: bool = True  # DEFAULT ON: §8.1.6 requires RSA 24/7
+    phone_voicemail_ingest_enabled: bool = False
+    phone_live_transcript_enabled: bool = False
+    phone_retention_job_enabled: bool = False
+
     # Settings configurations
     model_config = SettingsConfigDict(
         env_file=".env",

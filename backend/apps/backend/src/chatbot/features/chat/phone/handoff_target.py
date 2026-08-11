@@ -33,6 +33,22 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(__name__)
 
 
+PLACEHOLDER_NUMBERS: frozenset[str] = frozenset(
+    {"+60300000001", "+60000000000", "+1234567890", "+60123456789", "00000000", "+60300000000"}
+)
+
+
+def validate_handoff_target_settings(settings: Settings) -> None:
+    """Refuse to start with placeholder numbers configured in phone targets."""
+    if settings.phone_handoff_enabled:
+        target = settings.phone_handoff_target_number.strip()
+        if target in PLACEHOLDER_NUMBERS:
+            raise ValueError(
+                f"Setting 'phone_handoff_target_number' is configured with placeholder number {target!r}. "
+                "Configure a valid E.164 phone number."
+            )
+
+
 @dataclass(frozen=True)
 class HandoffTarget:
     """`kind` is `"pstn"` (dial_twiml emits `<Number>`) or `"client"`
@@ -168,7 +184,7 @@ def dial_twiml(target: HandoffTarget, action_url: str, timeout: int, caller_id: 
     caller_id_attr = f" callerId={quoteattr(caller_id)}" if caller_id else ""
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        f'<Response><Dial action={quoteattr(action_url)} timeout="{int(timeout)}"'
+        f'<Response><Dial action={quoteattr(action_url)} timeout="{timeout}"'
         f"{caller_id_attr}>"
         f"{noun}</Dial></Response>"
     )

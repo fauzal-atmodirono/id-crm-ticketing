@@ -1,0 +1,186 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] one place to set your status, not two that disagree
+
+The sidebar's "Set your availability" and the "My status" page answered the
+same question with different answers. This menu offered Chatwoot's fixed three
+(Online/Busy/Offline); My status offered the operator-defined catalogue. An
+agent who picked "Offsite Visit" on one page saw "Busy" here and reasonably
+concluded something was broken.
+
+They are not actually two systems, and the backend already proves it:
+`status_router.py`'s `set_status` PATCHes Chatwoot's native availability FIRST
+and only appends the presence event once that succeeds. Choosing a custom
+status already moves the native one underneath it -- so this menu can offer the
+catalogue and nothing needs to write both.
+
+WHAT STAYS NATIVE, and why it is not an oversight:
+
+  * OFFLINE. The backend refuses it (`SYSTEM_MANAGED_KEYS` -- "Offline is
+    Chatwoot's own availability control"), so routing it through the Proton
+    endpoint would 400. It is appended to the custom list rather than dropped,
+    because dropping it would leave an agent no way to go offline from this
+    menu at all.
+  * AFTER-CALL WORK, filtered out with the other `system_managed` entries: it
+    is entered at call end and times out on its own. Offering it as a choice
+    would let an agent enter a state the system is supposed to own.
+
+FAIL-OPEN, the same posture as every other Proton surface: catalogue empty,
+feature off, or the request failed -> `customStatuses` stays empty and this
+menu renders exactly the three items it always did, byte-identical. That also
+covers today's state on a tenant that has not defined any statuses yet.
+
+After a successful set, the native value is dispatched to Vuex. The backend
+already wrote it to Chatwoot, but this SPA's store does not know that, and the
+store is what renders the dot here and on every avatar. It rewrites the value
+Chatwoot already holds, so it is idempotent -- and there is no action that
+merely re-reads availability (`getCurrentUserAvailability` is a getter, not an
+action; dispatching it would have failed silently).
+
+Real `git diff` against the component as extracted from the patched image.
+diff --git a/app/javascript/dashboard/components-next/sidebar/SidebarProfileMenuStatus.vue b/app/javascript/dashboard/components-next/sidebar/SidebarProfileMenuStatus.vue
+index a1eb1b8..f218829 100644
+--- a/app/javascript/dashboard/components-next/sidebar/SidebarProfileMenuStatus.vue
++++ b/app/javascript/dashboard/components-next/sidebar/SidebarProfileMenuStatus.vue
+@@ -1,5 +1,5 @@
+ <script setup>
+-import { computed, h } from 'vue';
++import { computed, h, onMounted, ref } from 'vue';
+ import { useMapGetter, useStore } from 'dashboard/composables/store';
+ import wootConstants from 'dashboard/constants/globals';
+ import { useAlert } from 'dashboard/composables';
+@@ -15,6 +15,10 @@ import {
+ import Icon from 'next/icon/Icon.vue';
+ import Button from 'next/button/Button.vue';
+ import ToggleSwitch from 'dashboard/components-next/switch/Switch.vue';
++import {
++  getPresenceStatuses,
++  setMyPresenceStatus,
++} from 'dashboard/api/protonAdmin';
+ 
+ const { t } = useI18n();
+ const store = useStore();
+@@ -35,18 +39,79 @@ const statusList = computed(() => {
+ 
+ const statusColors = ['bg-n-teal-9', 'bg-n-amber-9', 'bg-n-slate-9'];
+ 
+-const availabilityStatuses = computed(() => {
++// ── Proton custom statuses ────────────────────────────────────────────────
++// This menu and the "My status" page were two places to answer the same
++// question, and they disagreed: this one offered Chatwoot's fixed three while
++// My status offered the operator-defined catalogue. An agent who set "Offsite
++// Visit" on one page saw "Busy" here and reasonably concluded something was
++// broken.
++//
++// They can be one surface because the backend already makes them one:
++// status_router.py's set_status PATCHes Chatwoot's native availability FIRST
++// and only appends the presence event on success, so choosing a custom status
++// moves the native one underneath it. Nothing here needs to write both.
++//
++// Fail-open and default-preserving, the same posture as every other Proton
++// surface: catalogue empty, feature off, request failed -> `customStatuses`
++// stays empty and this menu renders exactly the three items it always did.
++const customStatuses = ref([]);
++
++// Offline stays native even when custom statuses exist. The backend refuses it
++// (SYSTEM_MANAGED_KEYS -- "Offline is Chatwoot's own availability control"),
++// so routing it through the Proton endpoint would 400. Dropping it instead
++// would leave an agent no way to go offline from this menu at all.
++const OFFLINE_INDEX = 2;
++
++onMounted(async () => {
++  try {
++    const catalogue = await getPresenceStatuses();
++    const entries = Array.isArray(catalogue?.statuses) ? catalogue.statuses : [];
++    customStatuses.value = entries.filter(entry => !entry.system_managed);
++  } catch (_error) {
++    customStatuses.value = [];
++  }
++});
++
++const nativeStatuses = computed(() => {
+   return statusList.value.map((statusLabel, index) => ({
+     label: statusLabel,
+     value: AVAILABILITY_STATUS_KEYS[index],
+     color: statusColors[index],
+     icon: h('span', { class: [statusColors[index], 'size-[12px] rounded'] }),
+     active: currentUserAvailability.value === AVAILABILITY_STATUS_KEYS[index],
++    custom: false,
++  }));
++});
++
++const availabilityStatuses = computed(() => {
++  if (!customStatuses.value.length) return nativeStatuses.value;
++  // A custom status carries its own colour, so the swatch is styled inline
++  // rather than through the three-entry Tailwind list the native items use.
++  const custom = customStatuses.value.map(entry => ({
++    label: entry.label || entry.key,
++    value: entry.key,
++    color: '',
++    icon: h('span', {
++      class: 'size-[12px] rounded',
++      style: { backgroundColor: entry.color || '#6b7280' },
++    }),
++    active: false,
++    custom: true,
++    native: entry.native || 'busy',
+   }));
++  return [...custom, nativeStatuses.value[OFFLINE_INDEX]];
+ });
+ 
++// Falls back to the native entry so the trigger always has a label and a dot:
++// with custom statuses present none of them is marked active (the catalogue
++// does not report which one is set), and an undefined activeStatus would blank
++// the button entirely.
+ const activeStatus = computed(() => {
+-  return availabilityStatuses.value.find(status => status.active);
++  return (
++    availabilityStatuses.value.find(status => status.active) ||
++    nativeStatuses.value.find(status => status.active) ||
++    nativeStatuses.value[OFFLINE_INDEX]
++  );
+ });
+ 
+ const autoOfflineToggle = computed({
+@@ -59,6 +124,33 @@ const autoOfflineToggle = computed({
+   },
+ });
+ 
++async function selectStatus(status) {
++  if (isImpersonating.value) {
++    useAlert(t('PROFILE_SETTINGS.FORM.AVAILABILITY.IMPERSONATING_ERROR'));
++    return;
++  }
++  if (!status.custom) {
++    changeAvailabilityStatus(status.value);
++    return;
++  }
++  try {
++    await setMyPresenceStatus(status.value);
++    // The backend already PATCHed Chatwoot's native availability, but this
++    // SPA's Vuex store does not know that -- and the store is what renders the
++    // dot here and on every avatar. Dispatching the native value keeps it in
++    // sync. It writes the same value Chatwoot already holds, so it is
++    // idempotent, and there is no store action that merely re-reads
++    // availability (`getCurrentUserAvailability` is a getter, not an action).
++    store.dispatch('updateAvailability', {
++      availability: status.native,
++      account_id: currentAccountId.value,
++    });
++    useAlert(status.label);
++  } catch (error) {
++    useAlert(error.message || t('PROFILE_SETTINGS.FORM.AVAILABILITY.SET_AVAILABILITY_ERROR'));
++  }
++}
++
+ function changeAvailabilityStatus(availability) {
+   if (isImpersonating.value) {
+     useAlert(t('PROFILE_SETTINGS.FORM.AVAILABILITY.IMPERSONATING_ERROR'));
+@@ -109,7 +201,7 @@ function changeAvailabilityStatus(availability) {
+               :label="status.label"
+               :icon="status.icon"
+               class="cursor-pointer"
+-              @click="changeAvailabilityStatus(status.value)"
++              @click="selectStatus(status)"
+             />
+           </DropdownBody>
+         </DropdownContainer>

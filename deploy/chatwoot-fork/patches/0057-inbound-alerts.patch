@@ -165,14 +165,51 @@ same technique 0053 and 0056 used), so the @@ arithmetic was computed by git
 rather than by hand, and re-verified by applying this patch with a real
 `git apply` to a freshly built copy of that pre-image. That proves internal
 consistency and self-consistency with those patches' own text only. It does
-NOT prove this patch applies to the real upstream-derived fork checkout, and
-it proves nothing at all about the two unverified guesses this patch makes
-about upstream APIs it could not read: the conversation-list store getter
-names and the /api/v1/accounts/:id/conversations response shape. Both fail
-toward a visible degraded indicator rather than toward silence. Build via
-Cloud Build for amd64 once merged; never on the prod VM, never from an arm64
-Mac. A row in docs/analysis/2026-08-09-blocked-work-register.md records this
-and the manual screenshot verification that is also still owed.
+NOT prove this patch applies to the real upstream-derived fork checkout.
+
+BOTH FORMERLY-UNVERIFIED GUESSES ARE NOW CONFIRMED (2026-08-11), read out of
+`chatwoot/chatwoot:v4.15.1` itself rather than guessed, along with the whole
+59-patch stack applying in order in a throwaway container:
+
+- The getters are right, and it is the FIRST candidate that hits, so the
+  healthy `coverage: 'list'` path is what actually runs. `store/modules/
+  conversations/getters.js` defines `getAllConversations`, and that module is
+  NOT namespaced (`export default { state, getters, actions, mutations }`), so
+  it resolves at the root. The second candidate is dead code, kept as
+  documentation. `INBOX_GETTER_CANDIDATES` is right for the opposite reason:
+  the inboxes module IS `namespaced: true`, so `inboxes/getInboxes` is live.
+- The response shape is right, and it is the first branch:
+  `index.json.jbuilder` is `json.data { json.meta …; json.payload … }`, so
+  `body.data.payload` is the array.
+
+TWO THINGS THE FIRST DRAFT GOT WRONG, FIXED IN THE HUNKS BELOW:
+
+1. `sort_by=last_activity_at` is not a valid key. `SORT_OPTIONS` has
+   `last_activity_at_asc`/`_desc`; an unknown key silently falls through to
+   `SORT_OPTIONS['last_activity_at_desc']`, which happens to be the order we
+   want. It worked by luck, not by contract. Now sends `_desc` explicitly.
+2. The poll was capped at 25 conversations. `ConversationFinder#conversations`
+   branches: with `updated_within` present it returns the filtered relation and
+   never calls `.page(…).per(…)`; without it, page size is the
+   `CONVERSATION_RESULTS_PER_PAGE` env var (default 25) and no `page` param was
+   sent. `updated_within=600` removes the cap without a paging loop and bounds
+   the result by recent activity, which is what a staleness watchdog wants.
+   There is no `per_page` param, so this is the only way to lift that cap from
+   a query string.
+
+WHAT THE POLL STILL CANNOT SEE, stated rather than implied. The conversation
+partial emits `json.messages [ …messages.last… ]` — an array of exactly ONE.
+So the fallback sees each conversation's most recent message only. An
+unanswered inbound IS the most recent message, which is the alert condition,
+so this is sufficient for its purpose — but it is not full coverage, and an
+inbound followed by any later message drops out of view. `set_inboxes` also
+scopes results to `current_user.assigned_inboxes`, which is the correct
+boundary for an agent-facing alert. Both fail toward a visible degraded
+indicator rather than toward silence.
+
+Build via Cloud Build for amd64 once merged; never on the prod VM, never from
+an arm64 Mac. A row in docs/analysis/2026-08-09-blocked-work-register.md
+records the manual screenshot verification that is also still owed.
 ---
  app/javascript/dashboard/api/protonAlerts.js       |  59 +++
  .../dashboard/components-next/sidebar/Sidebar.vue  |  22 +
@@ -473,14 +510,14 @@ index 0000000..ec15f64
 +  };
 +
 +  // Chatwoot's own conversations API, same-origin, with the same auth headers
-+  // the SPA's own axios client sends. No new backend endpoint, and it works
-+  // when the socket does not — which is the entire point of a fallback.
++  // the SPA's own axios client sends. `updated_within` is load-bearing: it is
++  // the one branch of ConversationFinder that does NOT paginate. See header.
 +  const fetchOpenConversations = async () => {
 +    const accountId = currentAccountId.value;
 +    if (!accountId) return null;
 +    try {
 +      const response = await fetch(
-+        `/api/v1/accounts/${accountId}/conversations?status=open&sort_by=last_activity_at`,
++        `/api/v1/accounts/${accountId}/conversations?status=open&sort_by=last_activity_at_desc&updated_within=600`,
 +        { headers: authHeaders() }
 +      );
 +      if (!response.ok) return null;

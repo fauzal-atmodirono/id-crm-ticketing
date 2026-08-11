@@ -6,27 +6,39 @@ example.env` with no consumer anywhere. The consumer is a fork patch --
 `deploy/chatwoot-fork/patches/0056-faq-composer-apply.patch` -- because the
 surface is a Chatwoot dashboard component, not backend Python. There is
 therefore no importable module to exercise directly; every test in this file
-either parses the patch text itself or applies it (via a real `git apply`) to
-a synthetic reconstruction of the two upstream files it stacks on
-(`0002-ai-assist-backend.patch`, `0055-translate-action.patch`) and inspects
-the result.
+either parses the patch text itself or applies it (via a real `git apply`) and
+inspects the result.
+
+**2026-08-11: this file used to apply the patch to a hand-written synthetic
+reconstruction of its pre-image, and that reconstruction was wrong.** Its
+`_KNOWN_LINES` asserted a `useAlert` import at line 15 of `ReplyTopPanel.vue`
+and `useStore` at line 14. The real file has no `useAlert` import at all, and
+line 14 is `useUISettings`. Because both 0055 and 0056 were written against
+that fiction, both failed on the first real Cloud Build -- 0055 at
+`ReplyTopPanel.vue:12`, 0056 at `ReplyTopPanel.vue:97`. Both patches have been
+regenerated from a real `git diff`, and this file now applies them to the real
+pre-image instead of a reconstruction:
+`deploy/chatwoot-fork/fixtures/ReplyTopPanel.post-0054.vue`, extracted by
+applying patches 0001-0054 to `chatwoot/chatwoot:v4.15.1` in a throwaway
+container (provenance and the extraction command are in that directory's
+README). A fixture cannot encode a wrong guess about upstream; a
+reconstruction can, and did.
 
 **What these tests can and cannot prove**, stated once here rather than
 repeated per test:
 
-- They CAN prove the patch's hunks are internally well-formed (correct `@@`
-  arithmetic), that they apply cleanly to a tree seeded with content
-  transcribed verbatim from 0002's and 0055's own already-merged diffs, and
-  that the resulting file contains the exact logic described below.
-- They CANNOT prove the patch applies to the real upstream-derived Chatwoot
-  fork checkout, because this sandbox has no network access to clone it --
-  the same limitation recorded against patches 0053/0054/0055. The brief's
-  `test_the_patch_applies_cleanly_onto_the_pinned_upstream_ref` is therefore
-  deliberately NOT one of the tests below under that name: nothing here was
-  run against the pinned upstream ref, and a test claiming that would be
-  false. `test_the_patch_hunks_apply_onto_a_synthetic_reconstruction_of_
-  transcribed_context` is the honest, verifiable substitute -- named for
-  exactly what it checks.
+- They CAN prove that 0055 applies cleanly to the real post-0054
+  `ReplyTopPanel.vue`, that 0056 then applies cleanly to the result of that,
+  and that the resulting file contains the exact logic described below. The
+  pre-image is ground truth, so this is a real check against the real fork
+  tree for this one file.
+- They do NOT re-run the whole 59-patch stack -- pytest has no access to the
+  upstream image. That check lives outside this suite: applying every patch in
+  order inside a `chatwoot/chatwoot:v4.15.1` container, committing after each
+  one, was run on 2026-08-11 and reported `=== FAILING:` with nothing after
+  it. See `.superpowers/sdd/fork-patch-verification.md`. Patches applying is
+  still necessary, not sufficient: only Cloud Build proves the vite build
+  compiles the patched source.
 - Because there is no Vue runtime available here, "the Apply button writes
   the composer" and friends are proven by extracting the generated JavaScript
   and asserting its structure/semantics (regex plus small Python
@@ -44,9 +56,19 @@ from pathlib import Path
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[5]
-_PATCH_PATH = _REPO_ROOT / "deploy" / "chatwoot-fork" / "patches" / "0056-faq-composer-apply.patch"
+_FORK_ROOT = _REPO_ROOT / "deploy" / "chatwoot-fork"
+_PATCH_PATH = _FORK_ROOT / "patches" / "0056-faq-composer-apply.patch"
+# 0056 stacks on 0055, so 0055 has to be applied first to build the pre-image.
+# Applying it here also makes this file 0055's only automated guard.
+_PATCH_0055_PATH = _FORK_ROOT / "patches" / "0055-translate-action.patch"
+# The REAL pre-image, extracted from the upstream image with 0001-0054 applied
+# -- not a reconstruction. See fixtures/README.md for how it was extracted and
+# when to refresh it.
+_PRE_IMAGE_PATH = _FORK_ROOT / "fixtures" / "ReplyTopPanel.post-0054.vue"
 
 assert _PATCH_PATH.is_file(), f"0056 patch not found at {_PATCH_PATH}"
+assert _PATCH_0055_PATH.is_file(), f"0055 patch not found at {_PATCH_0055_PATH}"
+assert _PRE_IMAGE_PATH.is_file(), f"post-0054 ground-truth file not found at {_PRE_IMAGE_PATH}"
 
 PATCH_TEXT = _PATCH_PATH.read_text(encoding="utf-8")
 
@@ -57,108 +79,24 @@ DIFF_TEXT = PATCH_TEXT[_DIFF_START:]
 
 TARGET_REL_PATH = "app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue"
 
-# ---------------------------------------------------------------------------
-# Synthetic reconstruction of the file this patch stacks on (0002 + 0055),
-# built ONLY from lines transcribed verbatim from those two patches' own
-# already-merged diffs -- never from memory of unverified upstream Chatwoot
-# source. Filler lines stand in for the surrounding content this sandbox has
-# no way to see. This is the same "reconstruct, pad with filler, verify with
-# a real git apply" technique 0053's report describes.
-# ---------------------------------------------------------------------------
-_KNOWN_LINES: dict[int, str] = {
-    1: "<script>",
-    2: "import { ref, computed } from 'vue';",
-    3: "import { useKeyboardEvents } from 'dashboard/composables/useKeyboardEvents';",
-    4: "import { useCaptain } from 'dashboard/composables/useCaptain';",
-    5: "import { useTrack } from 'dashboard/composables';",
-    9: "import NextButton from 'dashboard/components-next/button/Button.vue';",
-    10: "import EditorModeToggle from './EditorModeToggle.vue';",
-    11: "import CopilotMenuBar from './CopilotMenuBar.vue';",
-    12: "import { useProtonConfig } from 'dashboard/composables/useProtonConfig';",
-    13: "import { callAssist } from 'dashboard/api/protonAssist';",
-    14: "import { useStore } from 'dashboard/composables/store';",
-    15: "import { useAlert } from 'dashboard/composables';",
-    16: "",
-    17: "// Actions intercepted by Proton backend when ai_assist feature is enabled",
-    18: "const PROTON_ACTIONS = {",
-    19: "  reply_suggestion: 'suggest',",
-    20: "  summarize: 'summarize',",
-    21: "  ask_copilot: 'ask',",
-    22: "};",
-    23: "",
-    24: "// Where each action's result is inserted: the 'reply' box or a private 'note'.",
-    25: "const PROTON_ACTION_MODE = {",
-    26: "  reply_suggestion: 'reply',",
-    27: "  summarize: 'note',",
-    28: "  ask_copilot: 'reply',",
-    29: "};",
-    30: "",
-    31: "export default {",
-    32: "  name: 'ReplyTopPanel',",
-    97: "    };",
-    98: "",
-    99: "    const { captainTasksEnabled } = useCaptain();",
-    100: "    const { hasFeature } = useProtonConfig();",
-    101: "    const store = useStore();",
-    102: "    const protonEnabled = computed(() => hasFeature('ai_assist'));",
-    103: "    const showAiButton = computed(",
-    104: "      () => captainTasksEnabled.value || protonEnabled.value",
-    105: "    );",
-    106: "",
-    107: "    const showCopilotMenu = ref(false);",
-    108: "    const copilotToggleRef = ref(null);",
-    208: "      handleNoteClick,",
-    209: "      REPLY_EDITOR_MODES,",
-    210: "      captainTasksEnabled,",
-    211: "      protonEnabled,",
-    212: "      showAiButton,",
-    213: "      translating,",
-    214: "      handleTranslateLastCustomerMessage,",
-    215: "      handleCopilotAction,",
-    216: "      showCopilotMenu,",
-    217: "      copilotToggleRef,",
-    259: "        </span>",
-    260: "      </div>",
-    261: "    </div>",
-    262: '    <div v-if="protonEnabled" class="flex items-center gap-2">',
-    263: "      <button",
-    264: '        class="flex items-center gap-1 px-2 py-1 text-xs border rounded-lg border-n-weak text-n-slate-11"',
-    265: '        :disabled="translating"',
-    266: '        title="Translate the customer\'s last message to English"',
-    267: '        @click="handleTranslateLastCustomerMessage"',
-    268: "      >",
-    269: '        <span class="i-lucide-languages" />',
-    270: "        {{ translating ? 'Translating…' : 'Translate' }}",
-    271: "      </button>",
-    272: "    </div>",
-    273: '    <div v-if="showAiButton" class="flex items-center gap-2">',
-    274: '      <div class="relative">',
-    275: "        <NextButton",
-    276: '          ref="copilotToggleRef"',
-}
-_SYNTHETIC_LENGTH = 280
-
-
-def _build_synthetic_base() -> str:
-    lines = [
-        _KNOWN_LINES.get(i, f"// filler-transcribed-context-unknown-line-{i}")
-        for i in range(1, _SYNTHETIC_LENGTH + 1)
-    ]
-    return "\n".join(lines) + "\n"
-
 
 @pytest.fixture(scope="module")
 def applied_file(tmp_path_factory: pytest.TempPathFactory) -> str:
-    """Apply the real 0056 patch to the synthetic base with a real `git
-    apply`, inside a throwaway git repo, and return the resulting file text.
+    """Apply 0055 then 0056 to the REAL post-0054 `ReplyTopPanel.vue`, with a
+    real `git apply` inside a throwaway git repo, and return the result.
 
-    Session-scoped-ish (module scope) because applying is the same for every
-    test in this file and git/subprocess calls are not free.
+    0055 is applied first because 0056 stacks on it; committing in between is
+    what makes 0056's check meaningful (an uncommitted tree lets `git apply`
+    match against the pre-0055 content and hide a stacking error -- the same
+    mistake that produced three false failures in the container harness run).
+
+    Module-scoped because applying is identical for every test here and
+    git/subprocess calls are not free.
     """
     repo = tmp_path_factory.mktemp("patch0056-tree")
     target = repo / TARGET_REL_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(_build_synthetic_base(), encoding="utf-8")
+    target.write_text(_PRE_IMAGE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
 
     def run(*args: str) -> subprocess.CompletedProcess[str]:
         # All arguments are hardcoded literals below (git plumbing only) --
@@ -167,35 +105,39 @@ def applied_file(tmp_path_factory: pytest.TempPathFactory) -> str:
             args, cwd=repo, capture_output=True, text=True, check=False
         )
 
-    assert run("git", "init", "-q").returncode == 0
-    assert run("git", "add", "-A").returncode == 0
-    assert (
-        run(
-            "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base"
-        ).returncode
-        == 0
-    )
+    def commit(message: str) -> None:
+        assert run("git", "add", "-A").returncode == 0
+        assert (
+            run(
+                "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", message
+            ).returncode
+            == 0
+        )
 
-    check = run("git", "apply", "--check", str(_PATCH_PATH))
-    assert check.returncode == 0, (
-        "0056 did not apply to the synthetic reconstruction of 0002+0055's "
-        f"transcribed content (proves internal consistency only): {check.stderr}"
-    )
-    applied = run("git", "apply", str(_PATCH_PATH))
-    assert applied.returncode == 0, applied.stderr
+    assert run("git", "init", "-q").returncode == 0
+    commit("post-0054 ground truth")
+
+    for label, patch in (("0055", _PATCH_0055_PATH), ("0056", _PATCH_PATH)):
+        check = run("git", "apply", "--check", str(patch))
+        assert check.returncode == 0, (
+            f"{label} does not apply to the real post-0054 ReplyTopPanel.vue. "
+            "Either the patch is wrong, or an earlier patch now touches this "
+            "file and fixtures/ReplyTopPanel.post-0054.vue needs re-extracting "
+            f"(see that directory's README): {check.stderr}"
+        )
+        assert run("git", "apply", str(patch)).returncode == 0
+        commit(label)
 
     return target.read_text(encoding="utf-8")
 
 
-def test_the_patch_hunks_apply_onto_a_synthetic_reconstruction_of_transcribed_context(
+def test_the_patch_applies_cleanly_onto_the_real_post_0054_fork_file(
     applied_file: str,
 ) -> None:
-    """Honest substitute for the brief's `..._onto_the_pinned_upstream_ref`
-    test, which cannot pass in this sandbox (no network access to clone
-    upstream -- see the module docstring). This proves the five hunks'
-    `@@` arithmetic is internally correct and that they land cleanly against
-    content transcribed verbatim from 0002's and 0055's own merged diffs. It
-    proves nothing about the real fork checkout.
+    """The check that used to be impossible here. The pre-image is the real
+    `ReplyTopPanel.vue` from the patched fork tree, so a clean `git apply` of
+    0055-then-0056 onto it is a real result, not an internal-consistency
+    proof. It still says nothing about whether vite compiles the output.
     """
     # The fixture already asserted `git apply --check` and `git apply`
     # succeeded; this test additionally pins that every intended addition

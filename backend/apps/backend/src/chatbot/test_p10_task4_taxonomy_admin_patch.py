@@ -14,11 +14,19 @@ from the applied patch, and where `@vue/compiler-sfc` is available they compile 
 shipped SFC's script and template. So the behavioural claims are about the shipped
 text, not a Python re-implementation of it -- the discipline 0057 established.
 
-There is deliberately no `..._onto_the_pinned_upstream_ref` test and there cannot
-honestly be one: this sandbox has no network to clone upstream, so what is verified
-is internal consistency with the transcribed context of the patches below this one.
-Nothing here has been seen rendering in a browser, no Cloud Build has run, and no
-retire has been performed against a real Firestore.
+There is deliberately no `..._onto_the_pinned_upstream_ref` test here, because
+pytest has no access to the upstream Chatwoot image: what this file verifies is
+internal consistency with the transcribed context of the patches below this one.
+That is a limit of this suite only. On 2026-08-11 the whole 59-patch stack was
+applied in order inside a throwaway `chatwoot/chatwoot:v4.15.1` container,
+committing after each patch so every patch met the correctly accumulated tree --
+`0060` applies cleanly to the real upstream-derived tree, and the run reported
+`=== FAILING:` with nothing after it (`.superpowers/sdd/fork-patch-verification.md`).
+An earlier version of this paragraph said no such verification was possible; it is
+now, and where a real pre-image has been extracted a test should use it directly
+(see `test_p7_task7_faq_composer_patch.py`). Still owed: nothing here has been seen
+rendering in a browser, no Cloud Build has run -- so the vite build of the patched
+source is unproven -- and no retire has been performed against a real Firestore.
 
 **The reachability assertions are the point of the module.** A page is only
 reachable if the route exists, the nav offers it, and every path it calls is a path

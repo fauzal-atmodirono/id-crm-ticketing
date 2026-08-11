@@ -36,40 +36,59 @@ outbound-Tamil gate (which only fires when a caller explicitly asks to
 translate INTO Tamil) never applies to this UI surface. There is
 deliberately no "reply in Tamil" action anywhere in this patch.
 
-DEPENDENCY: this patch applies ON TOP OF 0002-ai-assist-backend.patch. Its
-four hunks are all anchored on ReplyTopPanel.vue content that 0002 itself
-adds (the PROTON_ACTIONS/PROTON_ACTION_MODE block, the protonEnabled/
-showAiButton computed refs, handleCopilotAction's body, and the
-`showAiButton` template div), not on unverified upstream Chatwoot content --
-every context line below was transcribed verbatim from 0002's own diff
-(which is already merged in this repo) and the four hunks' line-number
-offsets were computed by hand to account for each other cumulatively within
-this same file, the same arithmetic approach 0054 used on top of 0053.
+REGENERATED 2026-08-11 AGAINST THE REAL FORK TREE, AND VERIFIED. The first
+version of this patch was hand-written and hand-arithmetic'd, because the
+authoring sandbox could not reach github.com to clone upstream. It did not
+apply: `patch failed: .../WootWriter/ReplyTopPanel.vue:12`. The reason was a
+wrong reconstruction of the import block -- it assumed a `useAlert` import
+existed at the top of the file. There is no `useAlert` import in the real
+file at all, and the real line 14 is `useUISettings` (added later by the
+copilot-panel work), not the assumed one. The real post-0054 import block is:
 
-NOTE: hand-constructed and NOT verified with `git apply --check` against a
-real checkout -- this sandbox has no network access to clone upstream or the
-fork, the same constraint recorded for patches 0053/0054. Anchoring on our
-own already-merged 0002 content (rather than on unverified upstream lines)
-is deliberate risk reduction, but it does not substitute for a real
-`git apply --check`. Verify on the first Cloud Build; it is a row in
-docs/analysis/2026-08-09-blocked-work-register.md beside 0053/0054's.
+     2  import { ref, computed } from 'vue';
+     3  import { useKeyboardEvents } from 'dashboard/composables/useKeyboardEvents';
+     4  import { useCaptain } from 'dashboard/composables/useCaptain';
+     5  import { useTrack } from 'dashboard/composables';
+    ...
+    12  import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
+    13  import { callAssist } from 'dashboard/api/protonAssist';
+    14  import { useUISettings } from 'dashboard/composables/useUISettings';
+    15  import { useStore } from 'dashboard/composables/store';
+
+So `useAlert` is now added to line 5's existing `dashboard/composables`
+import rather than as a second import statement for the same module, and
+`callAssist`/`useStore`/`ref` are reused from what the file already has.
+
+The hunks below are a real `git diff` taken from the actual post-0054
+`ReplyTopPanel.vue` extracted from the upstream image with 0001-0054 applied
+-- no hand-computed `@@` counts. The whole 59-patch stack (this patch
+included; numbering runs 0001-0060 with 0042 absent, so 59 files, not 60)
+was then applied in order inside a throwaway container built from
+`chatwoot/chatwoot:v4.15.1`, committing after each patch so every patch is
+tested against the correctly accumulated tree: all 59 apply, `git apply`
+reports nothing. Patches applying is necessary but not sufficient -- the
+vite build still has to succeed, which only Cloud Build can tell us. Build
+via Cloud Build for amd64; never on the prod VM, never from an arm64 Mac.
 ---
- .../widgets/WootWriter/ReplyTopPanel.vue          | 53 +++++++++++++++++++++++
- 1 file changed, 53 insertions(+)
+ .../widgets/WootWriter/ReplyTopPanel.vue           | 54 +++++++++++++++++++++-
+ 1 file changed, 53 insertions(+), 1 deletion(-)
 diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
-index 0a6cec2..7c1d2e3 100644
+index 9a327d6..6b4d15c 100644
 --- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
 +++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
-@@ -12,4 +12,5 @@
- import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
- import { callAssist } from 'dashboard/api/protonAssist';
- import { useStore } from 'dashboard/composables/store';
-+import { useAlert } from 'dashboard/composables';
-
-@@ -135,5 +136,44 @@ export default {
+@@ -2,7 +2,7 @@
+ import { ref, computed } from 'vue';
+ import { useKeyboardEvents } from 'dashboard/composables/useKeyboardEvents';
+ import { useCaptain } from 'dashboard/composables/useCaptain';
+-import { useTrack } from 'dashboard/composables';
++import { useTrack, useAlert } from 'dashboard/composables';
+ import { vOnClickOutside } from '@vueuse/components';
+ import { REPLY_EDITOR_MODES, CHAR_LENGTH_WARNING } from './constants';
+ import { CAPTAIN_EVENTS } from 'dashboard/helper/AnalyticsHelper/events';
+@@ -145,6 +145,45 @@ export default {
        emit('executeCopilotAction', actionKey, data || props.editorContent);
      };
-
+ 
 +    // Task 3 (P7): translate the latest customer message into English.
 +    // POST /assist/translate posts the result directly into the
 +    // conversation as a private note (translate_router.py) -- there is no
@@ -111,9 +130,8 @@ index 0a6cec2..7c1d2e3 100644
 +
      const toggleCopilotMenu = () => {
        const isOpening = !showCopilotMenu.value;
-@@ -168,8 +208,10 @@ export default {
-       handleNoteClick,
-       REPLY_EDITOR_MODES,
+       if (isOpening && captainTasksEnabled.value) {
+@@ -180,6 +219,8 @@ export default {
        captainTasksEnabled,
        protonEnabled,
        showAiButton,
@@ -122,7 +140,7 @@ index 0a6cec2..7c1d2e3 100644
        handleCopilotAction,
        showCopilotMenu,
        copilotToggleRef,
-@@ -217,5 +259,16 @@ export default {
+@@ -227,6 +268,17 @@ export default {
          </span>
        </div>
      </div>
@@ -139,3 +157,4 @@ index 0a6cec2..7c1d2e3 100644
 +    </div>
      <div v-if="showAiButton" class="flex items-center gap-2">
        <div class="relative">
+         <NextButton

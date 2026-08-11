@@ -18,15 +18,22 @@ repeated per test:
   as described when run against representative inputs. The behavioural tests
   extract the real function source out of the applied file and run it; they do
   not re-implement it, so they cannot pass against a broken implementation.
-- They CANNOT prove the patch applies to the real upstream-derived Chatwoot
-  fork checkout, because this sandbox has no network access to clone it -- the
-  same limitation recorded against patches 0053/0054/0055/0056. The brief's
-  `test_the_patch_applies_cleanly_onto_the_pinned_upstream_ref` is therefore
-  deliberately NOT one of the tests below under that name: nothing here was
-  run against the pinned upstream ref, and a test claiming it would be false.
-  `test_the_patch_hunks_apply_onto_a_synthetic_reconstruction_of_transcribed_
-  context` is the honest, verifiable substitute -- named for exactly what it
-  checks.
+- They do NOT themselves apply the patch to the real fork tree: pytest has no
+  access to the upstream Chatwoot image, so the pre-image here is still a
+  reconstruction and `test_the_patch_hunks_apply_onto_a_synthetic_
+  reconstruction_of_transcribed_context` is named for exactly what it checks.
+  That is now a limit of this suite, NOT a limit of the project. On 2026-08-11
+  the whole 59-patch stack was applied in order inside a throwaway
+  `chatwoot/chatwoot:v4.15.1` container, committing after each patch so every
+  patch met the correctly accumulated tree: 0057 applies cleanly to the real
+  upstream-derived tree, and the run reported `=== FAILING:` with nothing after
+  it. See `.superpowers/sdd/fork-patch-verification.md`. Earlier versions of
+  this docstring said such verification was impossible ("no network access to
+  clone it"); that was true when written and is not true now. Where a real
+  pre-image has been extracted it should be used directly -- see
+  `test_p7_task7_faq_composer_patch.py`, which applies 0055/0056 to
+  `deploy/chatwoot-fork/fixtures/ReplyTopPanel.post-0054.vue`. A reconstruction
+  is what let 0055 and 0056 ship with an import block that did not exist.
 - They CANNOT prove the two things the patch guesses about upstream APIs it
   could not read: the Vuex conversation-list getter names, and the shape of
   `GET /api/v1/accounts/:id/conversations`. Both are guarded so a wrong guess

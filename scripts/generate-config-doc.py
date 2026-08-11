@@ -316,15 +316,42 @@ def render_default(name: str, field: Any) -> str:
 # --------------------------------------------------------------------------
 
 _ENV_LINE_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=")
+# A commented assignment -- `# DEBUG=false`. Not set, but the operator can find
+# out the setting exists, which is a different and better state than silence.
+_ENV_COMMENTED_RE = re.compile(r"^#\s*([A-Z][A-Z0-9_]*)=")
 
 
 def read_example_env(path: Path) -> list[str]:
-    """Env var names assigned in `example.env`, in file order."""
+    """Env var names ASSIGNED in `example.env`, in file order."""
     names: list[str] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         match = _ENV_LINE_RE.match(line.strip())
         if match:
             names.append(match.group(1))
+    return names
+
+
+def read_example_env_documented(path: Path) -> set[str]:
+    """Env var names that appear as a COMMENTED assignment in `example.env`.
+
+    Distinguished from the assigned set on purpose. The original drift table had
+    two states -- in `example.env`, or nowhere -- and reported 88 settings as
+    invisible to operators. They were then written into `example.env` as
+    commented lines carrying their code default, because uncommenting them would
+    change behaviour on every tenant while the point was only to make them
+    discoverable.
+
+    Collapsing that into "in example.env" would overstate it (nothing is set) and
+    leaving it as "nowhere" understates it (the operator can now find it). So it
+    is its own state. Only the genuinely-silent settings should ever be counted
+    as nowhere -- that count is the finding, and it must not quietly absorb work
+    that has been done.
+    """
+    names: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = _ENV_COMMENTED_RE.match(line.strip())
+        if match:
+            names.add(match.group(1))
     return names
 
 
@@ -365,18 +392,30 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ").strip() or "—"
 
 
-def where_set(env_name: str, example_set: set[str], compose_set: set[str]) -> str:
-    """Which of the three places an operator can find this setting."""
+def where_set(
+    env_name: str,
+    example_set: set[str],
+    compose_set: set[str],
+    documented_set: set[str] | None = None,
+) -> str:
+    """Which of the four places an operator can find this setting.
+
+    `documented` means `example.env` carries it as a commented line at its code
+    default: not set, but discoverable. See `read_example_env_documented`.
+    """
     if env_name in example_set:
         return "`example.env`"
     if env_name in compose_set:
         return "compose"
+    if documented_set and env_name in documented_set:
+        return "documented (commented)"
     return "**nowhere**"
 
 
 def build_document() -> str:
     example_names = read_example_env(EXAMPLE_ENV)
     example_set = set(example_names)
+    documented_set = read_example_env_documented(EXAMPLE_ENV)
     compose_set = read_compose_env(COMPOSE_FILES)
 
     out: list[str] = []
@@ -497,7 +536,7 @@ def build_document() -> str:
 
             blast, who = classify(name, field.annotation, field.default)
             env_name = name.upper()
-            location = where_set(env_name, example_set, compose_set)
+            location = where_set(env_name, example_set, compose_set, documented_set)
             if location == "**nowhere**" and name not in EXAMPLE_ENV_EXEMPT:
                 set_nowhere.append(
                     (env_name, heading, "required" if field.is_required() else "default")

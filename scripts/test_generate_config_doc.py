@@ -112,11 +112,34 @@ def test_a_setting_present_in_code_but_missing_from_example_env_is_flagged(
         "table will report a required setting as undiscoverable and be ignored"
     )
 
-    # 2. The report.
+    # 1b. The fourth state. `example.env` now carries 90 settings as COMMENTED
+    # assignments at their code default -- discoverable without being set. That
+    # is neither "in example.env" (nothing is set) nor "nowhere" (an operator
+    # can find it), so it reports as its own state. TWILIO_ACCOUNT_SID is the
+    # case that motivated the work: all eight Twilio credentials were invisible
+    # while no phone or WhatsApp feature works without them.
+    documented_set = gen.read_example_env_documented(gen.EXAMPLE_ENV)
+    assert (
+        gen.where_set("TWILIO_ACCOUNT_SID", example_set, compose_set, documented_set)
+        == "documented (commented)"
+    ), (
+        "TWILIO_ACCOUNT_SID must be discoverable in example.env. If this fails, "
+        "either its commented line was deleted or it was actually assigned a "
+        "value -- assigning a credential in a template is the worse of the two"
+    )
+    assert "TWILIO_ACCOUNT_SID" not in example_set, (
+        "example.env must DOCUMENT the Twilio credentials, never assign them"
+    )
+
+    # 2. The report. Every setting is now discoverable, so the drift table should
+    # be empty of the "nowhere" state -- and this assertion is what stops that
+    # regressing quietly the next time a setting is added to config.py alone.
     drift = document.split("## Drift:")[1].split("\n## ")[0]
-    assert "`TWILIO_ACCOUNT_SID`" in drift, (
-        "TWILIO_ACCOUNT_SID is set in neither example.env nor compose and must "
-        "be reported; the whole Twilio channel's credentials are undiscoverable"
+    assert "**nowhere**" not in drift, (
+        "a setting is discoverable in neither example.env nor compose. Add it to "
+        "deploy/tenants/example.env as a commented line at its code default; "
+        "88 settings were in this state until 2026-08-11 and the whole Twilio "
+        "channel was among them"
     )
     assert "`AGENT_MODE`" not in drift, "AGENT_MODE is in example.env and must not be flagged"
 

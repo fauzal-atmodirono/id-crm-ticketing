@@ -577,15 +577,21 @@ not read as a finished feature:
    patch.py`) prove the hunks apply cleanly to a synthetic reconstruction of
    `0002`'s and `0055`'s own already-merged content and that the resulting
    logic behaves as described — not that it applies to the real fork.
-2. **`FAQ_SUGGESTION_POPUP_ENABLED` and the frontend's actual gate are two
-   independent switches.** The strip's real client-side gate is
-   `hasFeature('faq_suggestion_popup')`, read from a tenant's `PROTON_FEATURES`
-   list — the same mechanism `ai_assist` already uses. Turning on the backend
-   setting does not populate that list; `deploy/tenants/*.env`,
-   `docker-compose.tenant.yml` and `main.py` were all off-limits for task 7, so
-   wiring the two together is a deploy-config task still owed, not something
-   task 7 could close by itself.
+2. ~~**`FAQ_SUGGESTION_POPUP_ENABLED` and the frontend's actual gate are two
+   independent switches.**~~ **CLOSED IN CODE 2026-08-11, OWED A CLOUD BUILD.**
+   The strip's client-side gate is `hasFeature('faq_suggestion_popup')`, read from
+   a tenant's `PROTON_FEATURES` list. `deploy/chatwoot-fork/patches/0058-feature-
+   flag-unification.patch` makes the Rails layout build that list as
+   `PROTON_FEATURES` **plus** the feature name of every mapped flag that is truthy
+   in the environment, and `deploy/docker-compose.tenant.yml` forwards this flag
+   from `tenants/<tenant>.env` into `x-chatwoot-env` so Rails has it to read. One
+   variable in one file now reaches both halves. See 3i for exactly what is proved,
+   what is still conditional, and what remains owed — the state below is what a
+   live tenant still has until the image is rebuilt.
 
+Nothing on the backend reads `faq_suggestion_popup_enabled` — the strip is
+entirely client-side, so populating the fork's feature list is the whole of that
+flag's wiring, and 3i asserts by test that no backend consumer has appeared.
 The side-panel FAQ suggestions are a separate, older feature and are
 unaffected either way. The README's P7 section and the operator handbook have
 been updated to describe this state rather than "no consumer."
@@ -603,15 +609,16 @@ mounted on every dashboard page), `api/protonAlerts.js`, and
 Four things are unverified or incomplete. None of them is a bug, and none
 should be read as "the feature is done":
 
-1. **`INBOUND_ALERTS_ENABLED` and the fork's real gate are two independent
-   switches** — the identical gap 3g records for
-   `FAQ_SUGGESTION_POPUP_ENABLED`. The module's client-side gate is
-   `hasFeature('inbound_alerts')`, read from a tenant's `PROTON_FEATURES` list
-   via `window.__PROTON_CONFIG__`. There is **no backend endpoint that reports
-   `inbound_alerts_enabled` to the frontend**, and `deploy/tenants/*.env`,
-   `docker-compose.tenant.yml` and `main.py` were off-limits for these tasks,
-   so an operator must add `inbound_alerts` to `PROTON_FEATURES` **in addition
-   to** turning the backend setting on. Closing this is a deploy-config task.
+1. ~~**`INBOUND_ALERTS_ENABLED` and the fork's real gate are two independent
+   switches**~~ — **CLOSED IN CODE 2026-08-11, OWED A CLOUD BUILD.** The module's
+   client-side gate is `hasFeature('inbound_alerts')`, read from a tenant's
+   `PROTON_FEATURES` list via `window.__PROTON_CONFIG__`. There is still no
+   backend endpoint reporting `inbound_alerts_enabled` to the frontend and
+   deliberately so — the list is built at Rails render time, where the value is
+   already available, and turning `useProtonConfig()` into an async read would
+   mean auditing every consumer for a load-order race. Fork patch `0058` plus the
+   `docker-compose.tenant.yml` passthrough make this one variable drive both
+   halves; see 3i for what is proved and what is still conditional.
    *The preferences page is different and has a single real switch:* it is
    gated by RBAC (`alerts.set_own_preferences` / `alerts.manage`) and reports
    `ALERT_RULES_ENABLED` honestly, because `rules_router.py` answers
@@ -641,6 +648,73 @@ should be read as "the feature is done":
    degraded indicator**, and a failed poll leaves the mode unchanged rather
    than claiming health. So a wrong guess is visible and fixable by editing one
    array; it is not silent. Confirm both on the first real build.
+
+## 3i. The two-switch fix (3g + 3h) — proved in code, conditional on two things
+
+`deploy/chatwoot-fork/patches/0058-feature-flag-unification.patch` plus the
+`x-chatwoot-env` passthrough in `deploy/docker-compose.tenant.yml` close the
+independent-switch gap recorded twice above. This row exists because the fix was
+committed (`38b59cc`) with its test module unfinished, so for a while the
+programme's mitigation for a twice-repeated defect was itself unverified.
+
+**What the fix is.** The single source of truth is **the env var in
+`tenants/<tenant>.env`** — not the backend `Settings` field and not
+`PROTON_FEATURES`; both of those are now readers of that one line. The backend
+reads it via `env_file:`. Rails reads it because `x-chatwoot-env` interpolates
+`${FLAG:-false}`, and 0058's ERB block unions the mapped feature name into the
+list the SPA's `hasFeature()` reads. `PROTON_FEATURES` keeps working and the union
+is **additive, never subtractive**, so nothing a tenant configured by hand under
+3g/3h's old advice stops working.
+
+**What is now proved** (`backend/apps/backend/src/chatbot/test_p9_task7_feature_
+flag_unification.py`, 16 tests). Each step runs in its real tool, not a Python
+re-implementation: `git apply` applies 0001 then 0058; `docker compose config`
+resolves the shipped compose file against a synthetic one-line tenant env and
+reports each service's environment; Ruby's own `erb` renders the shipped fragment.
+Specifically —
+
+- one line in `tenants/<tenant>.env` arrives in `chatwoot-rails`,
+  `chatwoot-sidekiq` **and** `backend`;
+- flag off (and flag absent — a different Compose path, and the one every existing
+  tenant is in) leaves the feature off on both sides;
+- flag on renders the feature name into the SPA's list, with the value Compose
+  itself resolved fed into the ERB;
+- **no value of the variable can leave the backend enabled while the SPA gate is
+  shut** — checked against the real `Settings` field over a corpus of values, so a
+  tenant writing `y` or `ON` cannot re-create the bug in a third variant;
+- the pre-0058 layout, rendered the same way, **does** exhibit the bug — so the
+  tests are sensitive to the property, not merely to the presence of a Ruby hash;
+- every mapped feature name is one some `hasFeature()` call in the patch series
+  really reads, harvested from the patches rather than retyped.
+
+**Two conditions, both real, neither a test can remove.**
+
+1. **The Chatwoot custom image must be rebuilt with 0058** (Cloud Build, amd64,
+   off-VM) and pulled. The compose passthrough takes effect on the next `up -d`;
+   the ERB change does not exist until the image contains it. **Until then the live
+   tenants still have two switches** and `inbound_alerts` /
+   `faq_suggestion_popup` must still be added to `PROTON_FEATURES` by hand. Owed,
+   along with everything else in 3g/3h awaiting the same build.
+2. **`--env-file tenants/<tenant>.env` is load-bearing.** Compose interpolates from
+   the shell environment and `--env-file` only — never from a service's own
+   `env_file:`. A deploy that omits it puts the backend on and leaves Chatwoot on
+   the `:-false` default: the original bug, restored silently. Every script and
+   README command in this repo passes it and a test asserts they continue to, but
+   a hand-run `docker compose up` without it regresses. Demonstrated with the real
+   Compose CLI rather than argued.
+
+**One asymmetry that remains, by design.** Flag on ⇒ feature on, always. The
+mirror image — a name hand-added to `PROTON_FEATURES` with the flag off — still
+turns the client surface on, because the union is additive. That is the safe
+direction: `faq_suggestion_popup_enabled` has no backend consumer at all (asserted
+by test, so the claim cannot silently rot), and `inbound_alerts_enabled` has
+exactly one — `surface_freshness`, which labels the alert surface `live_stream`
+instead of `poll_60s` — where the mirror image *understates* how live the alerting
+is. The combination the fix removes is the dangerous one: the backend claiming
+`live_stream` about a client surface that was switched off.
+
+**Nothing here proves a browser ever saw `window.__PROTON_CONFIG__`.** No pixels,
+no build, no screenshots.
 
 ## 4. Deliberately not attempted
 

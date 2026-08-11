@@ -441,7 +441,7 @@ SENTIMENT_TONE_ADJUSTMENT_ENABLED=true  # pick the reply's tone from that sentim
 TRANSLATION_ENABLED=true                # POST /assist/translate (inbound, private note)
 TRANSLATION_OUTBOUND_TAMIL_ENABLED=false  # leave this alone — see below
 FAQ_KEYWORD_WEIGHT=0.0                  # hybrid FAQ rank; 0.0 reproduces today exactly
-FAQ_SUGGESTION_POPUP_ENABLED=true       # NO-OP today: nothing reads it — see below
+FAQ_SUGGESTION_POPUP_ENABLED=true       # needs a fork image built with patch 0058 — see below
 MEDIA_DIAGNOSIS_PROMPT_ENABLED=true     # diagnostic instruction when a photo/video arrives
 RESOLVED_CASE_INDEX_ENABLED=true        # index resolved-case SUMMARIES into pgvector
 AUTO_SUMMARY_ON_RESOLVE_ENABLED=true    # post that summary as a private note
@@ -522,27 +522,29 @@ defaults off for exactly this reason.
 Five things this work does **not** deliver, each of which reads as delivered if
 nobody says otherwise:
 
-- **`FAQ_SUGGESTION_POPUP_ENABLED` still has no consumer — setting it does
-  nothing.** The P7 final review checked: the strip's only gate is the
-  front-end's `hasFeature('faq_suggestion_popup')`, read from `PROTON_FEATURES`.
-  So the back-end flag and the real switch are independent, and an earlier
-  version of this section claiming otherwise was wrong. Fork patch
-  `0056-faq-composer-apply.patch` does add a dismissible FAQ
-  suggestion strip to the reply composer's top panel, gated on a confidence
-  threshold (0.75, only `live_faq` hits from `GET /kb/suggest` carry a score)
-  and re-using 0002's `protonAssistResult` bridge for its Apply button — the
-  same mechanism `ReplyBox.vue` already writes the composer from, so the
-  iframe-sandbox limitation the agent-app README describes is superseded for
-  this one feature, not solved in general. Two things are still missing: (1)
-  the patch has never been through a Cloud Build or applied to a real
-  Chatwoot checkout — see the caveat in the patch header and the register; and
-  (2) the setting's real gate on the frontend today is the tenant's
-  `PROTON_FEATURES` list (`faq_suggestion_popup`), which `FAQ_SUGGESTION_
-  POPUP_ENABLED` does not automatically populate — `deploy/tenants/*.env`,
-  `docker-compose.tenant.yml` and `main.py` were out of scope for that task, so
-  an operator must set both independently for the strip to appear. Agent-assist
-  FAQ suggestions in the side panel are unaffected — they predate this and work
-  as before.
+- **`FAQ_SUGGESTION_POPUP_ENABLED` is a fork-side switch and needs a rebuilt
+  fork image before it does anything.** Nothing on the back end reads the
+  field — the strip is entirely client-side and its only gate is
+  `hasFeature('faq_suggestion_popup')`, read from `PROTON_FEATURES`. For most of
+  P7 the two were genuinely independent switches (an earlier version of this
+  section claiming otherwise was wrong, and was corrected). Fork patch
+  `0058-feature-flag-unification.patch` plus the `docker-compose.tenant.yml`
+  passthrough now make this variable populate that list, so **one setting is
+  sufficient — on a stack whose Chatwoot image was built with 0058.** Fork patch
+  `0056-faq-composer-apply.patch` is what adds the strip itself: dismissible, in
+  the reply composer's top panel, gated on a confidence threshold (0.75, only
+  `live_faq` hits from `GET /kb/suggest` carry a score) and re-using 0002's
+  `protonAssistResult` bridge for its Apply button — the same mechanism
+  `ReplyBox.vue` already writes the composer from, so the iframe-sandbox
+  limitation the agent-app README describes is superseded for this one feature,
+  not solved in general. Two things are still owed: (1) neither `0056` nor
+  `0058` has been through a Cloud Build or applied to a real Chatwoot checkout —
+  see the caveats in both patch headers and the register; and (2) until that
+  image is built and pulled, a live tenant still has two switches and
+  `faq_suggestion_popup` must be added to `PROTON_FEATURES` by hand. Adding it by
+  hand keeps working afterwards — the union is additive, never subtractive.
+  Agent-assist FAQ suggestions in the side panel are unaffected — they predate
+  this and work as before.
 
 - **The index is written and nothing reads it yet.** Summaries are stored and
   labelled `resolved_case` (distinct from the curated KB's own label), and a

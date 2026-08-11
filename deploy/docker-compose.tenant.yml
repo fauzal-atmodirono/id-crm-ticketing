@@ -65,6 +65,13 @@ x-chatwoot-env: &chatwoot-env
   # it does today, and a tenant that already listed a name in PROTON_FEATURES by
   # hand keeps it either way. Add a line here for every future flag whose feature
   # also has a `hasFeature(...)` gate in the fork.
+  #
+  # ALWAYS DEPLOY WITH `--env-file tenants/<tenant>.env`. Compose interpolates
+  # `${...}` from the shell environment and from --env-file ONLY — never from a
+  # service's own `env_file:`. Omit it and the backend still sees these flags
+  # (it has `env_file:`) while the lines below fall back to `false`, which is the
+  # two-switch bug this block exists to remove, silently restored. Every script
+  # and README command here passes it, and a test asserts they keep doing so.
   INBOUND_ALERTS_ENABLED: ${INBOUND_ALERTS_ENABLED:-false}
   FAQ_SUGGESTION_POPUP_ENABLED: ${FAQ_SUGGESTION_POPUP_ENABLED:-false}
 

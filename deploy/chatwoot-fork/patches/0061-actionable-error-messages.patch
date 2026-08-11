@@ -1,0 +1,246 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] error messages an operator can act on, not raw HTTP bodies
+
+Every Proton request helper threw `new Error(`${status}: ${text.slice(0,200)}`)`
+and every admin page rendered that string directly. When a backend path is not
+routed by the tenant's Caddy vhost the request falls through to Chatwoot, which
+answers with its own HTML error page, so the alert preferences page showed an
+operator:
+
+    Could not load alert preferences: 404: <!DOCTYPE html> <html lang="en"> …
+
+That is the worst possible message for that failure. The backend route was
+mounted and healthy; the fault was a missing /alerts/* line in the reverse
+proxy, and nothing in the UI could lead anyone there. It went unnoticed until
+somebody clicked the page.
+
+A new helper, `helper/protonError.js`, turns a failed response into a sentence:
+
+  - An HTML body means the request never reached the backend at all -- now said
+    in those words, with what an operator must fix. This is the case the old
+    message hid completely.
+  - FastAPI's own `detail` (or `reason`/`message`) is used when present, so a
+    router that explains itself keeps its explanation.
+  - 401/403/404/422/5xx each get a plain sentence naming the next step, e.g.
+    403 points at Settings -> Roles & Permissions rather than saying "403".
+
+Six throw sites across four files now call it. `.status` is preserved, because
+callers branch on it (patch 0033's 404-means-not-configured path), and the raw
+body moves to `.detail` -- still available to a console log or a test, never
+rendered.
+
+The hunks below are a real `git diff` against the four files as extracted from
+the patched upstream image, no hand-computed @@ counts. `node --check` passes
+on all five files.
+diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
+index ee62ad7..ecb7aea 100644
+--- a/app/javascript/dashboard/api/protonAdmin.js
++++ b/app/javascript/dashboard/api/protonAdmin.js
+@@ -11,6 +11,7 @@
+ // per-user require_permission dependency, not the shared secret alone.
+ import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
+ import Auth from './auth';
++import { httpFailure } from 'dashboard/helper/protonError';
+ 
+ export async function adminRequest(path, { method = 'GET', body } = {}) {
+   const { backendUrl, backendKey } = useProtonConfig();
+@@ -36,9 +37,7 @@ export async function adminRequest(path, { method = 'GET', body } = {}) {
+ 
+   if (!response.ok) {
+     const text = await response.text().catch(() => response.statusText);
+-    const err = new Error(`${response.status}: ${text.slice(0, 200)}`);
+-    err.status = response.status;
+-    throw err;
++    throw httpFailure(response.status, text);
+   }
+   const text = await response.text();
+   return text ? JSON.parse(text) : {};
+diff --git a/app/javascript/dashboard/api/protonKnowledge.js b/app/javascript/dashboard/api/protonKnowledge.js
+index 4d90afa..a14b330 100644
+--- a/app/javascript/dashboard/api/protonKnowledge.js
++++ b/app/javascript/dashboard/api/protonKnowledge.js
+@@ -1,4 +1,5 @@
+ import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++import { httpFailure } from 'dashboard/helper/protonError';
+ 
+ // Thin client for the Proton backend Knowledge endpoints (/kb/*). Auth is the
+ // shared PROTON_BACKEND_KEY sent as x-api-key; the backend's CORS allows the
+@@ -19,9 +20,7 @@ async function kbRequest(path, { method = 'GET', body } = {}) {
+ 
+   if (!response.ok) {
+     const text = await response.text().catch(() => response.statusText);
+-    const err = new Error(`${response.status}: ${text.slice(0, 200)}`);
+-    err.status = response.status;
+-    throw err;
++    throw httpFailure(response.status, text);
+   }
+   const text = await response.text();
+   return text ? JSON.parse(text) : {};
+@@ -63,9 +62,7 @@ export async function bulkUploadFaqs(file) {
+   });
+   if (!response.ok) {
+     const text = await response.text().catch(() => response.statusText);
+-    const err = new Error(`${response.status}: ${text.slice(0, 200)}`);
+-    err.status = response.status;
+-    throw err;
++    throw httpFailure(response.status, text);
+   }
+   const text = await response.text();
+   return text ? JSON.parse(text) : {};
+@@ -110,9 +107,7 @@ export async function uploadKnowledgeFile(file, title) {
+   });
+   if (!response.ok) {
+     const text = await response.text().catch(() => response.statusText);
+-    const err = new Error(`${response.status}: ${text.slice(0, 200)}`);
+-    err.status = response.status;
+-    throw err;
++    throw httpFailure(response.status, text);
+   }
+   const text = await response.text();
+   return text ? JSON.parse(text) : {};
+diff --git a/app/javascript/dashboard/api/protonMetrics.js b/app/javascript/dashboard/api/protonMetrics.js
+index 0a05e95..96cf550 100644
+--- a/app/javascript/dashboard/api/protonMetrics.js
++++ b/app/javascript/dashboard/api/protonMetrics.js
+@@ -1,4 +1,5 @@
+ import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++import { httpFailure } from 'dashboard/helper/protonError';
+ 
+ // Thin client for the Proton backend Metrics endpoints (/metrics/*). Auth is
+ // the shared PROTON_BACKEND_KEY sent as x-api-key; required for gated
+@@ -18,9 +19,7 @@ async function metricsRequest(path) {
+ 
+   if (!response.ok) {
+     const text = await response.text().catch(() => response.statusText);
+-    const err = new Error(`${response.status}: ${text.slice(0, 200)}`);
+-    err.status = response.status;
+-    throw err;
++    throw httpFailure(response.status, text);
+   }
+   const text = await response.text();
+   return text ? JSON.parse(text) : {};
+diff --git a/app/javascript/dashboard/api/protonRsa.js b/app/javascript/dashboard/api/protonRsa.js
+index 042889a..b0f24b3 100644
+--- a/app/javascript/dashboard/api/protonRsa.js
++++ b/app/javascript/dashboard/api/protonRsa.js
+@@ -1,4 +1,5 @@
+ import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++import { httpFailure } from 'dashboard/helper/protonError';
+ 
+ // Thin client for the Proton backend RSA incident-log endpoints
+ // (/rsa/incidents*). Auth is the shared PROTON_BACKEND_KEY sent as x-api-key —
+@@ -22,9 +23,7 @@ async function rsaRequest(path, { method = 'GET', body } = {}) {
+ 
+   if (!response.ok) {
+     const text = await response.text().catch(() => response.statusText);
+-    const err = new Error(`${response.status}: ${text.slice(0, 200)}`);
+-    err.status = response.status;
+-    throw err;
++    throw httpFailure(response.status, text);
+   }
+   const text = await response.text();
+   return text ? JSON.parse(text) : {};
+diff --git a/app/javascript/dashboard/helper/protonError.js b/app/javascript/dashboard/helper/protonError.js
+new file mode 100644
+index 0000000..276c540
+--- /dev/null
++++ b/app/javascript/dashboard/helper/protonError.js
+@@ -0,0 +1,98 @@
++// protonError.js — OUR file. One place that turns a failed Proton backend
++// response into a sentence an operator can act on.
++//
++// WHY THIS EXISTS. Every Proton request helper used to throw
++// `new Error(`${status}: ${text.slice(0, 200)}`)`, and every page rendered
++// that string straight into the UI. When a backend path is not routed by the
++// tenant's Caddy vhost the request falls through to Chatwoot, which answers
++// with its own HTML error page — so the alert preferences page displayed
++//
++//   Could not load alert preferences: 404: <!DOCTYPE html> <html lang="en">…
++//
++// to an operator, who has no way to read that as "an ops person must add
++// /alerts/* to the tenant's reverse-proxy route". That exact failure went
++// unnoticed until someone clicked the page, because the backend route was
++// mounted and healthy the whole time. A raw HTTP body is diagnostic output,
++// not a message; this module keeps the diagnosis on the error object (and the
++// console) and gives the UI a sentence instead.
++//
++// It deliberately does NOT swallow anything: the original status and body stay
++// on the returned Error as `.status` and `.detail` for logging and for tests.
++
++// A response Chatwoot rendered (or any HTML error page) means the request
++// never reached the backend at all — the single most useful thing this module
++// can tell anyone, and the one case the old message obscured completely.
++function looksLikeHtml(text) {
++  const head = (text || '').trimStart().slice(0, 200).toLowerCase();
++  return head.startsWith('<!doctype') || head.startsWith('<html') || head.startsWith('<');
++}
++
++// FastAPI puts its message in `detail`; some routers answer {"reason": …}.
++function jsonDetail(text) {
++  try {
++    const parsed = JSON.parse(text);
++    if (!parsed || typeof parsed !== 'object') return null;
++    const value = parsed.detail ?? parsed.reason ?? parsed.message;
++    if (typeof value === 'string' && value.trim()) return value.trim();
++    return null;
++  } catch (_e) {
++    return null;
++  }
++}
++
++// `what` names the thing the caller was doing, lowercase and without a
++// trailing period — e.g. 'load alert preferences'. It is used only when the
++// backend gave us nothing better to say.
++export function describeHttpFailure(status, bodyText, what = 'complete that request') {
++  if (looksLikeHtml(bodyText)) {
++    return (
++      `The CRM could not reach the Proton backend for this page (HTTP ${status}). ` +
++      `The request was answered by the CRM itself instead of the backend, which ` +
++      `means this feature's path is not routed to it. An operator needs to add ` +
++      `it to the tenant's reverse-proxy route — nothing is wrong with your input.`
++    );
++  }
++
++  const detail = jsonDetail(bodyText);
++
++  if (status === 401) {
++    return (
++      detail ||
++      'Your session is not authorised for this. Signing out and back in usually fixes it.'
++    );
++  }
++  if (status === 403) {
++    return (
++      detail ||
++      'You do not have permission for this. An administrator can grant it under ' +
++        'Settings → Roles & Permissions.'
++    );
++  }
++  if (status === 404) {
++    return (
++      detail ||
++      'This feature is not switched on for this account, so there is nothing to show yet.'
++    );
++  }
++  if (status === 422) {
++    return detail || 'The backend rejected that as invalid. Check the values and try again.';
++  }
++  if (status >= 500) {
++    return (
++      `The Proton backend failed while trying to ${what} (HTTP ${status}). ` +
++      `Please try again — if it keeps happening, an operator should check the backend logs.`
++    );
++  }
++  return detail || `Could not ${what} (HTTP ${status}).`;
++}
++
++// Build the Error every Proton request helper throws. Keeps `.status` (several
++// callers branch on it, notably the 404-means-not-configured paths in patch
++// 0033) and adds `.detail` so the raw body is still available to a console log
++// or a test without ever being rendered.
++export function httpFailure(status, bodyText, what) {
++  const err = new Error(describeHttpFailure(status, bodyText, what));
++  err.status = status;
++  err.detail = bodyText;
++  return err;
++}

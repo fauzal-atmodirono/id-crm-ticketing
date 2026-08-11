@@ -1107,8 +1107,10 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # but it made the whole per-agent override layer unreachable by the people it
     # exists for. `test_p9_wiring.py` drives the real app for exactly that.
     from chatbot.features.alerts.rules_router import build_rules_router
+    from chatbot.features.taxonomy.router import build_taxonomy_admin_router
 
     app.include_router(build_rules_router(settings, authz_repo, authz_validator))
+    app.include_router(build_taxonomy_admin_router(settings))
 
     # --- Proton AI-assist (rewired Captain AI) ---
     _assist_router = _wire_assist(

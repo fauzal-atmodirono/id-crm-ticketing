@@ -104,6 +104,7 @@ PERMISSION_REGISTRY: dict[str, str] = {
     # sla_breach default would go unnoticed until the whole team missed one.
     "alerts.set_own_preferences": "Set your own alert-rule preferences",
     "alerts.manage": "Manage account-level alert-rule defaults",
+    "taxonomy.manage": "Manage case taxonomy tree and category mappings",
 }
 
 _AGENT_PERMISSIONS = {

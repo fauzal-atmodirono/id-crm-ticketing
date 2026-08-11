@@ -181,26 +181,27 @@ Run on 2026-08-11 on branch `dev-yuda`:
 
 | Suite | Result | Command |
 |---|---|---|
-| Backend (`backend/apps/backend`) | **2858 passed, 1 skipped** | `GOOGLE_API_KEY=test-key uv run pytest -q` |
+| Backend (`backend/apps/backend`) | **2868 passed, 2 skipped** | `GOOGLE_API_KEY=test-key uv run pytest -q` |
 | Agent service (`agent/`) | **438 passed** | `./.venv/bin/python -m pytest -q` |
 | Configuration-document tests (`scripts/`) | **8 passed** | `uv run pytest ../../../scripts/test_generate_config_doc.py -q` |
-| Both-flag-states gate | Green in both states **at the last recorded run**, which was before the in-flight work described below | `deploy/scripts/check-suites-both-flag-states.sh` |
+| Both-flag-states gate | Green in both states **at the last recorded run**, which predates the work described below | `deploy/scripts/check-suites-both-flag-states.sh` |
 
-Growth across this programme: the backend suite went from 2193 to 2858 tests
-(+665) with zero regressions at any package boundary. Each package's ledger under
+Growth across this programme: the backend suite went from 2193 to 2868 tests
+(+675) with zero regressions at any package boundary. Each package's ledger under
 `.superpowers/sdd/` records the count at every commit, which is how a regression
-would be attributed rather than argued about — for P1–P10; **P11 to P14 have no
+would be attributed rather than argued about — for P1–P10; **P11 to P13 have no
 ledger** (risk register R18).
 
 **Two qualifications on the backend figure, because a test count quoted without
 them is misleading.**
 
-First, the number was **2838** at the last committed, quiet-tree measurement. The
-20 additional tests are in-flight P11 wiring work that was uncommitted in the
-working tree when this run was taken, so `2858` is a measurement of a tree that
-includes another workstream's uncommitted changes. It should be re-taken on a
-quiet tree before being quoted in a status report. That this needs saying at all
-is itself a process finding.
+First, **the tree was moving while this was measured.** The count was 2838 when
+the handover work began and 2868 a few hours later, as several concurrent
+workstreams committed. Every figure in the table above is therefore a snapshot of
+a moving target: **re-run the commands on a quiet tree before quoting any of them
+in a status report or a client update.** That this needs saying is itself a
+process finding, and the reason each row names its command rather than only its
+result.
 
 Second, and more important: **a test count is a measure of volume, not of
 coverage, and on this codebase it is specifically not a measure of

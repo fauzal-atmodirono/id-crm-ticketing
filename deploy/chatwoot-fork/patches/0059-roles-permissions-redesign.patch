@@ -1,0 +1,1560 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] Roles & Permissions: rail+detail redesign, staged saves
+
+Rewrites ProtonRolesPermissionsPage.vue (created by 0027, extended by 0028's
+Chatwoot-access section, root div touched by 0051) and adds a small
+protonChatwootAgents.js API helper.
+
+What changes, and why:
+
+* Layout. A `<select>` that hid every role behind a click becomes a role rail
+  showing each role's id, description, permission count and member count at a
+  glance. The always-open "New role id / Name / Create role" form that sat
+  between the picker and the permission list becomes an inline composer that
+  only opens on demand, with the id auto-slugged from the name.
+
+* Staged saves. Every control used to fire its own grant/revoke immediately
+  and then re-fetch, so a mis-click was already committed and there was no
+  feedback either way. Everything now mutates a local draft and a save bar
+  reports the diff. Save replays the diff one call per change, in order,
+  stopping at the first failure -- then re-reads the server and re-stages
+  exactly what never ran, so a partial save says so instead of silently
+  half-applying. Sequential, not concurrent: native-key writes resync the
+  Chatwoot role mirror for every member of the role, so parallel calls race.
+
+* Permissions are grouped, searchable and counted, and the row now leads with
+  the human sentence ("Trigger KB document ingestion") over the dotted key in
+  mono beneath it, rather than "kb.ingest -- Trigger KB document ingestion".
+  Grouping is presentation only: any key the backend returns that this file
+  does not know about falls into an "Other" group. That matters in practice --
+  the live proton tenant's backend returns 12 keys while seed.py in this
+  checkout defines 20 -- and a permission that exists but cannot be seen is a
+  permission that cannot be administered.
+
+* Members. The list rendered bare numeric Chatwoot user ids ("1", "6") and
+  membership was edited by typing an id into a text box. It now resolves ids
+  against Chatwoot's own /api/v1/accounts/:id/agents (name, email, avatar) and
+  assigns from a searchable picker. The directory call is fail-open: if it
+  returns nothing the page falls back to the raw-id entry it had before, so
+  membership stays editable regardless. Ids with no matching agent render as
+  "User #N -- not found in this account" rather than disappearing.
+
+* Self-lockout guard. Revoking `roles.manage` from your own role, or removing
+  yourself from the only role granting it, made this page unreachable with no
+  in-product way back. `wouldLoseAccess` evaluates that across all roles with
+  the draft overlaid, and routes Save through an explicit confirmation.
+
+* "Default access" is a new first option in the conversation-visibility radio
+  group, meaning "none of the three native keys granted". The previous UI had
+  no way back to that state once a radio had been picked, even though it is
+  the state every role ships in (seed.py auto-grants native keys to no role).
+
+Unsaved changes are guarded on both role switch and route leave via an
+in-app prompt. No backend change: this uses only the /authz endpoints that
+already exist, so it ships with a Chatwoot image rebuild alone.
+
+NOTE: the pre-image for ProtonRolesPermissionsPage.vue was reconstructed by
+replaying 0027 -> 0028 -> 0051 with `git apply` into a scratch repo (all three
+applied clean), and this patch was then verified to apply on top of that same
+replay. This sandbox still has no network access to clone upstream, so the
+patch has NOT been checked against a real fork checkout -- but unlike the
+hand-constructed patches in this directory, its context lines are machine-
+generated from a byte-exact pre-image rather than transcribed. Verify with
+`git apply --check` or a full image build before staging.
+---
+diff --git a/app/javascript/dashboard/api/protonChatwootAgents.js b/app/javascript/dashboard/api/protonChatwootAgents.js
+new file mode 100644
+index 0000000..8a1465a
+--- /dev/null
++++ b/app/javascript/dashboard/api/protonChatwootAgents.js
+@@ -0,0 +1,56 @@
++// protonChatwootAgents.js — OUR file. Reads Chatwoot's OWN agent list so the
++// Roles & Permissions page can show "Yuda Adi — yudaa0110@gmail.com" instead
++// of the bare numeric id the /authz role-membership endpoints deal in.
++//
++// This deliberately does NOT go through protonAdmin.js's adminRequest: that
++// helper targets the Proton backend (PROTON_BACKEND_URL) and the backend has
++// no user-directory endpoint. Chatwoot's own /api/v1/accounts/:id/agents is
++// the directory, and it authorizes with the same devise_token_auth
++// access-token/client/uid triplet adminRequest already pulls out of the auth
++// cookie (see 0030-fix-admin-request-auth) — so we reuse ./auth rather than
++// reaching into a Vuex module.
++//
++// FAIL-OPEN, like every other Proton addition: any failure here resolves to
++// an empty list, and the caller falls back to rendering raw user ids. A
++// broken or slow directory lookup must never stop an admin from editing
++// permissions.
++import Auth from './auth';
++
++function authHeaders() {
++  const authData = Auth.hasAuthCookie() ? Auth.getAuthData() : null;
++  if (!authData) return null;
++  return {
++    'access-token': authData['access-token'],
++    client: authData.client,
++    uid: authData.uid,
++  };
++}
++
++// The signed-in user's uid (their email). Used to work out which agent row is
++// "you", which is what the self-lockout guard on the Roles page keys off.
++export function currentUserUid() {
++  const authData = Auth.hasAuthCookie() ? Auth.getAuthData() : null;
++  return authData ? authData.uid : null;
++}
++
++export async function listAccountAgents(accountId) {
++  const headers = authHeaders();
++  if (!headers || !accountId) return [];
++  try {
++    const response = await fetch(`/api/v1/accounts/${accountId}/agents`, {
++      headers,
++    });
++    if (!response.ok) return [];
++    const data = await response.json();
++    if (!Array.isArray(data)) return [];
++    return data.map(agent => ({
++      id: agent.id,
++      name: agent.available_name || agent.name || `User ${agent.id}`,
++      email: agent.email || '',
++      thumbnail: agent.thumbnail || '',
++      chatwootRole: agent.role || '',
++    }));
++  } catch {
++    return [];
++  }
++}
+diff --git a/app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue b/app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue
+index 419712f..cdce06c 100644
+--- a/app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue
++++ b/app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue
+@@ -1,8 +1,35 @@
+ <!-- ProtonRolesPermissionsPage.vue — OUR file. Roles & Permissions admin:
+-     pick a role, toggle which permissions it grants (from the fixed
+-     backend-defined registry), and manage which Chatwoot user ids are
+-     assigned to it. Replaces Chatwoot's enterprise-licensed custom_roles
+-     page. -->
++     pick a role, decide what it grants, decide who holds it. Replaces
++     Chatwoot's enterprise-licensed custom_roles page.
++
++     Three things about this page are load-bearing and easy to break:
++
++     1. NOTHING WRITES UNTIL YOU PRESS SAVE. Every checkbox, radio and member
++        chip mutates a local draft; the diff against the last known server
++        state drives the save bar. The backend has no batch endpoint, so Save
++        replays the diff as one call per change, IN ORDER, and stops at the
++        first failure. It then re-reads the server's actual state and rebuilds
++        the draft as (server truth + the changes that never ran), so a partial
++        save is reported honestly rather than papered over — see `save()`.
++
++     2. THE PERMISSION LIST IS NEVER FILTERED DOWN TO WHAT THIS FILE KNOWS
++        ABOUT. PERMISSION_GROUPS is a presentation nicety; any key the backend
++        returns that isn't mapped falls into the "Other" group. The deployed
++        backend and this checkout drift (a tenant on an older image returns
++        fewer keys than seed.py defines), and a permission that exists but is
++        invisible is an unadministrable permission.
++
++     3. YOU CAN LOCK YOURSELF OUT. Revoking `roles.manage` from your own role —
++        or removing yourself from the only role that grants it — makes this
++        page unreachable, and there is no in-product way back: it takes DB
++        access. `wouldLoseAccess` computes that across ALL roles with the draft
++        overlaid, and Save routes through a confirmation instead of a toast.
++
++     Chatwoot-native keys (`chatwoot.*`) are rendered by the "Chatwoot access"
++     card, not the permission list — the three conversation-scope keys are
++     mutually exclusive server-side ("set not add", see /authz's
++     grant_role_permission), so they're a radio group, and the list would
++     otherwise show the same key twice under two conflicting interactions. -->
+ <script>
+ import { useAlert } from 'dashboard/composables';
+ import {
+@@ -16,162 +43,633 @@ import {
+   assignRole,
+   unassignRole,
+ } from 'dashboard/api/protonAdmin';
++import {
++  listAccountAgents,
++  currentUserUid,
++} from 'dashboard/api/protonChatwootAgents';
+ 
+-// Native Chatwoot conversation-visibility keys are mutually exclusive (the
+-// backend enforces "set not add" — granting one revokes the others server
+-// side, see /authz's grant_role_permission handler), so they're presented as
+-// a radio group rather than independent checkboxes. The boolean native keys
+-// are plain on/off toggles. Both groups still go through the same
+-// grantRolePermission/revokeRolePermission calls (and togglePermission, for
+-// the booleans) as the generic permission list below — no new API-call logic.
+-const NATIVE_CONVERSATION_OPTIONS = [
+-  { key: 'chatwoot.conversation_manage', label: 'Manage all conversations' },
+-  { key: 'chatwoot.conversation_unassigned_manage', label: 'Unassigned conversations only' },
+-  { key: 'chatwoot.conversation_participating_manage', label: 'My conversations only' },
++// The `null` key is not a permission — it means "none of the three granted",
++// which is how a role opts out of Chatwoot-side restriction entirely (see
++// seed.py: native keys are auto-granted to no default role, and a role that
++// holds none of them never gets a Chatwoot CustomRole created at all). The
++// previous version of this page had no way to get back to that state once a
++// radio had been picked; saving `null` revokes whichever key is set.
++const CONVERSATION_SCOPES = [
++  {
++    key: null,
++    label: 'Default access',
++    hint: 'No Chatwoot-side restriction. Conversation visibility follows whatever Chatwoot already does for this user.',
++  },
++  {
++    key: 'chatwoot.conversation_manage',
++    label: 'All conversations',
++    hint: 'See and reply to every conversation in the account.',
++  },
++  {
++    key: 'chatwoot.conversation_unassigned_manage',
++    label: 'Unassigned + own',
++    hint: 'See unassigned conversations, plus the ones assigned to them.',
++  },
++  {
++    key: 'chatwoot.conversation_participating_manage',
++    label: 'Own conversations only',
++    hint: 'See only conversations they are assigned to or participating in.',
++  },
+ ];
+-const NATIVE_BOOLEAN_OPTIONS = [
+-  { key: 'chatwoot.contact_manage', label: 'Contacts' },
+-  { key: 'chatwoot.report_manage', label: 'Reports' },
+-  { key: 'chatwoot.knowledge_base_manage', label: 'Knowledge base' },
++
++const NATIVE_TOGGLES = [
++  {
++    key: 'chatwoot.contact_manage',
++    label: 'Contacts',
++    hint: 'Create, edit and delete contacts.',
++  },
++  {
++    key: 'chatwoot.report_manage',
++    label: 'Reports',
++    hint: "Open Chatwoot's own reporting section.",
++  },
++  {
++    key: 'chatwoot.knowledge_base_manage',
++    label: 'Knowledge base',
++    hint: 'Manage Help Center portals and articles.',
++  },
+ ];
+-const ALL_NATIVE_KEYS = [...NATIVE_CONVERSATION_OPTIONS, ...NATIVE_BOOLEAN_OPTIONS].map(
+-  o => o.key
+-);
++
++const CONVERSATION_KEYS = CONVERSATION_SCOPES.filter(s => s.key).map(s => s.key);
++const NATIVE_KEYS = [...CONVERSATION_KEYS, ...NATIVE_TOGGLES.map(t => t.key)];
++
++// Presentation only — see header comment point 2. Keys the backend returns
++// that appear in no group land in OTHER_GROUP_ID.
++const OTHER_GROUP_ID = 'other';
++const PERMISSION_GROUPS = [
++  {
++    id: 'knowledge',
++    label: 'Knowledge & AI',
++    keys: ['knowledge.edit', 'kb.ingest', 'persona.edit', 'translation.use'],
++  },
++  {
++    id: 'cases',
++    label: 'Cases & taxonomy',
++    keys: ['cases.view', 'cases.manage', 'taxonomy.manage'],
++  },
++  {
++    id: 'routing',
++    label: 'Routing & escalation',
++    keys: ['escalation.manage', 'routing.reassign', 'sla.manage'],
++  },
++  {
++    id: 'workforce',
++    label: 'Workforce',
++    keys: ['workforce.view', 'workforce.manage', 'presence.set_own_status'],
++  },
++  {
++    id: 'alerts',
++    label: 'Alerts',
++    keys: ['alerts.manage', 'alerts.set_own_preferences'],
++  },
++  {
++    id: 'customer-data',
++    label: 'Customer data',
++    keys: ['customer360.view', 'call_recording.listen'],
++  },
++  {
++    id: 'administration',
++    label: 'Administration',
++    keys: ['roles.manage', 'audit.view', 'integration.manage'],
++  },
++  { id: OTHER_GROUP_ID, label: 'Other', keys: [] },
++];
++
++const LOCKOUT_KEY = 'roles.manage';
++
++const slugify = value =>
++  value
++    .toLowerCase()
++    .replace(/[^a-z0-9]+/g, '_')
++    .replace(/^_+|_+$/g, '');
+ 
+ export default {
+   name: 'ProtonRolesPermissionsPage',
+   data() {
+     return {
++      loading: true,
++      loadError: '',
+       roles: [],
+       registry: [],
++      agents: [],
++      // roleId -> string[] / number[], the last state we read from the server.
++      // Kept for EVERY role, not just the selected one: the rail's counts and
++      // the lockout check both need to reason across all roles at once.
++      permissionsByRole: {},
++      membersByRole: {},
+       selectedRoleId: '',
+-      selectedRolePermissions: [],
+-      selectedRoleUsers: [],
+-      newRoleId: '',
++      draftPermissions: [],
++      draftMembers: [],
++      search: '',
++      collapsedGroups: {},
++      composerOpen: false,
+       newRoleName: '',
+-      newUserId: '',
+-      loading: true,
+-      errored: false,
+-      conversationVisibilityOptions: NATIVE_CONVERSATION_OPTIONS,
+-      booleanNativeOptions: NATIVE_BOOLEAN_OPTIONS,
++      newRoleId: '',
++      newRoleIdTouched: false,
++      creatingRole: false,
++      memberPickerOpen: false,
++      memberQuery: '',
++      manualMemberId: '',
++      saving: false,
++      saveReport: null,
++      lockoutPromptOpen: false,
++      unsavedPrompt: null,
++      conversationScopes: CONVERSATION_SCOPES,
++      nativeToggles: NATIVE_TOGGLES,
+     };
+   },
+   computed: {
+-    // The one native conversation-visibility key currently granted to the
+-    // selected role, if any — drives the radio group's checked state.
+-    selectedRoleConversationKey() {
+-      const conversationKeys = NATIVE_CONVERSATION_OPTIONS.map(o => o.key);
+-      return (
+-        this.selectedRolePermissions.find(key => conversationKeys.includes(key)) || null
++    accountId() {
++      return this.$route.params.accountId;
++    },
++    selectedRole() {
++      return this.roles.find(r => r.id === this.selectedRoleId) || null;
++    },
++    currentUserId() {
++      const uid = currentUserUid();
++      if (!uid) return null;
++      const me = this.agents.find(
++        a => a.email && a.email.toLowerCase() === String(uid).toLowerCase()
+       );
++      return me ? me.id : null;
++    },
++    basePermissions() {
++      return this.permissionsByRole[this.selectedRoleId] || [];
+     },
+-    // Generic registry list excludes the native keys, which now have their
+-    // own dedicated "Chatwoot access" UI above — avoids showing the same
+-    // permission twice with two different (and for the radio group,
+-    // conflicting) interaction styles.
+-    otherPermissions() {
+-      return this.registry.filter(p => !ALL_NATIVE_KEYS.includes(p.key));
++    baseMembers() {
++      return this.membersByRole[this.selectedRoleId] || [];
++    },
++    // The registry minus the native keys, which the Chatwoot access card owns.
++    manageablePermissions() {
++      return this.registry.filter(p => !NATIVE_KEYS.includes(p.key));
++    },
++    baseScope() {
++      return this.basePermissions.find(k => CONVERSATION_KEYS.includes(k)) || null;
++    },
++    draftScope() {
++      return this.draftPermissions.find(k => CONVERSATION_KEYS.includes(k)) || null;
++    },
++    grantedCount() {
++      return this.manageablePermissions.filter(p =>
++        this.draftPermissions.includes(p.key)
++      ).length;
++    },
++    // Groups, in declared order, carrying only the keys the backend actually
++    // returned; unmapped keys are appended to "Other". Empty groups drop out.
++    permissionGroups() {
++      const byKey = new Map(this.manageablePermissions.map(p => [p.key, p]));
++      const claimed = new Set();
++      const groups = PERMISSION_GROUPS.map(group => {
++        const items = group.keys
++          .filter(key => byKey.has(key))
++          .map(key => {
++            claimed.add(key);
++            return byKey.get(key);
++          });
++        return { ...group, items };
++      });
++      const other = groups.find(g => g.id === OTHER_GROUP_ID);
++      other.items = this.manageablePermissions.filter(p => !claimed.has(p.key));
++      return groups.filter(g => g.items.length);
++    },
++    filteredGroups() {
++      const term = this.search.trim().toLowerCase();
++      if (!term) return this.permissionGroups;
++      return this.permissionGroups
++        .map(group => {
++          if (group.label.toLowerCase().includes(term)) return group;
++          const items = group.items.filter(
++            p =>
++              p.key.toLowerCase().includes(term) ||
++              (p.description || '').toLowerCase().includes(term)
++          );
++          return { ...group, items };
++        })
++        .filter(g => g.items.length);
++    },
++    // Union of who holds the role now and who will after save, so a staged
++    // removal stays visible (struck through) rather than vanishing.
++    memberRows() {
++      const ids = [...this.baseMembers];
++      this.draftMembers.forEach(id => {
++        if (!ids.includes(id)) ids.push(id);
++      });
++      return ids.map(id => {
++        const agent = this.agents.find(a => a.id === id) || null;
++        const inBase = this.baseMembers.includes(id);
++        const inDraft = this.draftMembers.includes(id);
++        return {
++          id,
++          agent,
++          isSelf: this.currentUserId === id,
++          state: inBase === inDraft ? '' : (inDraft ? 'added' : 'removed'),
++        };
++      });
++    },
++    assignableAgents() {
++      const term = this.memberQuery.trim().toLowerCase();
++      return this.agents
++        .filter(a => !this.draftMembers.includes(a.id))
++        .filter(
++          a =>
++            !term ||
++            a.name.toLowerCase().includes(term) ||
++            a.email.toLowerCase().includes(term)
++        );
++    },
++    permissionChanges() {
++      const changes = [];
++      if (this.draftScope !== this.baseScope) {
++        changes.push({
++          kind: 'scope',
++          value: this.draftScope,
++          previous: this.baseScope,
++          label: this.scopeLabel(this.draftScope),
++        });
++      }
++      const togglable = [
++        ...NATIVE_TOGGLES.map(t => ({ key: t.key, description: t.label })),
++        ...this.manageablePermissions,
++      ];
++      togglable.forEach(p => {
++        const was = this.basePermissions.includes(p.key);
++        const now = this.draftPermissions.includes(p.key);
++        if (was !== now) {
++          changes.push({
++            kind: 'permission',
++            key: p.key,
++            value: now,
++            label: p.description || p.key,
++          });
++        }
++      });
++      return changes;
++    },
++    memberChanges() {
++      const changes = [];
++      this.draftMembers.forEach(id => {
++        if (!this.baseMembers.includes(id)) {
++          changes.push({ kind: 'member', userId: id, value: true, label: this.memberLabel(id) });
++        }
++      });
++      this.baseMembers.forEach(id => {
++        if (!this.draftMembers.includes(id)) {
++          changes.push({ kind: 'member', userId: id, value: false, label: this.memberLabel(id) });
++        }
++      });
++      return changes;
++    },
++    pendingChanges() {
++      return [...this.permissionChanges, ...this.memberChanges];
++    },
++    isDirty() {
++      return this.pendingChanges.length > 0;
++    },
++    changeSummary() {
++      const parts = [];
++      const perms = this.permissionChanges.length;
++      const members = this.memberChanges.length;
++      if (perms) parts.push(`${perms} permission change${perms === 1 ? '' : 's'}`);
++      if (members) parts.push(`${members} member change${members === 1 ? '' : 's'}`);
++      return parts.join(', ');
++    },
++    // True when the draft, applied, would leave the signed-in user without
++    // `roles.manage` through ANY role — i.e. unable to reopen this page.
++    wouldLoseAccess() {
++      const me = this.currentUserId;
++      if (me === null) return false;
++      const holds = useDraft => {
++        return this.roles.some(role => {
++          const isSelected = role.id === this.selectedRoleId;
++          const perms =
++            isSelected && useDraft
++              ? this.draftPermissions
++              : this.permissionsByRole[role.id] || [];
++          const members =
++            isSelected && useDraft
++              ? this.draftMembers
++              : this.membersByRole[role.id] || [];
++          return members.includes(me) && perms.includes(LOCKOUT_KEY);
++        });
++      };
++      return holds(false) && !holds(true);
++    },
++  },
++  watch: {
++    newRoleName(value) {
++      if (!this.newRoleIdTouched) this.newRoleId = slugify(value);
+     },
+   },
+   async mounted() {
+-    await this.loadRolesAndRegistry();
++    await this.load();
++  },
++  // Returning false aborts the navigation outright rather than parking a
++  // `next` callback — a guard invocation can only be resolved once, so the
++  // "discard and leave" path re-issues the navigation via the router instead.
++  beforeRouteLeave(to) {
++    if (!this.isDirty) return true;
++    this.unsavedPrompt = { type: 'leave', to: to.fullPath };
++    return false;
+   },
+   methods: {
+-    async loadRolesAndRegistry() {
++    async load() {
+       this.loading = true;
+-      this.errored = false;
++      this.loadError = '';
+       try {
+-        const [roles, registry] = await Promise.all([listRoles(), permissionRegistry()]);
++        const [roles, registry, agents] = await Promise.all([
++          listRoles(),
++          permissionRegistry(),
++          listAccountAgents(this.accountId),
++        ]);
+         this.roles = roles;
+         this.registry = registry;
+-        if (roles.length && !this.selectedRoleId) {
+-          this.selectedRoleId = roles[0].id;
+-          await this.loadRoleDetail();
+-        }
++        this.agents = agents;
++        await this.loadEveryRoleDetail();
++        const stillExists = roles.some(r => r.id === this.selectedRoleId);
++        this.applyRole(stillExists ? this.selectedRoleId : (roles[0] || {}).id || '');
+       } catch (err) {
+-        this.errored = true;
+-        useAlert('Failed to load roles: ' + (err.message || String(err)));
++        this.loadError = err.message || String(err);
+       } finally {
+         this.loading = false;
+       }
+     },
+-    async onSelectRole() {
+-      await this.loadRoleDetail();
++    // Every role's permissions AND members, in parallel. The rail's counts and
++    // the lockout check are both cross-role questions, and fetching on demand
++    // per selection would make either impossible to answer without a stall.
++    async loadEveryRoleDetail() {
++      const details = await Promise.all(
++        this.roles.map(async role => ({
++          id: role.id,
++          permissions: await rolePermissions(role.id),
++          members: await roleUsers(role.id),
++        }))
++      );
++      const permissions = {};
++      const members = {};
++      details.forEach(d => {
++        permissions[d.id] = d.permissions;
++        members[d.id] = d.members;
++      });
++      this.permissionsByRole = permissions;
++      this.membersByRole = members;
+     },
+-    async loadRoleDetail() {
+-      if (!this.selectedRoleId) return;
+-      try {
+-        const [perms, users] = await Promise.all([
+-          rolePermissions(this.selectedRoleId),
+-          roleUsers(this.selectedRoleId),
+-        ]);
+-        this.selectedRolePermissions = perms;
+-        this.selectedRoleUsers = users;
+-      } catch (err) {
+-        useAlert('Failed to load role detail: ' + (err.message || String(err)));
+-      }
++    async reloadSelectedRole() {
++      const roleId = this.selectedRoleId;
++      const [permissions, members] = await Promise.all([
++        rolePermissions(roleId),
++        roleUsers(roleId),
++      ]);
++      this.permissionsByRole = { ...this.permissionsByRole, [roleId]: permissions };
++      this.membersByRole = { ...this.membersByRole, [roleId]: members };
+     },
+-    async togglePermission(key) {
+-      const has = this.selectedRolePermissions.includes(key);
+-      try {
+-        if (has) {
+-          await revokeRolePermission(this.selectedRoleId, key);
+-        } else {
+-          await grantRolePermission(this.selectedRoleId, key);
+-        }
+-        await this.loadRoleDetail();
+-      } catch (err) {
+-        useAlert('Failed to update permission: ' + (err.message || String(err)));
++    applyRole(roleId) {
++      this.selectedRoleId = roleId;
++      this.draftPermissions = [...(this.permissionsByRole[roleId] || [])];
++      this.draftMembers = [...(this.membersByRole[roleId] || [])];
++      this.search = '';
++      this.memberPickerOpen = false;
++      this.memberQuery = '';
++      this.manualMemberId = '';
++      this.saveReport = null;
++    },
++    selectRole(roleId) {
++      if (roleId === this.selectedRoleId) return;
++      if (this.isDirty) {
++        this.unsavedPrompt = { type: 'switch', roleId };
++        return;
+       }
++      this.applyRole(roleId);
+     },
+-    // Radio-group selection: always grants the newly-picked key (never
+-    // revokes client-side) — the backend enforces mutual exclusivity for the
+-    // conversation-visibility keys, so granting the new one automatically
+-    // revokes whichever of the other two was previously set. Reuses the same
+-    // grantRolePermission call togglePermission already uses above.
+-    async setConversationVisibility(key) {
+-      try {
+-        await grantRolePermission(this.selectedRoleId, key);
+-        await this.loadRoleDetail();
+-      } catch (err) {
+-        useAlert('Failed to update permission: ' + (err.message || String(err)));
++    confirmDiscardAndProceed() {
++      const prompt = this.unsavedPrompt;
++      this.unsavedPrompt = null;
++      if (!prompt) return;
++      if (prompt.type === 'switch') {
++        this.applyRole(prompt.roleId);
++      } else {
++        // Clear the diff first: beforeRouteLeave runs again on the re-issued
++        // navigation and would otherwise re-open this same prompt forever.
++        this.draftPermissions = [...this.basePermissions];
++        this.draftMembers = [...this.baseMembers];
++        this.$nextTick(() => this.$router.push(prompt.to));
+       }
+     },
+-    async addUser() {
+-      const userId = Number(this.newUserId);
++    scopeLabel(key) {
++      const scope = CONVERSATION_SCOPES.find(s => s.key === key);
++      return scope ? `Chatwoot access: ${scope.label}` : 'Chatwoot access';
++    },
++    memberLabel(userId) {
++      const agent = this.agents.find(a => a.id === userId);
++      return agent ? agent.name : `User #${userId}`;
++    },
++    initials(agent) {
++      return agent.name
++        .split(/\s+/)
++        .slice(0, 2)
++        .map(part => part.charAt(0).toUpperCase())
++        .join('');
++    },
++    permissionState(key) {
++      const was = this.basePermissions.includes(key);
++      const now = this.draftPermissions.includes(key);
++      if (was === now) return '';
++      return now ? 'added' : 'removed';
++    },
++    isGranted(key) {
++      return this.draftPermissions.includes(key);
++    },
++    setPermission(key, granted) {
++      const next = this.draftPermissions.filter(k => k !== key);
++      if (granted) next.push(key);
++      this.draftPermissions = next;
++    },
++    togglePermission(key) {
++      this.setPermission(key, !this.isGranted(key));
++    },
++    setScope(key) {
++      const next = this.draftPermissions.filter(k => !CONVERSATION_KEYS.includes(k));
++      if (key) next.push(key);
++      this.draftPermissions = next;
++    },
++    groupGrantedCount(group) {
++      return group.items.filter(p => this.isGranted(p.key)).length;
++    },
++    groupFullyGranted(group) {
++      return this.groupGrantedCount(group) === group.items.length;
++    },
++    toggleGroup(group) {
++      const grantAll = !this.groupFullyGranted(group);
++      group.items.forEach(p => this.setPermission(p.key, grantAll));
++    },
++    isCollapsed(groupId) {
++      return !!this.collapsedGroups[groupId];
++    },
++    toggleCollapsed(groupId) {
++      this.collapsedGroups = {
++        ...this.collapsedGroups,
++        [groupId]: !this.collapsedGroups[groupId],
++      };
++    },
++    addMember(userId) {
++      if (!userId || this.draftMembers.includes(userId)) return;
++      this.draftMembers = [...this.draftMembers, userId];
++      this.memberQuery = '';
++      this.memberPickerOpen = false;
++    },
++    addManualMember() {
++      const userId = Number(this.manualMemberId);
+       if (!userId) {
+         useAlert('Enter a valid Chatwoot user id.');
+         return;
+       }
+-      try {
+-        await assignRole(this.selectedRoleId, userId);
+-        this.newUserId = '';
+-        await this.loadRoleDetail();
+-      } catch (err) {
+-        useAlert('Failed to assign user: ' + (err.message || String(err)));
++      this.addMember(userId);
++      this.manualMemberId = '';
++    },
++    removeMember(userId) {
++      this.draftMembers = this.draftMembers.filter(id => id !== userId);
++    },
++    restoreMember(userId) {
++      if (!this.draftMembers.includes(userId)) {
++        this.draftMembers = [...this.draftMembers, userId];
++      }
++    },
++    discard() {
++      this.draftPermissions = [...this.basePermissions];
++      this.draftMembers = [...this.baseMembers];
++      this.saveReport = null;
++    },
++    // Replays one staged change onto a draft pair. Used both to run a change
++    // and — after a partial failure — to re-stage the ones that never ran.
++    applyChangeToDraft(change, permissions, members) {
++      if (change.kind === 'scope') {
++        const next = permissions.filter(k => !CONVERSATION_KEYS.includes(k));
++        if (change.value) next.push(change.value);
++        return { permissions: next, members };
++      }
++      if (change.kind === 'permission') {
++        const next = permissions.filter(k => k !== change.key);
++        if (change.value) next.push(change.key);
++        return { permissions: next, members };
++      }
++      const nextMembers = members.filter(id => id !== change.userId);
++      if (change.value) nextMembers.push(change.userId);
++      return { permissions, members: nextMembers };
++    },
++    runChange(change) {
++      const roleId = this.selectedRoleId;
++      if (change.kind === 'scope') {
++        // Granting a conversation key revokes the other two server-side, so
++        // switching scopes is one call. Clearing to "Default access" is the
++        // only case that needs an explicit revoke.
++        return change.value
++          ? grantRolePermission(roleId, change.value)
++          : revokeRolePermission(roleId, change.previous);
++      }
++      if (change.kind === 'permission') {
++        return change.value
++          ? grantRolePermission(roleId, change.key)
++          : revokeRolePermission(roleId, change.key);
++      }
++      return change.value
++        ? assignRole(roleId, change.userId)
++        : unassignRole(roleId, change.userId);
++    },
++    requestSave() {
++      if (this.wouldLoseAccess) {
++        this.lockoutPromptOpen = true;
++        return;
+       }
++      this.save();
+     },
+-    async removeUser(userId) {
++    async save() {
++      this.lockoutPromptOpen = false;
++      const changes = this.pendingChanges;
++      if (!changes.length || this.saving) return;
++      this.saving = true;
++      this.saveReport = null;
++      let applied = 0;
++      let failure = null;
++      for (const change of changes) {
++        try {
++          // Sequential on purpose: these calls mutate overlapping server state
++          // (the Chatwoot role mirror resyncs every member of the role on each
++          // native-key write), and firing them concurrently would race.
++          // eslint-disable-next-line no-await-in-loop
++          await this.runChange(change);
++          applied += 1;
++        } catch (err) {
++          failure = { change, message: err.message || String(err) };
++          break;
++        }
++      }
+       try {
+-        await unassignRole(this.selectedRoleId, userId);
+-        await this.loadRoleDetail();
+-      } catch (err) {
+-        useAlert('Failed to unassign user: ' + (err.message || String(err)));
++        await this.reloadSelectedRole();
++      } catch {
++        // Non-fatal: the writes above already happened. Falling through with a
++        // stale baseline is worse than useless, so surface it in the report.
++        failure = failure || {
++          change: null,
++          message: 'Changes were saved, but re-reading the role failed. Reload the page.',
++        };
+       }
++      if (failure) {
++        // Re-stage exactly what never ran, on top of the server's real state.
++        let permissions = [...this.basePermissions];
++        let members = [...this.baseMembers];
++        changes.slice(applied).forEach(change => {
++          ({ permissions, members } = this.applyChangeToDraft(change, permissions, members));
++        });
++        this.draftPermissions = permissions;
++        this.draftMembers = members;
++        this.saveReport = {
++          applied,
++          total: changes.length,
++          failedLabel: failure.change ? failure.change.label : '',
++          message: failure.message,
++        };
++      } else {
++        this.draftPermissions = [...this.basePermissions];
++        this.draftMembers = [...this.baseMembers];
++        useAlert(`Saved ${applied} change${applied === 1 ? '' : 's'}.`);
++      }
++      this.saving = false;
++    },
++    onNewRoleIdInput(event) {
++      this.newRoleIdTouched = true;
++      this.newRoleId = event.target.value;
+     },
+-    async addRole() {
+-      if (!this.newRoleId || !this.newRoleName) {
+-        useAlert('Role id and name are required.');
++    openComposer() {
++      this.composerOpen = true;
++      this.newRoleName = '';
++      this.newRoleId = '';
++      this.newRoleIdTouched = false;
++    },
++    async submitNewRole() {
++      const id = slugify(this.newRoleId);
++      if (!this.newRoleName.trim() || !id) {
++        useAlert('Role name and id are both required.');
++        return;
++      }
++      if (this.roles.some(r => r.id === id)) {
++        useAlert(`A role with the id "${id}" already exists.`);
+         return;
+       }
++      this.creatingRole = true;
+       try {
+-        await createRole({ id: this.newRoleId, name: this.newRoleName });
+-        this.newRoleId = '';
+-        this.newRoleName = '';
+-        await this.loadRolesAndRegistry();
++        await createRole({ id, name: this.newRoleName.trim() });
++        this.composerOpen = false;
++        await this.load();
++        this.applyRole(id);
+         useAlert('Role created.');
+       } catch (err) {
+         useAlert('Failed to create role: ' + (err.message || String(err)));
++      } finally {
++        this.creatingRole = false;
+       }
+     },
+   },
+@@ -179,138 +677,546 @@ export default {
+ </script>
+ 
+ <template>
+-  <div class="w-full h-full p-6 overflow-y-auto">
+-    <h1 class="mb-1 text-lg font-medium text-n-slate-12">Roles & Permissions</h1>
+-    <p class="mb-6 text-sm text-n-slate-11">
+-      Manage roles, the permissions each role grants, and which users hold each role.
+-    </p>
+-
+-    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">Loading…</div>
+-    <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">
+-      Could not load roles.
+-    </div>
+-    <div v-else class="grid grid-cols-1 gap-8 lg:grid-cols-2">
+-      <div>
+-        <label class="block mb-1 text-sm font-medium text-n-slate-12">Role</label>
+-        <select
+-          v-model="selectedRoleId"
+-          class="w-full px-3 py-2 mb-4 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-          @change="onSelectRole"
++  <div class="w-full h-full overflow-y-auto bg-n-background">
++    <div class="flex flex-col gap-6 p-6 mx-auto max-w-[84rem]">
++      <header>
++        <h1 class="text-lg font-medium text-n-slate-12">Roles & Permissions</h1>
++        <p class="mt-1 text-sm text-n-slate-11">
++          Decide what each role can do and who holds it. Changes are staged —
++          nothing is written until you save.
++        </p>
++      </header>
++
++      <div v-if="loading" class="flex flex-col gap-6 lg:flex-row lg:items-start">
++        <div class="flex flex-col w-full gap-2 lg:w-[17.5rem] shrink-0">
++          <div
++            v-for="n in 3"
++            :key="n"
++            class="h-20 rounded-xl bg-n-alpha-black2 animate-pulse"
++          />
++        </div>
++        <div class="flex flex-col flex-1 gap-4 min-w-0">
++          <div class="h-32 rounded-xl bg-n-alpha-black2 animate-pulse" />
++          <div class="h-64 rounded-xl bg-n-alpha-black2 animate-pulse" />
++        </div>
++      </div>
++
++      <div
++        v-else-if="loadError"
++        class="flex flex-col items-start gap-3 p-6 border rounded-xl border-n-ruby-6 bg-n-ruby-2"
++      >
++        <p class="text-sm font-medium text-n-ruby-11">Could not load roles.</p>
++        <p class="text-sm text-n-slate-11">{{ loadError }}</p>
++        <button
++          type="button"
++          class="px-3 py-2 text-sm font-medium text-white rounded-lg bg-n-brand hover:opacity-90"
++          @click="load"
+         >
+-          <option v-for="r in roles" :key="r.id" :value="r.id">{{ r.name }}</option>
+-        </select>
++          Try again
++        </button>
++      </div>
+ 
+-        <div class="flex items-end gap-2 mb-6">
+-          <div>
+-            <label class="block mb-1 text-xs text-n-slate-11">New role id</label>
++      <div v-else class="flex flex-col gap-6 lg:flex-row lg:items-start">
++        <!-- ── Role rail ─────────────────────────────────────────────── -->
++        <aside class="flex flex-col w-full gap-2 lg:w-[17.5rem] shrink-0">
++          <div class="flex items-baseline justify-between px-1">
++            <h2 class="text-sm font-medium text-n-slate-12">Roles</h2>
++            <span class="text-xs text-n-slate-10">{{ roles.length }}</span>
++          </div>
++
++          <button
++            v-for="role in roles"
++            :key="role.id"
++            type="button"
++            class="flex flex-col gap-1 p-3 text-left transition-colors border rounded-xl"
++            :class="
++              role.id === selectedRoleId
++                ? 'border-n-brand bg-n-alpha-black2'
++                : 'border-n-weak hover:bg-n-alpha-black1'
++            "
++            @click="selectRole(role.id)"
++          >
++            <span class="text-sm font-medium text-n-slate-12">{{ role.name }}</span>
++            <span class="font-mono text-xs text-n-slate-10">{{ role.id }}</span>
++            <span v-if="role.description" class="text-xs text-n-slate-11">
++              {{ role.description }}
++            </span>
++            <span class="flex gap-2 mt-1">
++              <span class="px-2 py-0.5 text-xs rounded-md bg-n-alpha-black2 text-n-slate-11">
++                {{ (permissionsByRole[role.id] || []).length }} permissions
++              </span>
++              <span class="px-2 py-0.5 text-xs rounded-md bg-n-alpha-black2 text-n-slate-11">
++                {{ (membersByRole[role.id] || []).length }} members
++              </span>
++            </span>
++          </button>
++
++          <div v-if="composerOpen" class="flex flex-col gap-2 p-3 border rounded-xl border-n-weak">
++            <label class="text-xs text-n-slate-11" for="new-role-name">Name</label>
+             <input
+-              v-model="newRoleId"
++              id="new-role-name"
++              v-model="newRoleName"
+               type="text"
+-              class="w-32 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++              placeholder="Supervisor"
++              class="px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+             />
+-          </div>
+-          <div>
+-            <label class="block mb-1 text-xs text-n-slate-11">Name</label>
++            <label class="text-xs text-n-slate-11" for="new-role-id">Id</label>
+             <input
+-              v-model="newRoleName"
++              id="new-role-id"
++              :value="newRoleId"
+               type="text"
+-              class="w-40 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++              placeholder="supervisor"
++              class="px-3 py-2 font-mono text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++              @input="onNewRoleIdInput"
+             />
++            <p class="text-xs text-n-slate-10">
++              The id is permanent and is what the backend stores. It cannot be
++              changed later.
++            </p>
++            <div class="flex gap-2">
++              <button
++                type="button"
++                :disabled="creatingRole"
++                class="px-3 py-2 text-sm font-medium text-white rounded-lg bg-n-brand hover:opacity-90 disabled:opacity-50"
++                @click="submitNewRole"
++              >
++                {{ creatingRole ? 'Creating…' : 'Create' }}
++              </button>
++              <button
++                type="button"
++                class="px-3 py-2 text-sm rounded-lg text-n-slate-11 hover:bg-n-alpha-black1"
++                @click="composerOpen = false"
++              >
++                Cancel
++              </button>
++            </div>
+           </div>
+           <button
++            v-else
+             type="button"
+-            class="px-3 py-2 text-sm font-medium rounded-lg bg-n-brand text-white hover:opacity-90"
+-            @click="addRole"
++            class="p-3 text-sm border border-dashed rounded-xl border-n-weak text-n-slate-11 hover:bg-n-alpha-black1"
++            @click="openComposer"
+           >
+-            Create role
++            + New role
+           </button>
+-        </div>
++        </aside>
+ 
+-        <div class="flex flex-col gap-2 mb-6 pb-6 border-b border-n-weak">
+-          <h4 class="text-sm font-medium text-n-slate-12">Chatwoot access</h4>
+-          <p class="text-xs text-n-slate-11">
+-            Controls what this role can see/do in Chatwoot itself (not our admin
+-            pages below).
+-          </p>
+-          <fieldset class="flex flex-col gap-1">
+-            <label
+-              v-for="opt in conversationVisibilityOptions"
+-              :key="opt.key"
+-              class="flex items-center gap-2 text-sm text-n-slate-12"
+-            >
+-              <input
+-                type="radio"
+-                :name="`conv-visibility-${selectedRoleId}`"
+-                :value="opt.key"
+-                :checked="selectedRoleConversationKey === opt.key"
+-                @change="setConversationVisibility(opt.key)"
+-              />
+-              {{ opt.label }}
+-            </label>
+-          </fieldset>
+-          <div class="flex flex-col gap-1 mt-2">
+-            <label
+-              v-for="opt in booleanNativeOptions"
+-              :key="opt.key"
+-              class="flex items-center gap-2 text-sm text-n-slate-12"
+-            >
++        <!-- ── Detail ────────────────────────────────────────────────── -->
++        <section
++          v-if="selectedRole"
++          class="flex flex-col flex-1 gap-4 min-w-0 max-w-[56rem]"
++        >
++          <div>
++            <h2 class="text-base font-medium text-n-slate-12">{{ selectedRole.name }}</h2>
++            <p class="mt-1 text-sm text-n-slate-11">
++              {{ selectedRole.description || 'No description.' }}
++            </p>
++          </div>
++
++          <div
++            v-if="saveReport"
++            class="flex flex-col gap-1 p-4 border rounded-xl border-n-amber-6 bg-n-amber-3"
++          >
++            <p class="text-sm font-medium text-n-amber-11">
++              Saved {{ saveReport.applied }} of {{ saveReport.total }} changes.
++            </p>
++            <p class="text-sm text-n-slate-11">
++              <template v-if="saveReport.failedLabel">
++                Failed on “{{ saveReport.failedLabel }}”:
++              </template>
++              {{ saveReport.message }}
++            </p>
++            <p v-if="saveReport.total > saveReport.applied" class="text-sm text-n-slate-11">
++              The remaining
++              {{ saveReport.total - saveReport.applied }} change{{
++                saveReport.total - saveReport.applied === 1 ? ' is' : 's are'
++              }}
++              still staged below. Fix the problem and save again.
++            </p>
++          </div>
++
++          <!-- Chatwoot access -->
++          <div class="flex flex-col gap-4 p-5 border rounded-xl border-n-weak">
++            <div>
++              <h3 class="text-sm font-medium text-n-slate-12">Chatwoot access</h3>
++              <p class="mt-1 text-xs text-n-slate-11">
++                What this role can see and do in Chatwoot itself — separate from
++                the Proton permissions below.
++              </p>
++            </div>
++
++            <fieldset class="flex flex-col gap-1">
++              <legend class="mb-2 text-xs font-medium tracking-wide uppercase text-n-slate-10">
++                Conversation visibility
++              </legend>
++              <label
++                v-for="scope in conversationScopes"
++                :key="scope.key || 'default'"
++                class="flex items-start gap-3 p-3 border rounded-lg cursor-pointer"
++                :class="
++                  draftScope === scope.key
++                    ? 'border-n-brand bg-n-alpha-black2'
++                    : 'border-transparent hover:bg-n-alpha-black1'
++                "
++              >
++                <input
++                  type="radio"
++                  class="mt-0.5"
++                  :name="`conversation-scope-${selectedRoleId}`"
++                  :checked="draftScope === scope.key"
++                  @change="setScope(scope.key)"
++                />
++                <span class="flex flex-col gap-0.5">
++                  <span class="text-sm text-n-slate-12">{{ scope.label }}</span>
++                  <span class="text-xs text-n-slate-11">{{ scope.hint }}</span>
++                </span>
++              </label>
++            </fieldset>
++
++            <div class="flex flex-col gap-1">
++              <p class="mb-1 text-xs font-medium tracking-wide uppercase text-n-slate-10">
++                Sections
++              </p>
++              <label
++                v-for="toggle in nativeToggles"
++                :key="toggle.key"
++                class="flex items-start justify-between gap-3 p-3 rounded-lg cursor-pointer hover:bg-n-alpha-black1"
++              >
++                <span class="flex flex-col gap-0.5">
++                  <span class="text-sm text-n-slate-12">
++                    {{ toggle.label }}
++                    <span
++                      v-if="permissionState(toggle.key)"
++                      class="ml-2 text-xs"
++                      :class="
++                        permissionState(toggle.key) === 'added'
++                          ? 'text-n-teal-11'
++                          : 'text-n-amber-11'
++                      "
++                    >
++                      ● {{ permissionState(toggle.key) }}
++                    </span>
++                  </span>
++                  <span class="text-xs text-n-slate-11">{{ toggle.hint }}</span>
++                </span>
++                <input
++                  type="checkbox"
++                  class="mt-1 shrink-0"
++                  :checked="isGranted(toggle.key)"
++                  @change="togglePermission(toggle.key)"
++                />
++              </label>
++            </div>
++          </div>
++
++          <!-- Permissions -->
++          <div class="flex flex-col gap-4 p-5 border rounded-xl border-n-weak">
++            <div class="flex flex-wrap items-center justify-between gap-3">
++              <div>
++                <h3 class="text-sm font-medium text-n-slate-12">Permissions</h3>
++                <p class="mt-1 text-xs text-n-slate-11">
++                  {{ grantedCount }} of {{ manageablePermissions.length }} granted
++                </p>
++              </div>
+               <input
+-                type="checkbox"
+-                :checked="selectedRolePermissions.includes(opt.key)"
+-                @change="togglePermission(opt.key)"
++                v-model="search"
++                type="search"
++                placeholder="Search permissions…"
++                class="w-56 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+               />
+-              {{ opt.label }}
+-            </label>
++            </div>
++
++            <p v-if="!filteredGroups.length" class="py-6 text-sm text-center text-n-slate-11">
++              No permission matches “{{ search }}”.
++            </p>
++
++            <div v-for="group in filteredGroups" :key="group.id" class="flex flex-col">
++              <div class="flex items-center justify-between gap-2 py-2 border-b border-n-weak">
++                <button
++                  type="button"
++                  class="flex items-center gap-2 text-xs font-medium tracking-wide uppercase text-n-slate-10 hover:text-n-slate-12"
++                  @click="toggleCollapsed(group.id)"
++                >
++                  <span>{{ isCollapsed(group.id) ? '▸' : '▾' }}</span>
++                  {{ group.label }}
++                  <span class="text-n-slate-11">
++                    {{ groupGrantedCount(group) }}/{{ group.items.length }}
++                  </span>
++                </button>
++                <button
++                  type="button"
++                  class="px-2 py-1 text-xs rounded-md text-n-slate-11 hover:bg-n-alpha-black1"
++                  @click="toggleGroup(group)"
++                >
++                  {{ groupFullyGranted(group) ? 'Revoke all' : 'Grant all' }}
++                </button>
++              </div>
++
++              <div v-if="!isCollapsed(group.id)" class="flex flex-col py-1">
++                <label
++                  v-for="permission in group.items"
++                  :key="permission.key"
++                  class="flex items-start gap-3 p-2 rounded-lg cursor-pointer hover:bg-n-alpha-black1"
++                >
++                  <input
++                    type="checkbox"
++                    class="mt-1 shrink-0"
++                    :checked="isGranted(permission.key)"
++                    @change="togglePermission(permission.key)"
++                  />
++                  <span class="flex flex-col gap-0.5 min-w-0">
++                    <span class="text-sm text-n-slate-12">
++                      {{ permission.description || permission.key }}
++                      <span
++                        v-if="permissionState(permission.key)"
++                        class="ml-2 text-xs"
++                        :class="
++                          permissionState(permission.key) === 'added'
++                            ? 'text-n-teal-11'
++                            : 'text-n-amber-11'
++                        "
++                      >
++                        ● {{ permissionState(permission.key) }}
++                      </span>
++                    </span>
++                    <span class="font-mono text-xs text-n-slate-10">{{ permission.key }}</span>
++                  </span>
++                </label>
++              </div>
++            </div>
+           </div>
+-        </div>
+ 
+-        <h2 class="mb-2 text-sm font-medium text-n-slate-12">Permissions</h2>
+-        <div class="flex flex-col gap-2">
+-          <label
+-            v-for="p in otherPermissions"
+-            :key="p.key"
+-            class="flex items-center gap-2 text-sm text-n-slate-11"
++          <!-- Members -->
++          <div class="flex flex-col gap-4 p-5 border rounded-xl border-n-weak">
++            <div class="flex flex-wrap items-center justify-between gap-3">
++              <div>
++                <h3 class="text-sm font-medium text-n-slate-12">
++                  Members ({{ draftMembers.length }})
++                </h3>
++                <p class="mt-1 text-xs text-n-slate-11">
++                  Everyone who holds this role.
++                </p>
++              </div>
++              <div v-if="agents.length" class="relative">
++                <button
++                  type="button"
++                  class="px-3 py-2 text-sm font-medium text-white rounded-lg bg-n-brand hover:opacity-90"
++                  @click="memberPickerOpen = !memberPickerOpen"
++                >
++                  + Add member
++                </button>
++                <div
++                  v-if="memberPickerOpen"
++                  class="absolute right-0 z-20 flex flex-col w-72 gap-1 p-2 mt-1 border shadow-lg rounded-xl border-n-weak bg-n-solid-2"
++                >
++                  <input
++                    v-model="memberQuery"
++                    type="search"
++                    placeholder="Search people…"
++                    class="px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                  <p
++                    v-if="!assignableAgents.length"
++                    class="px-3 py-3 text-sm text-n-slate-11"
++                  >
++                    Everyone is already assigned.
++                  </p>
++                  <button
++                    v-for="agent in assignableAgents"
++                    :key="agent.id"
++                    type="button"
++                    class="flex flex-col items-start px-3 py-2 text-left rounded-lg hover:bg-n-alpha-black1"
++                    @click="addMember(agent.id)"
++                  >
++                    <span class="text-sm text-n-slate-12">{{ agent.name }}</span>
++                    <span class="text-xs text-n-slate-11">{{ agent.email }}</span>
++                  </button>
++                </div>
++              </div>
++              <!-- Directory lookup failed (or the account has no agents) —
++                   fall back to the raw-id entry this page used to have, so
++                   membership stays editable either way. -->
++              <div v-else class="flex items-end gap-2">
++                <input
++                  v-model="manualMemberId"
++                  type="text"
++                  placeholder="Chatwoot user id"
++                  class="w-40 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                />
++                <button
++                  type="button"
++                  class="px-3 py-2 text-sm font-medium text-white rounded-lg bg-n-brand hover:opacity-90"
++                  @click="addManualMember"
++                >
++                  Add
++                </button>
++              </div>
++            </div>
++
++            <p v-if="!memberRows.length" class="py-6 text-sm text-center text-n-slate-11">
++              Nobody holds this role yet.
++            </p>
++
++            <ul class="flex flex-col gap-1">
++              <li
++                v-for="row in memberRows"
++                :key="row.id"
++                class="flex items-center gap-3 p-2 rounded-lg"
++                :class="row.state === 'removed' ? 'opacity-60' : ''"
++              >
++                <img
++                  v-if="row.agent && row.agent.thumbnail"
++                  :src="row.agent.thumbnail"
++                  :alt="row.agent.name"
++                  class="object-cover w-8 h-8 rounded-full"
++                />
++                <span
++                  v-else
++                  class="flex items-center justify-center text-xs w-8 h-8 rounded-full bg-n-alpha-black2 text-n-slate-11"
++                >
++                  {{ row.agent ? initials(row.agent) : '#' }}
++                </span>
++                <span class="flex flex-col min-w-0 grow">
++                  <span
++                    class="text-sm text-n-slate-12"
++                    :class="row.state === 'removed' ? 'line-through' : ''"
++                  >
++                    {{ row.agent ? row.agent.name : `User #${row.id}` }}
++                    <span v-if="row.isSelf" class="ml-1 text-xs text-n-slate-10">(you)</span>
++                    <span
++                      v-if="row.state"
++                      class="ml-2 text-xs"
++                      :class="row.state === 'added' ? 'text-n-teal-11' : 'text-n-amber-11'"
++                    >
++                      ● {{ row.state }}
++                    </span>
++                  </span>
++                  <span class="text-xs truncate text-n-slate-11">
++                    <template v-if="row.agent">{{ row.agent.email }}</template>
++                    <template v-else>
++                      Not found in this account — the user may have been deleted.
++                    </template>
++                  </span>
++                </span>
++                <button
++                  v-if="row.state === 'removed'"
++                  type="button"
++                  class="px-2 py-1 text-xs rounded-md text-n-slate-11 hover:bg-n-alpha-black1"
++                  @click="restoreMember(row.id)"
++                >
++                  Undo
++                </button>
++                <button
++                  v-else
++                  type="button"
++                  class="px-2 py-1 text-xs rounded-md text-n-ruby-11 hover:bg-n-ruby-2"
++                  @click="removeMember(row.id)"
++                >
++                  Remove
++                </button>
++              </li>
++            </ul>
++          </div>
++
++          <!-- Save bar -->
++          <div
++            v-if="isDirty"
++            class="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 p-3 border shadow-lg rounded-xl border-n-weak bg-n-solid-2"
+           >
+-            <input
+-              type="checkbox"
+-              :checked="selectedRolePermissions.includes(p.key)"
+-              @change="togglePermission(p.key)"
+-            />
+-            {{ p.key }} — {{ p.description }}
+-          </label>
+-        </div>
++            <div class="flex flex-col">
++              <span class="text-sm text-n-slate-12">{{ changeSummary }}</span>
++              <span v-if="wouldLoseAccess" class="text-xs text-n-amber-11">
++                This removes your own access to this page.
++              </span>
++            </div>
++            <div class="flex gap-2">
++              <button
++                type="button"
++                class="px-3 py-2 text-sm rounded-lg text-n-slate-11 hover:bg-n-alpha-black1"
++                @click="discard"
++              >
++                Discard
++              </button>
++              <button
++                type="button"
++                :disabled="saving"
++                class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-n-brand hover:opacity-90 disabled:opacity-50"
++                @click="requestSave"
++              >
++                {{ saving ? 'Saving…' : 'Save changes' }}
++              </button>
++            </div>
++          </div>
++        </section>
++
++        <section v-else class="flex-1 py-16 text-sm text-center text-n-slate-11">
++          No roles exist yet. Create one to get started.
++        </section>
+       </div>
++    </div>
+ 
+-      <div>
+-        <h2 class="mb-2 text-sm font-medium text-n-slate-12">Assigned users (Chatwoot user id)</h2>
+-        <div class="flex items-end gap-2 mb-4">
+-          <input
+-            v-model="newUserId"
+-            type="text"
+-            placeholder="e.g. 101"
+-            class="w-40 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-          />
++    <!-- ── Lockout confirmation ────────────────────────────────────── -->
++    <div
++      v-if="lockoutPromptOpen"
++      class="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/50"
++    >
++      <div class="flex flex-col w-full max-w-md gap-3 p-6 border rounded-xl border-n-weak bg-n-solid-2">
++        <h3 class="text-base font-medium text-n-slate-12">
++          This locks you out of Roles &amp; Permissions
++        </h3>
++        <p class="text-sm text-n-slate-11">
++          After this save you will no longer hold
++          <span class="font-mono">roles.manage</span> through any role, so this
++          page will disappear from your sidebar and you will not be able to undo
++          this from the product. Restoring it requires direct database access.
++        </p>
++        <div class="flex justify-end gap-2 mt-2">
+           <button
+             type="button"
+-            class="px-3 py-2 text-sm font-medium rounded-lg bg-n-brand text-white hover:opacity-90"
+-            @click="addUser"
++            class="px-3 py-2 text-sm rounded-lg text-n-slate-11 hover:bg-n-alpha-black1"
++            @click="lockoutPromptOpen = false"
+           >
+-            Assign
++            Cancel
++          </button>
++          <button
++            type="button"
++            class="px-3 py-2 text-sm font-medium text-white rounded-lg bg-n-ruby-9 hover:opacity-90"
++            @click="save"
++          >
++            I understand, save anyway
+           </button>
+         </div>
+-        <ul class="flex flex-col gap-2">
+-          <li
+-            v-for="userId in selectedRoleUsers"
+-            :key="userId"
+-            class="flex items-center justify-between px-3 py-2 text-sm border rounded-lg border-n-weak text-n-slate-12"
++      </div>
++    </div>
++
++    <!-- ── Unsaved-changes prompt ──────────────────────────────────── -->
++    <div
++      v-if="unsavedPrompt"
++      class="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/50"
++    >
++      <div class="flex flex-col w-full max-w-md gap-3 p-6 border rounded-xl border-n-weak bg-n-solid-2">
++        <h3 class="text-base font-medium text-n-slate-12">Discard unsaved changes?</h3>
++        <p class="text-sm text-n-slate-11">
++          {{ changeSummary }} on
++          <span class="font-medium">{{ selectedRole ? selectedRole.name : '' }}</span>
++          {{ pendingChanges.length === 1 ? 'has' : 'have' }} not been saved.
++        </p>
++        <div class="flex justify-end gap-2 mt-2">
++          <button
++            type="button"
++            class="px-3 py-2 text-sm rounded-lg text-n-slate-11 hover:bg-n-alpha-black1"
++            @click="unsavedPrompt = null"
++          >
++            Keep editing
++          </button>
++          <button
++            type="button"
++            class="px-3 py-2 text-sm font-medium text-white rounded-lg bg-n-brand hover:opacity-90"
++            @click="confirmDiscardAndProceed"
+           >
+-            {{ userId }}
+-            <button type="button" class="text-xs text-n-ruby-9" @click="removeUser(userId)">
+-              Remove
+-            </button>
+-          </li>
+-          <li v-if="!selectedRoleUsers.length" class="text-sm text-n-slate-11">No users assigned.</li>
+-        </ul>
++            Discard changes
++          </button>
++        </div>
+       </div>
+     </div>
+   </div>

@@ -43,6 +43,7 @@ from chatbot.features.chat.kb_scenarios_router import build_kb_scenarios_router
 from chatbot.features.chat.kb_settings_router import build_kb_settings_router
 from chatbot.features.chat.kb_suggest_router import build_kb_suggest_router
 from chatbot.features.chat.kb_tools_router import build_kb_tools_router
+from chatbot.features.chat.phone.handoff_target import validate_handoff_target_settings
 from chatbot.features.chat.pic_registry import build_pic_registry
 from chatbot.features.chat.pic_store import DealerStore, PicStore
 from chatbot.features.chat.ports import (
@@ -336,6 +337,36 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     """Bootstrap settings, structured logging, adapters, CORS, and routes."""
     settings = get_settings()
     configure_logging(settings.debug)
+
+    # P11 task 5's stated constraint: "placeholder numbers must fail loudly, at
+    # startup, not at dial time." This is the caller that makes that true --
+    # `validate_handoff_target_settings` shipped with none, so the guard never
+    # ran anywhere. It is a REFUSAL rather than a warning, deliberately:
+    #
+    #   - The alternative failure is silent and badly timed. A tenant
+    #     provisioned from a copied env boots clean carrying e.g.
+    #     `+60300000001`, and the first human handoff dials an unallocated
+    #     number. The customer hears silence and the dial-status webhook
+    #     records `no-answer` -- byte-identical to an agent simply not picking
+    #     up, so nobody investigates the configuration. On an RSA call that is
+    #     2 a.m. and a stranded motorist.
+    #   - It cannot regress an existing tenant. It only fires when
+    #     `phone_handoff_enabled` is true, which defaults false and which no
+    #     tenant env in `deploy/tenants/` sets; and when it does fire, the
+    #     handoff it refuses to boot with could not have worked anyway.
+    #   - A startup ValueError is the established shape here, not a novelty:
+    #     `Settings._phone_flag_dependencies` already refuses an unsafe phone
+    #     flag combination the same way.
+    #
+    # Placed before any adapter is constructed so the message is the first
+    # thing in the log rather than buried behind unrelated wiring. Logged as
+    # well as raised because a container that exits on an exception may show
+    # only the traceback, and the structured line is what alerting sees.
+    try:
+        validate_handoff_target_settings(settings)
+    except ValueError as exc:
+        _log.error("phone_handoff_target_invalid_refusing_to_start", error=str(exc))
+        raise
 
     # google-genai (used by ADK under the hood) reads these from os.environ, not
     # from our Settings object. Mirror them so a single .env drives both layers.

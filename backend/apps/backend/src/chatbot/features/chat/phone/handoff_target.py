@@ -39,7 +39,21 @@ PLACEHOLDER_NUMBERS: frozenset[str] = frozenset(
 
 
 def validate_handoff_target_settings(settings: Settings) -> None:
-    """Refuse to start with placeholder numbers configured in phone targets."""
+    """Refuse to start with a placeholder number configured as the handoff target.
+
+    Called from `bootstrap_application()` (see the comment at that call site for
+    why this is a refusal and not a warning). It shipped with **no caller at
+    all**, which made P11's own constraint -- "placeholder numbers must fail
+    loudly, at startup, not at dial time" -- false: the service booted clean and
+    the first handoff dialled an unallocated number, recording a `no-answer`
+    indistinguishable from an agent not picking up. `test_p11_wiring.py` boots
+    the real app with a placeholder in the environment, so removing the call
+    fails the suite rather than quietly restoring that state.
+
+    Only fires when `phone_handoff_enabled` is on: with handoff off nothing
+    dials, so a placeholder left in a copied env is inert and must not stop a
+    boot.
+    """
     if settings.phone_handoff_enabled:
         target = settings.phone_handoff_target_number.strip()
         if target in PLACEHOLDER_NUMBERS:

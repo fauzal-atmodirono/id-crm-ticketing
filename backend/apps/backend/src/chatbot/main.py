@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from chatbot.features.assist.copilot_router import build_copilot_router
 from chatbot.features.assist.router import build_assist_router
 from chatbot.features.assist.translate_router import build_translate_router
+from chatbot.features.authz.audit_purge import build_audit_row_source, start_audit_purge_job
 from chatbot.features.chat.adapters.assistants_store import build_assistants_store
 from chatbot.features.chat.adapters.audit_log import build_audit_log
 from chatbot.features.chat.adapters.bigquery_metrics import build_metrics_port
@@ -44,6 +45,7 @@ from chatbot.features.chat.kb_settings_router import build_kb_settings_router
 from chatbot.features.chat.kb_suggest_router import build_kb_suggest_router
 from chatbot.features.chat.kb_tools_router import build_kb_tools_router
 from chatbot.features.chat.phone.handoff_target import validate_handoff_target_settings
+from chatbot.features.chat.phone.retention import start_recording_retention_job
 from chatbot.features.chat.pic_registry import build_pic_registry
 from chatbot.features.chat.pic_store import DealerStore, PicStore
 from chatbot.features.chat.ports import (
@@ -67,6 +69,7 @@ from chatbot.features.chat.resolved_case_index import (
 from chatbot.features.chat.router import build_chat_router
 from chatbot.features.chat.service import OrchestratorService
 from chatbot.features.chat.sla import start_sla_scheduler
+from chatbot.features.health_enrichment import build_health_router
 from chatbot.features.metrics.anomaly_router import build_metrics_anomaly_router
 from chatbot.features.metrics.dashboard_router import build_metrics_query_router
 from chatbot.features.metrics.email_port import build_email_report_port
@@ -441,7 +444,19 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # connected), never as a silent, misleadingly-empty "ok" — see
     # customer360_router.py's module docstring for why that distinction
     # matters.
-    dms_client: DmsClient | None = MockDmsClient() if settings.dms_mock_client_enabled else None
+    #
+    # `environment=` is what makes MockDmsClient's own sandbox refusal reachable.
+    # This line used to read `MockDmsClient()`, so the argument took the class's
+    # own default of "sandbox" and the guard could not fire on any tenant --
+    # meaning a production deployment with DMS_MOCK_CLIENT_ENABLED=true showed
+    # fabricated vehicle and service records on a real customer's panel. The
+    # argument is now required (no default on the class), so this cannot silently
+    # regress; `app_environment` defaults to "production", i.e. to refusing.
+    dms_client: DmsClient | None = (
+        MockDmsClient(environment=settings.app_environment)
+        if settings.dms_mock_client_enabled
+        else None
+    )
 
     # --- P6: the two presence stores (constructed unconditionally) ---
     # Same reasoning as pic_store/dealer_store/dms_config_store above: neither
@@ -1262,6 +1277,73 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
 
     # --- Task Timers & Agent Reminders (Phase 6) ---
     app.include_router(build_tasks_router(settings))
+
+    # --- P13: the deep health check, and the two retention schedules ---------
+    # All three modules below shipped complete, unit-tested and WITHOUT A CALLER
+    # (see docs/analysis/2026-08-09-blocked-work-register.md §3c-4). Their unit
+    # tests passed because they called the inner function directly, one layer
+    # below the bug, which is this run's recurring failure. `test_p13_wiring.py`
+    # drives the real app for each.
+
+    # `GET /healthz` -- probes what is configured, answers 503 when a dependency
+    # actually failed, and is bounded at 2s (concurrent probes, so the bound does
+    # not multiply). Mounted unconditionally: gating a health check behind a flag
+    # would mean the tenants that most need one are the ones without it.
+    #
+    # `GET /` is deliberately UNTOUCHED above. It is the container's liveness
+    # probe in docker-compose.tenant.yml, and a liveness probe that fails on a
+    # dependency outage restarts a healthy process in a loop -- turning one
+    # broken dependency into an outage. Liveness and readiness are different
+    # questions and now have different endpoints; point monitoring uptime checks
+    # at /healthz (docs/runbooks/monitoring-alerts.md §5 item 1).
+    #
+    # The engines are read per request from `app.state`, so the probe set follows
+    # the flags that actually built something: a `None` engine means that feature
+    # is off for this tenant and contributes no subsystem, because an absent
+    # dependency is not an unhealthy one.
+    app.include_router(
+        build_health_router(
+            settings,
+            lambda: {
+                "rbac_database": getattr(app.state, "authz_engine", None),
+                "knowledge_database": getattr(app.state, "kb_engine", None),
+                "rsa_database": getattr(app.state, "rsa_engine", None),
+            },
+        )
+    )
+
+    # Audit-log retention. Off by default; when on, a daily tick reports how many
+    # rows are past AUDIT_LOG_RETENTION_DAYS and deletes NOTHING -- the audit-log
+    # port has no delete method and `AuditEntry` carries no document id, so there
+    # is nothing to address a deletion to. The row source is wired anyway (it is
+    # the same port `/cases/{id}/audit` reads), because a daily honest count of
+    # trail past retention is useful and because it proves the whole path but the
+    # last step. Deliberately no `delete_func=`: see audit_purge.py's docstring.
+    audit_purge_scheduler = start_audit_purge_job(
+        settings, source=build_audit_row_source(audit_log)
+    )
+    app.state.audit_purge_scheduler = audit_purge_scheduler
+    if audit_purge_scheduler is not None:
+
+        @app.on_event("shutdown")
+        def _stop_audit_purge_scheduler() -> None:
+            audit_purge_scheduler.shutdown(wait=False)
+
+    # Call-recording retention. Off by default; when on, the tick is scheduled
+    # but neither a candidate source nor a deleter is passed, so it reports
+    # `not_executable` and touches nothing. That is deliberate and it is the
+    # honest state: there is no Twilio recording-delete adapter and no store that
+    # lists recordings due for purge, so **the 90-day recording policy is not in
+    # force on any tenant**. Deleting a customer's call recording is
+    # irreversible, so the scheduling lands first and the destructive step waits
+    # for explicit configuration rather than being inferred from a flag.
+    recording_retention_scheduler = start_recording_retention_job(settings)
+    app.state.recording_retention_scheduler = recording_retention_scheduler
+    if recording_retention_scheduler is not None:
+
+        @app.on_event("shutdown")
+        def _stop_recording_retention_scheduler() -> None:
+            recording_retention_scheduler.shutdown(wait=False)
 
     @app.get("/")
     def health_check() -> dict[str, str]:

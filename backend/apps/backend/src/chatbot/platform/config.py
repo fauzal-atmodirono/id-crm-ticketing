@@ -196,6 +196,28 @@ class Settings(BaseSettings):
     # enabled/base_url/credential config is operator-edited in the CRM admin
     # UI and stored in Firestore, NOT here.
     dms_mock_client_enabled: bool = False
+    # Which environment this deployment is. Its ONLY consumer is the mock-DMS
+    # sandbox guard: `main.py` passes it to `MockDmsClient(environment=...)`,
+    # which refuses to construct unless it is one of "sandbox", "test" or
+    # "development" (case-insensitive). Adding it is what makes that guard able
+    # to fire at all -- `MockDmsClient()` was previously constructed with no
+    # argument, so `environment` took its own default of "sandbox" and the
+    # refusal never ran on any tenant.
+    #
+    # DEFAULTS TO "production", i.e. to REFUSING, because the failure it
+    # prevents is a real customer's Customer 360 panel showing "Proton X50
+    # (Demo data)" and a fabricated 20,000 km service history, which an agent
+    # then quotes back to them. A default of "sandbox" would be the same
+    # unreachable guard by another name. That also makes this inert for every
+    # existing tenant: `dms_mock_client_enabled` is false everywhere, so
+    # nothing reads this value.
+    #
+    # Deliberately NOT derived from the compose-level `TENANT` variable. A
+    # tenant-name allowlist means deciding that e.g. "default" or "demo" counts
+    # as sandbox, and a guard whose answer is guessed from a name someone
+    # chose for unrelated reasons is one rename away from being wrong in the
+    # dangerous direction. An operator who wants demo data says so.
+    app_environment: str = "production"
     # --- Phase 5: Agent routing & presence ---
     # Master switch: when False (default) the routing service is bypassed and
     # the static chatwoot_agent_team_id team assignment remains active.
@@ -1195,11 +1217,15 @@ class Settings(BaseSettings):
     # `phone_transcript_live_enabled` is what actually controls today's live
     # transcript -- do not confuse the two.
     phone_live_transcript_enabled: bool = False
-    # Read by `retention.py::run_retention_purge_job`, which has no scheduler:
-    # nothing invokes the job, so PHONE_RECORDING_RETENTION_DAYS still enforces
-    # nothing in a running deployment. The job itself is correct and tested; it
-    # needs a caller. Until then the declared retention policy remains a written
-    # commitment the system does not keep.
+    # Read by `retention.py::start_recording_retention_job`, which `main.py`
+    # calls: on -> a daily tick is scheduled, the first one an interval after
+    # boot (never at boot, so a crash-looping container cannot drive a deletion
+    # pass per restart). The tick DELETES NOTHING and marks nothing deleted
+    # unless a candidate source and a recording deleter are both injected, and
+    # neither exists yet -- there is no Twilio recording-delete adapter and no
+    # store that lists recordings due for purge. So on means "the schedule and
+    # the reporting are real"; **the 90-day policy is still not in force on any
+    # tenant**, and turning this on does not change that.
     phone_retention_job_enabled: bool = False
 
     # --- P13: authorisation/case audit-log retention ------------------------

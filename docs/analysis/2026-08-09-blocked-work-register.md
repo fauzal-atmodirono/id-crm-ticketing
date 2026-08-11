@@ -716,6 +716,150 @@ is. The combination the fix removes is the dangerous one: the backend claiming
 **Nothing here proves a browser ever saw `window.__PROTON_CONFIG__`.** No pixels,
 no build, no screenshots.
 
+## 3j. P10 data-scoped RBAC — the logic shipped, the enforcement did not
+
+Same category as §3d/§3f: not blocked on anyone outside this repo, recorded so it
+is not mistaken for shipped. Found by the P10/P11/P12 review
+(`.superpowers/sdd/2026-08-08-rfp-p10-admin-and-access-control/review-p10-p11-p12.md`),
+which was the first review any of those three packages had — their implementing
+agents died on the API limit and the work was committed by the controller
+unreviewed.
+
+P10 task 6 landed in full: `features/authz/data_scope.py` implements `DataScope`
+and `intersect_scopes`, and `test_data_scope.py` genuinely proves the two
+invariants that matter — scopes intersect rather than union, so a second role can
+only narrow access, and an empty intersection is `()` (access to nothing) rather
+than `None` (account-wide). That logic is correct and worth keeping.
+
+**P10 task 7, the enforcement, is absent.** Nothing outside that module and its own
+tests imports it:
+
+- `apply_scope_to_filters()` has no caller. `features/metrics/query_adapter.py` and
+  the admin routers were never modified, so no query is narrowed and the
+  `_fail_closed` marker it sets is read by nobody.
+- `resolve_user_data_scope()` has no caller, and there is no FastAPI dependency
+  despite the plan's interface naming one.
+- **`DATA_SCOPED_RBAC_ENABLED` has no consumer at all** — `data_scope.py` never
+  takes a `Settings`. Flipping it on does nothing.
+- Role scopes live in `_ROLE_DATA_SCOPES`, a module-level dict with no persistence
+  and no admin surface, so an operator has no way to configure one. **This is the
+  design decision blocking the rest**: where a role's scope is stored and who edits
+  it was never settled, and the enforcement cannot be wired until it is.
+- `features/authz/chatwoot_role_mirror.py` was not modified; inbox scope is not
+  mirrored into a Chatwoot custom role.
+
+`test_scope_enforcement.py`'s names claim more than it checks — including
+`test_enforcement_holds_when_the_api_is_called_directly`, which calls
+`apply_scope_to_filters` by hand and never touches an API, so it cannot detect that
+no request path reaches it. That is the "test drives the inner function while the
+bug lives one layer up" shape this run has now hit ten times. **No client-facing
+material may describe per-role data scoping as delivered.** The config.py comment
+and the `example.env` entry were rewritten during the review to say so; before
+that, both described enforcement in the query layer that does not exist.
+
+## 3k. P11 voice partials — five modules with no caller, and a retention job with no scheduler
+
+Recorded for the same reason as §3j, and it is the larger gap of the two. Every P11
+module is implemented and unit-tested; **the call path was never modified**, so none
+of it runs. `twiml.py`, `transcript_sink.py` and `bridge.py` are unchanged.
+
+| Module | State |
+|---|---|
+| `recording_router.py` | Router **now mounted** (review fix). Reads an in-process registry nothing writes, so it answers "no recording exists" for a real conversation; logs rather than writing an audit-log row; the URL carries a fixed `?signature=signed_token` literal and is not a signed credential. |
+| `dtmf_menu.py` | No caller. `twiml.py` emits no `<Gather>`. `PHONE_DTMF_MENU_ENABLED` has **no consumer** — `build_dtmf_twiml(enabled=...)` takes the switch as an argument nobody supplies. |
+| `after_hours.py` | `evaluate_after_hours_call` reads its flags but has no caller, so the out-of-hours branch never executes. |
+| `voicemail_ingest.py` | No caller and no webhook route. Creates no Chatwoot conversation. `attend_after` is `now + 12h`, **not** P1's `next_working_instant` — a Friday-evening voicemail promises a Saturday callback, the opposite of what the after-hours message commits to. Falls back to a hardcoded `+60120000000` when the payload has no `From`. |
+| `retention.py` | Correct and tested, **but nothing invokes it**. `PHONE_RECORDING_RETENTION_DAYS` therefore still enforces nothing in a running deployment — the declared retention policy remains a written commitment the system does not keep, which is exactly the gap P11 task 8 existed to close. |
+| `handoff_target.py::validate_handoff_target_settings` | No caller. The plan's constraint is "placeholder numbers must fail loudly, **at startup**"; this function never runs, so `+60300000001` still dials silently. |
+| `transcript_sink.py` (task 6) | Not implemented. `PHONE_LIVE_TRANSCRIPT_ENABLED` has **no consumer**. Note the separate, pre-existing `PHONE_TRANSCRIPT_LIVE_ENABLED` is what controls today's live transcript — the two are easily confused. |
+
+Also missing outright: task 5's distinct RSA vs non-RSA targets and the admin-store
+read (the two tests named for them assert a single env-sourced target), task 7's
+phone CSAT into the shared survey flow, the task 1/6 fork patch for the player and
+live transcript panel, and task 9's real-call verification document.
+
+**The RSA 24/7 guarantee is therefore currently vacuous, in both directions.**
+`PHONE_RSA_AFTER_HOURS_BYPASS` defaults to `true` and the bypass logic is correct,
+but since the after-hours branch never executes, no out-of-hours caller reaches
+either the message or the bypass. Nothing is *broken* today — the call path is
+exactly as it was — but §8.1.6 must not be reported as MET.
+
+**None of P11's seven settings is in `check-suites-both-flag-states.sh`'s
+`FLAGS_ON` array**, so their on-paths have never once executed under the gate — the
+same hole P5 had for a whole package (see "The flags-on test run" below). The seven
+rows are owed:
+
+```
+CALL_RECORDING_RETRIEVAL_ENABLED=true
+PHONE_DTMF_MENU_ENABLED=true
+PHONE_AFTER_HOURS_ENABLED=true
+PHONE_RSA_AFTER_HOURS_BYPASS=true
+PHONE_VOICEMAIL_INGEST_ENABLED=true
+PHONE_LIVE_TRANSCRIPT_ENABLED=true
+PHONE_RETENTION_JOB_ENABLED=true
+```
+
+They were not added by the review because `deploy/scripts/` was owned by a
+concurrent worker at the time. `test_p11_flags.py` deliberately does **not** assert
+that membership, so that it fails for nothing it cannot fix.
+
+As always for this package: **no real Twilio call has ever reached any of this
+code** (`docs/testing/phone-channel-package-c-verification.md`). Code-complete is
+not done here, and P11's own plan says so.
+
+## 3l. P12 screen-pop — the mock-DMS guard cannot fire, and four tasks are absent
+
+Recorded for the same reason as §3j/§3k.
+
+**The sandbox guard is unreachable, which is the finding that matters.** P12 task 3
+made `MockDmsClient.__init__` refuse to construct outside a sandbox environment,
+and its test proves that by passing `environment="production"` explicitly. But the
+only real call site is `main.py`:
+
+```python
+dms_client = MockDmsClient() if settings.dms_mock_client_enabled else None
+```
+
+— with no argument, so `environment` takes its default of `"sandbox"` and **the
+guard never fires on any tenant**. A production tenant that sets
+`DMS_MOCK_CLIENT_ENABLED=true` still gets fabricated vehicle and service records on
+a real customer's panel, which is the precise failure the guard was written to make
+impossible. The per-field `"(Demo data)"` suffixes remain the only containment, and
+the plan's own note says those are "a convention someone can crop out of a
+screenshot".
+
+**This needs a design decision before it can be fixed**, which is why the review
+left it: there is no `tenant` or `environment` field on `Settings` at all. `TENANT`
+exists in `deploy/tenants/example.env` as a compose-level variable only. Fixing the
+guard means adding that setting *and* deciding which tenant names count as sandbox —
+neither is a mechanical change. Recommended shape: make `environment` a required
+argument so omission is a type error rather than a silent pass.
+
+Absent outright:
+
+- **Task 2 (per-section endpoints and states).** `customer360_router.py` was never
+  modified. There is no `GET /admin/customer360/conversation/{id}`, no per-section
+  `state` ∈ `loading|ready|empty|not_connected|demo|timed_out`, no per-section fetch
+  duration, no timeout, and no `insured_name` slot. The card-level demo banner flag
+  does not exist.
+- **Task 4 (the Dashboard App fork patch)** and **task 5 (auto-focus on inbound
+  call)** — no patch, no focus path.
+- **Task 6 (dealer escalation contacts on the card).**
+- **Task 7 (flags, env, docs).** None of the three settings exists:
+  `CUSTOMER360_SECTION_TIMEOUT_MS`, and a `DMS_MOCK_ENABLED` distinct from the
+  pre-existing `DMS_MOCK_CLIENT_ENABLED`.
+
+`test_customer360_sections.py` must not be read as evidence for any of the above.
+All fourteen of its tests construct a Python dict literal and assert on the literal
+they just wrote; the only production symbol the module imports is `DealerStore`, and
+only to call `hasattr` on it. It exercises no code. The tasks it is named for are
+unstarted.
+
+Task 1 (phone-number normalisation) **is** implemented and genuinely tested —
+`features/chat/phone_number.py` handles the three Malaysian formats and returns
+`None` rather than a guess. It has **no caller**: `customer360_router.py` still
+matches on its own `_digits()` helper, so the screen-pop lookup does not use it.
+
 ## 4. Deliberately not attempted
 
 Recorded so they are not mistaken for oversights.

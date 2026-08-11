@@ -1202,6 +1202,29 @@ class Settings(BaseSettings):
     # commitment the system does not keep.
     phone_retention_job_enabled: bool = False
 
+    # --- P13: authorisation/case audit-log retention ------------------------
+    # Both of these were previously read by `authz/audit_purge.py` via
+    # `getattr(settings, ..., default)` and were NOT declared here, so no
+    # environment variable configured or disabled the purge, and the job's own
+    # disable test set an attribute pydantic had never declared -- it passed
+    # while the flag did not exist. Declared fields, so a typo'd or removed
+    # field is now an AttributeError at the call site rather than a silent
+    # default.
+    #
+    # Off by default, and the default must stay off: this is a job whose whole
+    # purpose is deleting rows from the trail that exists to be consulted after
+    # something goes wrong.
+    audit_purge_job_enabled: bool = False
+    # 2557 = 7*365 + 2 leap days, the same arithmetic
+    # `docs/runbooks/data-retention.md` §4 uses for the BigQuery seven-year
+    # expiration. Deliberately NOT 365 (the value the unreachable code assumed):
+    # §4.84 requires operations data to be retained at least seven years, and
+    # the authorisation trail is operations data, so a 365-day default would
+    # have made "turn the purge on" a contract breach performed by a default
+    # nobody chose. Shorten it per tenant only against a written retention
+    # decision. Must be >= 1 (see `_retention_windows_are_positive`).
+    audit_log_retention_days: int = 2557
+
     # Settings configurations
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -1251,6 +1274,32 @@ class Settings(BaseSettings):
                 "attachment, unanswered_handoff tag) is silently lost -- Twilio does "
                 "not retry a 200. Enable PHONE_TRANSCRIPT_LIVE_ENABLED first."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _retention_windows_are_positive(self) -> Settings:
+        """A retention window of 0 or less means "delete everything, now".
+
+        Both purge jobs compute `now - timedelta(days=window)` and delete what
+        is older, so a window of 0 selects every row and a negative window
+        selects rows from the future as well. Neither is a policy anybody would
+        write down, and both are plausible typos (an empty value cannot happen
+        -- pydantic rejects that -- but `=0` reads like "off" to someone who has
+        not read the code, and it is the opposite). Refused at boot, because the
+        alternative is discovering it from an audit trail or a set of call
+        recordings that no longer exist. Turning a job OFF is what its
+        `*_ENABLED` flag is for.
+        """
+        for name, value in (
+            ("AUDIT_LOG_RETENTION_DAYS", self.audit_log_retention_days),
+            ("PHONE_RECORDING_RETENTION_DAYS", self.phone_recording_retention_days),
+        ):
+            if value < 1:
+                raise ValueError(
+                    f"{name}={value} would purge every record on the first run "
+                    "(the cutoff is now minus the window). Use a positive number "
+                    "of days; to disable a purge, set its *_ENABLED flag to false."
+                )
         return self
 
 

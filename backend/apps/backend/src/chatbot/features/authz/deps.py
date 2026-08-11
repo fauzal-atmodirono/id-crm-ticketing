@@ -35,8 +35,8 @@ def _shared_secret_check(settings: Settings, x_api_key: str | None) -> None:
 def require_permission(
     permission: str,
     *,
-    repo: AuthzRepository | None,
-    validator: TokenValidator | None,
+    repo: AuthzRepository | None = None,
+    validator: TokenValidator | None = None,
     settings: Settings,
 ):
     async def _check(

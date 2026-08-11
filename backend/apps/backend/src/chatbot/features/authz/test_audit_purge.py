@@ -12,13 +12,21 @@ back to a default nobody chose.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 import os
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from chatbot.features.authz.audit_purge import run_audit_log_purge_job
+from chatbot.features.authz.audit_purge import (
+    PURGE_INTERVAL_HOURS,
+    build_audit_row_source,
+    run_audit_log_purge_job,
+    run_audit_purge_pass,
+    run_audit_purge_tick,
+    start_audit_purge_job,
+)
 from chatbot.platform.config import Settings
 
 
@@ -97,7 +105,9 @@ async def test_the_retention_window_is_configurable_from_the_environment(
     )
     assert settings.audit_log_retention_days == 30
 
-    entries = [{"id": "audit_1", "timestamp": (datetime.now(UTC) - timedelta(days=200)).isoformat()}]
+    entries = [
+        {"id": "audit_1", "timestamp": (datetime.now(UTC) - timedelta(days=200)).isoformat()}
+    ]
     mock_del = AsyncMock()
 
     res = await run_audit_log_purge_job(settings, entries, delete_func=mock_del)
@@ -146,3 +156,141 @@ def test_a_window_of_zero_is_refused_at_boot(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("AUDIT_LOG_RETENTION_DAYS", "0")
     with pytest.raises(ValueError, match="AUDIT_LOG_RETENTION_DAYS"):
         Settings()
+
+
+# --- the dry run, the row source and the schedule ---------------------------
+
+
+class _FakeScheduler:
+    """Records what was scheduled without starting a thread."""
+
+    def __init__(self) -> None:
+        self.jobs: list[dict[str, Any]] = []
+        self.started = False
+
+    def add_job(self, func: Any, **kwargs: Any) -> None:
+        self.jobs.append({"func": func, **kwargs})
+
+    def start(self) -> None:
+        self.started = True
+
+
+async def test_with_no_deleter_the_pass_is_a_dry_run_that_claims_no_deletions(
+    enabled_settings: Settings,
+) -> None:
+    """Today's real state: the audit-log port has no delete method, so the tick
+    can only report. Reporting those rows as `purged_count` would be a fabricated
+    measurement of a compliance action."""
+    entries = [
+        {"id": "audit_1", "timestamp": (datetime.now(UTC) - timedelta(days=400)).isoformat()}
+    ]
+
+    res = await run_audit_log_purge_job(enabled_settings, entries)
+
+    assert res["status"] == "dry_run"
+    assert res["reason"] == "no_audit_deleter_configured"
+    assert res["eligible_count"] == 1
+    assert res["purged_count"] == 0
+
+
+async def test_a_row_with_no_id_is_counted_but_never_deleted(
+    enabled_settings: Settings,
+) -> None:
+    """`AuditEntry` carries no document id, so this is every row the real source
+    yields. Deleting by a guessed id is not an option."""
+    entries = [{"id": None, "timestamp": (datetime.now(UTC) - timedelta(days=400)).isoformat()}]
+    mock_del = AsyncMock()
+
+    res = await run_audit_log_purge_job(enabled_settings, entries, delete_func=mock_del)
+
+    assert res["undeletable_count"] == 1
+    assert res["purged_count"] == 0
+    mock_del.assert_not_called()
+
+
+async def test_a_naive_timestamp_is_read_as_utc_rather_than_crashing_the_pass(
+    enabled_settings: Settings,
+) -> None:
+    naive = (datetime.now(UTC) - timedelta(days=400)).replace(tzinfo=None).isoformat()
+    entries = [{"id": "audit_1", "timestamp": naive}]
+    mock_del = AsyncMock()
+
+    res = await run_audit_log_purge_job(enabled_settings, entries, delete_func=mock_del)
+
+    assert res["purged_count"] == 1
+
+
+async def test_the_row_source_asks_the_audit_log_for_rows_older_than_the_cutoff() -> None:
+    """Proves the tick reads the real audit-log port rather than a list someone
+    passed by hand -- and that every row it yields is id-less, hence undeletable."""
+
+    class _Entry:
+        def __init__(self, at: str) -> None:
+            self.at = at
+
+    class _FakeAuditLog:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def list_filtered(self, **kwargs: Any) -> list[Any]:
+            self.calls.append(kwargs)
+            return [_Entry("2019-01-01T00:00:00+00:00")]
+
+    audit_log = _FakeAuditLog()
+    source = build_audit_row_source(audit_log, scan_limit=17)  # type: ignore[arg-type]
+    cutoff = datetime.now(UTC) - timedelta(days=2557)
+
+    rows = await source(cutoff)
+
+    assert audit_log.calls == [{"to_ts": cutoff.isoformat(), "limit": 17}]
+    assert rows == [{"id": None, "timestamp": "2019-01-01T00:00:00+00:00"}]
+
+
+async def test_a_pass_with_no_row_source_reports_not_executable(
+    enabled_settings: Settings,
+) -> None:
+    res = await run_audit_purge_pass(enabled_settings)
+
+    assert res["status"] == "not_executable"
+    assert res["reason"] == "no_audit_row_source_configured"
+    # None, not 0: nothing was measured, so "no rows are past retention" is not
+    # a claim this pass is entitled to make.
+    assert res["eligible_count"] is None
+    assert res["purged_count"] is None
+
+
+def test_the_flag_off_schedules_nothing_at_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    off = _settings(monkeypatch, AUDIT_PURGE_JOB_ENABLED="false")
+    sched = _FakeScheduler()
+
+    assert start_audit_purge_job(off, scheduler=sched) is None
+    assert sched.jobs == []
+    assert sched.started is False
+
+
+def test_the_flag_on_schedules_one_daily_job_that_does_not_run_at_boot(
+    enabled_settings: Settings,
+) -> None:
+    sched = _FakeScheduler()
+
+    assert start_audit_purge_job(enabled_settings, scheduler=sched) is sched
+    assert sched.started is True
+    assert len(sched.jobs) == 1
+    job = sched.jobs[0]
+    assert job["id"] == "audit_log_purge"
+    assert job["trigger"] == "interval"
+    assert job["hours"] == PURGE_INTERVAL_HOURS == 24
+    # No `next_run_time=now`: a crash-looping container must not be able to drive
+    # a deletion pass per restart.
+    assert "next_run_time" not in job
+
+
+def test_the_tick_never_raises_when_the_source_explodes(enabled_settings: Settings) -> None:
+    async def _source(_cutoff: datetime) -> list[dict[str, Any]]:
+        raise RuntimeError("firestore unavailable")
+
+    res = run_audit_purge_tick(enabled_settings, source=_source)
+
+    assert res["status"] == "failed"
+    assert res["purged_count"] is None
+    assert "firestore unavailable" in res["error"]

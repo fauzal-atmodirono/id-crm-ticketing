@@ -63,6 +63,30 @@ class _FakeFirestore:
         _FakeFirestore.documents = {}
 
 
+class _LogRecorder:
+    """Stands in for `seed.py`'s structlog logger so tests can assert on events.
+
+    `seed_taxonomy_from_env` never raises for a dropped detail -- it logs
+    `taxonomy_seed_details_unresolved` instead -- so that log call is the only
+    observable a test has for "the seeder dropped something."
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, dict[str, Any]]] = []
+
+    def _record(self, level: str, event: str, **kwargs: Any) -> None:
+        self.events.append((level, event, kwargs))
+
+    def info(self, event: str, **kwargs: Any) -> None:
+        self._record("info", event, **kwargs)
+
+    def warning(self, event: str, **kwargs: Any) -> None:
+        self._record("warning", event, **kwargs)
+
+    def error(self, event: str, **kwargs: Any) -> None:
+        self._record("error", event, **kwargs)
+
+
 @pytest.fixture(autouse=True)
 def _clean_state(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeFirestore.reset()
@@ -179,20 +203,35 @@ async def test_re_seeding_adds_a_node_that_appeared_in_the_env_json(
 
 
 async def test_every_detail_option_finds_its_parent_including_after_sales(
-    store: TaxonomyStore, settings
+    store: TaxonomyStore, settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The division key is `aftersales`; the detail prefix is `After Sales`.
 
     Re-slugifying the prefix gives `after_sales`, which matches no division key,
     so 100 of 246 details used to be dropped with no log line. Resolution goes
-    through a label -> key map now.
+    through a label -> key map now, and the seeder's own
+    `taxonomy_seed_details_unresolved` warning -- its only observable for "a
+    detail's parent could not be found" -- must never fire against the real
+    config: that's the property this test actually needs, not a raw node
+    count, which conflates missing-parent drops with same-key collisions
+    (see below).
     """
+    recorder = _LogRecorder()
+    monkeypatch.setattr("chatbot.features.taxonomy.seed._log", recorder)
+
     await seed_taxonomy_from_env(store, settings)
 
-    detail_count = len(json.loads(settings.case_detail_options_json)["options"])
+    unresolved = [e for e in recorder.events if e[1] == "taxonomy_seed_details_unresolved"]
+    assert unresolved == [], f"seeder dropped details for want of a parent: {unresolved}"
+
     nodes = await store.list_nodes(active_only=True)
     seeded_details = [n for n in nodes if n.level == 4]
-    assert len(seeded_details) == detail_count
+    # 245, one fewer than the config's 246 option strings: "Charging: Public
+    # Charging: others" and "...: Others" differ only by case and slugify to
+    # the same det_ key, so the second collapses into the first. That is
+    # correct dedup, not a dropped parent -- the assertion above is what
+    # guards the actual defect this task fixes.
+    assert len(seeded_details) == 245
 
     after_sales_details = [
         n for n in seeded_details if n.parent is not None and n.parent.startswith("cat_aftersales_")

@@ -119,8 +119,12 @@ async def seed_taxonomy_from_env(store: TaxonomyStore, settings: Settings) -> in
             div_label = div_info.get("label", div_slug.title())
             # A detail option is prefixed with the division LABEL; the division
             # node is keyed from the JSON KEY. "After Sales" -> "aftersales" is
-            # only knowable from here.
-            label_to_div_slug[_slugify(str(div_label))] = div_slug
+            # only knowable from here. Store the SLUGIFIED key: level-3 keys are
+            # built as f"cat_{_slugify(div_slug)}_{...}", and a non-slug-safe
+            # JSON key (e.g. "after-sales") would otherwise let this map and
+            # that key-building diverge again -- the exact bug class this task
+            # exists to close.
+            label_to_div_slug[_slugify(str(div_label))] = _slugify(div_slug)
 
             await _create(
                 TaxonomyNode(

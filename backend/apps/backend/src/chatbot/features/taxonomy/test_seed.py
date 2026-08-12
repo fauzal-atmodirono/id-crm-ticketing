@@ -221,6 +221,13 @@ async def test_every_detail_option_finds_its_parent_including_after_sales(
 
     await seed_taxonomy_from_env(store, settings)
 
+    # Positive control: proves the monkeypatch is actually wired to the
+    # logger the seeder calls. Without this, a future `seed.py` change to
+    # `structlog.get_logger(__name__)` *inside* the function -- a common
+    # structlog idiom -- would make the patch inert, and "no unresolved
+    # events" below would pass vacuously rather than testing anything.
+    assert any(event == "taxonomy_seeded" for _, event, _ in recorder.events)
+
     unresolved = [e for e in recorder.events if e[1] == "taxonomy_seed_details_unresolved"]
     assert unresolved == [], f"seeder dropped details for want of a parent: {unresolved}"
 
@@ -291,8 +298,11 @@ async def test_the_three_case_types_are_seeded_as_childless_roots(
 
 
 async def test_a_detail_whose_parent_does_not_exist_is_skipped_not_raised(
-    store: TaxonomyStore, settings
+    store: TaxonomyStore, settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    recorder = _LogRecorder()
+    monkeypatch.setattr("chatbot.features.taxonomy.seed._log", recorder)
+
     updated = settings.model_copy(
         update={
             "case_detail_options_json": json.dumps(
@@ -306,3 +316,54 @@ async def test_a_detail_whose_parent_does_not_exist_is_skipped_not_raised(
     assert created > 0  # types, root and divisions still seeded
     nodes = await store.list_nodes(active_only=True)
     assert [n for n in nodes if n.level == 4] == []
+
+    # The positive side of the assertion above: a dropped detail must be
+    # observable, not merely absent. This is what would have caught the
+    # original bug -- 100 of 246 details vanished with no log line at all.
+    unresolved = [e for e in recorder.events if e[1] == "taxonomy_seed_details_unresolved"]
+    assert len(unresolved) == 1
+    _, _, kwargs = unresolved[0]
+    assert kwargs["dropped"] == 1
+    assert kwargs["parents"] == ["cat_nonexistent_division_nonexistent_category"]
+
+
+async def test_a_hyphenated_division_key_still_resolves_its_details(
+    store: TaxonomyStore, settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards `label_to_div_slug` storing an unslugified division key.
+
+    An operator could enter "after-sales" as the JSON key for a division
+    labelled "After Sales". The level-3 subcategory key is always built by
+    slugifying that key (`cat_after_sales_...`, hyphen becomes underscore).
+    If the label -> key map ever stored the raw JSON key instead of its
+    slug, the detail-resolution path would compute `cat_after-sales_...`
+    instead -- a key the level-3 node never has -- and every detail under
+    that division would silently orphan again, reintroducing this task's
+    original bug class through a different division key.
+    """
+    recorder = _LogRecorder()
+    monkeypatch.setattr("chatbot.features.taxonomy.seed._log", recorder)
+
+    updated = settings.model_copy(
+        update={
+            "case_taxonomy_json": json.dumps(
+                {"after-sales": {"label": "After Sales", "subcategories": ["Warranty"]}}
+            ),
+            "case_detail_options_json": json.dumps(
+                {"options": ["After Sales: Warranty: Rejected"]}
+            ),
+        }
+    )
+
+    await seed_taxonomy_from_env(store, updated)
+
+    unresolved = [e for e in recorder.events if e[1] == "taxonomy_seed_details_unresolved"]
+    assert unresolved == []
+
+    category = await store.get_node("cat_after_sales_warranty")
+    assert category is not None
+
+    nodes = await store.list_nodes(active_only=True)
+    details = [n for n in nodes if n.level == 4]
+    assert len(details) == 1
+    assert details[0].parent == category.key

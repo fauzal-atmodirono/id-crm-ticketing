@@ -305,6 +305,46 @@ labels & the escalation email section. Only senders in the Escalation
 Routing directory (Administration chapter) — or the conversation's own
 customer — are trusted to link a reply back onto a case this way.
 
+## Inbound alerts
+
+### What it is
+
+A toast notification that pops up right inside the CRM the moment a new
+customer message arrives on one of your inboxes — so you don't have to keep
+staring at the conversation list to notice new work.
+
+### Where to find it
+
+It appears on its own, anywhere in the CRM, whenever a new customer message
+lands in your inbox. No particular page needs to be open for it to fire.
+
+### How to use it
+
+1. Keep working anywhere in the CRM — the alert appears on its own when a
+   new customer message comes in.
+2. Click the toast to jump straight to that conversation.
+3. Today this fires on the platform's built-in default for a new message: a
+   toast notification, nothing more. A fuller, self-service preferences page
+   — where each agent could add a sound or a desktop notification, or tune
+   alerts for other events — exists in the product but is **not switched on
+   for this tenant**, so there's nothing to configure yet. What you see is
+   the same for every agent, and it can't currently be changed.
+
+[[SCREENSHOT: ch02-inbound-alert | A toast notification for a new customer message]]
+
+### Example scenario
+
+An agent is deep in a different conversation when a new WhatsApp inquiry
+lands on their inbox; a toast notification in the corner of the screen
+catches their attention immediately, instead of the message sitting
+unnoticed until they next glance at the conversation list.
+
+### Integrations & automation
+
+This is separate from SLA breach alerts (below), which are email-driven and
+scoped to a missed response/resolution target rather than to every new
+message.
+
 ## SLA breach alerts
 
 ### What it is
@@ -590,6 +630,88 @@ configuration covered in the Knowledge chapter and the AI assistant
 behaviour chapter; it's a feature an administrator can turn on or off per
 tenant.
 
+## Translate
+
+### What it is
+
+A one-click action that translates the customer's most recent message into
+English and posts the translation as a private note — useful the moment a
+customer writes in Malay, Tamil, Chinese, or any language you're not
+confident reading, without leaving the conversation to look it up.
+
+### Where to find it
+
+A "Translate" button next to Copilot, above the reply box.
+
+### How to use it
+
+1. Open the conversation with the message you want translated.
+2. Click "Translate" above the reply box.
+3. Wait a moment — the translation appears as a new private note on the
+   conversation. It isn't inserted into your reply box, because it isn't
+   meant to be sent to the customer as-is.
+4. Read the note, which also names the language it detected the message
+   was written in, then reply to the customer yourself in whichever
+   language fits.
+
+[[SCREENSHOT: ch02-translate | Translating a customer's message into English, posted as a private note]]
+
+### Example scenario
+
+A customer writes an entire complaint in Bahasa Melayu about a delayed
+delivery; the agent clicks Translate, reads the English private note a
+moment later, and replies having understood the complaint precisely rather
+than guessing at it.
+
+### Integrations & automation
+
+Translate only ever posts a private note — the same customer-safety rule
+every other AI-assist action in this chapter follows, so nothing it
+produces reaches the customer without an agent choosing to send it. It only
+translates *into* English; there's no option here to translate an outgoing
+reply into another language.
+
+## FAQ suggestion strip
+
+### What it is
+
+A small, dismissible strip that can appear above the reply box showing the
+single best-matching FAQ answer for the customer's latest message, with an
+"Apply" button that drops the full answer straight into your reply.
+
+### Where to find it
+
+Above the reply box, alongside the other composer actions. It only appears
+when the CRM has found a confident FAQ match for the latest customer
+message — it will not appear on every message.
+
+### How to use it
+
+1. Watch for the strip after a new customer message arrives — it only
+   shows up when a good match exists.
+2. Read the suggested FAQ answer in the strip.
+3. Click "Apply" to paste the full answer into your reply box, then edit
+   and send it as normal.
+4. Dismiss it if it doesn't fit the case. A dismissed suggestion for that
+   particular message won't reopen, but a later customer message can still
+   surface a fresh one.
+
+[[SCREENSHOT: ch02-faq-strip | The FAQ suggestion strip above the reply box, with its Apply button]]
+
+### Example scenario
+
+A customer asks a common question about charging cable compatibility; the
+strip surfaces the matching FAQ answer immediately, the agent clicks Apply,
+adjusts the greeting, and sends — without leaving the conversation to
+search the Knowledge base by hand.
+
+### Integrations & automation
+
+The strip draws on the same knowledge base as Ask Copilot and Suggest-a-
+reply (see the Knowledge chapter), but it only ever shows a suggestion when
+the match is confident — a weak or uncertain hit stays silent instead of
+handing you something that might be wrong.
+
 ## Suggest-a-reply
 <!-- TRAINING: audience=agent, exercise -->
 
@@ -598,7 +720,9 @@ tenant.
 A one-click AI-drafted reply for the conversation you're currently in,
 based on the conversation so far and the knowledge base, placed directly
 in the reply box for you to review before sending — with a "Sources"
-line showing what it was grounded in.
+line showing what it was grounded in. It also looks at any photo, video,
+or voice note the customer has sent in the conversation, not just their
+typed words.
 
 ### Where to find it
 
@@ -610,7 +734,10 @@ A "Suggest a reply" action above the reply box.
 
 1. Open the conversation.
 2. Click "Suggest a reply" above the reply box.
-3. Wait a moment for the draft to appear in the reply box.
+3. Wait a moment for the draft to appear in the reply box. If the customer
+   has sent a photo, video, or voice note, the draft takes that into
+   account too — it can describe what's in a warning-light photo or a
+   video without you having to ask the customer to explain it again.
 4. Check the Sources line underneath the draft for the knowledge-base
    articles it drew on.
 5. Edit the draft if needed, then send it like any other reply.
@@ -621,13 +748,20 @@ A "Suggest a reply" action above the reply box.
 
 A customer asks about the cancellation policy for a service booking; the
 agent clicks Suggest a reply, receives a draft citing the relevant FAQ
-article, adjusts the tone slightly, and sends it.
+article, adjusts the tone slightly, and sends it. In a different case, a
+customer sends only a photo of a dashboard warning light with no
+explanation; Suggest a reply still produces a draft, because the icon in
+the photo — not just the customer's (absent) words — is what led the
+knowledge-base search this time.
 
 ### Integrations & automation
 
 Suggest-a-reply draws on the same knowledge base as Ask Copilot and the
 AI auto-draft behaviour described below; its source citations link back
-to content covered in the Knowledge chapter.
+to content covered in the Knowledge chapter. When a conversation has media
+attached, what's in that media — not only the customer's typed words —
+leads the knowledge-base search, which is why it can still find the right
+source article on a photo-only or voice-note-only turn.
 
 ## Summarize conversation
 
@@ -672,10 +806,11 @@ original language, matching Proton's internal reporting standard.
 
 The AI assistant can act on incoming customer messages on its own,
 without an agent asking it to. It always works in one of two modes, set
-per inbox by an administrator: **suggest mode** (the default), where it
-drafts a reply as a private note and reopens the conversation for a human
-to review and send; or **auto mode**, where it sends its reply straight
-to the customer.
+per inbox by an administrator: **auto mode** — the tenant-wide default
+today, unless an inbox has its own override — where it sends its reply
+straight to the customer; or **suggest mode**, where it drafts a reply as
+a private note and reopens the conversation for a human to review and
+send.
 
 ### Where to find it
 
@@ -684,14 +819,15 @@ administrator. Agents simply see its effects appear inside conversations.
 
 ### How to use it
 
-1. Watch for a private note marked as a suggested reply on a conversation
-   the AI has just handled — that means the inbox is in suggest mode.
-2. Read the suggested draft, edit it if needed, then send it yourself as
-   a normal reply. The AI never sends this for you.
-3. On an inbox running in auto mode, the AI's reply is sent to the
-   customer directly and the conversation stays in **Pending** while the
-   AI keeps handling it — it only moves to **Open** once the AI hands off
-   or an agent steps in.
+1. On most inboxes today, the AI's reply is sent to the customer directly
+   — that's auto mode, the tenant-wide default — and the conversation
+   stays in **Pending** while the AI keeps handling it. It only moves to
+   **Open** once the AI hands off or an agent steps in.
+2. On an inbox an administrator has switched to suggest mode instead,
+   watch for a private note marked as a suggested reply on a conversation
+   the AI has just handled.
+3. Read that suggested draft, edit it if needed, then send it yourself as
+   a normal reply. The AI never sends a suggest-mode draft for you.
 4. If the AI can't confidently help, it hands the conversation off to a
    human on its own — reopening it and, if configured, posting a brief
    acknowledgement to the customer first.
@@ -700,10 +836,12 @@ administrator. Agents simply see its effects appear inside conversations.
 
 ### Example scenario
 
-On a WhatsApp inbox running suggest mode, a customer asks about the price
-of an e.MAS X service package; the AI drafts an answer as a private note,
-the on-duty agent reviews it, adjusts the price wording, and sends it as
-their own reply.
+On the tenant's default auto mode, a customer asks about the price of an
+e.MAS X service package on WhatsApp; the AI answers directly, and the
+conversation stays Pending until the AI hands off or an agent steps in.
+On an inbox an administrator has switched to suggest mode instead, the
+same kind of question produces a private-note draft that the on-duty agent
+reviews, adjusts, and sends as their own reply.
 
 ### Integrations & automation
 
@@ -785,6 +923,7 @@ reply, and once the drive is booked the agent marks it Resolved.
 
 Conversations can also close automatically due to inactivity timers an
 administrator sets per inbox — an idle warning is posted first, then an
-automatic close after a grace period (see the Administration chapter). A
-conversation resolved this way may also trigger a satisfaction-survey
-message, covered in the AI assistant behaviour chapter.
+automatic close after a grace period (see the Administration chapter).
+Satisfaction surveys are a capability the platform supports, but they are
+switched off on this tenant today, so resolving a conversation — whether
+automatically or by hand — does not currently send the customer one.

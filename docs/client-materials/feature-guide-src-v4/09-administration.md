@@ -695,15 +695,23 @@ assignments" permission).
    whatever the account already does for that person), **All
    conversations**, **Unassigned + own**, or **Own conversations only**.
    Then, under **Sections**, toggle whether the role can manage
-   **Contacts**, **Reports**, and/or the **Knowledge base**. Leaving
-   visibility on **Default access** is what a role that should not touch
-   CRM-side access control at all wants — the other three actively impose a
-   restriction.
+   **Contacts**, **Reports**, and/or the **Knowledge base**. **Read the
+   warning below before you change either of these on a role that any
+   administrator belongs to** — the other three visibility options and the
+   Sections toggles do not narrow an administrator's access, they replace
+   it. For a role that exists only to grant Proton permissions, leave
+   visibility on **Default access** and every Sections toggle off, and go
+   straight to step 3.
 3. Under **Permissions**, grant or revoke the Proton permissions. They are
    grouped — Knowledge & AI, Cases & taxonomy, Routing & escalation,
-   Workforce, Alerts, Customer data, Administration — with a count of how
+   Workforce, Alerts, Customer data and Administration — with a count of how
    many in each group are granted, a **Grant all** / **Revoke all** button
-   per group, and a search box for finding one by name.
+   per group, and a search box for finding one by name. That is the full set
+   of groups; **you may well see fewer.** A group only appears if the
+   platform is currently offering at least one permission belonging to it, so
+   the page reflects what this account can actually grant today rather than
+   a fixed list. A group you expected and cannot find is a question for us,
+   not something to work around.
 4. Under **Members**, click **+ Add member** and search for the person by
    name or email, or click **Remove** on a row to take the role away. A
    staged addition or removal is marked as such and can be undone before you
@@ -712,14 +720,33 @@ assignments" permission).
    **Discard** to throw the draft away. Navigating away, or clicking a
    different role, with unsaved changes asks you first.
 
-> **Two things the page will stop you on, and both are worth knowing before
-> you meet them.** If a save would leave you without the "Manage roles and
-> permission assignments" permission through any role, the page warns you
-> explicitly that this removes the page from your own navigation and cannot
-> be undone from inside the product. And if a save partly fails, the page
-> tells you how many of your changes went through and leaves the rest
-> staged, so you can fix the problem and save again rather than guessing at
-> a half-applied state.
+> **Never switch on a Chatwoot-access restriction for a role that
+> administrators belong to.** This is the one mistake on this page that
+> cannot be undone by the people it affects. Choosing any **Conversation
+> visibility** option other than **Default access**, or ticking any of the
+> **Sections** toggles, does not *narrow* what an administrator can do — it
+> **replaces** their administrator access with exactly what that role
+> grants. Everyone assigned to the role loses the Settings area and every
+> administrative page in this chapter, including this one, so they cannot
+> put it back themselves; it takes someone else with administrator rights,
+> or us. This has happened on a live account, so treat it as a rule rather
+> than a caution. If you need a role that only grants Proton permissions —
+> which is the usual case — leave **Conversation visibility** on **Default
+> access** and leave every **Sections** toggle off. The Chatwoot-access
+> controls are for shaping *agent* roles.
+
+> **Two things the page tries to catch for you.** If a save would leave you
+> without the "Manage roles and permission assignments" permission through
+> any role, the page warns you that this removes the page from your own
+> navigation and cannot be undone from inside the product. That check has to
+> work out which account is yours by matching your email address against the
+> staff directory, and where it cannot, it stays quiet — **so treat it as a
+> useful catch for the obvious case, not as a guarantee you will always be
+> stopped.** Read back what you are about to save. Separately, if a save
+> partly fails, the page tells you how many of your changes went through and
+> leaves the rest staged, so you can fix the problem and save again rather
+> than guessing at a half-applied state — that one does not depend on
+> identifying you.
 
 [[SCREENSHOT: ch09-roles-permissions | Creating a role, granting a group of permissions, and the save bar showing staged changes]]
 
@@ -730,7 +757,10 @@ conversations and never see administrative pages. An administrator either
 assigns him the existing **Agent** role, or clicks **+ New role**, names it
 **Front-desk**, sets **Conversation visibility** to **Own conversations
 only**, leaves every Proton permission group at zero granted, adds Budi
-under **Members**, and clicks **Save changes**.
+under **Members**, and clicks **Save changes**. That visibility setting is
+safe here precisely because the role's members are agents; the same setting
+on a role an administrator belongs to would take that administrator's own
+access away.
 
 ### Integrations & automation
 
@@ -774,6 +804,9 @@ section).
 In the main left-hand navigation, select **Escalation Routing** (visible
 only if your role has been granted the "Manage PIC/dealer escalation
 routing" permission).
+
+<!-- VERIFY-LIVE: open Escalation Routing with an administrator session and record which of the six department rows actually carry a PIC email, and which dealer groups exist with at least one member. The directory API is RBAC-gated (401 to an API key), so this can only be settled in a browser; until it is, no chapter may state a coverage count -->
+
 
 ### How to use it
 

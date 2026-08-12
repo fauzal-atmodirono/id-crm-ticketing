@@ -193,8 +193,7 @@ Applied like any other label, from an open conversation's label control
 1. Open the Email conversation you need to escalate.
 2. Apply a department label first — `dept_sales`, `dept_engineer`,
    `dept_pre_sales`, `dept_aftersales`, `dept_cs`, or `dept_technical` —
-   then the relevant dealer label if one is involved (`dealer_komang_motor`
-   or `dealer_caroline_motor`). **Check the Escalation Routing page in the
+   then the relevant dealer label if one is involved. **Check the Escalation Routing page in the
    Administration chapter rather than assume every department or dealer
    is covered** — one with no contact configured there sends the
    escalation email to nobody, with no error anywhere to warn you. You may

@@ -83,9 +83,13 @@ page — no extra navigation is needed to see them.
 
 Pak Andi, the Proton e.MAS operations lead, opens the Agent report every
 Monday morning to see which service advisors handled the most cases last
-week. He scrolls past the native chart to the Tasks per Agent (Proton)
-table, which stacks WhatsApp, email, and phone caseload for each PIC into
-one comparison instead of him checking each channel separately.
+week, reading it off the native chart — it's live and reflects this
+account's real activity. He also glances at the Tasks per Agent (Proton)
+table beneath it, which is built to stack WhatsApp, email, and phone
+caseload for each PIC into one comparison, but its reporting warehouse
+connection hasn't gone live for this account yet, so today it shows the
+same illustrative example figures every time — he doesn't read a
+conclusion off it until that connection is confirmed live.
 
 ### Integrations & automation
 
@@ -129,11 +133,15 @@ monthly total.
 
 ### Example scenario
 
-On a Tuesday morning, Ibu Rina notices the WhatsApp channel flagged with a
-sharply higher deviation score. She finds that a service reminder blast
-went out overnight, driving an unusual spike in booking inquiries, and
-asks the on-shift team to add temporary coverage rather than assuming
-something is broken.
+The Anomaly report is built for a moment like this: a service reminder
+blast goes out overnight, driving an unusual spike in booking inquiries,
+and on Tuesday morning Ibu Rina would see the WhatsApp channel flagged
+with a sharply higher deviation score, prompting her to ask the on-shift
+team to add temporary coverage rather than assume something is broken.
+Until the reporting warehouse connection goes live for this account,
+though, what the page actually shows is the same illustrative example
+figures every time, not this account's real channel volume — so treat
+this as what the page will do, not a finding to act on yet.
 
 ### Integrations & automation
 
@@ -177,11 +185,14 @@ vehicle models.
 
 ### Example scenario
 
-During the weekly ops review, Pak Hendra pulls up Departments & PIC and
-sees the Service department's reopen rate at Dealer Bandung Timur is
-noticeably higher than other dealers, prompting a follow-up with that
-dealer's PIC about whether repairs are properly verified before a case is
-closed.
+This is the kind of pattern Departments & PIC is built to surface: the
+Service department's reopen rate at one dealer creeping noticeably above
+the others, prompting a follow-up with that dealer's PIC about whether
+repairs are properly verified before a case is closed. Until the
+reporting warehouse connection goes live for this account, the numbers on
+the page today are the same illustrative example figures every time, not
+Proton e.MAS's actual reopen rates — so treat this as a preview of what
+the report will flag, not a finding to follow up on yet.
 
 ### Integrations & automation
 
@@ -225,9 +236,13 @@ still open.
 
 ### Example scenario
 
-Ibu Sari, reviewing open RSA follow-ups, uses the Work-in-Progress / Case
-Aging table to find any case older than a week that's still open, and
-escalates those to the relevant PIC before they slip further.
+This is what the Work-in-Progress / Case Aging table is built for:
+finding any case older than a week that's still open and escalating it to
+the relevant PIC before it slips further. Until the reporting warehouse
+connection goes live for this account, though, the table shows the same
+illustrative example cases every time rather than this account's actual
+open work, so for now Ibu Sari can't yet use it for that — it's a preview
+of the workflow, not today's real aging list.
 
 ### Integrations & automation
 
@@ -296,10 +311,15 @@ page you can already read as real today.
 ### Example scenario
 
 Every Friday, Ibu Dewi sets the Weekly Report's window to the
-just-finished reporting period, notes the Case Volume and Departments &
-PIC numbers for the client's weekly update, and checks the Dealer
-Escalation Turnaround table before the call to flag any dealer whose
-average turnaround has crept up.
+just-finished reporting period and checks **Per-Case Detail** at the
+bottom — the one section on this page read live from Chatwoot's current
+conversations — for the actual cases behind the week. Case Volume,
+Departments & PIC, and Dealer Escalation Turnaround are still on the
+reporting warehouse connection that hasn't gone live for this account, so
+she doesn't read a conclusion off them for the client update — no "this
+dealer's turnaround has crept up," no case-volume trend — until that
+connection is confirmed live, relying on Per-Case Detail or a bulk export
+of the real data instead.
 
 ### Integrations & automation
 
@@ -343,10 +363,15 @@ reported on.
 
 ### Example scenario
 
-Pak Yudi checks Cross-Channel SLA Achievement before a monthly client
-review to confirm the team is holding above its committed percentage,
-then drills into SLA Compliance by Bucket to see whether one particular
-case type is dragging the average down.
+Pak Yudi checks the native SLA table before a monthly client review — it's
+live and measures achievement directly against each conversation's
+assigned SLA policy — to confirm the team is holding above its committed
+percentage. Cross-Channel SLA Achievement and SLA Compliance by Bucket
+would normally be the fastest way to see this across every channel and by
+case type, but their reporting warehouse connection hasn't gone live for
+this account yet, so he treats what's on screen there as a preview of the
+layout, not this month's real compliance, until that connection is
+confirmed live.
 
 ### Integrations & automation
 
@@ -392,10 +417,14 @@ numbers.
 
 An agent applies a dealer label to a customer's complaint about a delayed
 repair, forwarding it to Dealer Kelapa Gading. The moment that label is
-applied, the case's escalation clock starts; once the case is later
-resolved, the elapsed time appears against Dealer Kelapa Gading in the
-turnaround table, letting Ibu Sari track that dealer's responsiveness
-over time.
+applied, the case's escalation clock starts — that per-case timestamp is
+written straight onto the conversation and is real today. Once the case
+is later resolved, that elapsed time is what the turnaround table's
+averages and percentiles are built from — but the table itself still
+reads from the reporting warehouse connection that hasn't gone live for
+this account, so Ibu Sari can't yet use it to track Dealer Kelapa Gading's
+responsiveness over time. Once that connection is live, this is exactly
+the view she'll use for that.
 
 ### Integrations & automation
 

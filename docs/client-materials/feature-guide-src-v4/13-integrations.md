@@ -292,7 +292,9 @@ escalation email section).
    customer reply beside it, rather than arriving as a separate email you
    have to go find (see the Conversations chapter's Escalation replies
    section). A customer who replies to their own acknowledgement rejoins
-   the conversation the same way, as a normal incoming message.
+   the conversation too, also as a private note — Chatwoot's Email-channel
+   inbox doesn't accept a synthetic incoming message, so the CRM falls
+   back to posting the customer's own words as a private note instead.
 5. If an expected escalation email, acknowledgement, or reply doesn't
    arrive, first check the recipients set up in Escalation Routing (see
    the Administration chapter); if it's still not working, report it to
@@ -498,6 +500,12 @@ reporting data (see the Reports chapter's Weekly Report section).
 
 ### Integrations & automation
 
-Exports draw on the same reporting warehouse behind every page in the
-Reports chapter, so exported figures should match what those pages show
-for the same period.
+Exports draw on the same reporting warehouse behind the Proton-built
+sections of the Reports chapter (Anomaly, Departments & PIC, Case
+Lifecycle, Weekly Report, and the SLA report's cross-channel sections) —
+and that connection has not yet been switched on for this account, so an
+export today carries the same illustrative example numbers those sections
+show on screen, not Proton e.MAS's actual figures. Chatwoot's own native
+report numbers, the Weekly Report's Per-Case Detail, and the
+dealer-escalation timestamp are unaffected either way and reflect this
+account's real activity in an export just as they do on screen.

@@ -107,8 +107,9 @@ The label will stick, and nothing will be sent.
    playbook). Do not tell a customer "I've escalated this" on the strength of
    the label alone.
 
-> Your administrator can switch escalation on for every channel. Until they
-> have, treat the label as inert here.
+> Escalation email is built to run on Email-channel conversations only —
+> it isn't a setting that can be turned on for WhatsApp. Treat the label
+> as inert here.
 
 ### What is not usable yet on WhatsApp
 

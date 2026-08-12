@@ -388,11 +388,12 @@ In the left-hand navigation, open **Knowledge** and select **Inboxes**.
 ### Example scenario
 
 Proton adds a new WhatsApp inbox for e.MAS 7 pre-order enquiries and wants it
-handled by the sales-focused assistant in **Auto** mode, while the general
-support WhatsApp inbox stays on the default assistant in **Suggest** mode so
-agents can review replies first. The administrator opens **Knowledge →
-Inboxes**, finds the new inbox, sets its **Assistant** to the sales
-assistant and its **Mode** to **Auto**, and leaves the support inbox as-is.
+handled by the sales-focused assistant, also in **Auto** mode — the same mode
+the general support WhatsApp inbox already runs in on the default assistant,
+with no human review step, since Auto is the tenant-wide default today. The
+administrator opens **Knowledge → Inboxes**, finds the new inbox, sets its
+**Assistant** to the sales assistant, confirms its **Mode** is **Auto**, and
+leaves the support inbox as-is.
 
 ### Integrations & automation
 

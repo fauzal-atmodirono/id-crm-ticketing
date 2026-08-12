@@ -855,7 +855,12 @@ forward to that dealer.
 **Escalating to a department or a dealer group**, from an agent's side, is
 the same eight-second action every time — apply a department label, then a
 dealer label if there is one, then `escalate` (see the Conversations
-chapter's Labels section). Which slug goes with which kind of case:
+chapter's Labels section). **The escalation email only fires on
+Email-channel conversations.** Applying `escalate` alongside a department
+or dealer label on a WhatsApp or Web Chatbot conversation stamps the label
+but sends nothing to the PIC or dealer group — see the Channel Playbooks
+chapter for what to do instead on those channels. On an Email-channel
+conversation, though, which slug goes with which kind of case:
 
 1. A pricing/financing question that needs Pre-Sales: apply `dept_pre_sales`,
    then `escalate`. The Pre-Sales PIC's email is who receives it.
@@ -954,15 +959,18 @@ that they have been assigned a role at all.
    Offline dot rather than the named status, so after picking "Lunch" it
    still reads Busy — that is correct, not a fault. The **My status** page
    is the one that says *Currently: Lunch — for 55 min*.
-3. Set yourself back to **Available** when you return. Anything other than
-   Available means new conversations are not routed to you.
+3. Set yourself back to **Available** when you return. For the statuses this
+   account ships with today, anything other than Available means new
+   conversations are not routed to you — a status an administrator adds
+   themselves can be configured to behave differently (see step 4).
 4. **To add a status of your own** — a shift pattern or an activity specific
    to your team — an administrator opens the **Status catalogue** section at
    the bottom of the **My status** page and clicks **Add status**. Give it a
    key, a label, a colour, which of the CRM's three native statuses it
-   should mirror into, whether an agent in it can still receive new
-   conversations, and whether it should count as unavailable. Existing
-   statuses are edited the same way. **Statuses are never deleted**, because
+   should mirror into, and whether it should count as unavailable. Whether
+   an agent in it can still receive new conversations defaults to on for a
+   newly added status — routable unless the administrator turns it off.
+   Existing statuses are edited the same way. **Statuses are never deleted**, because
    past history refers to them — retire one by marking it as not receiving
    new conversations.
 5. In that catalogue, a row marked **Default** is one of the built-in

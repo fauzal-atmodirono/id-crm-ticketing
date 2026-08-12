@@ -240,8 +240,8 @@ conversation reopens — but **correction from the previous edition of
 this guide: it does not arrive as an ordinary incoming message.**
 Chatwoot only accepts a synthetic incoming message on an Api-channel
 inbox; every Email-channel conversation (which is the only channel this
-loop ever runs on) rejects it with `{"error":"Incoming messages are only
-allowed in Api inboxes"}`. The CRM tries the inline post first, and it
+loop ever runs on) refuses it, since an Email inbox doesn't support
+messages posted in that way. The CRM tries the inline post first, and it
 always fails on this tenant's Email inbox today, so what you actually see
 is a **private note**, prefixed `Customer's own reply (from
 <email>, could not be posted inline -- see conversation <id>):`,

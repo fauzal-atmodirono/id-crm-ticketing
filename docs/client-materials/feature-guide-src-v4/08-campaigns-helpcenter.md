@@ -45,9 +45,9 @@ Campaigns send through whichever inbox/channel they're attached to (for
 example, a connected WhatsApp inbox); there's no separate setup beyond
 that channel already being connected (see the Integrations chapter).
 
-> Campaigns may not be enabled or visible for every Proton deployment —
-> confirm on the live tenant whether this menu is present for your
-> account before relying on it in training material.
+> Campaigns is a Chatwoot feature that isn't enabled or visible on every
+> Proton deployment; check with your CRM administrator whether it's active
+> on your account before relying on it.
 
 ## Help Center portal
 
@@ -94,6 +94,6 @@ portal is a native, public-facing self-service site, while Knowledge
 feeds the AI assistant's answers inside conversations. The two typically
 need to be kept in sync manually, since they serve different audiences.
 
-> The Help Center menu may not be enabled for every Proton deployment —
-> confirm on the live tenant whether this feature is active before
-> relying on it in training material.
+> Help Center is a Chatwoot feature that isn't enabled for every Proton
+> deployment; check with your CRM administrator whether it's active on
+> your account before relying on it.

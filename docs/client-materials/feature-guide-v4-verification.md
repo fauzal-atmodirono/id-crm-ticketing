@@ -68,7 +68,7 @@ Full capture: see the `## Raw capture` section below.
 | 02 | The **escalate** label triggers the two-thread escalation email workflow | raw capture: agent/backend env `EMAIL_ESCALATION_ENABLED=true`, `ESCALATION_EMAIL_ENABLED=true`; openapi prefix `/escalation/notify` | verified | 2026-08-12 |
 | 02 | The automated escalation email only fires on an Email-channel conversation; applying `escalate` on WhatsApp/web chatbot/phone changes only the label | source: `agent/app/services/dept_suggestion.py` and `sync.maybe_escalate` both gate on `inbox.channel_type == "Channel::Email"`; raw capture confirms `ESCALATION_ALL_CHANNELS` is unset on both containers (per Task 3's finding) | verified | 2026-08-12 |
 | 02 | A dealer label routes to a dealer **group** — every member is forwarded the case, not just one address | source: `backend/apps/backend/src/chatbot/features/chat/pic_store.py`'s `DealerRecord.emails: list[str]` (a list, not a single address) | verified | 2026-08-12 |
-| 02 | "All six departments now route somewhere" — `dept_sales/engineer/pre_sales/aftersales/cs/technical` each have a PIC configured, and both `dealer_komang_motor`/`dealer_caroline_motor` do too | not settled by raw capture — no PIC/dealer directory contents were captured (only route paths). A stale docstring in `agent/app/services/dept_suggestion.py` states "`dept_aftersales`, `dept_cs`, `dept_technical` on the Proton tenant today" had **no** PIC at time of writing, which conflicts with this claim; the PIC/dealer stores are Firestore-backed and editable at runtime, so this may since have changed. Would need a live authenticated `GET /admin/escalation/pics` and `GET /admin/escalation/dealers` to settle either way — left unchanged pending that check | unverifiable | 2026-08-12 |
+| 02 | "All six departments now route somewhere" — `dept_sales/engineer/pre_sales/aftersales/cs/technical` each have a PIC configured, and both `dealer_komang_motor`/`dealer_caroline_motor` do too | not settled by raw capture — no PIC/dealer directory contents were captured (only route paths). A stale docstring in `agent/app/services/dept_suggestion.py` states "`dept_aftersales`, `dept_cs`, `dept_technical` on the Proton tenant today" had **no** PIC at time of writing, which conflicts with this claim; the PIC/dealer stores are Firestore-backed and editable at runtime, so this may since have changed. Fix round 1: reviewer attempted `GET /admin/escalation/pics`/`/dealers` from inside the container and both returned HTTP 401 (RBAC-gated, needs a user token, not an API key) — still not settled. **Prose amended** to stop asserting the coverage count: it now states the routing mechanism (a department/dealer with no contact configured sends the escalation email to nobody) and tells the operator to check the Escalation Routing page, without claiming how many are populated. Would need the browser sweep's Escalation Routing admin-page pass (with a user session) to settle the actual count | unverifiable | 2026-08-12 |
 | 02 | AI-suggested escalation department: live on this tenant, off by default at the code level | raw capture: agent/backend env `DEPT_SUGGESTION_ENABLED=true` (code default is `False` per `agent/app/config.py`) | verified | 2026-08-12 |
 | 02 | AI-suggested escalation department only fires on Email-channel conversations, posts once per conversation, and only ever proposes a department that has a PIC configured | source: `agent/app/services/dept_suggestion.py` — `channel_type != "Channel::Email"` gate, `dept_suggested_at` first-write-wins stamp, and candidates sourced only from the PIC store (`GET /escalation/departments`), never a static list | verified | 2026-08-12 |
 | 02 | Dealer/PIC reply is linked back as a private note `Reply from <name> <email>:`, and a second reply from the same address doesn't post another note | source: `agent/app/services/escalation_replies.py` — exact f-string match, and `existing.get(_REPLIED_ATTR)` early-return before the internal-reply path | verified | 2026-08-12 |
@@ -79,7 +79,9 @@ Full capture: see the `## Raw capture` section below.
 | 02 | The contact side panel now opens by default, rather than needing manual expansion each time | source: `deploy/chatwoot-fork/patches/0004-contact-panel-default.patch` — `isContactSidebarOpen === undefined ? true : isContactSidebarOpen` | verified | 2026-08-12 |
 | 02 | Conversation summaries are written in English regardless of the conversation's original language | source: `backend/apps/backend/src/chatbot/features/assist/router.py` `_SUMMARIZE_SYSTEM` — "Reply in English regardless of the conversation language." | verified | 2026-08-12 |
 | 02 | Inactivity timers (idle warning, then automatic close after a grace period) are configurable per inbox | raw capture: agent/backend env `LIFECYCLE_ENABLED=true`; openapi prefix `/kb/inboxes/{inbox_id}/timing`; source `backend/apps/backend/src/chatbot/features/chat/adapters/inbox_timing_store.py` stores `idle_warn_minutes`/`idle_close_grace_minutes`/`idle_close_out_of_hours_grace_minutes` per inbox_id | verified | 2026-08-12 |
-| 02 | A conversation resolved via inactivity auto-close (or by hand) may trigger a satisfaction-survey message | raw capture: agent/backend env `LIFECYCLE_SURVEY_ENABLED=false`; source `agent/app/services/lifecycle.py` `on_human_resolved` returns early when the flag is off, and the same flag gates the bot's own end-of-chat survey prompt | corrected | 2026-08-12 |
+| 02 | A conversation resolved via inactivity auto-close (or by hand) may trigger a satisfaction-survey message [fix round 1: this row's original "corrected" text — "does not currently send one" — was itself wrong; see the two rows below, which supersede it] | raw capture: agent/backend env `LIFECYCLE_SURVEY_ENABLED=false`; source `agent/app/services/lifecycle.py` `on_human_resolved` returns early when the flag is off | corrected | 2026-08-12 |
+| 02 | Resolving a conversation sends the customer Chatwoot's own native CSAT satisfaction-rating request, on all four live inboxes | live read-only query of `Inbox.csat_survey_enabled`, 2026-08-12: `[1] Proton API (Channel::Api)=true, [2] Website Demo (Channel::WebWidget)=true, [3] Twilio Proton (Channel::TwilioSms)=true, [4] Email (Channel::Email)=true` — all four `true` | verified | 2026-08-12 |
+| 02 | The AI assistant's own lifecycle rating prompt ("rate our AI assistant/support agent from 1 to 5", distinct from native CSAT) is not currently switched on for this tenant | raw capture: agent/backend env `LIFECYCLE_SURVEY_ENABLED=false`; source `agent/app/services/lifecycle.py` — `on_human_resolved` and the bot's own end-of-chat survey step both gate on this flag | verified | 2026-08-12 |
 | 02 | AI auto-draft: **suggest mode** is described as "the default" tenant-wide | raw capture: agent/backend env `AGENT_MODE=auto` (code default in `agent/app/config.py` is `agent_mode: str = "suggest"`, but this tenant overrides it); `agent/app/services/orchestrator.py` — `effective_mode = per_inbox_mode or settings.agent_mode` | corrected | 2026-08-12 |
 | 02 | Translate composer action: renders and works | raw capture: SPA feature list includes `ai_assist` (gates button visibility, per `deploy/chatwoot-fork/patches/0055-translate-action.patch`); openapi path `/assist/translate` present (backend route exists) — both halves of the probe pass | verified | 2026-08-12 |
 | 02 | FAQ suggestion strip: renders and works | raw capture: SPA feature list includes `faq_suggestion_popup`; openapi path `/kb/suggest` present; agent/backend env `FAQ_SUGGESTION_POPUP_ENABLED=true` — both halves of the probe pass | verified | 2026-08-12 |
@@ -310,3 +312,25 @@ The full `bq ls --format=pretty` project-wide listing was long (100+
 datasets, none else proton-named); only the `proton`-matching row and the
 `demo_proton` dataset's contents are reproduced above per the brief's
 two-attempt cap on BigQuery hunting.
+
+### native CSAT per inbox (added 2026-08-12, Task 6 fix round)
+
+Read-only query of Chatwoot's own `Inbox.csat_survey_enabled` (Chatwoot's
+native per-inbox CSAT toggle — distinct from the agent/backend's own
+`LIFECYCLE_SURVEY_ENABLED`-gated rating prompt). Run to settle whether a
+resolved conversation sends the customer a satisfaction survey:
+
+```
+[1] Proton API    | Channel::Api       | csat_survey_enabled=true
+[2] Website Demo  | Channel::WebWidget | csat_survey_enabled=true
+[3] Twilio Proton | Channel::TwilioSms | csat_survey_enabled=true
+[4] Email         | Channel::Email     | csat_survey_enabled=true
+```
+
+All four inboxes have native CSAT **on**. This is the survey a customer
+actually receives on resolve, and it's what feeds the `v_csat` BigQuery
+view above — it is a *different* mechanism from the AI assistant's own
+`LIFECYCLE_SURVEY_ENABLED`-gated rating prompt, which is off (see the
+Raw capture agent/backend env block earlier in this file). Chapters 4 and
+10 make lifecycle-message claims and should use this distinction rather
+than re-deriving it.

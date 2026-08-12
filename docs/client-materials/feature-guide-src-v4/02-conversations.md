@@ -94,16 +94,16 @@ Labels are tags you attach to a conversation to categorize it. Alongside
 general-purpose labels, Proton uses two special families: an **escalate**
 label that flags a conversation for the escalation email workflow, and
 `dept_<slug>`/dealer-specific labels used to route that escalation and,
-for dealer labels, to feed turnaround-time reporting. **All six
-departments now route somewhere**: `dept_sales`, `dept_engineer`,
-`dept_pre_sales`, `dept_aftersales`, `dept_cs`, and `dept_technical` each
-have a PIC configured, and both live dealer groups —
-`dealer_komang_motor` and `dealer_caroline_motor` — do too. Previously
-most department labels had no PIC behind them, so escalating with one
-sent no email to anyone, with no error to warn you; that's fixed. A
-dealer label now also routes to a **dealer group** — every member of that
-group is forwarded the case, not just one address (see the Administration
-chapter's Escalation Routing section).
+for dealer labels, to feed turnaround-time reporting. Applying a
+department label routes the escalation to whichever contact is configured
+for that department under Escalation Routing (see the Administration
+chapter) — and a department with **no** contact configured there sends
+the escalation email to nobody, with no error anywhere to warn you.
+**Check the Escalation Routing page rather than assume every department
+is covered.** A dealer label works the same way but can route to a whole
+**dealer group** instead of a single contact — every member of that group
+is forwarded the case, again only for a dealer that's actually been
+configured there.
 
 ### Where to find it
 
@@ -924,6 +924,13 @@ reply, and once the drive is booked the agent marks it Resolved.
 Conversations can also close automatically due to inactivity timers an
 administrator sets per inbox — an idle warning is posted first, then an
 automatic close after a grace period (see the Administration chapter).
-Satisfaction surveys are a capability the platform supports, but they are
-switched off on this tenant today, so resolving a conversation — whether
-automatically or by hand — does not currently send the customer one.
+Resolving a conversation on any of the four live inboxes sends the
+customer a CSAT satisfaction-rating request — that's the CRM's own,
+native survey, and it's what the CSAT figures in the Reports chapter are
+built from. This is a separate mechanism from the AI assistant's own
+rating prompt (a "rate our AI assistant / support agent from 1 to 5"
+message the AI itself can send as part of its own resolve flow, covered
+in the AI assistant behaviour chapter) — that one is not currently
+switched on for this tenant, so an agent shouldn't expect to see it fire.
+The satisfaction request each customer actually receives on resolve is
+the native CSAT one, not that one.

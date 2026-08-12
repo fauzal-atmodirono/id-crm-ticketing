@@ -101,9 +101,9 @@ Full capture: see the `## Raw capture` section below.
 | 04 | Welcome/disclaimer message on conversation start does not fire on this tenant today | raw capture: agent/backend env `LIFECYCLE_DISCLAIMER_ENABLED=false`; source `agent/app/services/lifecycle.py::on_conversation_created` — non-Email branch returns before calling `_welcome_text` when the flag is off (Email branch is independently gated on `EMAIL_AUTOACK_ENABLED`, also `false` in raw capture) | verified | 2026-08-12 |
 | 04 | The assistant's own Survey AI / Survey agent / Thanks messages do not fire on this tenant today — a conversation resolved by the bot or by a human does not trigger this page's rating request | raw capture: agent/backend env `LIFECYCLE_SURVEY_ENABLED=false`; source `agent/app/services/lifecycle.py` — `handle_lifecycle_reply`'s survey branch and `on_human_resolved` both return early when the flag is off | verified | 2026-08-12 |
 | 04 | The idle warning, automatic close, and "is your case resolved?" prompt ARE live on this tenant, and the Assign agent message fires from that same flow regardless of the survey flag | raw capture: agent/backend env `LIFECYCLE_ENABLED=true`; source `agent/app/services/lifecycle.py::handle_lifecycle_reply` — the `AWAITING_RESOLUTION`/"not resolved" branch posts `assign_agent` unconditionally, only the "resolved" branch's survey step is gated on `LIFECYCLE_SURVEY_ENABLED` | verified | 2026-08-12 |
-| 04 | Customers still get a satisfaction-rating request on resolve, from Chatwoot's own native CSAT survey — a separate mechanism from the two rows above, configured per inbox rather than per assistant, and not exposed on this Settings page at all | live read-only query of `Inbox.csat_survey_enabled`, 2026-08-12 (see the `### native CSAT per inbox` raw-capture subsection): `true` on all four inboxes | verified | 2026-08-12 |
+| 04 | Customers still get a satisfaction-rating request on resolve, from Chatwoot's own native CSAT survey — a separate mechanism from the two rows above, configured per inbox rather than per assistant, and not exposed on this Settings page at all | live read-only query of `Inbox.csat_survey_enabled`, 2026-08-12 (see the `### native CSAT and greeting per inbox` raw-capture subsection): `true` on all four inboxes | verified | 2026-08-12 |
 | 04 | Per-inbox idle-timer minutes, a per-inbox on/off switch for the idle-warning/auto-close step, and per-inbox overrides of the same message wording live on that inbox's own settings page under Administration → Inboxes, not on Knowledge → Inboxes or Knowledge → Settings, and win over the assistant persona message when both are set | source: `deploy/chatwoot-fork/patches/0023-inbox-inactivity-timing.patch` adds this panel to the native inbox settings page (`WeeklyAvailability.vue`), calling `GET/PUT /kb/inboxes/{inbox_id}/timing`; `agent/app/services/lifecycle.py::_resolve_lifecycle_message` — "Per-inbox override -> persona message -> SOP default" | verified | 2026-08-12 |
-| 04 | Chatwoot also has its own native per-inbox greeting-message setting, distinct from both the assistant's Welcome message and native CSAT | this task's brief pointed to a "greeting_enabled" live query as already captured alongside the CSAT query; the actual `## Raw capture` / native-CSAT subsection contains no `greeting_enabled` data (grepped, zero matches) — the brief's premise does not hold against this evidence base as it currently stands. The concept is not asserted as a specific on/off state anywhere in this chapter for that reason. Would need the same live `Inbox.greeting_enabled` query pattern used for `csat_survey_enabled` to settle it | unverifiable | 2026-08-12 |
+| 04 | Chatwoot's native per-inbox greeting message is ON for the Twilio Proton (WhatsApp) and Email inboxes, OFF for Proton API and Website Demo — a mechanism distinct from both the assistant's own Welcome message (off tenant-wide) and native CSAT | [fix round 1: supersedes this row's original "unverifiable" verdict — the brief's premise that the data was already captured did not hold at the time, and Task 7 correctly declined to fabricate a value; the coordinator has since supplied the live query's full output] live read-only query `Inbox.all.each { |i| puts "...csat_survey_enabled=#{i.csat_survey_enabled} | greeting_enabled=#{i.greeting_enabled}" }`, run against the live tenant 2026-08-12 (see the `### native CSAT and greeting per inbox` raw-capture subsection): `greeting_enabled=false` on Proton API and Website Demo, `greeting_enabled=true` on Twilio Proton and Email. The query shows on/off state only, not the configured greeting text | verified | 2026-08-12 |
 
 ## Raw capture
 
@@ -328,24 +328,46 @@ datasets, none else proton-named); only the `proton`-matching row and the
 `demo_proton` dataset's contents are reproduced above per the brief's
 two-attempt cap on BigQuery hunting.
 
-### native CSAT per inbox (added 2026-08-12, Task 6 fix round)
+### native CSAT and greeting per inbox (added 2026-08-12, Task 6 fix round;
+corrected 2026-08-12, Task 7 fix round 1)
 
-Read-only query of Chatwoot's own `Inbox.csat_survey_enabled` (Chatwoot's
-native per-inbox CSAT toggle — distinct from the agent/backend's own
-`LIFECYCLE_SURVEY_ENABLED`-gated rating prompt). Run to settle whether a
-resolved conversation sends the customer a satisfaction survey:
+Read-only query of Chatwoot's own `Inbox.csat_survey_enabled` and
+`Inbox.greeting_enabled` (Chatwoot's native per-inbox CSAT and greeting
+toggles — both distinct from the agent/backend's own `LIFECYCLE_SURVEY_ENABLED`/
+`LIFECYCLE_DISCLAIMER_ENABLED`-gated messages). Query:
 
-```
-[1] Proton API    | Channel::Api       | csat_survey_enabled=true
-[2] Website Demo  | Channel::WebWidget | csat_survey_enabled=true
-[3] Twilio Proton | Channel::TwilioSms | csat_survey_enabled=true
-[4] Email         | Channel::Email     | csat_survey_enabled=true
+```ruby
+Inbox.all.each { |i| puts "[#{i.id}] #{i.name} | channel=#{i.channel_type} | csat_survey_enabled=#{i.csat_survey_enabled} | greeting_enabled=#{i.greeting_enabled}" }
 ```
 
-All four inboxes have native CSAT **on**. This is the survey a customer
+Run against the live tenant, 2026-08-12:
+
+```
+[1] Proton API    | Channel::Api       | csat_survey_enabled=true | greeting_enabled=false
+[2] Website Demo  | Channel::WebWidget | csat_survey_enabled=true | greeting_enabled=false
+[3] Twilio Proton | Channel::TwilioSms | csat_survey_enabled=true | greeting_enabled=true
+[4] Email         | Channel::Email     | csat_survey_enabled=true | greeting_enabled=true
+```
+
+**Correction note:** this is the same query as Task 6's fix round; the
+version of this subsection committed on 2026-08-12 by Task 6 transcribed
+only the `csat_survey_enabled` column and dropped `greeting_enabled` from
+the record, even though the live query captured both. Task 7's brief
+asserted the greeting column was already captured here; it was not, Task 7
+correctly flagged the gap instead of fabricating a value, and this
+subsection was then corrected with the query's full, verbatim output above.
+Nobody should conclude from the earlier version that the greeting column
+was never queried — it was queried, just not recorded.
+
+All four inboxes have native CSAT **on** — this is the survey a customer
 actually receives on resolve, and it's what feeds the `v_csat` BigQuery
-view above — it is a *different* mechanism from the AI assistant's own
-`LIFECYCLE_SURVEY_ENABLED`-gated rating prompt, which is off (see the
-Raw capture agent/backend env block earlier in this file). Chapters 4 and
-10 make lifecycle-message claims and should use this distinction rather
-than re-deriving it.
+view above — a *different* mechanism from the AI assistant's own
+`LIFECYCLE_SURVEY_ENABLED`-gated rating prompt, which is off (see the Raw
+capture agent/backend env block earlier in this file).
+
+Native greeting is **on** for Twilio Proton (WhatsApp) and Email, **off**
+for Proton API and Website Demo — again a different mechanism from the AI
+assistant's own `LIFECYCLE_DISCLAIMER_ENABLED`-gated Welcome message, which
+is off tenant-wide. This query shows only the on/off state, not the
+greeting's configured text. Chapters 4 and 10 make lifecycle-message claims
+and should use both distinctions rather than re-deriving them.

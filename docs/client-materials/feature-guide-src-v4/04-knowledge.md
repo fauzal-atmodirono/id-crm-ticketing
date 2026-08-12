@@ -461,17 +461,21 @@ In the left-hand navigation, open **Knowledge** and select **Settings**.
    each step is switched on or off tenant-wide, independently of what you
    type into these boxes. **What is actually live on this tenant today:**
    the idle warning, the automatic close, and the "is your case resolved?"
-   prompt are on. The opening **Welcome message** is off — a new
-   conversation currently opens straight into the assistant's answer, not
-   this message. The **Survey AI** and **Survey agent** messages (and the
-   **Thanks** message that follows a rating) are also off — resolving a
-   case, by the bot or by hand, does not trigger this page's own rating
-   request. Customers still receive a satisfaction-rating request when a
-   conversation is resolved: that one comes from the CRM's own native CSAT
-   survey, a separate mechanism enabled per inbox rather than per assistant
-   (see the AI Behaviour chapter). Ask your administrator which of these
-   steps are switched on before telling a customer any particular message
-   will reach them.
+   prompt are on. The opening **Welcome message** is off — filling it in
+   here currently does nothing. On the WhatsApp and Email inboxes, a
+   customer starting a new conversation does still get an immediate
+   acknowledgement, but it comes from Chatwoot's own native per-inbox
+   greeting, not from this field — see the note below. On the other two
+   inboxes, a new conversation opens straight into the assistant's answer,
+   with no greeting from either mechanism. The **Survey AI** and **Survey
+   agent** messages (and the **Thanks** message that follows a rating) are
+   also off — resolving a case, by the bot or by hand, does not trigger
+   this page's own rating request. Customers still receive a
+   satisfaction-rating request when a conversation is resolved: that one
+   comes from the CRM's own native CSAT survey, a separate mechanism
+   enabled per inbox rather than per assistant (see the AI Behaviour
+   chapter). Ask your administrator which of these steps are switched on
+   before telling a customer any particular message will reach them.
 
    A related set of overrides — per-inbox idle timers, an on/off switch for
    the idle-warning/auto-close step on that one inbox, and per-inbox wording
@@ -479,6 +483,16 @@ In the left-hand navigation, open **Knowledge** and select **Settings**.
    inbox's own settings page under Administration → Inboxes (see the
    Administration chapter). Where both are set, the inbox-level override
    wins over the assistant persona message set here.
+
+   **The native greeting is a separate setting again, on that same
+   inbox settings page.** It is currently on for the WhatsApp and Email
+   inboxes and off for the other two. It is not this Welcome message, it is
+   not affected by anything on this Settings page, and it does not go
+   through the assistant at all — it is Chatwoot's own inbox-level
+   acknowledgement. If you need to change the wording a WhatsApp or Email
+   customer sees the moment they start a conversation, edit the greeting on
+   that inbox's own settings page; editing the Welcome message here will
+   have no effect on it.
 7. Under **Features**, toggle whether this assistant uses knowledge-base/FAQ
    grounding, conversation memory context, source citations in its answers,
    and contact-attribute context.

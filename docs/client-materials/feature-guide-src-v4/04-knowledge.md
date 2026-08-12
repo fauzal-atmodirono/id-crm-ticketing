@@ -74,8 +74,11 @@ them in Playground before the launch.
 
 FAQ entries are part of the knowledge base the assistant draws on for
 Suggest-a-reply, the Ask Copilot panel, and AI auto-drafted replies (see
-Conversations and AI Behaviour). Toggling an entry's **Active** flag off
-removes it from grounding immediately, without deleting it.
+Conversations and AI Behaviour). They are also the primary source for the
+FAQ suggestion strip agents see above the reply box (see Conversations) — an
+edit made here is what an agent sees suggested on the next matching message,
+with no publishing delay. Toggling an entry's **Active** flag off removes it
+from grounding immediately, without deleting it.
 
 ## Documents
 <!-- TRAINING: audience=admin, exercise -->
@@ -137,10 +140,11 @@ draw on it directly.
 ### Integrations & automation
 
 Both the read-only corpus and the operator-authored uploads feed the same
-grounding the assistant uses for Suggest-a-reply, Ask Copilot, and Playground
-answers (see Conversations). Uploads that finish indexing become available
-to every assistant persona automatically — there is no separate step to
-attach a document to a specific assistant.
+grounding the assistant uses for Suggest-a-reply, Ask Copilot, Playground
+answers, and — alongside FAQs — the FAQ suggestion strip (see Conversations).
+Uploads that finish indexing become available to every assistant persona
+automatically — there is no separate step to attach a document to a specific
+assistant.
 
 ## Assistants
 
@@ -219,8 +223,8 @@ In the left-hand navigation, open **Knowledge** and select **Scenarios**.
    in its row.
 6. To change or remove a scenario, click **Edit** or **Delete** on its row.
 
-Each assistant can hold a limited number of scenarios, and the instruction
-text has a maximum length — the page shows a character counter and will not
+Each assistant can hold up to 20 scenarios, and the instruction text is
+capped at 4,096 characters — the page shows a character counter and will not
 let you save past the limit.
 
 [[SCREENSHOT: ch04-scenarios | The Scenarios list under Knowledge]]
@@ -326,8 +330,8 @@ In the left-hand navigation, open **Knowledge** and select **Tools**.
    - Optionally a **param_schema** (a JSON description of the tool's
      inputs), a **request template**, and a **response template**.
    - **Enabled**, so the tool is available to be assigned to an assistant.
-3. Save. Custom tools are capped at a fixed number per tenant, shown as a
-   count next to the section heading.
+3. Save. Custom tools are capped at 15 per tenant, shown as a count next to
+   the section heading.
 4. To change or remove a custom tool, click **Edit** or **Delete** on its
    row.
 5. Scroll to **Per-assistant enablement**, pick an assistant with the
@@ -395,7 +399,11 @@ assistant and its **Mode** to **Auto**, and leaves the support inbox as-is.
 The assistant and mode set here determine which persona and knowledge base
 answer a given inbox, including in the Ask Copilot panel (see
 Conversations) and in the AI's decision to reply, draft, or hand off (see
-AI Behaviour).
+AI Behaviour). This page only sets *which assistant* and *which mode* apply
+to an inbox — idle-timer minutes and per-inbox message wording are a
+separate set of controls on that inbox's own settings page under
+Administration → Inboxes (see the Administration chapter, and the Settings
+section below), not here.
 
 ## Settings (persona, language, lifecycle messages, guardrails)
 
@@ -448,6 +456,29 @@ In the left-hand navigation, open **Knowledge** and select **Settings**.
    **Resolution message** field is also available on this page, but it is
    saved for future use only — nothing in the current build sends it to a
    customer.
+
+   Editing a message's wording here does not turn its lifecycle step on —
+   each step is switched on or off tenant-wide, independently of what you
+   type into these boxes. **What is actually live on this tenant today:**
+   the idle warning, the automatic close, and the "is your case resolved?"
+   prompt are on. The opening **Welcome message** is off — a new
+   conversation currently opens straight into the assistant's answer, not
+   this message. The **Survey AI** and **Survey agent** messages (and the
+   **Thanks** message that follows a rating) are also off — resolving a
+   case, by the bot or by hand, does not trigger this page's own rating
+   request. Customers still receive a satisfaction-rating request when a
+   conversation is resolved: that one comes from the CRM's own native CSAT
+   survey, a separate mechanism enabled per inbox rather than per assistant
+   (see the AI Behaviour chapter). Ask your administrator which of these
+   steps are switched on before telling a customer any particular message
+   will reach them.
+
+   A related set of overrides — per-inbox idle timers, an on/off switch for
+   the idle-warning/auto-close step on that one inbox, and per-inbox wording
+   for these same messages — lives outside Knowledge entirely, on each
+   inbox's own settings page under Administration → Inboxes (see the
+   Administration chapter). Where both are set, the inbox-level override
+   wins over the assistant persona message set here.
 7. Under **Features**, toggle whether this assistant uses knowledge-base/FAQ
    grounding, conversation memory context, source citations in its answers,
    and contact-attribute context.

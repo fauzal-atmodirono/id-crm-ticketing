@@ -2,9 +2,16 @@
 
 **Not a client deliverable.** Three Administration sections were written for
 Feature Guide v3 and removed from it on 2026-08-09, because the software they
-described was not running on the `proton` tenant. **Two of the three came back
-in v4 on 2026-08-12; one is still held back and is all that remains in this
-file.**
+described was not running on the `proton` tenant. **All three were re-probed
+on 2026-08-12. AI Conversational Quality came back into v4 in full. Agent
+Availability came back in part, as `09-administration.md`'s "Agent
+Availability & My Status" section — the agent status selector / My status
+page, whose probe (a captured screenshot) passed. Its other half, the
+Workforce dashboard, was pulled back out the same day**, once a browser
+session found the page itself does not render (see this file's `## Workforce
+Dashboard` section for exactly what was observed). AI Cost & Performance was
+never restored. Those two — Workforce Dashboard and AI Cost & Performance —
+are what remains in this file.
 
 **Status after Task 11's re-probe (2026-08-12).** The v3 rationale below is
 superseded and is kept only so the earlier decision can be audited:
@@ -38,20 +45,154 @@ superseded and is kept only so the earlier decision can be audited:
   dataset, and it holds 8 views, not the 11 this section describes.
   `/metrics/ai-cost` and `/metrics/control-items` exist as routes but are read
   by no fork patch, so there is no operator-reachable page for either.
+- **Task 15 (2026-08-12, later the same day) found the Workforce dashboard
+  half of the restored section does not render** — see this file's
+  `## Workforce Dashboard` section, below, for exactly what was observed. The
+  code/flag evidence above is still accurate as far as it goes (the patch is
+  in the image, the router is mounted, the permission gates it correctly) —
+  it just isn't sufficient on its own, which is the lesson this reversal
+  leaves for any future restore: code-and-flag evidence has to be joined by
+  an actual rendered page before a section goes back into the client-facing
+  guide.
 
-**To put the remaining section back:** switch the tenant's metrics provider to
-BigQuery against a real per-tenant dataset, create the views this section
-names, run the two owed one-off database changes, confirm a real (non-canned)
-number reaches a report, then move the section into
+**To put the AI Cost & Performance section back:** switch the tenant's
+metrics provider to BigQuery against a real per-tenant dataset, create the
+views this section names, run the two owed one-off database changes, confirm
+a real (non-canned) number reaches a report, then move the section into
 `feature-guide-src-v4/09-administration.md` ahead of `## Account settings` and
 restore its `OUTLINE.md` row. The `<!-- VERIFY-LIVE -->` comments are
 deliberately left in place — each one names what still has to be confirmed.
 
+**To put the Workforce Dashboard section back:** see that section's own "To
+put this back in v4" note, below.
+
 | Section | Status | Needs |
 |---|---|---|
-| Agent Availability & Workforce Dashboard | **Restored to v4, 2026-08-12** | Nothing further to reach it. Two capabilities inside it are switched off and documented as off: absence alerts and After-Call Work. |
+| Agent Availability & My Status | **Restored to v4, 2026-08-12** | Nothing further to reach it — this is the half of the original section whose probe (a captured screenshot) passed. Two capabilities inside it are switched off and documented as off: absence alerts and After-Call Work. |
+| Workforce Dashboard | **Restored to v4, then pulled back out, both 2026-08-12** | The data request behind the page to actually return — see this file's `## Workforce Dashboard` section for what was observed. |
 | AI Conversational Quality | **Restored to v4, 2026-08-12** | Nothing further to reach it. Four settings inside it are switched off and documented as off. One live check is still owed and is carried into the chapter as a `<!-- VERIFY-LIVE -->`: the photo/video diagnosis prompt against a real image through a real WhatsApp number, before that setting is enabled anywhere. |
 | AI Cost & Performance Measurement | **Still held back** | A real metrics-warehouse connection (the tenant is on the `noop` provider, so every metrics route serves canned data), a per-tenant dataset with the views this section names (only the 8-view default `demo_proton` exists), the `/metrics/targets` route, the two owed one-off database changes, and an operator-reachable page for the AI-cost and control-item reports — no fork patch reads either route today. |
+
+---
+
+## Workforce Dashboard
+
+<!--
+OBSERVED 2026-08-12, in two separate browser sessions: the Workforce
+dashboard's page shell loads and shows "Loading…", and its data request
+never returns — no status code, no error, no timeout, for 70+ seconds each
+time. This is not a routing or authorization problem: the same path through
+the public URL returns HTTP 401 in 0.37 seconds when unauthenticated, so the
+route is reachable and correctly gated — the authenticated request gets past
+the auth check and then hangs somewhere past it, with nothing in the browser
+(no console error, no failed network request, no timeout) to say where.
+
+This section was restored into v4's `09-administration.md` earlier on
+2026-08-12 on the strength of code/flag evidence (the patch is in the
+deployed image, the backend router is mounted, the permission gates it
+correctly) and pulled back out the same day once a browser actually opened
+the page. The Agent Availability material this section used to sit beside —
+the agent status selector and the My status page — passed its own probe (a
+captured screenshot) and stayed in `09-administration.md`, retitled "Agent
+Availability & My Status".
+-->
+
+### What it is
+
+A supervisor-facing **Workforce** dashboard meant to show, live, who is in
+which status, how long they have been in it, how their day has been split
+across statuses, their availability against the working day, and how many
+cases they currently have open. It was designed to sit alongside the agent
+status material now in the Administration chapter's **Agent Availability &
+My Status** section — same underlying data, read by a supervisor instead of
+set by the agent themselves.
+
+Three things about how the page is designed to present its data, which held
+in source review and should be re-checked once the page actually renders:
+
+> **Named statuses mirror into the CRM's own Online/Busy/Offline.** Selecting
+> "Lunch" is designed to show as **Busy** to colleagues in the conversation
+> list, and as **Lunch** on this dashboard.
+>
+> **Availability history is derived from going offline and coming back.** It
+> is *not* meant to be a login/logout record — an agent who closes their
+> laptop without setting themselves offline would stay shown as available
+> until their next change.
+>
+> **Where the dashboard cannot measure something it is designed to show a
+> blank, never a zero.** In particular the **Cases closed today** column is
+> designed to always be blank: nothing in the platform records a
+> date-filtered "resolved today" count that can be read cheaply enough to
+> refresh every half minute, and a zero there would be a statement about the
+> team's output rather than about what is instrumented. **Open cases** is
+> designed to also come back blank, for a different reason: if the count
+> could not be established on that refresh, every row would blank rather
+> than show everyone as idle.
+
+### Where to find it
+
+Supervisors would open **Workforce** in the main left-hand navigation, gated
+on the "View the workforce/presence dashboard" permission — an administrator
+permission, separate from the Agent role's default "set your own status"
+permission.
+
+### The defect
+
+The page shell loads and shows **"Loading…"**, and its data request never
+returns — no status code, no error, no timeout, observed for 70+ seconds in
+two separate browser sessions on 2026-08-12. The route itself is not the
+problem: the same path through the public URL returns HTTP 401 in 0.37
+seconds when unauthenticated, so it is reachable and correctly gated. The
+authenticated request gets past the auth check and then hangs. Until this is
+fixed, the page has nothing an operator can act on.
+
+### How it was designed to be used (not verified against a working page)
+
+1. Open **Workforce** to see the live grid: Agent, Current status, Elapsed in
+   status, Time in status today, Availability % (working day), Open cases,
+   Cases closed today, and Availability history. The page was designed to
+   re-read roughly every half minute — a polled view of current data, not a
+   pushed live feed.
+2. Read **Time in status today** and **Availability % (working day)**
+   together: the percentage is measured against the inbox's configured
+   working hours, not against a flat 24 hours, so an agent who worked their
+   whole shift would read near 100% rather than around a third. An agent
+   with no recorded history at all would show a blank rather than a zero.
+
+[[SCREENSHOT: ch09-workforce | Deferred — the page never finishes loading, so there is nothing to capture. Capture the grid described above once the data request is fixed and the page actually renders]]
+
+### Example scenario (as designed — not verified against a working page)
+
+An agent sets herself to **Lunch** at 10:45. Proton's after-sales supervisor
+opens **Workforce** at 11:40 and, if the page worked, would see she has been
+in **Lunch** for 55 minutes while three cases sit open against her name. The
+dashboard is where the *reason* would be visible; in the conversation list
+that agent simply reads as Busy. Because absence alerting is not switched on
+for this account either, nothing would page the supervisor about it —
+noticing it on the dashboard was meant to be the mechanism, once the page
+actually loads.
+
+### Integrations & automation
+
+Unlike the report pages in the Reports chapter, this dashboard is designed to
+read live records on every refresh rather than the reporting warehouse, so
+its numbers would be this account's own — once it renders. "Viewing the
+workforce dashboard" and "editing the status catalogue or setting another
+agent's status" are administrator permissions, separate from the "set your
+own status" permission the default Agent role carries, which is what the
+material remaining in `09-administration.md` depends on.
+
+### To put this back in v4
+
+Get the authenticated data request behind the page to actually return —
+check the Rails and agent-service logs for that request specifically, not
+just what the browser's network panel shows, since the browser saw no
+response at all rather than a slow one. Once it returns, confirm the page
+renders in a real, logged-in browser session (not just that the route
+answers with a 200). Only then move this section back into
+`09-administration.md`, immediately after the **Agent Availability & My
+Status** section, restore its `OUTLINE.md` row, and capture the
+`ch09-workforce` screenshot for real.
 
 ---
 

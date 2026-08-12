@@ -73,8 +73,6 @@ already signed in.
 
 <!-- VERIFY-LIVE: confirm the exact login screen fields/branding on the live tenant -->
 
-[[SCREENSHOT: ch01-login | The Proton e.MAS CRM login screen]]
-
 ### Example scenario
 
 A newly hired agent receives a welcome email with their login details,

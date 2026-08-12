@@ -5,8 +5,8 @@ This chapter covers the pages an administrator uses to configure the CRM
 itself, rather than to handle a customer conversation. Most of these pages
 require an administrator account; the Proton-specific pages that sit in the
 main left-hand navigation — SLA Policies, Audit Log, Roles & Permissions,
-Escalation Routing, Integrations, Case Taxonomy, Customer 360, Cases, the
-RSA Incident Log and Workforce — additionally require a specific permission
+Escalation Routing, Integrations, Case Taxonomy, Customer 360, Cases and the
+RSA Incident Log — additionally require a specific permission
 to be granted to your role. If you don't see one of these items in the
 left-hand navigation, ask an administrator to grant you the matching
 permission from **Roles & Permissions**. One entry in that list works the
@@ -177,8 +177,6 @@ wrong one:
 - The **idle warning, automatic close and "is your case resolved?" prompt**
   are live account-wide.
 
-[[SCREENSHOT: ch09-inboxes | Inbox inactivity-timing settings]]
-
 [[SCREENSHOT: ch09-agent-priorities | The Agent Channel Priorities table on an inbox's collaborators tab, with one edited row showing its Save button]]
 
 ### Example scenario
@@ -204,7 +202,7 @@ the two are easy to confuse and are covered side by side in the Knowledge
 chapter. Agent channel priorities feed the automatic assignment described in
 the Conversations chapter, and an agent's availability — the status shown
 beside their name in that table — is what decides whether they are offered
-new work at all (see **Agent Availability & Workforce Dashboard**, below).
+new work at all (see **Agent Availability & My Status**, below).
 
 ## Labels
 
@@ -666,7 +664,7 @@ This page controls which capabilities each role grants: both the CRM's own
 native access controls (which conversations a role can see, and whether it
 can manage contacts, reports, or the help centre) and the Proton-specific
 permissions (SLA Policies, Audit Log, Roles & Permissions itself, Escalation
-Routing, Case Taxonomy, Customer 360, Workforce, the DMS/TSP integration and
+Routing, Case Taxonomy, Customer 360, the DMS/TSP integration and
 more). It replaces the need to edit any configuration file to change what a
 role can do.
 
@@ -765,8 +763,8 @@ access away.
 ### Integrations & automation
 
 Every Proton page in this chapter — SLA Policies, Audit Log, Roles &
-Permissions, Escalation Routing, Case Taxonomy, the DMS/TSP integration
-page, and the Workforce dashboard below — only appears in the navigation
+Permissions, Escalation Routing, Case Taxonomy, and the DMS/TSP integration
+page — only appears in the navigation
 for a user whose role has been granted the matching permission here. The
 same is true of Customer 360, the Cases list and the RSA Incident Log
 covered in earlier chapters. **My status** is the deliberate exception: its
@@ -799,14 +797,18 @@ time, so what was complete last month may not be today. Nothing about how
 you apply the labels has changed (see the Conversations chapter's Labels
 section).
 
+**Checked on 2026-08-12:** every one of the six department rows —
+Pre-Sales, Engineer, Sales, After-Sales, CS and Technical — had a PIC email
+on file that day, and both dealer groups had at least one member. That is a
+snapshot, not a guarantee: the directory is editable at any time, so treat
+the instruction above — check this page yourself before you rely on it — as
+the durable rule, and this note as one data point in its favour.
+
 ### Where to find it
 
 In the main left-hand navigation, select **Escalation Routing** (visible
 only if your role has been granted the "Manage PIC/dealer escalation
 routing" permission).
-
-<!-- VERIFY-LIVE: open Escalation Routing with an administrator session and record which of the six department rows actually carry a PIC email, and which dealer groups exist with at least one member. The directory API is RBAC-gated (401 to an API key), so this can only be settled in a browser; until it is, no chapter may state a coverage count -->
-
 
 ### How to use it
 
@@ -890,46 +892,25 @@ Escalation replies section) checks against — a reply that lands from an
 address not listed here as a PIC or a dealer-group member is not linked
 back onto the case.
 
-## Agent Availability & Workforce Dashboard
-<!-- TRAINING: audience=supervisor, exercise -->
+## Agent Availability & My Status
+<!-- TRAINING: audience=agent, exercise -->
 
 ### What it is
 
-Two related things, both new since the last edition of this guide and both
-live on this account.
+An extended set of **availability statuses** an agent can choose beyond the
+three the CRM offers natively (Online, Busy, Offline): **Available, Busy,
+Lunch, Break, Coaching, Training, Toilet** and **Prayer** — new since the
+last edition of this guide and live on this account.
 
-First, an extended set of **availability statuses** an agent can choose
-beyond the three the CRM offers natively (Online, Busy, Offline):
-**Available, Busy, Lunch, Break, Coaching, Training, Toilet** and
-**Prayer**. Second, a supervisor **Workforce** dashboard showing, live, who
-is in which status, how long they have been in it, how their day has been
-split across statuses, their availability against the working day, and how
-many cases they currently have open.
-
-Three things about how this is presented are deliberate, and knowing them
-prevents a supervisor drawing the wrong conclusion from the page:
+One thing about how this is presented is deliberate, and knowing it prevents
+drawing the wrong conclusion from the status shown elsewhere in the CRM:
 
 > **Named statuses mirror into the CRM's own Online/Busy/Offline.**
 > Selecting "Lunch" shows as **Busy** to colleagues in the conversation
-> list, and as **Lunch** on the Workforce dashboard. This is deliberate: the
-> CRM's own availability field only has three values, and mirroring means an
-> agent is still correctly excluded from being offered new work even if the
-> named-status service is unavailable.
->
-> **Availability history is derived from going offline and coming back.**
-> It is *not* a login/logout record — an agent who closes their laptop
-> without setting themselves offline stays shown as available until their
-> next change.
->
-> **Where the dashboard cannot measure something it shows a blank, never a
-> zero.** In particular the **Cases closed today** column is always blank:
-> nothing in the platform records a date-filtered "resolved today" count
-> that can be read cheaply enough to refresh every half minute, and a zero
-> there would be a statement about the team's output rather than about what
-> is instrumented. **Open cases** can also come back blank, for a different
-> reason: if the count could not be established on that refresh, every row
-> blanks rather than showing everyone as idle. Read a blank as "not
-> measured", never as "none".
+> list, while the **My status** page shows the named status itself. This is
+> deliberate: the CRM's own availability field only has three values, and
+> mirroring means an agent is still correctly excluded from being offered
+> new work even if the named-status service is unavailable.
 
 **Two capabilities in this area are built but not switched on for this
 account, and neither should be described to agents as though it were
@@ -955,25 +936,21 @@ unmeasured.
 Agents set their status in two equivalent places: the **availability
 control in the profile menu**, which now offers the named statuses rather
 than only the CRM's three, and a dedicated **My status** page in the main
-left-hand navigation. Supervisors open **Workforce** in the same
-navigation.
+left-hand navigation.
 
-Each entry appears only if your role has the matching permission —
-"Set your own availability status" for **My status**, which the default
-Agent role carries, and "View the workforce/presence dashboard" for
-**Workforce**, which it does not. If an agent cannot see **My status**,
-check on the **Roles & Permissions** page that they have been assigned a
-role at all.
+**My status** appears only if your role has the matching permission — "Set
+your own availability status" — which the default Agent role carries. If an
+agent cannot see **My status**, check on the **Roles & Permissions** page
+that they have been assigned a role at all.
 
 ### How to use it
 
-1. **As an agent**, open the availability control in your profile menu, or
-   the **My status** page, and pick the status that matches what you are
-   doing — **Lunch** when you step out, for example. You do not need to also
-   set yourself Busy: choosing Lunch does that for you, which is why
-   colleagues see you as Busy while the supervisor's dashboard shows the
-   reason. **Offline** stays exactly as it always was and is still how you
-   say you are off shift.
+1. **Open the availability control in your profile menu, or the My status
+   page**, and pick the status that matches what you are doing — **Lunch**
+   when you step out, for example. You do not need to also set yourself
+   Busy: choosing Lunch does that for you, which is why colleagues still
+   see you as Busy in the conversation list. **Offline** stays exactly as it
+   always was and is still how you say you are off shift.
 2. **Check the My status page when you want to know what you are currently
    set to.** The profile-menu control shows the underlying Online/Busy/
    Offline dot rather than the named status, so after picking "Lunch" it
@@ -981,17 +958,7 @@ role at all.
    is the one that says *Currently: Lunch — for 55 min*.
 3. Set yourself back to **Available** when you return. Anything other than
    Available means new conversations are not routed to you.
-4. **As a supervisor**, open **Workforce** to see the live grid: Agent,
-   Current status, Elapsed in status, Time in status today, Availability %
-   (working day), Open cases, Cases closed today, and Availability history.
-   Leave the page open — it re-reads roughly every half minute. This is a
-   polled view of current data, not a pushed live feed.
-5. Read **Time in status today** and **Availability % (working day)**
-   together: the percentage is measured against the inbox's configured
-   working hours, not against a flat 24 hours, so an agent who worked their
-   whole shift reads near 100% rather than around a third. An agent with no
-   recorded history at all shows a blank rather than a zero.
-6. **To add a status of your own** — a shift pattern or an activity specific
+4. **To add a status of your own** — a shift pattern or an activity specific
    to your team — an administrator opens the **Status catalogue** section at
    the bottom of the **My status** page and clicks **Add status**. Give it a
    key, a label, a colour, which of the CRM's three native statuses it
@@ -999,27 +966,23 @@ role at all.
    conversations, and whether it should count as unavailable. Existing
    statuses are edited the same way. **Statuses are never deleted**, because
    past history refers to them — retire one by marking it as not receiving
-   new conversations, and it stays readable on old dashboard rows.
-7. In that catalogue, a row marked **Default** is one of the built-in
+   new conversations.
+5. In that catalogue, a row marked **Default** is one of the built-in
    statuses that has not been saved on this account yet; saving it writes
    it. **Counts as unavailable** is the setting that would arm the absence
    alerts if they were switched on — leave it off for scheduled activities
    like Coaching and Training, on for stepping away.
 
-[[SCREENSHOT: ch09-workforce | The Workforce dashboard, with the availability-history column and a blank Cases closed today column]]
-
 [[SCREENSHOT: ch09-my-status | The My status page: the status picker, the current status with its elapsed time, and the administrator-only Status catalogue]]
 
 ### Example scenario
 
-An agent sets herself to **Lunch** at 10:45. Proton's after-sales
-supervisor opens **Workforce** at 11:40 and sees she has been in **Lunch**
-for 55 minutes while three cases sit open against her name. The dashboard
-is where the *reason* is visible; in the conversation list that agent simply
-reads as Busy. Because absence alerting is not switched on for this account,
-nothing will page the supervisor about it — noticing it on the dashboard is
-the mechanism today. She reassigns the most urgent of the three cases to a
-colleague from the conversation view.
+An agent sets herself to **Lunch** at 10:45 before stepping away from her
+desk. Colleagues opening the conversation list see her as **Busy**, so
+routing correctly stops offering her new conversations, while her own **My
+status** page reads *Currently: Lunch — for 55 min* so she can see exactly
+how long she has been away. She sets herself back to **Available** just
+before 11:40 when she returns, and new conversations resume.
 
 ### Integrations & automation
 
@@ -1030,17 +993,12 @@ routing keeps behaving correctly even if the named-status service is
 unavailable. The agent availability shown beside each name in the **Agent
 Channel Priorities** table earlier in this chapter is the same value.
 
-Three separate permissions, all granted from **Roles & Permissions**, govern
-this area, and the split matters: *setting your own status* belongs to the
-Agent role by default, because it is part of an agent's own working day;
-*viewing the workforce dashboard* and *editing the status catalogue or
-setting another agent's status* are administrator permissions. An agent
-cannot mark a colleague as being on Lunch — that would take the colleague
-out of routing under their own name.
-
-Unlike the report pages in the Reports chapter, this dashboard reads live
-records on every refresh rather than the reporting warehouse, so its numbers
-are this account's own.
+Two separate permissions, both granted from **Roles & Permissions**, govern
+what's described here: *setting your own status* belongs to the Agent role
+by default, because it is part of an agent's own working day; *editing the
+status catalogue or setting another agent's status* is an administrator
+permission. An agent cannot mark a colleague as being on Lunch — that would
+take the colleague out of routing under their own name.
 
 ## AI Conversational Quality
 
@@ -1164,8 +1122,6 @@ private notes in the conversation.
    deliberately kept separate from your authored FAQs, so clearing it can
    never remove curated content — but there is no button or command for it
    today, so ask us before you need it in a hurry.
-
-[[SCREENSHOT: ch09-ai-quality | The reply composer's Translate action, and the resulting translation as a private note in the conversation]]
 
 ### Example scenario
 

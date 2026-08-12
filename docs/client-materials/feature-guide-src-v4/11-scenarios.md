@@ -67,8 +67,6 @@
    actually took, they'd check the case itself (see the Reports chapter's
    Weekly Report and Dealer escalation turnaround sections).
 
-[[SCREENSHOT: ch11-scenario2-escalation | A complaint tracked from escalation label, through the dealer's reply, to the turnaround report]]
-
 ## Scenario 3: RSA call to Customer 360 follow-up
 <!-- TRAINING: audience=supervisor -->
 
@@ -98,8 +96,6 @@
    on today (see the Contacts chapter's Customer 360 section and the
    Integration Overview chapter's DMS/TSP section).
 
-[[SCREENSHOT: ch11-scenario3-rsa | An RSA incident followed up through Customer 360]]
-
 ## Scenario 4: FAQ batch import to live bot answer
 <!-- TRAINING: audience=admin, exercise -->
 
@@ -121,8 +117,6 @@
    normal handoff to a human agent, the same as any other unanswerable
    question (see the AI Assistant Behaviour chapter's When the AI replies
    vs. hands off to a human section).
-
-[[SCREENSHOT: ch11-scenario4-faq-csv | A newly imported FAQ answered live by the bot after Playground testing]]
 
 ## Scenario 5: Weekly reporting routine
 <!-- TRAINING: audience=supervisor, exercise -->
@@ -179,9 +173,7 @@
    where she sets her own availability, but none of the administrator-only
    pages (see the Introduction chapter's Logging in and Roles: agent vs
    administrator sections, and the Administration chapter's Agent
-   Availability & Workforce Dashboard section).
-
-[[SCREENSHOT: ch11-scenario6-onboarding | Onboarding a new agent with a role, team, and inbox assignment]]
+   Availability & My Status section).
 
 ## Scenario 7: A customer replies to their own acknowledgement email
 
@@ -328,8 +320,6 @@
    being looped in — not that "I've escalated this," since the label
    alone didn't do anything on this channel.
 
-[[SCREENSHOT: ch11-scenario12-whatsapp-escalation-limit | Adding dealer and escalate labels to a WhatsApp conversation, with no email sent as a result]]
-
 ## Scenario 13: The same limitation on a web chat case
 
 1. A website visitor asks about a warranty issue that turns out to need
@@ -346,8 +336,6 @@
    outside the CRM today, the same as WhatsApp.
 4. The agent contacts the dealer directly and tells the visitor only that
    the right team has been looped in, the same wording as Scenario 12.
-
-[[SCREENSHOT: ch11-scenario13-webchat-escalation-limit | The same escalate-label limitation on a Web Chatbot conversation]]
 
 ## Scenario 14: An after-hours breakdown call, and an unanswered transfer
 
@@ -373,8 +361,6 @@
 5. Neither of these cases can be escalated to a dealer with just the
    `escalate` label either — a phone conversation isn't on the Email
    inbox, the same limitation as Scenarios 12 and 13.
-
-[[SCREENSHOT: ch11-scenario14-phone-unanswered-handoff | A tagged unanswered-transfer conversation, and an after-hours breakdown call logged manually]]
 
 ## Scenario 15: Categorising a case through all five taxonomy dropdowns
 <!-- TRAINING: audience=agent, exercise -->
@@ -455,5 +441,10 @@
    page yourself before a launch event rather than relying on a past
    check, and don't tell the team they can skip double-checking after an
    escalation on the strength of a check that's already gone stale.
+5. **As it stood on 2026-08-12:** all six department rows and both dealer
+   group rows did show a contact — a supervisor doing this check that day
+   would have found nothing missing. That observation is already out of
+   date by the time you read it, which is exactly why step 1 above is
+   worth repeating rather than trusted from a past run.
 
 [[SCREENSHOT: ch11-scenario17-escalation-routing-verified | The Escalation Routing page, checked row by row before a launch event]]

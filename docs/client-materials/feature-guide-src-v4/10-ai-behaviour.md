@@ -196,7 +196,10 @@ Applied like any other label, from an open conversation's label control
    then the relevant dealer label if one is involved. **Check the Escalation Routing page in the
    Administration chapter rather than assume every department or dealer
    is covered** — one with no contact configured there sends the
-   escalation email to nobody, with no error anywhere to warn you. You may
+   escalation email to nobody, with no error anywhere to warn you.
+   Checked on 2026-08-12: all six departments and both dealer groups had a
+   contact configured that day — but the directory is editable at any time,
+   so that is one data point, not a guarantee. You may
    see a private note suggesting a department first — see the
    Conversations chapter's AI-suggested escalation department section.
 3. Apply the **escalate** label last.
@@ -364,8 +367,6 @@ appearing all at once at hangup otherwise.
 
 <!-- VERIFY-LIVE: confirm current phone/IVR operator-visible surface on the live tenant -->
 
-[[SCREENSHOT: ch10-voice-bot | A voice bot call transcript building up in the Conversations view]]
-
 ### Example scenario
 
 A customer calls outside business hours asking about the battery warranty
@@ -435,8 +436,6 @@ an agent switches on.
    Voice bot section describes.
 
 <!-- VERIFY-LIVE: confirm current phone/IVR operator-visible surface on the live tenant -->
-
-[[SCREENSHOT: ch10-phone-handoff | An unanswered-transfer note on a phone conversation]]
 
 ### Example scenario
 

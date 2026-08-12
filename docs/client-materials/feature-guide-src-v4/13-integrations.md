@@ -121,8 +121,6 @@ before promising a visitor the bot will answer.
 5. If the widget stops loading, or messages aren't arriving, report it to
    your CRM administrator or Devoteam support.
 
-[[SCREENSHOT: ch12-web-chatbot | A Web Chatbot inbox conversation]]
-
 ### Example scenario
 
 A website visitor asks about e.MAS 7 financing options through the chat
@@ -179,8 +177,6 @@ hangup, depending on how your tenant is configured.
    and a real agent transfer are built and code-reviewed but, as of this
    writing, have never been run against a real phone call — describe them
    as "should work, unconfirmed" if a client asks, not as proven.
-
-[[SCREENSHOT: ch12-voice-bot | A voice bot call transcript in the Conversations view]]
 
 ### Example scenario
 
@@ -243,8 +239,6 @@ that conversation.
    transfer that should have connected but didn't, report it to your CRM
    administrator or Devoteam support — most of this behaviour is still
    being confirmed against real calls.
-
-[[SCREENSHOT: ch12-phone | A call transferred to a human agent, and the note it leaves behind]]
 
 ### Example scenario
 

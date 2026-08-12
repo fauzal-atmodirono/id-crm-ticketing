@@ -100,7 +100,10 @@ for that department under Escalation Routing (see the Administration
 chapter) — and a department with **no** contact configured there sends
 the escalation email to nobody, with no error anywhere to warn you.
 **Check the Escalation Routing page rather than assume every department
-is covered.** A dealer label works the same way but can route to a whole
+is covered.** (Checked on 2026-08-12: all six departments and both dealer
+groups had a contact configured that day — but the directory is editable at
+any time, so treat that as one data point, not a guarantee, and check the
+page yourself.) A dealer label works the same way but can route to a whole
 **dealer group** instead of a single contact — every member of that group
 is forwarded the case, again only for a dealer that's actually been
 configured there.
@@ -329,8 +332,6 @@ lands in your inbox. No particular page needs to be open for it to fire.
    alerts for other events — exists in the product but is **not switched on
    for this tenant**, so there's nothing to configure yet. What you see is
    the same for every agent, and it can't currently be changed.
-
-[[SCREENSHOT: ch02-inbound-alert | A toast notification for a new customer message]]
 
 ### Example scenario
 
@@ -653,8 +654,6 @@ A "Translate" button next to Copilot, above the reply box.
 4. Read the note, which also names the language it detected the message
    was written in, then reply to the customer yourself in whichever
    language fits.
-
-[[SCREENSHOT: ch02-translate | Translating a customer's message into English, posted as a private note]]
 
 ### Example scenario
 

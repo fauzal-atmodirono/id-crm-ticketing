@@ -100,18 +100,21 @@ from the current incident records, not a separate log.
 
 ### What it is
 
-Incidents logged here also surface elsewhere: an operator searching
-Customer 360 by a vehicle number sees any matching incidents alongside
-that customer's contact and conversations, and the same incident data
-feeds Proton's wider reporting — the Cases by cause/Cases by dealer
-summary on this page is a lightweight version of that same reporting.
+Incidents logged here surface in exactly two other places: an operator
+searching Customer 360 by a vehicle number sees any matching incidents
+alongside that customer's contact and conversations, and this page's
+own Cases by cause/Cases by dealer summary (above) totals the same
+incident records. RSA incidents are their own separate record, kept
+apart from conversation data — they are not part of what feeds the
+Reports chapter's Departments & PIC or Case Lifecycle reports, so an
+incident logged here will not show up on either of those report pages.
 
 ### Where to find it
 
 The RSA incidents table inside a Customer 360 lookup (see the Contacts
-chapter); the Cases by cause/Cases by dealer summary on this page; and
-the Departments & PIC and Case Lifecycle reports (see the Reports
-chapter).
+chapter), and the Cases by cause/Cases by dealer summary on this page —
+see What it is, above, for why the Reports chapter's own report pages
+aren't a third place to look.
 
 ### How to use it
 

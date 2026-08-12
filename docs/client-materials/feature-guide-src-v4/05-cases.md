@@ -120,7 +120,12 @@ Vehicle Model are new rows in that same panel — before this edition,
 neither had a custom-attribute definition at all, so those two dropdowns
 didn't render there yet.
 
-<!-- VERIFY-LIVE: confirm the exact custom attributes panel label and location on the live tenant -->
+Administrators also see a separate **Case Taxonomy** page in the
+sidebar, new since the last edition, for managing where Case Category,
+Case Subcategory, and Case Detail's option lists themselves come from —
+see Integrations & automation, below.
+
+<!-- VERIFY-LIVE: confirm the exact custom attributes panel label and location on the live tenant, and the exact Case Taxonomy page wording -->
 
 ### How to use it
 
@@ -168,18 +173,40 @@ Appendix A specifies.
 
 ### Integrations & automation
 
-The list of available Case Category/Case Subcategory values is defined
-by an administrator under the Administration chapter's Custom Attributes
-section; Case Type, Case Detail, and Vehicle Model are provisioned the
-same way but as flat option lists (see that section for how these are
-sourced from RFP 2026_028 Appendix A). Case Category, Case Subcategory,
-Case Type, and Vehicle Model are also set automatically by the AI
-assistant when it classifies an incoming or just-resolved conversation
-(see the AI Assistant Behaviour chapter) — an agent reviewing the case
-can always correct a misclassification here, the same as before. Case
-Detail is never set by the AI; it's always an agent's own pick. These
-five values feed the Cases list (above) and the Departments & PIC and
-Case Lifecycle reports (see the Reports chapter).
+**New since the last edition of this guide:** Case Category, Case
+Subcategory, and Case Detail's option lists are now administered from
+the dedicated **Case Taxonomy** page (see Where to find it, above),
+reachable only to administrators granted the case-taxonomy permission —
+not every administrator has it. There, an administrator builds the
+division/subcategory/detail tree entry by entry, giving each one a
+label and, optionally, the escalation department it belongs to. Saving
+a change updates the dropdown values agents see immediately, with no
+restart or redeploy. A value is never permanently deleted, only
+**retired** — a case created before a value was retired keeps showing
+it correctly, and retiring a value doesn't retire anything beneath it
+in the tree, so the page walks the administrator through re-homing or
+retiring those separately rather than leaving them invisible by
+accident.
+
+Because the Case Taxonomy page treats its own list as the complete,
+authoritative one and rewrites it in full every time an administrator
+saves or retires a node there, **don't add or edit Case Category, Case
+Subcategory, or Case Detail values from the general Custom Attributes
+settings page anymore** (see the Administration chapter) — a value
+added that way can be silently overwritten the next time anyone uses
+the Case Taxonomy page. Case Type and Vehicle Model aren't part of this
+taxonomy tree and have no dedicated admin page of their own; keep
+provisioning those two as flat option lists under Administration →
+Custom Attributes, same as before, sourced from RFP 2026_028 Appendix A.
+
+Case Category, Case Subcategory, Case Type, and Vehicle Model are also
+set automatically by the AI assistant when it classifies an incoming or
+just-resolved conversation (see the AI Assistant Behaviour chapter) —
+an agent reviewing the case can always correct a misclassification
+here, the same as before. Case Detail is never set by the AI; it's
+always an agent's own pick. These five values feed the Cases list
+(above) and the Departments & PIC and Case Lifecycle reports (see the
+Reports chapter).
 
 ## Case lifecycle & status
 <!-- TRAINING: audience=agent -->

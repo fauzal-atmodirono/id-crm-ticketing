@@ -23,6 +23,17 @@ this CRM keeps every escalation inside Chatwoot rather than a separate
 ticketing system, both reasons produce exactly the same thing you see: a
 reopened conversation, ready for an agent.
 
+When a customer's message includes a photo, video, or voice note, the
+assistant reads that media as part of the same decision, on WhatsApp as
+well as other channels — and when it does, the terms it draws from that
+media, not just the customer's typed words, are what lead its search of
+the knowledge base for an answer. A warning-light photo with no caption at
+all can still steer the assistant to the right article, and to the right
+reply. This is the same media-grounded search that powers an agent's
+manual "Suggest a reply" click (see the Conversations chapter); here it
+happens automatically, as part of the assistant deciding what to say or
+whether to hand off.
+
 ### Where to find it
 
 Not something an agent switches on or off. Whether the assistant is active
@@ -68,27 +79,33 @@ Inboxes.
 ### What it is
 
 Every inbox where the assistant is active runs in one of two modes, chosen
-by an administrator: **Suggest mode**, where the assistant drafts a reply as
-a private note and reopens the conversation for a human to review and send;
-or **Auto mode**, where the assistant sends its reply straight to the
-customer and the conversation stays **Pending** while it continues handling
-the conversation on its own.
+by an administrator: **Auto mode** — the tenant-wide default today, unless
+an inbox has its own override — where the assistant sends its reply
+straight to the customer and the conversation stays **Pending** while it
+continues handling the conversation on its own; or **Suggest mode**, where
+the assistant drafts a reply as a private note and reopens the
+conversation for a human to review and send. **On this tenant today, a
+customer's default experience is a reply that reaches them without a
+human reading it first.** Suggest mode exists and can be set per inbox,
+but it is the exception here, not the rule.
 
 ### Where to find it
 
-Set per inbox under **Knowledge → Inboxes**, with a tenant-wide default mode
-under **Knowledge → Settings** that applies to any inbox without its own
-override (see the Knowledge chapter for both).
+Set per inbox under **Knowledge → Inboxes**, with a tenant-wide default
+mode under **Knowledge → Settings** — currently **Auto** — that applies to
+any inbox without its own override (see the Knowledge chapter for both).
 
 ### How to use it
 
-1. An administrator decides which inboxes should run in Suggest mode
-   (every reply reviewed by a human first) and which can run in Auto mode
-   (the assistant replies directly, useful for high-volume, low-risk
-   questions).
-2. Set or change the mode for a specific inbox under **Knowledge →
-   Inboxes**; leave an inbox unset to inherit the tenant-wide default mode
-   from **Knowledge → Settings**.
+1. On most inboxes today, the assistant's reply is sent to the customer
+   directly, with no human review step — that's Auto mode, the tenant-wide
+   default — and the conversation stays **Pending** while the assistant
+   keeps handling it on its own.
+2. On an inbox an administrator has switched to Suggest mode instead,
+   watch for a private note marked as a suggested reply on a conversation
+   the assistant has just handled — that private note, reviewed and sent
+   by a human, is the only place in this flow a reply is checked before a
+   customer sees it.
 3. As an agent, you can tell which mode an inbox is running by what you
    see: a suggested draft arriving as a private note (Suggest mode) versus
    a reply already sent to the customer with the conversation still
@@ -100,11 +117,13 @@ override (see the Knowledge chapter for both).
 
 ### Example scenario
 
-Proton runs its general WhatsApp support inbox in Suggest mode, so every
-AI-drafted reply is reviewed by an agent before it reaches a customer, but
-runs a simpler pre-order inquiry inbox in Auto mode, since those questions
-are lower-risk and higher-volume, and the team wants customers to get an
-instant answer.
+On the tenant's default Auto mode, a customer asks the after-sales
+WhatsApp inbox about a delayed spare-part order; the assistant answers
+directly and the conversation stays Pending until it hands off or an
+agent steps in — nobody reviewed that reply before the customer read it.
+On an inbox an administrator has switched to Suggest mode instead, the
+same kind of question produces a private-note draft that the on-duty
+agent reviews, adjusts, and sends as their own reply.
 
 ### Integrations & automation
 
@@ -128,6 +147,16 @@ department/dealer labels are already present the moment `escalate` is
 applied, so applying `escalate` before the department label means that
 leg silently doesn't fire for that trigger — apply the department label,
 then the dealer label if there is one, then `escalate`, in that order.
+
+Separately, on an Email-channel conversation with no department label
+applied yet, the assistant may post a private note **suggesting** a
+department — never applying the label itself. That's a deliberate limit,
+not an oversight: applying `escalate` after a department label fires the
+escalation email automatically, and an AI guess is not something that
+should be able to send that email on its own — so the suggestion always
+waits for a human to read it and add the label by hand. See the
+Conversations chapter's AI-suggested escalation department section for
+the full walkthrough.
 
 This is no longer a one-way notification. The escalation email carries a
 hidden reference back to its conversation, so when the dealer or PIC
@@ -163,14 +192,14 @@ Applied like any other label, from an open conversation's label control
 
 1. Open the Email conversation you need to escalate.
 2. Apply a department label first — `dept_sales`, `dept_engineer`,
-   `dept_pre_sales`, `dept_aftersales`, `dept_cs`, or `dept_technical`,
-   all six of which now have a PIC configured and route correctly — then
-   the relevant dealer label if one is involved (`dealer_komang_motor`
-   and `dealer_caroline_motor` are both live dealer groups today) — see
-   **Escalation Routing** in the Administration chapter for how these map
-   to a specific PIC or dealer group. You may see a private note
-   suggesting a department first — see the Conversations chapter's
-   AI-suggested escalation department section.
+   `dept_pre_sales`, `dept_aftersales`, `dept_cs`, or `dept_technical` —
+   then the relevant dealer label if one is involved (`dealer_komang_motor`
+   or `dealer_caroline_motor`). **Check the Escalation Routing page in the
+   Administration chapter rather than assume every department or dealer
+   is covered** — one with no contact configured there sends the
+   escalation email to nobody, with no error anywhere to warn you. You may
+   see a private note suggesting a department first — see the
+   Conversations chapter's AI-suggested escalation department section.
 3. Apply the **escalate** label last.
 4. The acknowledgement email to the customer and the internal forward to
    the PIC/dealer group are sent automatically; there's nothing further to
@@ -244,11 +273,14 @@ today.**
 > agent-handled variants. Ratings still reach the CSAT report, because the
 > CRM's own native satisfaction survey is enabled on every inbox — that is
 > a separate mechanism, configured per inbox rather than per assistant.
-> On the Email inbox the acknowledgement of receipt is sent by
-> the inbox's own greeting rather than by the platform, which means it goes
-> to **every** new email thread — including a dealer replying to an
-> escalation. Ask your administrator before telling a customer that any of
-> these will reach them.
+> On the **WhatsApp and Email** inboxes, a customer's immediate
+> acknowledgement when a conversation starts comes from that inbox's own
+> native greeting instead — a further separate mechanism again, on for
+> those two inboxes and off for the web chatbot and the Proton API inbox.
+> It is not the assistant's Welcome message, doesn't go through the
+> assistant at all, and its wording lives on that inbox's own settings
+> page, not here. Ask your administrator before telling a customer that
+> any of these will reach them.
 
 1. If a customer stops replying mid-conversation, expect an idle-warning
    message once the configured wait time passes, followed by an automatic
@@ -259,7 +291,11 @@ today.**
 3. With the surveys switched on, a "yes" would also bring a satisfaction
    rating request and a thank-you, and a human resolving a case directly
    would bring the agent-specific survey. Neither happens today.
-4. Treat these messages as normal, expected parts of the flow — they don't
+4. On WhatsApp or Email, don't be surprised to see a customer already
+   greeted before the assistant sends its first answer — that's the native
+   greeting above, not a sign the Welcome message has quietly turned back
+   on.
+5. Treat these messages as normal, expected parts of the flow — they don't
    need an agent to trigger them.
 
 [[SCREENSHOT: ch10-lifecycle-messages | The set of customer lifecycle messages in the assistant settings]]

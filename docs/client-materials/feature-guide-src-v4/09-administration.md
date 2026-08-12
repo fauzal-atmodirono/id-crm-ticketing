@@ -3,12 +3,15 @@
 
 This chapter covers the pages an administrator uses to configure the CRM
 itself, rather than to handle a customer conversation. Most of these pages
-require an administrator account; a handful of the Proton-specific pages
-(SLA Policies, Audit Log, Roles & Permissions, Escalation Routing, and
-Integrations) additionally require a specific permission to be granted to
-your role — if you don't see one of these items in the left-hand navigation,
-ask an administrator to grant you the matching permission from **Roles &
-Permissions**.
+require an administrator account; the Proton-specific pages that sit in the
+main left-hand navigation — SLA Policies, Audit Log, Roles & Permissions,
+Escalation Routing, Integrations, Case Taxonomy, Customer 360, Cases, the
+RSA Incident Log and Workforce — additionally require a specific permission
+to be granted to your role. If you don't see one of these items in the
+left-hand navigation, ask an administrator to grant you the matching
+permission from **Roles & Permissions**. One entry in that list works the
+other way round: **My status** is deliberately available to ordinary agents,
+because setting your own availability is part of an agent's own working day.
 
 ## Agents
 <!-- TRAINING: audience=admin, exercise -->
@@ -97,22 +100,38 @@ grouping in reports (see the Reports chapter's Departments & PIC report).
 
 An inbox is one connected communication channel — a WhatsApp number, an
 email address, the website widget, and so on. Each inbox has its own
-settings: which agents can see it, its working hours, and (Proton addition)
+settings: which agents can see it, its working hours, whether it sends the
+CRM's own greeting and satisfaction-survey messages, and (Proton additions)
 how long an idle conversation waits before the customer is warned and the
-conversation is auto-closed.
+conversation is auto-closed, plus which channel each agent handles first.
+
+Three of these are worth calling out because they are the switches operators
+most often assume are somewhere else:
+
+- **The greeting message is a per-inbox setting here**, not part of the AI
+  assistant's own wording. It is the acknowledgement a customer gets when
+  they first write in.
+- **The satisfaction-rating request sent when a conversation is resolved is
+  also a per-inbox setting here** — again separate from the AI assistant's
+  own rating prompt, which is a different message configured in a different
+  place (see the Knowledge chapter).
+- **Agent channel priorities are edited on this page too**, on the
+  collaborators tab of an individual inbox, even though what they steer is
+  automatic assignment across the account.
 
 ### Where to find it
 
 Open **Settings** (the gear icon) and select **Inboxes**, then choose the
 inbox you want to configure.
 
-<!-- VERIFY-LIVE: confirm the exact tab name that hosts business hours / inactivity settings on the live tenant -->
+<!-- VERIFY-LIVE: confirm the exact tab names that host business hours / inactivity settings and the collaborators/agent-priorities table on the live tenant -->
 
 ### How to use it
 
 1. Open **Settings → Inboxes** and select the inbox to configure.
-2. Use the inbox's general settings to control its name, the agents/teams
-   assigned to it, and greeting/away messages.
+2. Use the inbox's general settings to control its name and the
+   agents/teams assigned to it, and to switch the **greeting message** and
+   the resolution **satisfaction survey** on or off and set their wording.
 3. Open the tab that hosts business hours to set working hours for the
    inbox.
 4. On the same tab, scroll to **Inactivity & auto-close**. Toggle **Enable
@@ -125,24 +144,67 @@ inbox you want to configure.
    closed message**, **Resolution prompt**, **Assign-to-agent message**, **AI
    rating survey**, **Agent rating survey**, and **Thank-you message** sent
    to the customer at each stage. Leave a field blank to use the default
-   wording.
+   wording. Note that the last three of those seven — the two rating surveys
+   and the thank-you — belong to the AI assistant's own survey step, which is
+   **switched off account-wide today**, so wording entered there is stored
+   but nothing sends it. The first four are live.
 7. Click **Update** to save — this single action saves both the business
    hours and the inactivity-timing settings together.
+8. To set which channel an agent picks up first, open the inbox's
+   **collaborators** tab and use the **Agent Channel Priorities** table (see
+   below).
+
+**Agent Channel Priorities.** The table lists every agent with their current
+availability, one **Primary** channel, and any number of **Also handles**
+channels, chosen from WhatsApp, Call, Email, Social and Web. Primary is
+always first in an agent's priority order, so the chip for an agent's current
+primary channel is deliberately not selectable as an extra — a channel cannot
+be both. A **Save** button appears on a row only once you have actually
+changed it; a row you have saved shows a **Saved** tick and an untouched row
+shows a dash, so at a glance you can see which rows still hold unsaved work.
+The table is account-wide even though it is reached through one inbox: the
+priorities you set here steer automatic assignment everywhere (see the
+Conversations chapter).
+
+**Where each per-inbox switch stands today**, so nobody plans around the
+wrong one:
+
+- The **greeting message** is on for the WhatsApp and Email inboxes and off
+  for the API and website-demo inboxes.
+- The **resolution satisfaction survey** is on for all four inboxes — this
+  is the rating request customers actually receive when a conversation is
+  resolved.
+- The **idle warning, automatic close and "is your case resolved?" prompt**
+  are live account-wide.
 
 [[SCREENSHOT: ch09-inboxes | Inbox inactivity-timing settings]]
+
+[[SCREENSHOT: ch09-agent-priorities | The Agent Channel Priorities table on an inbox's collaborators tab, with one edited row showing its Save button]]
 
 ### Example scenario
 
 Proton's WhatsApp inbox is set to warn a customer after 10 minutes of no
 reply ("Warn after idle (min)"), then auto-close 5 minutes later during
 business hours, but wait longer overnight when no agent is on duty — set via
-a larger out-of-hours grace value on the same inbox.
+a larger out-of-hours grace value on the same inbox. On the same inbox's
+collaborators tab, an administrator sets Sari's **Primary** channel to
+WhatsApp and ticks Email under **Also handles**, so she is offered WhatsApp
+work first and email only when WhatsApp is quiet; the row shows a Save
+button until she clicks it, then a Saved tick.
 
 ### Integrations & automation
 
 The inactivity timers work together with the AI assistant's lifecycle
 messages (see the AI Behaviour chapter) to keep conversations moving without
-an agent having to manually chase or close every idle chat.
+an agent having to manually chase or close every idle chat — and where both
+are set, the wording entered on this page wins over the assistant's own. The
+greeting and satisfaction-survey switches on this page are the CRM's own,
+and run whether or not the AI assistant's equivalent messages are enabled;
+the two are easy to confuse and are covered side by side in the Knowledge
+chapter. Agent channel priorities feed the automatic assignment described in
+the Conversations chapter, and an agent's availability — the status shown
+beside their name in that table — is what decides whether they are offered
+new work at all (see **Agent Availability & Workforce Dashboard**, below).
 
 ## Labels
 
@@ -204,6 +266,23 @@ in the RFP's Level 3/4 rows (see the Cases chapter for the full
 explanation) — these lists are large (246 Case Detail values alone) and
 are provisioned from that source file, not hand-typed one at a time.
 
+> **This page is no longer where three of those five are maintained, and
+> the previous edition of this guide said otherwise.** Case Category, Case
+> Subcategory and Case Detail are now owned by the separate **Case
+> Taxonomy** admin page (see the Cases chapter, which explains its
+> four-tier structure and the trap in its tier names). That page treats its
+> own tree as the complete, authoritative list and rewrites all three option
+> lists in full every time anyone saves or retires a node on it. So a value
+> you add to any of those three from this page can be silently overwritten
+> the next time an administrator touches Case Taxonomy — no error, no
+> warning, the value is simply gone. Add and edit those three on the Case
+> Taxonomy page instead.
+>
+> **Case Type and Vehicle Model are not affected.** Neither is part of the
+> taxonomy tree, neither is touched by that page's sync, and neither has an
+> admin page of its own — they stay here, as ordinary List attributes, and
+> editing them here is correct.
+
 ### Where to find it
 
 Open **Settings** (the gear icon) and select **Custom Attributes**.
@@ -216,11 +295,13 @@ Open **Settings** (the gear icon) and select **Custom Attributes**.
 2. Click **Add Custom Attribute**, choose whether it applies to
    conversations or contacts, give it a name and a type (text, number, list,
    checkbox, etc.), and save.
-3. To edit an attribute's options, click on it and update the fields. For
-   the five case-categorisation attributes specifically, treat this as a
-   last resort rather than routine maintenance — Case Detail alone carries
-   246 values matched one-for-one against the RFP source, and a hand
-   edit here won't update that source file, so the two can drift apart.
+3. To edit an attribute's options, click on it and update the fields.
+   **Do not edit Case Category, Case Subcategory or Case Detail here** —
+   use the Case Taxonomy page (see the box above, and the Cases chapter).
+   Case Type and Vehicle Model are edited here as normal, though treat even
+   those as occasional rather than routine maintenance: both are matched
+   one-for-one against the RFP source, and a hand edit here won't update
+   that source file, so the two can drift apart.
 4. To remove an attribute that is no longer needed, use its delete option and
    confirm.
 
@@ -233,13 +314,19 @@ Open **Settings** (the gear icon) and select **Custom Attributes**.
 Proton's five case-categorisation fields (used on the Cases page) are
 defined here as conversation-level custom attributes, so any conversation
 can be tagged with the same structured Case Type/Category/Subcategory/
-Detail/Vehicle Model values used in Case reporting.
+Detail/Vehicle Model values used in Case reporting. An administrator asked
+to add a new vehicle model adds it here; an administrator asked to add a new
+case category adds it on the Case Taxonomy page instead, and the value
+reaches this page automatically.
 
 ### Integrations & automation
 
 Custom attributes back the Cases feature's five categorisation fields (see
 the Cases chapter) and can also be used as conditions in Automation rules
-below.
+below. Three of the five — Case Category, Case Subcategory and Case Detail —
+have the Case Taxonomy page as their source of truth and are written into
+this page's definitions from there; the other two are maintained here
+directly.
 
 ## Automation
 
@@ -391,14 +478,17 @@ Permissions** below), then open the **DMS / TSP** card.
 ### How to use it
 
 1. From the main left-hand navigation, open **Integrations**, then click the
-   **DMS / TSP** card. Its status badge shows **Not connected**, **Enabled**,
-   or **Status unavailable** — it never claims to be actively connected,
-   since that can only be confirmed with the **Test connection** button
-   described below.
+   **DMS / TSP** card. Its status badge shows **Checking status…** while it
+   loads, then **Not connected**, **Enabled**, or **Status unavailable** —
+   it never claims to be actively connected, since that can only be
+   confirmed with the **Test connection** button described below. Even an
+   **Enabled** badge carries a caption saying reachability has not been
+   verified.
 2. Check **Enabled** to turn the connection on.
 3. Fill in a **Provider label** (a friendly name for your own reference),
-   the **Auth type** (Bearer token, Basic auth, or API key header), and the
-   **Base URL** of the DMS/TSP system (must start with `https://`).
+   the **Auth type** (Bearer token, Basic auth, or API key header — the
+   third option names the header it sends), and the **Base URL** of the
+   DMS/TSP system (must start with `https://`).
 4. Click **Replace** next to **Credential** to enter the API key/secret for
    this connection. Once saved, the credential always shows as masked
    (`••••••••`) and is never displayed again — click **Replace** again later
@@ -411,7 +501,11 @@ Permissions** below), then open the **DMS / TSP** card.
    response before giving up and showing CRM data only (between 0.1 and 30
    seconds).
 7. Click **Save**, then click **Test connection** to confirm the saved
-   configuration can actually reach the DMS/TSP system.
+   configuration can actually reach the DMS/TSP system. **Test connection
+   runs against the saved configuration, not what is on screen**, so save
+   first if you have just edited the form. A successful test reports
+   **Reachable**; a failure names the reason — authentication failed, timed
+   out, an unexpected response, or not configured yet.
 
 [[SCREENSHOT: ch09-integrations | Configuring the DMS / TSP connection under Integrations]]
 
@@ -469,11 +563,18 @@ your role has been granted the "Manage SLA policies" permission — see
 5. Optionally set **Per-channel ACK minutes (JSON)** for a channel-specific
    acknowledgement target, for example `{"whatsapp": 15}`, and a **PIC
    WhatsApp number** to notify.
-6. Leave any field empty on an inbox's policy to inherit the tenant default
+6. Use the **Engine enabled override** checkbox to switch SLA tracking off
+   for this scope entirely — useful for an inbox that should not be
+   measured against a target at all.
+7. Leave any field empty on an inbox's policy to inherit the tenant default
    (or the deployed default, for Tier-2/warning) instead of setting an
-   inbox-specific value.
-7. Click **Save**. The policy applies to conversations on that scope going
-   forward; it does not re-evaluate already-closed conversations.
+   inbox-specific value. *Setting a field back to empty after you have
+   typed in it can be rejected on save*; if that happens, ask us to clear
+   the value rather than fighting the form.
+8. Click **Save**. The new targets apply from the next check onward. A
+   breach that has already been recorded is never recomputed or removed, and
+   a conversation already resolved is not re-examined — so lowering a
+   threshold cannot retrospectively create or erase a breach.
 
 [[SCREENSHOT: ch09-sla-policies | Editing an SLA policy's response, resolution, Tier-2, and warning thresholds]]
 
@@ -487,20 +588,34 @@ Email case actually breaches and triggers the PIC-group alert.
 
 ### Integrations & automation
 
-SLA policy targets are what the SLA reports in the Reports chapter measure
-performance against; a policy breach is what those reports flag as missed,
-and what the SLA breach alert engine (Conversations chapter) actively
-notifies the PIC group and posts a private note about, on the Email
-inbox today.
+A policy breach is what the SLA breach alert engine (Conversations chapter)
+actively notifies the PIC group and posts a private note about, on the Email
+inbox today — that part is live and reads this account's real conversations.
+
+The targets set here are *also* what the SLA reports in the Reports chapter
+measure performance against, but read that chapter's opening note before
+using those pages to judge whether a target is being met: the cross-channel
+reporting connection those sections read from has not yet been switched on
+for this account, so the "Proton" sections on the reports pages currently
+show illustrative example numbers rather than this account's real
+performance. Editing a target here changes what the live alert engine
+enforces immediately; it does not make an illustrative report page real.
 
 ## Audit Log
 <!-- TRAINING: audience=admin, exercise -->
 
 ### What it is
 
-A read-only, filterable log of case/ticket status changes — who changed a
-case from one status to another, and when — used to review what happened on
-a case after the fact.
+A read-only, filterable trail of what has happened to a case — who moved it
+from one state to another, and when — used to review a case after the fact.
+
+**It records more than an agent changing a status by hand**, which is worth
+knowing before you read a row and can't place it. The same trail also
+carries the SLA engine's own breach and Tier-2 markers, the moment an agent
+first replied, whether an escalation email actually went out, an
+escalation being acknowledged, and a supervisor reassigning a case from one
+agent to another. Rows whose actor is not a person are the system recording
+something it did.
 
 ### Where to find it
 
@@ -510,41 +625,56 @@ Permissions** below).
 
 ### How to use it
 
-1. Open **Audit Log** to see every recorded status change, newest first.
-   Each row shows the timestamp, the ticket/case, the actor who made the
-   change, the transition (from status to status), and any remark left with
-   it.
-2. To narrow the list, enter an **Actor** to filter by who made the change,
-   and/or a **From**/**To** date range.
+1. Open **Audit Log** to see the recorded entries, newest first. The five
+   columns are **At** (when), **Ticket** (which case), **Actor** (who or
+   what), **Transition** (the move from one state to another), and
+   **Remark**.
+2. To narrow the list, enter an **Actor**, and/or a **From**/**To** date
+   range. **Actor is an exact match, not a partial one** — a half-typed
+   name returns nothing rather than a shortlist. The **To** date is
+   inclusive of the whole day you pick.
 3. Click **Filter** to apply the filters.
+4. The page shows the most recent entries matching your filter rather than
+   the entire history, so narrow the date range if you are looking further
+   back.
 
 [[SCREENSHOT: ch09-audit-log | Filtering the audit log]]
 
 ### Example scenario
 
-A customer disputes when their RSA case was marked resolved. An
-administrator opens **Audit Log**, filters by the case's date range, and
-finds the exact transition from "In progress" to "Resolved," who made it,
-and the remark left at the time.
+A customer disputes when their case was marked resolved. An administrator
+opens **Audit Log**, filters by the case's date range, and finds the exact
+transition, who made it, and the remark left at the time — and, a few rows
+above it, the SLA engine's own breach marker showing the case had already
+run past its resolution target before anyone touched it.
 
 ### Integrations & automation
 
-The audit log records the same case status transitions surfaced in the
-Cases and RSA chapters — it is the historical trail behind those features,
-not a separate data source.
+The audit log is the historical trail behind the case status shown in the
+Cases chapter, the SLA breach alerts in the Conversations chapter, and the
+escalation email in this chapter's Escalation Routing section — not a
+separate data source, and not a copy that can disagree with them. Unlike
+the report pages in the Reports chapter, it reads live records rather than
+the reporting warehouse.
 
 ## Roles & Permissions
 <!-- TRAINING: audience=admin, exercise -->
 
 ### What it is
 
-This page controls which capabilities each role grants: both Chatwoot's own
+This page controls which capabilities each role grants: both the CRM's own
 native access controls (which conversations a role can see, and whether it
-can manage contacts, reports, or the knowledge base) and the Proton-specific
-administrative permissions (SLA Policies, Audit Log, Roles & Permissions
-itself, Escalation Routing, Customer 360, and DMS/TSP integration
-management). It replaces the need to edit any configuration file to change
-what a role can do.
+can manage contacts, reports, or the help centre) and the Proton-specific
+permissions (SLA Policies, Audit Log, Roles & Permissions itself, Escalation
+Routing, Case Taxonomy, Customer 360, Workforce, the DMS/TSP integration and
+more). It replaces the need to edit any configuration file to change what a
+role can do.
+
+**The page was redesigned since the last edition of this guide, and the
+steps below have changed with it.** The most important change is that
+nothing you tick is written when you tick it: every change is staged against
+a local draft and only applied when you press **Save changes**. Creating a
+role is the one exception — that happens immediately.
 
 ### Where to find it
 
@@ -554,37 +684,64 @@ assignments" permission).
 
 ### How to use it
 
-1. Open **Roles & Permissions**. Pick an existing role from the **Role**
-   dropdown, or create a new one by entering a role id and name under **New
-   role id** / **Name** and clicking **Create role**.
-2. Under **Chatwoot access**, choose one conversation-visibility option for
-   the role — **Manage all conversations**, **Unassigned conversations
-   only**, or **My conversations only** — and toggle whether the role can
-   manage **Contacts**, **Reports**, and/or **Knowledge base**.
-3. Under **Permissions**, check or uncheck any of the Proton administrative
-   permissions to grant or remove them for this role (for example, "Manage
-   SLA policies" or "View the Customer 360 lookup").
-4. Under **Assigned users**, enter a Chatwoot user id and click **Assign**
-   to give a specific person this role, or click **Remove** next to a listed
-   user id to take it away.
+1. Open **Roles & Permissions**. Roles are listed down the left as cards,
+   each showing how many permissions and how many members it has — click
+   one to open it. To add a role, click **+ New role**, enter a **Name**,
+   check the **Id** the page derives from it, and click **Create**. *The id
+   is permanent and cannot be changed later*, so read it before you
+   confirm.
+2. Under **Chatwoot access**, choose one **Conversation visibility** option:
+   **Default access** (no CRM-side restriction at all — visibility stays
+   whatever the account already does for that person), **All
+   conversations**, **Unassigned + own**, or **Own conversations only**.
+   Then, under **Sections**, toggle whether the role can manage
+   **Contacts**, **Reports**, and/or the **Knowledge base**. Leaving
+   visibility on **Default access** is what a role that should not touch
+   CRM-side access control at all wants — the other three actively impose a
+   restriction.
+3. Under **Permissions**, grant or revoke the Proton permissions. They are
+   grouped — Knowledge & AI, Cases & taxonomy, Routing & escalation,
+   Workforce, Alerts, Customer data, Administration — with a count of how
+   many in each group are granted, a **Grant all** / **Revoke all** button
+   per group, and a search box for finding one by name.
+4. Under **Members**, click **+ Add member** and search for the person by
+   name or email, or click **Remove** on a row to take the role away. A
+   staged addition or removal is marked as such and can be undone before you
+   save.
+5. Click **Save changes** in the bar at the bottom of the page — or
+   **Discard** to throw the draft away. Navigating away, or clicking a
+   different role, with unsaved changes asks you first.
 
-[[SCREENSHOT: ch09-roles-permissions | Creating a role and assigning permissions]]
+> **Two things the page will stop you on, and both are worth knowing before
+> you meet them.** If a save would leave you without the "Manage roles and
+> permission assignments" permission through any role, the page warns you
+> explicitly that this removes the page from your own navigation and cannot
+> be undone from inside the product. And if a save partly fails, the page
+> tells you how many of your changes went through and leaves the rest
+> staged, so you can fix the problem and save again rather than guessing at
+> a half-applied state.
+
+[[SCREENSHOT: ch09-roles-permissions | Creating a role, granting a group of permissions, and the save bar showing staged changes]]
 
 ### Example scenario
 
 Proton onboards a new agent, Budi, who should only handle his own assigned
 conversations and never see administrative pages. An administrator either
-assigns him the existing **Agent** role, or creates a limited **Front-desk**
-role with conversation visibility set to **My conversations only** and none
-of the Proton administrative permissions checked, then assigns Budi's user
-id to it under **Assigned users**.
+assigns him the existing **Agent** role, or clicks **+ New role**, names it
+**Front-desk**, sets **Conversation visibility** to **Own conversations
+only**, leaves every Proton permission group at zero granted, adds Budi
+under **Members**, and clicks **Save changes**.
 
 ### Integrations & automation
 
-Every Proton administrative page in this chapter — SLA Policies, Audit Log,
-Roles & Permissions, Escalation Routing, and the DMS/TSP integration page —
-only appears in the navigation for a user whose role has been granted the
-matching permission here.
+Every Proton page in this chapter — SLA Policies, Audit Log, Roles &
+Permissions, Escalation Routing, Case Taxonomy, the DMS/TSP integration
+page, and the Workforce dashboard below — only appears in the navigation
+for a user whose role has been granted the matching permission here. The
+same is true of Customer 360, the Cases list and the RSA Incident Log
+covered in earlier chapters. **My status** is the deliberate exception: its
+permission is granted to the default Agent role, so ordinary agents can set
+their own availability.
 
 ## Escalation Routing
 <!-- TRAINING: audience=admin, exercise -->
@@ -598,17 +755,19 @@ represents each dealer, for SLA breaches and escalated conversations.
 Every member of a dealer group receives the escalation forward, not just
 one address.
 
-**Escalation routing is now complete.** All six department labels —
-`dept_sales`, `dept_engineer`, `dept_pre_sales`, `dept_aftersales`,
-`dept_cs`, and `dept_technical` — have a PIC configured and route
-correctly today, as do both live dealer groups, `dealer_komang_motor` and
-`dealer_caroline_motor`. Previously, most department labels had no PIC
-behind them: applying `dept_aftersales`/`dept_cs`/`dept_technical` (for
-example) and then `escalate` still stamped the conversation and looked
-like a successful escalation, but the mail simply had nobody to send to —
-silently, with no error visible anywhere in the CRM. That gap is what
-this section fixes; nothing about how you apply the labels changed (see
-the Conversations chapter's Labels section).
+**This page is the reason an escalation reaches anyone at all, so read
+what happens when a row is missing.** Applying a department label and then
+`escalate` stamps the conversation and looks, from the conversation view,
+exactly like a successful escalation — whether or not that department has a
+contact configured here. A department with no PIC, or a dealer group with
+no members, sends the escalation email to nobody, silently, with no error
+visible anywhere in the CRM. There are six department labels — `dept_sales`,
+`dept_engineer`, `dept_pre_sales`, `dept_aftersales`, `dept_cs` and
+`dept_technical` — plus one row per dealer group. **Check this page rather
+than assume every department is covered**; the directory is editable at any
+time, so what was complete last month may not be today. Nothing about how
+you apply the labels has changed (see the Conversations chapter's Labels
+section).
 
 ### Where to find it
 
@@ -637,13 +796,13 @@ routing" permission).
 6. Changes take effect immediately for new escalations — there is no
    redeploy or waiting period. Any department or dealer not yet edited here
    falls back to the defaults configured when the tenant was set up.
-7. To confirm every department actually routes before relying on it, scroll
-   **Department PICs** and check that all six rows — `dept_sales`,
-   `dept_engineer`, `dept_pre_sales`, `dept_aftersales`, `dept_cs`, and
-   `dept_technical` — show a PIC email, and that **Dealer groups** lists
-   both `dealer_komang_motor` and `dealer_caroline_motor` with at least
-   one member each. A row with no PIC/members is exactly the silent-dead-end
-   case described above.
+7. To confirm a department actually routes before relying on it, scroll
+   **Department PICs** and check that its row shows a PIC email — and, for
+   any dealer you intend to escalate to, that its **Dealer groups** row
+   lists at least one member. A row that is absent, or present with no PIC
+   email or no members, is exactly the silent-dead-end case described
+   above. Do this for all six department labels before a launch or a
+   campaign rather than discovering a gap from a customer complaint.
 
 [[SCREENSHOT: ch09-escalation-routing | Editing the PIC contact for a department and a dealer group's members]]
 
@@ -660,12 +819,10 @@ matching dealer group, adds the new advisor's address to **Members**
 alongside the existing one, and saves — both now receive every future
 forward to that dealer.
 
-**Escalating to each of the six departments and a dealer group**, from an
-agent's side, is the same eight-second action every time — apply a
-department label, then a dealer label if there is one, then `escalate`
-(see the Conversations chapter's Labels section) — repeated here once per
-destination so there's no ambiguity about which slug goes with which
-case:
+**Escalating to a department or a dealer group**, from an agent's side, is
+the same eight-second action every time — apply a department label, then a
+dealer label if there is one, then `escalate` (see the Conversations
+chapter's Labels section). Which slug goes with which kind of case:
 
 1. A pricing/financing question that needs Pre-Sales: apply `dept_pre_sales`,
    then `escalate`. The Pre-Sales PIC's email is who receives it.
@@ -679,15 +836,15 @@ case:
    `escalate`. Routes to the CS PIC.
 6. A software/app/infotainment fault: apply `dept_technical`, then
    `escalate`. Routes to the Technical PIC.
-7. A case that also needs a specific dealer outlet looped in — Komang
-   Motor, say — apply `dealer_komang_motor` (or `dealer_caroline_motor`
-   for the other live dealer group) *alongside* whichever department
-   label fits, before `escalate`. Every member of that dealer group is
-   forwarded the case, and the dealer's turnaround clock starts at the
-   same moment.
+7. A case that also needs a specific dealer outlet looped in: apply that
+   dealer's label *alongside* whichever department label fits, before
+   `escalate`. Every member of that dealer group is forwarded the case, and
+   the dealer's turnaround clock starts at the same moment.
 
-All seven of these are now live, verified destinations — before this
-edition, only some had a PIC behind them.
+Each of those routes to whatever this page currently holds for that
+department or dealer — and to nobody, silently, where a row is missing or
+empty. That is why step 7 above is worth doing before you rely on any of
+them.
 
 ### Integrations & automation
 
@@ -699,6 +856,324 @@ allowlist that the escalation reply loop (see the Conversations chapter's
 Escalation replies section) checks against — a reply that lands from an
 address not listed here as a PIC or a dealer-group member is not linked
 back onto the case.
+
+## Agent Availability & Workforce Dashboard
+<!-- TRAINING: audience=supervisor, exercise -->
+
+### What it is
+
+Two related things, both new since the last edition of this guide and both
+live on this account.
+
+First, an extended set of **availability statuses** an agent can choose
+beyond the three the CRM offers natively (Online, Busy, Offline):
+**Available, Busy, Lunch, Break, Coaching, Training, Toilet** and
+**Prayer**. Second, a supervisor **Workforce** dashboard showing, live, who
+is in which status, how long they have been in it, how their day has been
+split across statuses, their availability against the working day, and how
+many cases they currently have open.
+
+Three things about how this is presented are deliberate, and knowing them
+prevents a supervisor drawing the wrong conclusion from the page:
+
+> **Named statuses mirror into the CRM's own Online/Busy/Offline.**
+> Selecting "Lunch" shows as **Busy** to colleagues in the conversation
+> list, and as **Lunch** on the Workforce dashboard. This is deliberate: the
+> CRM's own availability field only has three values, and mirroring means an
+> agent is still correctly excluded from being offered new work even if the
+> named-status service is unavailable.
+>
+> **Availability history is derived from going offline and coming back.**
+> It is *not* a login/logout record — an agent who closes their laptop
+> without setting themselves offline stays shown as available until their
+> next change.
+>
+> **Where the dashboard cannot measure something it shows a blank, never a
+> zero.** In particular the **Cases closed today** column is always blank:
+> nothing in the platform records a date-filtered "resolved today" count
+> that can be read cheaply enough to refresh every half minute, and a zero
+> there would be a statement about the team's output rather than about what
+> is instrumented. **Open cases** can also come back blank, for a different
+> reason: if the count could not be established on that refresh, every row
+> blanks rather than showing everyone as idle. Read a blank as "not
+> measured", never as "none".
+
+**Two capabilities in this area are built but not switched on for this
+account, and neither should be described to agents as though it were
+working:**
+
+- **The absence alerts do not fire.** The design behind them is real —
+  Lunch, Break, Toilet and Prayer are marked as "counts as unavailable", and
+  the **My status** page even shows an "(alerts)" marker beside them, which
+  is why this needs saying plainly. But the alerting itself is switched off
+  on this account, so nobody is notified when an agent stays in one of those
+  statuses. Ask us before you plan a shift-supervision process around it.
+- **After-Call Work is not switched on.** Nothing places an agent into a
+  wrap-up state automatically when a phone call ends, and the status is not
+  offered as a choice.
+
+**Average handling time is not part of this** either. It depends on call
+queue statistics the platform does not yet receive from the telephony side —
+the same gap that leaves several call-related rows of the monthly report
+unmeasured.
+
+### Where to find it
+
+Agents set their status in two equivalent places: the **availability
+control in the profile menu**, which now offers the named statuses rather
+than only the CRM's three, and a dedicated **My status** page in the main
+left-hand navigation. Supervisors open **Workforce** in the same
+navigation.
+
+Each entry appears only if your role has the matching permission —
+"Set your own availability status" for **My status**, which the default
+Agent role carries, and "View the workforce/presence dashboard" for
+**Workforce**, which it does not. If an agent cannot see **My status**,
+check on the **Roles & Permissions** page that they have been assigned a
+role at all.
+
+### How to use it
+
+1. **As an agent**, open the availability control in your profile menu, or
+   the **My status** page, and pick the status that matches what you are
+   doing — **Lunch** when you step out, for example. You do not need to also
+   set yourself Busy: choosing Lunch does that for you, which is why
+   colleagues see you as Busy while the supervisor's dashboard shows the
+   reason. **Offline** stays exactly as it always was and is still how you
+   say you are off shift.
+2. **Check the My status page when you want to know what you are currently
+   set to.** The profile-menu control shows the underlying Online/Busy/
+   Offline dot rather than the named status, so after picking "Lunch" it
+   still reads Busy — that is correct, not a fault. The **My status** page
+   is the one that says *Currently: Lunch — for 55 min*.
+3. Set yourself back to **Available** when you return. Anything other than
+   Available means new conversations are not routed to you.
+4. **As a supervisor**, open **Workforce** to see the live grid: Agent,
+   Current status, Elapsed in status, Time in status today, Availability %
+   (working day), Open cases, Cases closed today, and Availability history.
+   Leave the page open — it re-reads roughly every half minute. This is a
+   polled view of current data, not a pushed live feed.
+5. Read **Time in status today** and **Availability % (working day)**
+   together: the percentage is measured against the inbox's configured
+   working hours, not against a flat 24 hours, so an agent who worked their
+   whole shift reads near 100% rather than around a third. An agent with no
+   recorded history at all shows a blank rather than a zero.
+6. **To add a status of your own** — a shift pattern or an activity specific
+   to your team — an administrator opens the **Status catalogue** section at
+   the bottom of the **My status** page and clicks **Add status**. Give it a
+   key, a label, a colour, which of the CRM's three native statuses it
+   should mirror into, whether an agent in it can still receive new
+   conversations, and whether it should count as unavailable. Existing
+   statuses are edited the same way. **Statuses are never deleted**, because
+   past history refers to them — retire one by marking it as not receiving
+   new conversations, and it stays readable on old dashboard rows.
+7. In that catalogue, a row marked **Default** is one of the built-in
+   statuses that has not been saved on this account yet; saving it writes
+   it. **Counts as unavailable** is the setting that would arm the absence
+   alerts if they were switched on — leave it off for scheduled activities
+   like Coaching and Training, on for stepping away.
+
+[[SCREENSHOT: ch09-workforce | The Workforce dashboard, with the availability-history column and a blank Cases closed today column]]
+
+[[SCREENSHOT: ch09-my-status | The My status page: the status picker, the current status with its elapsed time, and the administrator-only Status catalogue]]
+
+### Example scenario
+
+An agent sets herself to **Lunch** at 10:45. Proton's after-sales
+supervisor opens **Workforce** at 11:40 and sees she has been in **Lunch**
+for 55 minutes while three cases sit open against her name. The dashboard
+is where the *reason* is visible; in the conversation list that agent simply
+reads as Busy. Because absence alerting is not switched on for this account,
+nothing will page the supervisor about it — noticing it on the dashboard is
+the mechanism today. She reassigns the most urgent of the three cases to a
+colleague from the conversation view.
+
+### Integrations & automation
+
+Availability is what conversation routing already reads to decide who can be
+offered new work (see the Conversations chapter), so a named status takes
+effect on routing through the native status it mirrors into — which is why
+routing keeps behaving correctly even if the named-status service is
+unavailable. The agent availability shown beside each name in the **Agent
+Channel Priorities** table earlier in this chapter is the same value.
+
+Three separate permissions, all granted from **Roles & Permissions**, govern
+this area, and the split matters: *setting your own status* belongs to the
+Agent role by default, because it is part of an agent's own working day;
+*viewing the workforce dashboard* and *editing the status catalogue or
+setting another agent's status* are administrator permissions. An agent
+cannot mark a colleague as being on Lunch — that would take the colleague
+out of routing under their own name.
+
+Unlike the report pages in the Reports chapter, this dashboard reads live
+records on every refresh rather than the reporting warehouse, so its numbers
+are this account's own.
+
+## AI Conversational Quality
+
+### What it is
+
+A set of adjustments to how the AI reads and answers customers. Two of them
+are live on this account and appear in the reply composer; the rest are
+configuration your administrator asks us to switch on, rather than
+checkboxes inside the CRM, because each one changes what customers receive.
+
+**Live today:**
+
+1. **Translate, for the agent.** A **Translate** action in the reply
+   composer renders the customer's latest message in English as a **private
+   note** on the conversation. The translation is never sent to the
+   customer — the only thing the platform can do with it is add a note. See
+   the Conversations chapter for the agent-side view.
+2. **The FAQ suggestion strip** above the reply box, offering a single
+   best-matching FAQ answer with an Apply button. Also covered in the
+   Conversations chapter.
+
+**Built, deployed, and switched off on this account:**
+
+3. **Sentiment on every conversation.** The AI would record how the customer
+   sounds — positive, neutral, negative or urgent — on the conversation
+   itself, using the same request it already makes to answer the message.
+   No extra AI call and no extra delay.
+4. **Tone matched to that sentiment**: a measured, apologetic register for
+   an angry customer, a brisk one for an urgent safety issue. It does
+   nothing without sentiment recorded first, and a sentiment older than
+   about a quarter of an hour is ignored, so an hour-old complaint does not
+   make a cheerful "thanks, all sorted" come back apologetic.
+5. **Photo and video diagnosis.** When a customer sends a photo or video,
+   the AI would be asked to describe what is actually visible, name the
+   likely fault, state how confident it is and ask at most one follow-up
+   question — instead of a generic "please describe the issue". Voice notes
+   are deliberately excluded: there is nothing to look at.
+6. **Resolved-case summaries.** When a case is resolved, the AI can post a
+   summary of it as a private note, and can separately add that summary to a
+   searchable store of previously resolved cases. The two are independent.
+
+A seventh adjustment is **already in effect at a setting that changes
+nothing**: a keyword-overlap score can be blended into FAQ ranking, to help
+product codes and model names (e.MAS 7, for instance) that match poorly on
+meaning alone. It ships at zero weight, which reproduces today's suggestions
+exactly, entry for entry.
+
+Two of these carry limits that must be read before they are switched on.
+
+> **Tamil.** Inbound Tamil translation — so an agent can *read* a Tamil
+> message — is what the live Translate action gives you. **Outbound Tamil
+> replies to customers remain deliberately disabled**, pending an evaluation
+> of thirty real Tamil enquiries scored by a Tamil speaker. Switching it on
+> before that evaluation sends unverified machine translation to customers.
+>
+> **Resolved-case suggestions are not approved guidance.** They are
+> generated from summaries of previously resolved cases — what a colleague
+> did last month, not what the manual says — and are labelled as such
+> wherever they are shown. The store holds summaries rather than
+> transcripts, and the summariser is instructed to omit customer
+> identifiers, but **that is a mitigation, not guaranteed removal of
+> personal data.** Two things about it are worth knowing precisely: nothing
+> checks or edits a summary before it is stored, and an operator's own
+> persona **guardrails** are placed ahead of that instruction in the same
+> request — so a guardrail saying the opposite ("always include the
+> customer's full name") is text the AI may prefer. Anyone who can edit the
+> persona can weaken the mitigation without any software change.
+
+### Where to find it
+
+The **Translate** action and the **FAQ suggestion strip** are in the reply
+composer, inside a conversation. Everything else on this list is a **setting
+in the account's configuration**, not a page in the CRM: there is no admin
+screen that toggles them, which is deliberate — each one changes what
+customers receive, so switching it on is a deployment decision with a
+record, not a checkbox. Ask your administrator.
+
+Where sentiment is switched on, it appears on the conversation's custom
+attributes. Where resolved-case summaries are switched on, they appear as
+private notes in the conversation.
+
+> **Not yet demonstrated.** The photo-and-video diagnosis wording has never
+> been tried against a real photo sent through a real WhatsApp number. It is
+> switched off today, and we would want that test before switching it on for
+> a live account — please ask for it rather than assuming it has been done.
+
+<!-- VERIFY-LIVE: confirm the photo/video diagnosis prompt against a real image sent through a real WhatsApp number before this setting is enabled on any tenant -->
+
+### How to use it
+
+1. **Use Translate to read, not to reply.** It posts a private note. To
+   answer a Malay, Chinese or Tamil customer, write the reply as you
+   normally would — the AI already answers in the language the customer
+   wrote in.
+2. **Ask for sentiment before tone.** Tone selection does nothing on its
+   own: with no sentiment recorded there is nothing to choose a tone from,
+   and the assistant keeps its standard wording.
+3. **Sentiment on its own is not a no-op, so expect one side effect.** A
+   case whose customer sounded negative or urgent is treated as **open**
+   rather than resolved, and that reading is not time-bounded — so one angry
+   turn keeps later turns in the same conversation reading as open,
+   including a closing "thanks, all sorted". The replies themselves are
+   unchanged. Tell us if that is unwanted, rather than discovering it in a
+   report.
+4. **Leave the FAQ keyword weight at zero until you have a measurement.**
+   Zero reproduces today's ordering and today's scores exactly. A large
+   weight would damage the common case — ordinary questions, which already
+   match well — in order to fix the rare one.
+5. **Do not switch on outbound Tamil.** See the note above.
+6. **The two resolve settings are independent.** The private-note summary
+   needs no database and can be used on its own. The searchable store of
+   resolved cases needs the knowledge database, which this account does
+   have; if it were not configured, the summary note would still post and
+   the store would simply be skipped. Either way, **resolving the case
+   always succeeds** — resolving is the agent's action, and the summary is
+   an addition to it that can never fail it.
+7. **A case reopened and resolved again gets a second summary**, appended
+   rather than overwriting the first, because the first summary is a true
+   record of the first resolution.
+8. **Emptying the resolved-case store is not self-service yet.** It is
+   deliberately kept separate from your authored FAQs, so clearing it can
+   never remove curated content — but there is no button or command for it
+   today, so ask us before you need it in a hurry.
+
+[[SCREENSHOT: ch09-ai-quality | The reply composer's Translate action, and the resulting translation as a private note in the conversation]]
+
+### Example scenario
+
+A customer messages in Tamil about a warning light. The agent, who does not
+read Tamil, clicks **Translate**: a private note appears in the conversation
+with the English text, and the customer sees nothing. She answers in her own
+words and the assistant's FAQ suggestion strip offers the standard warranty
+wording, which she applies with one click. Later, Proton asks whether the
+assistant could also read the dashboard photo the customer sent and name the
+warning symbol — that is the photo-diagnosis setting above, and the answer
+is that it is built and switched off, and we would want to try it against a
+real photo first.
+
+### Integrations & automation
+
+Sentiment, where enabled, is written to the conversation's own custom
+attributes, so it is available to automation rules and to reporting exactly
+like any other case field — no new integration surface. The resolved-case
+summary is produced by the same summariser the **Summarize** button in the
+composer already uses, so there is one summariser and one set of wording to
+review rather than two that can drift apart, and it is posted through the
+same private-note mechanism as escalation notes.
+
+**Translate has its own permission** ("use translation"), granted to the
+default Agent role rather than kept administrator-only: reading a customer's
+own message is part of an ordinary agent's job.
+
+Two limits on what has been delivered, recorded here because both read as
+delivered if nobody says so:
+
+- **Nothing yet shows resolved-case suggestions to an agent.** Summaries
+  would be stored and labelled, and the labelling exists so that whichever
+  panel eventually adds them cannot present them with a curated FAQ's
+  authority — but no panel queries that store today. Switching it on builds
+  the corpus; it does not yet surface it.
+- **No before-and-after accuracy figures exist.** The evaluation sets and
+  the runner for them are built and are part of the delivery, but they have
+  never been run against the real AI service, so the accuracy tables read
+  "unmeasured". Any percentage produced by the test harness in its current
+  form is a property of the harness, not of the model, and must not be
+  quoted as a result.
 
 ## Account settings
 

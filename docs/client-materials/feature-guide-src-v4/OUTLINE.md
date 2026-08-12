@@ -213,7 +213,7 @@ Deliberate decisions worth not re-litigating by accident:
 |---|---|---|
 | Agents | Native — `<!-- VERIFY-LIVE -->` | ch09-agents |
 | Teams | Native — `<!-- VERIFY-LIVE -->` | ch09-teams |
-| Inboxes (incl. inactivity timing) | Native + `0023-inbox-inactivity-timing.patch` (idle-warn / close-grace / resolution-confirm-grace settings) | ch09-inboxes |
+| Inboxes (incl. inactivity timing) | Native + `0023-inbox-inactivity-timing.patch` (idle-warn / close-grace / resolution-confirm-grace settings) + native per-inbox `greeting_enabled`/`csat_survey_enabled` (live query, see ledger ch02/ch04 rows) + `0024-agent-priorities.patch`/`0063`/`0064` (Agent Channel Priorities table on the Collaborators tab; `/routing/agents`, `/routing/priorities`) | ch09-inboxes, ch09-agent-priorities |
 | Labels | Native — `<!-- VERIFY-LIVE -->` | ch09-labels |
 | Custom Attributes | Native (also backs Ch5's case categories, `0036`) | ch09-custom-attributes |
 | Automation | Native — `<!-- VERIFY-LIVE -->` | ch09-automation |
@@ -222,11 +222,11 @@ Deliberate decisions worth not re-litigating by accident:
 | Integrations (incl. DMS / TSP connection) | Native Settings → Integrations + `0045-dms-integration-card.patch` (`ProtonIntegrationsPage`, `ProtonDmsIntegrationPage`, permission `integration.manage`) | ch09-integrations |
 | SLA Policies | `0025-sla-policies-admin.patch` (permission `sla.manage`) | ch09-sla-policies |
 | Audit Log | `0026-audit-log-admin.patch` (permission `audit.view`) | ch09-audit-log |
-| Roles & Permissions | `0027-roles-permissions-admin.patch`, `0028-chatwoot-access-permissions.patch` (permission list), `0031-permissions-no-poison-retry.patch` | ch09-roles-permissions |
+| Roles & Permissions | `0027-roles-permissions-admin.patch`, `0028-chatwoot-access-permissions.patch` (permission list), `0031-permissions-no-poison-retry.patch`, **`0059-roles-permissions-redesign.patch` (the deployed layout: role card rail, staged draft + Save changes bar, 7 permission groups, people-picker Members, self-lockout confirmation)** | ch09-roles-permissions |
 | Escalation Routing | `0039-escalation-routing-admin.patch` (PIC per department, dealer directory, permission `escalation.manage`) | ch09-escalation-routing |
-| ~~Agent Availability & Workforce Dashboard~~ | **Held back** — patches `0053`/`0054` not built; see `feature-guide-v3-pending.md` | — |
-| ~~AI Conversational Quality~~ | **Held back** — P7 not deployed (no `/assist/translate` on the tenant); see `feature-guide-v3-pending.md` | — |
-| ~~AI Cost & Performance Measurement~~ | **Held back** — P8 not deployed and its BigQuery views do not exist; see `feature-guide-v3-pending.md` | — |
+| Agent Availability & Workforce Dashboard | **Restored (v4)** — `0053-workforce-dashboard.patch` (`workforce.view`), `0054-agent-status-selector.patch` (`presence.set_own_status`/`workforce.manage`), `0062` (Add-status dialog), `0065-unify-availability-selector.patch` (profile-menu selector offers the catalogue). Backend `/admin/workforce` + `/routing/presence/*` both mounted; env `PRESENCE_TRACKING_ENABLED=true`, `PRESENCE_CUSTOM_STATUSES_ENABLED=true`. `PRESENCE_THRESHOLD_ALERTS_ENABLED`/`ACW_ENABLED` absent → both off, stated as off in the chapter | ch09-workforce, ch09-my-status |
+| AI Conversational Quality | **Restored (v4)** — `0055-translate-action.patch` + `0056-faq-composer-apply.patch` in the deployed image (sha `0866fda`); `/assist/translate` + `/kb/suggest` both present; env `TRANSLATION_ENABLED=true`, `FAQ_SUGGESTION_POPUP_ENABLED=true`. The four AI-behaviour settings (`SENTIMENT_CLASSIFIER_ENABLED`, `SENTIMENT_TONE_ADJUSTMENT_ENABLED`, `MEDIA_DIAGNOSIS_PROMPT_ENABLED`, `RESOLVED_CASE_INDEX_ENABLED`/`AUTO_SUMMARY_ON_RESOLVE_ENABLED`) are absent → off, stated as off; `FAQ_KEYWORD_WEIGHT` at its 0.0 default | ch09-ai-quality |
+| ~~AI Cost & Performance Measurement~~ | **Still held back** — `/metrics/targets` absent; `metrics_provider` defaults to `noop` and is unoverridden on this tenant, so every `/metrics/*` route serves `MockMetricsQuery` canned rows; `/metrics/ai-cost` + `/metrics/control-items` are read by no fork patch, so there is no operator-reachable page. See `feature-guide-v3-pending.md` | — |
 | Account settings | Native — `<!-- VERIFY-LIVE -->` | ch09-account-settings |
 
 ### 10-ai-behaviour.md

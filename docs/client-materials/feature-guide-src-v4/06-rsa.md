@@ -125,8 +125,6 @@ aren't a third place to look.
    cause/Cases by dealer summary for a running total without doing a
    per-vehicle lookup.
 
-[[SCREENSHOT: ch06-rsa-customer360-link | An RSA incident surfaced in a Customer 360 lookup]]
-
 ### Example scenario
 
 A breakdown call comes in for a customer's vehicle; staff log the

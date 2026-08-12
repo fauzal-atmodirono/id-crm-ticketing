@@ -207,6 +207,15 @@ Full capture: see the `## Raw capture` section below.
 | 10 | Same promotion applied — "How to use it" step 2 now carries the same dated observation as chapters 02/09/11, without reintroducing a bare coverage assertion | same browser read as this file's chapter-02 promotion row, 2026-08-12 | verified | 2026-08-12 |
 | 11 | Same promotion applied to Scenario 17, which already stated the mechanism and the check but not a current reading — a step 5 is added naming the 2026-08-12 finding, framed as one dated data point rather than a standing guarantee, consistent with the scenario's own point that "what was complete last month may not be today" | same browser read as this file's chapter-02 promotion row, 2026-08-12 | verified | 2026-08-12 |
 | 09 | **Residual gap, recorded here only — not in chapter prose.** No conversation in this tenant has ever combined a dealer label with `escalate`. Only the department-PIC path (a department label + `escalate`) has live end-to-end evidence from this sweep; the dealer-notification path (a dealer label alongside a department label, forwarding to every dealer-group member) has never actually fired on this tenant, so its "every member is forwarded" behaviour is verified from the dealer-group membership only, not from an observed forward | browser sweep of this tenant's conversation history, 2026-08-12 — searched for any conversation carrying both a `dealer_*` label and `escalate` | unverifiable | 2026-08-12 |
+| — | **Fix round 1: reused-screenshot audit.** 92 backed markers resolved to only 74 distinct images (by MD5) — 11 images each reused under 2-5 captions. Every one of the 11 groups was opened and looked at directly, not assumed from the filename. 8 captions were **amended** to describe only what the shared image genuinely shows (see the eight rows below); 12 more markers were **dropped** because no true caption could be written for what the chapter promised (see `## Screenshots not captured`, above, for each one's reason). The escalation-routing coverage screenshot (`ch09-escalation-routing`) independently re-confirms this file's chapter-02 promotion row: all six department rows and both dealer-group rows carry a contact, visible directly in the image | manual visual inspection of all 11 duplicate-hash image groups against every caption pointing at each, 2026-08-12 | corrected | 2026-08-12 |
+| 11 | Amended: `ch11-scenario1-whatsapp`'s caption dropped "to arrange the booking" (the real captured conversation is a towing/pricing complaint, not a test-drive booking) — now "...then handed off for a human agent to continue" | visual inspection of the shared image (also used by `ch12-gemini-ai`/`ch12-whatsapp`/`ch12-whatsapp-conversation`) | corrected | 2026-08-12 |
+| 13 | Amended: `ch12-gemini-ai`'s caption changed from "drafting a reply" to "sent directly in a WhatsApp conversation" — the image shows an already-sent blue reply bubble, not a private-note draft, consistent with this tenant's Auto-mode default | visual inspection of the shared image | corrected | 2026-08-12 |
+| 09 | Amended: `ch09-escalation-routing`'s caption changed from "Editing the PIC contact..." to "...listing each department's PIC contact and the dealer groups below" — the image shows the page in its normal listing state, not an edit in progress | visual inspection of the shared image (also used by `ch11-scenario17-escalation-routing-verified`, unchanged) | corrected | 2026-08-12 |
+| 10 | Amended: `ch10-escalation-label`'s caption dropped "dealer" (the captured example applies a department label and `escalate` only; no dealer label is on this conversation) — now "Applying a department label, then escalate, to a conversation in order" | visual inspection of the shared image | corrected | 2026-08-12 |
+| 12 | Amended: `ch12-escalation-labels`'s caption changed from "The three escalation labels" to "A department label and escalate" — same reason as the `ch10-escalation-label` row above, same image | visual inspection of the shared image | corrected | 2026-08-12 |
+| 09 | Amended: `ch09-sla-policies`'s caption changed from "Editing an SLA policy's..." to "...fields, scoped to the tenant default" — the image shows every field blank under the Tenant default scope, not an active edit | visual inspection of the shared image (also used by the now-dropped `ch11-scenario10-sla-threshold`) | corrected | 2026-08-12 |
+| 11 | Amended: `ch11-scenario16-dept-suggestion`'s caption dropped "one accepted and one overridden" (only one AI-suggested-department note, `pre_sales`, was captured — no second, overridden case exists as an image) — now matches `ch02-dept-suggestion-note`'s wording plus the department name | visual inspection of the shared image (also used by `ch02-dept-suggestion-note`, unchanged) | corrected | 2026-08-12 |
+| 11 | Amended: `ch11-scenario9-sla-breach`'s caption dropped "and the matching PIC-group email" (no email is shown, only the two Chatwoot SLA-breach private notes) — now matches `ch02-sla-breach-note`'s wording | visual inspection of the shared image (also used by `ch02-sla-breach-note`, unchanged) | corrected | 2026-08-12 |
 
 ## Screenshots not captured
 
@@ -216,8 +225,22 @@ Full capture: see the `## Raw capture` section below.
 not are listed below with their caption and why, and the marker line for
 each has been **deleted from its chapter** — not flagged, not left dangling
 — per the rule that a marker with no PNG behind it is how a placeholder box
-returns by accident in a later edition. This is the list whoever builds v5
-starts from.
+returns by accident in a later edition.
+
+**Fix round 1 (same day) added a second reason a marker ends up here: a
+reused image whose caption promised something that specific image does not
+show.** Of the 92 backed markers, 28 pointed at only 11 distinct images (the
+rest of the reuse — e.g. `ch05-case-list`'s own double reference — was
+single-image, single-caption and never in question). Each of those 11
+groups was opened and looked at directly. Where the shared image genuinely
+supported more than one caption, the wording was tightened so every
+surviving caption is true of the pixels behind it (see the ledger rows
+below). Where no true caption could be written for what a chapter promised,
+the marker was dropped here instead — 12 more of them, on top of the
+original 18. That is what pushed the total in this section from 18 to 30,
+and the found/total in the build report from 92/92 down to 80/80: **found
+must equal total either way, and it does — the number just describes a
+smaller, now fully-truthful set of captions.**
 
 | Shot id | Caption | Why |
 |---|---|---|
@@ -239,6 +262,18 @@ starts from.
 | `ch12-phone` | A call transferred to a human agent, and the note it leaves behind | This tenant has no phone/voice inbox |
 | `ch12-voice-bot` | A voice bot call transcript in the Conversations view | This tenant has no phone/voice inbox |
 | `ch12-web-chatbot` | A Web Chatbot inbox conversation | This tenant has zero Website Chat conversations |
+| `ch10-suggest-vs-auto` | The difference between a suggested private note and an auto-sent reply | No distinct screenshot exists — a single conversation image cannot show a *difference* between two modes. The available image (shared with `ch11-scenario1-whatsapp`/`ch12-gemini-ai`/`ch12-whatsapp`/`ch12-whatsapp-conversation`, all kept) shows only an Auto-mode sent reply; no Suggest-mode private-note draft example was captured |
+| `ch02-customer-reply-note` | A customer's own reply to their acknowledgement email, linked back as a private note instead of an inline message | No distinct screenshot exists. The available image shows a generic Email-channel conversation (a Sales/Promotion inquiry) with an unrelated staff note ("PeC case boleh close") — not the `Customer's own reply (from <email>, could not be posted inline...)`-prefixed note this section describes |
+| `ch02-escalation-reply-note` | A dealer's reply linked back onto the case as a private note, with the AI-drafted customer reply beneath it | Same image as `ch02-customer-reply-note`, same problem — no `Reply from ` note and no `Suggested customer reply (draft...)` note are visible; this mechanism was never captured |
+| `ch11-scenario7-customer-reply` | A customer's reply to their acknowledgement email, linked back as a private note, not an inline message | Same image and same reason as `ch02-customer-reply-note` |
+| `ch12-email` | An escalation email thread sent from an Email-channel conversation | Same image again; the conversation shown is tagged Sales/Promotion/Inquiry, not an escalation — no escalation email thread was captured |
+| `ch11-scenario8-dealer-group` | Editing a dealer group's member list under Escalation Routing | No distinct screenshot exists — the available image (shared with `ch09-escalation-routing`/`ch11-scenario17-escalation-routing-verified`, both kept with amended/accurate captions) shows the Escalation Routing page in its normal listing view, not an edit in progress, and the scenario's fictional dealer ("Kelapa Gading") does not match either real dealer group on this tenant |
+| `ch02-faq-strip` | The FAQ suggestion strip above the reply box, with its Apply button | No distinct screenshot exists — the available image shows a different UI surface entirely: an agent-side "FAQ Assist" tab with two suggestions and Copy buttons, not the small dismissible single-match strip with an Apply button above the reply box this section describes |
+| `ch12-knowledge-base` | The knowledge base sources cited in a suggested reply | Same "FAQ Assist" tab image as `ch02-faq-strip`; this section is about the admin-side Knowledge → FAQs/Documents/Uploads pages, none of which are shown |
+| `ch06-rsa-customer360-link` | An RSA incident surfaced in a Customer 360 lookup | This tenant's RSA incident log is empty — confirmed directly in the available image (shared with `ch03-customer360`, kept), whose RSA incidents panel reads "No RSA incidents found" |
+| `ch11-scenario11-email-template` | Editing the escalation acknowledgement email wording under Knowledge Settings | No distinct screenshot exists — the available image (shared with `ch10-lifecycle-messages`, kept) shows the assistant's lifecycle-message fields (Welcome/Handoff/Resolution/etc.), not the separate Tenant-settings "Escalation acknowledgement template" field this caption describes, and every field shown is blank, not being edited |
+| `ch11-scenario10-sla-threshold` | Tightening the Email inbox's SLA response window and warning threshold | No distinct screenshot exists — the available image (shared with `ch09-sla-policies`, kept with an amended caption) shows the SLA Policies page scoped to Tenant default with every field blank, not the Email-inbox scope with a 0.5h response window and 30min warning this scenario describes |
+| `ch09-integrations` | Configuring the DMS / TSP connection under Integrations | No distinct screenshot exists — the available image (shared with `ch12-dms`, kept) shows only the collapsed status card reading "Not connected," not the expanded configuration form (Provider label/Auth type/Base URL/Credential/etc.) this section walks through |
 
 ## Raw capture
 

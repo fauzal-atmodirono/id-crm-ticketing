@@ -338,7 +338,7 @@ trigger — only the customer acknowledgement goes out.
 6. A customer with no email address on file gets no acknowledgement; the PIC
    email still goes out.
 
-[[SCREENSHOT: ch12-escalation-labels | The three escalation labels applied in order on an email conversation]]
+[[SCREENSHOT: ch12-escalation-labels | A department label and escalate applied in order on an email conversation]]
 
 ### Scenario C continued — the dealer's reply comes back
 

@@ -286,10 +286,6 @@ resolved, so it shouldn't show up in your queue as something to work.
    reply more than once without limit; each reply lands as its own
    private note the same way.
 
-[[SCREENSHOT: ch02-escalation-reply-note | A dealer's reply linked back onto the case as a private note, with the AI-drafted customer reply beneath it]]
-
-[[SCREENSHOT: ch02-customer-reply-note | A customer's own reply to their acknowledgement email, linked back as a private note instead of an inline message]]
-
 ### Example scenario
 
 An agent escalates a charging-fault complaint to a dealer on Monday. On
@@ -694,8 +690,6 @@ message — it will not appear on every message.
 4. Dismiss it if it doesn't fit the case. A dismissed suggestion for that
    particular message won't reopen, but a later customer message can still
    surface a fresh one.
-
-[[SCREENSHOT: ch02-faq-strip | The FAQ suggestion strip above the reply box, with its Apply button]]
 
 ### Example scenario
 

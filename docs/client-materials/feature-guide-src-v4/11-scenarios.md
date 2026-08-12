@@ -29,7 +29,7 @@
    the CSAT report (see the AI Assistant Behaviour chapter's Lifecycle
    messages section and the Reports chapter).
 
-[[SCREENSHOT: ch11-scenario1-whatsapp | A WhatsApp inquiry answered directly by the AI assistant, then handed to an agent to arrange the booking]]
+[[SCREENSHOT: ch11-scenario1-whatsapp | A WhatsApp inquiry answered directly by the AI assistant, then handed off for a human agent to continue]]
 
 ## Scenario 2: Complaint escalation, the dealer's reply, and the turnaround report
 <!-- TRAINING: audience=agent, exercise -->
@@ -204,8 +204,6 @@
    won't. Nothing about the escalation itself (the ack, the PIC email,
    the dealer forward) fires again just because the customer replied.
 
-[[SCREENSHOT: ch11-scenario7-customer-reply | A customer's reply to their acknowledgement email, linked back as a private note, not an inline message]]
-
 ## Scenario 8: Maintaining a dealer group
 <!-- TRAINING: audience=admin, exercise -->
 
@@ -226,8 +224,6 @@
    **Members**, and saves — future escalations stop reaching the old
    address immediately.
 
-[[SCREENSHOT: ch11-scenario8-dealer-group | Editing a dealer group's member list under Escalation Routing]]
-
 ## Scenario 9: An SLA breach reaches the PIC group and the case
 <!-- TRAINING: audience=supervisor -->
 
@@ -247,7 +243,7 @@
 5. A supervisor checks later in the day and confirms no second alert fired
    for the same breach — the CRM only alerts once per breach per case.
 
-[[SCREENSHOT: ch11-scenario9-sla-breach | An SLA breach private note and the matching PIC-group email]]
+[[SCREENSHOT: ch11-scenario9-sla-breach | An SLA breach private note on a conversation]]
 
 ## Scenario 10: Adjusting SLA thresholds ahead of a launch event
 <!-- TRAINING: audience=supervisor, exercise -->
@@ -270,8 +266,6 @@
    Response window and warning fields back to blank, restoring the tenant
    default.
 
-[[SCREENSHOT: ch11-scenario10-sla-threshold | Tightening the Email inbox's SLA response window and warning threshold]]
-
 ## Scenario 11: Editing a customer-facing email template
 <!-- TRAINING: audience=admin -->
 
@@ -291,8 +285,6 @@
    since on this tenant the inbound auto-acknowledgement is currently
    switched off. Editing the template alone doesn't turn the feature on;
    nothing will actually send until an administrator enables it.
-
-[[SCREENSHOT: ch11-scenario11-email-template | Editing the escalation acknowledgement email wording under Knowledge Settings]]
 
 ## Scenario 12: A WhatsApp case looks escalated, but nothing was sent
 
@@ -412,7 +404,7 @@
    automatically either way, so ignoring it costs nothing and requires no
    extra click.
 
-[[SCREENSHOT: ch11-scenario16-dept-suggestion | An AI-suggested escalation department note, one accepted and one overridden by the agent's own judgement]]
+[[SCREENSHOT: ch11-scenario16-dept-suggestion | An AI-suggested escalation department private note (pre_sales) on an Email conversation]]
 
 ## Scenario 17: Checking escalation routing before you rely on it
 <!-- TRAINING: audience=admin -->

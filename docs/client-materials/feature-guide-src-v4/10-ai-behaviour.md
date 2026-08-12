@@ -113,8 +113,6 @@ any inbox without its own override (see the Knowledge chapter for both).
 4. In either mode, if the assistant can't confidently answer, it hands off
    to a human instead (see the section above) rather than guessing.
 
-[[SCREENSHOT: ch10-suggest-vs-auto | The difference between a suggested private note and an auto-sent reply]]
-
 ### Example scenario
 
 On the tenant's default Auto mode, a customer asks the after-sales
@@ -214,7 +212,7 @@ Applied like any other label, from an open conversation's label control
    a private note, not a new task you have to go find (see the
    Conversations chapter's Escalation replies section).
 
-[[SCREENSHOT: ch10-escalation-label | Applying the department, dealer, and escalate labels to a conversation in order]]
+[[SCREENSHOT: ch10-escalation-label | Applying a department label, then escalate, to a conversation in order]]
 
 ### Example scenario
 

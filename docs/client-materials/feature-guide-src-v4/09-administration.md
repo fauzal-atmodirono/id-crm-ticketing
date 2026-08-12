@@ -505,8 +505,6 @@ Permissions** below), then open the **DMS / TSP** card.
    **Reachable**; a failure names the reason — authentication failed, timed
    out, an unexpected response, or not configured yet.
 
-[[SCREENSHOT: ch09-integrations | Configuring the DMS / TSP connection under Integrations]]
-
 ### Example scenario
 
 Proton's IT team receives API credentials from its DMS provider ahead of a
@@ -574,7 +572,7 @@ your role has been granted the "Manage SLA policies" permission — see
    a conversation already resolved is not re-examined — so lowering a
    threshold cannot retrospectively create or erase a breach.
 
-[[SCREENSHOT: ch09-sla-policies | Editing an SLA policy's response, resolution, Tier-2, and warning thresholds]]
+[[SCREENSHOT: ch09-sla-policies | The SLA Policies page's response, resolution, Tier-2, and warning-threshold fields, scoped to the tenant default]]
 
 ### Example scenario
 
@@ -839,7 +837,7 @@ routing" permission).
    above. Do this for all six department labels before a launch or a
    campaign rather than discovering a gap from a customer complaint.
 
-[[SCREENSHOT: ch09-escalation-routing | Editing the PIC contact for a department and a dealer group's members]]
+[[SCREENSHOT: ch09-escalation-routing | The Escalation Routing page, listing each department's PIC contact and the dealer groups below]]
 
 ### Example scenario
 

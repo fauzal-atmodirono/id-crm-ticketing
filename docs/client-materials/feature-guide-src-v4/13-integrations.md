@@ -298,8 +298,6 @@ escalation email section).
    the Administration chapter); if it's still not working, report it to
    your CRM administrator or Devoteam support.
 
-[[SCREENSHOT: ch12-email | An escalation email thread sent from an Email-channel conversation]]
-
 ### Example scenario
 
 A customer emails about a recurring charging fault; the agent escalates it
@@ -346,7 +344,7 @@ Assistant Behaviour chapters.
    under Knowledge → Settings; if the problem continues, report it to your
    CRM administrator or Devoteam support.
 
-[[SCREENSHOT: ch12-gemini-ai | The Gemini AI assistant drafting a reply]]
+[[SCREENSHOT: ch12-gemini-ai | The Gemini AI assistant's reply, sent directly in a WhatsApp conversation]]
 
 ### Example scenario
 
@@ -449,8 +447,6 @@ Uploads** (see the Knowledge chapter).
    whether the relevant FAQ entry or document is active/indexed first; if
    material that should be indexed is stuck as **failed** or missing, report
    it to your CRM administrator or Devoteam support.
-
-[[SCREENSHOT: ch12-knowledge-base | The knowledge base sources cited in a suggested reply]]
 
 ### Example scenario
 

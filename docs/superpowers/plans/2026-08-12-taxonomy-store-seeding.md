@@ -376,7 +376,9 @@ with patch('chatbot.features.taxonomy.store.firestore.Client', FakeClient):
 "
 ```
 
-Expected output: `created 347` and `Counter({4: 246, 3: 89, 2: 8, 1: 4})`.
+Expected output: `created 346` and `Counter({4: 245, 3: 89, 2: 8, 1: 4})`.
+
+245, not 246: `"Charging: Public Charging: others"` and `"Charging: Public Charging: Others"` in the shipped config differ only by letter case and slugify to the same key. That is pre-existing transcription data, unrelated to this task, and collapsing them is correct — the ruling was to leave `config.py` verbatim.
 
 - [ ] **Step 7: Commit**
 
@@ -588,9 +590,10 @@ Immediately **before** that `ONCE A TENANT'S STORE...` paragraph in `deploy/tena
 ```
 # Turning this on seeds the store from CASE_TYPE_OPTIONS_JSON,
 # CASE_TAXONOMY_JSON and CASE_DETAIL_OPTIONS_JSON on the next backend boot --
-# with the shipped RFP 2026_028 Appendix A defaults that is 347 nodes (3 case
-# types + a neutral "Case divisions" root + 8 divisions + 89 categories + 246
-# details). The seed runs in the background so it never delays the container's
+# with the shipped RFP 2026_028 Appendix A defaults that is 346 nodes (3 case
+# types + a neutral "Case divisions" root + 8 divisions + 89 categories + 245
+# details -- 246 detail strings, two of which differ only by letter case and
+# collapse to one node). The seed runs in the background so it never delays the container's
 # health check, and it re-runs on every boot: after the first it reads once and
 # writes nothing. Watch for `taxonomy_startup_seed_complete` in the backend log.
 #
@@ -702,7 +705,7 @@ gcloud compute ssh crm-ticketing --zone=asia-southeast2-a \
   --command "docker logs proton-backend 2>&1 | grep -E 'taxonomy_seeded|taxonomy_startup_seed|taxonomy_seed_details_unresolved' | tail -5"
 ```
 
-Expected: `taxonomy_seeded newly_created=347` and `taxonomy_startup_seed_complete`. **`taxonomy_seed_details_unresolved` must not appear** — if it does, the label→key map missed a division and Task 1 is not finished; report the `parents` list rather than continuing.
+Expected: `taxonomy_seeded newly_created=346` and `taxonomy_startup_seed_complete`. **`taxonomy_seed_details_unresolved` must not appear** — if it does, the label→key map missed a division and Task 1 is not finished; report the `parents` list rather than continuing.
 
 - [ ] **Step 7: Verify both endpoints from inside the container**
 
@@ -726,7 +729,7 @@ print('unreferenced:', cov['unreferenced_departments'])
 "
 ```
 
-Expected: four roots including `Case divisions`, `nodes: 347`, `unmapped: 97`, and a list of `dept_*` slugs. A 404 from `/admin/taxonomy/coverage` means the flag did not reach the container — re-check Step 4 and that the recreate in Step 5 actually replaced the container.
+Expected: four roots including `Case divisions`, `nodes: 346`, `unmapped: 97`, and a list of `dept_*` slugs. A 404 from `/admin/taxonomy/coverage` means the flag did not reach the container — re-check Step 4 and that the recreate in Step 5 actually replaced the container.
 
 Note the image has `wget`, not `curl`, and `localhost` resolves to IPv6 while the server binds IPv4 — hence `127.0.0.1` and Python's `urllib` above.
 
@@ -770,7 +773,7 @@ git push origin dev-yuda
 | `main.py` startup hook, dispatched not awaited | Task 2, Step 3 |
 | `example.env` documentation | Task 3 |
 | Tests: divisions parent to neutral root | Task 1, Step 1 |
-| Tests: all 246 details incl. After Sales | Task 1, Step 1 |
+| Tests: no detail dropped, incl. After Sales | Task 1, Step 1 |
 | Tests: unresolvable detail skipped, not raised | Task 1, Step 1 |
 | Tests: re-seed creates 0, no writes | Task 1, Step 5 (existing tests, kept green) |
 | Tests: operator edit and retired node survive | Task 1, Step 5 (existing tests, kept green) |

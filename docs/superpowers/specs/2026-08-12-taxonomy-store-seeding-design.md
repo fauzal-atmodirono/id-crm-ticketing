@@ -100,7 +100,15 @@ Case divisions        (Type)   key: type_case_divisions
   ... 8 divisions / 89 categories / 246 details
 ```
 
-347 nodes total. Nothing downstream shifts: the coverage report still reads
+346 nodes total — 3 case types, the neutral root, 8 divisions, 89 categories
+and 245 details. 245 rather than 246 because `"Charging: Public Charging:
+others"` and `"Charging: Public Charging: Others"` in the transcription differ
+only by letter case and slugify to one key. That is pre-existing client data;
+the ruling was to leave `config.py` verbatim and let the store collapse them,
+so both spellings still appear in the Chatwoot picker until that is addressed
+separately.
+
+Nothing downstream shifts: the coverage report still reads
 levels 2–3 (Division and Category) exactly as designed, and the page's
 `LEVEL_LABELS` (`1: Type, 2: Division, 3: Category, 4: Detail`) stay correct.
 
@@ -179,8 +187,9 @@ Extend `features/taxonomy/test_seed.py`:
 
 - the `type_case_divisions` root is created and all 8 divisions parent to it;
   the 3 case types remain childless level-1 roots
-- all 246 details resolve, including every After Sales detail (the regression
-  test for defect 1)
+- no detail is dropped for want of a parent — the seeder's
+  `taxonomy_seed_details_unresolved` warning never fires — including every
+  After Sales detail (the regression test for defect 1)
 - a detail whose parent genuinely does not exist is skipped, logged, and does
   not raise
 - a second seed against a populated store creates 0 nodes and issues no writes
@@ -208,7 +217,7 @@ the suite never runs.
    all today.
 5. Recreate the backend so it picks up the flag, then verify **from inside the
    container** before opening the page: `GET /admin/taxonomy/tree` returns 4
-   roots and 347 nodes, and `GET /admin/taxonomy/coverage` returns 200 with 97
+   roots and 346 nodes, and `GET /admin/taxonomy/coverage` returns 200 with 97
    unmapped categories rather than 404.
 6. Confirm the seed ran once: a second restart logs `taxonomy_seeded` with
    `newly_created=0`.

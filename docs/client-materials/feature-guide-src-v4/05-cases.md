@@ -177,16 +177,28 @@ Appendix A specifies.
 Subcategory, and Case Detail's option lists are now administered from
 the dedicated **Case Taxonomy** page (see Where to find it, above),
 reachable only to administrators granted the case-taxonomy permission —
-not every administrator has it. There, an administrator builds the
-division/subcategory/detail tree entry by entry, giving each one a
-label and, optionally, the escalation department it belongs to. Saving
-a change updates the dropdown values agents see immediately, with no
-restart or redeploy. A value is never permanently deleted, only
-**retired** — a case created before a value was retired keeps showing
-it correctly, and retiring a value doesn't retire anything beneath it
-in the tree, so the page walks the administrator through re-homing or
-retiring those separately rather than leaving them invisible by
-accident.
+not every administrator has it. There, an administrator builds a
+four-level tree — labelled **Type, Division, Category,** and
+**Detail** — entry by entry, giving each one a label and, optionally,
+the escalation department it belongs to. Saving a change updates the
+dropdown values agents see immediately, with no restart or redeploy. A
+value is never permanently deleted, only **retired** — a case created
+before a value was retired keeps showing it correctly, and retiring a
+value doesn't retire anything beneath it in the tree, so the page walks
+the administrator through re-homing or retiring those separately rather
+than leaving them invisible by accident.
+
+**The page's four tier labels don't map onto the conversation's
+dropdowns one-for-one — read this before adding anything.** Add or edit
+a division at the tier labelled **Type**: that is what fills the
+conversation's **Case Category** dropdown (Sales, Aftersales, and so
+on), not the tier labelled Division. **Division** and **Category**
+together fill **Case Subcategory** — Category holds the value's own
+name, and its Division parent supplies the prefix automatically.
+**Detail** fills **Case Detail** directly. The conversation's own
+**Case Type** field (Inquiry / Complaint / Compliment & Feedback) is a
+different field, edited elsewhere (see below) — this page's Type tier
+does not touch it.
 
 Because the Case Taxonomy page treats its own list as the complete,
 authoritative one and rewrites it in full every time an administrator

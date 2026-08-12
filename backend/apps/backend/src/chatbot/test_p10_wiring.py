@@ -146,6 +146,51 @@ def test_the_coverage_report_404s_when_only_the_taxonomy_admin_flag_is_on(
     assert "CATEGORY_DEPARTMENT_MAPPING_ENABLED" in res.json()["detail"]
 
 
+def test_startup_seeds_the_taxonomy_store_when_the_admin_flag_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The seeder existed and had no caller but its own tests.
+
+    The admin page rendered "No active taxonomy nodes yet" on a tenant with the
+    flag on, the router mounted and the Appendix A data sitting in config --
+    because nothing ever wrote it to Firestore.
+    """
+    import time
+
+    app = _boot(monkeypatch, TAXONOMY_ADMIN_ENABLED="true")
+
+    with TestClient(app) as client:
+        # The seed runs on the TestClient's own event loop, in its own thread.
+        # Poll rather than await: this test function is sync and cannot drive
+        # that loop. Against `_FakeFirestore` the seed is in-memory and finishes
+        # almost immediately.
+        for _ in range(200):
+            if app.state.taxonomy_seed_task.done():
+                break
+            time.sleep(0.01)
+        assert app.state.taxonomy_seed_task.done(), "seed task did not finish"
+
+        res = client.get("/admin/taxonomy/tree")
+        assert res.status_code == 200
+        roots = res.json()["tree"]
+        assert {root["label"] for root in roots} == {
+            "Inquiry",
+            "Complaint",
+            "Compliment & Feedback",
+            "Case divisions",
+        }
+
+
+def test_startup_does_not_seed_when_the_admin_flag_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _boot(monkeypatch, TAXONOMY_ADMIN_ENABLED="false")
+
+    with TestClient(app):
+        assert not hasattr(app.state, "taxonomy_seed_task")
+    assert _FakeFirestore.documents == {}
+
+
 def test_data_scoped_rbac_refuses_to_boot_because_nothing_enforces_it() -> None:
     """The flag restricts no data, so it must not be quietly settable.
 

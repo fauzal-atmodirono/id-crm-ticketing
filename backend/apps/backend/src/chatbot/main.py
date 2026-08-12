@@ -1166,6 +1166,38 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     app.include_router(build_rules_router(settings, authz_repo, authz_validator))
     app.include_router(build_taxonomy_admin_router(settings))
 
+    @app.on_event("startup")
+    async def _seed_taxonomy_store() -> None:
+        """Seed the taxonomy store from the three CASE_*_JSON settings.
+
+        Dispatched, never awaited. A first boot against an empty store is ~347
+        sequential Firestore writes -- 15-30s -- and awaiting that here holds the
+        container below its health check. A populated store costs one read, so
+        the steady state is nearly free either way.
+
+        `example.env` already documents these vars as "the seed only" once a
+        tenant's store is populated. Until this hook existed no tenant's store
+        ever was, and the taxonomy admin page rendered empty on a tenant whose
+        config held the full Appendix A taxonomy.
+        """
+        if not settings.taxonomy_admin_enabled:
+            return
+
+        import asyncio
+
+        from chatbot.features.taxonomy.seed import seed_taxonomy_from_env
+        from chatbot.features.taxonomy.store import build_taxonomy_store
+
+        async def _run() -> None:
+            try:
+                created = await seed_taxonomy_from_env(build_taxonomy_store(settings), settings)
+                _log.info("taxonomy_startup_seed_complete", newly_created=created)
+            except Exception as exc:
+                _log.warning("taxonomy_startup_seed_failed", error=str(exc))
+
+        # Held on app.state so the task is not garbage-collected mid-flight.
+        app.state.taxonomy_seed_task = asyncio.create_task(_run())
+
     # P11 task 1: `GET /calls/{conversation_id}/recording`. Mounted here for the
     # same reason the two above are: the router was written, unit-tested against
     # its own throwaway `FastAPI()` and never mounted, so on a live backend the

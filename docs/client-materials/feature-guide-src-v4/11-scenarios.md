@@ -6,27 +6,30 @@
 
 1. A customer messages Proton's WhatsApp number asking about the price and
    availability of a test drive for the e.MAS 7. Chatwoot creates a new
-   conversation on the WhatsApp inbox, which is running in Suggest mode
-   (see the AI Assistant Behaviour chapter's Suggest mode vs. Auto mode
+   conversation on the WhatsApp inbox, which runs in **Auto mode** — the
+   tenant-wide default — so no human review step applies here unless this
+   particular inbox has been explicitly switched to Suggest (see the AI
+   Assistant Behaviour chapter's Suggest mode vs. Auto mode section).
+2. The AI assistant answers directly, grounded in the knowledge base, and
+   sends the reply itself — this is what Auto mode means day to day (see
+   the Conversations chapter's AI auto-draft and suggest-vs-auto mode
    section).
-2. The AI assistant drafts an answer grounded in the knowledge base and
-   posts it as a private note, then reopens the conversation for a human
-   (see the Conversations chapter's AI auto-draft section and the AI
-   Assistant Behaviour chapter).
-3. The on-duty agent opens the conversation, reads the suggested draft and
-   its source citations, tweaks the wording slightly, and sends it as
-   their own reply (see the Conversations chapter's Private notes and
-   Suggest-a-reply sections).
-4. The customer confirms they'd like to book the test drive; the agent
-   arranges it and, once everything is confirmed, marks the conversation
-   **Resolved** (see the Conversations chapter's Resolving, snoozing &
-   transcripts section).
-5. The customer receives the standard resolution prompt and satisfaction
-   survey, and their 1–5 rating shows up later in the CSAT report (see the
-   AI Assistant Behaviour chapter's Lifecycle messages section and the
-   Reports chapter).
+3. The customer confirms they'd like to book a test drive. Because
+   arranging a booking needs a person, the conversation reopens and is
+   assigned to an available agent whose channel priorities include
+   WhatsApp (see the Channel Playbooks chapter's WhatsApp section,
+   Scenario B).
+4. The agent picks it up, confirms the booking details with the customer
+   — using **Ask Copilot** for a knowledge-grounded draft if useful — and,
+   once everything is confirmed, marks the conversation **Resolved** (see
+   the Conversations chapter's Resolving, snoozing & transcripts section).
+5. On resolve, the customer receives Chatwoot's own native satisfaction-
+   rating request — not the assistant's own survey message, which is off
+   tenant-wide on this account — and their 1–5 rating shows up later in
+   the CSAT report (see the AI Assistant Behaviour chapter's Lifecycle
+   messages section and the Reports chapter).
 
-[[SCREENSHOT: ch11-scenario1-whatsapp | A WhatsApp inquiry resolved with an AI-suggested reply]]
+[[SCREENSHOT: ch11-scenario1-whatsapp | A WhatsApp inquiry answered directly by the AI assistant, then handed to an agent to arrange the booking]]
 
 ## Scenario 2: Complaint escalation, the dealer's reply, and the turnaround report
 <!-- TRAINING: audience=agent, exercise -->
@@ -56,10 +59,13 @@
 5. The agent reads the draft, adjusts a couple of words, sends it as their
    own reply to the customer, and marks the conversation **Resolved**.
 6. During the weekly ops review, a supervisor opens the Weekly Report page
-   and checks the Dealer Escalation Turnaround table to see how long that
-   dealer took to close the case, alongside every other escalation from
-   the same week (see the Reports chapter's Weekly Report and Dealer
-   escalation turnaround sections).
+   and looks at the Dealer Escalation Turnaround table. Today it shows a
+   fixed set of illustrative example figures rather than this account's
+   real timings — the reporting connection behind it hasn't been switched
+   on for this account yet — so the supervisor doesn't read this dealer's
+   actual turnaround off that table. To know how long this specific case
+   actually took, they'd check the case itself (see the Reports chapter's
+   Weekly Report and Dealer escalation turnaround sections).
 
 [[SCREENSHOT: ch11-scenario2-escalation | A complaint tracked from escalation label, through the dealer's reply, to the turnaround report]]
 
@@ -84,10 +90,13 @@
    completed RSA incident together with the customer's conversations in
    one place (see the Contacts chapter's Customer 360 section and the RSA
    Incident Log chapter's RSA in Customer 360 & reports section).
-5. Where the DMS/TSP connection is configured, the same Customer 360
-   result also shows that vehicle's service history alongside the RSA
-   incident (see the Contacts chapter's Customer 360 section and the
-   Administration chapter's Integrations section).
+5. The same Customer 360 result also has a DMS/TSP block for that
+   vehicle, but no live dealer-management-system adapter has been built
+   into the platform yet, so on this tenant it shows a **Not connected**
+   notice rather than a service history — the RSA incident and the
+   customer's conversations are what the administrator actually has to go
+   on today (see the Contacts chapter's Customer 360 section and the
+   Integration Overview chapter's DMS/TSP section).
 
 [[SCREENSHOT: ch11-scenario3-rsa | An RSA incident followed up through Customer 360]]
 
@@ -121,21 +130,31 @@
 1. Every Friday afternoon, Proton's operations lead opens **Reports →
    Weekly Report** and sets the week picker to the period just finishing
    (see the Reports chapter's Weekly Report section).
-2. They read **Case Volume** for the week's total and its channel/division
-   breakdown, then **Case Status Trend** for how cases split across
-   statuses during the window.
-3. They scroll through **Inquiry / Complaint / Feedback Detail —
-   Departments & PIC**, **Call Centre & SLA Performance**, and
-   **Work-in-Progress / Case Aging** to note anything that needs follow-up
-   before the client call.
-4. They check **Dealer Escalation Turnaround** for any dealer whose
-   average turnaround has crept up, ready to raise it on the call (see the
-   AI Assistant Behaviour chapter's Escalation labels & the escalation
-   email section for how that clock starts).
-5. Figures from the page are copied into the weekly client deck; if the
-   client asks for a deeper cut of the data than the page shows, the
-   operations lead asks their CRM administrator to arrange a bulk export
-   (see the Integration Overview chapter's BI/reporting exports section).
+2. They check **Per-Case Detail** at the bottom of the page — the one
+   section here that's read live from Chatwoot's current conversations —
+   for the actual cases behind the week.
+3. They also open **Case Volume**, **Case Status Trend**, **Inquiry /
+   Complaint / Feedback Detail — Departments & PIC**, **Call Centre & SLA
+   Performance**, **Work-in-Progress / Case Aging**, and **Dealer
+   Escalation Turnaround**, but treat every number on those sections as a
+   placeholder: the reporting connection behind them hasn't been switched
+   on for this account yet, so what's on screen is a fixed set of
+   illustrative example figures, not this week's real activity — and
+   nothing on the page marks them as examples today, so the operations
+   lead has to know that going in (see the Reports chapter's Weekly Report
+   section).
+4. Because none of those sections reflect this account's real week yet,
+   the operations lead does not read a conclusion off them for the client
+   call — no "this dealer's turnaround has crept up," no "complaints were
+   up this week." Anything they report comes from Per-Case Detail, or from
+   asking their CRM administrator whether the reporting connection has
+   been switched on since the last check.
+5. Once that connection does go live — a step still pending for this
+   account — this routine can move back to reading the full page. Until
+   then, if the client needs a number beyond what Per-Case Detail shows,
+   the operations lead asks their CRM administrator to arrange a bulk
+   export from the CRM's live data instead (see the Integration Overview
+   chapter's BI/reporting exports section).
 
 [[SCREENSHOT: ch11-scenario5-weekly-report | Using the Weekly Report page for the weekly client meeting]]
 
@@ -156,9 +175,11 @@
    chapter's Inboxes section).
 5. Dian signs in for the first time using the credentials from her
    invitation, lands on the Conversations view, and — since her role is
-   Agent — sees Conversations, Contacts, and Knowledge, but none of the
-   administrator-only pages (see the Introduction chapter's Logging in
-   and Roles: agent vs administrator sections).
+   Agent — sees Conversations, Contacts, Knowledge, and **My status**,
+   where she sets her own availability, but none of the administrator-only
+   pages (see the Introduction chapter's Logging in and Roles: agent vs
+   administrator sections, and the Administration chapter's Agent
+   Availability & Workforce Dashboard section).
 
 [[SCREENSHOT: ch11-scenario6-onboarding | Onboarding a new agent with a role, team, and inbox assignment]]
 
@@ -360,7 +381,10 @@
 
 1. A customer emails complaining that their new e.MAS 5's delivery has no
    estimated date. The agent opens the conversation's custom attributes
-   panel (see the Cases chapter's Case categorisation section).
+   panel — these are the same five dropdowns every agent fills in on a
+   case, distinct from the admin-only Case Taxonomy page that maintains
+   three of these option lists behind the scenes (see the Cases chapter's
+   Case categorisation section).
 2. They set **Case Type** to `Complaint` — one of three values, and
    independent of everything else in the panel.
 3. They set **Case Category** to `Sales`, one of eight divisions.
@@ -404,30 +428,32 @@
 
 [[SCREENSHOT: ch11-scenario16-dept-suggestion | An AI-suggested escalation department note, one accepted and one overridden by the agent's own judgement]]
 
-## Scenario 17: Verifying escalation now reaches all six departments and a dealer group
+## Scenario 17: Checking escalation routing before you rely on it
 <!-- TRAINING: audience=admin -->
 
 1. Ahead of relying on escalation routing for a live launch event, a
    supervisor with the escalation-routing permission opens
    **Escalation Routing** (see the Administration chapter's Escalation
-   Routing section) and checks that all six department rows —
+   Routing section) and reads down the six department rows —
    `dept_sales`, `dept_engineer`, `dept_pre_sales`, `dept_aftersales`,
-   `dept_cs`, and `dept_technical` — show a PIC email, and that both
-   dealer groups, `dealer_komang_motor` and `dealer_caroline_motor`,
-   list at least one member.
-2. Satisfied, they escalate one test case per department label in turn —
-   `dept_sales`, `dept_engineer`, `dept_pre_sales`, `dept_aftersales`,
-   `dept_cs`, `dept_technical`, each followed by `escalate` — and confirm
-   each PIC actually receives the forward.
-3. They escalate one more test case with `dealer_komang_motor` added
-   alongside a department label, and confirm every member of that dealer
-   group receives it too.
-4. Before this edition, most of these department labels had no PIC
-   configured — escalating with them stamped the conversation and looked
-   identical to a working escalation, but sent no mail to anyone, with
-   nothing in the CRM to say so. That gap is closed; the supervisor
-   documents that all seven destinations (six departments plus the two
-   dealer groups) are now verified live, and tells the team they no
-   longer need to double-check with a phone call after escalating.
+   `dept_cs`, and `dept_technical` — plus the dealer group rows, checking
+   which ones actually show a contact.
+2. **Why this check matters:** applying `escalate` stamps the
+   conversation and looks, from the conversation view, exactly like a
+   successful escalation — whether or not that department or dealer group
+   has a contact configured. A department with no PIC, or a dealer group
+   with no members, sends the escalation email to nobody, silently, with
+   no error anywhere in the CRM to say so.
+3. For every row that does show a contact, the supervisor escalates one
+   test case with that department's label, then `escalate`, and confirms
+   the contact actually receives the forward. For a dealer group, they add
+   the dealer's label alongside a department label and confirm every
+   member listed receives it too.
+4. **What this check does not establish:** how many of the rows are
+   populated overall, since the directory is editable at any time and what
+   was complete last month may not be today. Check the Escalation Routing
+   page yourself before a launch event rather than relying on a past
+   check, and don't tell the team they can skip double-checking after an
+   escalation on the strength of a check that's already gone stale.
 
-[[SCREENSHOT: ch11-scenario17-escalation-routing-verified | The Escalation Routing page with all six department PICs and both dealer groups configured]]
+[[SCREENSHOT: ch11-scenario17-escalation-routing-verified | The Escalation Routing page, checked row by row before a launch event]]

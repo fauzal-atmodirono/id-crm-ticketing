@@ -14,7 +14,7 @@ find the right one.
 | Phone | The human side of that same call | The same conversation, plus — where turned on — a transfer attempt to a live agent |
 | Email (incl. escalation emails) | Proton's support email address(es) | An Email inbox in Conversations, plus automatic two-thread escalation emails when the `escalate` label is applied |
 | Gemini AI | Google's Gemini AI model | AI-drafted replies, Ask Copilot answers, summaries, and Playground test answers |
-| DMS / TSP | A dealer's Dealer Management System / Telematics Service Provider | Vehicle and service-history results inside a Customer 360 lookup |
+| DMS / TSP | A placeholder for a future dealer Dealer Management System / Telematics Service Provider connection — no live adapter exists yet on this platform | A "Not connected" notice inside a Customer 360 lookup (or, only if a demo mode is deliberately switched on, a clearly labelled "Mock data" notice) |
 | Knowledge base | Proton's FAQ and document corpus | The content AI-assist features and Ask Copilot draw their answers and source citations from |
 | BI / reporting exports | External BI/reporting tools | Report figures made available for use outside the CRM |
 
@@ -66,10 +66,13 @@ Conversations chapter's Conversation inbox & views section).
 
 A customer messages Proton's WhatsApp number asking about e.MAS 7 test
 drive availability; the conversation arrives in the WhatsApp inbox, where
-the AI assistant drafts a reply for an agent to review and send (see the
-End-to-End Scenarios chapter's Scenario 1). Where a case instead needs a
-dealer's attention, see the End-to-End Scenarios chapter's Scenario 12 for
-what escalating a WhatsApp case actually involves.
+the AI assistant answers directly from the knowledge base with no human
+review step — this inbox runs in Auto mode, the tenant-wide default —
+unless the customer needs something only a person can arrange, in which
+case the conversation reopens for an agent (see the End-to-End Scenarios
+chapter's Scenario 1). Where a case instead needs a dealer's attention,
+see the End-to-End Scenarios chapter's Scenario 12 for what escalating a
+WhatsApp case actually involves.
 
 ### Integrations & automation
 
@@ -368,51 +371,62 @@ in this section works independently of those.
 
 ### What it is
 
-An optional connection to a dealer's own Dealer Management System or
-Telematics Service Provider, which lets the Customer 360 lookup show a
-customer's vehicle and service history alongside their CRM conversations.
+An optional connection point for a dealer's own Dealer Management System
+or Telematics Service Provider, meant to let the Customer 360 lookup show
+a customer's vehicle and service history alongside their CRM
+conversations. **No live dealer system has actually been wired into this
+build yet.** The Integrations page lets an administrator save a provider
+label, authentication method, base URL, and credential, but nothing today
+reads that saved configuration back into a real system — the only client
+this release can ever call is a demo client that returns fabricated
+sample records, and even that demo mode is switched off for this tenant.
+Treat this as a placeholder for a future connection, not a working
+integration.
 
 ### Where to find it
 
 Configured under **Administration → Integrations**, on the **DMS / TSP**
 card (visible only to administrators with the matching permission — see
 the Administration chapter's Integrations and Roles & Permissions
-sections). Its results appear inside a **Customer 360** lookup (see the
-Contacts chapter).
+sections). Its result — today, always a "Not connected" notice — appears
+inside a **Customer 360** lookup (see the Contacts chapter).
 
 ### How to use it
 
-1. An administrator with the right permission configures the connection
-   under **Administration → Integrations → DMS / TSP** — provider label,
-   authentication, base URL, and credential — and clicks **Test
-   connection** to confirm it's reachable (see the Administration
-   chapter).
-2. Once enabled, any Customer 360 search that matches a vehicle shows a
-   **DMS / TSP** section with that vehicle's service history.
-3. A **Not connected** notice means the connection isn't configured or
-   isn't reachable; a **Mock data** notice means the results shown are
-   demo data rather than a live system. Either way, Customer 360 still
-   shows the CRM's own contact, conversation, and RSA data.
-4. If the connection reports an error or shows unexpected data, first
-   check its status and **Test connection** result under Administration →
-   Integrations; if it still doesn't work, report it to your CRM
-   administrator or Devoteam support, since the fault may be on the
-   dealer's own system.
+1. An administrator with the right permission can fill in the connection
+   fields under **Administration → Integrations → DMS / TSP** — provider
+   label, authentication, base URL, and credential — and save them.
+   **This does not connect to anything today:** no real DMS/TSP adapter
+   exists in this build yet, so the saved configuration currently has no
+   effect on what Customer 360 shows.
+2. On this tenant, every Customer 360 search shows a **Not connected**
+   notice in the DMS/TSP block, regardless of what has been saved on the
+   Integrations page.
+3. If Devoteam switches on the platform's demo mode for a walkthrough,
+   the same block instead shows a **Mock data** notice with fabricated
+   sample vehicle and service records — clearly labelled as demo data,
+   never a real customer's history. Either way, Customer 360 still shows
+   the CRM's own contact, conversation, and RSA data next to it.
+4. Never quote a DMS/TSP result to a customer as their actual vehicle
+   record. Until a real adapter is built and connected, nothing in this
+   block reflects a live dealer system.
 
 [[SCREENSHOT: ch12-dms | The DMS / TSP connection status in Integrations]]
 
 ### Example scenario
 
-A dealer calls asking about a customer's vehicle history; because the
-dealership's DMS/TSP connection is configured and reachable, the operator's
-Customer 360 search shows that vehicle's last two service visits alongside
-its CRM conversations (see the Contacts chapter's Customer 360 section).
+A dealer calls asking about a customer's vehicle history; the operator
+opens Customer 360 and searches for the vehicle, but the DMS/TSP block
+shows **Not connected** — there's no live dealer-management-system
+adapter behind it yet on this platform, so the operator answers from the
+CRM's own conversation and RSA history instead (see the Contacts
+chapter's Customer 360 section).
 
 ### Integrations & automation
 
-This connection only affects the Customer 360 lookup covered in the
-Contacts chapter — it has no effect anywhere else in the CRM until it is
-enabled and reachable.
+This connection point only affects the Customer 360 lookup covered in the
+Contacts chapter — and, until a real adapter is built, it has no live
+effect there either.
 
 ## Knowledge base (Vertex corpus)
 

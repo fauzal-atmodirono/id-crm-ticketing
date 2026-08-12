@@ -23,6 +23,24 @@ combined, not just one inbox at a time) from the CRM's reporting warehouse:
   CSAT and NPS scores, CSAT by channel, NPS respondent split, and NPS by
   agent.
 
+There's a second thing to know about every Proton-built section on this
+page, and about five of the standalone report pages later in this chapter
+(Anomaly, Departments & PIC, Case Lifecycle, Weekly Report, and the
+cross-channel sections on the SLA reports page, including Dealer Escalation
+Turnaround): they all read from one shared cross-channel reporting
+connection, separate from Chatwoot itself, and **that connection has not
+yet been switched on for this account.** Until it is, those sections show a
+fixed set of illustrative example numbers rather than Proton e.MAS's actual
+conversations — and today nothing on the page marks them as illustrative;
+the tables and charts render exactly as they will once the connection goes
+live. Chatwoot's own native numbers are unaffected and always reflect this
+account's real activity — conversation counts, native CSAT, the native SLA
+table, and any table that reads straight from Chatwoot conversations (the
+Weekly Report's Per-Case Detail, for instance). Treat any number inside a
+section labelled "Proton" on these pages as a preview of that report's
+layout, not as this account's real performance, until we confirm the
+connection is live.
+
 Two of those tiles need reading precisely, because their labels promise more
 than the underlying data can say:
 
@@ -72,9 +90,10 @@ one comparison instead of him checking each channel separately.
 ### Integrations & automation
 
 These pages read from Chatwoot conversation data and, for the Proton
-sections, from the CRM's reporting warehouse. There is nothing to turn
-on — the extra sections simply fail to load quietly (rather than break the
-page) if that warehouse is briefly unreachable.
+sections, from the CRM's reporting warehouse — see the note above about
+that connection's current status. Once it is live, a brief warehouse outage
+fails the extra sections quietly (an empty section, not a broken page)
+rather than surfacing an error.
 
 ## Anomaly report
 <!-- TRAINING: audience=supervisor, exercise -->
@@ -119,8 +138,12 @@ something is broken.
 ### Integrations & automation
 
 The Anomaly report is read-only reporting; it doesn't trigger any
-automated action on its own. Use it as an early-warning signal alongside
-the standard Inbox and Overview reports.
+automated action on its own. It reads from the same reporting warehouse
+connection described under Standard reports — until that connection is
+switched on for this account, the channels and figures shown here are
+illustrative, not this account's real traffic. Once it's live, use the
+page as an early-warning signal alongside the standard Inbox and Overview
+reports.
 
 ## Departments & PIC report
 
@@ -162,9 +185,13 @@ closed.
 
 ### Integrations & automation
 
-This report reflects case categories and dealer/department labels that
-agents apply during normal conversation handling — there is no separate
-configuration step; it fills in as agents work.
+In principle this report reflects case categories and dealer/department
+labels that agents apply during normal conversation handling, with no
+separate configuration step. Today, though, it reads from the same
+not-yet-connected reporting warehouse described under Standard
+reports — so what's on screen is illustrative rather than a live
+reflection of how cases are actually being handled, until that connection
+is switched on.
 
 ## Case Lifecycle report
 
@@ -205,8 +232,10 @@ escalates those to the relevant PIC before they slip further.
 ### Integrations & automation
 
 Case status and category come from how agents and administrators manage
-conversations day to day (see Cases and RSA); this report has no separate
-setup of its own.
+conversations day to day (see Cases and RSA), with no separate setup of
+its own — but this report also reads from the same not-yet-connected
+reporting warehouse described under Standard reports, so its numbers are
+illustrative rather than live until that connection is switched on.
 
 ## Weekly Report
 <!-- TRAINING: audience=supervisor, exercise -->
@@ -250,6 +279,16 @@ doesn't require collating several report pages by hand.
 > warehouse) can legitimately show slightly different counts, since they
 > come from two different data sources — this is expected, not a bug.
 
+Right now those two sources aren't just "different" — one of them isn't
+live yet. Per-Case Detail reads straight from Chatwoot and is always real.
+Case Volume, Case Status Trend, Departments & PIC Detail, Call Centre & SLA
+Performance, Work-in-Progress / Case Aging, and Dealer Escalation
+Turnaround all read from the reporting warehouse connection described
+under Standard reports, which has not yet been switched on for this
+account — so those sections currently show illustrative figures rather
+than this account's real week. Per-Case Detail is the one section on this
+page you can already read as real today.
+
 <!-- VERIFY-LIVE: confirm this reconciliation note's exact wording on the live tenant -->
 
 [[SCREENSHOT: ch07-weekly-report | The Weekly Report page]]
@@ -265,7 +304,8 @@ average turnaround has crept up.
 ### Integrations & automation
 
 The Weekly Report reads from the same reporting warehouse and live case
-data as the other report pages; there is no export button on the page
+data as the other report pages — see the note above about the warehouse
+connection's current status. There is no export button on the page
 itself, so figures are typically copied by hand into a weekly deck, or
 pulled in bulk via BI/reporting exports for a larger dataset (see the
 Integrations chapter).
@@ -310,9 +350,13 @@ case type is dragging the average down.
 
 ### Integrations & automation
 
-SLA achievement is measured against whichever SLA policy is applied to a
-conversation (configured on the SLA Policies admin page, see
-Administration); this report doesn't need separate setup of its own.
+The native table at the top measures SLA achievement directly against
+whichever SLA policy is applied to a conversation (configured on the SLA
+Policies admin page, see Administration) — no separate setup, and it's
+live today. Cross-Channel SLA Achievement and SLA Compliance by Bucket
+below it read from the same not-yet-connected reporting warehouse
+described under Standard reports, so treat their numbers as illustrative
+until that connection is switched on.
 
 ## Dealer escalation turnaround
 
@@ -359,4 +403,9 @@ The turnaround clock starts automatically, once, the first time a dealer
 label is applied to a conversation — an agent doesn't need to do anything
 extra beyond applying the label as part of normal escalation handling
 (see Labels, and Escalation labels & the escalation email in the AI
-Behaviour chapter).
+Behaviour chapter). That timestamp is written straight onto the
+conversation and is always real. The turnaround table itself — averages,
+percentiles, and the Slowest Cases list — is one of the sections fed by
+the reporting warehouse connection described under Standard reports, so
+until that connection is switched on for this account, what's on screen
+there is illustrative rather than computed from these real timestamps.

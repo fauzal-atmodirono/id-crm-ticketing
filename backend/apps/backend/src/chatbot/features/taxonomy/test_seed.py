@@ -97,9 +97,8 @@ async def test_all_three_case_types_are_seeded(store: TaxonomyStore, settings) -
     await seed_taxonomy_from_env(store, settings)
 
     nodes = await store.list_nodes(active_only=True)
-    l1_nodes = [n for n in nodes if n.level == 1]
-    l1_labels = {n.label for n in l1_nodes}
-    assert l1_labels == {"Inquiry", "Complaint", "Compliment & Feedback"}
+    l1_labels = {n.label for n in nodes if n.level == 1}
+    assert {"Inquiry", "Complaint", "Compliment & Feedback"} <= l1_labels
 
 
 async def test_all_eight_divisions_are_seeded(store: TaxonomyStore, settings) -> None:
@@ -119,21 +118,6 @@ async def test_all_eight_divisions_are_seeded(store: TaxonomyStore, settings) ->
         "Marketing",
     }
     assert l2_labels == expected
-
-
-async def test_the_seeded_tree_matches_what_the_env_json_produces_today(
-    store: TaxonomyStore, settings
-) -> None:
-    await seed_taxonomy_from_env(store, settings)
-
-    tree = await store.tree()
-    assert len(tree) >= 1
-    root = tree[0]
-    assert root["label"] == "Inquiry"
-    # Root should contain children divisions
-    div_labels = {child["label"] for child in root["children"]}
-    assert "Sales" in div_labels
-    assert "After Sales" in div_labels
 
 
 async def test_re_seeding_never_overwrites_an_operator_edited_label(
@@ -192,3 +176,94 @@ async def test_re_seeding_adds_a_node_that_appeared_in_the_env_json(
     assert new_node is not None
     assert new_node.label == "Leasing"
     assert new_node.active is True
+
+
+async def test_every_detail_option_finds_its_parent_including_after_sales(
+    store: TaxonomyStore, settings
+) -> None:
+    """The division key is `aftersales`; the detail prefix is `After Sales`.
+
+    Re-slugifying the prefix gives `after_sales`, which matches no division key,
+    so 100 of 246 details used to be dropped with no log line. Resolution goes
+    through a label -> key map now.
+    """
+    await seed_taxonomy_from_env(store, settings)
+
+    detail_count = len(json.loads(settings.case_detail_options_json)["options"])
+    nodes = await store.list_nodes(active_only=True)
+    seeded_details = [n for n in nodes if n.level == 4]
+    assert len(seeded_details) == detail_count
+
+    after_sales_details = [
+        n for n in seeded_details if n.parent is not None and n.parent.startswith("cat_aftersales_")
+    ]
+    assert after_sales_details, "no After Sales details were seeded"
+
+
+async def test_divisions_hang_off_the_neutral_root_not_a_case_type(
+    store: TaxonomyStore, settings
+) -> None:
+    """Appendix A's Case Category is orthogonal to Division.
+
+    Parenting divisions to whichever case type sorts first made the page assert
+    that every division belongs to Inquiry. The neutral root makes no such claim.
+    """
+    await seed_taxonomy_from_env(store, settings)
+
+    nodes = await store.list_nodes(active_only=True)
+    divisions = [n for n in nodes if n.level == 2]
+    assert divisions
+    assert {n.parent for n in divisions} == {"type_case_divisions"}
+
+    root = await store.get_node("type_case_divisions")
+    assert root is not None
+    assert root.level == 1
+    assert root.label == "Case divisions"
+    assert root.parent is None
+
+
+async def test_the_three_case_types_are_seeded_as_childless_roots(
+    store: TaxonomyStore, settings
+) -> None:
+    await seed_taxonomy_from_env(store, settings)
+
+    tree = await store.tree()
+    by_label = {root["label"]: root for root in tree}
+    assert set(by_label) == {
+        "Inquiry",
+        "Complaint",
+        "Compliment & Feedback",
+        "Case divisions",
+    }
+    for label in ("Inquiry", "Complaint", "Compliment & Feedback"):
+        assert by_label[label]["children"] == []
+
+    div_labels = {child["label"] for child in by_label["Case divisions"]["children"]}
+    assert div_labels == {
+        "Sales",
+        "Product",
+        "Network",
+        "Charging",
+        "Apps",
+        "After Sales",
+        "Others",
+        "Marketing",
+    }
+
+
+async def test_a_detail_whose_parent_does_not_exist_is_skipped_not_raised(
+    store: TaxonomyStore, settings
+) -> None:
+    updated = settings.model_copy(
+        update={
+            "case_detail_options_json": json.dumps(
+                {"options": ["Nonexistent Division: Nonexistent Category: Some Detail"]}
+            )
+        }
+    )
+
+    created = await seed_taxonomy_from_env(store, updated)
+
+    assert created > 0  # types, root and divisions still seeded
+    nodes = await store.list_nodes(active_only=True)
+    assert [n for n in nodes if n.level == 4] == []

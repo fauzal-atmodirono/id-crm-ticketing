@@ -150,8 +150,9 @@ Administration → Roles & Permissions.
 
 ### How to use it
 
-1. As an agent, you see Conversations, Contacts, and Knowledge (read
-   access) — the day-to-day support tools.
+1. As an agent, you see Conversations, Contacts, and Knowledge — the
+   day-to-day support tools. Knowledge isn't read-only for agents: the
+   same page and its editing controls are available to both roles.
 2. As an administrator, you additionally see Cases, the RSA Incident Log,
    Customer 360, Reports, and Administration together with any
    admin-only pages your permissions grant, such as Integrations,

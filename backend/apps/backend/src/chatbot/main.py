@@ -1170,7 +1170,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     async def _seed_taxonomy_store() -> None:
         """Seed the taxonomy store from the three CASE_*_JSON settings.
 
-        Dispatched, never awaited. A first boot against an empty store is ~347
+        Dispatched, never awaited. A first boot against an empty store is 346
         sequential Firestore writes -- 15-30s -- and awaiting that here holds the
         container below its health check. A populated store costs one read, so
         the steady state is nearly free either way.
@@ -1193,7 +1193,15 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
                 created = await seed_taxonomy_from_env(build_taxonomy_store(settings), settings)
                 _log.info("taxonomy_startup_seed_complete", newly_created=created)
             except Exception as exc:
-                _log.warning("taxonomy_startup_seed_failed", error=str(exc))
+                # Broad on purpose: a non-string entry in one of the CASE_*_JSON
+                # env vars raises AttributeError from inside the seeder, and this
+                # is what keeps that from killing the boot. Narrowing this to
+                # e.g. ValueError would let such an error escape the background
+                # task, which only produces an unretrieved-exception log.
+                # error() + exc_info so a malformed CASE_*_JSON var is diagnosable
+                # -- the only operator-visible symptom otherwise is an empty
+                # admin page, with nothing pointing at which var or why.
+                _log.error("taxonomy_startup_seed_failed", error=str(exc), exc_info=True)
 
         # Held on app.state so the task is not garbage-collected mid-flight.
         app.state.taxonomy_seed_task = asyncio.create_task(_run())

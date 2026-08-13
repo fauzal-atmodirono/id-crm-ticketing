@@ -47,17 +47,23 @@ class _FakeCollection:
 
 
 class _FakeFirestore:
-    documents: ClassVar[dict[str, dict[str, Any]]] = {}
+    # Keyed per-collection: `TaxonomyStore` writes to "taxonomy_nodes" and
+    # `CustomStatusStore` (a wholly separate feature, also wired through this
+    # same `firestore.Client` patch point) writes to "custom_statuses". A
+    # single shared dict here made the taxonomy-store assertions see the other
+    # feature's documents whenever both startup hooks ran in the same test --
+    # see the flags-ON CI gate failure this was built to fix.
+    collections: ClassVar[dict[str, dict[str, dict[str, Any]]]] = {}
 
     def __init__(self, *_args: Any, **_kwargs: Any) -> None:
         pass
 
-    def collection(self, _name: str) -> _FakeCollection:
-        return _FakeCollection(_FakeFirestore.documents)
+    def collection(self, name: str) -> _FakeCollection:
+        return _FakeCollection(_FakeFirestore.collections.setdefault(name, {}))
 
     @staticmethod
     def reset() -> None:
-        _FakeFirestore.documents = {}
+        _FakeFirestore.collections = {}
 
 
 @pytest.fixture(autouse=True)
@@ -180,6 +186,25 @@ def test_startup_seeds_the_taxonomy_store_when_the_admin_flag_is_on(
             "Case divisions",
         }
 
+        # Root labels alone pass even if the seed dies partway through writing
+        # levels 2-4 (`_run` swallows the exception) -- the exact bug class
+        # Task 1 fixed, where 100 of 246 detail nodes vanished silently. Count
+        # every node in the tree and require the deepest level actually landed.
+        total_nodes = 0
+        has_level_4 = False
+
+        def _walk(nodes: list[dict[str, Any]]) -> None:
+            nonlocal total_nodes, has_level_4
+            for node in nodes:
+                total_nodes += 1
+                if node["level"] == 4:
+                    has_level_4 = True
+                _walk(node["children"])
+
+        _walk(roots)
+        assert total_nodes == 346
+        assert has_level_4
+
 
 def test_startup_does_not_seed_when_the_admin_flag_is_off(
     monkeypatch: pytest.MonkeyPatch,
@@ -188,7 +213,7 @@ def test_startup_does_not_seed_when_the_admin_flag_is_off(
 
     with TestClient(app):
         assert not hasattr(app.state, "taxonomy_seed_task")
-    assert _FakeFirestore.documents == {}
+    assert _FakeFirestore.collections.get("taxonomy_nodes", {}) == {}
 
 
 def test_data_scoped_rbac_refuses_to_boot_because_nothing_enforces_it() -> None:

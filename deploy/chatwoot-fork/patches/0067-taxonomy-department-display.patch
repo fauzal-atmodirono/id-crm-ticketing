@@ -1,0 +1,61 @@
+# 0067-taxonomy-department-display.patch — OUR patch. Show the Department
+# column as a readable name, not a raw slug.
+#
+# The stored value has to stay a slug: it is what becomes a Chatwoot
+# `dept_*` label when escalation routing is wired, and Chatwoot labels cannot
+# contain spaces (this tenant already lost dealer forwarding once to PIC
+# records keyed "Pre Sales", which made `dept_pre sales` an impossible label).
+# The coverage report also matches this string against the department slugs it
+# reads from the PIC store, so a display-shaped value would silently stop
+# matching and report every department as unreferenced.
+#
+# So this is a display change only. `dept_pre_sales` renders as "Pre Sales",
+# `dept_sales` as "Sales". The raw slug stays reachable as the cell's `title`,
+# because the slug is the thing an operator types into the edit form and the
+# thing that becomes a label -- hiding it entirely would make the two
+# impossible to reconcile.
+#
+# Note `dept_aftersales` renders as "Aftersales", not "After Sales": the
+# existing PIC record for that team is keyed `aftersales` with no separator,
+# and matching the real PIC matters more than the space. Anything keyed with
+# underscores humanises exactly.
+#
+# The edit form's input is untouched -- it still takes and shows the slug,
+# which is what gets stored.
+
+diff --git a/app/javascript/dashboard/views/ProtonTaxonomyPage.vue b/app/javascript/dashboard/views/ProtonTaxonomyPage.vue
+index 6f9fb8d..68fa544 100644
+--- a/app/javascript/dashboard/views/ProtonTaxonomyPage.vue
++++ b/app/javascript/dashboard/views/ProtonTaxonomyPage.vue
+@@ -133,6 +133,18 @@ export default {
+     levelLabel(level) {
+       return LEVEL_LABELS[Number(level)] || `Level ${level}`;
+     },
++    // `dept_pre_sales` -> "Pre Sales". Display only: the stored value stays
++    // the slug, because that is what becomes a Chatwoot label and what the
++    // coverage report matches against the PIC store.
++    departmentLabel(slug) {
++      if (!slug) return '';
++      return String(slug)
++        .replace(/^dept_/, '')
++        .split('_')
++        .filter(Boolean)
++        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
++        .join(' ');
++    },
+     async load() {
+       this.loading = true;
+       this.errored = false;
+@@ -554,8 +566,10 @@ export default {
+               <td class="px-3 py-2 whitespace-nowrap">
+                 {{ levelLabel(node.level) }}
+               </td>
+-              <td class="px-3 py-2 font-mono text-xs">
+-                <span v-if="node.department">{{ node.department }}</span>
++              <td class="px-3 py-2 text-xs" :title="node.department || ''">
++                <span v-if="node.department">
++                  {{ departmentLabel(node.department) }}
++                </span>
+                 <span v-else class="italic font-sans text-n-slate-11">
+                   not mapped
+                 </span>

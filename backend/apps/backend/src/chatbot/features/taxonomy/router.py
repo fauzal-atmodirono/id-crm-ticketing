@@ -57,7 +57,42 @@ async def _maybe_sync_to_chatwoot(store: TaxonomyStore, settings: Settings, reas
     await sync_taxonomy_to_chatwoot(store, settings)
 
 
-def build_taxonomy_admin_router(settings: Settings) -> APIRouter:  # noqa: PLR0915 — one builder, many route closures
+async def _unreferenced_departments(
+    pic_store: PicStore, mapped_departments: set[str]
+) -> tuple[list[str], str]:
+    """Departments with a configured PIC that no active category maps to.
+
+    `PicStore.list_all()` (features/chat/pic_store.py:160-190) never actually
+    raises -- it catches every exception internally, logs
+    `pic_store_list_failed` at error level itself, and returns `[]`. The
+    try/except below is belt-and-braces only, in case that contract ever
+    changes; it is **not** the path a real Firestore failure takes today, so
+    its presence here is not evidence this endpoint observes PicStore
+    failures -- it doesn't, and can't tell "no PICs configured" apart from
+    "read failed and was swallowed upstream" (see the returned source below).
+
+    Returns `(sorted_department_slugs, source)` where `source` is:
+    - `"pic_store"` -- at least one PIC record came back, which is
+      unambiguous proof the read actually happened.
+    - `"unknown"` -- the read returned nothing at all. That is genuinely
+      ambiguous (no PICs are configured vs. the read silently failed
+      upstream), so this never claims the stronger `"pic_store"` answer.
+    """
+    try:
+        pics = await pic_store.list_all()
+    except Exception as exc:  # pragma: no cover -- list_all() swallows internally today
+        _log.error("taxonomy_coverage_pic_store_failed", error=str(exc))
+        return [], "unknown"
+
+    known_departments = {
+        f"dept_{key}" for rec in pics if (key := (rec.department or "").strip().lower())
+    }
+    unreferenced = sorted(known_departments - mapped_departments)
+    source = "pic_store" if pics else "unknown"
+    return unreferenced, source
+
+
+def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
     router = APIRouter(prefix="/admin/taxonomy", tags=["taxonomy-admin"])
     store = build_taxonomy_store(settings)
     pic_store = PicStore(settings)
@@ -139,6 +174,12 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:  # noqa: PLR09
         returns every PIC record, with no notion of retirement at all). The key
         is present so the shape is stable, and it is empty because nothing
         measured it -- not because nothing was found.
+
+        `departments_source` is `"unknown"` rather than `"pic_store"` whenever
+        the PIC read comes back empty: an empty result is ambiguous -- it means
+        either "no PICs are configured" or "the read failed and was swallowed
+        upstream" (see `_unreferenced_departments`) -- and nothing distinguishes
+        the two, so this never claims the stronger answer it can't back up.
         """
         # Two gates, both required. The taxonomy admin has to be on for the store
         # to be the source of anything, and CATEGORY_DEPARTMENT_MAPPING_ENABLED is
@@ -158,27 +199,20 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:  # noqa: PLR09
                 if not node.department:
                     unmapped_categories.append({"key": node.key, "label": node.label, "level": node.level})
                 else:
-                    mapped_departments.add(node.department)
+                    # Normalized the same way `_unreferenced_departments` normalizes
+                    # the PIC side below -- without this, a category saved with
+                    # stray case/whitespace (e.g. " Dept_Sales") fails to cancel
+                    # its PIC and falsely shows up as unreferenced.
+                    mapped_departments.add(node.department.strip().lower())
 
         # Departments that actually have a PIC configured, straight from the
         # same store /escalation/departments reads (escalation_router.py:226).
         # No hardcoded fallback: a guessed department list presented to an
         # operator as "unmapped" is worse than none, and is exactly what made
         # this report's previous ImportError invisible for a live deploy.
-        try:
-            pics = await pic_store.list_all()
-        except Exception as exc:
-            _log.error("taxonomy_coverage_pic_store_failed", error=str(exc))
-            unreferenced_departments: list[str] = []
-            departments_source = "unavailable"
-        else:
-            known_departments = {
-                f"dept_{key}"
-                for rec in pics
-                if (key := (rec.department or "").strip().lower())
-            }
-            unreferenced_departments = sorted(known_departments - mapped_departments)
-            departments_source = "pic_store"
+        unreferenced_departments, departments_source = await _unreferenced_departments(
+            pic_store, mapped_departments
+        )
 
         retired_dept_categories: list[str] = []
 

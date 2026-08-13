@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 import structlog
 
 from chatbot.features.authz.deps import require_permission
+from chatbot.features.chat.pic_store import PicStore
 from chatbot.features.taxonomy.chatwoot_sync import sync_taxonomy_to_chatwoot
 from chatbot.features.taxonomy.store import TaxonomyNode, TaxonomyStore, build_taxonomy_store
 
@@ -56,9 +57,10 @@ async def _maybe_sync_to_chatwoot(store: TaxonomyStore, settings: Settings, reas
     await sync_taxonomy_to_chatwoot(store, settings)
 
 
-def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
+def build_taxonomy_admin_router(settings: Settings) -> APIRouter:  # noqa: PLR0915 — one builder, many route closures
     router = APIRouter(prefix="/admin/taxonomy", tags=["taxonomy-admin"])
     store = build_taxonomy_store(settings)
+    pic_store = PicStore(settings)
 
     def _check_enabled() -> None:
         if not settings.taxonomy_admin_enabled:
@@ -132,10 +134,11 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
         """Coverage report: active categories with no department, and departments not mapped.
 
         `retired_department_categories` is always `[]`: flagging a category whose
-        mapped department has been retired needs a retired/active distinction the
-        `PicStore` read below does not currently expose. The key is present so
-        the shape is stable, and it is empty because nothing measured it -- not
-        because nothing was found.
+        mapped department has been retired needs a retired/active distinction --
+        active vs. retired PICs -- that `PicStore.list_all()` does not expose (it
+        returns every PIC record, with no notion of retirement at all). The key
+        is present so the shape is stable, and it is empty because nothing
+        measured it -- not because nothing was found.
         """
         # Two gates, both required. The taxonomy admin has to be on for the store
         # to be the source of anything, and CATEGORY_DEPARTMENT_MAPPING_ENABLED is
@@ -157,24 +160,33 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
                 else:
                     mapped_departments.add(node.department)
 
-        # Retrieve active escalation departments from PicStore if available
-        known_departments: set[str] = {"dept_sales", "dept_aftersales", "dept_network", "dept_charging"}
+        # Departments that actually have a PIC configured, straight from the
+        # same store /escalation/departments reads (escalation_router.py:226).
+        # No hardcoded fallback: a guessed department list presented to an
+        # operator as "unmapped" is worse than none, and is exactly what made
+        # this report's previous ImportError invisible for a live deploy.
         try:
-            from chatbot.features.routing.store import build_pic_store
-            pic_store = build_pic_store(settings)
-            active_pics = await pic_store.list_active()
-            if active_pics:
-                known_departments = {f"dept_{pic.dept_slug}" for pic in active_pics}
-        except Exception:
-            pass
+            pics = await pic_store.list_all()
+        except Exception as exc:
+            _log.error("taxonomy_coverage_pic_store_failed", error=str(exc))
+            unreferenced_departments: list[str] = []
+            departments_source = "unavailable"
+        else:
+            known_departments = {
+                f"dept_{key}"
+                for rec in pics
+                if (key := (rec.department or "").strip().lower())
+            }
+            unreferenced_departments = sorted(known_departments - mapped_departments)
+            departments_source = "pic_store"
 
-        unreferenced_departments = list(known_departments - mapped_departments)
         retired_dept_categories: list[str] = []
 
         return {
             "unmapped_categories": unmapped_categories,
-            "unreferenced_departments": sorted(unreferenced_departments),
+            "unreferenced_departments": unreferenced_departments,
             "retired_department_categories": retired_dept_categories,
+            "departments_source": departments_source,
         }
 
     return router

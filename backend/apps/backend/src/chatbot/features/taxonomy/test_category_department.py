@@ -33,6 +33,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
+from chatbot.features.chat.pic_store import PicRecord
 from chatbot.features.taxonomy.router import build_taxonomy_admin_router
 from chatbot.features.taxonomy.store import TaxonomyNode, TaxonomyStore
 
@@ -89,10 +90,44 @@ class _FakeFirestore:
         _FakeFirestore.documents = {}
 
 
+class _FakePicStore:
+    """Stand-in for `PicStore` that never touches Firestore.
+
+    Holds the `PicRecord`s a test wants `list_all()` to return; pass `error=`
+    instead to make it behave like a store whose read failed.
+    """
+
+    def __init__(
+        self, records: list[PicRecord] | None = None, *, error: Exception | None = None
+    ) -> None:
+        self._records = records or []
+        self._error = error
+
+    async def list_all(self) -> list[PicRecord]:
+        if self._error is not None:
+            raise self._error
+        return list(self._records)
+
+
+def _pic_record(department: str) -> PicRecord:
+    return PicRecord(department=department, pic_name="Test PIC", pic_email="pic@test", pic_whatsapp="")
+
+
+def _patch_pic_store(monkeypatch: pytest.MonkeyPatch, fake: _FakePicStore) -> None:
+    """`router.py` builds `PicStore(settings)` once per router; patching the
+    name it imported hands back `fake` regardless of the settings argument --
+    the same technique `_clean_state` already uses for `firestore.Client`.
+    """
+    monkeypatch.setattr("chatbot.features.taxonomy.router.PicStore", lambda _settings: fake)
+
+
 @pytest.fixture(autouse=True)
 def _clean_state(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeFirestore.reset()
     monkeypatch.setattr("chatbot.features.taxonomy.store.firestore.Client", _FakeFirestore)
+    # Default to an empty, never-raising fake so tests that don't care about
+    # departments never construct a real `PicStore` against real Firestore.
+    _patch_pic_store(monkeypatch, _FakePicStore())
 
 
 @pytest.fixture
@@ -132,7 +167,12 @@ async def test_the_coverage_report_lists_active_categories_with_no_department(se
     assert "div_unmapped" in keys
 
 
-async def test_the_coverage_report_lists_departments_no_category_maps_to(settings) -> None:
+async def test_the_coverage_report_lists_departments_no_category_maps_to(
+    settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_pic_store(
+        monkeypatch, _FakePicStore([_pic_record("sales"), _pic_record("aftersales")])
+    )
     store = TaxonomyStore(settings)
     await store.create_node(TaxonomyNode(level=1, key="type_inquiry", label="Inquiry"))
     await store.create_node(TaxonomyNode(level=2, key="div_sales", label="Sales", parent="type_inquiry", department="dept_sales"))
@@ -143,12 +183,84 @@ async def test_the_coverage_report_lists_departments_no_category_maps_to(setting
 
     res = client.get("/admin/taxonomy/coverage")
     assert res.status_code == 200
-    unreferenced = res.json()["unreferenced_departments"]
-    # The mapped department must be absent and the unmapped ones present -- key
+    body = res.json()
+    # The mapped department must be absent and the unmapped one present -- key
     # presence alone (what this asserted before) passes on an empty list, which
     # is the answer the report gives when it is broken.
-    assert "dept_sales" not in unreferenced
-    assert "dept_aftersales" in unreferenced
+    assert "dept_sales" not in body["unreferenced_departments"]
+    assert "dept_aftersales" in body["unreferenced_departments"]
+    assert body["departments_source"] == "pic_store"
+
+
+async def test_unreferenced_departments_come_from_the_pic_store_not_a_hardcoded_list(
+    settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard for the defect itself: the old code fell back to a
+    hardcoded `{dept_sales, dept_aftersales, dept_network, dept_charging}`
+    whenever the (broken) PicStore import raised. `dept_network` and
+    `dept_charging` have no PIC on the live tenant and must never appear;
+    a working `PicStore` read is the only thing that can put a department in
+    this list.
+    """
+    _patch_pic_store(
+        monkeypatch, _FakePicStore([_pic_record("sales"), _pic_record("pre_sales")])
+    )
+    store = TaxonomyStore(settings)
+    await store.create_node(TaxonomyNode(level=1, key="type_inquiry", label="Inquiry"))
+
+    app = FastAPI()
+    app.include_router(build_taxonomy_admin_router(settings))
+    client = TestClient(app)
+
+    res = client.get("/admin/taxonomy/coverage")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["unreferenced_departments"] == ["dept_pre_sales", "dept_sales"]
+    assert "dept_network" not in body["unreferenced_departments"]
+    assert "dept_charging" not in body["unreferenced_departments"]
+    assert body["departments_source"] == "pic_store"
+
+
+async def test_unreferenced_departments_dedupe_case_insensitively(
+    settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`PicStore._doc_ref` lowercases document ids, so `"Sales"` and `"sales"`
+    are the same document -- the report must collapse them the same way.
+    """
+    _patch_pic_store(monkeypatch, _FakePicStore([_pic_record("Sales"), _pic_record("sales")]))
+    store = TaxonomyStore(settings)
+    await store.create_node(TaxonomyNode(level=1, key="type_inquiry", label="Inquiry"))
+
+    app = FastAPI()
+    app.include_router(build_taxonomy_admin_router(settings))
+    client = TestClient(app)
+
+    res = client.get("/admin/taxonomy/coverage")
+    assert res.status_code == 200
+    assert res.json()["unreferenced_departments"] == ["dept_sales"]
+
+
+async def test_pic_store_failure_yields_empty_unreferenced_departments_not_500(
+    settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_pic_store(monkeypatch, _FakePicStore(error=RuntimeError("firestore unreachable")))
+    store = TaxonomyStore(settings)
+    await store.create_node(TaxonomyNode(level=1, key="type_inquiry", label="Inquiry"))
+    await store.create_node(TaxonomyNode(level=2, key="div_unmapped", label="Unmapped", parent="type_inquiry"))
+
+    app = FastAPI()
+    app.include_router(build_taxonomy_admin_router(settings))
+    client = TestClient(app)
+
+    res = client.get("/admin/taxonomy/coverage")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["unreferenced_departments"] == []
+    assert body["departments_source"] == "unavailable"
+    # The left-hand panel is a wholly separate read (TaxonomyStore, not
+    # PicStore) and must not be affected by the PIC store failing.
+    keys = [c["key"] for c in body["unmapped_categories"]]
+    assert "div_unmapped" in keys
 
 
 async def test_the_retired_department_category_list_is_present_but_never_populated(

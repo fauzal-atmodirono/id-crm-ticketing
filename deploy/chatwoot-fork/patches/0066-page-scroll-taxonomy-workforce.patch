@@ -1,0 +1,59 @@
+# 0066-page-scroll-taxonomy-workforce.patch — OUR patch. The two standalone
+# Proton admin pages added after 0051 never adopted its fix, so they clip.
+#
+# This is 0051's bug, verbatim, on the two pages that did not exist when 0051
+# was written. Chatwoot's Dashboard.vue (AppContainer) <main> is
+# `flex flex-1 h-full w-full min-h-0 overflow-hidden`: the router-view child is
+# stretched to exactly the viewport height and anything taller is CLIPPED, not
+# scrolled — <main> owns the overflow and hides it. A page whose root is a
+# plain `<div class="p-6">` therefore loses everything below the fold with no
+# way to reach it.
+#
+# 0051 fixed every standalone admin page that existed at the time
+# (ProtonAuditLogPage, ProtonCasesPage, ProtonCustomer360Page,
+# ProtonDmsIntegrationPage, ProtonEscalationRoutingPage, ...) by giving each
+# root `w-full h-full p-6 overflow-y-auto`, matching the convention the
+# Knowledge pages (0010-0021) already used. `0053-workforce-dashboard` and
+# `0060-taxonomy-admin` were both authored after that and reintroduced the
+# plain root.
+#
+# Why it went unnoticed until now: both pages were short or empty in practice.
+# The taxonomy page in particular rendered "No active taxonomy nodes yet" on
+# every tenant, because nothing ever seeded the store it reads — so there was
+# never enough content to overflow. Seeding it (346 nodes on proton: 3 case
+# types, a neutral divisions root, 8 divisions, 89 categories, 245 details)
+# made a latent layout bug into an unusable page: the table is ~346 rows and
+# the coverage report sits below it, entirely out of reach.
+#
+# Verified against the running image (.git_sha 0866fda) before writing this:
+# `grep -c overflow-y-auto public/vite/assets/ProtonTaxonomyPage-*.js` and the
+# same for ProtonWorkforceDashboardPage-*.js both returned 0, and the taxonomy
+# bundle carries a bare `p-6` root class string.
+#
+# Kept as a separate patch, like 0051 was, so the fix is one reviewable unit
+# and 0053/0060 keep applying unchanged.
+
+diff --git a/app/javascript/dashboard/views/ProtonTaxonomyPage.vue b/app/javascript/dashboard/views/ProtonTaxonomyPage.vue
+--- a/app/javascript/dashboard/views/ProtonTaxonomyPage.vue
++++ b/app/javascript/dashboard/views/ProtonTaxonomyPage.vue
+@@ -500,7 +500,7 @@
+ </script>
+
+ <template>
+-  <div class="p-6">
++  <div class="w-full h-full p-6 overflow-y-auto">
+     <h1 class="mb-1 text-lg font-medium text-n-slate-12">Case Taxonomy</h1>
+     <p class="mb-6 max-w-3xl text-sm text-n-slate-11">
+       The four-level case taxonomy — Type → Division → Category → Detail — used
+diff --git a/app/javascript/dashboard/views/ProtonWorkforceDashboardPage.vue b/app/javascript/dashboard/views/ProtonWorkforceDashboardPage.vue
+--- a/app/javascript/dashboard/views/ProtonWorkforceDashboardPage.vue
++++ b/app/javascript/dashboard/views/ProtonWorkforceDashboardPage.vue
+@@ -200,7 +200,7 @@
+ </script>
+
+ <template>
+-  <div class="p-6">
++  <div class="w-full h-full p-6 overflow-y-auto">
+     <h1 class="mb-1 text-lg font-medium text-n-slate-12">
+       Workforce dashboard
+     </h1>

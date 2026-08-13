@@ -58,10 +58,27 @@ async def seed_taxonomy_from_env(store: TaxonomyStore, settings: Settings) -> in
     issues an existence check plus a parent check before writing, so probing
     made every boot after the first cost ~700 round trips to create nothing.
     One read now, and a populated store writes nothing at all.
+
+    THE EMPTY PRE-READ IS NOT TRUSTED. `TaxonomyStore.list_nodes` catches every
+    exception and returns `[]`, so a genuinely empty store and a transient
+    `DeadlineExceeded` (or one malformed document making `_from_dict` raise)
+    are indistinguishable from here -- and `create_node` writes with an
+    unconditional `.set()`, so membership in `existing_keys` is the ONLY thing
+    standing between a failed read and re-`set()`ting all 346 nodes back to
+    `department=None, active=True` and the env label: every operator
+    department mapping erased, every retired category resurrected into the
+    agent picker, every edited label reverted, and `taxonomy_seeded
+    newly_created=346` logged as though it were a first boot. So when the
+    pre-read comes back empty we fall back to the per-node `get_node` probe for
+    that run. A genuine first boot pays ~346 extra reads exactly once; a failed
+    read can no longer overwrite anything. Do not "optimise" this back into
+    trusting the empty set.
     """
     from chatbot.features.taxonomy.store import TaxonomyNode
 
     existing_keys = {node.key for node in await store.list_nodes(active_only=False)}
+    # Empty could mean "empty store" or "read failed" -- see the docstring.
+    probe_before_create = not existing_keys
     created_count = 0
 
     async def _create(node: TaxonomyNode) -> None:
@@ -73,6 +90,11 @@ async def seed_taxonomy_from_env(store: TaxonomyStore, settings: Settings) -> in
         """
         nonlocal created_count
         if node.key in existing_keys:
+            return
+        if probe_before_create and await store.get_node(node.key) is not None:
+            # The pre-read said "nothing exists" and this node disproves it:
+            # the read failed. Record the key so later lookups stay cheap.
+            existing_keys.add(node.key)
             return
         try:
             if await store.create_node(node):

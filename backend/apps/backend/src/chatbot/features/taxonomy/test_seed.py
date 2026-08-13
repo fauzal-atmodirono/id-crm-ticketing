@@ -327,6 +327,71 @@ async def test_a_detail_whose_parent_does_not_exist_is_skipped_not_raised(
     assert kwargs["parents"] == ["cat_nonexistent_division_nonexistent_category"]
 
 
+async def test_a_failed_pre_read_does_not_overwrite_the_seeded_store(
+    store: TaxonomyStore, settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient collection read failure must not re-seed over operator edits.
+
+    `TaxonomyStore.list_nodes` catches every exception and returns `[]`, so the
+    seeder's one up-front read cannot tell an empty store from a failed one.
+    With `create_node` writing via an unconditional `.set()`, trusting that
+    empty result would re-seed all 346 nodes back to `department=None,
+    active=True` and the env label -- erasing every department mapping,
+    resurrecting every retired category into the agent picker, and reverting
+    every edited label, while logging `taxonomy_seeded newly_created=346` as
+    though it were a first boot.
+    """
+    await seed_taxonomy_from_env(store, settings)
+
+    edited = await store.get_node("div_sales")
+    assert edited is not None
+    edited.label = "Sales & Retail"
+    edited.department = "dept_sales"
+    await store.create_node(edited)
+    await store.retire_node("div_product")
+
+    recorder = _LogRecorder()
+    monkeypatch.setattr("chatbot.features.taxonomy.seed._log", recorder)
+
+    # Only the collection-wide read fails; per-document reads still resolve --
+    # exactly the DeadlineExceeded / malformed-document shape being guarded.
+    def _boom(_self: Any) -> None:
+        raise RuntimeError("503 Deadline Exceeded")
+
+    original_get = _FakeCollection.get
+    monkeypatch.setattr(_FakeCollection, "get", _boom)
+
+    created = await seed_taxonomy_from_env(store, settings)
+    assert created == 0
+
+    # Restore only this patch -- `monkeypatch.undo()` would also revert the
+    # autouse fixture's `firestore.Client` stub and point the assertions below
+    # at the real Firestore.
+    monkeypatch.setattr(_FakeCollection, "get", original_get)
+
+    assert ("info", "taxonomy_seeded", {"newly_created": 0}) in recorder.events
+
+    survived = await store.get_node("div_sales")
+    assert survived is not None
+    assert survived.label == "Sales & Retail"
+    assert survived.department == "dept_sales"
+
+    retired = await store.get_node("div_product")
+    assert retired is not None
+    assert retired.active is False
+
+
+async def test_a_genuinely_empty_store_still_seeds_when_probing_per_node(
+    store: TaxonomyStore, settings
+) -> None:
+    """The per-node fallback must not turn a real first boot into a no-op."""
+    created = await seed_taxonomy_from_env(store, settings)
+
+    assert created == 346
+    nodes = await store.list_nodes(active_only=False)
+    assert len(nodes) == 346
+
+
 async def test_a_hyphenated_division_key_still_resolves_its_details(
     store: TaxonomyStore, settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:

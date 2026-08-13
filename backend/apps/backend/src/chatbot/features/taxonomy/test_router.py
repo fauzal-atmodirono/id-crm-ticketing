@@ -129,6 +129,127 @@ def test_an_agent_role_cannot_edit_the_taxonomy(settings) -> None:
     assert res.status_code == 401
 
 
+class _SyncSpy:
+    """Stands in for `sync_taxonomy_to_chatwoot` so a test can see if it fired."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self, _store: Any, _settings: Any) -> bool:
+        self.calls += 1
+        return True
+
+
+class _LogRecorder:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    def _record(self, event: str, **kwargs: Any) -> None:
+        self.events.append((event, kwargs))
+
+    def info(self, event: str, **kwargs: Any) -> None:
+        self._record(event, **kwargs)
+
+    def warning(self, event: str, **kwargs: Any) -> None:
+        self._record(event, **kwargs)
+
+    def error(self, event: str, **kwargs: Any) -> None:
+        self._record(event, **kwargs)
+
+
+def _client_for(settings) -> TestClient:
+    app = FastAPI()
+    app.include_router(build_taxonomy_admin_router(settings))
+    return TestClient(app)
+
+
+async def test_saving_a_node_does_not_push_to_chatwoot_while_the_sync_flag_is_off(
+    settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The seeded store must not be allowed to overwrite the live pickers.
+
+    `chatwoot_sync.py` derives case_category from level-1 nodes (case types +
+    the neutral divisions root) and case_detail from bare level-4 labels, while
+    Chatwoot holds the 8 division labels and full "Division: Subcategory:
+    Detail" strings. Firing it on the first operator save would break fork
+    patch 0050's cascade for every agent.
+    """
+    spy = _SyncSpy()
+    recorder = _LogRecorder()
+    monkeypatch.setattr("chatbot.features.taxonomy.router.sync_taxonomy_to_chatwoot", spy)
+    monkeypatch.setattr("chatbot.features.taxonomy.router._log", recorder)
+
+    off = settings.model_copy(update={"taxonomy_chatwoot_sync_enabled": False})
+    res = _client_for(off).post(
+        "/admin/taxonomy/node",
+        headers={"x-api-key": off.proton_backend_key},
+        json={"level": 1, "key": "type_inquiry", "label": "Inquiry"},
+    )
+
+    assert res.status_code == 200
+    assert spy.calls == 0
+    # The skip must be observable: an operator whose picker did not change
+    # needs the reason in the log, not a guess about a broken sync.
+    skipped = [e for e in recorder.events if e[0] == "taxonomy_chatwoot_sync_skipped"]
+    assert len(skipped) == 1
+    assert skipped[0][1]["setting"] == "TAXONOMY_CHATWOOT_SYNC_ENABLED"
+
+
+async def test_retiring_a_node_does_not_push_to_chatwoot_while_the_sync_flag_is_off(
+    settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy = _SyncSpy()
+    monkeypatch.setattr("chatbot.features.taxonomy.router.sync_taxonomy_to_chatwoot", spy)
+
+    off = settings.model_copy(update={"taxonomy_chatwoot_sync_enabled": False})
+    store = TaxonomyStore(off)
+    await store.create_node(TaxonomyNode(level=1, key="type_inquiry", label="Inquiry"))
+
+    res = _client_for(off).post(
+        "/admin/taxonomy/node/type_inquiry/retire",
+        headers={"x-api-key": off.proton_backend_key},
+    )
+
+    assert res.status_code == 200
+    assert spy.calls == 0
+
+
+async def test_saving_a_node_pushes_to_chatwoot_when_the_sync_flag_is_on(
+    settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy = _SyncSpy()
+    monkeypatch.setattr("chatbot.features.taxonomy.router.sync_taxonomy_to_chatwoot", spy)
+
+    on = settings.model_copy(update={"taxonomy_chatwoot_sync_enabled": True})
+    res = _client_for(on).post(
+        "/admin/taxonomy/node",
+        headers={"x-api-key": on.proton_backend_key},
+        json={"level": 1, "key": "type_inquiry", "label": "Inquiry"},
+    )
+
+    assert res.status_code == 200
+    assert spy.calls == 1
+
+
+async def test_retiring_a_node_pushes_to_chatwoot_when_the_sync_flag_is_on(
+    settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy = _SyncSpy()
+    monkeypatch.setattr("chatbot.features.taxonomy.router.sync_taxonomy_to_chatwoot", spy)
+
+    on = settings.model_copy(update={"taxonomy_chatwoot_sync_enabled": True})
+    store = TaxonomyStore(on)
+    await store.create_node(TaxonomyNode(level=1, key="type_inquiry", label="Inquiry"))
+
+    res = _client_for(on).post(
+        "/admin/taxonomy/node/type_inquiry/retire",
+        headers={"x-api-key": on.proton_backend_key},
+    )
+
+    assert res.status_code == 200
+    assert spy.calls == 1
+
+
 async def test_retiring_a_node_with_children_returns_a_confirmation_prompt_not_an_error(settings) -> None:
     store = TaxonomyStore(settings)
     await store.create_node(TaxonomyNode(level=1, key="type_inquiry", label="Inquiry"))

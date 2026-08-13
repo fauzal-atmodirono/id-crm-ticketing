@@ -1091,7 +1091,7 @@ class Settings(BaseSettings):
 
     # --- P10: self-service taxonomy admin, category->department, data-scoped
     # RBAC -------------------------------------------------------------------
-    # Three settings, all default-off, so a tenant that sets none of them is
+    # Four settings, all default-off, so a tenant that sets none of them is
     # byte-identical to today: no taxonomy admin store is consulted (the
     # CASE_TAXONOMY_JSON/CASE_TYPE_OPTIONS_JSON/CASE_DETAIL_OPTIONS_JSON env
     # vars stay the live source, exactly as before this package), no
@@ -1099,10 +1099,10 @@ class Settings(BaseSettings):
     # to the account-wide scope it has always had.
     #
     # Task 1/2/3/4: mounts the Firestore-backed taxonomy store's admin CRUD
-    # endpoints (features/taxonomy/router.py) and the Chatwoot
-    # attribute-definition sync that removes the "restart to add a category"
-    # step. Off = those endpoints 404 (so the fork's admin page does not
-    # render) and CASE_TAXONOMY_JSON/CASE_TYPE_OPTIONS_JSON/
+    # endpoints (features/taxonomy/router.py) and seeds the store on boot. It
+    # does NOT push anything into Chatwoot -- the attribute-definition sync has
+    # its own flag below and is off. Off = those endpoints 404 (so the fork's
+    # admin page does not render) and CASE_TAXONOMY_JSON/CASE_TYPE_OPTIONS_JSON/
     # CASE_DETAIL_OPTIONS_JSON remain the only source, read exactly as before
     # -- this flag does not stop them being read.
     #
@@ -1129,6 +1129,32 @@ class Settings(BaseSettings):
     # change on sync failure -- that trades a visible retry for a silent data
     # loss.
     taxonomy_admin_enabled: bool = False
+    # Task 3's Chatwoot custom-attribute push, split out of the flag above and
+    # DEFAULT-OFF BECAUSE IT IS KNOWN-WRONG FOR A PROVISIONED TENANT. It was
+    # dormant only while the store was empty; now that startup seeds the store,
+    # the first operator save would fire it, and
+    # `features/taxonomy/chatwoot_sync.py` derives:
+    #   - case_category from LEVEL-1 nodes -- the three case types plus the
+    #     neutral "Case divisions" root -- where Chatwoot holds the 8 DIVISION
+    #     labels (the `l1_options or l2_options` fallback never fires now that
+    #     level 1 is non-empty);
+    #   - case_detail from BARE level-4 labels ("Rejected", "Others") where
+    #     Chatwoot holds full "Division: Subcategory: Detail" strings;
+    #   - attribute_display_name from the attribute KEY, which would rename the
+    #     conversation-sidebar labels to "case_category"/"case_detail".
+    # Fork patch 0050 filters each attribute's options by prefix against its
+    # parent's selected value, so overwriting case_category with case types
+    # kills the sidebar cascade for every agent and strands every conversation
+    # already stamped case_category="Sales" outside its attribute's allowed
+    # values.
+    #
+    # `chatwoot-config/provision_case_taxonomy.py` (run 2026-08-08) is what
+    # provisioned the live definitions and remains the supported way to update
+    # them. Correcting the derivation means reproducing that script's exact
+    # formats -- including how the case-collapsed "Charging: Public Charging:
+    # others" spelling is handled -- which is a design task, not a flag flip.
+    # Do not turn this on to "make the picker update".
+    taxonomy_chatwoot_sync_enabled: bool = False
     # Task 5: gates GET /admin/taxonomy/coverage (active categories with no
     # mapped department; dept_* slugs no category maps to). Off = that endpoint
     # 404s. Also requires taxonomy_admin_enabled, since the store is what the

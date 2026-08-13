@@ -14,12 +14,46 @@ import structlog
 
 from chatbot.features.authz.deps import require_permission
 from chatbot.features.taxonomy.chatwoot_sync import sync_taxonomy_to_chatwoot
-from chatbot.features.taxonomy.store import TaxonomyNode, build_taxonomy_store
+from chatbot.features.taxonomy.store import TaxonomyNode, TaxonomyStore, build_taxonomy_store
 
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
+
+
+_SYNC_SKIPPED_DETAIL = (
+    "Chatwoot custom-attribute sync is disabled; the store was updated but the "
+    "Chatwoot pickers were not. Update them with "
+    "chatwoot-config/provision_case_taxonomy.py."
+)
+
+
+async def _maybe_sync_to_chatwoot(store: TaxonomyStore, settings: Settings, reason: str) -> None:
+    """Push the store into Chatwoot's pickers -- only when explicitly enabled.
+
+    TAXONOMY_CHATWOOT_SYNC_ENABLED is default-off because `chatwoot_sync.py`
+    derives `case_category` from level-1 nodes (the case types plus the neutral
+    divisions root) and `case_detail` from bare level-4 labels, while the live
+    definitions provisioned by `chatwoot-config/provision_case_taxonomy.py`
+    hold the 8 division labels and full "Division: Subcategory: Detail"
+    strings. Firing it would overwrite both and break fork patch 0050's
+    conversation-sidebar cascade for every agent. The sync was harmless only
+    while the store was empty; startup seeding removed that accident.
+
+    The skip is logged rather than silent: an operator who saves a category and
+    then finds the agent picker unchanged needs to see WHY in the backend log
+    instead of guessing at a broken sync.
+    """
+    if not settings.taxonomy_chatwoot_sync_enabled:
+        _log.info(
+            "taxonomy_chatwoot_sync_skipped",
+            reason=reason,
+            setting="TAXONOMY_CHATWOOT_SYNC_ENABLED",
+            detail=_SYNC_SKIPPED_DETAIL,
+        )
+        return
+    await sync_taxonomy_to_chatwoot(store, settings)
 
 
 def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
@@ -57,8 +91,8 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
             )
             success = await store.create_node(node)
             if success:
-                # Trigger downstream sync
-                await sync_taxonomy_to_chatwoot(store, settings)
+                # Trigger downstream sync (gated -- see _maybe_sync_to_chatwoot)
+                await _maybe_sync_to_chatwoot(store, settings, "node_saved")
                 return {"status": "ok", "node": asdict(node)}
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -77,7 +111,7 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
         _check_enabled()
         try:
             active_children = await store.retire_node(key)
-            await sync_taxonomy_to_chatwoot(store, settings)
+            await _maybe_sync_to_chatwoot(store, settings, "node_retired")
             return {
                 "status": "retired",
                 "key": key,

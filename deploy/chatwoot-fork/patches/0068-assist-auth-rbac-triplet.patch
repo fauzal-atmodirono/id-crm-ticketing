@@ -1,0 +1,110 @@
+# 0068-assist-auth-rbac-triplet.patch — OUR patch. Make the composer's
+# /assist/* calls carry the caller's Chatwoot session, so the Translate
+# button stops returning 401.
+#
+# THE BUG. Clicking "Translate" in the reply composer failed with:
+#
+#   [proton-assist] translate failed
+#   Error: assist/translate failed: 401 {"detail":"Missing Chatwoot access token"}
+#
+# That detail string is raised by exactly one place -- `require_permission`'s
+# RBAC branch (`features/authz/deps.py`) -- and only when
+# `settings.rbac_enabled` is True, which it is on this tenant. The dependency
+# needs the caller's own identity and gets none, so it denies. It is a 401,
+# not a 403: the request never identified anybody, so there was no permission
+# set to check.
+#
+# WHY ONLY TRANSLATE. The four composer actions do not share an auth check.
+# /assist/suggest, /assist/summarize and /assist/ask (features/assist/router.py)
+# and /assist/copilot (copilot_router.py) all call their own `_authorize`,
+# which compares the shared `x-api-key` and nothing else. /assist/translate is
+# the only one gated per-user, on `translation.use` (patch 0055 / P7 task 3,
+# granted to the default "agent" role in features/authz/seed.py). So
+# `callAssist` sending the shared key alone was sufficient for every action
+# that existed when patch 0002 wrote it, and became insufficient the moment a
+# require_permission-gated action was added to the same helper. Suggesting a
+# reply still worked; translating did not.
+#
+# THE FIX is the one protonAdmin.js already got. `adminRequest` forwards the
+# devise_token_auth access-token/client/uid triplet from the auth cookie --
+# the same cookie Chatwoot's own axios client reads (helper/APIHelper.js), NOT
+# the separate static per-user "Access Token" API credential, which the SPA
+# cannot read automatically. Patch 0030 is the record of getting that
+# distinction wrong the first time and fixing it; this patch applies the
+# settled answer to the one remaining helper that predates RBAC.
+#
+# DEFAULT-PRESERVING. The three headers are spread conditionally on the auth
+# cookie being present, and with RBAC off `require_permission` falls through
+# to the shared-secret check that ignores them entirely. A tenant that never
+# opted into RBAC sees byte-identical request behaviour.
+#
+# AFTER THIS PATCH, A 401 BECOMES A 403 IF THE AGENT HAS NO ROLE.
+# `permissions_for_user` returns only the permissions of roles actually
+# assigned to that Chatwoot user id -- there is no implicit
+# administrator-gets-everything path. An agent who has never been assigned a
+# role in Roles & Permissions will now get 403 "Missing permission:
+# translation.use" instead of the 401. That is the correct, informative
+# failure, and the fix for it is to assign the role, not to change this file.
+#
+# Also unchanged by design: `translation_enabled` still gates the endpoint
+# ahead of any of this, and returns {"disabled": true} rather than an error
+# when off, so a tenant with translation switched off sees the button's
+# "Translation is not enabled on this account." toast exactly as before.
+#
+# protonAssist.js is created by patch 0002 and touched by no other patch in
+# the stack, so this diff applies to that file's original 21 lines. The hunk
+# below is a real `git diff` against a reconstruction of exactly those 21
+# lines -- no hand-computed @@ counts (the failure mode patch 0055's header
+# documents).
+diff --git a/app/javascript/dashboard/api/protonAssist.js b/app/javascript/dashboard/api/protonAssist.js
+index 835c428..1a2b3c4 100644
+--- a/app/javascript/dashboard/api/protonAssist.js
++++ b/app/javascript/dashboard/api/protonAssist.js
+@@ -1,14 +1,47 @@
++// protonAssist.js (api) — OUR file. The /assist/* actions the reply composer
++// calls (suggest, summarize, ask, translate).
++//
++// WHY THE CHATWOOT SESSION TRIPLET IS FORWARDED. This helper was written in
++// patch 0002, before RBAC existed, so it sent the shared `x-api-key` alone.
++// That is still enough for /assist/suggest, /assist/summarize and /assist/ask,
++// which authorize on the shared secret only (features/assist/router.py's
++// `_authorize`). It is NOT enough for /assist/translate, which is gated by
++// `require_permission('translation.use')`: with RBAC_ENABLED=true that
++// dependency needs the caller's own identity and rejects a shared-secret-only
++// request with 401 {"detail":"Missing Chatwoot access token"} — the exact
++// failure the Translate button hit in the composer.
++//
++// The identity is the devise_token_auth access-token/client/uid triplet from
++// the same auth cookie Chatwoot's own axios client reads (helper/APIHelper.js),
++// NOT Chatwoot's separate static per-user "Access Token" API credential, which
++// the SPA cannot read automatically. This is the same triplet, read the same
++// way, that protonAdmin.js's `adminRequest` has forwarded since patch 0030 —
++// see that patch for the first version of this mistake and its fix.
++//
++// The headers are spread conditionally: with RBAC off the backend ignores them
++// entirely and the shared-secret path is unchanged, so a logged-out or
++// cookie-less caller behaves exactly as it did before this patch.
+ import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++import Auth from './auth';
+
+ export async function callAssist(action, payload) {
+   const { backendUrl, backendKey } = useProtonConfig();
+   if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
+
++  const authData = Auth.hasAuthCookie() ? Auth.getAuthData() : null;
++
+   const response = await fetch(`${backendUrl}/assist/${action}`, {
+     method: 'POST',
+     headers: {
+       'Content-Type': 'application/json',
+       'x-api-key': backendKey,
++      ...(authData
++        ? {
++            'x-chatwoot-access-token': authData['access-token'],
++            'x-chatwoot-client': authData.client,
++            'x-chatwoot-uid': authData.uid,
++          }
++        : {}),
+     },
+     body: JSON.stringify(payload),
+   });

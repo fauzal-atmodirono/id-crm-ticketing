@@ -214,7 +214,22 @@ def _wire_assist(
             allow_origins=settings.assist_cors_origins,
             allow_credentials=True,
             allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            allow_headers=["x-api-key", "content-type"],
+            # The three x-chatwoot-* headers carry the caller's devise_token_auth
+            # session, which /assist/translate needs: it is the one /assist/*
+            # endpoint gated per-user by require_permission rather than by the
+            # shared secret. Omitting them here fails the browser's PREFLIGHT
+            # ("Disallowed CORS headers"), i.e. before the request ever reaches
+            # the dependency — a different and more confusing failure than the
+            # 401 the missing headers themselves produce. This middleware is not
+            # actually path-scoped despite the comment above, so the same three
+            # are what protonAdmin.js's adminRequest sends to /admin/* too.
+            allow_headers=[
+                "x-api-key",
+                "content-type",
+                "x-chatwoot-access-token",
+                "x-chatwoot-client",
+                "x-chatwoot-uid",
+            ],
         )
 
     return assist_router

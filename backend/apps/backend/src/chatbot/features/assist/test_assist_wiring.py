@@ -5,7 +5,10 @@ Uses the full bootstrap to ensure the router is wired; mocks GCP so no credentia
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
+
+from chatbot.platform.config import get_settings
 
 
 def _patched_app() -> object:
@@ -55,6 +58,43 @@ def test_assist_summarize_route_exists_and_is_auth_guarded() -> None:
     client = TestClient(app)
     r = client.post("/assist/summarize", json={"conversation_id": "1", "messages": ["hi"]})
     assert r.status_code in (401, 503)
+
+
+def test_assist_preflight_allows_the_chatwoot_session_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CORS preflight must not reject the headers /assist/translate needs.
+
+    /assist/translate is gated by require_permission, which reads the caller's
+    devise_token_auth triplet (x-chatwoot-access-token/client/uid). The browser
+    asks permission for those headers before sending them, so an allow_headers
+    list that omits them fails the request in the browser — before the
+    dependency runs, and with a CORS error rather than the 401 the missing
+    headers would otherwise produce. Only registered when ASSIST_CORS_ORIGINS
+    is set, hence the env var here.
+    """
+    monkeypatch.setenv("ASSIST_CORS_ORIGINS", '["http://crm.example.com"]')
+    get_settings.cache_clear()
+    try:
+        client = TestClient(_patched_app())
+        r = client.options(
+            "/assist/translate",
+            headers={
+                "Origin": "http://crm.example.com",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": (
+                    "content-type,x-api-key,x-chatwoot-access-token,"
+                    "x-chatwoot-client,x-chatwoot-uid"
+                ),
+            },
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert r.status_code == 200, r.text
+    allowed = r.headers.get("access-control-allow-headers", "").lower()
+    for header in ("x-chatwoot-access-token", "x-chatwoot-client", "x-chatwoot-uid"):
+        assert header in allowed
 
 
 def test_assist_ask_route_exists_and_is_auth_guarded() -> None:

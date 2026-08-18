@@ -91,6 +91,29 @@ class CallControl:
             _log.error("call_redirect_failed", call_sid=call_sid, error=str(e))
             return False
 
+    async def fetch_call_to(self, call_sid: str) -> str | None:
+        """The `to` of a call leg -- e.g. `client:agent_17` or `+60388889999`.
+
+        Used to learn WHICH agent answered a fan-out `<Dial>`: Twilio's action
+        callback carries `DialCallSid` (the child leg) but not the endpoint it
+        reached, so this is the one way to map the winning leg back to a
+        Chatwoot user.
+
+        Safe to call here despite being a Twilio round trip: the only caller is
+        `_enter_acw_best_effort`, which Starlette runs as a background task
+        AFTER the TwiML response has been sent, so this is nowhere near the
+        live call's critical path -- unlike `redirect()` above.
+        """
+        client = self._twilio()
+        if client is None:
+            return None
+        try:
+            call = await asyncio.to_thread(lambda: client.calls(call_sid).fetch())
+            return str(call.to) if call.to else None
+        except Exception as e:
+            _log.error("call_fetch_to_failed", call_sid=call_sid, error=str(e))
+            return None
+
     async def start_recording(self, call_sid: str, status_callback: str) -> str | None:
         """Start a dual-channel recording on a live call. Returns the recording SID."""
         client = self._twilio()

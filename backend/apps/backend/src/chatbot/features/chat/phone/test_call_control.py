@@ -3,10 +3,12 @@ the feature, never drop the live call it is attached to."""
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from chatbot.features.chat.phone.call_control import CallControl
-from chatbot.platform.config import Settings
+from chatbot.platform.config import Settings, get_settings
 
 
 @pytest.fixture
@@ -115,3 +117,30 @@ async def test_lazily_constructed_client_gets_a_bounded_http_timeout(monkeypatch
     timeout = captured["timeout"]
     assert isinstance(timeout, (int, float))
     assert timeout <= 5.0  # shorter than bridge.py's own bound
+
+
+# --- Task 10: mapping a winning <Dial> leg back to whoever answered --------
+
+
+async def test_fetch_call_to_returns_the_dialed_endpoint() -> None:
+    client = MagicMock()
+    client.calls.return_value.fetch.return_value = MagicMock(to="client:agent_17")
+
+    cc = CallControl(get_settings(), client=client)
+    assert await cc.fetch_call_to("CA-child") == "client:agent_17"
+
+
+async def test_fetch_call_to_is_fail_open() -> None:
+    """Same invariant as every other method here: a Twilio blip degrades the
+    feature (ACW falls back to the assignee), it never raises."""
+    client = MagicMock()
+    client.calls.return_value.fetch.side_effect = RuntimeError("twilio down")
+
+    assert await CallControl(get_settings(), client=client).fetch_call_to("CA-child") is None
+
+
+async def test_fetch_call_to_unconfigured_returns_none() -> None:
+    unconfigured = get_settings().model_copy(
+        update={"twilio_account_sid": "", "twilio_auth_token": ""}
+    )
+    assert await CallControl(unconfigured).fetch_call_to("CA-child") is None

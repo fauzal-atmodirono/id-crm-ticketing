@@ -33,7 +33,7 @@ from chatbot.features.chat.case_state import CHATWOOT_CASE_STATE_ATTR, CaseState
 from chatbot.features.chat.handoff_bridge import HandoffBridge, SurveyEvent
 from chatbot.features.chat.models import AgentMessageEvent
 from chatbot.features.chat.nps import parse_nps, record_nps_agent_attribution, should_survey_nps
-from chatbot.features.chat.phone.agent_token import agent_identity
+from chatbot.features.chat.phone.agent_token import agent_id_from_identity, agent_identity
 from chatbot.features.chat.phone.bridge import PhoneBridge
 from chatbot.features.chat.phone.gemini_live import LiveSession, connect_live
 from chatbot.features.chat.phone.handoff_csat_tools import (
@@ -65,6 +65,7 @@ from chatbot.features.chat.sla import FIRST_RESPONSE_STATE
 from chatbot.features.chat.twilio_signature import verify_twilio_signature
 
 if TYPE_CHECKING:
+    from chatbot.features.chat.phone.call_control import CallControl
     from chatbot.features.chat.phone.softphone_registry import SoftphoneRegistry
     from chatbot.features.chat.resolved_case_index import ResolvedCaseIndexer
     from chatbot.features.routing.acw import ACWController
@@ -381,6 +382,7 @@ class ChatRouter:
         resolved_case_index: ResolvedCaseIndexer | None = None,
         softphone_registry: SoftphoneRegistry | None = None,
         presence_fetcher: PresenceFetcher | None = None,
+        call_control: CallControl | None = None,
     ) -> None:
         self.orchestrator = orchestrator
         self._handoff_bridge = handoff_bridge
@@ -406,6 +408,12 @@ class ChatRouter:
         # existing caller/test is untouched.
         self._softphone_registry = softphone_registry
         self._presence_fetcher = presence_fetcher
+        # Task 10: same None-defaulted pattern as acw_controller/softphone_
+        # registry above -- lets `_enter_acw_best_effort` map a fan-out
+        # `<Dial>`'s winning leg back to the agent who actually answered
+        # (`_answering_agent_id`), falling back to today's assignee-based
+        # `start_after_call` when it is None, same as every existing caller.
+        self._call_control = call_control
         self._phone_token_limiter = RateLimiter(
             orchestrator._settings.phone_token_rate_limit,
             orchestrator._settings.phone_token_rate_window_seconds,
@@ -1618,6 +1626,7 @@ class ChatRouter:
                     self.orchestrator._conversation_log_port,
                     websocket.send_json,
                     settings,
+                    softphone_registry=self._softphone_registry,
                 )
 
                 # Feed the "start" frame read above so bridge.stream_sid is set
@@ -1873,7 +1882,9 @@ class ChatRouter:
             # queues nothing and makes zero extra calls -- not even a
             # `find_conversation_ticket` lookup.
             if self._acw_controller is not None and settings.acw_enabled:
-                background_tasks.add_task(self._enter_acw_best_effort, call_sid)
+                background_tasks.add_task(
+                    self._enter_acw_best_effort, call_sid, params.get("DialCallSid") or None
+                )
             return Response(content=_DIAL_HANGUP_TWIML, media_type="application/xml")
 
         _log.info("phone_dial_status_unanswered", call_sid=call_sid, status=status)
@@ -1930,10 +1941,10 @@ class ChatRouter:
             media_type="application/xml",
         )
 
-    async def _enter_acw_best_effort(self, call_sid: str) -> None:
+    async def _enter_acw_best_effort(self, call_sid: str, dial_call_sid: str | None = None) -> None:
         """P6 task 5: resolve the call's conversation and hand it to
-        ``ACWController.start_after_call`` -- the only place that decides
-        which agent (if any) enters After-Call-Work.
+        ``ACWController`` -- the only place that decides which agent (if
+        any) enters After-Call-Work.
 
         Called only from ``phone_dial_status_webhook``'s ``"completed"``
         branch, and only as a FastAPI **background task** -- Starlette runs
@@ -1965,6 +1976,17 @@ class ChatRouter:
         existed, or it can't be found) is a normal, silent skip here, not
         an error -- unlike the unanswered branch, there is no promised
         callback riding on this lookup succeeding.
+
+        Task 10: **prefers the agent who actually answered** over the
+        conversation's assignee. Before stage-2 fan-out these were the same
+        person often enough for the assignee to be a fair proxy; fan-out
+        deliberately rings agents who are NOT the assignee, so using it
+        unconditionally would put the wrong person into wrap-up and leave
+        the one actually on the call routable. ``dial_call_sid`` is Twilio's
+        ``DialCallSid`` -- the winning `<Dial>` leg -- and is looked up via
+        ``_answering_agent_id``; ``None`` from that helper (a PSTN leg
+        answered, no child SID was sent, or the Twilio lookup failed) falls
+        back to today's assignee-based ``start_after_call``.
         """
         if self._acw_controller is None:
             return
@@ -1987,10 +2009,31 @@ class ChatRouter:
                 "phone_dial_status_acw_non_numeric_ticket", call_sid=call_sid, ticket_id=ticket_id
             )
             return
+        answering_agent_id = await self._answering_agent_id(dial_call_sid)
         try:
-            await self._acw_controller.start_after_call(conversation_id)
+            if answering_agent_id is not None:
+                await self._acw_controller.enter(answering_agent_id)
+            else:
+                # No better answer than today's: a PSTN leg answered (no
+                # Chatwoot agent behind it), Twilio sent no child SID, or the
+                # lookup failed.
+                await self._acw_controller.start_after_call(conversation_id)
         except Exception as e:
             _log.error("phone_dial_status_acw_failed", call_sid=call_sid, error=str(e))
+
+    async def _answering_agent_id(self, dial_call_sid: str | None) -> int | None:
+        """Map a winning `<Dial>` leg to a Chatwoot user id, or None.
+
+        None is the ordinary answer on the PSTN fallback path -- a phone
+        number is not an agent -- so callers must treat it as "fall back",
+        never as an error.
+        """
+        if not dial_call_sid or self._call_control is None:
+            return None
+        to = await self._call_control.fetch_call_to(dial_call_sid)
+        if not to or not to.startswith("client:"):
+            return None
+        return agent_id_from_identity(to[len("client:") :])
 
     def _dial_status_action_url(self) -> str:
         """Mirrors ``PhoneBridge._dial_status_action_url`` -- the URL the
@@ -2101,6 +2144,7 @@ def build_chat_router(
     resolved_case_index: ResolvedCaseIndexer | None = None,
     softphone_registry: SoftphoneRegistry | None = None,
     presence_fetcher: PresenceFetcher | None = None,
+    call_control: CallControl | None = None,
 ) -> APIRouter:
     """Builds and returns the configured FastAPI router instance."""
     return ChatRouter(
@@ -2112,6 +2156,7 @@ def build_chat_router(
         audit_log=audit_log,
         acw_controller=acw_controller,
         resolved_case_index=resolved_case_index,
+        call_control=call_control,
         softphone_registry=softphone_registry,
         presence_fetcher=presence_fetcher,
     ).router

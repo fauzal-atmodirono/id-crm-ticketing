@@ -1089,6 +1089,80 @@ async def test_acw_disabled_queues_nothing_on_a_completed_call() -> None:
     assert log.found_calls == []
 
 
+# --- Task 10: ACW attributed to whoever ACTUALLY answered -------------------
+
+
+@pytest.fixture
+def chat_router_acw() -> tuple[ChatRouter, AsyncMock, AsyncMock]:
+    """Same router/settings shape as the ACW tests above, but with AsyncMock
+    `ACWController`/`CallControl` collaborators so `_enter_acw_best_effort`
+    can be driven directly without a real Firestore-backed ACWController or a
+    real Twilio call."""
+    log = _DialLog()
+    log.found = "42"
+    settings = _acw_settings()
+    acw = AsyncMock()
+    call_control = AsyncMock()
+    router = ChatRouter(
+        orchestrator=_orchestrator(log, settings),
+        acw_controller=acw,
+        call_control=call_control,
+    )
+    return router, acw, call_control
+
+
+async def test_acw_goes_to_the_agent_who_answered_not_the_assignee(
+    chat_router_acw: tuple[ChatRouter, AsyncMock, AsyncMock],
+) -> None:
+    """The defect stage-2 fan-out introduces: the assignee and the answerer
+    are routinely different people once we ring everyone."""
+    router, acw, call_control = chat_router_acw
+    call_control.fetch_call_to.return_value = "client:agent_29"
+
+    await router._enter_acw_best_effort("CA123", dial_call_sid="CA-child")
+
+    acw.enter.assert_awaited_once_with(29)
+    acw.start_after_call.assert_not_awaited()
+
+
+async def test_acw_falls_back_to_the_assignee_when_a_number_answered(
+    chat_router_acw: tuple[ChatRouter, AsyncMock, AsyncMock],
+) -> None:
+    """A PSTN fallback dial has no Chatwoot agent behind it, so there is
+    nothing better than the assignee to fall back to."""
+    router, acw, call_control = chat_router_acw
+    call_control.fetch_call_to.return_value = "+60388889999"
+
+    await router._enter_acw_best_effort("CA123", dial_call_sid="CA-child")
+
+    acw.enter.assert_not_awaited()
+    acw.start_after_call.assert_awaited_once()
+
+
+async def test_acw_falls_back_when_the_twilio_lookup_fails(
+    chat_router_acw: tuple[ChatRouter, AsyncMock, AsyncMock],
+) -> None:
+    router, acw, call_control = chat_router_acw
+    call_control.fetch_call_to.return_value = None
+
+    await router._enter_acw_best_effort("CA123", dial_call_sid="CA-child")
+
+    acw.start_after_call.assert_awaited_once()
+
+
+async def test_acw_falls_back_when_twilio_sent_no_child_sid(
+    chat_router_acw: tuple[ChatRouter, AsyncMock, AsyncMock],
+) -> None:
+    """DialCallStatus=completed without a DialCallSid should not crash the
+    background task -- it just means we cannot do better than today."""
+    router, acw, call_control = chat_router_acw
+
+    await router._enter_acw_best_effort("CA123", dial_call_sid=None)
+
+    call_control.fetch_call_to.assert_not_awaited()
+    acw.start_after_call.assert_awaited_once()
+
+
 # --- Task 8: stage 2, the fan-out route -------------------------------------
 
 

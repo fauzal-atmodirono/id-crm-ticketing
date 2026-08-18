@@ -142,11 +142,6 @@ class PhoneBridge:
         self._knowledge = knowledge_port
         self._log_port = conversation_log_port
         self._send_twilio = send_twilio
-        # Task 7: keeps the resolver chain (below) in sync with whichever
-        # resolver a caller explicitly injected -- see the `_settings`
-        # property setter and `_rebuild_handoff_resolver`'s own docstring for
-        # why this is needed.
-        self._injected_handoff_resolver = handoff_resolver
         self._settings = settings
         # Package C Task 5: injectable for tests (never construct a real
         # Twilio client from a test -- see call_control.py's own docstring);
@@ -242,26 +237,6 @@ class PhoneBridge:
         # phone_transcript_classification_enabled is on -- see _genai().
         self._genai_client: Any | None = None
 
-    @property
-    def _settings(self) -> Settings:
-        return self.__settings
-
-    @_settings.setter
-    def _settings(self, value: Settings) -> None:
-        """Task 7: `test_softphone_disabled_is_byte_identical_to_today` (and
-        any other test that flips a flag on an already-built bridge) proves
-        the resolver chain reflects whatever settings the bridge is
-        CURRENTLY configured with -- not a stale copy captured the first
-        time the chain was built. Guarded on `_handoff_resolver` existing
-        because `__init__` assigns `self._settings` before the chain is
-        built for the first time (before `_softphone_registry` even exists);
-        that first, real build still happens explicitly right after
-        `_softphone_registry` is set, so this is a no-op until then.
-        """
-        self.__settings = value
-        if hasattr(self, "_handoff_resolver"):
-            self._rebuild_handoff_resolver(self._injected_handoff_resolver)
-
     def _rebuild_handoff_resolver(self, injected: Any | None = None) -> None:
         """Compose the handoff resolver chain: the assigned agent's softphone
         first, the static PSTN hunt group behind it.
@@ -273,6 +248,15 @@ class PhoneBridge:
 
         `injected` keeps the existing test seam: a caller that passes its own
         resolver gets exactly that resolver, unchained.
+
+        Reviewer note (fix round 1, Finding 1): this is called explicitly --
+        from `__init__` once, and again by any test that reassigns
+        `self._settings` on an already-built bridge (see
+        `test_softphone_disabled_is_byte_identical_to_today`) -- rather than
+        via a `_settings` property/setter. Nothing in production reassigns
+        `_settings` on a live bridge, so an automatic-rebuild-on-assignment
+        setter was side-effecting complexity on a hot-path class for a need
+        that was purely a test-fixture artifact.
         """
         if injected is not None:
             self._handoff_resolver = injected

@@ -1241,6 +1241,103 @@ async def test_fanout_with_nobody_available_falls_through_to_the_apology(
     assert await router._fanout_identities() == []
 
 
+# --- Fix round 1, Finding 2: a genuinely-signed HTTP round trip through -----
+# --- phone_dial_status_fanout_webhook, covering the delegation bug found ---
+# --- (and fixed) during Task 8's own TDD but never committed as a test. ----
+
+
+def _fanout_app_client(settings: Settings, registry: AsyncMock, presence: AsyncMock) -> TestClient:
+    """Same shape as `_softphone_app_client`, but with real
+    softphone_registry/presence_fetcher collaborators wired through
+    `build_chat_router` -- needed so `_fanout_identities()` can actually
+    return agents to dial for test (a) below."""
+    orchestrator = _orchestrator(_DialLog(), settings)
+    app = create_app(settings)
+    app.include_router(
+        build_chat_router(orchestrator, softphone_registry=registry, presence_fetcher=presence)
+    )
+    return TestClient(app)
+
+
+def test_fanout_webhook_signed_request_with_agents_dials_them() -> None:
+    """(a) A genuinely Twilio-signed POST to /dial-status/fanout, with
+    agents available and DialCallStatus != completed, must succeed (not
+    401) and return fan-out TwiML dialing exactly those agents.
+
+    This is the branch the delegation bug (Finding 2) does NOT exercise --
+    it's here so a regression in the OTHER branch (test_..._delegates_...
+    below) can't hide a broken non-delegating path."""
+    settings = _softphone_settings()
+    registry = AsyncMock()
+    registry.registered_ids.return_value = {1, 2}
+    presence = AsyncMock()
+    presence.fetch_agents.return_value = [_agent(1, "online"), _agent(2, "online")]
+    client = _fanout_app_client(settings, registry, presence)
+    params = {"CallSid": "CA1", "DialCallStatus": "no-answer"}
+    url = f"{_BASE_URL}/webhooks/phone/dial-status/fanout"
+    sig = _sign(settings.twilio_auth_token, url, params)
+
+    res = client.post(
+        "/webhooks/phone/dial-status/fanout", data=params, headers={"X-Twilio-Signature": sig}
+    )
+
+    assert res.status_code == 200
+    assert "<Identity>agent_1</Identity>" in res.text
+    assert "<Identity>agent_2</Identity>" in res.text
+
+
+def test_fanout_webhook_signed_completed_delegates_without_401() -> None:
+    """(b) THE regression test for the bug found during TDD: a genuinely
+    Twilio-signed POST to /dial-status/fanout with DialCallStatus=
+    "completed" delegates to phone_dial_status_webhook using the SAME
+    request object -- whose real, signed path is `/fanout`, not the stage-1
+    path. If phone_dial_status_webhook ever goes back to reconstructing a
+    hardcoded "/webhooks/phone/dial-status" verify URL instead of reading
+    request.url.path, this 401s and drops a caller who is still on the
+    line. Proven to fail against that hardcoded version -- see the report's
+    revert-and-rerun evidence for Finding 2."""
+    settings = _softphone_settings()
+    registry = AsyncMock()
+    registry.registered_ids.return_value = set()
+    presence = AsyncMock()
+    presence.fetch_agents.return_value = []
+    client = _fanout_app_client(settings, registry, presence)
+    params = {"CallSid": "CA1", "DialCallStatus": "completed"}
+    url = f"{_BASE_URL}/webhooks/phone/dial-status/fanout"
+    sig = _sign(settings.twilio_auth_token, url, params)
+
+    res = client.post(
+        "/webhooks/phone/dial-status/fanout", data=params, headers={"X-Twilio-Signature": sig}
+    )
+
+    assert res.status_code == 200
+    assert res.status_code != 401
+    assert "<Hangup/>" in res.text
+
+
+def test_fanout_webhook_signed_nobody_available_delegates_without_401() -> None:
+    """(b), the other delegation branch: no agents to ring also delegates to
+    phone_dial_status_webhook on the SAME (fanout-signed) request, and must
+    likewise not 401."""
+    settings = _softphone_settings()
+    registry = AsyncMock()
+    registry.registered_ids.return_value = set()
+    presence = AsyncMock()
+    presence.fetch_agents.return_value = []
+    client = _fanout_app_client(settings, registry, presence)
+    params = {"CallSid": "CA1", "DialCallStatus": "no-answer"}
+    url = f"{_BASE_URL}/webhooks/phone/dial-status/fanout"
+    sig = _sign(settings.twilio_auth_token, url, params)
+
+    res = client.post(
+        "/webhooks/phone/dial-status/fanout", data=params, headers={"X-Twilio-Signature": sig}
+    )
+
+    assert res.status_code == 200
+    assert res.status_code != 401
+    assert "<Say " in res.text  # the stage-1 apology TwiML
+
+
 def _agent(agent_id: int, status: str) -> Any:
     from chatbot.features.routing.presence import AgentRecord  # noqa: PLC0415
 

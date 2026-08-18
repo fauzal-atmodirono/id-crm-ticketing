@@ -1465,6 +1465,9 @@ async def test_softphone_disabled_is_byte_identical_to_today(
     """The acceptance bar for the whole feature."""
     bridge = bridge_with_softphone
     bridge._settings = bridge._settings.model_copy(update={"phone_agent_softphone_enabled": False})
+    # _settings is a plain attribute (not a property) -- reassigning it does
+    # not itself rebuild the resolver chain, same as the fixture above.
+    bridge._rebuild_handoff_resolver()
     bridge.call_sid = "CA123"
     bridge.ticket_id = "42"
 

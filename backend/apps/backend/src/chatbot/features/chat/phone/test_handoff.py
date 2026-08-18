@@ -29,6 +29,7 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import AsyncMock
 from urllib.parse import urlencode
 
 import pytest
@@ -1086,3 +1087,161 @@ async def test_acw_disabled_queues_nothing_on_a_completed_call() -> None:
     assert tasks.tasks == []
     assert acw.calls == []
     assert log.found_calls == []
+
+
+# --- Task 8: stage 2, the fan-out route -------------------------------------
+
+
+def _softphone_settings(**overrides: Any) -> Settings:
+    kwargs: dict[str, Any] = {
+        "phone_agent_softphone_enabled": True,
+        "twilio_auth_token": "test_token",
+        "twilio_account_sid": "AC1",
+    }
+    kwargs.update(overrides)
+    return _enabled_settings(**kwargs)
+
+
+@pytest.fixture
+def bridge_with_softphone() -> PhoneBridge:
+    """A bridge whose tenant has BOTH the softphone and the PSTN fallback
+    configured, with agent 17 assigned and registered.
+
+    Local to this file (rather than reusing test_bridge.py's fixture of the
+    same name) because pytest fixtures don't cross test modules -- this one
+    is built on THIS file's own fakes/`CallControl`-backed bridge shape.
+    """
+    settings = _softphone_settings()
+    live = _FakeLive()
+    log = _FakeLog()
+    log.get_conversation_assignee = AsyncMock(return_value="17")  # type: ignore[attr-defined]
+    twilio_client = _FakeTwilioClient()
+    call_control = CallControl(settings, client=twilio_client)
+    call_control.redirect = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    registry = AsyncMock()
+    registry.registered_ids.return_value = {17}
+
+    async def send_twilio(_msg: dict[str, object]) -> None:
+        return None
+
+    return PhoneBridge(
+        live,
+        _FakeKnowledge(),
+        log,
+        send_twilio,
+        settings,
+        call_control=call_control,
+        softphone_registry=registry,
+    )
+
+
+def _softphone_app_client(settings: Settings) -> TestClient:
+    orchestrator = _orchestrator(_DialLog(), settings)
+    app = create_app(settings)
+    app.include_router(build_chat_router(orchestrator))
+    return TestClient(app)
+
+
+@pytest.fixture
+def app_client_softphone_off() -> TestClient:
+    return _softphone_app_client(_enabled_settings())  # phone_agent_softphone_enabled left off
+
+
+@pytest.fixture
+def app_client_softphone_on() -> TestClient:
+    return _softphone_app_client(_softphone_settings())
+
+
+@pytest.fixture
+def chat_router_softphone() -> tuple[ChatRouter, AsyncMock, AsyncMock]:
+    settings = _softphone_settings()
+    registry = AsyncMock()
+    presence = AsyncMock()
+    router = ChatRouter(
+        orchestrator=_orchestrator(_DialLog(), settings),
+        softphone_registry=registry,
+        presence_fetcher=presence,
+    )
+    return router, registry, presence
+
+
+async def test_stage_one_action_url_points_at_the_fanout_route(
+    bridge_with_softphone: PhoneBridge,
+) -> None:
+    """Stage 1 must hand its outcome to the stage-2 handler, or an unanswered
+    assignee ends the call instead of ringing everyone else."""
+    bridge = bridge_with_softphone
+    bridge.call_sid = "CA123"
+    bridge.ticket_id = "42"
+
+    await bridge._attempt_transfer()
+
+    twiml = bridge._call_control.redirect.await_args.args[1]
+    assert "/webhooks/phone/dial-status/fanout" in twiml
+
+
+def test_fanout_route_absent_when_the_feature_is_off(
+    app_client_softphone_off: TestClient,
+) -> None:
+    res = app_client_softphone_off.post("/webhooks/phone/dial-status/fanout", data={})
+    assert res.status_code == 404
+
+
+def test_fanout_signature_is_verified_against_its_own_path(
+    app_client_softphone_on: TestClient,
+) -> None:
+    """The trap this guards: Twilio signs the EXACT url it posts to. Verifying
+    a stage-2 callback against the stage-1 path yields a mismatch, a 401, and
+    a dropped caller who is still on the line."""
+    res = app_client_softphone_on.post(
+        "/webhooks/phone/dial-status/fanout",
+        data={"CallSid": "CA123", "DialCallStatus": "no-answer"},
+        headers={"X-Twilio-Signature": "wrong"},
+    )
+    assert res.status_code == 401
+
+
+async def test_fanout_rings_available_registered_agents(
+    chat_router_softphone: tuple[ChatRouter, AsyncMock, AsyncMock],
+) -> None:
+    router, registry, presence = chat_router_softphone
+    registry.registered_ids.return_value = {1, 2, 3}
+    presence.fetch_agents.return_value = [
+        _agent(1, "online"),
+        _agent(2, "busy"),
+        _agent(3, "online"),
+    ]
+
+    identities = await router._fanout_identities()
+
+    assert identities == ["agent_1", "agent_3"]  # busy agent excluded
+
+
+async def test_fanout_is_capped_at_the_twilio_noun_limit(
+    chat_router_softphone: tuple[ChatRouter, AsyncMock, AsyncMock],
+) -> None:
+    """More than 10 nouns in a <Dial> is a TwiML error, which drops the call."""
+    router, registry, presence = chat_router_softphone
+    router.orchestrator._settings = router.orchestrator._settings.model_copy(
+        update={"phone_fanout_max_agents": 10}
+    )
+    registry.registered_ids.return_value = set(range(1, 16))
+    presence.fetch_agents.return_value = [_agent(i, "online") for i in range(1, 16)]
+
+    assert len(await router._fanout_identities()) == 10
+
+
+async def test_fanout_with_nobody_available_falls_through_to_the_apology(
+    chat_router_softphone: tuple[ChatRouter, AsyncMock, AsyncMock],
+) -> None:
+    router, registry, presence = chat_router_softphone
+    registry.registered_ids.return_value = set()
+    presence.fetch_agents.return_value = []
+
+    assert await router._fanout_identities() == []
+
+
+def _agent(agent_id: int, status: str) -> Any:
+    from chatbot.features.routing.presence import AgentRecord  # noqa: PLC0415
+
+    return AgentRecord(id=agent_id, name=f"Agent {agent_id}", availability_status=status)

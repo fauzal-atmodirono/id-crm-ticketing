@@ -439,7 +439,10 @@ class PhoneBridge:
         base = self._settings.twilio_webhook_base_url
         if not base:
             return ""
-        return f"{base.rstrip('/')}/webhooks/phone/dial-status"
+        # Stage 1 hands its outcome to the stage-2 handler; without the
+        # softphone there is no stage 2 and the outcome is final.
+        suffix = "/fanout" if self._settings.phone_agent_softphone_enabled else ""
+        return f"{base.rstrip('/')}/webhooks/phone/dial-status{suffix}"
 
     async def _maybe_start_recording(self, call_sid: str) -> None:
         """Start Twilio call recording once, fire-and-forget from

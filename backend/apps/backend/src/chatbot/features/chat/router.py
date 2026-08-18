@@ -33,6 +33,7 @@ from chatbot.features.chat.case_state import CHATWOOT_CASE_STATE_ATTR, CaseState
 from chatbot.features.chat.handoff_bridge import HandoffBridge, SurveyEvent
 from chatbot.features.chat.models import AgentMessageEvent
 from chatbot.features.chat.nps import parse_nps, record_nps_agent_attribution, should_survey_nps
+from chatbot.features.chat.phone.agent_token import agent_identity
 from chatbot.features.chat.phone.bridge import PhoneBridge
 from chatbot.features.chat.phone.gemini_live import LiveSession, connect_live
 from chatbot.features.chat.phone.handoff_csat_tools import (
@@ -40,6 +41,7 @@ from chatbot.features.chat.phone.handoff_csat_tools import (
     SUBMIT_CSAT_TOOL,
     SUBMIT_NPS_TOOL,
 )
+from chatbot.features.chat.phone.handoff_target import fanout_twiml
 from chatbot.features.chat.phone.kb_tool import KB_SEARCH_TOOL
 from chatbot.features.chat.phone.rate_limit import RateLimiter
 from chatbot.features.chat.phone.token import mint_voice_token
@@ -63,8 +65,10 @@ from chatbot.features.chat.sla import FIRST_RESPONSE_STATE
 from chatbot.features.chat.twilio_signature import verify_twilio_signature
 
 if TYPE_CHECKING:
+    from chatbot.features.chat.phone.softphone_registry import SoftphoneRegistry
     from chatbot.features.chat.resolved_case_index import ResolvedCaseIndexer
     from chatbot.features.routing.acw import ACWController
+    from chatbot.features.routing.presence import PresenceFetcher
 
 _log = structlog.get_logger(__name__)
 
@@ -375,6 +379,8 @@ class ChatRouter:
         audit_log: AuditLogPort | None = None,
         acw_controller: ACWController | None = None,
         resolved_case_index: ResolvedCaseIndexer | None = None,
+        softphone_registry: SoftphoneRegistry | None = None,
+        presence_fetcher: PresenceFetcher | None = None,
     ) -> None:
         self.orchestrator = orchestrator
         self._handoff_bridge = handoff_bridge
@@ -393,6 +399,13 @@ class ChatRouter:
         # existing test are untouched. See `resolved_case_index.py`'s module
         # docstring for what it does and its PII caveat.
         self._resolved_case_index = resolved_case_index
+        # Task 8: None-defaulted, same pattern as acw_controller/
+        # resolved_case_index above -- a later wiring wave passes in the
+        # real SoftphoneRegistry/PresenceFetcher; until then _fanout_
+        # identities() returns [] (see its own docstring) and every
+        # existing caller/test is untouched.
+        self._softphone_registry = softphone_registry
+        self._presence_fetcher = presence_fetcher
         self._phone_token_limiter = RateLimiter(
             orchestrator._settings.phone_token_rate_limit,
             orchestrator._settings.phone_token_rate_window_seconds,
@@ -467,6 +480,19 @@ class ChatRouter:
             self.router.add_api_route(
                 "/webhooks/phone/dial-status",
                 self.phone_dial_status_webhook,
+                methods=["POST"],
+            )
+        # Stage 2 of the softphone handoff. A SEPARATE PATH, not a query
+        # parameter on the route above: Twilio signs the exact URL it posts
+        # to, including any query string, but phone_dial_status_webhook
+        # reconstructs the URL for verification as
+        # f"{twilio_webhook_base_url}/webhooks/phone/dial-status" and drops
+        # the query -- so `?stage=2` would fail the signature check, answer
+        # 401, and drop a caller who is still on the line.
+        if orchestrator._settings.phone_agent_softphone_enabled:
+            self.router.add_api_route(
+                "/webhooks/phone/dial-status/fanout",
+                self.phone_dial_status_fanout_webhook,
                 methods=["POST"],
             )
 
@@ -1807,7 +1833,18 @@ class ChatRouter:
         form = await request.form()
         params = {k: str(v) for k, v in form.items()}
         base = settings.twilio_webhook_base_url
-        verify_url = f"{base.rstrip('/')}/webhooks/phone/dial-status" if base else str(request.url)
+        # Task 8: built from `request.url.path`, NOT a hardcoded
+        # "/webhooks/phone/dial-status" suffix. `phone_dial_status_fanout_
+        # webhook`'s "completed"/"nobody available" branches delegate here
+        # with the SAME `request` object they were called with -- one whose
+        # real, Twilio-signed path is `/webhooks/phone/dial-status/fanout`.
+        # A hardcoded stage-1 suffix would reconstruct the WRONG url for
+        # that delegated call, fail the signature check, answer 401, and
+        # drop a caller who is still on the line -- the exact trap this
+        # package's two-stage design exists to avoid. Reading the actual
+        # request path keeps both call sites correct without duplicating
+        # this whole verify-then-dispatch block.
+        verify_url = f"{base.rstrip('/')}{request.url.path}" if base else str(request.url)
         signature = request.headers.get("X-Twilio-Signature")
         if not verify_twilio_signature(token, verify_url, params, signature):
             _log.warning("phone_dial_status_signature_invalid")
@@ -1955,6 +1992,103 @@ class ChatRouter:
         except Exception as e:
             _log.error("phone_dial_status_acw_failed", call_sid=call_sid, error=str(e))
 
+    def _dial_status_action_url(self) -> str:
+        """Mirrors ``PhoneBridge._dial_status_action_url`` -- the URL the
+        fan-out `<Dial>`'s own `action` posts to next. Empty string when
+        unconfigured, same convention as every other action-url builder in
+        this package (the caller must not dial with a blank action)."""
+        base = self.orchestrator._settings.twilio_webhook_base_url
+        if not base:
+            return ""
+        return f"{base.rstrip('/')}/webhooks/phone/dial-status"
+
+    async def _fanout_identities(self) -> list[str]:
+        """Agents to ring in stage 2: registered softphone AND `online` in
+        Chatwoot.
+
+        `busy` and `offline` are excluded deliberately -- `busy` in Chatwoot
+        means already on something, and ringing them would interrupt one
+        customer to serve another.
+
+        Capped at `phone_fanout_max_agents` because Twilio rejects a `<Dial>`
+        with more than 10 nouns, and a TwiML error here drops a live call. The
+        cap is LOGGED when it bites: silently truncating would read as "we rang
+        everyone" when we did not.
+        """
+        settings = self.orchestrator._settings
+        if self._softphone_registry is None or self._presence_fetcher is None:
+            return []
+        try:
+            registered = await self._softphone_registry.registered_ids()
+            agents = await self._presence_fetcher.fetch_agents()
+        except Exception as e:
+            _log.error("phone_fanout_lookup_failed", error=str(e))
+            return []
+        eligible = sorted(
+            a.id for a in agents if a.id in registered and a.availability_status == "online"
+        )
+        cap = settings.phone_fanout_max_agents
+        if len(eligible) > cap:
+            _log.warning(
+                "phone_fanout_capped", eligible=len(eligible), cap=cap, dropped=eligible[cap:]
+            )
+            eligible = eligible[:cap]
+        return [agent_identity(i) for i in eligible]
+
+    async def phone_dial_status_fanout_webhook(
+        self, request: Request, background_tasks: BackgroundTasks
+    ) -> Response:
+        """Stage 1's `<Dial action>`: the assigned agent's ring has ended.
+
+        `completed` means they took it -- delegate to the stage-1 handler,
+        which already does ACW entry and returns hang-up TwiML. Anything else
+        means they did not, so ring everyone available instead of apologising
+        immediately. Only when THAT `<Dial>` also fails (it posts to the
+        stage-1 route) does the caller hear the apology and the case get its
+        `unanswered_handoff` tag.
+        """
+        settings = self.orchestrator._settings
+        token = settings.twilio_auth_token
+        if not token:
+            _log.warning("phone_fanout_no_auth_token_configured")
+            raise HTTPException(status_code=401, detail="Dial status webhook not configured")
+
+        form = await request.form()
+        params = {k: str(v) for k, v in form.items()}
+        base = settings.twilio_webhook_base_url
+        # Verified against THIS route's own path -- see the registration
+        # comment in __init__ for why the two stages are separate paths.
+        verify_url = (
+            f"{base.rstrip('/')}/webhooks/phone/dial-status/fanout" if base else str(request.url)
+        )
+        if not verify_twilio_signature(
+            token, verify_url, params, request.headers.get("X-Twilio-Signature")
+        ):
+            _log.warning("phone_fanout_signature_invalid")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
+        if params.get("DialCallStatus", "") == "completed":
+            return await self.phone_dial_status_webhook(request, background_tasks)
+
+        identities = await self._fanout_identities()
+        if not identities:
+            _log.info("phone_fanout_nobody_available", call_sid=params.get("CallSid", ""))
+            return await self.phone_dial_status_webhook(request, background_tasks)
+
+        _log.info(
+            "phone_fanout_dialing",
+            call_sid=params.get("CallSid", ""),
+            agents=len(identities),
+        )
+        return Response(
+            content=fanout_twiml(
+                identities,
+                self._dial_status_action_url(),
+                settings.phone_fanout_ring_timeout_seconds,
+            ),
+            media_type="application/xml",
+        )
+
 
 def build_chat_router(
     orchestrator: OrchestratorService,
@@ -1965,6 +2099,8 @@ def build_chat_router(
     audit_log: AuditLogPort | None = None,
     acw_controller: ACWController | None = None,
     resolved_case_index: ResolvedCaseIndexer | None = None,
+    softphone_registry: SoftphoneRegistry | None = None,
+    presence_fetcher: PresenceFetcher | None = None,
 ) -> APIRouter:
     """Builds and returns the configured FastAPI router instance."""
     return ChatRouter(
@@ -1976,4 +2112,6 @@ def build_chat_router(
         audit_log=audit_log,
         acw_controller=acw_controller,
         resolved_case_index=resolved_case_index,
+        softphone_registry=softphone_registry,
+        presence_fetcher=presence_fetcher,
     ).router

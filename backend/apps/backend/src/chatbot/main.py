@@ -1015,11 +1015,23 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # Task 9: the agent softphone's token-mint + registration endpoints.
     # Mounted here, right after the RBAC block, so `authz_repo`/`authz_
     # validator` reflect whatever that block actually built above -- the real
-    # pair when RBAC is on, still None otherwise. `build_softphone_router`
-    # already treats a None pair as "fall back to the shared-secret x-api-key
-    # check", same convention as every other router taking this pair, and its
-    # own routes 404 internally when `phone_agent_softphone_enabled` is off --
-    # so this is mounted unconditionally, like the routing config router above.
+    # pair when RBAC is on, still None otherwise.
+    #
+    # Whole-branch review fix (Important 7): the paragraph this replaced
+    # claimed a None pair falls back to the shared-secret x-api-key check.
+    # It does not, and the difference is deliberate:
+    # `require_permission_with_identity` (features/authz/deps.py) EXPLICITLY
+    # refuses the shared-secret path and 401s whenever repo/validator are
+    # None or rbac_enabled is off -- "a shared secret identifies a service,
+    # not a person, and the only caller of this dependency mints a
+    # credential in a specific person's name" (its own docstring). So the
+    # real prerequisite for this feature to work at all is
+    # RBAC_ENABLED=true and a mounted /authz (i.e. RBAC_DATABASE_URL set);
+    # with RBAC off, every /voice/agent/* call 401s regardless of
+    # PHONE_AGENT_SOFTPHONE_ENABLED. Documented in example.env next to that
+    # flag. This router is still mounted unconditionally (like the routing
+    # config router above) because its own routes 404 internally when
+    # `phone_agent_softphone_enabled` is off, independent of RBAC.
     from chatbot.features.chat.phone.softphone_router import build_softphone_router
 
     app.include_router(

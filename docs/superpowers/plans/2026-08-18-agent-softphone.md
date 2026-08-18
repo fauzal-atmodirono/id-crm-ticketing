@@ -49,7 +49,8 @@
 | `features/authz/seed.py` | `voice.answer` permission |
 | `features/chat/phone/handoff_target.py` | `<Client>` long form + `<Parameter>`; PSTN-only caller-id guard; `fanout_twiml` |
 | `features/chat/phone/bridge.py` | Construct + prefetch the chained resolver; pass `<Parameter>` values |
-| `features/chat/router.py` | Stage-1 action URL; new fan-out route + handler |
+| `features/chat/router.py` | Stage-1 action URL; new fan-out route + handler; ACW attribution to whoever actually answered |
+| `features/chat/phone/call_control.py` | `fetch_call_to()` — map `DialCallSid` to the answering `<Client>` identity |
 | `main.py` | Mount the softphone router; construct the registry |
 | `deploy/tenants/example.env` | Document the 6 new settings |
 
@@ -2158,7 +2159,224 @@ git commit -m "feat(phone): mount the agent softphone router and registry"
 
 ---
 
-### Task 10: Fork patch 0068 — the softphone UI
+### Task 10: Attribute After-Call-Work to whoever actually answered
+
+Stage-2 fan-out breaks an assumption the existing ACW code was built on. `ACWController.start_after_call(conversation_id)` resolves the agent from the conversation's **current Chatwoot assignee** — fine when handoff only ever dialled a PSTN hunt group, but fan-out deliberately rings people who are *not* the assignee. A call assigned to Ali and answered by Siti would put **Ali** into wrap-up while Siti sits on the call.
+
+**Files:**
+- Modify: `backend/apps/backend/src/chatbot/features/chat/phone/call_control.py`
+- Modify: `backend/apps/backend/src/chatbot/features/chat/router.py` (`_enter_acw_best_effort` ~1900-1955)
+- Test: `backend/apps/backend/src/chatbot/features/chat/phone/test_call_control.py`
+- Test: `backend/apps/backend/src/chatbot/features/chat/phone/test_handoff.py`
+
+**Interfaces:**
+- Consumes: `agent_id_from_identity` (Task 2); `ACWController.enter(agent_id, *, now=None) -> bool` and `.start_after_call(conversation_id, *, now=None) -> int | None` (existing).
+- Produces: `CallControl.fetch_call_to(call_sid: str) -> str | None`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `test_call_control.py`:
+
+```python
+async def test_fetch_call_to_returns_the_dialed_endpoint():
+    from unittest.mock import MagicMock
+
+    from chatbot.features.chat.phone.call_control import CallControl
+    from chatbot.platform.config import get_settings
+
+    client = MagicMock()
+    client.calls.return_value.fetch.return_value = MagicMock(to="client:agent_17")
+
+    cc = CallControl(get_settings(), client=client)
+    assert await cc.fetch_call_to("CA-child") == "client:agent_17"
+
+
+async def test_fetch_call_to_is_fail_open():
+    """Same invariant as every other method here: a Twilio blip degrades the
+    feature (ACW falls back to the assignee), it never raises."""
+    from unittest.mock import MagicMock
+
+    from chatbot.features.chat.phone.call_control import CallControl
+    from chatbot.platform.config import get_settings
+
+    client = MagicMock()
+    client.calls.return_value.fetch.side_effect = RuntimeError("twilio down")
+
+    assert await CallControl(get_settings(), client=client).fetch_call_to("CA-child") is None
+
+
+async def test_fetch_call_to_unconfigured_returns_none():
+    from chatbot.features.chat.phone.call_control import CallControl
+    from chatbot.platform.config import get_settings
+
+    unconfigured = get_settings().model_copy(
+        update={"twilio_account_sid": "", "twilio_auth_token": ""}
+    )
+    assert await CallControl(unconfigured).fetch_call_to("CA-child") is None
+```
+
+Append to `test_handoff.py`:
+
+```python
+async def test_acw_goes_to_the_agent_who_answered_not_the_assignee(chat_router_acw):
+    """The defect stage-2 fan-out introduces: the assignee and the answerer
+    are routinely different people once we ring everyone."""
+    router, acw, call_control = chat_router_acw
+    call_control.fetch_call_to.return_value = "client:agent_29"
+
+    await router._enter_acw_best_effort("CA123", dial_call_sid="CA-child")
+
+    acw.enter.assert_awaited_once_with(29)
+    acw.start_after_call.assert_not_awaited()
+
+
+async def test_acw_falls_back_to_the_assignee_when_a_number_answered(chat_router_acw):
+    """A PSTN fallback dial has no Chatwoot agent behind it, so there is
+    nothing better than the assignee to fall back to."""
+    router, acw, call_control = chat_router_acw
+    call_control.fetch_call_to.return_value = "+60388889999"
+
+    await router._enter_acw_best_effort("CA123", dial_call_sid="CA-child")
+
+    acw.enter.assert_not_awaited()
+    acw.start_after_call.assert_awaited_once()
+
+
+async def test_acw_falls_back_when_the_twilio_lookup_fails(chat_router_acw):
+    router, acw, call_control = chat_router_acw
+    call_control.fetch_call_to.return_value = None
+
+    await router._enter_acw_best_effort("CA123", dial_call_sid="CA-child")
+
+    acw.start_after_call.assert_awaited_once()
+
+
+async def test_acw_falls_back_when_twilio_sent_no_child_sid(chat_router_acw):
+    """DialCallStatus=completed without a DialCallSid should not crash the
+    background task -- it just means we cannot do better than today."""
+    router, acw, call_control = chat_router_acw
+
+    await router._enter_acw_best_effort("CA123", dial_call_sid=None)
+
+    call_control.fetch_call_to.assert_not_awaited()
+    acw.start_after_call.assert_awaited_once()
+```
+
+Build `chat_router_acw` on the same router fixture the existing ACW tests use, with `AsyncMock` `ACWController` and `CallControl`, `acw_enabled=True`.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+```bash
+cd backend/apps/backend && .venv/bin/pytest src/chatbot/features/chat/phone/test_call_control.py src/chatbot/features/chat/phone/test_handoff.py -k "fetch_call_to or acw" -v
+```
+
+Expected: FAIL — `AttributeError: 'CallControl' object has no attribute 'fetch_call_to'`, and `_enter_acw_best_effort()` takes no `dial_call_sid` argument.
+
+- [ ] **Step 3: Add the Twilio lookup**
+
+Append to `CallControl` in `call_control.py`, following the shape its module docstring mandates:
+
+```python
+    async def fetch_call_to(self, call_sid: str) -> str | None:
+        """The `to` of a call leg -- e.g. `client:agent_17` or `+60388889999`.
+
+        Used to learn WHICH agent answered a fan-out `<Dial>`: Twilio's action
+        callback carries `DialCallSid` (the child leg) but not the endpoint it
+        reached, so this is the one way to map the winning leg back to a
+        Chatwoot user.
+
+        Safe to call here despite being a Twilio round trip: the only caller is
+        `_enter_acw_best_effort`, which Starlette runs as a background task
+        AFTER the TwiML response has been sent, so this is nowhere near the
+        live call's critical path -- unlike `redirect()` above.
+        """
+        client = self._twilio()
+        if client is None:
+            return None
+        try:
+            call = await asyncio.to_thread(lambda: client.calls(call_sid).fetch())
+            return str(call.to) if call.to else None
+        except Exception as e:
+            _log.error("call_fetch_to_failed", call_sid=call_sid, error=str(e))
+            return None
+```
+
+- [ ] **Step 4: Use the answerer for ACW**
+
+In `router.py`, change `_enter_acw_best_effort` to take the child SID and prefer it:
+
+```python
+    async def _enter_acw_best_effort(
+        self, call_sid: str, dial_call_sid: str | None = None
+    ) -> None:
+        # ... existing ticket resolution unchanged, through `conversation_id` ...
+
+        # Prefer the agent who ACTUALLY answered over the conversation's
+        # assignee. Before stage-2 fan-out these were the same person often
+        # enough for the assignee to be a fair proxy; fan-out rings agents who
+        # are deliberately NOT the assignee, so using it would put the wrong
+        # person into wrap-up and leave the one actually on the call routable.
+        answering_agent_id = await self._answering_agent_id(dial_call_sid)
+        try:
+            if answering_agent_id is not None:
+                await self._acw_controller.enter(answering_agent_id)
+            else:
+                # No better answer than today's: a PSTN leg answered (no
+                # Chatwoot agent behind it), Twilio sent no child SID, or the
+                # lookup failed.
+                await self._acw_controller.start_after_call(conversation_id)
+        except Exception as e:
+            _log.error("phone_dial_status_acw_failed", call_sid=call_sid, error=str(e))
+
+    async def _answering_agent_id(self, dial_call_sid: str | None) -> int | None:
+        """Map a winning `<Dial>` leg to a Chatwoot user id, or None.
+
+        None is the ordinary answer on the PSTN fallback path -- a phone number
+        is not an agent -- so callers must treat it as "fall back", never as an
+        error.
+        """
+        if not dial_call_sid or self._call_control is None:
+            return None
+        to = await self._call_control.fetch_call_to(dial_call_sid)
+        if not to or not to.startswith("client:"):
+            return None
+        return agent_id_from_identity(to[len("client:") :])
+```
+
+Update the single call site in the `"completed"` branch:
+
+```python
+            if self._acw_controller is not None and settings.acw_enabled:
+                background_tasks.add_task(
+                    self._enter_acw_best_effort, call_sid, params.get("DialCallSid") or None
+                )
+```
+
+`ChatRouter` needs a `CallControl` to do this; add it as a `None`-defaulted collaborator alongside `acw_controller`, following the same precedent, and pass the existing instance in `main.py` (Task 9's wiring block).
+
+> `ACWController.enter()` does **not** check `acw_enabled` — `start_after_call()` does. The call site above is already gated on `settings.acw_enabled`, so this is correct, but keep that gate if you move the code.
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+```bash
+cd backend/apps/backend && .venv/bin/pytest src/chatbot/features/chat/phone/ src/chatbot/features/routing/test_acw.py -v
+```
+
+Expected: PASS, including the pre-existing ACW tests — the no-`DialCallSid` path must still behave exactly as before.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add backend/apps/backend/src/chatbot/features/chat/phone/call_control.py \
+        backend/apps/backend/src/chatbot/features/chat/phone/test_call_control.py \
+        backend/apps/backend/src/chatbot/features/chat/router.py \
+        backend/apps/backend/src/chatbot/features/chat/phone/test_handoff.py
+git commit -m "fix(phone): enter after-call-work for the agent who answered, not the assignee"
+```
+
+---
+
+### Task 11: Fork patch 0068 — the softphone UI
 
 **Files:**
 - Modify: `deploy/chatwoot-fork/Dockerfile`
@@ -2295,17 +2513,44 @@ export function useProtonSoftphone() {
       status.value = 'in-call';
       startElapsed();
     });
-    incomingCall.on('disconnect', reset);
-    incomingCall.on('cancel', reset);
+    // `cancel` = the ring ended without us: a colleague accepted first, or the
+    // caller hung up. `disconnect` after we accepted = a normal call ending,
+    // including the narrow race where this agent hit accept just as Twilio
+    // bridged someone else. Both show the neutral "Call ended" state; only an
+    // explicit reject by THIS agent closes the panel immediately, since they
+    // already know what happened.
+    incomingCall.on('disconnect', () => endWith('ended'));
+    incomingCall.on('cancel', () => endWith('ended'));
     incomingCall.on('reject', reset);
   }
 
-  function reset() {
+  // A ring that ends without this agent taking it -- because a colleague
+  // accepted first (Twilio cancels the losing legs itself) or because the
+  // caller hung up. The SDK fires `cancel` for BOTH, and gives us no way to
+  // tell them apart; the fork has no server-push channel to ask our backend
+  // either. So the copy stays deliberately neutral. Do not "improve" this to
+  // "answered by another agent" -- it would be a confident lie roughly half
+  // the time. What this fixes is the panel VANISHING silently, which reads as
+  // a misclick and leaves the agent unsure whether they missed something.
+  function endWith(finalStatus) {
     stopElapsed();
-    incoming.value = null;
     muted.value = false;
     call = null;
-    status.value = device ? 'ready' : 'idle';
+    status.value = finalStatus;
+    if (finalStatus === 'ended') {
+      window.setTimeout(() => {
+        if (status.value === 'ended') {
+          incoming.value = null;
+          status.value = device ? 'ready' : 'idle';
+        }
+      }, 3000);
+    } else {
+      incoming.value = null;
+    }
+  }
+
+  function reset() {
+    endWith(device ? 'ready' : 'idle');
   }
 
   async function register() {
@@ -2394,7 +2639,9 @@ const { status, incoming, elapsed, muted, register, accept, reject, hangup, togg
 
 onMounted(register);
 
-const visible = computed(() => status.value === 'ringing' || status.value === 'in-call');
+const visible = computed(() =>
+  ['ringing', 'in-call', 'ended'].includes(status.value)
+);
 
 const elapsedLabel = computed(() => {
   const m = Math.floor(elapsed.value / 60);
@@ -2417,7 +2664,13 @@ function openConversation() {
     >
       <div class="flex items-center justify-between">
         <span class="text-sm font-medium text-n-slate-12">
-          {{ status === 'ringing' ? 'Incoming call' : 'On call' }}
+          {{
+            status === 'ringing'
+              ? 'Incoming call'
+              : status === 'ended'
+                ? 'Call ended'
+                : 'On call'
+          }}
         </span>
         <span v-if="status === 'in-call'" class="font-mono text-sm text-n-slate-11">
           {{ elapsedLabel }}
@@ -2439,6 +2692,9 @@ function openConversation() {
         <Button label="Accept" color="teal" class="flex-1" @click="accept" />
         <Button label="Reject" color="ruby" variant="faded" class="flex-1" @click="reject" />
       </div>
+      <p v-else-if="status === 'ended'" class="text-sm text-n-slate-11">
+        This call is no longer ringing.
+      </p>
       <div v-else class="flex gap-2">
         <Button
           :label="muted ? 'Unmute' : 'Mute'"
@@ -2496,7 +2752,7 @@ git commit -m "feat(fork): in-CRM agent softphone panel for transferred calls"
 
 ---
 
-### Task 11: Manual verification plan
+### Task 12: Manual verification plan
 
 The automated suite covers token shape, resolver branches, TwiML, and routing. It cannot cover a real browser ringing on a real Twilio call — the same gap `backend/docs/testing/phone-channel-smoke-test.md` documents for the bridge.
 
@@ -2518,6 +2774,8 @@ Create the file with these scenarios, each stating setup, action, and the observ
 | G | Nobody registered | PSTN hunt group dials, exactly as before the feature |
 | H | Nobody answers anywhere | Bilingual apology plays; conversation tagged `unanswered_handoff` |
 | I | Two tabs open for one agent | Both ring; first accept wins; the other stops cleanly |
+| L | **Two different agents both hit Accept** at the same moment during fan-out | Exactly one gets audio; the other's panel shows "Call ended" for ~3s rather than vanishing; the customer hears one continuous call with no glitch |
+| M | **A non-assignee answers the fan-out** | After-call-work is applied to the agent who ANSWERED; the assignee's availability is untouched. Check the workforce dashboard, not just the logs |
 | J | Mute / hang up | Caller stops hearing the agent; hang-up ends the call for both |
 | K | Flag off | Handoff dials the PSTN number; no softphone route reachable; no behavioural difference from today |
 
@@ -2532,11 +2790,18 @@ git commit -m "docs(testing): manual verification plan for the agent softphone"
 
 ## Self-Review Notes
 
-**Spec coverage.** Every numbered component in the spec maps to a task: §1 agent token → Task 2 (+ endpoint in Task 4); §2 registry → Task 3; §3 resolver → Task 6 (+ its two required edits to existing code in Task 5); §4 fork UI → Task 10; §5 call outcome → Task 8. Spec sections without their own task are folded in where they belong: configuration → Task 1, security → Tasks 2/4, failure modes → the test lists in Tasks 3/6/8, the build constraint → Task 10 Step 1, rollout → Task 11.
+**Spec coverage.** Every numbered component in the spec maps to a task: §1 agent token → Task 2 (+ endpoint in Task 4); §2 registry → Task 3; §3 resolver → Task 6 (+ its two required edits to existing code in Task 5); §4 fork UI → Task 11; §5 call outcome → Tasks 8 and 10. Spec sections without their own task are folded in where they belong: configuration → Task 1, security → Tasks 2/4, failure modes → the test lists in Tasks 3/6/8, the build constraint → Task 11 Step 1, rollout → Task 12.
 
 **Two refinements to the spec, both discovered while reading the real code:**
 
 1. The spec said the token endpoint uses `require_permission("voice.answer")`. The existing `require_permission` returns `None` and accepts a **shared secret** when `rbac_enabled` is off — neither works when the endpoint's whole job is minting a credential in a specific person's name. Task 4 adds `require_permission_with_identity`, which returns the user id and refuses the shared-secret path.
 2. The spec's stage-1 `action` URL was `/webhooks/phone/dial-status`. It has to be the fan-out route, or an unanswered assignee ends the call instead of ringing anyone else. Task 8 Step 4 changes `PhoneBridge._dial_status_action_url()` accordingly, gated on the flag.
 
-**Known soft spot.** Task 10's Vue code depends on Chatwoot's own `Button` props and `n-*` colour tokens, which are not verifiable from this checkout. Step 4 flags this and points at patch 0025 as the reference. Nothing else in the plan depends on unread upstream code.
+**A third refinement, added after review** (Task 10, and the `endWith` state in Task 11): stage-2 fan-out means the agent who *answers* is routinely not the conversation's *assignee* — which silently breaks `ACWController.start_after_call()`, since it resolves the agent from the assignee. Left unfixed, a call assigned to one agent and answered by another puts the wrong person into after-call-work. Task 10 resolves the answerer from the `<Dial>` callback's `DialCallSid` via a Twilio REST fetch, falling back to today's behaviour when the answering leg wasn't a `<Client>` (the PSTN path) or the lookup fails. This defect is *exposed* by fan-out, not caused by it — stage 1 rings the assignee, so the two agree there.
+
+**Known soft spots.**
+
+1. Task 11's Vue code depends on Chatwoot's own `Button` props and `n-*` colour tokens, which are not verifiable from this checkout. Its Step 4 flags this and points at patch 0025 as the reference.
+2. **The losing agent cannot be told *why* the ring ended.** Twilio's Voice SDK fires `cancel` both when a colleague accepts first and when the caller hangs up mid-ring, and the fork has no server-push channel to ask our backend which it was. The panel therefore shows a neutral "Call ended" for ~3 seconds instead of vanishing. That fixes the "did I misclick?" confusion without asserting something we do not know. Distinguishing the two would need a push channel into the CRM bundle (patch 0057 polls, it does not subscribe) — deliberately out of scope.
+
+Nothing else in the plan depends on unread upstream code.

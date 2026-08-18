@@ -283,9 +283,21 @@ notification stack.
   (Twilio's per-`<Dial>` noun limit). The apology only plays when stage 2 also
   fails, or when stage 2 has no one to ring.
 - **Who answered.** On `completed`, note the answering agent and the duration
-  on the conversation. Twilio's callback carries the answering leg, so a
-  `<Client>` identity maps back to a Chatwoot user id by construction
-  (`agent_<id>`).
+  on the conversation. Twilio's callback carries `DialCallSid` (the winning
+  leg); fetching that call gives its `to` as `client:agent_<id>`, which maps
+  back to a Chatwoot user id by construction.
+
+  **This is not cosmetic.** The existing `completed` branch enters
+  After-Call-Work via `ACWController.start_after_call(conversation_id)`, which
+  resolves the agent from the conversation's *current Chatwoot assignee*. That
+  was a fair proxy when handoff only ever dialled a PSTN hunt group — but
+  stage-2 fan-out deliberately rings agents who are **not** the assignee, so a
+  call assigned to one agent and answered by another would put the wrong person
+  into wrap-up while the one actually on the call stays routable. The answering
+  agent must therefore drive ACW entry (`ACWController.enter(agent_id)`), with
+  the assignee kept as the fallback for the PSTN path, where no Chatwoot agent
+  answered at all. Stage 1 rings the assignee, so the two agree there — this is
+  exposed by fan-out, not caused by it.
 
 Stage tracking rides on the `action` URL rather than server state, so a
 redelivered callback cannot advance a caller past a stage and the handler stays
@@ -323,6 +335,7 @@ every failure must degrade to something audible, never to silence.**
 | `/voice/agent/token` fails in the browser | Panel shows "softphone unavailable", agent keeps working; that agent is simply not in the fan-out |
 | Token expires mid-call | Twilio keeps an in-progress call alive; `tokenWillExpire` re-mints for the next one |
 | Two tabs open for one agent | Both register the same identity; Twilio rings both, first accept wins, the other cancels. Acceptable — no dedup needed |
+| Two *different* agents accept simultaneously in the fan-out | Twilio arbitrates on its own media server: the first leg to answer is bridged and the rest are cancelled. Two agents can never both be on the call, and no application-side locking is needed |
 | Agent rejects | Twilio reports `no-answer`-class status → stage 2, so a reject is not a dead end |
 
 ### A stale registry must not strand a caller

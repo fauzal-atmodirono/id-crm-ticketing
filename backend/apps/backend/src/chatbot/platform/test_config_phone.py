@@ -35,3 +35,22 @@ def test_agent_softphone_requires_handoff_enabled() -> None:
             phone_handoff_enabled=False,
             phone_transcript_live_enabled=True,
         )
+
+
+def test_fanout_max_agents_above_twilios_dial_limit_refuses_to_boot() -> None:
+    """Whole-branch review fix (Important 1): Twilio rejects a <Dial> with
+    more than 10 nouns -- a TwiML error that drops a live call. An operator
+    who reads "max agents" as "how many people we ring" and sets it above
+    10 must fail at boot, not at dial time on a live caller."""
+    with pytest.raises(ValueError, match="PHONE_FANOUT_MAX_AGENTS=11 is out of range"):
+        Settings(phone_fanout_max_agents=11)
+
+
+def test_fanout_max_agents_zero_or_negative_refuses_to_boot() -> None:
+    with pytest.raises(ValueError, match="PHONE_FANOUT_MAX_AGENTS=0 is out of range"):
+        Settings(phone_fanout_max_agents=0)
+
+
+def test_fanout_max_agents_at_the_boundary_is_accepted() -> None:
+    assert Settings(phone_fanout_max_agents=1).phone_fanout_max_agents == 1
+    assert Settings(phone_fanout_max_agents=10).phone_fanout_max_agents == 10

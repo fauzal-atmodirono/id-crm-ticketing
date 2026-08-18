@@ -1416,6 +1416,25 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _fanout_max_agents_cannot_exceed_twilios_dial_limit(self) -> Settings:
+        """Whole-branch review fix (Important 1): `phone_fanout_max_agents`
+        had a comment declaring it a hard cap but nothing enforcing that --
+        an operator who set it above 10 got a `<Dial>` with more than 10
+        nouns, which is a TwiML error that drops a live call. Refused at
+        boot, same shape as `_retention_windows_are_positive` just below:
+        the alternative is discovering it from a dropped caller, not a
+        readable startup error.
+        """
+        cap = self.phone_fanout_max_agents
+        if not (1 <= cap <= 10):
+            raise ValueError(
+                f"PHONE_FANOUT_MAX_AGENTS={cap} is out of range. Twilio allows at "
+                "most 10 nouns in a single <Dial>; exceeding it is a TwiML error "
+                "that drops a live call, so this must be between 1 and 10."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _retention_windows_are_positive(self) -> Settings:
         """A retention window of 0 or less means "delete everything, now".
 

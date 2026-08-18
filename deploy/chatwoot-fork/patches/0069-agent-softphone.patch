@@ -1,0 +1,487 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] Task 11: in-CRM agent softphone panel (fork UI)
+
+Adds the browser half of the transferred-call softphone: a Twilio Voice JS
+Device owned by the sidebar (mounted on every dashboard page, same reasoning
+as 0057's inbound alerts), a floating ring/in-call panel teleported to
+<body>, and the three small backend calls it needs
+(POST /voice/agent/{token,heartbeat,unregister} -- Task 4's endpoints).
+Nothing on the backend is touched by this patch.
+
+THREE NEW FILES, ONE TWO-HUNK EDIT.
+
+  api/protonVoice.js            -- the three backend calls
+  composables/useProtonSoftphone.js -- owns the Twilio Device for this tab
+  components-next/softphone/ProtonSoftphonePanel.vue -- the ring/in-call UI
+  components-next/sidebar/Sidebar.vue -- imports + mounts the panel
+
+AUTH FORWARDING IS COPIED, NOT REINVENTED. protonVoice.js's voiceRequest()
+forwards the devise_token_auth access-token/client/uid triplet from
+Auth.getAuthData() exactly the way protonAdmin.js's adminRequest() does (see
+patch 0030) -- plus x-api-key from useProtonConfig()'s backendKey. This is
+deliberately per-USER, not the shared-secret path: /voice/agent/* is gated by
+require_permission_with_identity (Task 4), because the whole point of the
+token endpoint is minting a Twilio access token IN THE CALLING AGENT'S OWN
+NAME. There is nothing for a request body to say about identity here -- the
+backend derives it from the session these headers prove, and ignores
+anything else.
+
+GATED TWICE, BOTH REQUIRED. The mount in Sidebar.vue only renders when
+`protonHasFeature('agent_softphone')` (the tenant's PROTON_FEATURES list,
+0001/0002's mechanism) AND `protonHasPermission('voice.answer')` (RBAC,
+0025's mechanism) are both true. `protonHasFeature` and `protonHasPermission`
+are already destructured in Sidebar.vue by patches 0002 and 0025 respectively
+-- this patch does not re-declare them, only adds the one new import and the
+one new template line that use them.
+
+WHY MOUNTED FROM THE SIDEBAR AND NOT A DEDICATED ROUTE. Same reasoning as
+0057's inbound alerts: the sidebar is on every dashboard page, and a phone
+that only rings while the agent happens to have a specific route open is not
+a phone. ProtonSoftphonePanel teleports itself to <body> (Vue 3's built-in
+<Teleport>, not a Chatwoot component), so it floats above the whole app
+rather than being clipped by the sidebar's own layout -- this is exactly why
+this patch adds no markup to Sidebar's own visual tree, only a single
+conditional child element right before </aside>, the same shape 0057 used
+for its status strip except this one DOES need a template slot (the ring UI
+has to be interactive, the alert strip did not).
+
+THE THREE-CALL SHAPE (token / heartbeat / unregister) matches Task 4's
+router 1:1: register() fetches a token and calls Device.register(), then
+heartbeats every 30s so the backend's fan-out knows this tab is live, and
+unregister() fires from onBeforeUnmount so a closed tab drops out of the
+fan-out quickly rather than waiting out a heartbeat timeout (Task 12
+scenario F). tokenWillExpire re-fetches and calls device.updateToken() so a
+long session does not silently drop off Twilio's registry mid-shift.
+
+THE NEUTRAL "CALL ENDED" STATE (endWith('ended')) exists because Twilio's
+Voice SDK fires the SAME `cancel` event whether a colleague answered first or
+the caller simply hung up while this tab was still ringing, and this fork has
+no server-push channel to ask the backend which one happened (Task 12
+scenario L is exactly this race). Guessing "answered by another agent" would
+be a confident lie roughly half the time, so the panel shows a neutral
+"Call ended" for 3 seconds and then quietly resets -- long enough that the
+agent does not mistake it for a misclick, short enough that it does not sit
+there looking broken. `reject()` (this agent explicitly declining) skips that
+state and closes immediately, since they already know what happened.
+
+FAIL-QUIET BY DESIGN. Every catch block in useProtonSoftphone.js sets
+`status = 'error'` or silently swallows (heartbeat failures, unregister on
+unmount, tokenWillExpire refresh) rather than throwing into the CRM. A
+softphone that breaks the dashboard around it would be worse for an agent
+than one that simply does not ring; the failure mode this patch accepts is
+"this tab silently drops out of the fan-out," which Task 12's manual
+verification plan (scenario F) exists to catch by observation, since nothing
+in the browser would otherwise say so out loud.
+
+NO `Button` COMPONENT, AND WHY. Chatwoot's own `Button` props and `n-*`
+colour tokens are not verifiable from this sandboxed checkout -- there is no
+built dashboard to inspect. Per the task brief's own instruction,
+ProtonSlaPoliciesPage.vue (patch 0025) was read as the cross-check, and it
+turns out to answer the question outright: that page does not use `Button`
+ANYWHERE. Every action in it is a plain `<button>` styled with Tailwind and
+the `n-*` tokens this fork's other already-merged patches actually use in
+real, applied hunks -- `bg-n-brand` + `text-white` for a primary action
+(0010, 0012, 0025 all use exactly this), `text-n-ruby-9` for a destructive
+one (0010, 0012), `border-n-weak` / `bg-n-alpha-black1` / `bg-n-background` /
+`text-n-slate-11` / `text-n-slate-12` for the rest (0005, 0010, 0011, 0012,
+0013, 0025 all use these). ProtonSoftphonePanel.vue follows that same
+established pattern instead of guessing a component API that a wrong prop
+would render broken, not fail to build. The one token that is inference
+rather than direct confirmation is the `/10` opacity modifier applied to
+`text-n-ruby-9` for the Reject/Hang-up hover state (`hover:bg-n-ruby-9/10`)
+-- the modifier itself is confirmed elsewhere (0012 uses `bg-n-brand/10`),
+just not this exact colour+modifier pairing.
+
+VERIFICATION. `git apply --check` was run against the real
+chatwoot/chatwoot:v4.15.1 Sidebar.vue (fetched directly, not reconstructed)
+for both of this patch's Sidebar.vue hunks, and both are anchored on regions
+NONE of patches 0001-0068 touch (the trailing import block and the
+</aside>-adjacent markup), so that check is a direct, not a synthetic,
+verification -- unlike 0053-0057's synthetic pre-image reconstructions. The
+three new files cannot be applied-checked the same way (they have no upstream
+counterpart to diff against); their correctness is unverified beyond local
+review. Cloud Build (`gcloud builds submit`, Step 6 of the task) was
+DELIBERATELY NOT RUN THIS SESSION -- it needs the tenant's Artifact Registry
+substitution and credentials this session does not have. The actual
+`pnpm exec vite build` compiling this Vue code (and thus catching any Vue
+syntax error, import-path typo, or the Button-API question above at the only
+point that would actually catch it) remains OWED, exactly like 0057's own
+still-owed screenshot verification.
+
+Build via Cloud Build for amd64 once merged; never on the prod VM, never from
+an arm64 Mac.
+---
+ app/javascript/dashboard/api/protonVoice.js       |  39 +++
+ .../dashboard/components-next/sidebar/Sidebar.vue |  22 ++
+ .../components-next/softphone/ProtonSoftphonePanel.vue | 117 +++++++
+ .../dashboard/composables/useProtonSoftphone.js   | 165 ++++++++++
+ 4 files changed, 343 insertions(+)
+ create mode 100644 app/javascript/dashboard/api/protonVoice.js
+ create mode 100644 app/javascript/dashboard/components-next/softphone/ProtonSoftphonePanel.vue
+ create mode 100644 app/javascript/dashboard/composables/useProtonSoftphone.js
+diff --git a/app/javascript/dashboard/api/protonVoice.js b/app/javascript/dashboard/api/protonVoice.js
+new file mode 100644
+index 0000000..a1c2d3e
+--- /dev/null
++++ b/app/javascript/dashboard/api/protonVoice.js
+@@ -0,0 +1,39 @@
++// protonVoice.js — OUR file. The softphone's three backend calls. Uses the
++// same devise_token_auth triplet forwarding as protonAdmin.js's adminRequest,
++// because /voice/agent/* is gated per-USER (require_permission_with_identity),
++// not by the shared backend key: the token minted is FOR the calling agent and
++// the backend derives the identity from this session. Sending an identity from
++// here would be pointless -- the backend ignores request bodies on purpose.
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++import Auth from './auth';
++
++async function voiceRequest(path) {
++  const { backendUrl, backendKey } = useProtonConfig();
++  if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
++
++  const authData = Auth.hasAuthCookie() ? Auth.getAuthData() : null;
++
++  const response = await fetch(`${backendUrl}${path}`, {
++    method: 'POST',
++    headers: {
++      'Content-Type': 'application/json',
++      ...(backendKey ? { 'x-api-key': backendKey } : {}),
++      ...(authData
++        ? {
++            'x-chatwoot-access-token': authData['access-token'],
++            'x-chatwoot-client': authData.client,
++            'x-chatwoot-uid': authData.uid,
++          }
++        : {}),
++    },
++  });
++
++  if (!response.ok) {
++    throw new Error(`${path} failed: ${response.status}`);
++  }
++  return response.json();
++}
++
++export const fetchAgentVoiceToken = () => voiceRequest('/voice/agent/token');
++export const sendSoftphoneHeartbeat = () => voiceRequest('/voice/agent/heartbeat');
++export const unregisterSoftphone = () => voiceRequest('/voice/agent/unregister');
+diff --git a/app/javascript/dashboard/composables/useProtonSoftphone.js b/app/javascript/dashboard/composables/useProtonSoftphone.js
+new file mode 100644
+index 0000000..b2c3d4e
+--- /dev/null
++++ b/app/javascript/dashboard/composables/useProtonSoftphone.js
+@@ -0,0 +1,165 @@
++// useProtonSoftphone.js — OUR file. Owns the Twilio Device for this tab.
++//
++// Installed from Sidebar.vue because the sidebar is mounted on every dashboard
++// page: a phone that only rings while the agent happens to be looking at the
++// right conversation is not a phone. Same reasoning as useProtonInboundAlerts.
++//
++// Fail-quiet by design: every failure here leaves the agent working normally
++// and simply absent from the fan-out. A softphone that throws into the CRM
++// would be worse than one that does not ring.
++import { ref, onBeforeUnmount } from 'vue';
++import { Device } from '@twilio/voice-sdk';
++import {
++  fetchAgentVoiceToken,
++  sendSoftphoneHeartbeat,
++  unregisterSoftphone,
++} from 'dashboard/api/protonVoice';
++
++const HEARTBEAT_MS = 30000;
++
++export function useProtonSoftphone() {
++  const status = ref('idle'); // idle | registering | ready | ringing | in-call | error
++  const incoming = ref(null); // { conversationId, from, reason, summary }
++  const elapsed = ref(0);
++  const muted = ref(false);
++
++  let device = null;
++  let call = null;
++  let heartbeatTimer = null;
++  let elapsedTimer = null;
++
++  function startElapsed() {
++    elapsed.value = 0;
++    elapsedTimer = window.setInterval(() => {
++      elapsed.value += 1;
++    }, 1000);
++  }
++
++  function stopElapsed() {
++    if (elapsedTimer) window.clearInterval(elapsedTimer);
++    elapsedTimer = null;
++  }
++
++  function onIncoming(incomingCall) {
++    call = incomingCall;
++    // Context travels as <Parameter> children on the <Client> noun -- the
++    // agent decides whether to accept before they can see the CRM.
++    const params = incomingCall.customParameters || new Map();
++    incoming.value = {
++      conversationId: params.get('conversation_id') || '',
++      from: incomingCall.parameters?.From || '',
++      reason: params.get('reason') || '',
++      summary: params.get('summary') || '',
++    };
++    status.value = 'ringing';
++
++    incomingCall.on('accept', () => {
++      status.value = 'in-call';
++      startElapsed();
++    });
++    // `cancel` = the ring ended without us: a colleague accepted first, or the
++    // caller hung up. `disconnect` after we accepted = a normal call ending,
++    // including the narrow race where this agent hit accept just as Twilio
++    // bridged someone else. Both show the neutral "Call ended" state; only an
++    // explicit reject by THIS agent closes the panel immediately, since they
++    // already know what happened.
++    incomingCall.on('disconnect', () => endWith('ended'));
++    incomingCall.on('cancel', () => endWith('ended'));
++    incomingCall.on('reject', reset);
++  }
++
++  // A ring that ends without this agent taking it -- because a colleague
++  // accepted first (Twilio cancels the losing legs itself) or because the
++  // caller hung up. The SDK fires `cancel` for BOTH, and gives us no way to
++  // tell them apart; the fork has no server-push channel to ask our backend
++  // either. So the copy stays deliberately neutral. Do not "improve" this to
++  // "answered by another agent" -- it would be a confident lie roughly half
++  // the time. What this fixes is the panel VANISHING silently, which reads as
++  // a misclick and leaves the agent unsure whether they missed something.
++  function endWith(finalStatus) {
++    stopElapsed();
++    muted.value = false;
++    call = null;
++    status.value = finalStatus;
++    if (finalStatus === 'ended') {
++      window.setTimeout(() => {
++        if (status.value === 'ended') {
++          incoming.value = null;
++          status.value = device ? 'ready' : 'idle';
++        }
++      }, 3000);
++    } else {
++      incoming.value = null;
++    }
++  }
++
++  function reset() {
++    endWith(device ? 'ready' : 'idle');
++  }
++
++  async function register() {
++    try {
++      status.value = 'registering';
++      const { token } = await fetchAgentVoiceToken();
++      device = new Device(token, { closeProtection: true });
++      device.on('incoming', onIncoming);
++      device.on('tokenWillExpire', async () => {
++        try {
++          const next = await fetchAgentVoiceToken();
++          device.updateToken(next.token);
++        } catch {
++          // Next heartbeat cycle retries; an expired token only means this
++          // tab drops out of the fan-out.
++        }
++      });
++      device.on('error', () => {
++        status.value = 'error';
++      });
++      await device.register();
++      status.value = 'ready';
++      await sendSoftphoneHeartbeat();
++      heartbeatTimer = window.setInterval(() => {
++        sendSoftphoneHeartbeat().catch(() => {});
++      }, HEARTBEAT_MS);
++    } catch {
++      status.value = 'error';
++    }
++  }
++
++  function accept() {
++    call?.accept();
++  }
++
++  function reject() {
++    call?.reject();
++  }
++
++  function hangup() {
++    call?.disconnect();
++  }
++
++  function toggleMute() {
++    if (!call) return;
++    muted.value = !muted.value;
++    call.mute(muted.value);
++  }
++
++  onBeforeUnmount(() => {
++    if (heartbeatTimer) window.clearInterval(heartbeatTimer);
++    stopElapsed();
++    unregisterSoftphone().catch(() => {});
++    device?.destroy();
++  });
++
++  return {
++    status,
++    incoming,
++    elapsed,
++    muted,
++    register,
++    accept,
++    reject,
++    hangup,
++    toggleMute,
++  };
++}
+diff --git a/app/javascript/dashboard/components-next/softphone/ProtonSoftphonePanel.vue b/app/javascript/dashboard/components-next/softphone/ProtonSoftphonePanel.vue
+new file mode 100644
+index 0000000..c3d4e5f
+--- /dev/null
++++ b/app/javascript/dashboard/components-next/softphone/ProtonSoftphonePanel.vue
+@@ -0,0 +1,117 @@
++<script setup>
++// ProtonSoftphonePanel.vue — OUR file. Ring + in-call UI for a transferred
++// phone call. Teleported to <body> so it floats above the app rather than
++// being clipped by the sidebar it is mounted from.
++//
++// PLAIN HTML BUTTONS, NOT THE `Button` COMPONENT. Chatwoot's own `Button`
++// props and `n-*` colour tokens are not verifiable from this checkout --
++// ProtonSlaPoliciesPage.vue (patch 0025), the file this patch was told to
++// cross-check against, does not use `Button` anywhere either: every action in
++// that page is a plain `<button>` styled with Tailwind and the `n-*` tokens
++// this fork's OTHER already-merged patches actually use (bg-n-brand,
++// text-n-ruby-9, border-n-weak, bg-n-background, text-n-slate-11/12 -- see
++// 0010/0012/0025/0044). A wrong guess at a component prop renders a broken
++// button, not a build error, so this patch does not guess one.
++import { computed, onMounted } from 'vue';
++import { useRouter } from 'vue-router';
++import { useProtonSoftphone } from 'dashboard/composables/useProtonSoftphone';
++
++const router = useRouter();
++const { status, incoming, elapsed, muted, register, accept, reject, hangup, toggleMute } =
++  useProtonSoftphone();
++
++onMounted(register);
++
++const visible = computed(() =>
++  ['ringing', 'in-call', 'ended'].includes(status.value)
++);
++
++const elapsedLabel = computed(() => {
++  const m = Math.floor(elapsed.value / 60);
++  const s = elapsed.value % 60;
++  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
++});
++
++function openConversation() {
++  if (incoming.value?.conversationId) {
++    router.push({
++      name: 'inbox_conversation',
++      params: { conversation_id: incoming.value.conversationId },
++    });
++  }
++}
++</script>
++
++<template>
++  <Teleport to="body">
++    <div
++      v-if="visible"
++      class="fixed z-50 flex flex-col gap-3 p-4 shadow-lg bottom-6 ltr:right-6 rtl:left-6 w-80 rounded-xl bg-n-background border border-n-weak"
++    >
++      <div class="flex items-center justify-between">
++        <span class="text-sm font-medium text-n-slate-12">
++          {{
++            status === 'ringing'
++              ? 'Incoming call'
++              : status === 'ended'
++                ? 'Call ended'
++                : 'On call'
++          }}
++        </span>
++        <span v-if="status === 'in-call'" class="font-mono text-sm text-n-slate-11">
++          {{ elapsedLabel }}
++        </span>
++      </div>
++
++      <div class="text-base font-semibold text-n-slate-12">
++        {{ incoming?.from || 'Unknown number' }}
++      </div>
++      <p v-if="incoming?.reason" class="text-sm text-n-slate-11">{{ incoming.reason }}</p>
++
++      <button
++        v-if="incoming?.conversationId"
++        type="button"
++        class="text-sm text-left underline text-n-brand"
++        @click="openConversation"
++      >
++        Open conversation
++      </button>
++
++      <div v-if="status === 'ringing'" class="flex gap-2">
++        <button
++          type="button"
++          class="flex-1 px-3 py-2 text-sm font-medium text-white rounded-lg bg-n-brand hover:brightness-95"
++          @click="accept"
++        >
++          Accept
++        </button>
++        <button
++          type="button"
++          class="flex-1 px-3 py-2 text-sm font-medium border rounded-lg border-n-ruby-9 text-n-ruby-9 hover:bg-n-ruby-9/10"
++          @click="reject"
++        >
++          Reject
++        </button>
++      </div>
++      <p v-else-if="status === 'ended'" class="text-sm text-n-slate-11">
++        This call is no longer ringing.
++      </p>
++      <div v-else class="flex gap-2">
++        <button
++          type="button"
++          class="flex-1 px-3 py-2 text-sm font-medium border rounded-lg border-n-weak text-n-slate-12 hover:bg-n-alpha-black1"
++          @click="toggleMute"
++        >
++          {{ muted ? 'Unmute' : 'Mute' }}
++        </button>
++        <button
++          type="button"
++          class="flex-1 px-3 py-2 text-sm font-medium border rounded-lg border-n-ruby-9 text-n-ruby-9 hover:bg-n-ruby-9/10"
++          @click="hangup"
++        >
++          Hang up
++        </button>
++      </div>
++    </div>
++  </Teleport>
++</template>
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 5eee274..d4f6a01 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -21,7 +21,8 @@
+ import SidebarAccountSwitcher from './SidebarAccountSwitcher.vue';
+ import Logo from 'next/icon/Logo.vue';
+ import ComposeConversation from 'dashboard/components-next/NewConversation/ComposeConversation.vue';
++import ProtonSoftphonePanel from 'dashboard/components-next/softphone/ProtonSoftphonePanel.vue';
+ import {
+   SIDEBAR_SORT_SECTIONS,
+   getSidebarSortOptions,
+   resolveSidebarSort,
+@@ -1000,5 +1000,13 @@
+         :class="{ 'bg-n-brand': isResizing }"
+       />
+     </div>
++
++    <!-- Transferred-call softphone. Rendered from the sidebar because the
++         sidebar is on every dashboard page; the panel teleports itself to
++         <body>, so it is not clipped by this aside. Gated twice: the
++         `agent_softphone` feature AND the `voice.answer` permission. -->
++    <ProtonSoftphonePanel
++      v-if="protonHasFeature('agent_softphone') && protonHasPermission('voice.answer')"
++    />
+   </aside>
+ </template>

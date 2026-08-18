@@ -70,6 +70,12 @@ RUN for p in /tmp/proton-patches/*.patch; do \
 # NODE_OPTIONS prevents OOM on machines with ≤4 GB free; bump if build stalls.
 ENV NODE_OPTIONS="--max-old-space-size=3072"
 RUN pnpm install --frozen-lockfile
+# Patch 0069's softphone needs Twilio's Voice JS SDK, which upstream does not
+# depend on. Added AFTER the frozen install so upstream's dependency graph
+# stays byte-reproducible and exactly one dependency is added, explicitly and
+# pinned. Editing package.json in the patch instead would break
+# --frozen-lockfile, since we cannot regenerate pnpm-lock.yaml here.
+RUN pnpm add @twilio/voice-sdk@2.18.3
 RUN pnpm exec vite build
 
 # Overwrite the baked-in upstream .git_sha with our own build identifier —

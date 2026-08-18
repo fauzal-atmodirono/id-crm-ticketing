@@ -136,6 +136,13 @@ class HandoffTargetResolver:
         # the call mid-transfer, AFTER the tool response already promised
         # "transferring". Treat "no caller id configured" exactly like the
         # no-target-configured case above -- do not dial blind.
+        #
+        # This resolver only ever produces a PSTN target, so this guard is
+        # correctly unconditional HERE. It must NOT be copied into a resolver
+        # that can return kind="client" (see agent_client_resolver.py):
+        # error 13214 is a <Number> restriction, and applying it to <Client>
+        # would silently disable the softphone for any tenant that never
+        # configured a PSTN caller id.
         if not self._settings.phone_handoff_caller_id.strip():
             _log.warning("phone_handoff_no_caller_id_configured")
             return None
@@ -173,38 +180,91 @@ class HandoffTargetResolver:
         return working_minutes_between(now, now + timedelta(minutes=1), inbox) > 0
 
 
-def dial_twiml(target: HandoffTarget, action_url: str, timeout: int, caller_id: str) -> str:
+def _parameters_xml(parameters: dict[str, str] | None) -> str:
+    """`<Parameter>` children, escaped. Values here include MODEL-GENERATED
+    text (the handoff `reason`/`summary`), i.e. untrusted input going into an
+    XML attribute -- `quoteattr` is load-bearing, not tidiness. Malformed
+    TwiML on a live call drops the caller."""
+    if not parameters:
+        return ""
+    return "".join(
+        f"<Parameter name={quoteattr(name)} value={quoteattr(value)}/>"
+        for name, value in parameters.items()
+    )
+
+
+def _client_noun(identity: str, parameters: dict[str, str] | None = None) -> str:
+    """The LONG form. The shorthand `<Client>id</Client>` accepts no children,
+    so it cannot carry the context the ringing browser needs."""
+    return f"<Client><Identity>{escape(identity)}</Identity>{_parameters_xml(parameters)}</Client>"
+
+
+def dial_twiml(
+    target: HandoffTarget,
+    action_url: str,
+    timeout: int,
+    caller_id: str,
+    parameters: dict[str, str] | None = None,
+) -> str:
     """TwiML that dials `target` and posts the outcome to `action_url`
     (see `/webhooks/phone/dial-status`). `timeout` is Twilio's `<Dial>`
     ring timeout in seconds before it gives up and fires `action` with
     `DialCallStatus=no-answer`.
 
-    `caller_id` is REQUIRED, not optional: a PSTN `<Number>` `<Dial>` with
+    `caller_id` applies to the PSTN branch ONLY. A `<Number>` `<Dial>` with
     no `callerId` falls back to the parent leg's `From`, which on this
     repo's browser-softphone inbound path is a `client:` identifier Twilio
-    rejects for a PSTN caller id (error 13214) -- see
-    `HandoffTargetResolver.resolve()`'s docstring, which refuses to resolve
-    a target at all when `phone_handoff_caller_id` is unconfigured, so this
-    should never actually be called with an empty string in practice. Still
-    only emitted when non-empty (rather than assumed non-empty) so this
-    pure builder degrades to Twilio's own default behaviour instead of
-    raising if a future call site ever gets this wrong.
+    rejects for a PSTN caller id (error 13214) -- see `HandoffTargetResolver.
+    resolve()`, which refuses to resolve a PSTN target at all when
+    `phone_handoff_caller_id` is unconfigured. `<Client>` has no such
+    restriction, so the attribute is omitted entirely on that branch rather
+    than emitted empty.
+
+    `parameters` are ignored on the PSTN branch: a phone has nowhere to put
+    them. They exist for `<Client>`, where they arrive in the browser as
+    `call.customParameters`.
     """
-    noun = (
-        f"<Client>{escape(target.value)}</Client>"
-        if target.kind == "client"
-        else f"<Number>{escape(target.value)}</Number>"
-    )
-    caller_id_attr = f" callerId={quoteattr(caller_id)}" if caller_id else ""
+    if target.kind == "client":
+        noun = _client_noun(target.value, parameters)
+        caller_id_attr = ""
+    else:
+        noun = f"<Number>{escape(target.value)}</Number>"
+        caller_id_attr = f" callerId={quoteattr(caller_id)}" if caller_id else ""
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         # `int(...)` is load-bearing, not decoration: `timeout` reaches here from
-        # `settings.phone_handoff_dial_timeout_seconds`, and pydantic will happily
-        # hand back a float for a value written `15.0` in a tenant env. Twilio
-        # rejects a non-integer `<Dial timeout>` attribute, which fails the dial
-        # -- i.e. the handoff silently does not connect. P11 dropped this coercion
-        # while touching an unrelated line; restored, with the test below.
+        # a settings field, and pydantic will happily hand back a float for a
+        # value written `15.0` in a tenant env. Twilio rejects a non-integer
+        # `<Dial timeout>` attribute, which fails the dial -- i.e. the handoff
+        # silently does not connect.
         f'<Response><Dial action={quoteattr(action_url)} timeout="{int(timeout)}"'
         f"{caller_id_attr}>"
         f"{noun}</Dial></Response>"
+    )
+
+
+def fanout_twiml(
+    identities: list[str],
+    action_url: str,
+    timeout: int,
+    parameters: dict[str, str] | None = None,
+) -> str:
+    """Stage 2: ring every available agent at once, first accept wins.
+
+    Returns `""` when `identities` is empty so callers can branch on "is
+    there anyone to ring?" without constructing a `<Dial>` with zero nouns,
+    which is a TwiML error on a live call.
+
+    Twilio allows at most 10 nouns per `<Dial>`; enforcing that cap is the
+    CALLER's job (`settings.phone_fanout_max_agents`), because silently
+    truncating here would hide from the caller that some agents were never
+    rung.
+    """
+    if not identities:
+        return ""
+    nouns = "".join(_client_noun(i, parameters) for i in identities)
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f'<Response><Dial action={quoteattr(action_url)} timeout="{int(timeout)}">'
+        f"{nouns}</Dial></Response>"
     )

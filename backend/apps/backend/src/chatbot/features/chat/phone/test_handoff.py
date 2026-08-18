@@ -292,10 +292,14 @@ def test_dial_twiml_pstn_target() -> None:
 
 
 def test_dial_twiml_client_target() -> None:
+    """Package C Task 5 switched the client noun to the long
+    `<Client><Identity>` form (see `handoff_target._client_noun`): the
+    shorthand `<Client>id</Client>` has no room for the `<Parameter>`
+    children a ringing agent's browser needs."""
     xml = dial_twiml(
         HandoffTarget(kind="client", value="proton-agent-1"), "https://x/y", 15, _CALLER_ID
     )
-    assert "<Client>proton-agent-1</Client>" in xml
+    assert "<Client><Identity>proton-agent-1</Identity></Client>" in xml
     assert "<Number>" not in xml
 
 

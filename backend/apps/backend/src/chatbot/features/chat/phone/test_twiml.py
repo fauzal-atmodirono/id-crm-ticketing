@@ -63,3 +63,93 @@ def test_google_voice_constants_match_deployed_ivr() -> None:
     voice)."""
     assert GOOGLE_VOICE_EN_US == "Google.en-US-Standard-C"
     assert GOOGLE_VOICE_MS_MY == "Google.ms-MY-Standard-A"
+
+
+def test_client_dial_uses_the_long_form_with_parameters():
+    """The shorthand <Client>id</Client> has nowhere to put context. The
+    ringing browser needs to know who is calling and why BEFORE the agent
+    decides to accept, and <Parameter> children are how Twilio delivers that
+    (they arrive as call.customParameters in the JS SDK)."""
+    from chatbot.features.chat.phone.handoff_target import HandoffTarget, dial_twiml
+
+    xml = dial_twiml(
+        HandoffTarget(kind="client", value="agent_17"),
+        "https://example.test/webhooks/phone/dial-status",
+        20,
+        "",
+        {"conversation_id": "42", "reason": "billing dispute"},
+    )
+    assert "<Client><Identity>agent_17</Identity>" in xml
+    assert '<Parameter name="conversation_id" value="42"/>' in xml
+    assert '<Parameter name="reason" value="billing dispute"/>' in xml
+    assert 'timeout="20"' in xml
+
+
+def test_client_dial_needs_no_caller_id():
+    """Twilio error 13214 (a client: caller id rejected for a PSTN <Number>)
+    is what motivates the caller-id guard elsewhere. It does not apply to
+    <Client>, and emitting an empty callerId attribute would be junk TwiML."""
+    from chatbot.features.chat.phone.handoff_target import HandoffTarget, dial_twiml
+
+    xml = dial_twiml(
+        HandoffTarget(kind="client", value="agent_17"), "https://e.test/a", 20, ""
+    )
+    assert "callerId" not in xml
+
+
+def test_parameter_values_are_escaped():
+    """`reason` and `summary` are MODEL-GENERATED strings going into an XML
+    attribute. Unescaped, a quote character produces TwiML Twilio cannot
+    parse -- which drops a call that is still live."""
+    from chatbot.features.chat.phone.handoff_target import HandoffTarget, dial_twiml
+
+    xml = dial_twiml(
+        HandoffTarget(kind="client", value="agent_17"),
+        "https://e.test/a",
+        20,
+        "",
+        {"reason": 'he said "no" & left <angrily>'},
+    )
+    # `quoteattr` picks whichever quote delimiter (' or ") does not appear in
+    # the value, escaping only what's actually structural for that choice --
+    # e.g. a lone `"` with no `'` in the value is legally left unescaped
+    # inside single-quote delimiters. So the load-bearing property isn't a
+    # specific escape sequence, it's that `&`/`<` (always structural,
+    # regardless of delimiter) are neutralised and the whole document parses.
+    assert "&amp;" in xml
+    assert "<angrily>" not in xml
+    assert "&lt;angrily&gt;" in xml
+
+    import xml.etree.ElementTree as ET
+
+    ET.fromstring(xml)  # must parse
+
+
+def test_number_dial_is_unchanged():
+    """Regression guard: the PSTN path is the fallback that protects every
+    caller when the softphone path finds nobody."""
+    from chatbot.features.chat.phone.handoff_target import HandoffTarget, dial_twiml
+
+    xml = dial_twiml(
+        HandoffTarget(kind="pstn", value="+60388889999"), "https://e.test/a", 30, "+60311112222"
+    )
+    assert "<Number>+60388889999</Number>" in xml
+    assert 'callerId="+60311112222"' in xml
+    assert "<Identity>" not in xml
+
+
+def test_fanout_emits_one_client_per_identity():
+    from chatbot.features.chat.phone.handoff_target import fanout_twiml
+
+    xml = fanout_twiml(["agent_1", "agent_2", "agent_3"], "https://e.test/f", 25)
+    assert xml.count("<Client>") == 3
+    assert "<Identity>agent_2</Identity>" in xml
+    assert 'timeout="25"' in xml
+
+
+def test_fanout_with_no_identities_returns_empty_string():
+    """Callers must be able to ask "is there anyone to ring?" without
+    building a <Dial> with zero nouns, which is a TwiML error."""
+    from chatbot.features.chat.phone.handoff_target import fanout_twiml
+
+    assert fanout_twiml([], "https://e.test/f", 25) == ""

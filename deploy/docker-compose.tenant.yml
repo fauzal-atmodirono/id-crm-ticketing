@@ -74,6 +74,12 @@ x-chatwoot-env: &chatwoot-env
   # and README command here passes it, and a test asserts they keep doing so.
   INBOUND_ALERTS_ENABLED: ${INBOUND_ALERTS_ENABLED:-false}
   FAQ_SUGGESTION_POPUP_ENABLED: ${FAQ_SUGGESTION_POPUP_ENABLED:-false}
+  # Whole-branch review (Important 4): the in-CRM agent softphone's client
+  # gate (`protonHasFeature('agent_softphone')`, fork patch 0069) follows this
+  # SAME backend flag via 0058's unified mechanism -- without this line an
+  # operator who sets PHONE_AGENT_SOFTPHONE_ENABLED gets a backend that dials
+  # <Client> and a CRM panel that never renders (the two-switch trap again).
+  PHONE_AGENT_SOFTPHONE_ENABLED: ${PHONE_AGENT_SOFTPHONE_ENABLED:-false}
 
 networks:
   platform:

@@ -115,7 +115,26 @@ COMPOSE_TEXT = COMPOSE_PATH.read_text(encoding="utf-8")
 
 # The flags this task unifies, and the file each is documented in. The FEATURE
 # NAME each maps to is deliberately absent -- see the module docstring.
-_UNIFIED_FLAGS = ("INBOUND_ALERTS_ENABLED", "FAQ_SUGGESTION_POPUP_ENABLED")
+#
+# PHONE_AGENT_SOFTPHONE_ENABLED (whole-branch review, Important 4) joined this
+# map after the fact -- the in-CRM agent softphone's client gate
+# (`protonHasFeature('agent_softphone')`, patch 0069) is the same two-switch
+# shape 3g/3h were, and this is the mechanism built to remove it.
+_UNIFIED_FLAGS = (
+    "INBOUND_ALERTS_ENABLED",
+    "FAQ_SUGGESTION_POPUP_ENABLED",
+    "PHONE_AGENT_SOFTPHONE_ENABLED",
+)
+# Some unified flags depend on another Settings field to construct without a
+# ValidationError (see config.py's `_phone_flag_dependencies`) -- extra kwargs
+# supplied here so `Settings(**{field: value})` below doesn't blow up on a
+# structural dependency that has nothing to do with THIS task's assertion.
+_EXTRA_SETTINGS_FOR_FLAG: dict[str, dict[str, object]] = {
+    "PHONE_AGENT_SOFTPHONE_ENABLED": {
+        "phone_handoff_enabled": True,
+        "phone_transcript_live_enabled": True,
+    },
+}
 
 _RUBY = shutil.which("ruby")
 _DOCKER = shutil.which("docker")
@@ -265,7 +284,8 @@ def _render_features(fragment: str, env: dict[str, str], tmp_path: Path) -> list
     harness = tmp_path / "render.rb"
     harness.write_text(
         "require 'erb'\nrequire 'json'\n"
-        "%w[PROTON_FEATURES INBOUND_ALERTS_ENABLED FAQ_SUGGESTION_POPUP_ENABLED]"
+        "%w[PROTON_FEATURES INBOUND_ALERTS_ENABLED FAQ_SUGGESTION_POPUP_ENABLED "
+        "PHONE_AGENT_SOFTPHONE_ENABLED]"
         ".each { |k| ENV.delete(k) }\n"
         "JSON.parse(File.read(ARGV[1])).each { |k, v| ENV[k] = v }\n"
         "out = ERB.new(File.read(ARGV[0])).result(binding)\n"
@@ -298,11 +318,17 @@ def _fork_feature_names() -> set[str]:
     The point of harvesting rather than listing: a name in the ERB map that no
     `hasFeature` call reads is a flag that looks wired and gates nothing, which
     is the exact defect this task closes.
+
+    Matches both the bare `hasFeature(...)` call (0056/0057's own components)
+    and the `protonHasFeature(...)` alias (`const { hasFeature: protonHasFeature
+    } = useProtonConfig()`, used wherever a component -- Sidebar.vue, mounted by
+    0057 and 0069 -- would otherwise collide with Chatwoot's own native
+    `hasFeature`). Same composable, same gate, different local name.
     """
     names: set[str] = set()
     for patch in sorted(PATCH_DIR.glob("*.patch")):
         for match in re.finditer(
-            r"hasFeature\(\s*'([a-z0-9_]+)'\s*\)", patch.read_text(encoding="utf-8")
+            r"(?:proton)?[Hh]asFeature\(\s*'([a-z0-9_]+)'\s*\)", patch.read_text(encoding="utf-8")
         ):
             names.add(match.group(1))
     return names
@@ -626,7 +652,10 @@ def test_the_previously_broken_state_backend_on_and_the_spa_gate_off_can_no_long
         rails_env = envs["chatwoot-rails"]
         # The backend is on -- that is the premise of the broken state.
         field = flag.lower()
-        backend_settings = Settings(**{field: envs["backend"][flag]})  # type: ignore[arg-type]
+        backend_settings = Settings(
+            **{field: envs["backend"][flag]},  # type: ignore[arg-type]
+            **_EXTRA_SETTINGS_FOR_FLAG.get(flag, {}),
+        )
         assert backend_settings.model_dump()[field] is True
         # ...and the SPA's gate is now on as well, which is what used to fail.
         rendered = _render_features(

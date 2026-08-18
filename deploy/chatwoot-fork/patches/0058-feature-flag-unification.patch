@@ -94,11 +94,20 @@ next `up -d` of the tenant stack; this ERB change only takes effect once the
 Chatwoot custom image is REBUILT with this patch in it (Cloud Build, amd64,
 off-VM). Until that image is pulled, the live tenants keep two switches and the
 env documentation's older warning is still the accurate description of them.
+
+UPDATE (whole-branch review, Important 4). `PHONE_AGENT_SOFTPHONE_ENABLED` ->
+`agent_softphone` was added to the same map, for the exact reason this patch
+exists: the in-CRM agent softphone (patch 0069, `protonHasFeature('agent_
+softphone')`) is gated client-side on that feature name and server-side on
+this backend flag, and without this line an operator who enables
+`PHONE_AGENT_SOFTPHONE_ENABLED` gets a backend that dials `<Client>` and a
+CRM that never renders the softphone panel -- the identical two-switch trap
+this whole mechanism was written to remove.
 diff --git a/app/views/layouts/vueapp.html.erb b/app/views/layouts/vueapp.html.erb
 index 47db376..1b747ea 100644
 --- a/app/views/layouts/vueapp.html.erb
 +++ b/app/views/layouts/vueapp.html.erb
-@@ -64,11 +64,38 @@
+@@ -64,11 +64,39 @@
        }
        window.errorLoggingConfig = '<%= ENV.fetch('SENTRY_FRONTEND_DSN', '') || ENV.fetch('SENTRY_DSN', '') %>'
      </script>
@@ -122,6 +131,7 @@ index 47db376..1b747ea 100644
 +      proton_flag_features = {
 +        'INBOUND_ALERTS_ENABLED' => 'inbound_alerts',
 +        'FAQ_SUGGESTION_POPUP_ENABLED' => 'faq_suggestion_popup',
++        'PHONE_AGENT_SOFTPHONE_ENABLED' => 'agent_softphone',
 +      }
 +      proton_features = ENV.fetch('PROTON_FEATURES', '').split(',').map { |f| f.strip }.reject { |f| f.empty? }
 +      proton_flag_features.each do |flag_name, feature_name|

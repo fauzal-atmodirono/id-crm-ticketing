@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from structlog.testing import capture_logs
 
 import chatbot.features.chat.phone.bridge as bridge_module
@@ -1379,3 +1380,95 @@ async def test_genai_client_construction_failure_is_fail_open(monkeypatch: Any) 
     await b.finalize()
     assert log.classifications == []
     assert any(c[2] == "solved" for c in log.comments)
+
+
+# --- Task 7: chained softphone resolver wired into the bridge ---------------
+
+
+@pytest.fixture
+def bridge() -> PhoneBridge:
+    """A default PhoneBridge over the fakes already defined in this file --
+    the base fixture the softphone-chain tests build on top of."""
+    return _bridge(_FakeLive([]), [])
+
+
+@pytest.fixture
+def bridge_with_softphone(bridge: PhoneBridge) -> PhoneBridge:
+    """A bridge whose tenant has BOTH the softphone and the PSTN fallback
+    configured, with agent 17 assigned and registered."""
+    bridge._settings = bridge._settings.model_copy(
+        update={
+            "phone_agent_softphone_enabled": True,
+            "phone_handoff_enabled": True,
+            "phone_handoff_target_number": "+60388889999",
+            "phone_handoff_caller_id": "+60311112222",
+            "twilio_webhook_base_url": "https://example.test",
+        }
+    )
+    registry = AsyncMock()
+    registry.registered_ids.return_value = {17}
+    bridge._softphone_registry = registry
+    bridge._log_port.get_conversation_assignee = AsyncMock(return_value="17")
+    bridge._call_control.redirect = AsyncMock(return_value=True)
+    bridge._rebuild_handoff_resolver()
+    return bridge
+
+
+async def test_transfer_prefers_a_registered_assignee_over_the_pstn_number(
+    bridge_with_softphone: PhoneBridge,
+) -> None:
+    """The whole feature in one assertion: with an assigned, registered agent
+    the live call is redirected to their browser, not to the hunt group."""
+    bridge = bridge_with_softphone
+    bridge.call_sid = "CA123"
+    bridge.ticket_id = "42"
+
+    assert await bridge._attempt_transfer() == "transferring"
+
+    twiml = bridge._call_control.redirect.await_args.args[1]
+    assert "<Identity>agent_17</Identity>" in twiml
+    assert "<Number>" not in twiml
+
+
+async def test_transfer_passes_context_to_the_ringing_browser(
+    bridge_with_softphone: PhoneBridge,
+) -> None:
+    """The agent decides whether to accept BEFORE they can see the CRM, so the
+    reason and the conversation link have to travel with the ring."""
+    bridge = bridge_with_softphone
+    bridge.call_sid = "CA123"
+    bridge.ticket_id = "42"
+    bridge.handoff = {"reason": "angry about a billing charge", "summary": "s"}
+
+    await bridge._attempt_transfer()
+
+    twiml = bridge._call_control.redirect.await_args.args[1]
+    assert 'name="conversation_id" value="42"' in twiml
+    assert "angry about a billing charge" in twiml
+
+
+async def test_transfer_falls_back_to_pstn_when_nobody_is_registered(
+    bridge_with_softphone: PhoneBridge,
+) -> None:
+    bridge = bridge_with_softphone
+    bridge._softphone_registry.registered_ids.return_value = set()
+    bridge.call_sid = "CA123"
+    bridge.ticket_id = "42"
+
+    assert await bridge._attempt_transfer() == "transferring"
+    assert "<Number>" in bridge._call_control.redirect.await_args.args[1]
+
+
+async def test_softphone_disabled_is_byte_identical_to_today(
+    bridge_with_softphone: PhoneBridge,
+) -> None:
+    """The acceptance bar for the whole feature."""
+    bridge = bridge_with_softphone
+    bridge._settings = bridge._settings.model_copy(update={"phone_agent_softphone_enabled": False})
+    bridge.call_sid = "CA123"
+    bridge.ticket_id = "42"
+
+    await bridge._attempt_transfer()
+    twiml = bridge._call_control.redirect.await_args.args[1]
+    assert "<Number>" in twiml
+    assert "<Client>" not in twiml

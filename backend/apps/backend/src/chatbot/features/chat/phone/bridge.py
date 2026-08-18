@@ -12,6 +12,7 @@ import structlog
 
 from chatbot.features.chat.csat import record_csat_on_ticket
 from chatbot.features.chat.nps import record_nps_agent_attribution, record_nps_on_ticket
+from chatbot.features.chat.phone.agent_client_resolver import AgentClientResolver, ChainedResolver
 from chatbot.features.chat.phone.audio_codec import mulaw8k_to_pcm16k, pcm24k_to_mulaw8k
 from chatbot.features.chat.phone.call_control import CallControl
 from chatbot.features.chat.phone.handoff_csat_tools import parse_csat_score, parse_nps_score
@@ -30,6 +31,7 @@ from chatbot.features.chat.ports import ConversationLogResult
 
 if TYPE_CHECKING:
     from chatbot.features.chat.phone.gemini_live import LiveSession
+    from chatbot.features.chat.phone.softphone_registry import SoftphoneRegistry
     from chatbot.features.chat.ports import ConversationLogPort, KnowledgePort
     from chatbot.platform.config import Settings
 
@@ -134,11 +136,17 @@ class PhoneBridge:
         clock: Callable[[], float] | None = None,
         call_control: CallControl | None = None,
         handoff_resolver: HandoffTargetResolver | None = None,
+        softphone_registry: SoftphoneRegistry | None = None,
     ) -> None:
         self._live = live
         self._knowledge = knowledge_port
         self._log_port = conversation_log_port
         self._send_twilio = send_twilio
+        # Task 7: keeps the resolver chain (below) in sync with whichever
+        # resolver a caller explicitly injected -- see the `_settings`
+        # property setter and `_rebuild_handoff_resolver`'s own docstring for
+        # why this is needed.
+        self._injected_handoff_resolver = handoff_resolver
         self._settings = settings
         # Package C Task 5: injectable for tests (never construct a real
         # Twilio client from a test -- see call_control.py's own docstring);
@@ -152,11 +160,8 @@ class PhoneBridge:
         # above. Constructing one unconditionally is safe even when
         # phone_handoff_enabled is off -- resolve() checks the flag first
         # and never touches the log port otherwise.
-        self._handoff_resolver = (
-            handoff_resolver
-            if handoff_resolver is not None
-            else HandoffTargetResolver(settings, conversation_log_port)
-        )
+        self._softphone_registry = softphone_registry
+        self._rebuild_handoff_resolver(handoff_resolver)
         # Review fix (Important 2): once a redirect has actually been
         # accepted by Twilio, the call is mid-<Dial> -- a SECOND
         # request_human_handoff arriving before the websocket tears down
@@ -237,6 +242,72 @@ class PhoneBridge:
         # phone_transcript_classification_enabled is on -- see _genai().
         self._genai_client: Any | None = None
 
+    @property
+    def _settings(self) -> Settings:
+        return self.__settings
+
+    @_settings.setter
+    def _settings(self, value: Settings) -> None:
+        """Task 7: `test_softphone_disabled_is_byte_identical_to_today` (and
+        any other test that flips a flag on an already-built bridge) proves
+        the resolver chain reflects whatever settings the bridge is
+        CURRENTLY configured with -- not a stale copy captured the first
+        time the chain was built. Guarded on `_handoff_resolver` existing
+        because `__init__` assigns `self._settings` before the chain is
+        built for the first time (before `_softphone_registry` even exists);
+        that first, real build still happens explicitly right after
+        `_softphone_registry` is set, so this is a no-op until then.
+        """
+        self.__settings = value
+        if hasattr(self, "_handoff_resolver"):
+            self._rebuild_handoff_resolver(self._injected_handoff_resolver)
+
+    def _rebuild_handoff_resolver(self, injected: Any | None = None) -> None:
+        """Compose the handoff resolver chain: the assigned agent's softphone
+        first, the static PSTN hunt group behind it.
+
+        Order is the feature. Stage 1 returning None is the normal case (no
+        assignee, nobody registered, flag off) and must fall through to the
+        behaviour every tenant has today -- which is why this is a chain and
+        not a replacement.
+
+        `injected` keeps the existing test seam: a caller that passes its own
+        resolver gets exactly that resolver, unchained.
+        """
+        if injected is not None:
+            self._handoff_resolver = injected
+            return
+        pstn = HandoffTargetResolver(self._settings, self._log_port)
+        if not self._settings.phone_agent_softphone_enabled or self._softphone_registry is None:
+            self._handoff_resolver = pstn
+            return
+        self._handoff_resolver = ChainedResolver(
+            [
+                AgentClientResolver(
+                    self._settings,
+                    self._log_port,
+                    self._softphone_registry,
+                    lambda: self.ticket_id,
+                ),
+                pstn,
+            ]
+        )
+
+    def _handoff_parameters(self) -> dict[str, str]:
+        """Context the ringing browser shows BEFORE the agent accepts.
+
+        `reason`/`summary` are model-generated; `handoff_target._parameters_xml`
+        escapes them. Truncated because Twilio caps the total TwiML size and a
+        rambling summary on a live call is not worth a TwiML error.
+        """
+        handoff = self.handoff or {}
+        params = {
+            "conversation_id": str(self.ticket_id or ""),
+            "reason": str(handoff.get("reason") or "")[:200],
+            "summary": str(handoff.get("summary") or "")[:400],
+        }
+        return {k: v for k, v in params.items() if v}
+
     async def handle_twilio(self, msg: dict[str, object]) -> None:
         event = msg.get("event")
         if event == "start":
@@ -280,9 +351,10 @@ class PhoneBridge:
                     self._recording_task = asyncio.create_task(
                         self._maybe_start_recording(self.call_sid)
                     )
-                if self._settings.phone_handoff_enabled and (
-                    self._handoff_prefetch_task is None or self._handoff_prefetch_task.done()
-                ):
+                if (
+                    self._settings.phone_handoff_enabled
+                    or self._settings.phone_agent_softphone_enabled
+                ) and (self._handoff_prefetch_task is None or self._handoff_prefetch_task.done()):
                     # Fire-and-forget, same reasoning again: the
                     # business-hours lookup is a real Chatwoot GET, and
                     # doing it here (once, at call setup) instead of
@@ -610,11 +682,17 @@ class PhoneBridge:
         if not action_url:
             _log.warning("phone_handoff_no_action_url_configured", call_sid=self.call_sid)
             return "ticket_created"
+        timeout = (
+            self._settings.phone_agent_ring_timeout_seconds
+            if target.kind == "client"
+            else self._settings.phone_handoff_timeout_seconds
+        )
         twiml = dial_twiml(
             target,
             action_url,
-            self._settings.phone_handoff_timeout_seconds,
+            timeout,
             self._settings.phone_handoff_caller_id,
+            self._handoff_parameters(),
         )
         try:
             ok = await asyncio.wait_for(

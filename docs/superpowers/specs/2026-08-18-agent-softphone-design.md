@@ -171,9 +171,19 @@ New permission in `features/authz/seed.py`:
 "voice.answer": "Answer transferred phone calls in the browser softphone",
 ```
 
-Not granted by default to any existing role; an operator ticks it on. This
-matters because a Voice grant is a **billable capability** on your Twilio
-account, not just a UI affordance.
+Withheld from the default **agent** role; an operator grants it per-agent in
+the Roles admin UI. This matters because a Voice grant is a **billable
+capability** on your Twilio account, not just a UI affordance.
+
+Administrators receive it automatically, like every other key in
+`PERMISSION_REGISTRY`. An earlier draft of this section said "not granted by
+default to any existing role", and implementing that literally required
+carving a special case into `seed_defaults()`'s "administrator holds every
+permission" invariant and loosening two pre-existing tests — too high a price,
+given administrators already hold every comparably dangerous permission here
+(`roles.manage`, `audit.view`, `call_recording.listen`) and can untick this one
+in the Roles UI. Note the practical consequence: an administrator with the
+feature flag on and a CRM tab open **will** join the stage-2 fan-out rotation.
 
 ### 2. `features/chat/phone/softphone_registry.py` — who can actually be rung
 

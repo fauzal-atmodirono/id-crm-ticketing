@@ -47,12 +47,12 @@ PERMISSION_REGISTRY: dict[str, str] = {
     "call_recording.listen": "Listen to / retrieve a call recording",
     # Agent softphone (see docs/superpowers/specs/
     # 2026-08-18-agent-softphone-design.md): granted per-agent to whoever
-    # should receive transferred calls in the browser. Unlike every other
-    # key in this dict, "administrator" does NOT get this automatically --
-    # see _NOT_AUTO_GRANTED_TO_ADMINISTRATOR below. A Voice grant with
-    # incoming_allow=True is a BILLABLE capability on the tenant's Twilio
-    # account, not just a UI affordance, so the design spec requires it be
-    # off for every default role until an operator ticks it on deliberately.
+    # should receive transferred calls in the browser. A Voice grant with
+    # incoming_allow=True is a BILLABLE, call-receiving capability on the
+    # tenant's Twilio account, not just a UI affordance, so it is deliberately
+    # withheld from the default AGENT role. An operator grants it per-agent via
+    # the Roles admin UI; it auto-grants to "administrator" like all other
+    # PERMISSION_REGISTRY keys.
     "voice.answer": "Answer transferred phone calls in the browser softphone",
     # Package F: the DMS/TSP integration shell's admin CRUD + connection
     # test (features/chat/dms_admin_router.py). Same shape as
@@ -125,12 +125,6 @@ _AGENT_PERMISSIONS = {
     "alerts.set_own_preferences",
 }
 
-# Agent softphone: "administrator"'s grant loop below normally hands out
-# every PERMISSION_REGISTRY key automatically ("full access to all
-# permissions" per this module's docstring). voice.answer is the one
-# exception -- see its entry in PERMISSION_REGISTRY above for why.
-_NOT_AUTO_GRANTED_TO_ADMINISTRATOR = {"voice.answer"}
-
 # Native Chatwoot conversation/inbox visibility, mirrored into Chatwoot's own
 # CustomRole via features/authz/chatwoot_role_mirror.py (Phase 3). Registered
 # so they're visible in the permission registry and grantable from the Roles
@@ -159,8 +153,6 @@ async def seed_defaults(repo: AuthzRepository) -> None:
 
     await repo.create_role("administrator", "Administrator", "Full access to all permissions")
     for key in PERMISSION_REGISTRY:
-        if key in _NOT_AUTO_GRANTED_TO_ADMINISTRATOR:
-            continue
         await repo.grant_permission("administrator", key)
 
     await repo.create_role("agent", "Agent", "Minimal default access")

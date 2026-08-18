@@ -1475,3 +1475,71 @@ async def test_softphone_disabled_is_byte_identical_to_today(
     twiml = bridge._call_control.redirect.await_args.args[1]
     assert "<Number>" in twiml
     assert "<Client>" not in twiml
+
+
+# --- Whole-branch review CRITICAL 1: prefetch() must not cache a `None` ----
+# --- computed before the ticket exists --------------------------------------
+
+
+async def test_transfer_resolves_a_client_target_when_the_ticket_is_created_asynchronously(
+    bridge_with_softphone: PhoneBridge,
+) -> None:
+    """The end-to-end regression test the review demanded: drive the REAL
+    `handle_twilio("start")` -> `_attempt_transfer()` path on the same
+    bridge, with the ticket created by a detached task that genuinely
+    awaits (like the real Chatwoot HTTP call), instead of setting
+    `bridge.ticket_id` directly the way every other test in this file does.
+
+    Production shape: `handle_twilio`'s "start" branch creates the
+    ticket-create task and the handoff-prefetch task back to back, with no
+    intervening await. The scheduler always runs the ticket-create task
+    first; it immediately awaits a real HTTP call and suspends -- so the
+    prefetch task runs next, and `AgentClientResolver._lookup()` reads
+    `self.ticket_id` (still None at that instant) with no await before that
+    read. Before the fix, `prefetch()` cached that `None` as `_warm=True`,
+    permanently -- `resolve()` then returned `None` for the rest of the
+    call no matter that the ticket was created a moment later, and stage 1
+    could never ring the browser: every handoff silently fell through to
+    the PSTN hunt group, which is exactly what this package exists to
+    replace.
+
+    Proven to fail against the pre-fix code (see the report's
+    revert-and-rerun evidence): the assertion below sees a `<Number>` --
+    the PSTN fallback -- instead of `<Client>agent_17`.
+    """
+    bridge = bridge_with_softphone
+    bridge.ticket_id = None
+    # The ticket-create task only fires when phone_transcript_live_enabled is
+    # on (see handle_twilio's "start" branch) -- the shared fixture doesn't
+    # set it because every other test in this file sets bridge.ticket_id
+    # directly and never needs the real task to run.
+    bridge._settings = bridge._settings.model_copy(
+        update={"phone_transcript_live_enabled": True}
+    )
+
+    async def _ensure_conversation_ticket(*args: Any, **kwargs: Any) -> str:
+        # A genuine await point, same shape as the real ChatwootAdapter's
+        # HTTP round trip -- yields control back to the event loop so the
+        # concurrently-created prefetch task runs BEFORE this resumes and
+        # sets bridge.ticket_id. Without this await, the fake ticket-create
+        # task would run to completion in one scheduling slice and this
+        # test would not reproduce the race at all.
+        await asyncio.sleep(0)
+        return "42"
+
+    bridge._log_port.ensure_conversation_ticket = _ensure_conversation_ticket  # type: ignore[method-assign]
+
+    await bridge.handle_twilio({"event": "start", "start": {"streamSid": "MZ1", "callSid": "CA1"}})
+    assert bridge._ticket_create_task is not None
+    assert bridge._handoff_prefetch_task is not None
+    await bridge._ticket_create_task
+    await bridge._handoff_prefetch_task
+
+    assert bridge.ticket_id == "42", "the ticket-create task must have completed by now"
+
+    status = await bridge._attempt_transfer()
+
+    assert status == "transferring"
+    twiml = bridge._call_control.redirect.await_args.args[1]
+    assert "<Identity>agent_17</Identity>" in twiml, twiml
+    assert "<Number>" not in twiml, twiml

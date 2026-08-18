@@ -19,6 +19,7 @@ start and may not exist yet when the resolver is constructed.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -33,6 +34,22 @@ if TYPE_CHECKING:
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
+
+# Whole-branch review fix (Important 8): `bridge.py`'s `_attempt_transfer`
+# wraps the WHOLE chain in one 5s `asyncio.wait_for` -- fine when there was
+# one resolver to prefetch, but this chain can now be
+# [AgentClientResolver (up to 2 network lookups cold), HandoffTargetResolver
+# (up to 1 more)]. Without a per-resolver bound, a slow-but-not-FAILING
+# registry or Chatwoot call can consume that whole outer budget by itself;
+# `wait_for` then fires, `_attempt_transfer` returns "ticket_created" with
+# NO dial at all, and the PSTN fallback -- configured, available, and next
+# in the chain -- never gets tried. This bound caps what any ONE resolver
+# can cost, so a slow resolver costs a ring STAGE, not the whole fallback.
+# Deliberately shorter than the outer bound so two resolvers still fit
+# inside it with room to spare, not because either number is precisely
+# tuned -- a real Chatwoot/Firestore call is typically sub-second, so this
+# is generous, not tight.
+_RESOLVER_TIMEOUT_SECONDS = 2.5
 
 
 class _Resolver(Protocol):
@@ -63,7 +80,28 @@ class AgentClientResolver:
         A failed lookup (Chatwoot/registry error) is deliberately NOT cached:
         `_warm` stays False so `resolve()` retries live instead of being
         stuck replaying a transient failure for the rest of the call.
+
+        CRITICAL fix (whole-branch review): "no ticket yet" is ALSO not
+        cached, and for the same reason -- it is not an answer, it is "not
+        knowable yet". `handle_twilio`'s "start" branch creates the ticket-
+        create task and this prefetch task back to back with no intervening
+        await; the ticket-create task always runs first and immediately
+        suspends on a real Chatwoot HTTP call, so this prefetch task runs
+        `_lookup()` to its `ticket_id` read -- which happens with no await
+        before it -- while `self.ticket_id` is STILL None. Caching that
+        `None` as `_warm=True` here used to mean stage 1 could never
+        resolve a `<Client>` target for the rest of the call, no matter
+        that the ticket was created a few hundred milliseconds later: every
+        handoff silently fell through to the PSTN hunt group, which is
+        exactly what this feature exists to replace. Skipping the cache
+        here leaves `resolve()`'s cold path (one Chatwoot GET plus one
+        registry read, inside the existing bounded wait_for) as the live
+        cost for a handoff that arrives before the ticket exists -- which
+        the spec already sanctions ("a cold cache falls back to the inline
+        lookup, within the existing bound").
         """
+        if not self._ticket_id_provider():
+            return
         try:
             self._target = await self._lookup()
             self._warm = True
@@ -102,7 +140,7 @@ class AgentClientResolver:
             raise
         if not assignee:
             return None
-        agent_id = _as_agent_id(assignee)
+        agent_id = assignee_to_agent_id(assignee)
         if agent_id is None:
             _log.warning("agent_client_assignee_not_numeric", assignee=str(assignee))
             return None
@@ -117,7 +155,15 @@ class AgentClientResolver:
         return HandoffTarget(kind="client", value=agent_identity(agent_id))
 
 
-def _as_agent_id(assignee: Any) -> int | None:
+def assignee_to_agent_id(assignee: Any) -> int | None:
+    """Parse a Chatwoot conversation assignee value into a numeric agent id.
+
+    Public (not module-private) because the whole-branch review's fan-out
+    exclusion fix (`router.py`'s `_fanout_identities`) needs the exact same
+    parsing to find the stage-1 assignee it must not re-ring in stage 2 --
+    one parser for "what agent id does this assignee value mean", not two
+    that could silently drift apart.
+    """
     try:
         return int(str(assignee).strip())
     except (TypeError, ValueError):
@@ -148,8 +194,15 @@ class ChainedResolver:
     async def resolve(self) -> HandoffTarget | None:
         for resolver in self._resolvers:
             try:
-                target = await resolver.resolve()
+                target = await asyncio.wait_for(
+                    resolver.resolve(), timeout=_RESOLVER_TIMEOUT_SECONDS
+                )
             except Exception as e:
+                # Whole-branch review fix (Important 8): a per-resolver
+                # TimeoutError lands here too (asyncio.TimeoutError is an
+                # Exception) and is treated exactly like a raising resolver
+                # -- skipped, not fatal to the chain -- so a slow resolver
+                # costs its own ring stage, never the fallback behind it.
                 _log.error("chained_resolver_failed", error=str(e))
                 continue
             if target is not None:

@@ -110,6 +110,40 @@ async def test_prefetch_failure_leaves_resolve_working(settings, log_port, regis
     assert await resolver.resolve() == HandoffTarget(kind="client", value="agent_17")
 
 
+async def test_prefetch_does_not_cache_when_the_ticket_does_not_exist_yet(
+    settings, log_port, registry
+):
+    """CRITICAL fix (whole-branch review): "no ticket yet" is not an answer,
+    it is "not knowable yet" -- caching it as a permanent None would mean
+    stage 1 can never resolve a <Client> target for the rest of the call,
+    no matter that the ticket is created a moment later by the concurrently
+    running ticket-create task. See test_bridge.py's end-to-end regression
+    test for the full production shape this unit test isolates."""
+    resolver = AgentClientResolver(settings, log_port, registry, lambda: None)
+
+    await resolver.prefetch()
+
+    assert resolver._warm is False
+    log_port.get_conversation_assignee.assert_not_awaited()
+    registry.registered_ids.assert_not_awaited()
+
+
+async def test_prefetch_after_the_ticket_appears_resolves_live_not_stuck_cold(
+    settings, log_port, registry
+):
+    """Once the ticket id becomes available, prefetch() (fired again, or
+    resolve()'s own inline fallback) must actually find the assignee --
+    proving the earlier no-ticket prefetch left nothing behind to get in
+    the way."""
+    ticket_id_holder = {"value": None}
+    resolver = AgentClientResolver(settings, log_port, registry, lambda: ticket_id_holder["value"])
+
+    await resolver.prefetch()  # too early -- must not cache
+    ticket_id_holder["value"] = "42"
+
+    assert await resolver.resolve() == HandoffTarget(kind="client", value="agent_17")
+
+
 async def test_chain_returns_the_first_non_none():
     first, second = AsyncMock(), AsyncMock()
     first.resolve.return_value = None
@@ -135,3 +169,26 @@ async def test_chain_survives_a_raising_resolver():
     second.resolve.return_value = HandoffTarget(kind="pstn", value="+60388889999")
 
     assert await ChainedResolver([first, second]).resolve() is not None
+
+
+async def test_chain_survives_a_slow_resolver_and_still_tries_the_fallback():
+    """Whole-branch review fix (Important 8): a resolver that is SLOW but
+    never actually fails must not consume the whole outer wait_for budget
+    `bridge._attempt_transfer` wraps the chain in -- the fallback resolver
+    behind it must still get tried, same as when the slow resolver raises
+    outright."""
+    import asyncio  # noqa: PLC0415
+
+    first, second = AsyncMock(), AsyncMock()
+
+    async def _hangs() -> HandoffTarget | None:
+        await asyncio.sleep(10)
+        return None  # pragma: no cover -- never reached, cancelled first
+
+    first.resolve.side_effect = _hangs
+    second.resolve.return_value = HandoffTarget(kind="pstn", value="+60388889999")
+
+    result = await asyncio.wait_for(ChainedResolver([first, second]).resolve(), timeout=5.0)
+
+    assert result == HandoffTarget(kind="pstn", value="+60388889999")
+    second.resolve.assert_awaited_once()

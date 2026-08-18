@@ -107,6 +107,16 @@ _LOG_TRANSCRIPT_MAX_CHARS = 400
 # invariant that a slow redirect FAILS on the SDK side (leaving
 # `_transfer_dialed` consistent) rather than being abandoned mid-flight by
 # this bound.
+#
+# Whole-branch review fix (Important 8): this ONE bound now covers up to
+# THREE network lookups when the softphone chain is cold (assignee,
+# registry, business hours), not the single lookup it was sized for. A
+# slow-but-not-failing one could consume the whole budget by itself and
+# starve the PSTN fallback of a chance to even try. `agent_client_resolver.
+# ChainedResolver` now applies its own per-resolver sub-bound
+# (`_RESOLVER_TIMEOUT_SECONDS`) so a slow resolver costs a ring stage, not
+# the fallback -- this outer bound remains the audio-pump guarantee of
+# last resort.
 _HANDOFF_RESOLVE_TIMEOUT_SECONDS = 5.0
 _HANDOFF_REDIRECT_TIMEOUT_SECONDS = 3.0
 

@@ -732,6 +732,24 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         if engine is not None:
             await init_resolved_case_index_db(engine)
 
+    # --- Task 9: agent softphone (registry + call control), built before the
+    # chat router that consumes them. `SoftphoneRegistry` is Firestore-backed
+    # but built lazily (no I/O at construction, see its own module docstring),
+    # same convention as pic_store/dealer_store above. `CallControl` is the
+    # same fail-open Twilio REST wrapper `PhoneBridge` already defaults to
+    # internally; ChatRouter needs its own instance too so `_enter_acw_best_
+    # effort` (Task 10) can look up who actually answered a fan-out `<Dial>`.
+    # `_routing_presence` is normally built further down in the Phase 5 block
+    # below -- moved up here (and NOT duplicated there) because ChatRouter's
+    # own fan-out helper (`_fanout_identities`, Task 8) needs the SAME
+    # instance, not a second `PresenceFetcher` with its own HTTP config.
+    from chatbot.features.chat.phone.call_control import CallControl
+    from chatbot.features.chat.phone.softphone_registry import SoftphoneRegistry
+
+    softphone_registry = SoftphoneRegistry(settings)
+    _call_control = CallControl(settings)
+    _routing_presence = PresenceFetcher(settings)
+
     app.include_router(
         build_chat_router(
             orchestrator=orchestrator,
@@ -741,6 +759,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             audit_log=audit_log,
             acw_controller=_acw_controller,
             resolved_case_index=_resolved_case_index,
+            softphone_registry=softphone_registry,
+            presence_fetcher=_routing_presence,
+            call_control=_call_control,
         )
     )
 
@@ -750,7 +771,8 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # endpoints back the routing-admin UI) -- but down in the P6 block below,
     # after RBAC, because the supervisor-reassignment path needs the authz
     # repo/validator that block builds.
-    _routing_presence = PresenceFetcher(settings)
+    # `_routing_presence` is built above, alongside the softphone/call-control
+    # wiring, and reused here rather than constructed a second time.
     _routing_priority_store = ChannelPriorityStore(settings)
     _routing_svc = RoutingService(
         presence=_routing_presence,
@@ -989,6 +1011,25 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             "rbac_enabled_but_no_database_url",
             detail="RBAC_ENABLED is true but RBAC_DATABASE_URL is empty; /authz not mounted",
         )
+
+    # Task 9: the agent softphone's token-mint + registration endpoints.
+    # Mounted here, right after the RBAC block, so `authz_repo`/`authz_
+    # validator` reflect whatever that block actually built above -- the real
+    # pair when RBAC is on, still None otherwise. `build_softphone_router`
+    # already treats a None pair as "fall back to the shared-secret x-api-key
+    # check", same convention as every other router taking this pair, and its
+    # own routes 404 internally when `phone_agent_softphone_enabled` is off --
+    # so this is mounted unconditionally, like the routing config router above.
+    from chatbot.features.chat.phone.softphone_router import build_softphone_router
+
+    app.include_router(
+        build_softphone_router(
+            settings,
+            softphone_registry,
+            repo=authz_repo,
+            validator=authz_validator,
+        )
+    )
 
     @app.on_event("startup")
     async def _init_authz_db() -> None:

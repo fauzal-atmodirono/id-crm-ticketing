@@ -33,6 +33,7 @@ from chatbot.features.chat.case_state import CHATWOOT_CASE_STATE_ATTR, CaseState
 from chatbot.features.chat.handoff_bridge import HandoffBridge, SurveyEvent
 from chatbot.features.chat.models import AgentMessageEvent
 from chatbot.features.chat.nps import parse_nps, record_nps_agent_attribution, should_survey_nps
+from chatbot.features.chat.phone.agent_client_resolver import assignee_to_agent_id
 from chatbot.features.chat.phone.agent_token import agent_id_from_identity, agent_identity
 from chatbot.features.chat.phone.bridge import PhoneBridge
 from chatbot.features.chat.phone.gemini_live import LiveSession, connect_live
@@ -2009,7 +2010,17 @@ class ChatRouter:
                 "phone_dial_status_acw_non_numeric_ticket", call_sid=call_sid, ticket_id=ticket_id
             )
             return
-        answering_agent_id = await self._answering_agent_id(dial_call_sid)
+        # Whole-branch review fix (Important 5): a "who answered" lookup is
+        # only ever possible when the softphone is on -- a PSTN <Dial>'s `to`
+        # never starts with `client:`, so `_answering_agent_id` can only ever
+        # return None on a flag-off tenant anyway. Gating it here means a
+        # flag-off tenant makes NO extra Twilio `calls().fetch()` per
+        # completed handoff -- flag off must stay byte-identical to today.
+        answering_agent_id = (
+            await self._answering_agent_id(dial_call_sid)
+            if self.orchestrator._settings.phone_agent_softphone_enabled
+            else None
+        )
         try:
             if answering_agent_id is not None:
                 await self._acw_controller.enter(answering_agent_id)
@@ -2045,7 +2056,7 @@ class ChatRouter:
             return ""
         return f"{base.rstrip('/')}/webhooks/phone/dial-status"
 
-    async def _fanout_identities(self) -> list[str]:
+    async def _fanout_identities(self, exclude_agent_id: int | None = None) -> list[str]:
         """Agents to ring in stage 2: registered softphone AND `online` in
         Chatwoot.
 
@@ -2057,6 +2068,13 @@ class ChatRouter:
         with more than 10 nouns, and a TwiML error here drops a live call. The
         cap is LOGGED when it bites: silently truncating would read as "we rang
         everyone" when we did not.
+
+        Whole-branch review fix (Important 6): `exclude_agent_id` -- normally
+        the stage-1 assignee -- is dropped from the eligible set. Without it,
+        an agent who just declined (or let stage 1 ring out) gets rung again
+        immediately in stage 2, which is both a bad experience for them and
+        exactly what ``docs/testing/agent-softphone-verification.md``
+        scenario E asserts must not happen.
         """
         settings = self.orchestrator._settings
         if self._softphone_registry is None or self._presence_fetcher is None:
@@ -2068,7 +2086,11 @@ class ChatRouter:
             _log.error("phone_fanout_lookup_failed", error=str(e))
             return []
         eligible = sorted(
-            a.id for a in agents if a.id in registered and a.availability_status == "online"
+            a.id
+            for a in agents
+            if a.id in registered
+            and a.availability_status == "online"
+            and a.id != exclude_agent_id
         )
         cap = settings.phone_fanout_max_agents
         if len(eligible) > cap:
@@ -2077,6 +2099,37 @@ class ChatRouter:
             )
             eligible = eligible[:cap]
         return [agent_identity(i) for i in eligible]
+
+    async def _fanout_context(self, call_sid: str) -> tuple[str | None, int | None]:
+        """Resolve the two pieces of state the fan-out handler needs but
+        does not have -- the bridge that handled this call is long gone by
+        the time Twilio posts here, so this is a fresh lookup, not a read of
+        in-memory state, same as ``_answering_agent_id`` above.
+
+        Returns ``(ticket_id, assignee_agent_id)``, either or both ``None``
+        on any failure or "nothing found" -- fail-open, same convention as
+        every other lookup in this handler: a caller on a still-live call
+        must never be dropped because a CRM read came back empty or raised.
+
+        Whole-branch review fix (Important 2 + 6): ``ticket_id`` feeds the
+        `<Parameter conversation_id>` a fanned-out agent's browser needs to
+        show "who is calling" before they accept (stage 1 already does
+        this; stage 2 was the one case that needed it most, since a
+        fanned-out agent is by construction not the assignee and has no
+        prior context). ``assignee_agent_id`` is who stage 1 just rang, fed
+        to ``_fanout_identities`` so stage 2 does not ring them again.
+        """
+        session_id = f"phone-{call_sid}"
+        port = self.orchestrator._conversation_log_port
+        try:
+            ticket_id = await port.find_conversation_ticket(session_id)
+            if ticket_id is None:
+                return None, None
+            assignee = await port.get_conversation_assignee(ticket_id)
+        except Exception as e:
+            _log.error("phone_fanout_context_lookup_failed", call_sid=call_sid, error=str(e))
+            return None, None
+        return ticket_id, assignee_to_agent_id(assignee)
 
     async def phone_dial_status_fanout_webhook(
         self, request: Request, background_tasks: BackgroundTasks
@@ -2113,21 +2166,39 @@ class ChatRouter:
         if params.get("DialCallStatus", "") == "completed":
             return await self.phone_dial_status_webhook(request, background_tasks)
 
-        identities = await self._fanout_identities()
+        call_sid = params.get("CallSid", "")
+        ticket_id, assignee_agent_id = await self._fanout_context(call_sid)
+        identities = await self._fanout_identities(exclude_agent_id=assignee_agent_id)
         if not identities:
-            _log.info("phone_fanout_nobody_available", call_sid=params.get("CallSid", ""))
+            _log.info("phone_fanout_nobody_available", call_sid=call_sid)
+            return await self.phone_dial_status_webhook(request, background_tasks)
+
+        # Review fix (Important 3): PhoneBridge._attempt_transfer already
+        # refuses to dial with a blank action url; the fan-out handler must
+        # too, rather than emitting <Dial action=""> -- which Twilio
+        # resolves relative to THIS request's own URL, i.e. an unanswered
+        # fan-out would silently re-POST to this same handler.
+        action_url = self._dial_status_action_url()
+        if not action_url:
+            _log.warning("phone_fanout_no_action_url_configured", call_sid=call_sid)
             return await self.phone_dial_status_webhook(request, background_tasks)
 
         _log.info(
             "phone_fanout_dialing",
-            call_sid=params.get("CallSid", ""),
+            call_sid=call_sid,
             agents=len(identities),
         )
+        # Review fix (Important 2): conversation_id is the one piece of
+        # stage-1 context this stateless handler can actually recover --
+        # the AI's reason/summary are bridge state and genuinely gone by
+        # the time Twilio posts here.
+        parameters = {"conversation_id": ticket_id} if ticket_id else None
         return Response(
             content=fanout_twiml(
                 identities,
-                self._dial_status_action_url(),
+                action_url,
                 settings.phone_fanout_ring_timeout_seconds,
+                parameters,
             ),
             media_type="application/xml",
         )

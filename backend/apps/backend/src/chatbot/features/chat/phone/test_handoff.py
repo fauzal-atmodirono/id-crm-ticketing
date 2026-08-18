@@ -364,6 +364,10 @@ class _FakeLog:
     def __init__(self) -> None:
         self.working_hours: dict[str, Any] | None = None
         self.tags: list[tuple[str, str]] = []
+        # Whole-branch review fix (Important 2/6): the fan-out handler's
+        # context lookup (_fanout_context) reads this too. None by default,
+        # same as a conversation with no assignee.
+        self.assignee: str | None = None
 
     async def ensure_conversation_ticket(self, *a: Any, **k: Any) -> str:
         return "T-1"
@@ -402,6 +406,9 @@ class _FakeLog:
 
     async def get_inbox_working_hours(self, inbox_id: int) -> dict[str, Any] | None:
         return self.working_hours
+
+    async def get_conversation_assignee(self, ticket_id: str) -> str | None:
+        return self.assignee
 
 
 class _FakeCalls:
@@ -1092,15 +1099,14 @@ async def test_acw_disabled_queues_nothing_on_a_completed_call() -> None:
 # --- Task 10: ACW attributed to whoever ACTUALLY answered -------------------
 
 
-@pytest.fixture
-def chat_router_acw() -> tuple[ChatRouter, AsyncMock, AsyncMock]:
+def _chat_router_acw(**settings_overrides: Any) -> tuple[ChatRouter, AsyncMock, AsyncMock]:
     """Same router/settings shape as the ACW tests above, but with AsyncMock
     `ACWController`/`CallControl` collaborators so `_enter_acw_best_effort`
     can be driven directly without a real Firestore-backed ACWController or a
     real Twilio call."""
     log = _DialLog()
     log.found = "42"
-    settings = _acw_settings()
+    settings = _acw_settings(**settings_overrides)
     acw = AsyncMock()
     call_control = AsyncMock()
     router = ChatRouter(
@@ -1111,18 +1117,51 @@ def chat_router_acw() -> tuple[ChatRouter, AsyncMock, AsyncMock]:
     return router, acw, call_control
 
 
+@pytest.fixture
+def chat_router_acw() -> tuple[ChatRouter, AsyncMock, AsyncMock]:
+    return _chat_router_acw()
+
+
+@pytest.fixture
+def chat_router_acw_softphone_on() -> tuple[ChatRouter, AsyncMock, AsyncMock]:
+    """Same as `chat_router_acw`, with the softphone flag on. A `<Client>`
+    winning `to` (review fix, Important 5) is only reachable at all when the
+    softphone is on -- a PSTN `<Number>` dial's `to` never starts with
+    `client:` -- so the one test that exercises that path needs the flag."""
+    return _chat_router_acw(phone_agent_softphone_enabled=True)
+
+
 async def test_acw_goes_to_the_agent_who_answered_not_the_assignee(
-    chat_router_acw: tuple[ChatRouter, AsyncMock, AsyncMock],
+    chat_router_acw_softphone_on: tuple[ChatRouter, AsyncMock, AsyncMock],
 ) -> None:
     """The defect stage-2 fan-out introduces: the assignee and the answerer
     are routinely different people once we ring everyone."""
-    router, acw, call_control = chat_router_acw
+    router, acw, call_control = chat_router_acw_softphone_on
     call_control.fetch_call_to.return_value = "client:agent_29"
 
     await router._enter_acw_best_effort("CA123", dial_call_sid="CA-child")
 
     acw.enter.assert_awaited_once_with(29)
     acw.start_after_call.assert_not_awaited()
+
+
+async def test_acw_answering_lookup_is_gated_on_the_softphone_flag(
+    chat_router_acw: tuple[ChatRouter, AsyncMock, AsyncMock],
+) -> None:
+    """Whole-branch review fix (Important 5): flag off must stay
+    byte-identical to today -- no extra Twilio `calls().fetch()` per
+    completed handoff. `chat_router_acw` (unlike the `_softphone_on`
+    fixture above) leaves `phone_agent_softphone_enabled` at its default
+    False, so even with a winning `<Client>` leg answering, the lookup
+    must never fire and today's assignee-based fallback must run instead."""
+    router, acw, call_control = chat_router_acw
+    call_control.fetch_call_to.return_value = "client:agent_29"
+
+    await router._enter_acw_best_effort("CA123", dial_call_sid="CA-child")
+
+    call_control.fetch_call_to.assert_not_awaited()
+    acw.enter.assert_not_awaited()
+    acw.start_after_call.assert_awaited_once()
 
 
 async def test_acw_falls_back_to_the_assignee_when_a_number_answered(
@@ -1320,12 +1359,14 @@ async def test_fanout_with_nobody_available_falls_through_to_the_apology(
 # --- (and fixed) during Task 8's own TDD but never committed as a test. ----
 
 
-def _fanout_app_client(settings: Settings, registry: AsyncMock, presence: AsyncMock) -> TestClient:
+def _fanout_app_client(
+    settings: Settings, registry: AsyncMock, presence: AsyncMock, log: _FakeLog | None = None
+) -> TestClient:
     """Same shape as `_softphone_app_client`, but with real
     softphone_registry/presence_fetcher collaborators wired through
     `build_chat_router` -- needed so `_fanout_identities()` can actually
     return agents to dial for test (a) below."""
-    orchestrator = _orchestrator(_DialLog(), settings)
+    orchestrator = _orchestrator(log or _DialLog(), settings)
     app = create_app(settings)
     app.include_router(
         build_chat_router(orchestrator, softphone_registry=registry, presence_fetcher=presence)
@@ -1410,6 +1451,100 @@ def test_fanout_webhook_signed_nobody_available_delegates_without_401() -> None:
     assert res.status_code == 200
     assert res.status_code != 401
     assert "<Say " in res.text  # the stage-1 apology TwiML
+
+
+# --- Whole-branch review fix (Important 2, 3, 6) ----------------------------
+
+
+async def test_fanout_identities_excludes_the_assignee(
+    chat_router_softphone: tuple[ChatRouter, AsyncMock, AsyncMock],
+) -> None:
+    """Important 6: an agent who just declined (or let it ring out) in
+    stage 1 must not be rung again immediately in stage 2 -- see
+    docs/testing/agent-softphone-verification.md scenario E."""
+    router, registry, presence = chat_router_softphone
+    registry.registered_ids.return_value = {1, 2, 3}
+    presence.fetch_agents.return_value = [
+        _agent(1, "online"),
+        _agent(2, "online"),
+        _agent(3, "online"),
+    ]
+
+    identities = await router._fanout_identities(exclude_agent_id=2)
+
+    assert identities == ["agent_1", "agent_3"]
+
+
+def test_fanout_webhook_excludes_the_stage_one_assignee_and_carries_conversation_id() -> None:
+    """Important 2 + 6, end to end over a real signed HTTP request: the
+    stage-1 assignee (agent 2, resolved from the conversation Chatwoot
+    thinks this call belongs to) is dropped from the dialed identities, and
+    the ringing browsers get a `conversation_id` <Parameter> -- the one
+    piece of stage-1 context this stateless handler can actually recover."""
+    settings = _softphone_settings()
+    registry = AsyncMock()
+    registry.registered_ids.return_value = {1, 2}
+    presence = AsyncMock()
+    presence.fetch_agents.return_value = [_agent(1, "online"), _agent(2, "online")]
+    log = _DialLog()
+    log.found = "42"
+    log.assignee = "2"
+    client = _fanout_app_client(settings, registry, presence, log=log)
+    params = {"CallSid": "CA1", "DialCallStatus": "no-answer"}
+    url = f"{_BASE_URL}/webhooks/phone/dial-status/fanout"
+    sig = _sign(settings.twilio_auth_token, url, params)
+
+    res = client.post(
+        "/webhooks/phone/dial-status/fanout", data=params, headers={"X-Twilio-Signature": sig}
+    )
+
+    assert res.status_code == 200
+    assert "<Identity>agent_1</Identity>" in res.text
+    assert "<Identity>agent_2</Identity>" not in res.text  # the excluded assignee
+    assert 'name="conversation_id" value="42"' in res.text
+
+
+def test_fanout_webhook_with_no_action_url_falls_back_to_apology_instead_of_a_blank_dial() -> None:
+    """Important 3: PhoneBridge._attempt_transfer already refuses to dial
+    with a blank action url; the fan-out handler must too, rather than
+    emitting <Dial action=""> -- which Twilio resolves relative to THIS
+    request's own URL, i.e. an unanswered fan-out would silently re-POST to
+    this same handler."""
+    settings = Settings(
+        _env_file=None,
+        phone_transcript_live_enabled=True,
+        phone_handoff_enabled=True,
+        phone_agent_softphone_enabled=True,
+        twilio_auth_token="test_token",
+        twilio_account_sid="AC1",
+        # twilio_webhook_base_url left at its empty default -- see the test's
+        # own docstring.
+    )
+    registry = AsyncMock()
+    registry.registered_ids.return_value = {1}
+    presence = AsyncMock()
+    presence.fetch_agents.return_value = [_agent(1, "online")]
+    client = _fanout_app_client(settings, registry, presence)
+    params = {"CallSid": "CA1", "DialCallStatus": "no-answer"}
+    # No twilio_webhook_base_url -> verify_url falls back to str(request.url),
+    # same convention the non-delegating branch already uses. TestClient's
+    # default base_url is "http://testserver" -- same as every other test in
+    # this file that signs against the str(request.url) fallback.
+    sig = _sign(
+        settings.twilio_auth_token,
+        "http://testserver/webhooks/phone/dial-status/fanout",
+        params,
+    )
+
+    res = client.post(
+        "/webhooks/phone/dial-status/fanout",
+        data=params,
+        headers={"X-Twilio-Signature": sig},
+    )
+
+    assert res.status_code == 200
+    assert 'action=""' not in res.text
+    assert "<Say " in res.text  # the stage-1 apology TwiML, not a blank-action <Dial>
 
 
 def _agent(agent_id: int, status: str) -> Any:

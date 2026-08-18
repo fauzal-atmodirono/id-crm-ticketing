@@ -524,6 +524,33 @@ class Settings(BaseSettings):
     # handoff_target.py.
     phone_handoff_caller_id: str = ""
 
+    # --- In-CRM agent softphone (see docs/superpowers/specs/
+    # 2026-08-18-agent-softphone-design.md) -------------------------------
+    # Default off -> the chained resolver never returns a <Client> target and
+    # handoff behaviour is byte-identical to the PSTN hunt group above.
+    # DEPENDS ON phone_handoff_enabled: stage 1's <Dial action> is
+    # /webhooks/phone/dial-status, which router.py registers only when THAT
+    # flag is on -- see _phone_flag_dependencies below.
+    phone_agent_softphone_enabled: bool = False
+    # Agent Voice token TTL. Short on purpose: unlike the caller-side token
+    # this one carries incoming_allow=True, so a leak lets the holder RECEIVE
+    # transferred customer calls. The browser re-mints on tokenWillExpire.
+    phone_agent_token_ttl_seconds: int = 300
+    # How long a softphone registration stays valid without a heartbeat. The
+    # browser beats every 30s, so 90 tolerates three misses. Advisory only --
+    # a stale entry costs at most one wasted ring, never a stranded caller.
+    phone_softphone_registration_ttl_seconds: int = 90
+    # <Dial timeout> for stage 1 (the conversation's assigned agent alone).
+    # Shorter than the fan-out: one person who may be away should not hold a
+    # live caller for long before everyone else gets a chance.
+    phone_agent_ring_timeout_seconds: int = 20
+    # <Dial timeout> for stage 2 (fan-out to everyone available).
+    phone_fanout_ring_timeout_seconds: int = 25
+    # Twilio allows at most 10 nouns in a single <Dial>. Exceeding it is a
+    # TwiML error that drops a live call, so this is a hard cap, not a
+    # preference.
+    phone_fanout_max_agents: int = 10
+
     # Frontend CORS — origins of the Vue dev/prod app (comma-separated in env).
     # Defaults cover Vite's first few fallback ports (5173-5180) so a stale dev
     # server on 5173 doesn't break a fresh one bound to 5174+.
@@ -1376,6 +1403,15 @@ class Settings(BaseSettings):
                 "start they can fire before it exists and their write (recording "
                 "attachment, unanswered_handoff tag) is silently lost -- Twilio does "
                 "not retry a 200. Enable PHONE_TRANSCRIPT_LIVE_ENABLED first."
+            )
+        if self.phone_agent_softphone_enabled and not self.phone_handoff_enabled:
+            raise ValueError(
+                "PHONE_AGENT_SOFTPHONE_ENABLED requires PHONE_HANDOFF_ENABLED=true. "
+                "Stage 1 dials with action=/webhooks/phone/dial-status, and router.py "
+                "registers that route only when PHONE_HANDOFF_ENABLED is on -- so with "
+                "handoff off Twilio would POST the dial outcome to a 404 on a call that "
+                "is still live, and the caller would be dropped with no apology and no "
+                "unanswered_handoff tag."
             )
         return self
 

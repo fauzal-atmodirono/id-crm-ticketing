@@ -69,3 +69,51 @@ def require_permission(
             raise HTTPException(status_code=403, detail=f"Missing permission: {permission}")
 
     return _check
+
+
+def require_permission_with_identity(
+    permission: str,
+    *,
+    repo: AuthzRepository | None = None,
+    validator: TokenValidator | None = None,
+    settings: Settings,
+):
+    """Like `require_permission`, but RETURNS the resolved Chatwoot user id
+    and never honours the shared-secret path.
+
+    That second difference is the point, not an oversight. `require_permission`
+    falls back to `_shared_secret_check` when `rbac_enabled` is off, which is
+    correct for endpoints that merely need to be *authorised* -- but a shared
+    secret identifies a service, not a person, and the only caller of this
+    dependency mints a credential in a specific person's name. With RBAC off
+    there is no person, so there is no token to mint: 401.
+    """
+
+    async def _check(
+        x_api_key: str | None = Header(default=None),  # noqa: ARG001 -- shared secret deliberately ignored
+        x_chatwoot_access_token: str | None = Header(default=None),
+        x_chatwoot_client: str | None = Header(default=None),
+        x_chatwoot_uid: str | None = Header(default=None),
+    ) -> int:
+        if (
+            not settings.rbac_enabled
+            or not x_chatwoot_access_token
+            or not x_chatwoot_client
+            or not x_chatwoot_uid
+            or repo is None
+            or validator is None
+        ):
+            raise HTTPException(status_code=401, detail="Chatwoot session required")
+
+        user_id = await validator.resolve_user_id(
+            x_chatwoot_access_token, x_chatwoot_client, x_chatwoot_uid
+        )
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+        perms = await repo.permissions_for_user(user_id)
+        if permission not in perms:
+            raise HTTPException(status_code=403, detail=f"Missing permission: {permission}")
+        return user_id
+
+    return _check

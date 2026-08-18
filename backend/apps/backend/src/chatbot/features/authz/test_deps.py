@@ -128,7 +128,9 @@ async def test_rbac_enabled_invalid_token_denies(tmp_path, respx_mock):
     await seed_defaults(repo)
 
     respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
-        return_value=httpx.Response(401, json={"success": False, "errors": ["Invalid login credentials"]})
+        return_value=httpx.Response(
+            401, json={"success": False, "errors": ["Invalid login credentials"]}
+        )
     )
     validator = TokenValidator(settings)
     dep = require_permission("sla.manage", repo=repo, validator=validator, settings=settings)
@@ -143,3 +145,55 @@ async def test_rbac_enabled_invalid_token_denies(tmp_path, respx_mock):
         },
     )
     assert res.status_code == 401
+
+
+async def test_identity_dependency_refuses_shared_secret_even_with_rbac_off():
+    """require_permission falls back to a shared-secret check when RBAC is
+    off. This variant must NOT: a shared secret identifies a service, not a
+    person, and the token it guards is minted FOR a specific person."""
+    import pytest  # noqa: PLC0415
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from chatbot.features.authz.deps import require_permission_with_identity  # noqa: PLC0415
+    from chatbot.platform.config import get_settings  # noqa: PLC0415
+
+    settings = get_settings().model_copy(
+        update={"rbac_enabled": False, "proton_backend_key": "shared-secret"}
+    )
+    check = require_permission_with_identity("voice.answer", settings=settings)
+    with pytest.raises(HTTPException) as exc:
+        await check(
+            x_api_key="shared-secret",
+            x_chatwoot_access_token=None,
+            x_chatwoot_client=None,
+            x_chatwoot_uid=None,
+        )
+    assert exc.value.status_code == 401
+
+
+async def test_identity_dependency_returns_the_resolved_user_id():
+    from unittest.mock import AsyncMock  # noqa: PLC0415
+
+    from chatbot.features.authz.deps import require_permission_with_identity  # noqa: PLC0415
+    from chatbot.platform.config import get_settings  # noqa: PLC0415
+
+    validator = AsyncMock()
+    validator.resolve_user_id.return_value = 17
+    repo = AsyncMock()
+    repo.permissions_for_user.return_value = {"voice.answer"}
+
+    check = require_permission_with_identity(
+        "voice.answer",
+        repo=repo,
+        validator=validator,
+        settings=get_settings().model_copy(update={"rbac_enabled": True}),
+    )
+    assert (
+        await check(
+            x_api_key=None,
+            x_chatwoot_access_token="tok",
+            x_chatwoot_client="cli",
+            x_chatwoot_uid="a@b.c",
+        )
+        == 17
+    )

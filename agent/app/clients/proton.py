@@ -528,6 +528,7 @@ class ProtonConfigClient:
         department: str | None,
         dealer: str | None,
         channel_type: str | None = None,
+        customer_subject: str | None = None,
     ) -> bool:
         """Ask the backend to send the EM-7 two-thread email escalation for a
         natively-escalated Email-channel conversation (POST
@@ -553,6 +554,9 @@ class ProtonConfigClient:
                     # (features/chat/escalation_ack.py). Sent as the raw
                     # channel so the mapping lives in exactly one service.
                     "channel_type": channel_type,
+                    # Only the customer leg uses this; the PIC and dealer legs
+                    # keep `title`. See sync._maybe_notify_escalation.
+                    "customer_subject": customer_subject,
                 },
             )
             response.raise_for_status()

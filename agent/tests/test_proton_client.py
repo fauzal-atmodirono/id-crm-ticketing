@@ -702,6 +702,9 @@ async def test_notify_email_escalation_posts_payload():
         # None here means "caller did not say", which the backend reads as
         # Email -- the only channel that reached this endpoint before P2.
         "channel_type": None,
+        # None means "caller did not say", which the backend reads as the
+        # pre-2026-08-19 `Update on your case: {title}` subject.
+        "customer_subject": None,
     }
 
 

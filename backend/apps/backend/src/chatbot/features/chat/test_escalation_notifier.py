@@ -676,3 +676,78 @@ async def test_dealer_forward_works_without_a_store_configured() -> None:
 
     assert len(sent) == 1
     assert sent[0]["to"] == ["legacy@dealer.example"]
+
+
+# ---------------------------------------------------------------------------
+# The customer acknowledgement's subject (2026-08-19)
+# ---------------------------------------------------------------------------
+
+_REAL_FIRST_EMAIL = (
+    "Hi, I bought an e.MAS 7 from Proton e.MAS Petaling Jaya last month, "
+    "plate VAB 3271. The home charger"
+)
+
+
+async def test_customer_ack_subject_never_carries_the_message_body() -> None:
+    """A live run on 2026-08-19 mailed the customer their own first email,
+    cut mid-word, as the subject. The internal legs want that text; the
+    customer must never be quoted back at himself."""
+    notifier, sent = _notifier(pic=None, settings_kw={"email_escalation_ack_enabled": True})
+
+    await notifier.notify_escalation(
+        conv_id="42",
+        title=_REAL_FIRST_EMAIL,
+        body="b",
+        department=None,
+        dealer=None,
+        customer_email="alex@customer.example",
+        customer_subject="Update on your case (#42)",
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["subject"] == "Update on your case (#42)"
+    assert "e.MAS 7" not in sent[0]["subject"]
+    assert sent[0]["cc"] == []
+
+
+async def test_customer_ack_subject_falls_back_to_the_old_shape_when_absent() -> None:
+    """An agent service that predates this change sends no customer_subject;
+    the mail it produces must stay byte-identical."""
+    notifier, sent = _notifier(pic=None, settings_kw={"email_escalation_ack_enabled": True})
+
+    await notifier.notify_escalation(
+        conv_id="42",
+        title="Late delivery",
+        body="b",
+        department=None,
+        dealer=None,
+        customer_email="alex@customer.example",
+    )
+
+    assert sent[0]["subject"] == "Update on your case: Late delivery"
+
+
+async def test_internal_legs_keep_the_descriptive_title() -> None:
+    """The PIC leg is triaged from an inbox, so its subject keeps the case
+    text and the [CASE-n] correlation tag -- customer_subject must not leak
+    into it."""
+    notifier, sent = _notifier(
+        dealer_map={"kl_pj": ["dealer@kl.example"]},
+        settings_kw={"email_escalation_ack_enabled": True},
+    )
+
+    await notifier.notify_escalation(
+        conv_id="42",
+        title=_REAL_FIRST_EMAIL,
+        body="b",
+        department="apps",
+        dealer="kl_pj",
+        customer_email="alex@customer.example",
+        customer_subject="Update on your case (#42)",
+    )
+
+    internal = [m for m in sent if m["to"] != ["alex@customer.example"]]
+    assert len(internal) == 2
+    for message in internal:
+        assert "e.MAS 7" in message["subject"]
+        assert "Update on your case (#42)" != message["subject"]

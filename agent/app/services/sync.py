@@ -292,6 +292,12 @@ async def _maybe_notify_escalation(conversation_id: int, labels: list[str]) -> N
         department=department,
         dealer=dealer,
         channel_type=channel_type,
+        # `title` is the customer's own first message, truncated by
+        # `_single_line` to fit a Subject header. That is what a PIC wants to
+        # see in a crowded inbox and the last thing the customer should
+        # receive: a 2026-08-19 live run mailed him back his own words, cut
+        # mid-word at 100 characters. The two legs get two subjects.
+        customer_subject=f"Update on your case (#{conversation_id})",
     )
     if not sent:
         # Deliberately notify-then-stamp, and only on a confirmed send.

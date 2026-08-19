@@ -64,6 +64,11 @@ class _NotifyIn(BaseModel):
     # channel table lives in exactly one place. Absent (a pre-P2 agent) is
     # treated as Email, which is the only channel that used to reach here.
     channel_type: str | None = None
+    # The customer leg's subject. `title` carries the customer's own first
+    # message, which is right for the PIC/dealer inboxes and wrong for the
+    # customer -- see EscalationNotifier.notify_escalation. Absent keeps the
+    # pre-2026-08-19 subject, so an older agent service is unaffected.
+    customer_subject: str | None = None
 
 
 class _AcknowledgeIn(BaseModel):
@@ -132,6 +137,7 @@ def build_escalation_router(
             dealer=payload.dealer,
             customer_email=customer_email,
             ack_transport=transport,
+            customer_subject=payload.customer_subject,
         )
         return {"status": "ok"}
 

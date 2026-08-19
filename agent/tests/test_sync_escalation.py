@@ -177,6 +177,45 @@ async def test_maybe_escalate_notifies_email_channel_conversation(monkeypatch):
 
 
 @respx.mock
+async def test_maybe_escalate_sends_a_clean_customer_subject(monkeypatch):
+    """The customer leg must not be sent the customer's own words back.
+
+    `title` is the first ~100 characters of the customer's first message --
+    right for the PIC/dealer inboxes, wrong for the customer, who on
+    2026-08-19 received "Update on your case: Hi, I bought an e.MAS 7 ...
+    The home charger" with the sentence cut mid-word.
+    """
+    monkeypatch.setattr(get_settings(), "email_escalation_enabled", True)
+    monkeypatch.setattr(get_settings(), "proton_backend_url", "http://proton-backend:8080")
+    monkeypatch.setattr(get_settings(), "proton_backend_key", "k")
+    get_proton_config_client.cache_clear()
+
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9").mock(
+        return_value=httpx.Response(200, json={"id": 9, "inbox_id": 5})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/inboxes/5").mock(
+        return_value=httpx.Response(200, json={"id": 5, "channel_type": "Channel::Email"})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    notify_route = respx.post(f"{PROTON}/escalation/notify").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/9/custom_attributes").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    await sync.maybe_escalate({"id": 9, "labels": ["escalate", "dept_apps"]})
+
+    sent = json.loads(notify_route.calls[0].request.content)
+    assert sent["customer_subject"] == "Update on your case (#9)"
+    # ...while the internal legs keep the descriptive title.
+    assert sent["title"] == "Hi, my invoice is wrong"
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
 async def test_maybe_escalate_notify_includes_real_case_content(monkeypatch):
     """EM-7 fix: the notify title/body must carry real case content from the
     conversation transcript, not the generic 'was escalated by an agent'

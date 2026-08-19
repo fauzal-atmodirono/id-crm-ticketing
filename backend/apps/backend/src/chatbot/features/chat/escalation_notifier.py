@@ -382,6 +382,7 @@ class EscalationNotifier:
         dealer: str | None,
         customer_email: str | None,
         ack_transport: str = "email",
+        customer_subject: str | None = None,
     ) -> None:
         """Escalation fan-out (EM-7) for a conversation a human labelled
         `escalate` -- reached only via the /escalation/notify endpoint, called
@@ -396,11 +397,23 @@ class EscalationNotifier:
         (an outgoing message in the thread) or ``none`` (voice: the caller has
         already been spoken to). The PIC and dealer legs never depended on the
         channel and are unaffected by it.
+
+        ``customer_subject`` is the customer leg's subject and ONLY the
+        customer leg's. ``title`` is the first ~100 characters of the
+        customer's own first message: exactly what a PIC triaging an inbox
+        wants to see, and exactly what the customer must not be sent -- a
+        2026-08-19 live run mailed him his own words cut mid-word. Absent
+        (an agent service that predates this) falls back to the old
+        ``f"Update on your case: {title}"`` so that deploy stays
+        byte-identical.
         """
         if self._settings.email_escalation_ack_enabled:
             if ack_transport == "email" and customer_email:
                 ok, error = await self._send_customer_ack(
-                    customer_email, conv_id=conv_id, title=title
+                    customer_email,
+                    conv_id=conv_id,
+                    title=title,
+                    customer_subject=customer_subject,
                 )
                 await self._record_delivery(
                     conv_id,
@@ -483,7 +496,12 @@ class EscalationNotifier:
         return self._settings.email_escalation_ack_template
 
     async def _send_customer_ack(
-        self, to_email: str, *, conv_id: str, title: str
+        self,
+        to_email: str,
+        *,
+        conv_id: str,
+        title: str,
+        customer_subject: str | None = None,
     ) -> tuple[bool, str]:
         # No _case_tag here, deliberately: the customer thread must stay
         # clean -- only the invisible Reply-To carries the correlation token.
@@ -491,7 +509,7 @@ class EscalationNotifier:
             self._email_sender.send(
                 to=[to_email],
                 cc=[],
-                subject=f"Update on your case: {title}",
+                subject=customer_subject or f"Update on your case: {title}",
                 body=await self._resolve_ack_template(),
                 attachments=[],
                 reply_to=self._reply_to_for(conv_id),

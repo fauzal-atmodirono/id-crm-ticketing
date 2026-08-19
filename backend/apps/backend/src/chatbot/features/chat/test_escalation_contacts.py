@@ -116,3 +116,57 @@ def test_store_failure_degrades_to_partial_list_not_500() -> None:
     by_email = {c["email"]: c for c in res.json()["contacts"]}
     assert "a@test" in by_email
     assert "b@test" in by_email
+
+
+class _LadderDealerStore:
+    async def list_all(self) -> list[DealerRecord]:
+        return [
+            DealerRecord(
+                dealer="petaling_jaya",
+                emails=["desk@pj.my"],
+                cc_emails=["ops@pj.my"],
+                contacts={
+                    "cre": "cre@pj.my",
+                    "sales_aftersales_mgr": "sam@pj.my",
+                    "principal": "dp@pj.my",
+                    "owner": "owner@pj.my",
+                },
+                region="central",
+            )
+        ]
+
+
+def test_the_ladder_roles_are_on_the_allowlist() -> None:
+    """Steps 3 and 4 mail a Dealer Principal and a Dealer Owner who may appear
+    NOWHERE in the flat group. If their addresses are missing here, their
+    replies are refused as unknown senders -- so the ladder never learns the
+    dealer engaged and keeps climbing to the next person, which is precisely
+    the duplicate-escalation failure it exists to avoid."""
+    res = _client(dealer_store=_LadderDealerStore()).get(
+        "/escalation/contacts", headers={"x-api-key": "secret"}
+    )
+
+    by_email = {c["email"]: c for c in res.json()["contacts"]}
+    for address in ("cre@pj.my", "sam@pj.my", "dp@pj.my", "owner@pj.my"):
+        assert address in by_email, f"{address} can escalate but cannot reply"
+        assert by_email[address]["kind"] == "dealer"
+
+
+def test_the_dealer_cc_list_is_on_the_allowlist_too() -> None:
+    """A CC'd manager who hits reply-all is answering the escalation."""
+    res = _client(dealer_store=_LadderDealerStore()).get(
+        "/escalation/contacts", headers={"x-api-key": "secret"}
+    )
+
+    assert "ops@pj.my" in {c["email"] for c in res.json()["contacts"]}
+
+
+def test_the_role_name_travels_with_the_address() -> None:
+    """The agent writes this name onto the private note, so 'Reply from
+    Dealer Principal' beats 'Reply from petaling_jaya'."""
+    res = _client(dealer_store=_LadderDealerStore()).get(
+        "/escalation/contacts", headers={"x-api-key": "secret"}
+    )
+
+    by_email = {c["email"]: c for c in res.json()["contacts"]}
+    assert "principal" in by_email["dp@pj.my"]["name"].lower()

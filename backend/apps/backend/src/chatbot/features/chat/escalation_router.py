@@ -188,6 +188,19 @@ def build_escalation_router(
             for rec in dealers:
                 for member in rec.emails:
                     _add(member, rec.dealer, "dealer")
+                # The ladder's named roles. Steps 3 and 4 mail a Dealer
+                # Principal and a Dealer Owner who may appear NOWHERE in the
+                # flat group above -- that is the whole point of the roles.
+                # Leaving them off this list means their replies are refused
+                # as unknown senders, so the ladder never learns the dealer
+                # engaged and climbs to the next person anyway: exactly the
+                # duplicate escalation it exists to prevent.
+                for role, address in (rec.contacts or {}).items():
+                    _add(address, f"{rec.dealer} ({role.replace('_', ' ')})", "dealer")
+                # A CC'd manager who hits reply-all is answering the
+                # escalation too.
+                for cc in rec.cc_emails:
+                    _add(cc, f"{rec.dealer} (CC)", "dealer")
 
         return {"contacts": out}
 

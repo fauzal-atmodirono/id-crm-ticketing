@@ -117,3 +117,56 @@ def test_send_omits_reply_to_by_default() -> None:
     sender = SmtpEmailSender(_settings(), smtp_factory=factory)
     sender.send(to=["dealer@test"], cc=[], subject="hello", body="body", attachments=[])
     assert sent[0]["Reply-To"] is None
+
+
+# ---------------------------------------------------------------------------
+# Threading the customer acknowledgement onto their own mail (2026-08-19)
+# ---------------------------------------------------------------------------
+
+
+def test_in_reply_to_sets_both_threading_headers() -> None:
+    """Gmail and Outlook thread on References; In-Reply-To alone is honoured
+    inconsistently, so both go out."""
+    sent, factory = _capture_smtp()
+    sender = SmtpEmailSender(_settings(), smtp_factory=factory)
+
+    sender.send(
+        to=["alex@customer.example"],
+        cc=[],
+        subject="Update on your case (#42)",
+        body="b",
+        attachments=[],
+        in_reply_to="<CAB5fbLT@mail.gmail.com>",
+    )
+
+    assert sent[0]["In-Reply-To"] == "<CAB5fbLT@mail.gmail.com>"
+    assert sent[0]["References"] == "<CAB5fbLT@mail.gmail.com>"
+
+
+def test_a_bare_message_id_gets_its_angle_brackets() -> None:
+    """Chatwoot stores source_id bare, and an unbracketed msg-id is not a
+    valid header -- so the sender adds them rather than every caller."""
+    sent, factory = _capture_smtp()
+    sender = SmtpEmailSender(_settings(), smtp_factory=factory)
+
+    sender.send(
+        to=["alex@customer.example"],
+        cc=[],
+        subject="s",
+        body="b",
+        attachments=[],
+        in_reply_to="CAB5fbLT@mail.gmail.com",
+    )
+
+    assert sent[0]["In-Reply-To"] == "<CAB5fbLT@mail.gmail.com>"
+
+
+def test_no_in_reply_to_sets_neither_header() -> None:
+    """Every existing caller must keep producing byte-identical mail."""
+    sent, factory = _capture_smtp()
+    sender = SmtpEmailSender(_settings(), smtp_factory=factory)
+
+    sender.send(to=["a@b.c"], cc=[], subject="s", body="b", attachments=[])
+
+    assert sent[0]["In-Reply-To"] is None
+    assert sent[0]["References"] is None

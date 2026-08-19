@@ -705,6 +705,9 @@ async def test_notify_email_escalation_posts_payload():
         # None means "caller did not say", which the backend reads as the
         # pre-2026-08-19 `Update on your case: {title}` subject.
         "customer_subject": None,
+        # None means the acknowledgement is not threaded onto the customer's
+        # own mail -- what every non-email inbox produces.
+        "customer_in_reply_to": None,
     }
 
 

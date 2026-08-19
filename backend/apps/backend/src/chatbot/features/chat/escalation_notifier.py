@@ -383,6 +383,7 @@ class EscalationNotifier:
         customer_email: str | None,
         ack_transport: str = "email",
         customer_subject: str | None = None,
+        customer_in_reply_to: str | None = None,
     ) -> None:
         """Escalation fan-out (EM-7) for a conversation a human labelled
         `escalate` -- reached only via the /escalation/notify endpoint, called
@@ -397,6 +398,11 @@ class EscalationNotifier:
         (an outgoing message in the thread) or ``none`` (voice: the caller has
         already been spoken to). The PIC and dealer legs never depended on the
         channel and are unaffected by it.
+
+        ``customer_in_reply_to`` threads the acknowledgement onto the mail the
+        customer actually sent. Like ``customer_subject`` it is the customer
+        leg's alone: the PIC and dealer legs are new threads to different
+        people, and threading them onto the customer's mail would be wrong.
 
         ``customer_subject`` is the customer leg's subject and ONLY the
         customer leg's. ``title`` is the first ~100 characters of the
@@ -414,6 +420,7 @@ class EscalationNotifier:
                     conv_id=conv_id,
                     title=title,
                     customer_subject=customer_subject,
+                    in_reply_to=customer_in_reply_to,
                 )
                 await self._record_delivery(
                     conv_id,
@@ -502,6 +509,7 @@ class EscalationNotifier:
         conv_id: str,
         title: str,
         customer_subject: str | None = None,
+        in_reply_to: str | None = None,
     ) -> tuple[bool, str]:
         # No _case_tag here, deliberately: the customer thread must stay
         # clean -- only the invisible Reply-To carries the correlation token.
@@ -513,6 +521,7 @@ class EscalationNotifier:
                 body=await self._resolve_ack_template(),
                 attachments=[],
                 reply_to=self._reply_to_for(conv_id),
+                in_reply_to=in_reply_to,
             )
             return True, ""
         except Exception as exc:

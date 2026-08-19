@@ -376,8 +376,18 @@ def _notifier(
     sent_emails: list[dict[str, Any]] = []
 
     class _FakeEmailSender:
-        def send(self, to, cc, subject, body, attachments, *, reply_to=None) -> None:
-            sent_emails.append({"to": to, "cc": cc, "subject": subject, "body": body})
+        def send(
+            self, to, cc, subject, body, attachments, *, reply_to=None, in_reply_to=None
+        ) -> None:
+            sent_emails.append(
+                {
+                    "to": to,
+                    "cc": cc,
+                    "subject": subject,
+                    "body": body,
+                    "in_reply_to": in_reply_to,
+                }
+            )
 
     # notify_escalation (what every caller of this helper
     # exercises) never calls _write_case_state -- only notify() does -- so
@@ -751,3 +761,34 @@ async def test_internal_legs_keep_the_descriptive_title() -> None:
     for message in internal:
         assert "e.MAS 7" in message["subject"]
         assert "Update on your case (#42)" != message["subject"]
+
+
+async def test_only_the_customer_leg_is_threaded() -> None:
+    """The PIC and dealer legs are new threads to different people; threading
+    them onto the customer's mail would be wrong."""
+    captured: list[dict[str, Any]] = []
+
+    class _RecordingSender:
+        def send(self, to, cc, subject, body, attachments, *, reply_to=None, in_reply_to=None):
+            captured.append({"to": to, "in_reply_to": in_reply_to})
+
+    notifier, _ = _notifier(
+        dealer_map={"kl_pj": ["dealer@kl.example"]},
+        email_sender=_RecordingSender(),
+        settings_kw={"email_escalation_ack_enabled": True},
+    )
+
+    await notifier.notify_escalation(
+        conv_id="42",
+        title="t",
+        body="b",
+        department="apps",
+        dealer="kl_pj",
+        customer_email="alex@customer.example",
+        customer_in_reply_to="CAB5fbLT@mail.gmail.com",
+    )
+
+    by_recipient = {tuple(c["to"]): c["in_reply_to"] for c in captured}
+    assert by_recipient[("alex@customer.example",)] == "CAB5fbLT@mail.gmail.com"
+    assert by_recipient[("alice@proton.my",)] is None
+    assert by_recipient[("dealer@kl.example",)] is None

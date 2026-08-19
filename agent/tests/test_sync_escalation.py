@@ -543,3 +543,75 @@ async def test_maybe_escalate_skips_notify_when_flag_off(monkeypatch):
     await sync.maybe_escalate({"id": 9, "labels": ["escalate"]})
 
     assert not conv_route.called
+
+
+@respx.mock
+async def test_maybe_escalate_threads_the_ack_onto_the_customers_own_mail(monkeypatch):
+    """Chatwoot keeps the inbound mail's RFC Message-ID on the message's
+    `source_id` (verified against chatwoot_proton.messages: bare ids like
+    `CAB5fbLT...@mail.gmail.com`). Passing it makes the acknowledgement land
+    in the customer's thread instead of arriving as a new one."""
+    monkeypatch.setattr(get_settings(), "email_escalation_enabled", True)
+    monkeypatch.setattr(get_settings(), "proton_backend_url", "http://proton-backend:8080")
+    monkeypatch.setattr(get_settings(), "proton_backend_key", "k")
+    get_proton_config_client.cache_clear()
+
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9").mock(
+        return_value=httpx.Response(200, json={"id": 9, "inbox_id": 5})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/inboxes/5").mock(
+        return_value=httpx.Response(200, json={"id": 5, "channel_type": "Channel::Email"})
+    )
+    threaded = {
+        "payload": [
+            {**MESSAGES_RESPONSE["payload"][0], "source_id": "CAB5fbLT@mail.gmail.com"},
+            *MESSAGES_RESPONSE["payload"][1:],
+        ]
+    }
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9/messages").mock(
+        return_value=httpx.Response(200, json=threaded)
+    )
+    notify_route = respx.post(f"{PROTON}/escalation/notify").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/9/custom_attributes").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    await sync.maybe_escalate({"id": 9, "labels": ["escalate", "dept_apps"]})
+
+    sent = json.loads(notify_route.calls[0].request.content)
+    assert sent["customer_in_reply_to"] == "CAB5fbLT@mail.gmail.com"
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_a_message_without_a_source_id_simply_is_not_threaded(monkeypatch):
+    """A non-email inbox has no Message-ID. That means unthreaded mail, never
+    a failed escalation."""
+    monkeypatch.setattr(get_settings(), "email_escalation_enabled", True)
+    monkeypatch.setattr(get_settings(), "proton_backend_url", "http://proton-backend:8080")
+    monkeypatch.setattr(get_settings(), "proton_backend_key", "k")
+    get_proton_config_client.cache_clear()
+
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9").mock(
+        return_value=httpx.Response(200, json={"id": 9, "inbox_id": 5})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/inboxes/5").mock(
+        return_value=httpx.Response(200, json={"id": 5, "channel_type": "Channel::Email"})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/9/messages").mock(
+        return_value=httpx.Response(200, json=MESSAGES_RESPONSE)
+    )
+    notify_route = respx.post(f"{PROTON}/escalation/notify").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/9/custom_attributes").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    await sync.maybe_escalate({"id": 9, "labels": ["escalate", "dept_apps"]})
+
+    sent = json.loads(notify_route.calls[0].request.content)
+    assert sent["customer_in_reply_to"] is None
+    get_proton_config_client.cache_clear()

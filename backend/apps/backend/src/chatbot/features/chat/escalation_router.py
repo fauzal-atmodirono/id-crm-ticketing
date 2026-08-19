@@ -69,6 +69,10 @@ class _NotifyIn(BaseModel):
     # customer -- see EscalationNotifier.notify_escalation. Absent keeps the
     # pre-2026-08-19 subject, so an older agent service is unaffected.
     customer_subject: str | None = None
+    # RFC Message-ID of the customer's own first email (Chatwoot keeps it on
+    # the message's `source_id`), so the acknowledgement threads onto their
+    # mail instead of arriving as a new one. Absent = unthreaded, as before.
+    customer_in_reply_to: str | None = None
 
 
 class _AcknowledgeIn(BaseModel):
@@ -138,6 +142,7 @@ def build_escalation_router(
             customer_email=customer_email,
             ack_transport=transport,
             customer_subject=payload.customer_subject,
+            customer_in_reply_to=payload.customer_in_reply_to,
         )
         return {"status": "ok"}
 

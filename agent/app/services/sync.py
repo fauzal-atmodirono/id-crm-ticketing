@@ -262,6 +262,7 @@ async def _maybe_notify_escalation(conversation_id: int, labels: list[str]) -> N
 
     title = f"Escalated conversation #{conversation_id}"
     body = f"Conversation #{conversation_id} was escalated by an agent."
+    customer_in_reply_to: str | None = None
     try:
         raw_messages = await chatwoot.get_messages(conversation_id)
         if isinstance(raw_messages, dict):
@@ -280,6 +281,16 @@ async def _maybe_notify_escalation(conversation_id: int, labels: list[str]) -> N
 
             if first_incoming_text is None and message.get("message_type") == 0:
                 first_incoming_text = text
+                # Chatwoot stores the inbound mail's RFC Message-ID here
+                # (verified against chatwoot_proton.messages.source_id, which
+                # holds e.g. `CAB5fbLT...@mail.gmail.com` -- bare, no angle
+                # brackets; `content_attributes.email.message_id` is empty).
+                # It threads the acknowledgement onto the customer's own mail
+                # instead of starting a new one from "Support". Absent on a
+                # non-email inbox, which just means no threading.
+                raw_source_id = message.get("source_id")
+                if raw_source_id:
+                    customer_in_reply_to = str(raw_source_id)
 
         if first_incoming_text:
             title = _single_line(first_incoming_text)
@@ -305,6 +316,7 @@ async def _maybe_notify_escalation(conversation_id: int, labels: list[str]) -> N
         # receive: a 2026-08-19 live run mailed him back his own words, cut
         # mid-word at 100 characters. The two legs get two subjects.
         customer_subject=f"Update on your case (#{conversation_id})",
+        customer_in_reply_to=customer_in_reply_to,
     )
     if not sent:
         # Deliberately notify-then-stamp, and only on a confirmed send.

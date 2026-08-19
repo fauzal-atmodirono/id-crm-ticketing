@@ -62,12 +62,21 @@ class SmtpEmailSender:
         attachments: list[Attachment],
         *,
         reply_to: str | None = None,
+        in_reply_to: str | None = None,
     ) -> None:
         """Send an email synchronously. Swallows and logs all errors.
 
         ``reply_to`` carries the escalation correlation token (see
         escalation_notifier); omitted by default so existing callers produce
         byte-identical mail.
+
+        ``in_reply_to`` is the RFC Message-ID of the mail this one answers.
+        Chatwoot keeps it on the inbound message's ``source_id``. Setting it
+        (plus ``References``) is what makes the customer acknowledgement land
+        inside the customer's own thread instead of arriving as a new one
+        from a stranger called "Support". Angle brackets are added when the
+        caller's value lacks them, because Chatwoot stores the id bare and an
+        unbracketed header is not a valid msg-id.
         """
         if not to or not self._s.smtp_host:
             return
@@ -89,6 +98,14 @@ class SmtpEmailSender:
             msg["Cc"] = ", ".join(cc)
         if reply_to:
             msg["Reply-To"] = reply_to
+        if in_reply_to:
+            token = in_reply_to.strip()
+            if not token.startswith("<"):
+                token = f"<{token}>"
+            msg["In-Reply-To"] = token
+            # Gmail and Outlook thread on References; In-Reply-To alone is
+            # honoured inconsistently. One id is a valid References chain.
+            msg["References"] = token
         msg["Subject"] = subject
         msg.set_content(body)
         for filename, content, mimetype in attachments:

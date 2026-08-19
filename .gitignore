@@ -8,6 +8,8 @@ deploy/infra.env
 deploy/tenants/*.env
 !deploy/tenants/example.env
 *.env.local
+# Handout copies of specs with live credentials filled in — never commit
+*-WITH-CREDENTIALS.md
 .superpowers/
 __pycache__/
 *.pyc

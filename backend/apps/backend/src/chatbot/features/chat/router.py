@@ -42,6 +42,7 @@ from chatbot.features.chat.phone.handoff_csat_tools import (
     SUBMIT_CSAT_TOOL,
     SUBMIT_NPS_TOOL,
 )
+from chatbot.features.chat.phone.recording_transcriber import transcribe_and_attach
 from chatbot.features.chat.phone.handoff_target import fanout_twiml
 from chatbot.features.chat.phone.kb_tool import KB_SEARCH_TOOL
 from chatbot.features.chat.phone.rate_limit import RateLimiter
@@ -1692,7 +1693,9 @@ class ChatRouter:
         except Exception as e:
             _log.error("phone_stream_failed", error=str(e))
 
-    async def phone_recording_status_webhook(self, request: Request) -> Response:
+    async def phone_recording_status_webhook(
+        self, request: Request, background_tasks: BackgroundTasks
+    ) -> Response:
         """Twilio's recording-status callback (Package C Task 5).
 
         Review fix (Important 3): unlike ``/webhooks/twilio-whatsapp`` --
@@ -1802,6 +1805,22 @@ class ChatRouter:
             )
         except Exception as e:
             _log.error("phone_recording_status_write_failed", call_sid=call_sid, error=str(e))
+
+        # Post-call transcription of the finished recording. QUEUED, never
+        # awaited: downloading the audio and running it through the model takes
+        # far longer than Twilio's ~15 s webhook budget, and Starlette runs
+        # background tasks only after this response has been sent, so it can
+        # neither delay nor change the 200 above. This is the only way the
+        # HUMAN agent's half of the call reaches the CRM -- the live transcript
+        # stops the moment <Connect><Stream> is replaced by <Dial>.
+        if settings.phone_recording_transcription_enabled:
+            background_tasks.add_task(
+                transcribe_and_attach,
+                settings,
+                port,
+                ticket_id,
+                params.get("RecordingUrl", ""),
+            )
         return Response(status_code=200)
 
     async def phone_dial_status_webhook(

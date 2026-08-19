@@ -482,6 +482,14 @@ class Settings(BaseSettings):
     # recorded here so the retention POLICY is operator-visible and
     # configurable from day one rather than bolted on later.
     phone_recording_retention_days: int = 90
+    # Post-call transcription of the finished recording. Exists because the
+    # LIVE transcript stops at the handoff -- <Connect><Stream> is replaced by
+    # <Dial>, so Gemini never hears the human agent's half of the call. Runs
+    # from the recording-status webhook as a background task, never on the live
+    # call path. DEPENDS on phone_recording_enabled: with no recording there is
+    # nothing to transcribe.
+    phone_recording_transcription_enabled: bool = False
+    recording_transcription_model: str = "gemini-2.5-flash"
     # Browser-softphone access tokens (Twilio Voice grant)
     twilio_api_key_sid: str = ""
     twilio_api_key_secret: str = ""

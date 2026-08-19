@@ -76,6 +76,7 @@ SURFACE_CHAT_TRANSCRIBE = "chat.transcribe"
 SURFACE_EMBED = "embed"
 SURFACE_PHONE_LIVE = "phone.live"
 SURFACE_PHONE_CLASSIFY = "phone.classify"
+SURFACE_PHONE_TRANSCRIBE = "phone.transcribe"
 
 # Defined but deliberately UNUSED, and that is the honest state of affairs.
 #

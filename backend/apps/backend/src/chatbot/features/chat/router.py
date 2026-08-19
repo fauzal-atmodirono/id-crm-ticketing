@@ -357,6 +357,33 @@ _DIAL_HANGUP_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/><
 # rather than one bilingual blob, so fallback_twiml can emit a correctly
 # pronounced <Say language=...> for each instead of reading both in
 # Twilio's default English voice.
+# Guardrails inserted BEFORE the handoff instruction (2026-08-19).
+#
+# From a real proton call: the model answered a Proton X70 question correctly,
+# then escalated on the very next turn with the recorded reason "the user is
+# asking a follow-up question". The caller's speech had come through as
+# "Nya saya mau nanya pasal ada" -- garbled Malay. Telephone audio is mu-law at
+# 8 kHz and callers code-switch between English, Malay and Chinese, so ASR
+# degrades badly; the model then read "I did not understand this" as "I cannot
+# resolve this issue" and reached for a human. The existing instruction had
+# nothing distinguishing the two, which made premature handoff the DEFAULT
+# behaviour on any hard-to-hear turn.
+#
+# Deliberately placed before the handoff text rather than replacing it: the
+# existing wording covers what to SAY and in what order (which matters because
+# a redirect can cut the line mid-sentence). These add when handing off is
+# warranted at all.
+_HANDOFF_GUARDRAILS = (
+    "NEVER hand off because you could not hear or understand the caller. Phone audio "
+    "is lossy and callers switch languages mid-sentence, so when a turn is unclear, ASK "
+    "THEM TO REPEAT OR REPHRASE, and try at least twice, before you even consider a "
+    "handoff. A follow-up question is normal conversation and is NOT a reason to hand "
+    "off — keep answering. Before you conclude you cannot answer something, you MUST "
+    "have actually called kb_search for it. Hand off ONLY when the caller explicitly "
+    "asks for a human, when it is a complaint or a sensitive matter, or when kb_search "
+    "genuinely returned nothing useful. "
+)
+
 _UNANSWERED_HANDOFF_APOLOGY_EN = (
     "We're sorry, none of our agents are available to take your call right now. "
     "We've noted your call and someone will call you back soon. Goodbye."
@@ -1609,7 +1636,9 @@ class ChatRouter:
                 "immediately if they switch. You speak Bahasa Melayu fluently; NEVER say you cannot "
                 "speak a language and NEVER hand off merely because of language. "
                 "Use the kb_search tool to ground answers in the "
-                "Proton knowledge base before giving facts. If you cannot resolve the caller's "
+                "Proton knowledge base before giving facts. "
+                + _HANDOFF_GUARDRAILS
+                + "If you cannot resolve the caller's "
                 + handoff_instruction
                 + "After you answer, ask if there is anything else you can "
                 "help with, and keep helping across as many questions as the caller has. "

@@ -153,3 +153,18 @@ def test_fanout_with_no_identities_returns_empty_string():
     from chatbot.features.chat.phone.handoff_target import fanout_twiml
 
     assert fanout_twiml([], "https://e.test/f", 25) == ""
+
+
+def test_handoff_guardrails_are_in_the_phone_system_instruction():
+    """Regression guard for the 2026-08-19 proton call where the model answered
+    a question correctly and then escalated on the next turn, recording the
+    reason "the user is asking a follow-up question" after the caller's Malay
+    came through garbled. The instruction had nothing separating "I misheard"
+    from "I cannot help", so any hard-to-hear turn escalated."""
+    from chatbot.features.chat.router import _HANDOFF_GUARDRAILS
+
+    g = _HANDOFF_GUARDRAILS.lower()
+    assert "never hand off because you could not hear" in g
+    assert "repeat or rephrase" in g
+    assert "follow-up question" in g and "not a reason to hand off" in g
+    assert "must" in g and "kb_search" in g

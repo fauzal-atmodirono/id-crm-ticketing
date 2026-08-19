@@ -333,18 +333,29 @@ Stated so nobody builds it by accident:
 
 ## 7. What Yuda provides before you start
 
+The agent bot is **already created and attached** — `agent_bot id=1`, name
+"AEON360 Assistant", active on inbox 1.
+
 | Item | Value |
 |---|---|
 | CRM base URL | `http://aeon360.crm.34-50-103-151.nip.io` *(HTTPS being added — use the HTTPS URL once issued)* |
 | Account ID | `1` |
 | Inbox ID | `1` ("AEON360 Whatsapp") |
-| `AGENT_BOT_TOKEN` | the agent bot's `access_token` — sent separately, never in git |
-| `CHATWOOT_BOT_SECRET` | the agent bot's HMAC secret for §5.1 — sent separately |
+| Agent bot ID | `1` |
+| Registered `outgoing_url` | `https://aeon360-backend-247165654737.asia-southeast1.run.app/chatwoot/bot` |
+| `AGENT_BOT_TOKEN` | «AGENT_BOT_TOKEN» |
+| `CHATWOOT_BOT_SECRET` | «CHATWOOT_BOT_SECRET» |
 
-Yuda also: registers the agent bot pointing at your `/chatwoot/bot` URL, attaches it
-to inbox 1, enables TLS, and repoints the Twilio webhook.
+`AGENT_BOT_TOKEN` is the `api_access_token` header value for every call in §5.
+`CHATWOOT_BOT_SECRET` is the HMAC secret for verifying inbound deliveries (§5.1).
+Store both as Cloud Run secrets — do not commit them.
 
-**You need to give Yuda:** the public URL of your new `/chatwoot/bot` endpoint.
+Yuda still needs to: enable TLS on the CRM domain, and repoint the Twilio webhook at
+cutover.
+
+**Confirm with Yuda** that `outgoing_url` above matches where you actually deploy the
+endpoint. It is registered against the path this spec specifies; if you deploy it
+elsewhere, it must be updated in the CRM or no events will reach you.
 
 ---
 

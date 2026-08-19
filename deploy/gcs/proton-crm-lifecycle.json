@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "GCS lifecycle for proton call recordings + transcripts.",
+    "",
+    "matchesPrefix is LOAD-BEARING, not a tidiness detail. gs://lv-playground-genai",
+    "is a SHARED bucket -- it also holds bqml/, which belongs to unrelated work. A",
+    "rule without the prefix condition applies to the WHOLE bucket and would delete",
+    "that data after 90 days. Never remove or widen the prefix.",
+    "",
+    "This is what makes PHONE_RECORDING_RETENTION_DAYS real. retention.py cannot",
+    "enforce it (there is no Twilio recording-delete adapter, so a run is a dry",
+    "run), and the Twilio-side copies are NOT covered by this rule -- it governs",
+    "only the archived copies in this bucket.",
+    "",
+    "Apply with:",
+    "  gcloud storage buckets update gs://lv-playground-genai \\",
+    "    --lifecycle-file=deploy/gcs/proton-crm-lifecycle.json"
+  ],
+  "lifecycle": {
+    "rule": [
+      {
+        "action": { "type": "Delete" },
+        "condition": {
+          "age": 90,
+          "matchesPrefix": ["proton-crm/call-recording/"]
+        }
+      }
+    ]
+  }
+}

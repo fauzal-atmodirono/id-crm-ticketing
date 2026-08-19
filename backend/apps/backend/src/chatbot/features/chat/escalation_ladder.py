@@ -538,7 +538,7 @@ def start_ladder_scheduler(
         return None
 
     sched = scheduler or BackgroundScheduler()
-    interval = int(getattr(settings, "escalation_policy_scan_interval_seconds", 300))
+    interval = _startup_interval(settings, policy_repo)
     sched.add_job(
         job
         or (
@@ -558,9 +558,33 @@ def start_ladder_scheduler(
         replace_existing=True,
     )
     sched.start()
-    _log.info(
-        "escalation_ladder_scheduler_started",
-        interval_seconds=interval,
-        dry_run=bool(getattr(settings, "escalation_policy_dry_run", True)),
-    )
+    # Deliberately does NOT report enabled/dry_run. Both are resolved from the
+    # store on every sweep, so a boot-time claim would be a snapshot that goes
+    # stale the moment an operator touches the page -- and the earlier version
+    # of this line logged the ENV value, which said "dry_run=True" while the
+    # store had the ladder sending for real. Each sweep logs what it actually
+    # did; this line only reports the tick.
+    _log.info("escalation_ladder_scheduler_started", interval_seconds=interval)
     return sched
+
+
+def _startup_interval(settings: Settings, policy_repo: Any) -> int:
+    """The sweep tick, preferring the operator's stored value.
+
+    APScheduler fixes an interval when the job is added, so unlike every
+    other ladder setting this one cannot be resolved per sweep -- it is read
+    once, here. A change made in the page therefore takes effect at the next
+    backend restart, which the page and the tenant env both say.
+
+    Resolved synchronously because this runs during app construction, before
+    any event loop exists. Any failure falls back to the env value: an
+    unreachable store must not stop the ladder from being scheduled at all.
+    """
+    env_interval = int(getattr(settings, "escalation_policy_scan_interval_seconds", 300))
+    if policy_repo is None:
+        return env_interval
+    try:
+        return int(asyncio.run(resolve_ladder_config(policy_repo, settings)).scan_interval_seconds)
+    except Exception as exc:
+        _log.warning("escalation_ladder_interval_resolve_failed", error=str(exc))
+        return env_interval

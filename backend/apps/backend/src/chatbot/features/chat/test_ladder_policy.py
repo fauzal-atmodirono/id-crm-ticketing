@@ -3,12 +3,17 @@ and the in-flight view agreeing with the engine."""
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
-from chatbot.features.chat.escalation_ladder import describe_in_flight, sweep_ladder
+from chatbot.features.chat.escalation_ladder import (
+    _startup_interval,
+    describe_in_flight,
+    sweep_ladder,
+)
 from chatbot.features.chat.ladder_policy_db import (
     LadderPolicyValues,
     build_engine,
@@ -259,3 +264,30 @@ async def test_in_flight_ignores_cases_that_were_never_escalated(repo) -> None:
     ordinary = {"id": 9, "status": "open", "labels": ["dept_sales"], "custom_attributes": {}}
 
     assert await describe_in_flight([ordinary], settings=_settings(), policy_repo=repo) == []
+
+
+# --- the sweep tick ---------------------------------------------------------
+
+
+def test_the_startup_interval_prefers_the_stored_value(repo) -> None:
+    """APScheduler fixes an interval when the job is added, so this is the one
+    ladder setting that cannot be resolved per sweep. It must at least come
+    from the store rather than only from env."""
+    asyncio.run(repo.upsert(LadderPolicyValues(scan_interval_seconds=45)))
+
+    assert _startup_interval(_settings(escalation_policy_scan_interval_seconds=300), repo) == 45
+
+
+def test_the_startup_interval_falls_back_to_env_when_the_store_is_unreachable() -> None:
+    class _Boom:
+        async def resolve(self, _settings):
+            raise RuntimeError("postgres down")
+
+    settings = _settings(escalation_policy_scan_interval_seconds=120)
+
+    # An unreachable store must not stop the ladder being scheduled at all.
+    assert _startup_interval(settings, _Boom()) == 120
+
+
+def test_no_store_at_all_uses_the_env_interval() -> None:
+    assert _startup_interval(_settings(escalation_policy_scan_interval_seconds=90), None) == 90

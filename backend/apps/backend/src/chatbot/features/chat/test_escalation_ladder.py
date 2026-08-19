@@ -260,15 +260,22 @@ async def test_a_missing_owner_skips_the_rung_rather_than_mailing_the_cc_list() 
 
 
 async def test_an_unknown_dealer_does_not_stop_the_sweep() -> None:
+    """A dealer label whose record was deleted: this case is left alone (and
+    the sweep carries on for everyone else). Deliberately NOT stamped as
+    skipped -- if the record comes back, the ladder should resume properly
+    rather than find rungs already marked sent."""
     notifier = _Notifier()
     deps = _deps(notifier)
     deps["dealer_store"] = _Store(None)
 
     acted = await sweep_ladder(
-        [_conv(escalated_hours_ago=5, step=2)], settings=_settings(), **deps
+        [_conv(escalated_hours_ago=5, step=2), _conv(escalated_hours_ago=5, step=2)],
+        settings=_settings(),
+        **deps,
     )
 
-    assert acted[0]["action"] == "skipped"
+    assert acted == []
+    assert notifier.calls == []
 
 
 async def test_a_failing_dealer_store_does_not_stop_the_sweep() -> None:
@@ -284,7 +291,9 @@ async def test_a_failing_dealer_store_does_not_stop_the_sweep() -> None:
         [_conv(escalated_hours_ago=5, step=2)], settings=_settings(), **deps
     )
 
-    assert acted[0]["action"] == "skipped"
+    # No exception escapes, and the outage costs a delayed rung rather than a
+    # rung stamped as sent to nobody.
+    assert acted == []
 
 
 # --- dry run ----------------------------------------------------------------
@@ -357,4 +366,36 @@ async def test_a_friday_evening_escalation_does_not_remind_on_saturday() -> None
     )
 
     # 1 working hour elapsed (16:00-17:00 Friday), not 18 wall-clock hours.
+    assert acted == []
+
+
+async def test_a_case_with_no_dealer_is_not_climbed_at_all() -> None:
+    """The ladder IS the dealer escalation policy. A case escalated to a
+    department PIC with no dealer label has nobody to climb to -- and without
+    this guard it walked silently to step 5 and raised a 'call the Dealer
+    Principal' task for a dealer that does not exist.
+
+    Found live on proton 2026-08-19: two real cases were sitting in exactly
+    this state when the sweep was first armed.
+    """
+    notifier = _Notifier()
+    conv = _conv(escalated_hours_ago=40, step=1, labels=["escalate", "dept_aftersales"])
+
+    acted = await sweep_ladder([conv], settings=_settings(), **_deps(notifier))
+
+    assert acted == []
+    assert notifier.calls == []
+
+
+async def test_an_unknown_dealer_record_is_not_climbed_either() -> None:
+    """Same for a dealer label whose record was deleted, or a store outage:
+    resume when it resolves rather than stamping rungs nobody received."""
+    notifier = _Notifier()
+    deps = _deps(notifier)
+    deps["dealer_store"] = _Store(None)
+
+    acted = await sweep_ladder(
+        [_conv(escalated_hours_ago=40, step=1)], settings=_settings(), **deps
+    )
+
     assert acted == []

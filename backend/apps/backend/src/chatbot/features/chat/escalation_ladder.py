@@ -220,6 +220,21 @@ async def _advance_one(  # noqa: PLR0911 -- each return is one reason a case is 
         return None
 
     dealer, pronet = await _resolve_contacts(conv, dealer_store, pronet_store)
+
+    # No dealer, no ladder. This IS the dealer escalation policy: a case
+    # escalated to a department PIC with no `dealer_<slug>` label has nobody
+    # to climb to. Without this guard it advanced silently through every rung
+    # (each one resolving to no recipients) and then raised a "call the Dealer
+    # Principal" task for a dealer that does not exist -- observed on two live
+    # proton cases the first time the sweep was armed.
+    #
+    # Returning rather than stamping also means an unreachable store, or a
+    # dealer label added later, resumes the ladder properly instead of finding
+    # rungs already marked sent.
+    if dealer is None:
+        _log.info("escalation_ladder_no_dealer", conv_id=ticket_id, step_no=step.step_no)
+        return None
+
     to, cc = resolve_recipients(step, dealer, pronet)
     plan = {
         **describe(step, to, cc),

@@ -162,100 +162,137 @@ async def sweep_ladder(
 
     acted: list[dict[str, Any]] = []
     for conv in conversations:
-        conv_id = conv.get("id")
-        if conv_id is None:
-            continue
-        ticket_id = str(conv_id)
-        attrs = _attrs(conv)
-
-        if _should_skip(conv, attrs) is not None:
-            continue
-
-        started_at = _parse(attrs.get(NOTIFIED_ATTR))
-        if started_at is None:
-            continue
-
-        inbox = await cache.get(conv.get("inbox_id")) if working_hours else {}
-        elapsed_hours = (
-            elapsed_minutes(started_at, clock, inbox, working_hours=working_hours)
-            / _MINUTES_PER_HOUR
+        outcome = await _advance_one(
+            conv,
+            steps=steps,
+            clock=clock,
+            dry_run=dry_run,
+            working_hours=working_hours,
+            cache=cache,
+            notifier=notifier,
+            dealer_store=dealer_store,
+            pronet_store=pronet_store,
+            set_attributes=set_attributes,
         )
-
-        step = due_step(steps, elapsed_hours, _current_step(attrs))
-        if step is None:
-            continue
-        if attrs.get(step_sent_attr(step.step_no)):
-            continue
-
-        dealer = None
-        slug = _dealer_slug(conv)
-        if slug and dealer_store is not None:
-            try:
-                dealer = await dealer_store.get(slug)
-            except Exception as exc:
-                _log.warning("escalation_ladder_dealer_lookup_failed", dealer=slug, error=str(exc))
-
-        pronet = None
-        if dealer is not None and dealer.region and pronet_store is not None:
-            try:
-                pronet = await pronet_store.get(dealer.region)
-            except Exception as exc:
-                _log.warning(
-                    "escalation_ladder_pronet_lookup_failed",
-                    region=dealer.region,
-                    error=str(exc),
-                )
-
-        to, cc = resolve_recipients(step, dealer, pronet)
-        plan = {
-            **describe(step, to, cc),
-            "conv_id": ticket_id,
-            "elapsed_working_hours": round(elapsed_hours, 2),
-        }
-
-        # Step 2 is the dealer's own acknowledgement window, not something we
-        # send. Reaching it means the window closed unanswered; record the
-        # rung so step 3 becomes due next sweep, and send nothing.
-        if not to and step.channel != PHONE:
-            _log.info("escalation_ladder_step_skipped", **plan)
-            if not dry_run:
-                await _stamp(set_attributes, ticket_id, step, clock)
-            acted.append({**plan, "action": "skipped"})
-            continue
-
-        if dry_run:
-            _log.info("escalation_ladder_dry_run", **plan)
-            acted.append({**plan, "action": "dry_run"})
-            continue
-
-        # Stamp first: a crash here loses a reminder, the other order sends
-        # one twice.
-        await _stamp(set_attributes, ticket_id, step, clock)
-
-        if step.channel == PHONE:
-            await notifier.raise_phone_task(
-                conv_id=ticket_id,
-                step=step,
-                contacts=to,
-                deadline=clock + _PHONE_RESPONSE_WINDOW,
-            )
-            acted.append({**plan, "action": "phone_task"})
-            continue
-
-        ok, error = notifier.send_ladder_step(
-            conv_id=ticket_id,
-            step=step,
-            to=to,
-            cc=cc,
-            title=_title(conv, ticket_id),
-            body=_body(conv, ticket_id),
-            elapsed_working_hours=elapsed_hours,
-        )
-        acted.append({**plan, "action": "sent" if ok else "failed", "error": error})
+        if outcome is not None:
+            acted.append(outcome)
 
     if acted:
         _log.info("escalation_ladder_swept", count=len(acted), dry_run=dry_run)
     return acted
+
+
+async def _advance_one(  # noqa: PLR0911 -- each return is one reason a case is not advanced
+    conv: dict[str, Any],
+    *,
+    steps: tuple[EscalationStep, ...],
+    clock: datetime,
+    dry_run: bool,
+    working_hours: bool,
+    cache: Any,
+    notifier: EscalationNotifier,
+    dealer_store: DealerStore | None,
+    pronet_store: ProtonNetStore | None,
+    set_attributes: Any,
+) -> dict[str, Any] | None:
+    """One conversation, at most one rung. None when nothing was due."""
+    conv_id = conv.get("id")
+    if conv_id is None:
+        return None
+    ticket_id = str(conv_id)
+    attrs = _attrs(conv)
+
+    if _should_skip(conv, attrs) is not None:
+        return None
+
+    started_at = _parse(attrs.get(NOTIFIED_ATTR))
+    if started_at is None:
+        return None
+
+    inbox = await cache.get(conv.get("inbox_id")) if working_hours else {}
+    elapsed_hours = (
+        elapsed_minutes(started_at, clock, inbox, working_hours=working_hours)
+        / _MINUTES_PER_HOUR
+    )
+
+    step = due_step(steps, elapsed_hours, _current_step(attrs))
+    if step is None or attrs.get(step_sent_attr(step.step_no)):
+        return None
+
+    dealer, pronet = await _resolve_contacts(conv, dealer_store, pronet_store)
+    to, cc = resolve_recipients(step, dealer, pronet)
+    plan = {
+        **describe(step, to, cc),
+        "conv_id": ticket_id,
+        "elapsed_working_hours": round(elapsed_hours, 2),
+    }
+
+    # Step 2 is the dealer's own acknowledgement window, not something we
+    # send. Reaching it means the window closed unanswered; record the rung so
+    # step 3 becomes due next sweep, and send nothing.
+    if not to and step.channel != PHONE:
+        _log.info("escalation_ladder_step_skipped", **plan)
+        if not dry_run:
+            await _stamp(set_attributes, ticket_id, step, clock)
+        return {**plan, "action": "skipped"}
+
+    if dry_run:
+        _log.info("escalation_ladder_dry_run", **plan)
+        return {**plan, "action": "dry_run"}
+
+    # Stamp first: a crash here loses a reminder, the other order sends one
+    # twice.
+    await _stamp(set_attributes, ticket_id, step, clock)
+
+    if step.channel == PHONE:
+        await notifier.raise_phone_task(
+            conv_id=ticket_id,
+            step=step,
+            contacts=to,
+            deadline=clock + _PHONE_RESPONSE_WINDOW,
+        )
+        return {**plan, "action": "phone_task"}
+
+    ok, error = notifier.send_ladder_step(
+        conv_id=ticket_id,
+        step=step,
+        to=to,
+        cc=cc,
+        title=_title(conv, ticket_id),
+        body=_body(ticket_id),
+        elapsed_working_hours=elapsed_hours,
+    )
+    return {**plan, "action": "sent" if ok else "failed", "error": error}
+
+
+async def _resolve_contacts(
+    conv: dict[str, Any],
+    dealer_store: DealerStore | None,
+    pronet_store: ProtonNetStore | None,
+) -> tuple[Any, Any]:
+    """(dealer, pronet) for this conversation; either may be None.
+
+    A store outage yields None rather than an exception: the rung then skips
+    and logs, which is a missed reminder. Letting it raise would abort the
+    sweep for every OTHER case on the tenant, which is many missed reminders.
+    """
+    dealer = None
+    slug = _dealer_slug(conv)
+    if slug and dealer_store is not None:
+        try:
+            dealer = await dealer_store.get(slug)
+        except Exception as exc:
+            _log.warning("escalation_ladder_dealer_lookup_failed", dealer=slug, error=str(exc))
+
+    pronet = None
+    if dealer is not None and dealer.region and pronet_store is not None:
+        try:
+            pronet = await pronet_store.get(dealer.region)
+        except Exception as exc:
+            _log.warning(
+                "escalation_ladder_pronet_lookup_failed", region=dealer.region, error=str(exc)
+            )
+    return dealer, pronet
 
 
 def _title(conv: dict[str, Any], ticket_id: str) -> str:
@@ -267,7 +304,7 @@ def _title(conv: dict[str, Any], ticket_id: str) -> str:
     return f"Escalated case #{ticket_id}"
 
 
-def _body(conv: dict[str, Any], ticket_id: str) -> str:
+def _body(ticket_id: str) -> str:
     """What the reminder says the case is about.
 
     The conversation list payload does not carry the transcript, and fetching

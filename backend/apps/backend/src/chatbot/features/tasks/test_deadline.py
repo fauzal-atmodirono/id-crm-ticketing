@@ -268,6 +268,10 @@ def test_no_customer_update_deadline_once_the_customer_was_told() -> None:
 
 
 def test_the_customer_update_field_is_absent_while_the_flag_is_off() -> None:
+    # Pinned explicitly rather than relying on the default: the all-flags-ON
+    # gate run exports ESCALATION_CUSTOMER_UPDATE_ENABLED=true, and this test
+    # is about the flag being off, not about what the environment says.
+    settings = _settings(escalation_customer_update_enabled=False)
     conv = _attr_conv(escalation_replied_at=(_NOW - timedelta(hours=9)).isoformat())
 
-    assert compute_deadlines(conv, _settings(), _NOW).customer_update_at_iso is None
+    assert compute_deadlines(conv, settings, _NOW).customer_update_at_iso is None

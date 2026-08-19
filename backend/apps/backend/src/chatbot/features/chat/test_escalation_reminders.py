@@ -131,10 +131,10 @@ async def test_a_failed_deadline_write_does_not_cost_the_agent_the_note() -> Non
     convenience."""
     notifier, _, notes, _ = _notifier()
 
-    async def _boom(conv_id: str, attributes: dict[str, Any]) -> None:
+    async def _boom(_conv_id: str, _attributes: dict[str, Any]) -> None:
         raise RuntimeError("chatwoot down")
 
-    notifier._cw = _boom  # noqa: SLF001 -- exercising the failure path
+    notifier._cw = _boom
 
     assert await notifier.raise_phone_task(
         conv_id="42",
@@ -147,7 +147,7 @@ async def test_a_failed_deadline_write_does_not_cost_the_agent_the_note() -> Non
 
 async def test_an_unwired_post_message_is_reported_not_raised() -> None:
     notifier, _, _, _ = _notifier()
-    notifier._post_message = None  # noqa: SLF001
+    notifier._post_message = None
 
     assert not await notifier.raise_phone_task(
         conv_id="42",

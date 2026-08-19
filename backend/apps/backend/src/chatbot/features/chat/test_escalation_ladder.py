@@ -234,7 +234,7 @@ async def test_the_final_step_raises_a_phone_task_and_sends_no_mail() -> None:
 
     assert acted[0]["action"] == "phone_task"
     assert not [c for c in notifier.calls if c[0] == "send"]
-    phone = [c for c in notifier.calls if c[0] == "phone"][0]
+    phone = next(c for c in notifier.calls if c[0] == "phone")
     assert phone[1]["contacts"] == ["dp@kl.my", "owner@kl.my"]
 
 
@@ -304,8 +304,12 @@ async def test_dry_run_stamps_nothing_and_sends_nothing() -> None:
     assert notifier.calls == []
 
 
-async def test_dry_run_is_the_default_for_a_newly_enabled_ladder() -> None:
-    assert Settings(_env_file=None, escalation_policy_enabled=True).escalation_policy_dry_run
+def test_dry_run_is_the_default_for_a_newly_enabled_ladder() -> None:
+    """Asserted against the field default rather than a constructed Settings:
+    an ESCALATION_POLICY_DRY_RUN in the ambient environment would otherwise
+    decide the result, and the claim here is precisely about what an operator
+    gets when they set nothing."""
+    assert Settings.model_fields["escalation_policy_dry_run"].default is True
 
 
 # --- working hours ----------------------------------------------------------

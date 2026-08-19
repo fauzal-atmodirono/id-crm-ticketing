@@ -49,8 +49,8 @@ _STEP_EXPECTATION = {
 
 if TYPE_CHECKING:
     from chatbot.features.chat.adapters.tenant_settings_store import TenantSettingsStorePort
-    from chatbot.features.chat.escalation_policy import EscalationStep
     from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
+    from chatbot.features.chat.escalation_policy import EscalationStep
     from chatbot.features.chat.pic_registry import PicEntry, PicRegistry
     from chatbot.features.chat.pic_store import DealerStore
     from chatbot.features.metrics.email_sender import SmtpEmailSender

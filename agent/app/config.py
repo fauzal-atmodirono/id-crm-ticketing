@@ -121,6 +121,13 @@ class Settings(BaseSettings):
     # the backend's SLA_ACKNOWLEDGEMENT_ENABLED decides whether any breach
     # reads it.
     escalation_reply_acknowledgement_enabled: bool = False
+    # Stamp `customer_updated_at` when an agent sends the customer an outgoing
+    # public message after a dealer/PIC has answered -- the stop signal for
+    # the backend's customer-update clock (B-EM-05: the customer must be told
+    # within 4 working hours of the answer existing). Inert on its own; the
+    # backend's ESCALATION_CUSTOMER_UPDATE_ENABLED decides whether anything
+    # reads the stamp.
+    escalation_customer_update_enabled: bool = False
 
     # Fire the escalation on EVERY channel, not just Email. Before this, the
     # `escalate` label on a WhatsApp/Web/Phone case notified nobody and said

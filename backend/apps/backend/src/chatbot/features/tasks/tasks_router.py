@@ -71,6 +71,11 @@ def _task_item_to_dict(item: TaskItem) -> dict[str, Any]:
         "breachType": item.breach_type,
         "followUpAtIso": item.follow_up_at_iso,
         "followUpRemainingSeconds": item.follow_up_remaining_seconds,
+        # B-EM-04 / B-EM-05. Both null unless their feature is on, so the
+        # payload is unchanged for a tenant that has not enabled either.
+        "attendAfterIso": item.attend_after_iso,
+        "customerUpdateAtIso": item.customer_update_at_iso,
+        "customerUpdateRemainingSeconds": item.customer_update_remaining_seconds,
     }
 
 

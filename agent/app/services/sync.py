@@ -48,6 +48,13 @@ _NOTIFIED_ATTR = "escalation_notified_at"
 # Once-per-conversation intake stamp. See `maybe_stamp_business_hours`.
 _BUSINESS_HOURS_ATTR = "received_in_business_hours"
 
+# The dealer/PIC reply that starts the customer-update clock, written by
+# `escalation_replies.py`, and the stamp that stops it. See
+# `maybe_stamp_customer_update` and the backend's
+# `features/chat/customer_update.py`.
+_REPLIED_ATTR = "escalation_replied_at"
+_CUSTOMER_UPDATED_ATTR = "customer_updated_at"
+
 # Operator-set follow-up reminder DATE. See `maybe_validate_follow_up_date`.
 _FOLLOW_UP_ATTR = "follow_up_at"
 
@@ -467,6 +474,66 @@ async def maybe_stamp_business_hours(payload: dict) -> None:
         logger.exception(
             "maybe_stamp_business_hours: failed for conversation %s",
             conversation_id,
+        )
+
+
+async def maybe_stamp_customer_update(payload: dict) -> None:
+    """Handle a Chatwoot `message_created` event: stamp `customer_updated_at`
+    the first time an agent tells the customer something AFTER a dealer or PIC
+    answered the escalation.
+
+    This is the stop signal for the backend's customer-update clock
+    (`features/chat/customer_update.py`), which starts at
+    `escalation_replied_at`. It lives here rather than in the backend because
+    only this service sees the message stream closely enough to make the
+    distinction that matters: the two things that arrive immediately after a
+    dealer's reply are the linked reply and the AI draft, and both are
+    PRIVATE NOTES. A backend rule inferring "the customer was updated" from
+    recent activity would be satisfied by the very notes that start the
+    clock, and the clock would clear itself the instant it started.
+
+    So: outgoing, not private, and only on a case whose clock is running.
+    Never overwritten -- the first update is the one the SLA is measured
+    against; a chattier agent must not be able to move their own deadline.
+
+    Fail-open throughout, like every other background task here.
+    """
+    settings = get_settings()
+    if not settings.escalation_customer_update_enabled:
+        return
+
+    conversation = payload.get("conversation") or {}
+    conversation_id = conversation.get("id")
+    if conversation_id is None:
+        return
+
+    # An outgoing public message is the only thing that reaches the customer.
+    # A private note is the agent talking to the team, which is exactly what
+    # this must not count.
+    if payload.get("message_type") != "outgoing" or payload.get("private"):
+        return
+
+    try:
+        chatwoot = get_chatwoot_client()
+        existing = ((await chatwoot.get_conversation(conversation_id)) or {}).get(
+            "custom_attributes"
+        ) or {}
+
+        # No clock running -> nothing to stop. Checked against the live
+        # conversation rather than the webhook's embedded copy, which on
+        # message_created can predate the reply linker's own stamp.
+        if not existing.get(_REPLIED_ATTR):
+            return
+        if existing.get(_CUSTOMER_UPDATED_ATTR):
+            return
+
+        await chatwoot.set_custom_attributes(
+            conversation_id,
+            {_CUSTOMER_UPDATED_ATTR: datetime.now(timezone.utc).isoformat()},
+        )
+    except Exception:
+        logger.exception(
+            "maybe_stamp_customer_update: failed for conversation %s", conversation_id
         )
 
 

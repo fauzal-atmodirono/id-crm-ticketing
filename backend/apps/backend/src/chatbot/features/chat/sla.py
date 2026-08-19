@@ -50,6 +50,11 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from chatbot.features.chat.customer_update import (
+    CUSTOMER_UPDATE_DUE_STATE,
+    CUSTOMER_UPDATE_WARNING_STATE,
+    compute_customer_update_clock,
+)
 from chatbot.features.chat.ports import AuditEntry, AuditLogPort
 from chatbot.features.chat.sla_clock import InboxCache, elapsed_minutes
 from chatbot.features.chat.sla_policy_repository import SlaPolicyRepository
@@ -479,6 +484,51 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
                     labels=_labels(conv),
                 )
                 fired.append(reminder_entry)
+
+        # The customer-update clock. Deliberately outside every threshold
+        # above: those all run from `created_at` and are satisfied by the
+        # first agent reply, which on an escalated case happened long before
+        # the dealer answered. This one starts at the dealer's answer and asks
+        # a different question -- has the customer been told yet (B-EM-05).
+        # Off by default; `compute_customer_update_clock` returns the empty
+        # clock and nothing below fires.
+        update_clock = compute_customer_update_clock(
+            conv, settings, clock, inbox=inbox_hours, working_hours=conv_working_hours
+        )
+        if update_clock.started_at is not None and not update_clock.satisfied:
+            if update_clock.breached and CUSTOMER_UPDATE_DUE_STATE not in prior:
+                fired.append(
+                    await _fire(
+                        audit,
+                        ticket_id=ticket_id,
+                        session_id=session_id,
+                        to_state=CUSTOMER_UPDATE_DUE_STATE,
+                        remark=(
+                            "The dealer/PIC answered "
+                            f"{(update_clock.elapsed_minutes or 0) / 60:.1f}h ago and the "
+                            "customer has not been updated"
+                        ),
+                        clock=clock,
+                        alert=alert,
+                        labels=_labels(conv),
+                    )
+                )
+            elif update_clock.warning_due and CUSTOMER_UPDATE_WARNING_STATE not in prior:
+                fired.append(
+                    await _fire(
+                        audit,
+                        ticket_id=ticket_id,
+                        session_id=session_id,
+                        to_state=CUSTOMER_UPDATE_WARNING_STATE,
+                        remark=(
+                            f"{(update_clock.remaining_minutes or 0):.0f} min left to pass "
+                            "the dealer's answer on to the customer"
+                        ),
+                        clock=clock,
+                        alert=alert,
+                        labels=_labels(conv),
+                    )
+                )
 
     if fired:
         _log.info("sla_scan_fired", count=len(fired))

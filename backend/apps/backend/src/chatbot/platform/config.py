@@ -923,6 +923,14 @@ class Settings(BaseSettings):
     # Empty (default) means no dealer email is ever sent.
     dealer_email_map_json: str = ""
 
+    # How long the customer may wait AFTER a dealer/PIC has answered the
+    # escalation (features/chat/customer_update.py). Appendix B B-EM-05 gives
+    # the agent 4 working hours to pass that answer on; nothing measured it
+    # before. Off by default: with the flag off no clock exists, no field is
+    # surfaced and no breach can fire.
+    escalation_customer_update_enabled: bool = False
+    escalation_customer_update_hours: float = 4.0
+
     # Reply-To template for escalation mail, e.g.
     # "support+case{conv_id}@proton.example". Empty (default) means no
     # Reply-To and no [CASE-n] subject tag -- mail is byte-identical to

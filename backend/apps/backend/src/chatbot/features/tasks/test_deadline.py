@@ -210,3 +210,64 @@ def test_sla_minutes_behaviour_is_completely_unchanged() -> None:
     assert item_off.follow_up_remaining_seconds is None
     assert item_off.resolution_remaining_seconds == item_on.resolution_remaining_seconds
     assert item_off.breach_type == item_on.breach_type
+
+
+# ---------------------------------------------------------------------------
+# B-EM-04 / B-EM-05: the two promises My-Tasks now shows (2026-08-19)
+# ---------------------------------------------------------------------------
+
+
+def _attr_conv(**attrs: Any) -> dict[str, Any]:
+    return {
+        "id": 77,
+        "status": "open",
+        "created_at": int(_NOW.timestamp()) - 3600,
+        "first_reply_created_at": int(_NOW.timestamp()) - 3000,
+        "custom_attributes": dict(attrs),
+    }
+
+
+def test_attend_after_is_surfaced_and_never_sets_breach_type() -> None:
+    """The next-business-hour promise says when work may START. An agent
+    looking at one in the future is early, not late."""
+    item = compute_deadlines(
+        _attr_conv(attend_after="2026-08-20T09:00:00+08:00"), _settings(), _NOW
+    )
+
+    assert item.attend_after_iso == "2026-08-20T09:00:00+08:00"
+    assert item.breach_type is None
+
+
+def test_a_malformed_attend_after_is_ignored_rather_than_raised() -> None:
+    item = compute_deadlines(_attr_conv(attend_after="tomorrow morning"), _settings(), _NOW)
+
+    assert item.attend_after_iso is None
+
+
+def test_the_customer_update_deadline_runs_from_the_dealer_reply() -> None:
+    replied = (_NOW - timedelta(hours=1)).isoformat()
+    settings = _settings(
+        escalation_customer_update_enabled=True, escalation_customer_update_hours=4.0
+    )
+
+    item = compute_deadlines(_attr_conv(escalation_replied_at=replied), settings, _NOW)
+
+    assert item.customer_update_at_iso == (_NOW + timedelta(hours=3)).isoformat()
+    assert item.customer_update_remaining_seconds == 3 * 3600
+    assert item.breach_type is None  # an owed update is not an SLA breach
+
+
+def test_no_customer_update_deadline_once_the_customer_was_told() -> None:
+    settings = _settings(escalation_customer_update_enabled=True)
+    conv = _attr_conv(
+        escalation_replied_at=(_NOW - timedelta(hours=3)).isoformat(),
+        customer_updated_at=(_NOW - timedelta(hours=2)).isoformat(),
+    )
+
+    assert compute_deadlines(conv, settings, _NOW).customer_update_at_iso is None
+
+
+def test_the_customer_update_field_is_absent_while_the_flag_is_off() -> None:
+    conv = _attr_conv(escalation_replied_at=(_NOW - timedelta(hours=9)).isoformat())
+
+    assert compute_deadlines(conv, _settings(), _NOW).customer_update_at_iso is None

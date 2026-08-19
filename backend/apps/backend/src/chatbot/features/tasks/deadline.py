@@ -51,6 +51,18 @@ class TaskItem:
     # means the reminder is overdue -- it never sets breach_type.
     follow_up_at_iso: str | None
     follow_up_remaining_seconds: float | None
+    # B-EM-04: when a case that arrived outside business hours may next be
+    # attended (`agent/`'s intake stamp, computed from next_working_instant).
+    # A promise about when work STARTS, so like follow_up it gets its own
+    # field and never sets breach_type -- an agent looking at an attend_after
+    # in the future is early, not late.
+    attend_after_iso: str | None = None
+    # B-EM-05: when the customer must have been told what the dealer said.
+    # Wall-clock projection for display only; whether it has actually
+    # breached is the SLA engine's decision, on whichever clock that inbox
+    # runs (features/chat/customer_update.py).
+    customer_update_at_iso: str | None = None
+    customer_update_remaining_seconds: float | None = None
 
 
 def _labels(conv: dict[str, Any]) -> list[str]:
@@ -125,6 +137,26 @@ def _follow_up_at_from_conv(conv: dict[str, Any], settings: Settings) -> datetim
     return parsed
 
 
+def _iso_attr(conv: dict[str, Any], key: str) -> datetime | None:
+    """Read an ISO-8601 custom attribute, treating garbage as absent.
+
+    Same parse-and-ignore discipline as ``_follow_up_at_from_conv``: My-Tasks
+    is a read-only view over whatever Chatwoot happens to hold, and one
+    hand-edited attribute must not be able to 500 an agent's task list.
+    """
+    ca = conv.get("custom_attributes")
+    if not isinstance(ca, dict):
+        return None
+    raw = ca.get(key)
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
 def _subject_from(conv: dict[str, Any]) -> str:
     meta = conv.get("meta")
     if isinstance(meta, dict):
@@ -193,6 +225,28 @@ def compute_deadlines(
     follow_up_at_iso = follow_up_dt.isoformat() if follow_up_dt else None
     follow_up_remaining = (follow_up_dt - now).total_seconds() if follow_up_dt else None
 
+    # --- B-EM-04: the next-business-hour promise ---
+    # `agent/` already stamps this at intake and nothing ever showed it, which
+    # is the whole of what was PARTIAL about "attend in next business hour".
+    attend_after_dt = _iso_attr(conv, "attend_after")
+
+    # --- B-EM-05: the customer update owed after a dealer/PIC answered ---
+    # Computed here in wall clock, exactly as the response and resolution
+    # deadlines above are: My-Tasks is a display of times, and the engine that
+    # decides whether one has actually breached (and on which clock) is
+    # features/chat/customer_update.py.
+    customer_update_at_iso: str | None = None
+    customer_update_remaining: float | None = None
+    if getattr(settings, "escalation_customer_update_enabled", False):
+        replied_dt = _iso_attr(conv, "escalation_replied_at")
+        updated_dt = _iso_attr(conv, "customer_updated_at")
+        if replied_dt is not None and not (updated_dt and updated_dt >= replied_dt):
+            due = replied_dt + timedelta(
+                hours=float(getattr(settings, "escalation_customer_update_hours", 4.0))
+            )
+            customer_update_at_iso = due.isoformat()
+            customer_update_remaining = (due - now).total_seconds()
+
     return TaskItem(
         conv_id=conv_id,
         subject=_subject_from(conv),
@@ -206,4 +260,7 @@ def compute_deadlines(
         breach_type=breach_type,
         follow_up_at_iso=follow_up_at_iso,
         follow_up_remaining_seconds=follow_up_remaining,
+        attend_after_iso=attend_after_dt.isoformat() if attend_after_dt else None,
+        customer_update_at_iso=customer_update_at_iso,
+        customer_update_remaining_seconds=customer_update_remaining,
     )

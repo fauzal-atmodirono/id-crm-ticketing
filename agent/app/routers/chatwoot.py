@@ -70,6 +70,11 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks):
         # here rather than on conversation_updated because the requirement is
         # about ARRIVAL, and conversation_updated fires on every label write.
         background_tasks.add_task(sync.maybe_stamp_business_hours, payload)
+        # Stops the customer-update clock a dealer/PIC reply started. Here
+        # rather than on conversation_updated because only the message stream
+        # can tell an outgoing public reply from the private notes that carry
+        # the dealer's answer and its AI draft.
+        background_tasks.add_task(sync.maybe_stamp_customer_update, payload)
         # 4.39: a delivery-status notification means an escalation email never
         # arrived. The DSN lands in this same Email inbox, so it is read here
         # rather than needing a dedicated bounce mailbox.

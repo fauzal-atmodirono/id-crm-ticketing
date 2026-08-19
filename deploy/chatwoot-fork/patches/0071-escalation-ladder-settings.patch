@@ -1,0 +1,308 @@
+diff --git a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
+index 6b74abd..64adc16 100644
+--- a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
++++ b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
+@@ -16,8 +16,42 @@ import {
+   listDealers,
+   upsertDealer,
+   deleteDealer,
++  adminRequest,
+ } from 'dashboard/api/protonAdmin';
+ 
++// The ladder's three endpoints are called through the shared adminRequest
++// rather than through named helpers in protonAdmin.js: they are used by this
++// page and nothing else, and keeping them here means this patch touches one
++// file. adminRequest still carries the Chatwoot session triplet, so they are
++// gated by `escalation.manage` exactly like everything else on this page.
++const LADDER_PATH = '/admin/escalation/ladder';
++
++// Blank input means "inherit the deployment's value", which the API expresses
++// as null. '' would be a 422 and 0 would be a real (and very wrong) timer.
++function numOrNull(value) {
++  const raw = String(value ?? '').trim();
++  if (!raw) return null;
++  const n = Number(raw);
++  return Number.isNaN(n) ? null : n;
++}
++
++const LADDER_RUNGS = [
++  { key: 'step2_hours', label: 'Step 2 — acknowledgement due', hint: 'Dealer CRE is expected to reply by now. Nothing is sent.' },
++  { key: 'step3_hours', label: 'Step 3 — 1st reminder', hint: 'Emails the Dealer Principal.' },
++  { key: 'step4_hours', label: 'Step 4 — 2nd reminder', hint: 'Emails the Dealer Owner.' },
++  { key: 'step5_hours', label: 'Step 5 — telephone', hint: 'Raises a call task. Sends no email.' },
++];
++
++const EMPTY_LADDER_FORM = {
++  enabled: false,
++  dry_run: true,
++  scan_interval_seconds: '',
++  step2_hours: '',
++  step3_hours: '',
++  step4_hours: '',
++  step5_hours: '',
++};
++
+ const EMPTY_PIC_FORM = {
+   department: '',
+   pic_name: '',
+@@ -84,6 +118,14 @@ export default {
+       savingPic: false,
+       savingDealer: false,
+       dealerRoles: DEALER_ROLES,
++      ladderRungs: LADDER_RUNGS,
++      ladderForm: { ...EMPTY_LADDER_FORM },
++      ladderEffective: null,
++      ladderEnvDefaults: null,
++      savingLadder: false,
++      inFlight: [],
++      inFlightError: '',
++      loadingInFlight: false,
+     };
+   },
+   async mounted() {
+@@ -97,6 +139,10 @@ export default {
+         const [pics, dealers] = await Promise.all([listPics(), listDealers()]);
+         this.pics = pics;
+         this.dealers = dealers;
++        // Deliberately after the two awaits above and not inside them: a
++        // tenant whose backend predates the ladder endpoints should still get
++        // a working PIC/dealer page, not a blank one.
++        await this.loadLadder();
+       } catch (err) {
+         this.errored = true;
+         useAlert(
+@@ -106,6 +152,91 @@ export default {
+         this.loading = false;
+       }
+     },
++    // ── Escalation ladder ───────────────────────────────────────────────
++    async loadLadder() {
++      try {
++        const data = await adminRequest(LADDER_PATH);
++        const stored = data.stored || {};
++        this.ladderEffective = data.effective || null;
++        this.ladderEnvDefaults = data.env_defaults || null;
++        this.ladderForm = {
++          // A stored null means "inherit", so the checkbox shows what is
++          // actually in force rather than an unchecked box next to a
++          // running ladder.
++          enabled:
++            stored.enabled === null || stored.enabled === undefined
++              ? Boolean(data.effective && data.effective.enabled)
++              : Boolean(stored.enabled),
++          dry_run:
++            stored.dry_run === null || stored.dry_run === undefined
++              ? Boolean(data.effective && data.effective.dry_run)
++              : Boolean(stored.dry_run),
++          scan_interval_seconds: stored.scan_interval_seconds ?? '',
++          step2_hours: stored.step2_hours ?? '',
++          step3_hours: stored.step3_hours ?? '',
++          step4_hours: stored.step4_hours ?? '',
++          step5_hours: stored.step5_hours ?? '',
++        };
++      } catch (err) {
++        useAlert('Failed to load ladder settings: ' + (err.message || String(err)));
++      }
++      await this.loadInFlight();
++    },
++    async loadInFlight() {
++      this.loadingInFlight = true;
++      this.inFlightError = '';
++      try {
++        const data = await adminRequest(`${LADDER_PATH}/in-flight`);
++        this.inFlight = Array.isArray(data.cases) ? data.cases : [];
++        this.inFlightError = data.error || '';
++      } catch (err) {
++        this.inFlight = [];
++        this.inFlightError = err.message || String(err);
++      } finally {
++        this.loadingInFlight = false;
++      }
++    },
++    async saveLadder() {
++      this.savingLadder = true;
++      try {
++        await adminRequest(LADDER_PATH, {
++          method: 'PUT',
++          body: {
++            enabled: this.ladderForm.enabled,
++            dry_run: this.ladderForm.dry_run,
++            scan_interval_seconds: numOrNull(this.ladderForm.scan_interval_seconds),
++            step2_hours: numOrNull(this.ladderForm.step2_hours),
++            step3_hours: numOrNull(this.ladderForm.step3_hours),
++            step4_hours: numOrNull(this.ladderForm.step4_hours),
++            step5_hours: numOrNull(this.ladderForm.step5_hours),
++          },
++        });
++        useAlert(
++          this.ladderForm.enabled && !this.ladderForm.dry_run
++            ? 'Ladder saved. It is now sending reminders for real.'
++            : 'Ladder settings saved.'
++        );
++        await this.loadLadder();
++      } catch (err) {
++        useAlert('Failed to save ladder settings: ' + (err.message || String(err)));
++      } finally {
++        this.savingLadder = false;
++      }
++    },
++    inFlightLabel(state) {
++      return (
++        {
++          climbing: 'climbing',
++          dealer_replied: 'dealer replied — halted',
++          acknowledged_by_agent: 'marked acknowledged — halted',
++          resolved: 'case resolved — halted',
++          no_dealer: 'no dealer — not climbed',
++          no_step_one: 'never escalated by EM-7',
++          dealer_lookup_failed: 'dealer lookup failed',
++          ladder_complete: 'ladder complete',
++        }[state] || state
++      );
++    },
+     // ── PIC (department -> contact) ─────────────────────────────────────
+     async createPic() {
+       if (
+@@ -298,6 +429,142 @@ export default {
+     </div>
+ 
+     <template v-else>
++      <!-- Escalation ladder -->
++      <h2 class="mb-1 text-base font-medium text-n-slate-12">
++        Escalation ladder
++      </h2>
++      <p class="mb-4 text-sm text-n-slate-11">
++        How long an escalated case may go unanswered before each reminder.
++        Timers are in <strong>working hours</strong> from the moment the case
++        was escalated. Leave a box empty to use the deployment's value.
++      </p>
++
++      <div class="max-w-3xl p-4 mb-6 border rounded-lg border-n-weak">
++        <div class="flex flex-wrap gap-6 mb-4">
++          <label class="flex items-center gap-2 text-sm text-n-slate-12">
++            <input v-model="ladderForm.enabled" type="checkbox" />
++            Enabled
++          </label>
++          <label class="flex items-center gap-2 text-sm text-n-slate-12">
++            <input v-model="ladderForm.dry_run" type="checkbox" />
++            Dry run — log what it would send, send nothing
++          </label>
++          <label class="flex items-center gap-2 text-sm text-n-slate-11">
++            Check every
++            <input
++              v-model="ladderForm.scan_interval_seconds"
++              type="number"
++              min="30"
++              placeholder="300"
++              class="w-24 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++            />
++            seconds
++          </label>
++        </div>
++
++        <p
++          v-if="ladderForm.enabled && !ladderForm.dry_run"
++          class="p-2 mb-4 text-xs rounded text-n-slate-12 bg-n-amber-3"
++        >
++          Reminders will be emailed to real dealer contacts. Run with dry run
++          on first and read the log for a full working week before switching
++          it off.
++        </p>
++
++        <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
++          <div v-for="rung in ladderRungs" :key="rung.key">
++            <label class="block mb-1 text-sm text-n-slate-11">
++              {{ rung.label }}
++            </label>
++            <div class="flex items-center gap-2">
++              <input
++                v-model="ladderForm[rung.key]"
++                type="number"
++                min="0"
++                step="0.5"
++                class="w-24 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++              />
++              <span class="text-xs text-n-slate-11">working hours</span>
++            </div>
++            <p class="mt-1 text-xs text-n-slate-10">{{ rung.hint }}</p>
++          </div>
++        </div>
++
++        <div class="flex items-center gap-4 mt-4">
++          <button
++            type="button"
++            :disabled="savingLadder"
++            class="px-4 py-2 text-sm font-medium rounded-lg w-fit bg-n-brand text-white hover:opacity-90 disabled:opacity-50"
++            @click="saveLadder"
++          >
++            Save ladder settings
++          </button>
++          <span v-if="ladderEffective" class="text-xs text-n-slate-11">
++            In force now:
++            {{ ladderEffective.enabled ? 'enabled' : 'disabled' }},
++            {{ ladderEffective.dry_run ? 'dry run' : 'sending for real' }},
++            every {{ ladderEffective.scan_interval_seconds }}s
++            <template v-if="!ladderEffective.from_store">
++              (from the deployment — nothing set here yet)
++            </template>
++          </span>
++        </div>
++      </div>
++
++      <h3 class="mb-2 text-sm font-medium text-n-slate-12">
++        In flight ({{ inFlight.length }})
++      </h3>
++      <p v-if="inFlightError" class="mb-4 text-sm text-n-slate-11">
++        {{ inFlightError }}
++      </p>
++      <p v-else-if="loadingInFlight" class="mb-4 text-sm text-n-slate-11">
++        Loading…
++      </p>
++      <p v-else-if="!inFlight.length" class="mb-6 text-sm text-n-slate-11">
++        No escalated cases right now.
++      </p>
++      <div v-else class="mb-8 overflow-x-auto border rounded-lg border-n-weak">
++        <table class="w-full text-sm border-collapse text-n-slate-11">
++          <thead>
++            <tr class="text-left border-b border-n-weak text-n-slate-12">
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Case</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Dealer</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Rung</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Next step</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Due in</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">State</th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="row in inFlight"
++              :key="row.conv_id"
++              class="border-b border-n-weak last:border-b-0"
++            >
++              <td class="px-3 py-2 whitespace-nowrap text-n-slate-12">
++                #{{ row.conv_id }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">{{ row.dealer || '—' }}</td>
++              <td class="px-3 py-2 whitespace-nowrap">{{ row.rung ?? '—' }}</td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                {{ row.next_step_no ?? '—' }}
++              </td>
++              <td class="px-3 py-2 whitespace-nowrap">
++                <template v-if="row.next_due_in_working_hours === null">—</template>
++                <template v-else-if="row.next_due_in_working_hours === 0">due now</template>
++                <template v-else>{{ row.next_due_in_working_hours }}h</template>
++              </td>
++              <td
++                class="px-3 py-2 whitespace-nowrap"
++                :class="row.state === 'climbing' ? 'text-n-slate-12' : 'text-n-slate-10'"
++              >
++                {{ inFlightLabel(row.state) }}
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++
+       <!-- PIC section -->
+       <h2 class="mb-3 text-base font-medium text-n-slate-12">
+         Department PICs

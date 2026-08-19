@@ -893,6 +893,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     authz_repo = None
     authz_validator = None
     sla_policy_repo = None
+    ladder_policy_repo = None
     if settings.rbac_enabled and settings.rbac_database_url:
         from chatbot.features.authz.chatwoot_role_mirror import ChatwootRoleMirror
         from chatbot.features.authz.db import build_engine as build_authz_engine
@@ -928,6 +929,33 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             build_sla_policy_router(sla_policy_repo, authz_repo, authz_validator, settings)
         )
         app.state.sla_policy_engine = sla_policy_engine
+
+        # The escalation ladder's own switches and timers, so an operator
+        # retunes them in the CRM instead of in a tenant env file. Same
+        # per-feature-engine convention, same Postgres, `escalation.manage`.
+        from chatbot.features.chat.ladder_policy_db import (
+            build_engine as build_ladder_policy_engine,
+        )
+        from chatbot.features.chat.ladder_policy_db import (
+            build_session_maker as build_ladder_policy_session_maker,
+        )
+        from chatbot.features.chat.ladder_policy_repository import LadderPolicyRepository
+        from chatbot.features.chat.ladder_policy_router import build_ladder_policy_router
+
+        ladder_policy_engine = build_ladder_policy_engine(settings.rbac_database_url)
+        ladder_policy_repo = LadderPolicyRepository(
+            build_ladder_policy_session_maker(ladder_policy_engine)
+        )
+        app.include_router(
+            build_ladder_policy_router(
+                ladder_policy_repo,
+                authz_repo,
+                authz_validator,
+                settings,
+                dealer_store=dealer_store,
+            )
+        )
+        app.state.ladder_policy_engine = ladder_policy_engine
 
         # Reuses the pic_store/dealer_store instances constructed unconditionally
         # above — RBAC gates only the admin CRUD router, not the stores themselves.
@@ -1072,6 +1100,12 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             from chatbot.features.chat.sla_policy_db import init_sla_policy_db
 
             await init_sla_policy_db(sla_policy_engine)
+
+        ladder_policy_engine = getattr(app.state, "ladder_policy_engine", None)
+        if ladder_policy_engine is not None:
+            from chatbot.features.chat.ladder_policy_db import init_ladder_policy_db
+
+            await init_ladder_policy_db(ladder_policy_engine)
 
     # --- P6: agent presence, custom statuses & the workforce dashboard ---
     # Sits after the RBAC block, not with the Phase 5 constructions above, for
@@ -1417,6 +1451,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             chatwoot_client._merge_custom_attributes if chatwoot_client is not None else None
         ),
         conversation_log=chatwoot_client,
+        # With the store wired the job registers unconditionally, so the
+        # admin page's Enabled toggle takes effect without a redeploy.
+        policy_repo=ladder_policy_repo,
     )
     if ladder_scheduler is not None:
 

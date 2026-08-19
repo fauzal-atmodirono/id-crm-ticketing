@@ -25,7 +25,7 @@ sweep ran late.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -201,6 +201,27 @@ def due_step(
             return step
         return None
     return None
+
+
+def apply_delay_overrides(
+    steps: tuple[EscalationStep, ...], overrides: dict[int, float]
+) -> tuple[EscalationStep, ...]:
+    """Return *steps* with operator-set delays laid over the table's own.
+
+    Only the timings move. The roles a rung addresses stay exactly as the
+    table declares them, because that is the SOP's contract and the reason
+    the ladder is worth having -- an admin page that could point the 2nd
+    reminder at the service desk would be a way to defeat the policy from
+    inside the CRM.
+    """
+    if not overrides:
+        return steps
+    return tuple(
+        replace(step, delay_working_hours=float(overrides[step.step_no]))
+        if step.step_no in overrides
+        else step
+        for step in steps
+    )
 
 
 def step_by_no(steps: tuple[EscalationStep, ...], step_no: int) -> EscalationStep | None:

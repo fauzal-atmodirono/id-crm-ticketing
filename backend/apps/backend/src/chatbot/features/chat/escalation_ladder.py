@@ -41,11 +41,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from chatbot.features.chat.escalation_policy import (
     PHONE,
+    apply_delay_overrides,
     describe,
     due_step,
     load_steps,
     resolve_recipients,
 )
+from chatbot.features.chat.ladder_policy_repository import resolve_ladder_config
 from chatbot.features.chat.sla_clock import InboxCache, elapsed_minutes
 from chatbot.features.metrics.sync import fetch_conversations
 
@@ -148,6 +150,7 @@ async def sweep_ladder(
     set_attributes: Any = None,
     now: datetime | None = None,
     inbox_cache: InboxCache | None = None,
+    policy_repo: Any = None,
 ) -> list[dict[str, Any]]:
     """Advance every due case by exactly one rung. Returns what it did.
 
@@ -155,8 +158,17 @@ async def sweep_ladder(
     every other case on the tenant.
     """
     clock = now or datetime.now(UTC)
-    steps = load_steps(getattr(settings, "escalation_policy_steps_json", "") or "")
-    dry_run = bool(getattr(settings, "escalation_policy_dry_run", True))
+    config = await resolve_ladder_config(policy_repo, settings)
+    if not config.enabled:
+        # The scheduler registers unconditionally so the admin page's toggle
+        # takes effect in a running process; this is where "off" is honoured.
+        return []
+
+    steps = apply_delay_overrides(
+        load_steps(getattr(settings, "escalation_policy_steps_json", "") or ""),
+        config.delay_overrides,
+    )
+    dry_run = config.dry_run
     working_hours = bool(getattr(settings, "sla_working_hours_enabled", False))
     cache = inbox_cache if inbox_cache is not None else InboxCache(None)
 
@@ -180,6 +192,101 @@ async def sweep_ladder(
     if acted:
         _log.info("escalation_ladder_swept", count=len(acted), dry_run=dry_run)
     return acted
+
+
+async def describe_in_flight(
+    conversations: list[dict[str, Any]],
+    *,
+    settings: Settings,
+    dealer_store: DealerStore | None = None,
+    policy_repo: Any = None,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Every escalated case and what the ladder is doing with it.
+
+    Read-only, and deliberately built on the SAME `_should_skip`,
+    `_current_step` and `due_step` the sweep uses. A monitoring panel that
+    reimplemented those would eventually disagree with the engine, and a
+    panel that confidently shows the wrong reason a case is not climbing is
+    worse than no panel -- it is the reason two live cases sat unnoticed
+    until someone grepped the container logs.
+
+    Never raises: this backs a page, and a page that 500s tells an operator
+    less than a page with one row missing.
+    """
+    clock = now or datetime.now(UTC)
+    config = await resolve_ladder_config(policy_repo, settings)
+    steps = apply_delay_overrides(
+        load_steps(getattr(settings, "escalation_policy_steps_json", "") or ""),
+        config.delay_overrides,
+    )
+    working_hours = bool(getattr(settings, "sla_working_hours_enabled", False))
+
+    rows: list[dict[str, Any]] = []
+    for conv in conversations:
+        conv_id = conv.get("id")
+        if conv_id is None:
+            continue
+        attrs = _attrs(conv)
+        if ESCALATE_LABEL not in _labels(conv):
+            continue
+
+        slug = _dealer_slug(conv)
+        row: dict[str, Any] = {
+            "conv_id": str(conv_id),
+            "dealer": slug,
+            "rung": _current_step(attrs) if attrs.get(NOTIFIED_ATTR) else None,
+            "escalated_at": attrs.get(NOTIFIED_ATTR),
+            "state": "climbing",
+            "next_step_no": None,
+            "next_due_in_working_hours": None,
+        }
+
+        reason = _should_skip(conv, attrs)
+        if reason is not None:
+            row["state"] = reason
+            rows.append(row)
+            continue
+
+        if slug is None:
+            row["state"] = "no_dealer"
+            rows.append(row)
+            continue
+        if dealer_store is not None:
+            try:
+                if await dealer_store.get(slug) is None:
+                    row["state"] = "no_dealer"
+                    rows.append(row)
+                    continue
+            except Exception:
+                row["state"] = "dealer_lookup_failed"
+                rows.append(row)
+                continue
+
+        started_at = _parse(attrs.get(NOTIFIED_ATTR))
+        if started_at is None:
+            row["state"] = "no_step_one"
+            rows.append(row)
+            continue
+
+        elapsed_hours = (
+            elapsed_minutes(started_at, clock, {}, working_hours=working_hours)
+            / _MINUTES_PER_HOUR
+        )
+        current = _current_step(attrs)
+        upcoming = next(
+            (s for s in sorted(steps, key=lambda s: s.step_no) if s.step_no > current), None
+        )
+        if upcoming is None:
+            row["state"] = "ladder_complete"
+        else:
+            row["next_step_no"] = upcoming.step_no
+            row["next_due_in_working_hours"] = round(
+                max(0.0, upcoming.delay_working_hours - elapsed_hours), 2
+            )
+        rows.append(row)
+
+    return rows
 
 
 async def _advance_one(  # noqa: PLR0911 -- each return is one reason a case is not advanced
@@ -372,9 +479,20 @@ def run_ladder_scan_job(
     set_attributes: Any = None,
     conversation_log: Any = None,
     fetch: Any = None,
+    policy_repo: Any = None,
 ) -> None:
-    """Synchronous entry point for the scheduler. Never raises."""
+    """Synchronous entry point for the scheduler. Never raises.
+
+    Resolves the policy BEFORE fetching conversations. The job is registered
+    unconditionally so the admin page's Enabled toggle takes effect in a
+    running process, and a disabled ladder must therefore cost one small
+    query against its own table -- not a paged walk of every conversation on
+    the tenant, every interval, forever.
+    """
     try:
+        config = asyncio.run(resolve_ladder_config(policy_repo, settings))
+        if not config.enabled:
+            return
         conversations = (fetch or fetch_conversations)(settings)
         asyncio.run(
             sweep_ladder(
@@ -385,6 +503,7 @@ def run_ladder_scan_job(
                 pronet_store=pronet_store,
                 set_attributes=set_attributes,
                 inbox_cache=InboxCache(conversation_log),
+                policy_repo=policy_repo,
             )
         )
     except Exception as exc:
@@ -401,14 +520,21 @@ def start_ladder_scheduler(
     conversation_log: Any = None,
     scheduler: Any | None = None,
     job: Any | None = None,
+    policy_repo: Any = None,
 ) -> Any | None:
-    """Start the ladder sweep when enabled; else return None.
+    """Start the ladder sweep. Returns the scheduler, or None when unwired.
 
     Mirrors `start_sla_scheduler`, including the injectable scheduler/job for
-    tests. With `escalation_policy_enabled` off there is no scheduler at all,
-    so the dark path costs nothing.
+    tests, with one deliberate difference: the job is registered even when the
+    ladder is disabled. Without that, the admin page's Enabled toggle could
+    only take effect at the next deploy -- which is the thing the page exists
+    to avoid. The job itself returns immediately while disabled, before
+    fetching anything, so an unused ladder costs one query per interval.
+
+    `policy_repo=None` (no store wired) keeps the pure-env behaviour, and in
+    that case a disabled ladder is skipped here rather than every interval.
     """
-    if not getattr(settings, "escalation_policy_enabled", False):
+    if policy_repo is None and not getattr(settings, "escalation_policy_enabled", False):
         return None
 
     sched = scheduler or BackgroundScheduler()
@@ -423,6 +549,7 @@ def start_ladder_scheduler(
                 pronet_store=pronet_store,
                 set_attributes=set_attributes,
                 conversation_log=conversation_log,
+                policy_repo=policy_repo,
             )
         ),
         "interval",

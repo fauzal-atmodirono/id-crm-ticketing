@@ -15,7 +15,7 @@ import pytest
 
 from chatbot.features.chat.phone.recording_transcriber import (
     fetch_recording,
-    transcribe_and_attach,
+    process_recording,
     transcribe_recording,
 )
 
@@ -65,10 +65,13 @@ async def test_download_failure_returns_none_and_does_not_raise(settings):
 async def test_attach_writes_a_note_when_transcription_succeeds(settings):
     port = AsyncMock()
     with patch(
-        "chatbot.features.chat.phone.recording_transcriber.transcribe_recording",
-        new=AsyncMock(return_value="CUSTOMER: hello\nAGENT: hi there"),
+        "chatbot.features.chat.phone.recording_transcriber.fetch_recording",
+        new=AsyncMock(return_value=b"audio"),
+    ), patch(
+        "chatbot.features.chat.phone.recording_transcriber._transcribe_sync",
+        return_value="CUSTOMER: hello\nAGENT: hi there",
     ):
-        assert await transcribe_and_attach(settings, port, "42", "https://api.twilio.com/rec")
+        assert await process_recording(settings, port, "42", "https://api.twilio.com/rec")
     port.append_conversation_comment.assert_awaited_once()
     body = port.append_conversation_comment.await_args.args[1]
     assert "CUSTOMER: hello" in body
@@ -81,10 +84,10 @@ async def test_attach_writes_nothing_when_there_is_no_transcript(settings):
     captured this call and there was nothing in it'."""
     port = AsyncMock()
     with patch(
-        "chatbot.features.chat.phone.recording_transcriber.transcribe_recording",
+        "chatbot.features.chat.phone.recording_transcriber.fetch_recording",
         new=AsyncMock(return_value=None),
     ):
-        assert await transcribe_and_attach(settings, port, "42", "https://x") is False
+        assert await process_recording(settings, port, "42", "https://x") is False
     port.append_conversation_comment.assert_not_awaited()
 
 
@@ -94,7 +97,10 @@ async def test_attach_swallows_a_chatwoot_failure(settings):
     port = AsyncMock()
     port.append_conversation_comment.side_effect = RuntimeError("chatwoot down")
     with patch(
-        "chatbot.features.chat.phone.recording_transcriber.transcribe_recording",
-        new=AsyncMock(return_value="CUSTOMER: hi"),
+        "chatbot.features.chat.phone.recording_transcriber.fetch_recording",
+        new=AsyncMock(return_value=b"audio"),
+    ), patch(
+        "chatbot.features.chat.phone.recording_transcriber._transcribe_sync",
+        return_value="CUSTOMER: hi",
     ):
-        assert await transcribe_and_attach(settings, port, "42", "https://x") is False
+        assert await process_recording(settings, port, "42", "https://x") is False

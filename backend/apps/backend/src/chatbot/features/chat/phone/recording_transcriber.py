@@ -30,6 +30,11 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from chatbot.features.chat.phone.recording_archive import (
+    archive_call,
+    note_archive_locations,
+)
+
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
 
@@ -131,30 +136,54 @@ async def transcribe_recording(settings: Settings, recording_url: str) -> str | 
     return text
 
 
-async def transcribe_and_attach(
+async def process_recording(
     settings: Settings,
     log_port: Any,
     ticket_id: str,
     recording_url: str,
+    call_sid: str = "",
 ) -> bool:
-    """Transcribe the recording and append it to the conversation as a note.
+    """Download the recording ONCE, then transcribe it, attach the transcript
+    to the conversation, and archive both to Cloud Storage.
 
-    Idempotency is the caller's problem, not this function's: Twilio redelivers
-    a recording-status callback on any non-2xx, and `append_conversation_comment`
-    is an APPEND. The webhook guards on the recording-attached state before
-    dispatching this. Returns True only when a note was actually written.
+    One download on purpose: transcription and archiving need the same bytes,
+    and fetching twice would double Twilio egress and wall-clock for every
+    call. It also guarantees the archived audio is byte-identical to what was
+    transcribed, so a disputed transcript can be checked against the exact file
+    it came from.
+
+    Each stage is independent -- a failed archive still leaves the transcript
+    on the conversation, a failed transcription still archives the audio.
+    Returns True if anything at all was written.
+
+    Idempotency is the caller's problem: Twilio redelivers this callback on any
+    non-2xx and `append_conversation_comment` is an APPEND.
     """
-    text = await transcribe_recording(settings, recording_url)
-    if not text:
-        return False
-    try:
-        await log_port.append_conversation_comment(
-            ticket_id,
-            "[Full call transcript — includes the human agent portion, which the "
-            "live AI transcript cannot cover]\n\n" + text,
-        )
-    except Exception as e:
-        _log.error("recording_transcript_attach_failed", ticket_id=ticket_id, error=str(e))
-        return False
-    _log.info("recording_transcript_attached", ticket_id=ticket_id)
-    return True
+    wrote = False
+    audio: bytes | None = None
+    if settings.phone_recording_transcription_enabled or settings.phone_recording_archive_enabled:
+        audio = await fetch_recording(settings, recording_url)
+
+    text: str | None = None
+    if audio and settings.phone_recording_transcription_enabled:
+        _log.info("recording_transcribe_started", bytes=len(audio))
+        text = await asyncio.to_thread(_transcribe_sync, settings, audio)
+        if text:
+            _log.info("recording_transcribe_succeeded", chars=len(text))
+            try:
+                await log_port.append_conversation_comment(
+                    ticket_id,
+                    "[Full call transcript \u2014 includes the human agent portion, which "
+                    "the live AI transcript cannot cover]\n\n" + text,
+                )
+                _log.info("recording_transcript_attached", ticket_id=ticket_id)
+                wrote = True
+            except Exception as e:
+                _log.error("recording_transcript_attach_failed", ticket_id=ticket_id, error=str(e))
+
+    if settings.phone_recording_archive_enabled:
+        uris = await archive_call(settings, call_sid, audio, text)
+        if uris:
+            await note_archive_locations(log_port, ticket_id, uris)
+            wrote = True
+    return wrote

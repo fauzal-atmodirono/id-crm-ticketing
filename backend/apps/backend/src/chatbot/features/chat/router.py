@@ -42,7 +42,7 @@ from chatbot.features.chat.phone.handoff_csat_tools import (
     SUBMIT_CSAT_TOOL,
     SUBMIT_NPS_TOOL,
 )
-from chatbot.features.chat.phone.recording_transcriber import transcribe_and_attach
+from chatbot.features.chat.phone.recording_transcriber import process_recording
 from chatbot.features.chat.phone.handoff_target import fanout_twiml
 from chatbot.features.chat.phone.kb_tool import KB_SEARCH_TOOL
 from chatbot.features.chat.phone.rate_limit import RateLimiter
@@ -1813,13 +1813,14 @@ class ChatRouter:
         # neither delay nor change the 200 above. This is the only way the
         # HUMAN agent's half of the call reaches the CRM -- the live transcript
         # stops the moment <Connect><Stream> is replaced by <Dial>.
-        if settings.phone_recording_transcription_enabled:
+        if settings.phone_recording_transcription_enabled or settings.phone_recording_archive_enabled:
             background_tasks.add_task(
-                transcribe_and_attach,
+                process_recording,
                 settings,
                 port,
                 ticket_id,
                 params.get("RecordingUrl", ""),
+                call_sid,
             )
         return Response(status_code=200)
 

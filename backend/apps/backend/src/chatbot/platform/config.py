@@ -509,6 +509,16 @@ class Settings(BaseSettings):
     # nothing to transcribe.
     phone_recording_transcription_enabled: bool = False
     recording_transcription_model: str = "gemini-2.5-flash"
+    # Copy the finished recording and its transcript to a bucket the TENANT
+    # owns. Twilio is otherwise the only copy, which puts residency in
+    # Twilio's region, makes PHONE_RECORDING_RETENTION_DAYS unenforceable
+    # (no delete adapter exists), and bills storage forever. Layout is
+    # <prefix>/<YYYY-MM-DD>/<CallSid>.<mp3|txt> -- date-partitioned so a GCS
+    # lifecycle rule can make retention real.
+    phone_recording_archive_enabled: bool = False
+    phone_recording_archive_bucket: str = ""
+    phone_recording_archive_prefix: str = "proton-crm/call-recording"
+    phone_recording_archive_format: str = "mp3"  # mp3 | wav
     # Browser-softphone access tokens (Twilio Voice grant)
     twilio_api_key_sid: str = ""
     twilio_api_key_secret: str = ""

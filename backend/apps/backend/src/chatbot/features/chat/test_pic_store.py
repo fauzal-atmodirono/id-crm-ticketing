@@ -324,3 +324,99 @@ async def test_dealer_delete_swallows_exception() -> None:
         MockClient.return_value.collection.return_value.document.return_value = doc
         # Should not raise
         await _dealer_store().delete("acme")
+
+
+# ---------------------------------------------------------------------------
+# The escalation ladder's four dealer roles (2026-08-19)
+# ---------------------------------------------------------------------------
+
+from chatbot.features.chat.pic_store import (  # noqa: E402
+    DEALER_ROLES,
+    ProtonNetRecord,
+    _dealer_record_from_dict,
+)
+
+
+def test_a_legacy_group_record_reads_its_first_address_as_the_cre() -> None:
+    """Every dealer record written before the ladder holds one group that was
+    used exactly as the CRE is used now: first contact on escalation. Reading
+    it that way keeps the live tenant working with no migration."""
+    rec = _dealer_record_from_dict({"dealer": "kl", "emails": ["desk@kl.my", "b@kl.my"]}, "kl")
+
+    assert rec.contact("cre") == "desk@kl.my"
+    assert rec.emails == ["desk@kl.my", "b@kl.my"]  # the group itself is untouched
+
+
+def test_the_senior_roles_never_fall_back_to_the_group() -> None:
+    """Mailing a Dealer Owner an address that was only ever meant for the
+    service desk is worse than skipping the step."""
+    rec = _dealer_record_from_dict({"dealer": "kl", "emails": ["desk@kl.my"]}, "kl")
+
+    assert rec.contact("principal") == ""
+    assert rec.contact("owner") == ""
+    assert rec.contact("sales_aftersales_mgr") == ""
+
+
+def test_an_explicit_contact_wins_over_the_legacy_group() -> None:
+    rec = _dealer_record_from_dict(
+        {"dealer": "kl", "emails": ["desk@kl.my"], "contacts": {"cre": "cre@kl.my"}}, "kl"
+    )
+
+    assert rec.contact("cre") == "cre@kl.my"
+
+
+def test_the_full_role_map_round_trips_with_the_region() -> None:
+    rec = _dealer_record_from_dict(
+        {
+            "dealer": "kl",
+            "emails": [],
+            "region": "central",
+            "contacts": {
+                "cre": "cre@kl.my",
+                "sales_aftersales_mgr": "sam@kl.my",
+                "principal": "dp@kl.my",
+                "owner": "owner@kl.my",
+            },
+        },
+        "kl",
+    )
+
+    assert [rec.contact(r) for r in DEALER_ROLES] == [
+        "cre@kl.my",
+        "sam@kl.my",
+        "dp@kl.my",
+        "owner@kl.my",
+    ]
+    assert rec.region == "central"
+
+
+def test_an_unknown_role_key_is_dropped_rather_than_stored() -> None:
+    """A typo'd role would otherwise sit in Firestore looking configured
+    while no step ever reads it."""
+    rec = _dealer_record_from_dict(
+        {"dealer": "kl", "contacts": {"principle": "typo@kl.my"}}, "kl"
+    )
+
+    assert rec.contacts == {}
+    assert rec.contact("principal") == ""
+
+
+def test_an_unknown_role_lookup_returns_empty_and_does_not_raise() -> None:
+    rec = _dealer_record_from_dict({"dealer": "kl"}, "kl")
+
+    assert rec.contact("nobody") == ""
+
+
+def test_a_record_with_no_contacts_at_all_is_still_usable() -> None:
+    rec = _dealer_record_from_dict({}, "kl")
+
+    assert rec.dealer == "kl"
+    assert all(rec.contact(role) == "" for role in DEALER_ROLES)
+
+
+def test_pronet_record_reads_its_two_roles() -> None:
+    rec = ProtonNetRecord(region="central", area_regional_mgr="arm@proton.my", hod="hod@proton.my")
+
+    assert rec.contact("area_regional_mgr") == "arm@proton.my"
+    assert rec.contact("hod") == "hod@proton.my"
+    assert rec.contact("owner") == ""  # a dealer role is not a PRO-NET role

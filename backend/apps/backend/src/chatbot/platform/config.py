@@ -413,6 +413,25 @@ class Settings(BaseSettings):
     # Phone (real-time Gemini Live) settings. Vertex publisher model id — the
     # AI-Studio name "gemini-live-2.5-flash-preview" is rejected by Vertex (1008).
     gemini_live_model: str = "gemini-live-2.5-flash-native-audio"
+    # Barge-in sensitivity for the phone Live session. Gemini's DEFAULT VAD is
+    # tuned for clean microphone audio; this bridge only ever carries mu-law
+    # 8 kHz telephony, where line noise, a cough or a door closing were enough
+    # to register as speech and cut the assistant off mid-sentence (reported
+    # from proton, 2026-08-19: "a little sound will be breaking the AI agent").
+    # LOW start sensitivity = harder to trigger a barge-in. LOW end sensitivity
+    # plus a longer silence window = the model waits longer before deciding the
+    # CALLER has finished, which matters on a slow or hesitant speaker.
+    # Set gemini_live_vad_enabled=false to fall back to the SDK defaults.
+    gemini_live_vad_enabled: bool = True
+    gemini_live_vad_start_sensitivity: str = "LOW"  # LOW | HIGH
+    gemini_live_vad_end_sensitivity: str = "LOW"  # LOW | HIGH
+    # Audio kept BEFORE detected speech, so a barge-in does not clip its own
+    # first syllable.
+    gemini_live_vad_prefix_padding_ms: int = 300
+    # Silence required before the caller's turn is considered over. Twilio's
+    # default is far shorter; on a phone call that produced the model talking
+    # over a caller who simply paused to think.
+    gemini_live_vad_silence_duration_ms: int = 900
     gemini_live_voice: str = "Kore"
     # Optional output language hint (e.g. "ms-MY" for Bahasa Melayu). Empty = let
     # the model auto-detect. Only honored by half-cascade Live models; native-audio

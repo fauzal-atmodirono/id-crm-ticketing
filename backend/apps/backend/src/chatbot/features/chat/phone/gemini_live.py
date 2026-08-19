@@ -77,13 +77,56 @@ def _build_live_config(
     )
     if settings.gemini_live_language:
         speech_config.language_code = settings.gemini_live_language
-    return types.LiveConnectConfig(
+    config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         system_instruction=system_instruction,
         tools=tools,
         speech_config=speech_config,
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
+    )
+    if settings.gemini_live_vad_enabled:
+        config.realtime_input_config = _build_vad_config(settings)
+    return config
+
+
+def _build_vad_config(settings: Settings) -> types.RealtimeInputConfig:
+    """Barge-in tuning for telephony.
+
+    Left unset, the Live API applies its own defaults, which assume a clean
+    microphone. This bridge only ever carries mu-law 8 kHz phone audio, where
+    line noise and room sound sit much closer to the speech threshold -- on
+    proton that meant "a little sound will be breaking the AI agent": the
+    assistant was cut off mid-sentence by noise that was never a caller trying
+    to speak.
+
+    LOW start sensitivity raises the bar for what counts as the caller starting
+    to talk. LOW end sensitivity plus a longer silence window stops the model
+    treating a mid-sentence pause as the caller's turn ending, which is what
+    made it talk over people who were still thinking.
+
+    Unknown sensitivity strings fall back to LOW rather than raising: this runs
+    while a caller is connecting, and a typo in a tenant env must not fail the
+    call. LOW is also the safer wrong answer -- it under-triggers rather than
+    interrupting.
+    """
+    start = (
+        types.StartSensitivity.START_SENSITIVITY_HIGH
+        if settings.gemini_live_vad_start_sensitivity.upper() == "HIGH"
+        else types.StartSensitivity.START_SENSITIVITY_LOW
+    )
+    end = (
+        types.EndSensitivity.END_SENSITIVITY_HIGH
+        if settings.gemini_live_vad_end_sensitivity.upper() == "HIGH"
+        else types.EndSensitivity.END_SENSITIVITY_LOW
+    )
+    return types.RealtimeInputConfig(
+        automatic_activity_detection=types.AutomaticActivityDetection(
+            start_of_speech_sensitivity=start,
+            end_of_speech_sensitivity=end,
+            prefix_padding_ms=settings.gemini_live_vad_prefix_padding_ms,
+            silence_duration_ms=settings.gemini_live_vad_silence_duration_ms,
+        )
     )
 
 

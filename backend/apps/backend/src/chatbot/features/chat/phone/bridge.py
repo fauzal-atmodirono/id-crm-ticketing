@@ -147,6 +147,7 @@ class PhoneBridge:
         call_control: CallControl | None = None,
         handoff_resolver: HandoffTargetResolver | None = None,
         softphone_registry: SoftphoneRegistry | None = None,
+        presence_fetcher: Any | None = None,
     ) -> None:
         self._live = live
         self._knowledge = knowledge_port
@@ -166,6 +167,9 @@ class PhoneBridge:
         # phone_handoff_enabled is off -- resolve() checks the flag first
         # and never touches the log port otherwise.
         self._softphone_registry = softphone_registry
+        # Lets the resolver fan out when a conversation has no assignee -- the
+        # normal case for an inbound phone call.
+        self._presence_fetcher = presence_fetcher
         self._rebuild_handoff_resolver(handoff_resolver)
         # Review fix (Important 2): once a redirect has actually been
         # accepted by Twilio, the call is mid-<Dial> -- a SECOND
@@ -282,6 +286,7 @@ class PhoneBridge:
                     self._log_port,
                     self._softphone_registry,
                     lambda: self.ticket_id,
+                    self._presence_fetcher,
                 ),
                 pstn,
             ]
@@ -679,11 +684,14 @@ class PhoneBridge:
         if not action_url:
             _log.warning("phone_handoff_no_action_url_configured", call_sid=self.call_sid)
             return "ticket_created"
-        timeout = (
-            self._settings.phone_agent_ring_timeout_seconds
-            if target.kind == "client"
-            else self._settings.phone_handoff_timeout_seconds
-        )
+        if target.kind == "client":
+            timeout = self._settings.phone_agent_ring_timeout_seconds
+        elif target.kind == "clients":
+            # Immediate fan-out: give it the fan-out budget, not the shorter
+            # single-agent one -- several people need a chance to reach for it.
+            timeout = self._settings.phone_fanout_ring_timeout_seconds
+        else:
+            timeout = self._settings.phone_handoff_timeout_seconds
         twiml = dial_twiml(
             target,
             action_url,

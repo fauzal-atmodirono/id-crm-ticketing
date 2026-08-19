@@ -63,11 +63,17 @@ class AgentClientResolver:
         log_port: ConversationLogPort,
         registry: SoftphoneRegistry,
         ticket_id_provider: Callable[[], str | None],
+        presence_fetcher: Any | None = None,
     ) -> None:
         self._settings = settings
         self._log_port = log_port
         self._registry = registry
         self._ticket_id_provider = ticket_id_provider
+        # Needed to fan out when stage 1 has nobody specific to ring. Optional
+        # so every existing construction site (and test) keeps working; with
+        # None, an unassigned conversation falls through to the PSTN chain as
+        # it did before.
+        self._presence_fetcher = presence_fetcher
         # Warmed by prefetch(); None = cold, in which case resolve() does the
         # lookups inline (bounded by the caller's asyncio.wait_for).
         self._target: HandoffTarget | None = None
@@ -139,11 +145,20 @@ class AgentClientResolver:
             _log.error("agent_client_assignee_lookup_failed", ticket_id=ticket_id, error=str(e))
             raise
         if not assignee:
-            return None
+            # This path used to `return None` SILENTLY, and it is the single
+            # most common inbound case: Chatwoot phone conversations are
+            # created unassigned. Returning None sent the chain to the PSTN
+            # resolver and, with no hunt-group number configured, to
+            # "ticket_created" -- no dial at all, so the stage-2 fan-out (which
+            # only fires from a stage-1 dial's callback) never ran and NOBODY
+            # rang. Fan out immediately instead. The missing log line is why
+            # this was invisible in production.
+            _log.info("agent_client_no_assignee_fanning_out", ticket_id=ticket_id)
+            return await self._fanout_target()
         agent_id = assignee_to_agent_id(assignee)
         if agent_id is None:
             _log.warning("agent_client_assignee_not_numeric", assignee=str(assignee))
-            return None
+            return await self._fanout_target()
         try:
             registered = await self._registry.registered_ids()
         except Exception as e:
@@ -151,8 +166,44 @@ class AgentClientResolver:
             raise
         if agent_id not in registered:
             _log.info("agent_client_assignee_not_registered", agent_id=agent_id)
-            return None
+            return await self._fanout_target()
         return HandoffTarget(kind="client", value=agent_identity(agent_id))
+
+    async def _fanout_target(self) -> HandoffTarget | None:
+        """Every agent who is BOTH registered on a softphone and `online` in
+        Chatwoot, as a single multi-noun `<Dial>` target.
+
+        Used whenever stage 1 has no one specific to ring. `busy`/`offline`
+        are excluded deliberately -- `busy` means already on something, and
+        ringing them would interrupt one customer to serve another.
+
+        Returns None (chain continues to the PSTN fallback, then the apology)
+        when nobody is eligible. Raises on I/O failure so `prefetch()` does not
+        cache a transient outage as "nobody available".
+        """
+        if self._presence_fetcher is None:
+            return None
+        registered = await self._registry.registered_ids()
+        agents = await self._presence_fetcher.fetch_agents()
+        eligible = sorted(
+            a.id for a in agents if a.id in registered and a.availability_status == "online"
+        )
+        cap = self._settings.phone_fanout_max_agents
+        if len(eligible) > cap:
+            # Twilio rejects a <Dial> with more than 10 nouns, which DROPS a
+            # live call. Logged because silent truncation reads as "we rang
+            # everyone" when we did not.
+            _log.warning(
+                "agent_client_fanout_capped", eligible=len(eligible), cap=cap, dropped=eligible[cap:]
+            )
+            eligible = eligible[:cap]
+        if not eligible:
+            _log.info("agent_client_fanout_nobody_available")
+            return None
+        _log.info("agent_client_fanout", agents=len(eligible))
+        return HandoffTarget(
+            kind="clients", value=",".join(agent_identity(i) for i in eligible)
+        )
 
 
 def assignee_to_agent_id(assignee: Any) -> int | None:

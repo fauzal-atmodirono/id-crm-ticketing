@@ -1628,6 +1628,7 @@ class ChatRouter:
                     websocket.send_json,
                     settings,
                     softphone_registry=self._softphone_registry,
+            presence_fetcher=self._presence_fetcher,
                 )
 
                 # Feed the "start" frame read above so bridge.stream_sid is set

@@ -192,3 +192,80 @@ async def test_chain_survives_a_slow_resolver_and_still_tries_the_fallback():
 
     assert result == HandoffTarget(kind="pstn", value="+60388889999")
     second.resolve.assert_awaited_once()
+
+
+class _Agent:
+    def __init__(self, agent_id: int, status: str = "online") -> None:
+        self.id = agent_id
+        self.availability_status = status
+
+
+def _presence(*agents):
+    from unittest.mock import AsyncMock
+
+    p = AsyncMock()
+    p.fetch_agents.return_value = list(agents)
+    return p
+
+
+async def test_unassigned_conversation_fans_out_instead_of_giving_up(
+    settings, log_port, registry
+):
+    """THE production failure of 2026-08-19: Chatwoot creates phone
+    conversations UNASSIGNED, so this was the normal path -- and it used to
+    return None silently. The chain then fell to the PSTN resolver, which had
+    no number configured, so `_attempt_transfer` returned "ticket_created",
+    NO <Dial> was ever placed, and stage-2 fan-out (reachable only from a
+    stage-1 dial's callback) never ran. Nobody rang, on every single call."""
+    log_port.get_conversation_assignee.return_value = None
+    registry.registered_ids.return_value = {1, 7}
+
+    resolver = AgentClientResolver(
+        settings, log_port, registry, lambda: "42", _presence(_Agent(1), _Agent(7))
+    )
+    target = await resolver.resolve()
+
+    assert target is not None, "an unassigned conversation must still ring somebody"
+    assert target.kind == "clients"
+    assert sorted(target.value.split(",")) == ["agent_1", "agent_7"]
+
+
+async def test_fanout_excludes_busy_and_unregistered(settings, log_port, registry):
+    log_port.get_conversation_assignee.return_value = None
+    registry.registered_ids.return_value = {1, 2}  # 3 is online but not registered
+
+    resolver = AgentClientResolver(
+        settings,
+        log_port,
+        registry,
+        lambda: "42",
+        _presence(_Agent(1, "online"), _Agent(2, "busy"), _Agent(3, "online")),
+    )
+    target = await resolver.resolve()
+
+    assert target.value == "agent_1"
+
+
+async def test_fanout_with_nobody_eligible_resolves_none(settings, log_port, registry):
+    """Falls through to the PSTN chain and ultimately the apology -- never a
+    <Dial> with zero nouns, which is a TwiML error on a live call."""
+    log_port.get_conversation_assignee.return_value = None
+    registry.registered_ids.return_value = set()
+
+    resolver = AgentClientResolver(settings, log_port, registry, lambda: "42", _presence())
+    assert await resolver.resolve() is None
+
+
+async def test_assignee_still_wins_over_fanout(settings, log_port, registry):
+    """Stage 1 must keep its priority: a registered assignee is rung ALONE, so
+    a returning caller reaches the person who already knows their case."""
+    log_port.get_conversation_assignee.return_value = "7"
+    registry.registered_ids.return_value = {1, 7}
+
+    resolver = AgentClientResolver(
+        settings, log_port, registry, lambda: "42", _presence(_Agent(1), _Agent(7))
+    )
+    target = await resolver.resolve()
+
+    assert target.kind == "client"
+    assert target.value == "agent_7"

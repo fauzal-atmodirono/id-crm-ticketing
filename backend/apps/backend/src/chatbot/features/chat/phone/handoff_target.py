@@ -224,8 +224,17 @@ def dial_twiml(
     them. They exist for `<Client>`, where they arrive in the browser as
     `call.customParameters`.
     """
-    if target.kind == "client":
-        noun = _client_noun(target.value, parameters)
+    if target.kind in ("client", "clients"):
+        # "clients" is the immediate fan-out target: a comma-separated list of
+        # identities, emitted as one <Client> noun each so Twilio rings them
+        # simultaneously and the first to accept wins. It exists because a
+        # freshly created phone conversation has NO assignee, so stage 1 has
+        # nobody to ring -- and stage 2's fan-out is only reachable from the
+        # dial-status callback of an actual stage-1 dial. Without this, the
+        # single most common inbound case rang nobody at all.
+        # The CALLER enforces Twilio's 10-noun cap; see AgentClientResolver.
+        identities = [i for i in target.value.split(",") if i]
+        noun = "".join(_client_noun(i, parameters) for i in identities)
         caller_id_attr = ""
     else:
         noun = f"<Number>{escape(target.value)}</Number>"

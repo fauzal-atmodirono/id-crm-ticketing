@@ -249,5 +249,8 @@ async def test_customer_reply_still_skipped_when_email_does_not_match(monkeypatc
 
     await escalation_replies.maybe_link_escalation_reply(_payload(sender="stranger@test"))
 
-    assert not messages.called
+    # Not treated as the customer and not linked; surfaced as a pointer note
+    # naming the address, without the body (see test_escalation_reply_linking).
+    assert messages.called
+    assert "stranger@test" in messages.calls[0].request.content.decode()
     get_proton_config_client.cache_clear()

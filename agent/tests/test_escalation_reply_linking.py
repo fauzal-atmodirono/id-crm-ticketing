@@ -157,7 +157,16 @@ async def test_skips_unknown_sender(monkeypatch):
 
     await escalation_replies.maybe_link_escalation_reply(_payload(sender="stranger@test"))
 
-    assert not messages.called
+    # The reply is NOT linked -- but it is surfaced, because silently
+    # dropping mail addressed to a real case is how a genuine dealer reply
+    # from an address nobody added to Escalation Routing disappears.
+    assert messages.called
+    posted = messages.calls[0].request.content.decode()
+    assert "stranger@test" in posted
+    # ...as a pointer only. Copying the body is exactly what the allowlist
+    # exists to prevent: a conversation id is guessable, so anyone who can
+    # send mail could otherwise inject text into a stranger's case.
+    assert "Dealer here" not in posted
     get_proton_config_client.cache_clear()
 
 

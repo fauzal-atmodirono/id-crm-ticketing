@@ -37,6 +37,23 @@ _REPLIED_ATTR = "escalation_replied_at"
 _REPLIED_LABEL = "escalation_replied"
 _ORPHAN_LABEL = "escalation_reply"
 
+# Subject prefixes autoresponders use, lowercased. Deliberately prefixes and
+# not substrings: "our automatic reply system failed" is a human writing
+# about one, and matching it anywhere in the line would suppress a real
+# answer. English plus the Malay forms a Proton dealer's mailbox produces.
+_AUTO_REPLY_SUBJECTS = (
+    "automatic reply",
+    "auto reply",
+    "autoreply",
+    "auto-reply",
+    "out of office",
+    "out-of-office",
+    "away from my mail",
+    "on leave",
+    "balasan automatik",
+    "tidak di pejabat",
+)
+
 # `support+case42@host` in a To/Cc header — the primary correlation key.
 _ADDRESS_TOKEN = re.compile(r"\+case(\d+)@", re.IGNORECASE)
 # `[CASE-42]` in the subject — the fallback for relays that strip
@@ -78,6 +95,47 @@ def extract_case_id(message: dict) -> int | None:
                 return int(match.group(1))
     match = _SUBJECT_TOKEN.search(str(meta.get("subject") or ""))
     return int(match.group(1)) if match else None
+
+
+def is_auto_reply(message: dict) -> bool:
+    """Is this an out-of-office / vacation autoresponder rather than a person?
+
+    This matters more than it looks. A dealer's "I am on leave until Monday"
+    is delivered by the same mailbox, from the same allowlisted address, as
+    their real answer -- so without this check it stamps
+    `escalation_replied_at`, which halts the escalation ladder, records an
+    acknowledgement against the SLA, and starts the customer-update clock.
+    An away message would satisfy the entire escalation policy.
+
+    Two detectors, because Chatwoot's parsed `content_attributes.email` does
+    not reliably carry raw headers:
+
+    * RFC 3834 `Auto-Submitted` (anything but `no`) and the de-facto
+      `X-Autoreply` / `X-Autorespond`, read from the email metadata or a
+      `headers` map when Chatwoot happens to include them; and
+    * the subject prefixes every mail client in practice uses, which is what
+      actually catches these on a Chatwoot Email inbox today.
+
+    False negatives are the acceptable failure: a missed auto-reply means a
+    reminder that should have been suppressed still goes out, which is
+    noise. A false positive would drop a real dealer answer on the floor.
+    """
+    meta = _email_meta(message)
+    headers = meta.get("headers") if isinstance(meta.get("headers"), dict) else {}
+    lookup = {str(k).lower().replace("-", "_"): v for k, v in {**meta, **headers}.items()}
+
+    auto_submitted = str(lookup.get("auto_submitted") or "").strip().lower()
+    if auto_submitted and auto_submitted != "no":
+        return True
+    if any(lookup.get(key) for key in ("x_autoreply", "x_autorespond", "x_auto_response_suppress")):
+        return True
+
+    subject = str(meta.get("subject") or "").strip().lower()
+    # Strip the reply/forward prefixes a mail client may have stacked on
+    # top, so "Re: Automatic reply: ..." is still caught.
+    while subject.startswith(("re:", "fwd:", "fw:")):
+        subject = subject.split(":", 1)[1].strip()
+    return subject.startswith(_AUTO_REPLY_SUBJECTS)
 
 
 def strip_quoted_trail(text: str) -> str:
@@ -235,6 +293,30 @@ async def maybe_link_escalation_reply(payload: dict) -> None:
                     "escalation_replies: sender %s is not an escalation contact, skipping",
                     sender_email,
                 )
+                # Surfaced, but only as a pointer. Copying the body onto the
+                # case is exactly what the allowlist exists to prevent --
+                # a conversation id is guessable, so anyone who can send mail
+                # could otherwise inject text into a stranger's case. Naming
+                # the address and where to read it lets an agent judge it
+                # without this service having judged it for them.
+                try:
+                    await chatwoot.create_message(
+                        case_id,
+                        (
+                            f"An emailed reply for this case arrived from {sender_email}, "
+                            "which is not on the escalation contact list, so it was not "
+                            f"linked. Read it on conversation {reply_conv_id} and add the "
+                            "address to Escalation Routing if it is genuine."
+                        ),
+                        private=True,
+                    )
+                except Exception:
+                    logger.exception(
+                        "escalation_replies: failed to surface unknown sender %s on "
+                        "conversation %s",
+                        sender_email,
+                        case_id,
+                    )
                 return
             sender_name = contacts.get(sender_email) or sender_email
 
@@ -278,6 +360,32 @@ async def maybe_link_escalation_reply(payload: dict) -> None:
                     private=True,
                 )
             await chatwoot.toggle_status(case_id, "open")
+        elif is_auto_reply(payload):
+            # An away message is not an answer. It arrives from the same
+            # allowlisted address as a real reply, so without this branch it
+            # would stamp escalation_replied_at -- halting the escalation
+            # ladder, satisfying the acknowledgement SLA and starting the
+            # customer-update clock, all on "I am on leave until Monday".
+            #
+            # The note still goes on: an agent seeing that the dealer contact
+            # is away is useful, and is the cue to escalate by another route.
+            # No stamp, no acknowledgement, no draft -- and deliberately no
+            # `escalation_replied` label, so the ladder keeps climbing.
+            logger.info(
+                "escalation_replies: auto-reply from %s on conversation %s; noted but "
+                "not treated as an acknowledgement",
+                sender_email,
+                case_id,
+            )
+            await chatwoot.create_message(
+                case_id,
+                (
+                    f"Automatic reply from {sender_name} <{sender_email}> "
+                    "(not counted as a response; the escalation clock is still "
+                    f"running):\n\n{text}"
+                ),
+                private=True,
+            )
         else:
             # Deliberately note-then-stamp, not the reverse: if
             # create_message fails, the exception below aborts before the

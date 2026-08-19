@@ -227,7 +227,7 @@
         setStatus('Error');
         showBanner('error', 'Failed to load tasks: ' + escapeHtml(String(err.message)));
         document.getElementById('tasks-body').innerHTML =
-          '<tr><td colspan="6"><div class="empty-state">Could not load tasks.</div></td></tr>';
+          '<tr><td colspan="8"><div class="empty-state">Could not load tasks.</div></td></tr>';
       }
       scheduleNextRefresh();
     }
@@ -247,6 +247,20 @@
           beep(330, 600);
           notifiedConvIds.add(convId);
           toast('error', `Case #${convId} (${t.subject}) has breached its SLA!`);
+        } else if (
+          t.customerUpdateRemainingSeconds !== null &&
+          t.customerUpdateRemainingSeconds !== undefined &&
+          t.customerUpdateRemainingSeconds < 0
+        ) {
+          // The hard part is already done -- a dealer answered -- and the
+          // customer still does not know. Worth the same nudge as a breach.
+          sendDesktopNotification(
+            `Customer waiting — Case #${convId}`,
+            `${t.subject}: the dealer has answered and the customer has not been updated.`
+          );
+          beep(WARNING_SOUND_FREQ, 300);
+          notifiedConvIds.add(convId);
+          toast('warning', `Case #${convId} (${t.subject}): the customer is still waiting for the dealer's answer.`);
         } else if (
           t.resolutionRemainingSeconds !== null &&
           t.resolutionRemainingSeconds < warningThresholdMinutes * 60
@@ -268,7 +282,7 @@
     function renderTable(tasks) {
       const body = document.getElementById('tasks-body');
       if (!tasks.length) {
-        body.innerHTML = '<tr><td colspan="6"><div class="empty-state">No open tasks. Well done!</div></td></tr>';
+        body.innerHTML = '<tr><td colspan="8"><div class="empty-state">No open tasks. Well done!</div></td></tr>';
         return;
       }
       body.innerHTML = tasks.map((t) => {
@@ -291,6 +305,20 @@
             ? `<span class="badge badge-warning">WARNING</span>`
             : `<span class="badge badge-ok">OK</span>`;
 
+        // The dealer answered and the customer still has not been told.
+        // Its own column, never folded into the SLA countdowns: those two
+        // are about answering the case, this one is about passing an answer
+        // on, and an agent needs to see which of the two they owe.
+        const cuSec = t.customerUpdateRemainingSeconds;
+        const cuClass = cuSec === null || cuSec === undefined ? ''
+          : cuSec < 0 ? 'breach'
+            : cuSec < warningThresholdMinutes * 60 ? 'warning' : 'ok';
+        const cuDisplay = cuSec === null || cuSec === undefined ? '—' : fmtDuration(cuSec);
+
+        // Not a countdown: an attend_after in the future means the case is
+        // waiting for business hours, which is correct, not late.
+        const attendDisplay = t.attendAfterIso ? fmtClock(t.attendAfterIso) : '—';
+
         const chatwootBase = backendBaseUrl.replace(/\/api.*/, '');
         const convLink = `${escapeAttr(chatwootBase)}/app/conversations/${escapeAttr(t.convId)}`;
 
@@ -301,6 +329,8 @@
             <td>${escapeHtml(t.status)}</td>
             <td><span class="countdown ${respClass}">${respDisplay}</span></td>
             <td><span class="countdown ${resClass}">${resDisplay}</span></td>
+            <td><span class="countdown ${cuClass}">${cuDisplay}</span></td>
+            <td>${escapeHtml(attendDisplay)}</td>
             <td>${badge}</td>
           </tr>
         `;
@@ -344,6 +374,19 @@
 
     function fmtTime(date) {
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    // An ISO instant as a short local day + time, for attend_after. A raw
+    // ISO string in a table cell is unreadable, and a countdown would be
+    // wrong: this is when work may start, not a deadline running out.
+    function fmtClock(iso) {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return '—';
+      return d.toLocaleString([], {
+        weekday: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
     }
 
     function escapeHtml(text) {

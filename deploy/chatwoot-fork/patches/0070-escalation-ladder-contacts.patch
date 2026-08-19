@@ -1,0 +1,217 @@
+diff --git a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
+index 7fc8c00..6b74abd 100644
+--- a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
++++ b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
+@@ -32,8 +32,34 @@ const EMPTY_PIC_FORM = {
+ const EMPTY_DEALER_FORM = {
+   dealer: '',
+   emails: '', // comma-separated in the UI; split to an array on submit
++  // The escalation ladder's named roles. Steps 3 and 4 exist to reach a
++  // MORE SENIOR person than step 1 did, which the flat group above cannot
++  // express -- a rung whose role is blank is skipped and logged, never
++  // re-addressed to whoever else is configured.
++  region: '',
++  cre: '',
++  sales_aftersales_mgr: '',
++  principal: '',
++  owner: '',
+ };
+ 
++// role key -> the label an operator recognises, and which rung uses it.
++const DEALER_ROLES = [
++  { key: 'cre', label: 'Dealer CRE', rung: 'Step 1' },
++  { key: 'sales_aftersales_mgr', label: 'Sales / Aftersales Mgr', rung: 'Step 1' },
++  { key: 'principal', label: 'Dealer Principal', rung: 'Step 3 — 1st reminder' },
++  { key: 'owner', label: 'Dealer Owner', rung: 'Step 4 — 2nd reminder' },
++];
++
++function contactsFrom(form) {
++  const out = {};
++  DEALER_ROLES.forEach(({ key }) => {
++    const value = String(form[key] || '').trim();
++    if (value) out[key] = value;
++  });
++  return out;
++}
++
+ function splitEmails(value) {
+   return String(value || '')
+     .split(',')
+@@ -57,6 +83,7 @@ export default {
+       errored: false,
+       savingPic: false,
+       savingDealer: false,
++      dealerRoles: DEALER_ROLES,
+     };
+   },
+   async mounted() {
+@@ -165,13 +192,20 @@ export default {
+     // ── Dealer (dealer -> email) ─────────────────────────────────────────
+     async createDealer() {
+       const emails = splitEmails(this.dealerForm.emails);
+-      if (!this.dealerForm.dealer || !emails.length) {
+-        useAlert('Dealer and at least one member email are required.');
++      const contacts = contactsFrom(this.dealerForm);
++      // A dealer configured purely by role is valid -- that is the shape the
++      // ladder wants -- so either half satisfies "name somebody".
++      if (!this.dealerForm.dealer || (!emails.length && !Object.keys(contacts).length)) {
++        useAlert('Dealer and at least one member email or named contact are required.');
+         return;
+       }
+       this.savingDealer = true;
+       try {
+-        await upsertDealer(this.dealerForm.dealer, { emails });
++        await upsertDealer(this.dealerForm.dealer, {
++          emails,
++          contacts,
++          region: this.dealerForm.region,
++        });
+         useAlert('Dealer saved.');
+         this.dealerForm = { ...EMPTY_DEALER_FORM };
+         await this.load();
+@@ -183,11 +217,18 @@ export default {
+     },
+     startEditDealer(dealer) {
+       this.editingDealerName = dealer.dealer;
++      const contacts = dealer.contacts || {};
+       this.editDealerForm = {
++        ...EMPTY_DEALER_FORM,
+         dealer: dealer.dealer,
+         emails: Array.isArray(dealer.emails)
+           ? dealer.emails.join(', ')
+           : dealer.email || '',
++        region: dealer.region || '',
++        cre: contacts.cre || '',
++        sales_aftersales_mgr: contacts.sales_aftersales_mgr || '',
++        principal: contacts.principal || '',
++        owner: contacts.owner || '',
+       };
+     },
+     cancelEditDealer() {
+@@ -196,13 +237,18 @@ export default {
+     },
+     async saveEditDealer() {
+       const emails = splitEmails(this.editDealerForm.emails);
+-      if (!emails.length) {
+-        useAlert('At least one member email is required.');
++      const contacts = contactsFrom(this.editDealerForm);
++      if (!emails.length && !Object.keys(contacts).length) {
++        useAlert('At least one member email or named contact is required.');
+         return;
+       }
+       this.savingDealer = true;
+       try {
+-        await upsertDealer(this.editingDealerName, { emails });
++        await upsertDealer(this.editingDealerName, {
++          emails,
++          contacts,
++          region: this.editDealerForm.region,
++        });
+         useAlert('Dealer updated.');
+         this.cancelEditDealer();
+         await this.load();
+@@ -482,6 +528,41 @@ export default {
+             Comma-separated. Every member receives the escalation email.
+           </p>
+         </div>
++        <div>
++          <label class="block mb-1 text-sm text-n-slate-11">PRO-NET region</label>
++          <input
++            v-model="dealerForm.region"
++            type="text"
++            placeholder="central"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++          <p class="mt-1 text-xs text-n-slate-11">
++            Decides which Area/Regional Manager and HOD are CC'd.
++          </p>
++        </div>
++        <div class="md:col-span-2">
++          <p class="mb-2 text-sm font-medium text-n-slate-12">
++            Escalation ladder contacts
++          </p>
++          <p class="mb-3 text-xs text-n-slate-11">
++            Each reminder addresses a more senior person than the last. A role
++            left blank means that rung is skipped — it is never re-addressed to
++            somebody else.
++          </p>
++          <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
++            <div v-for="role in dealerRoles" :key="role.key">
++              <label class="block mb-1 text-sm text-n-slate-11">
++                {{ role.label }}
++                <span class="text-xs text-n-slate-10">({{ role.rung }})</span>
++              </label>
++              <input
++                v-model="dealerForm[role.key]"
++                type="email"
++                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++              />
++            </div>
++          </div>
++        </div>
+         <div class="md:col-span-2">
+           <button
+             type="submit"
+@@ -502,6 +583,7 @@ export default {
+             <tr class="text-left border-b border-n-weak text-n-slate-12">
+               <th class="px-3 py-2 font-medium whitespace-nowrap">Group name</th>
+               <th class="px-3 py-2 font-medium whitespace-nowrap">Members</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Ladder contacts</th>
+               <th class="px-3 py-2 font-medium whitespace-nowrap">Actions</th>
+             </tr>
+           </thead>
+@@ -522,6 +604,30 @@ export default {
+                     class="w-48 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
+                   />
+                 </td>
++                <td class="px-2 py-1">
++                  <div class="flex flex-col gap-1">
++                    <label
++                      v-for="role in dealerRoles"
++                      :key="role.key"
++                      class="flex items-center gap-2 text-xs text-n-slate-11"
++                    >
++                      <span class="w-32 shrink-0">{{ role.label }}</span>
++                      <input
++                        v-model="editDealerForm[role.key]"
++                        type="email"
++                        class="w-48 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                      />
++                    </label>
++                    <label class="flex items-center gap-2 text-xs text-n-slate-11">
++                      <span class="w-32 shrink-0">PRO-NET region</span>
++                      <input
++                        v-model="editDealerForm.region"
++                        type="text"
++                        class="w-48 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                      />
++                    </label>
++                  </div>
++                </td>
+                 <td class="px-3 py-2 whitespace-nowrap">
+                   <button
+                     type="button"
+@@ -543,6 +649,23 @@ export default {
+               <template v-else>
+                 <td class="px-3 py-2 whitespace-nowrap">{{ dealer.dealer }}</td>
+                 <td class="px-3 py-2 whitespace-nowrap">{{ Array.isArray(dealer.emails) ? dealer.emails.join(', ') : dealer.email }}</td>
++                <td class="px-3 py-2">
++                  <span
++                    v-if="!dealer.contacts || !Object.keys(dealer.contacts).length"
++                    class="text-xs text-n-slate-10"
++                  >
++                    None — reminders will be skipped
++                  </span>
++                  <div v-else class="flex flex-col gap-0.5 text-xs">
++                    <span
++                      v-for="role in dealerRoles"
++                      :key="role.key"
++                      :class="dealer.contacts[role.key] ? 'text-n-slate-12' : 'text-n-slate-10'"
++                    >
++                      {{ role.label }}: {{ dealer.contacts[role.key] || '—' }}
++                    </span>
++                  </div>
++                </td>
+                 <td class="px-3 py-2 whitespace-nowrap">
+                   <button
+                     type="button"

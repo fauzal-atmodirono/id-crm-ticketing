@@ -108,12 +108,27 @@ CUSTOMER_UPDATE_DUE   escalation_replied_at + escalation_customer_update_hours
 
 Gated by `ESCALATION_CUSTOMER_UPDATE_ENABLED`, default off.
 
-### 3.3 One-click send
+### 3.3 One-click send — NOT BUILT, and why
 
-The draft note is text an agent must copy into the composer. Fork patch: a
-**Send to customer** action on notes whose body starts with the draft marker,
-which loads the draft into the reply composer (not straight out the door — the
-agent still presses send, which is the invariant this whole design rests on).
+The intent stands: a **Send to customer** action on notes whose body starts
+with the draft marker, loading the draft into the reply composer (not straight
+out the door — the agent still presses send, which is the invariant this whole
+design rests on).
+
+It is **not built**, because it cannot be built safely from this checkout. The
+action belongs on the conversation's message bubble, which is an **upstream
+Chatwoot component**. A fork patch against an upstream file needs that file's
+surrounding lines as diff context, and this sandbox cannot reach github.com to
+clone upstream (see `project_chatwoot-fork-patch-network-restriction`). The
+existing patches that modify upstream files carry only their own hunks, so
+they cannot supply the context either. A hand-guessed patch that fails
+`git apply` at image-build time breaks the whole Chatwoot image, which is a
+worse outcome than the copy-paste it saves.
+
+**What it needs:** a checkout of the upstream Chatwoot SPA at the pinned
+version, then the patch is small. Everything it depends on — the draft note,
+its marker text, the customer-update clock that makes acting on it urgent —
+is shipped and working. Until then the draft is copy-paste, exactly as today.
 
 ### 3.4 Ack threading
 

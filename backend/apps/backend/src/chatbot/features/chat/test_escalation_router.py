@@ -69,6 +69,7 @@ def test_notify_resolves_customer_email_and_calls_notifier() -> None:
         customer_email="alex@customer.example",
         ack_transport="email",
         customer_subject=None,
+        customer_in_reply_to=None,
     )
 
 
@@ -83,5 +84,5 @@ def test_notify_handles_missing_customer_email() -> None:
     assert resp.status_code == 200
     notifier.notify_escalation.assert_awaited_once_with(
         conv_id="9", title="t", body="b", department=None, dealer=None, customer_email=None,
-        ack_transport="email", customer_subject=None,
+        ack_transport="email", customer_subject=None, customer_in_reply_to=None,
     )

@@ -34,8 +34,22 @@ from chatbot.features.chat.settings_facade import get_effective_value
 ESCALATION_DELIVERED = "delivered"
 ESCALATION_FAILED = "failed"
 
+# What the SOP asks the recipient of each rung to do. Kept beside the send so
+# a reminder says what a reminder has to say -- "please action this promptly"
+# is the right line for a first contact and far too soft for a 2nd reminder
+# addressed to a Dealer Owner.
+_STEP_EXPECTATION = {
+    3: "Please confirm the action taken and provide a status update.",
+    4: "Immediate action and a resolution status are required.",
+    5: (
+        "Respond within 1 hour. Failure to respond is a non-compliance under "
+        "the Daily Complaint Clause."
+    ),
+}
+
 if TYPE_CHECKING:
     from chatbot.features.chat.adapters.tenant_settings_store import TenantSettingsStorePort
+    from chatbot.features.chat.escalation_policy import EscalationStep
     from chatbot.features.chat.adapters.twilio_channel import TwilioChannelAdapter
     from chatbot.features.chat.pic_registry import PicEntry, PicRegistry
     from chatbot.features.chat.pic_store import DealerStore
@@ -361,6 +375,118 @@ class EscalationNotifier:
         except Exception as exc:
             _log.warning("escalation_email_failed", pic_email=pic.pic_email, error=str(exc))
             return False, str(exc)
+
+    def send_ladder_step(
+        self,
+        *,
+        conv_id: str,
+        step: EscalationStep,
+        to: list[str],
+        cc: list[str],
+        title: str,
+        body: str,
+        elapsed_working_hours: float,
+    ) -> tuple[bool, str]:
+        """Send one rung of the dealer ladder.
+
+        Deliberately not routed through `_send_email`: that builds the
+        first-contact "a case has been escalated to your team" body, and a
+        reminder addressed to a Dealer Owner has to say something different --
+        which rung this is, how long the case has been unanswered, and what
+        response the SOP requires. Same `[CASE-n]` tag and Reply-To, so a
+        reminder reply links back onto the case exactly like the first mail.
+
+        Empty ``to`` is the caller's mistake to avoid; refused here as well
+        because an email with only CC recipients would reach the wider group
+        while the person actually being chased receives nothing.
+        """
+        if not to:
+            return False, "no recipients"
+
+        required = _STEP_EXPECTATION.get(step.step_no, "Please action this case promptly.")
+        prefix = f"[{step.label}] " if step.label else "[Escalation] "
+        email_body = textwrap.dedent(f"""\
+            {step.label or "Escalation"} -- case unanswered for {elapsed_working_hours:.1f} working hours.
+
+            Subject  : {title}
+            Reference: Chatwoot conversation #{conv_id}
+
+            --- Summary ---
+            {body}
+
+            {required}
+        """)
+        try:
+            self._email_sender.send(
+                to=list(to),
+                cc=list(cc),
+                subject=f"{prefix}{self._case_tag(conv_id)}{title}",
+                body=email_body,
+                attachments=[],
+                reply_to=self._reply_to_for(conv_id),
+            )
+            return True, ""
+        except Exception as exc:
+            _log.warning(
+                "escalation_ladder_send_failed",
+                conv_id=conv_id,
+                step_no=step.step_no,
+                error=str(exc),
+            )
+            return False, str(exc)
+
+    async def raise_phone_task(
+        self,
+        *,
+        conv_id: str,
+        step: EscalationStep,
+        contacts: list[str],
+        deadline: datetime,
+    ) -> bool:
+        """Step 5: the SOP says telephone, so the CRM raises a task, not mail.
+
+        Placing the call automatically is Package C's job and is deliberately
+        out of scope here. What this owes the agent is everything they need to
+        make it: who to ring, what the case is, and the one-hour clock that
+        starts when they do. `follow_up_at` puts it in the existing My-Tasks
+        view rather than inventing a surface for one step of one flow.
+
+        Best-effort like every other leg. Returns whether the note landed --
+        the sweep stamps the step either way, because a repeated step-5 note
+        every five minutes would be worse than a missed one.
+        """
+        if self._post_message is None:
+            _log.info("escalation_phone_task_unwired", conv_id=conv_id)
+            return False
+
+        who = ", ".join(contacts) if contacts else "the dealer principal, then the owner"
+        note = textwrap.dedent(f"""\
+            ☎️ FINAL ESCALATION -- TELEPHONE REQUIRED
+
+            The dealer has not responded through {step.delay_working_hours:.0f} working
+            hours of written escalation. Under the SOP this step is a phone call,
+            not an email.
+
+            Call, in order: {who}
+            Response required within 1 hour of the call.
+            Failure to respond is a non-compliance under the Daily Complaint Clause.
+
+            Record the outcome of the call on this case.
+        """)
+        try:
+            await self._post_message(conv_id, {"content": note, "private": True})
+        except Exception as exc:
+            _log.warning("escalation_phone_task_note_failed", conv_id=conv_id, error=str(exc))
+            return False
+
+        # The deadline is a separate best-effort write: an agent who has the
+        # note has what they need to act, so a failed attribute write must not
+        # cost them the note.
+        try:
+            await self._cw(conv_id, {"follow_up_at": deadline.isoformat()})
+        except Exception as exc:
+            _log.warning("escalation_phone_task_deadline_failed", conv_id=conv_id, error=str(exc))
+        return True
 
     async def _send_wa(self, pic: PicEntry, *, conv_id: str, title: str) -> None:
         if self._twilio is None:

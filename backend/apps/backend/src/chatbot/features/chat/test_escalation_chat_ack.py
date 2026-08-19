@@ -22,7 +22,7 @@ class _Sender:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    def send(self, to, cc, subject, body, attachments, *, reply_to=None):
+    def send(self, to, cc, subject, body, attachments, *, reply_to=None, in_reply_to=None):
         self.calls.append(
             {"to": to, "cc": cc, "subject": subject, "body": body, "reply_to": reply_to}
         )

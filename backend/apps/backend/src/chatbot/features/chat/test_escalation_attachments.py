@@ -172,7 +172,7 @@ class _Sender:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    def send(self, to, cc, subject, body, attachments, *, reply_to=None):
+    def send(self, to, cc, subject, body, attachments, *, reply_to=None, in_reply_to=None):
         self.calls.append({"to": to, "body": body, "attachments": attachments})
 
     def by_to(self, address):

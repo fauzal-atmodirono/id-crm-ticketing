@@ -33,7 +33,7 @@ class _Sender:
         self.calls: list[dict] = []
         self._fail_for = fail_for or set()
 
-    def send(self, to, cc, subject, body, attachments, *, reply_to=None):
+    def send(self, to, cc, subject, body, attachments, *, reply_to=None, in_reply_to=None):
         self.calls.append({"to": to})
         if to and to[0] in self._fail_for:
             raise RuntimeError("smtp: connection refused")

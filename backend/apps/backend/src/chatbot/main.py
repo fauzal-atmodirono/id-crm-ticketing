@@ -48,7 +48,8 @@ from chatbot.features.chat.kb_tools_router import build_kb_tools_router
 from chatbot.features.chat.phone.handoff_target import validate_handoff_target_settings
 from chatbot.features.chat.phone.retention import start_recording_retention_job
 from chatbot.features.chat.pic_registry import build_pic_registry
-from chatbot.features.chat.pic_store import DealerStore, PicStore
+from chatbot.features.chat.escalation_ladder import start_ladder_scheduler
+from chatbot.features.chat.pic_store import DealerStore, PicStore, ProtonNetStore
 from chatbot.features.chat.ports import (
     ChatPort,
     ConversationLogPort,
@@ -933,7 +934,15 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         from chatbot.features.chat.pic_admin_router import build_pic_admin_router
 
         app.include_router(
-            build_pic_admin_router(pic_store, dealer_store, authz_repo, authz_validator, settings)
+            build_pic_admin_router(
+                pic_store,
+                dealer_store,
+                authz_repo,
+                authz_validator,
+                settings,
+                # The ladder's regional CC list. Same permission, same page.
+                pronet_store=ProtonNetStore(settings),
+            )
         )
 
         # P3: the case-record panel's read/write endpoints. The merge-safe
@@ -1389,6 +1398,31 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         @app.on_event("shutdown")
         def _stop_sla_scheduler() -> None:
             sla_scheduler.shutdown(wait=False)
+
+    # --- The five-step dealer escalation ladder -----------------------------
+    # Guarded behind escalation_policy_enabled (default OFF), and dry-run by
+    # default even when on. Reuses the SAME EscalationNotifier the one-shot
+    # EM-7 path uses, so a reminder carries the same Reply-To correlation
+    # token and a dealer's reply to rung 3 links back exactly like a reply to
+    # rung 1. The attribute writer is the merge-safe one for the same reason
+    # the notifier gets it: a bare POST to /custom_attributes replaces the
+    # whole object, which would erase escalation_notified_at and restart the
+    # ladder from the beginning.
+    ladder_scheduler = start_ladder_scheduler(
+        settings,
+        notifier=escalation_notifier,
+        dealer_store=dealer_store,
+        pronet_store=ProtonNetStore(settings),
+        set_attributes=(
+            chatwoot_client._merge_custom_attributes if chatwoot_client is not None else None
+        ),
+        conversation_log=chatwoot_client,
+    )
+    if ladder_scheduler is not None:
+
+        @app.on_event("shutdown")
+        def _stop_ladder_scheduler() -> None:
+            ladder_scheduler.shutdown(wait=False)
 
     # --- Task Timers & Agent Reminders (Phase 6) ---
     app.include_router(build_tasks_router(settings))

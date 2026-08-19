@@ -931,6 +931,22 @@ class Settings(BaseSettings):
     escalation_customer_update_enabled: bool = False
     escalation_customer_update_hours: float = 4.0
 
+    # The five-step dealer ladder (features/chat/escalation_ladder.py). Off by
+    # default; EM-7's one-shot escalation is unchanged while it is off.
+    escalation_policy_enabled: bool = False
+    # Dry run defaults ON, so enabling the ladder cannot send mail on the
+    # first deploy: the sweep logs what it would send, to whom, at what time,
+    # and touches nothing. A ladder firing on wrong timers damages a real
+    # business relationship and is not recoverable with a hotfix, so a
+    # tenant's first week of ladder output is meant to be read, not sent.
+    escalation_policy_dry_run: bool = True
+    escalation_policy_scan_interval_seconds: int = 300
+    # Operator override for the step table: a JSON list of
+    # {step_no, delay_working_hours, to_roles[], cc_roles[], label, channel}.
+    # Empty = the SOP's five steps. Malformed = the SOP's five steps, logged
+    # -- never a half-parsed ladder with a rung silently missing.
+    escalation_policy_steps_json: str = ""
+
     # Reply-To template for escalation mail, e.g.
     # "support+case{conv_id}@proton.example". Empty (default) means no
     # Reply-To and no [CASE-n] subject tag -- mail is byte-identical to

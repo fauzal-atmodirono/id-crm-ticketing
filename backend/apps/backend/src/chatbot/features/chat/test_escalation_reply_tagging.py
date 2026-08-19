@@ -35,7 +35,7 @@ class _Sender:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    def send(self, to, cc, subject, body, attachments, *, reply_to=None) -> None:
+    def send(self, to, cc, subject, body, attachments, *, reply_to=None, in_reply_to=None) -> None:
         self.calls.append({"to": to, "subject": subject, "reply_to": reply_to})
 
 

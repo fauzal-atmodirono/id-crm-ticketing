@@ -100,6 +100,42 @@ https://wa.me/16823993949?text=Hi%2C%20saya%20nak%20tanya%20pasal%20barang%20say
 The customer is then identified the normal way — the phone-number ladder in
 `resolve_member` (bound session → `member.directory` → `default_member_key`).
 
+## Test personas (real data, pulled 2026-08-21)
+
+The prototype guide could ship 14 tappable links because its personas were plain
+`[slug]` tags anyone could type. Ours are **signed tokens**, so a link has to be
+minted per member and expires after 72 hours — a static table of URLs in a repo
+would be both a credential leak and stale within three days.
+
+So the personas are fixed here and the links are generated on demand:
+
+```bash
+export NUDGE_API_KEY=...        # nudge.api_key from aeon360-customer-waba-config
+deploy/scripts/aeon360-mint-entry-links.sh
+```
+
+That prints this same table with a live `wa.me` link in each row. It needs
+`POST /entry-link` deployed (branch `feat/entry-link-deeplink`); until then it
+exits with the reason rather than printing broken links.
+
+These come from `aeon360_customer_marts.member_repurchase_due` — pseudonymous
+member keys and product rows, **no names and no phone numbers**, which is why
+they are safe to keep in the repo. The minted links are not: each authenticates
+its holder as one member for 72 hours.
+
+| Persona | Member key | What to verify |
+|---|---|---|
+| Baby needs, heavy buyer | `202408675835` | 10 buys of TOLLYJOY BEST BUY 1 on a 10-day cycle, 17 days overdue. Should name the item **and** the cadence, not give a generic catalogue answer. This is the headline journey. |
+| Fresh poultry, richest history | `202522100326` | 183 purchases, 70 SKUs due. Top item AYAM KAMPUNG BIG (CUBE), 7-day cycle, 21 days overdue. Tests whether it picks **one** thing rather than reciting a list. |
+| Cold beverage | `202530400461` | BUBBLES02 BOTTLE 425ML, 20-day cycle, 28 days overdue. |
+| Vegetables, short shelf life | `202210795936` | HK KAILAN 200G, 12-day cycle, 21 days overdue. Fresh produce — check it does not push a bulk-order framing. |
+| Different key format | `300000182216` | Key starts `3000000`, not `2026…`. KKH BROCCOLI ORG, 7-day cycle. Exercises the parser on both key shapes. |
+| **Nothing due — the honesty case** | `202603301842` | Soonest item is **118 days** away. It must **not** invent a restock. Expect a graceful "nothing needs restocking yet" and an offer to help with something else. |
+
+The last row is the one worth running deliberately. Everything else tests that
+the assistant says something; that one tests whether it will say nothing when
+nothing is true.
+
 ## Scenario scripts
 
 The assistant is a live agent, so exact wording varies — verify the **behaviour**.

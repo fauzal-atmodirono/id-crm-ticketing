@@ -377,9 +377,50 @@ Rollback: `/opt/platform/deploy/docker-compose.infra.yml.bak-caddypin-20260821`,
 
 ---
 
-## 3.3 Handover to AEON360 — two items, both need their hands
+## 3.2b CUTOVER WORKING END TO END — 2026-08-21 10:02 UTC
 
-**1. `crm.base_url` → `https://`.** Their config lives in Secret Manager secret
+First real customer message to produce an AI reply through the CRM:
+
+```
+[44] incoming  Contact:3    10:01:25  "mau beli mamupokok"
+[45] outgoing  AgentBot:1   10:02:01  "Untuk lampin MamyPoko, anda pernah beli
+                                       MamyPoko Extra Dry Tape saiz XL (40 keping)
+                                       sekali pada bulan Mac lepas. Adak…"
+[46] incoming  Contact:3    10:03:19  "yes"
+```
+
+Message 45's metadata is the whole architecture in one row:
+
+```
+sender=AgentBot#1  private=false  status=read
+source_id="SMb61eba03444efbd6965b45cdc1d5eb6d"
+```
+
+`source_id` is a **Twilio message SID**. The bot wrote once to
+`POST /conversations/3/messages`; Chatwoot stored it *and* delivered it over the
+Twilio channel it owns. One write, both outcomes — no mirroring, no second call
+to Twilio, exactly as §3 of the spec says.
+
+`status=read` means the customer received and opened it. 36 seconds end to end,
+consistent with the 30–45s agent turn.
+
+**Member identity survives the Chatwoot path.** This was the last unverified
+risk: bindings and thread ids live in process memory under `--max-instances=1`,
+and revision `00004-pwh` had started cold four minutes earlier, so nothing was
+cached. The reply still names a specific prior purchase (MamyPoko Extra Dry Tape
+XL, 40-pack, March), which means the member ladder re-resolved from
+`conversation.meta.sender.phone_number`. No degradation to a generic answer.
+
+Note the conversation was `pending` **and assigned to a human** (Default Policy
+re-assigned it at 09:31:08) and the bot still answered — assignment does not gate
+the bot, only `status`. Their `decide()` treats a human *outgoing message* as the
+takeover signal, nothing else.
+
+---
+
+## 3.3 Handover to AEON360 — one item left (https is DONE 2026-08-21 09:57)
+
+**1. ✅ DONE 2026-08-21 09:57** — secret version 3, revision `aeon360-customer-waba-00004-pwh` at 100%. Their CRM calls now log `https://aeon360.crm...` where they logged `http://` an hour earlier. Original instructions kept for reference. Their config lives in Secret Manager secret
 `aeon360-customer-waba-config` (project `prj-dev-innovation-svc-8e`), mounted at
 `CONFIG=/secrets/config.yaml`. Line 29 is `base_url: "http://aeon360.crm..."`.
 Now that the token is actually being transmitted, it crosses the public internet

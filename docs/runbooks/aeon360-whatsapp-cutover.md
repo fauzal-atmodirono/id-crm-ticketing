@@ -283,6 +283,97 @@ gcloud logging read 'resource.type="cloud_run_revision"
 
 ---
 
+## 3.2 RESOLVED 2026-08-21 09:05 UTC — Caddy pinned to 2.10
+
+`platform-infra-caddy-1` now runs `caddy:2.10-alpine`, pinned in
+`deploy/docker-compose.infra.yml` (and on the VM). `caddy:2-alpine` and
+`caddy:latest` both still resolve to the broken 2.11.4, so the pin is the only
+fix available today; upstream has milestoned it for v2.11.5.
+
+Verified in three independent ways:
+
+1. **Isolated version matrix.** A throwaway Caddy on a spare port, with a
+   neutral control header so the result could not be Chatwoot-specific:
+
+   ```
+   caddy:2.8-alpine  (v2.8.4)  -> underscore=[UVAL] dashed=[DVAL]
+   caddy:2.9-alpine  (v2.9.1)  -> underscore=[UVAL] dashed=[DVAL]
+   caddy:2.10-alpine (v2.10.2) -> underscore=[UVAL] dashed=[DVAL]
+   caddy:2.11-alpine (v2.11.4) -> underscore=[]     dashed=[DVAL]
+   ```
+
+2. **Production URL, before vs after.** The body is the tell, not the code:
+
+   ```
+   before:  api_access_token -> 401 {"errors":["You need to sign in or sign up before continuing."]}
+   after:   api_access_token -> 401 {"error":"Invalid Access Token"}
+   ```
+
+   Still a 401 because the probe sent a placeholder value — but it is now
+   *Chatwoot's* 401, which means the header arrived and was evaluated.
+
+3. **AEON360's own service, unchanged.** A signed probe on a nonexistent
+   conversation, read from their Cloud Run logs:
+
+   ```
+   before:  chatwoot post_message failed: 401 '{"errors":["You need to sign in..."]}'
+   after:   chatwoot post_message failed: 404 '{"error":"Resource could not be found"}'
+   ```
+
+   **401 → 404 is the proof.** The bot authenticates; Chatwoot then correctly
+   reports that conversation `777777` does not exist. Against a real
+   conversation this is a `200`.
+
+**AEON360 needs no code change for this.** Their `api_access_token` spelling was
+correct all along. The only item still outstanding on their side is switching
+`crm.base_url` from `http://` to `https://` — Caddy serves port 80 without
+redirecting, so the bot token now crosses the public internet in cleartext on
+every reply. Their own `client.py:31-34` already warns about it.
+
+**Regression check after the pin.** All tenant vhosts still serve
+(`aeon360.crm` 200, `proton.crm` 200 over TLS; `default.crm` and `*.agent` fail
+over TLS but never had certificates — only `aeon360.crm` and `proton.crm` appear
+in `/data/caddy/certificates`, so that predates this change).
+
+**Trade-off, deliberately accepted.** Allowing underscore header names back
+re-opens header smuggling against Rack: Rack folds `-` and `_` into the same CGI
+variable, so a client-supplied `X_Forwarded_For` reaches `HTTP_X_FORWARDED_FOR`
+beside the one Caddy sets and can win on ordering. This is not a new exposure —
+the floating tag sat on 2.10.x for the platform's whole life until 2026-08-19 —
+but since 2.10 is now a deliberate choice, a `strip_underscore_forwarding`
+snippet is defined in `caddy/Caddyfile` (live on the VM, `caddy validate` passes)
+and wired into `add-tenant.sh` for new tenants.
+
+**STILL TODO — one command, needs to be run by a human** (the prod-config edit is
+classifier-blocked). Wires the snippet into the six existing site blocks that
+front Chatwoot:
+
+```bash
+gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --command='
+cd /opt/platform/deploy/caddy/tenants
+sudo cp -r . /tmp/tenants.bak-$(date +%s)
+# bottom-up so earlier line numbers stay valid
+sudo sed -i "36a\\\timport strip_underscore_forwarding" aeon360.caddy
+sudo sed -i "1a\\\timport strip_underscore_forwarding"  aeon360.caddy
+sudo sed -i "36a\\\timport strip_underscore_forwarding" proton.caddy
+sudo sed -i "1a\\\timport strip_underscore_forwarding"  proton.caddy
+sudo sed -i "22a\\\timport strip_underscore_forwarding" default.caddy
+sudo sed -i "1a\\\timport strip_underscore_forwarding"  default.caddy
+sudo docker exec platform-infra-caddy-1 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+'
+```
+
+Only reload if that prints `Valid configuration`:
+
+```bash
+sudo docker exec platform-infra-caddy-1 caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+```
+
+Rollback for either step: `/opt/platform/deploy/docker-compose.infra.yml.bak-caddypin-20260821`
+and `/tmp/tenants.bak-underscore-20260821`.
+
+---
+
 ## 4. Rollback
 
 One change, AEON360 side. Point the Twilio **Sender** back at:

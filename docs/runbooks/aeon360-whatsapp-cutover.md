@@ -161,13 +161,88 @@ REQ POST /api/v1/accounts/1/conversations/999999/messages → 401 Unauthorized
 That proves their service receives the event, parses it, decides to answer, and
 dies on the write back.
 
-**The 401 is a bad token, not a permissions limit.** Chatwoot's
-`AccessTokenAuthHelper::BOT_ACCESSIBLE_ENDPOINTS` explicitly allows agent bots
-on `conversations#show`, `conversations#toggle_status` and
-`conversations/messages#create`, and `agent_bot_accessible?` checks only
-controller + action — there is no inbox scoping and no conversation-existence
-check at the auth layer. Confirmed against the live CRM with the real token read
-from the database:
+**Correction 2026-08-21 (second pass, with access to their GCP project).** The
+first pass called this a *bad* token. It is not — the token is **absent**.
+Chatwoot distinguishes the two, and the distinction is the whole diagnosis:
+
+| What the client sends | Chatwoot's 401 body |
+|---|---|
+| an unknown `api_access_token` | `{"error":"Invalid Access Token"}` |
+| **no** `api_access_token` header | `{"errors":["You need to sign in or sign up before continuing."]}` |
+
+`api/base_controller.rb` is why:
+
+```ruby
+before_action :authenticate_access_token!, if:     :authenticate_by_access_token?
+before_action :authenticate_user!,         unless: :authenticate_by_access_token?
+
+def authenticate_by_access_token?
+  request.headers[:api_access_token].present? || request.headers[:HTTP_API_ACCESS_TOKEN].present?
+end
+```
+
+A missing **or empty** header fails `.present?`, skips the access-token branch
+entirely, and falls through to Devise — which is why the message is Devise's,
+not Chatwoot's. AEON360's own Cloud Run logs show exactly that body:
+
+```
+INFO  src.agent.client: agent turn ok thread_id=939476e9-…
+INFO  httpx: GET  http://…/api/v1/accounts/1/conversations/999999          "401 Unauthorized"
+WARN  src.crm.client: chatwoot get_status non-2xx for conversation 999999: 401
+INFO  httpx: POST http://…/api/v1/accounts/1/conversations/999999/messages "401 Unauthorized"
+ERROR src.crm.service: chatwoot_send_failed conversation_id=999999
+src.exceptions.ChatwootApiError: chatwoot post_message failed: 401
+  '{"errors":["You need to sign in or sign up before continuing."]}'
+```
+
+Reproduced against the live CRM with no credential at all — byte-identical:
+
+```bash
+curl -sS https://aeon360.crm.34-50-103-151.nip.io/api/v1/accounts/1/conversations/2
+{"errors":["You need to sign in or sign up before continuing."]}
+```
+
+Note the first log line: **the AI answer is generated successfully**
+(`agent turn ok`). Nothing is wrong with their model, prompt, member scoping or
+BigQuery marts. The reply is composed and then thrown away on the write back.
+
+**Where the value has to be set.** `aeon360-customer-waba` takes its whole
+config from `CONFIG=/secrets/config.yaml`, mounted from Secret Manager secret
+`aeon360-customer-waba-config` (project `prj-dev-innovation-svc-8e`, region
+`asia-southeast1`, live revision `aeon360-customer-waba-00003-dxm`). The CRM bot
+token is empty or unset in that secret. Check it without printing the value:
+
+```bash
+gcloud secrets versions access latest \
+  --secret=aeon360-customer-waba-config \
+  --project=prj-dev-innovation-svc-8e \
+  | grep -iE 'token|secret' | awk -F': *' '{printf "%s len=%d\n", $1, length($2)}'
+```
+
+A `len=0` on the CRM bot token line confirms it. The correct value is in spec
+§7; its fingerprint matches `AgentBot.find(1).access_token.token` exactly.
+Deploying a new secret version requires a revision restart to pick up the mount.
+
+**Second, independent defect: they call the CRM over plain `http://`.** Caddy
+serves the API on port 80 without redirecting:
+
+```
+http  → 401   (no redirect)
+https → 401
+```
+
+Today that leaks nothing because no token is being sent. The moment the token is
+set, it crosses the public internet in cleartext on every reply. Their CRM base
+URL must be `https://aeon360.crm.34-50-103-151.nip.io`, fixed in the same
+change.
+
+**Consequence for their `docs/chatwoot-mapping.md` D2.** They concluded from a
+401 on `GET /conversations/{1,7}` that "agent bots are not documented as having
+read access to conversations at all", and narrowed the §5.6 race guard to local
+status only. That premise is false twice over: `conversations#show` is on
+Chatwoot's `BOT_ACCESSIBLE_ENDPOINTS` allowlist, and the 401 they saw was the
+missing header, not a permissions model. Confirmed against the live CRM with the
+real bot token read from the database:
 
 ```
 GET /conversations/2       real token   → 200
@@ -175,33 +250,24 @@ GET /conversations/999999  real token   → 404  Resource could not be found
 GET /conversations/2       bogus token  → 401  Invalid Access Token
 ```
 
-A valid token on a nonexistent conversation returns **404**. AEON360 got **401**.
-Therefore their deployed `crm.bot_token` is not a token Chatwoot knows.
-
-Two candidates, both theirs, indistinguishable from our side:
-
-1. **A stale or mistyped token value.** The token in spec §7 is current — its
-   fingerprint matches `AgentBot.find(1).access_token.token` exactly.
-2. **The token sent in the wrong header.** Chatwoot reads `api_access_token`
-   only. An `Authorization: Bearer …` leaves `@access_token` blank and yields
-   the same `Invalid Access Token` 401.
-
-Not a token swap: their `/chatwoot/bot` verifies our signature correctly, so
-their `crm.bot_secret` is right.
-
-**Consequence for their `docs/chatwoot-mapping.md` D2.** They concluded from a
-401 on `GET /conversations/{1,7}` that "agent bots are not documented as having
-read access to conversations at all", and narrowed the §5.6 race guard to local
-status only. That premise is false — `conversations#show` is on Chatwoot's bot
-allowlist and returns 200 with a valid token. They hit the same bad token and
-read it as a permissions model. Once the token is fixed, the **full** §5.6 guard
-is available to them and the narrowing can be reverted.
+Once the header is sent, the **full** §5.6 guard is available and the narrowing
+can be reverted.
 
 Reproduce any of this with:
 
 ```bash
 export CHATWOOT_BOT_SECRET=...
-python3 deploy/scripts/aeon360-bot-probe.py     --url https://innovation.dev.aeon360.net/aeon360-customer-waba/chatwoot/bot
+python3 deploy/scripts/aeon360-bot-probe.py \
+    --url https://innovation.dev.aeon360.net/aeon360-customer-waba/chatwoot/bot
+```
+
+Then read the result from *their* side — the probe's conversation id is
+deliberately nonexistent, so their failed write is easy to find:
+
+```bash
+gcloud logging read 'resource.type="cloud_run_revision"
+  AND resource.labels.service_name="aeon360-customer-waba"' \
+  --project prj-dev-innovation-svc-8e --limit 25 --format='value(textPayload)'
 ```
 
 ---

@@ -91,6 +91,14 @@ class Settings(BaseSettings):
     # thread while the bot stays silent). 0 = disabled: assigned conversations
     # are left entirely to the human (today's behavior).
     lifecycle_assigned_idle_resolve_minutes: int = 0
+    # Skip `pending` conversations entirely in the idle scanner. For tenants
+    # whose inbox is driven by a *third-party* agent bot (aeon360), `pending`
+    # means that bot is mid-conversation, and our idle warning posts as an
+    # outgoing message from a user — which its decision table reads as a human
+    # taking over, cancelling the generation and flipping the conversation to
+    # `open`. Default False: on our own tenants the orchestrator is the bot,
+    # `pending` is ours to sweep, and behavior is unchanged.
+    lifecycle_skip_pending: bool = False
     lifecycle_survey_enabled: bool = True
     lifecycle_disclaimer_enabled: bool = True
     lifecycle_auto_categorize: bool = False

@@ -74,7 +74,13 @@ async def scan_once() -> None:
     inbox_cache: dict[int, dict] = {}
 
     conversations: list = []
-    for status in ("pending", "open"):
+    # `pending` means "the bot owns this". Where that bot is a third party
+    # (aeon360), our idle warning is an outgoing message from a user, which
+    # reads to it as a human takeover — it cancels the AI mid-sentence and
+    # flips the conversation to `open`. Sweeping only `open` leaves the bot's
+    # conversations alone and still auto-closes the human-owned ones.
+    statuses = ("open",) if settings.lifecycle_skip_pending else ("pending", "open")
+    for status in statuses:
         try:
             conversations += _payload_list(
                 await chatwoot.list_conversations(status=status, assignee_type="all")

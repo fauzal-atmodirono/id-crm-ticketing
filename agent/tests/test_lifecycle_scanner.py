@@ -219,3 +219,40 @@ async def test_close_uses_per_inbox_messages(wired, monkeypatch):
     posted = [c.args[1] for c in wired.create_message.await_args_list]
     assert any("BYE" in str(m) for m in posted), posted
     assert any("OK? Y/N" in str(m) for m in posted), posted
+
+
+async def test_scan_leaves_bot_owned_pending_conversations_alone(wired, monkeypatch):
+    """`lifecycle_skip_pending` keeps us off conversations a bot still owns.
+
+    On a tenant whose inbox is driven by a third-party agent bot (aeon360),
+    `pending` means *that* bot is mid-conversation. Our idle warning posts as
+    an outgoing message from a user, which its decision table reads as a human
+    taking over: it cancels the in-flight generation and flips the
+    conversation to `open`. Observed live on 2026-08-21 — every one of our
+    lifecycle posts matched one of their `toggle_status` calls to the second.
+    """
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "lifecycle_skip_pending", True, raising=False)
+    await lifecycle_store.seed_active(70, channel="Channel::Whatsapp")
+
+    await lifecycle_scanner.scan_once()
+
+    # Never even listed: the conversation is not ours to sweep.
+    for call in wired.list_conversations.await_args_list:
+        assert call.kwargs.get("status") != "pending"
+    assert await lifecycle_store.get_state(70) == "active"
+    wired.create_message.assert_not_awaited()
+
+
+async def test_scan_still_sweeps_pending_by_default(wired):
+    """Default is off, so every existing tenant behaves exactly as before."""
+    from app.config import get_settings
+
+    assert get_settings().lifecycle_skip_pending is False
+    await lifecycle_store.seed_active(70, channel="Channel::Whatsapp")
+
+    await lifecycle_scanner.scan_once()
+
+    assert await lifecycle_store.get_state(70) == "idle_warned"
+    wired.create_message.assert_awaited()

@@ -23,12 +23,12 @@ history and human handoff.
 | Chatwoot inbox 1 "AEON360 Whatsapp" | created, agent bot 1 attached |
 | WABA `/aeon360-customer-waba/chatwoot/bot` | live, `crm_enabled: true`, `401` unsigned |
 | WABA `/aeon360-customer-waba/webhooks/whatsapp` | live, Twilio-only — **the rollback path** |
-| Agent bot 1 `outgoing_url` | **step 1 below** |
+| Agent bot 1 `outgoing_url` | ✅ `/chatwoot/bot` — corrected 2026-08-21, verified persisted |
 | Twilio Sender inbound URL | still AEON360 direct — **step 3** |
 
 ---
 
-## 1. Correct the agent bot `outgoing_url` — CRM side, ours
+## 1. Correct the agent bot `outgoing_url` — CRM side, ours ✅ DONE 2026-08-21
 
 The spec originally registered the bot against `/webhooks/whatsapp`. AEON360 built
 `/chatwoot/bot` instead, and `/webhooks/whatsapp` never grew a Chatwoot branch.
@@ -43,10 +43,12 @@ Chatwoot retries only on `429`/`500` and drops `403` permanently, so leaving thi
 wrong loses every message with **no error visible on either side** — conversations
 just fall to a human.
 
-SSH to the VM:
+SSH to the VM. **Do not use `--tunnel-through-iap`** — it fails with
+`4033: 'not authorized'` (no `roles/iap.tunnelResourceAccessor` on this project).
+The VM has an external IP (`34.50.103.151`), so connect directly:
 
 ```bash
-gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --tunnel-through-iap
+gcloud compute ssh crm-ticketing --zone=asia-southeast2-a
 ```
 
 **Read the current value first** (Rails boot takes ~30-60s):
@@ -57,8 +59,15 @@ docker exec aeon360-chatwoot-rails bundle exec rails runner \
    AgentBotInbox.all.each { |x| puts ["inbox", x.inbox_id, "bot", x.agent_bot_id].inspect }'
 ```
 
-Expect `[1, "AEON360 Assistant", ".../aeon360-customer-waba/webhooks/whatsapp"]`
-and `["inbox", 1, "bot", 1]`. If the bot id is not 1, use the real id below.
+Observed 2026-08-21, before the fix:
+
+```
+[1, "AEON360 Assistant", "https://innovation.dev.aeon360.net/aeon360-customer-waba/webhooks/whatsapp"]
+["inbox", 1, "bot", 1]
+["inbox", 1, "AEON360 Whatsapp", "Channel::TwilioSms"]
+```
+
+Exactly as the spec described. If the bot id is not 1, use the real id below.
 
 **Write:**
 
@@ -69,15 +78,23 @@ docker exec aeon360-chatwoot-rails bundle exec rails runner \
    puts b.reload.outgoing_url'
 ```
 
-Expect the new URL echoed back. No restart needed — `outgoing_url` is read per
-delivery.
+Expect the new URL echoed back; re-read in a fresh process to confirm it
+persisted. No restart needed — `outgoing_url` is read per delivery.
+
+Applied 2026-08-21 and verified: bot 1 now reads
+`https://innovation.dev.aeon360.net/aeon360-customer-waba/chatwoot/bot`, and the
+step 2 probe returns `401`.
+
+This was safe to do ahead of the cutover window precisely because Twilio still
+points at AEON360 direct — the CRM generates no agent-bot events at all, so
+nothing reads `outgoing_url` until step 3 flips the Sender.
 
 > Do **not** edit this through a tenant env file. It lives in the Chatwoot
 > database, not in config.
 
 ---
 
-## 2. Confirm the bot endpoint is reachable from the CRM's side of the network
+## 2. Confirm the bot endpoint is reachable from the CRM's side of the network ✅ `401` 2026-08-21
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \

@@ -1,322 +1,259 @@
 # AEON360 — WhatsApp Scenario — Testing Guide
 
-How to test the AEON360 assistant on WhatsApp end-to-end, now that it runs
-**through the CRM**. Every message a customer sends and every answer the AI
-gives is a row in Chatwoot, and a human agent can take the conversation over
-mid-sentence.
+How to test the AEON360 assistant on WhatsApp, step by step. You need a phone and
+about 20 minutes. No technical knowledge required.
 
-> **This supersedes the persona deep links in
-> `apac-aeon360-foundry-prototype/docs/whatsapp/whatsapp-scenario-testing.md`.**
-> Same phone number, different destination: the Twilio Sender was repointed at
-> Chatwoot on 2026-08-21, so `+16823993949` no longer reaches
-> `aeon360-backend`. The `[sarah]` / `[uncle-tan]` slugs are not token-shaped
-> (`src/identity.py` requires `v1.<b64url>.<b64url>`), so they are not even
-> stripped — they reach the model as ordinary text and identify nobody.
+## What you are testing
 
-## Live environment
+A customer messages AEON360 on WhatsApp. An AI assistant answers. Everything the
+customer says and everything the AI answers also appears in the CRM, where a
+human agent can read along and take over at any moment.
+
+So there are two things to check: **the customer gets good answers**, and **an
+agent can see and take over the conversation**.
+
+## Before you start
 
 | | |
 |---|---|
-| **Sender** | `+16823993949` (Twilio, production) |
-| **Twilio Sender webhook** | `https://aeon360.crm.34-50-103-151.nip.io/twilio/callback` — Chatwoot's own inbound |
-| **CRM** | Chatwoot, tenant `aeon360`, account 1, inbox 1 "AEON360 Whatsapp" (`Channel::TwilioSms`) |
-| **Agent bot** | id 1, "AEON360 Assistant" → `https://innovation.dev.aeon360.net/aeon360-customer-waba/chatwoot/bot` |
-| **Brain** | `aeon360-customer-waba` → `aeon360-customer-agent`, Cloud Run `asia-southeast1`, project `prj-dev-innovation-svc-8e` |
-| **Reverse proxy** | Caddy **2.10.2, pinned** — 2.11.4 silently drops `api_access_token` and breaks every reply |
-| **Turn latency** | 5–90 s, observed. Do not judge a test at 10 seconds — a turn taking 85 s has been seen in production. |
+| **WhatsApp number** | `+1 682 399 3949` — save it to your phone as "AEON360 Test" |
+| **CRM** | https://aeon360.crm.34-50-103-151.nip.io — ask Yuda for a login |
+| **How long a reply takes** | Up to **90 seconds**. Be patient. |
 
-Health checks:
+> **The most important rule: after you send a WhatsApp message, do not click
+> anything in the CRM until the AI has answered.** Clicking around while the AI
+> is thinking can cancel its answer, and you will think it is broken when it is
+> not.
 
-```bash
-curl -o /dev/null -w '%{http_code}\n' https://aeon360.crm.34-50-103-151.nip.io/api          # 200
-curl -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' -d '{}' \
-  https://innovation.dev.aeon360.net/aeon360-customer-waba/chatwoot/bot                     # 401 = alive, verifying
-```
+---
 
-`401` on that second one is the healthy answer: the route exists and rejected an
-unsigned delivery.
+## Part 1 — Your first conversation (5 minutes)
 
-## The one thing that changed
+**Step 1.** Open WhatsApp on your phone and start a chat with `+1 682 399 3949`.
 
-There is **no reply path back through Twilio any more.** The AI posts to
-`POST /api/v1/accounts/1/conversations/{id}/messages` and *Chatwoot* delivers it
-over the Twilio channel it owns. One write produces both the CRM record and the
-WhatsApp message.
+**Step 2.** Send this message:
 
-You can see it on any AI reply — `source_id` is a Twilio SID:
+> `mau beli mamypoko`
 
-```
-sender=AgentBot#1  private=false  status=read  source_id="SMb61eba03444efbd6965b45cdc1d5eb6d"
-```
+**Step 3.** Wait — up to 90 seconds. Do not send anything else, and do not open
+the CRM yet.
 
-## Quick start (30 seconds)
+**Step 4.** You should get a reply that **mentions something you actually bought
+before** — a specific product, and roughly when you last bought it. For example:
 
-1. Make sure the conversation is **`pending`** in the CRM (that is the flag that
-   says "the bot owns this"). A brand-new conversation starts `pending`.
-2. Send any message from WhatsApp to `+16823993949`. **No keyword or prefix is
-   needed** — the AI answers any message on a `pending` conversation.
-3. Wait up to 90 s. The reply lands on your handset *and* in the CRM thread.
+> *"Untuk lampin MamyPoko, anda pernah beli MamyPoko Extra Dry Tape saiz XL
+> (40 keping) sekali pada bulan Mac lepas. Adakah…"*
 
-**Do not click around in the CRM while a turn is running** — see
-[Troubleshooting](#troubleshooting).
+✅ **Pass** if the reply names a real product and a real time period.
+❌ **Fail** if it is generic ("we sell many diapers"), or nothing arrives in 90
+seconds.
 
-## Entry links (the "pre-text")
+**Step 5.** Reply naturally — `yes`, or `berapa harga?`. It should continue
+sensibly and remember what you were talking about.
 
-Two kinds, and the difference is a security boundary.
+---
 
-### Personalised — identifies the member
+## Part 2 — Check it appears in the CRM (5 minutes)
 
-`POST /entry-link` mints a `wa.me` link whose pre-filled text carries a signed
-entry token, so the AI knows who is writing before they type anything:
+**Step 6.** Open https://aeon360.crm.34-50-103-151.nip.io and log in.
 
-```bash
-curl -X POST https://innovation.dev.aeon360.net/aeon360-customer-waba/entry-link \
-  -H "Authorization: Bearer $NUDGE_API_KEY" -H 'Content-Type: application/json' \
-  -d '{"member_key":"M-1042","sku_code":"MPK-XL-40","reason":"restock"}'
-```
+**Step 7.** Click **Conversations** in the left sidebar. Find the conversation
+from your phone number and open it.
 
-```json
-{ "url": "https://wa.me/16823993949?text=Hi%21%20...%20%5Bv1.eyJ...%5D",
-  "expires_in_hours": 72 }
-```
+**Step 8.** You should see the whole conversation:
 
-The tag is stripped by `parse_entry_token` before the model sees it — only the
-human sentence reaches the agent.
+- Your messages on one side
+- The AI's answers on the other, labelled with the bot's name
+- In the same order they happened on your phone
 
-> **This URL is a credential.** For 72 hours it authenticates its holder as that
-> member, with no second factor. It is only safe on a surface addressed to one
-> known person: an email, an SMS, a push, a button inside a logged-in account.
-> **Never on a QR code, a poster, packaging, or a shared page** — every scanner
-> would be served that member's order history.
+✅ **Pass** if everything matches your phone, in the right order.
+❌ **Fail** if answers are missing, out of order, or shown as sent by the wrong
+person.
 
-### Generic — no token
+**Step 9.** Look at the status at the top of the conversation. It should say
+**Pending** — that means "the AI is handling this one".
 
-For public surfaces, use a plain link with no tag:
+---
 
-```
-https://wa.me/16823993949?text=Hi%2C%20saya%20nak%20tanya%20pasal%20barang%20saya
-```
+## Part 3 — Take over as a human agent (5 minutes)
 
-The customer is then identified the normal way — the phone-number ladder in
-`resolve_member` (bound session → `member.directory` → `default_member_key`).
+This is the most important test. It proves an agent can rescue a conversation
+when the AI gets something wrong.
 
-## Test personas (real data, pulled 2026-08-21)
+**Step 10.** From your phone, send a new question, for example:
 
-The prototype guide could ship 14 tappable links because its personas were plain
-`[slug]` tags anyone could type. Ours are **signed tokens**, so a link has to be
-minted per member and expires after 72 hours — a static table of URLs in a repo
-would be both a credential leak and stale within three days.
+> `saya nak tanya pasal harga`
 
-So the personas are fixed here and the links are generated on demand:
+**Step 11.** **Immediately** — within a second or two, while the AI is still
+thinking — go to the CRM, type a reply in that conversation and send it:
 
-```bash
-export NUDGE_API_KEY=...        # nudge.api_key from aeon360-customer-waba-config
-deploy/scripts/aeon360-mint-entry-links.sh
-```
+> `Hi, saya Yuda, saya boleh tolong.`
 
-That prints this same table with a live `wa.me` link in each row. It needs
-`POST /entry-link` deployed (branch `feat/entry-link-deeplink`); until then it
-exits with the reason rather than printing broken links.
+**Step 12.** Check three things:
 
-These come from `aeon360_customer_marts.member_repurchase_due` — pseudonymous
-member keys and product rows, **no names and no phone numbers**, which is why
-they are safe to keep in the repo. The minted links are not: each authenticates
-its holder as one member for 72 hours.
-
-| Persona | Member key | What to verify |
-|---|---|---|
-| Baby needs, heavy buyer | `202408675835` | 10 buys of TOLLYJOY BEST BUY 1 on a 10-day cycle, 17 days overdue. Should name the item **and** the cadence, not give a generic catalogue answer. This is the headline journey. |
-| Fresh poultry, richest history | `202522100326` | 183 purchases, 70 SKUs due. Top item AYAM KAMPUNG BIG (CUBE), 7-day cycle, 21 days overdue. Tests whether it picks **one** thing rather than reciting a list. |
-| Cold beverage | `202530400461` | BUBBLES02 BOTTLE 425ML, 20-day cycle, 28 days overdue. |
-| Vegetables, short shelf life | `202210795936` | HK KAILAN 200G, 12-day cycle, 21 days overdue. Fresh produce — check it does not push a bulk-order framing. |
-| Different key format | `300000182216` | Key starts `3000000`, not `2026…`. KKH BROCCOLI ORG, 7-day cycle. Exercises the parser on both key shapes. |
-| **Nothing due — the honesty case** | `202603301842` | Soonest item is **118 days** away. It must **not** invent a restock. Expect a graceful "nothing needs restocking yet" and an offer to help with something else. |
-
-The last row is the one worth running deliberately. Everything else tests that
-the assistant says something; that one tests whether it will say nothing when
-nothing is true.
-
-## Scenario scripts
-
-The assistant is a live agent, so exact wording varies — verify the **behaviour**.
-
-### A. Cold start, no link (the baseline)
-
-| You send | What to verify |
+| Check | Expected |
 |---|---|
-| `mau beli mamypoko` | A reply within ~90 s that is **member-aware** — it should reference real purchase history, e.g. *"anda pernah beli MamyPoko Extra Dry Tape saiz XL (40 keping) … bulan Mac lepas"*. Not a generic catalogue answer. |
-| `yes` | Continues the thread coherently — the thread id is held per conversation, so context carries. |
+| On your phone | You receive the agent's message |
+| On your phone | **No AI answer arrives afterwards** |
+| In the CRM | Status changed from **Pending** to **Open** |
 
-Proves: identity resolves from the phone number alone on the Chatwoot path, and
-the reply reaches both the handset and the CRM.
+✅ **Pass** if no AI message appears after the human's.
+❌ **Fail** if the AI also answers — the customer would get two different
+replies, which is exactly what this must prevent.
 
-### B. Personalised entry link
+**Step 13.** Send another message from your phone. The AI should stay **silent**
+— a human owns this conversation now. Only the agent should reply.
 
-| You send | What to verify |
+---
+
+## Part 4 — Hand it back to the AI (2 minutes)
+
+**Step 14.** In the CRM, change the status from **Open** back to **Pending**.
+
+**Step 15.** Send a new message from your phone.
+
+✅ **Pass** if the AI starts answering again.
+
+---
+
+## Part 5 — Things that should NOT stop the AI (5 minutes)
+
+Some actions look like they should silence the AI but must not.
+
+**Step 16 — Private note.** Send a message from your phone. While the AI is
+thinking, add a **private note** in the CRM (the tab next to "Reply" — notes are
+internal and the customer never sees them).
+
+✅ **Pass** if the AI still answers the customer normally. Notes are for your
+team, so they must not interrupt anything.
+
+**Step 17 — Assigning.** Assign the conversation to yourself while it is still
+**Pending**.
+
+✅ **Pass** if the AI keeps answering. Only the **status** decides who is in
+charge — not who it is assigned to.
+
+---
+
+## Part 6 — Asking for a human (2 minutes)
+
+**Step 18.** From your phone, send:
+
+> `saya nak cakap dengan manusia`
+
+**Step 19.** Check:
+
+| Check | Expected |
 |---|---|
-| a `/entry-link` URL, then **Send** the pre-filled text | Greeting reflects **that** member, not the phone's default. The `[v1...]` tag must **not** appear in the CRM message body shown to the agent's model — it is stripped. |
-| any follow-up | Stays bound to the same member for the session. |
+| On your phone | A short message saying a colleague will help |
+| In the CRM | Status changes to **Open** |
+| Afterwards | The AI stops answering |
 
-Also try an **expired or tampered** token (change one character): it must fall
-through silently to the phone-number ladder and still answer — never an error to
-the customer, never a hint that the token was rejected.
+✅ **Pass** if all three happen. The conversation is now waiting for a human.
 
-### C. Human takeover (the one most likely to break)
+---
 
-| Step | What to verify |
+## Part 7 — Does it admit when it does not know? (5 minutes)
+
+An assistant that invents answers is worse than one that says "I don't know".
+
+**Step 20.** Ask about something AEON360 does not sell, or a made-up brand:
+
+> `ada jual Brand Z formula?`
+
+✅ **Pass** if it honestly says it does not have that information.
+❌ **Fail** if it invents a product, a price, or a description.
+
+**Step 21.** Ask something completely unrelated:
+
+> `cuaca hari ini macam mana?`
+
+✅ **Pass** if it politely steers back to what it can help with.
+
+---
+
+## Testing as a specific customer (optional)
+
+Normally the assistant works out who you are from your phone number. To test as a
+**different** customer, you need a special link. Ask Yuda to run the link
+generator and send you one — each link opens WhatsApp with a message already
+typed, and identifies you as that customer when you send it.
+
+Six test customers are set up, each checking something different:
+
+| Test customer | What it is for |
 |---|---|
-| Customer sends a question | Conversation is `pending`, AI starts generating |
-| **While it is thinking**, an agent types a public reply in the CRM | AI is cancelled. Conversation flips to `open`. The customer gets the human's message and **no AI message afterwards**. |
-| Customer sends another message | AI stays silent — `open` means a human owns it. |
+| Heavy baby-needs buyer | Buys nappies every 10 days and is overdue — should name the product **and** the timing |
+| Customer with a huge history | 70 items due. Does it pick **one** sensible thing, or overwhelm you with a list? |
+| Cold drinks buyer | A simple, clear restock case |
+| Fresh vegetables buyer | Short shelf life — it should not suggest buying in bulk |
+| Unusual account number | Checks a different customer-number format still works |
+| **Customer with nothing due** | Nothing needs restocking for 118 days. It must **not** invent one. The most valuable test here. |
 
-This is spec §9 acceptance test 7. Note the narrow trigger: only a **public
-outgoing message from a user** interrupts.
+> ⚠️ These links work like a password — each one lets whoever holds it act as
+> that customer for 3 days. Do not forward them, post them in a group chat, or
+> put them in a shared document.
 
-### D. Things that must *not* interrupt
+---
 
-| Action | Expected |
-|---|---|
-| Agent writes a **private note** | AI keeps going and still replies. Deliberate — notes are for internal context. |
-| Conversation is **assigned** to an agent | No effect. Verified live: conversation 3 was assigned to a human and the bot still answered. |
-| A label is added | No effect. |
+## If something goes wrong
 
-### E. Handoff on request
+**Nothing arrives after 90 seconds.**
+Wait the full 90 seconds first — replies genuinely take that long sometimes. Then
+check the status in the CRM. If it says **Open** or **Resolved**, the AI is not
+supposed to answer; set it back to **Pending**. If it says **Pending** and there
+is still nothing, report it.
 
-| You send | What to verify |
-|---|---|
-| `saya nak cakap dengan manusia` | Customer gets *"Let me get a colleague to help you — one moment."*, conversation flips to `open`, AI stops. |
-| `what's the weather?` | Graceful out-of-scope redirect. Conversation stays `pending`. |
+**The answer arrived but was generic.**
+It did not recognise you. Note which phone number you used and report it.
 
-The trigger list is deliberately narrow (`HANDOFF_PHRASES`) — a false positive
-silences the bot, which is worse than a miss.
+**The AI stopped answering and never came back.**
+Set the conversation to **Open**, then back to **Pending**. That usually wakes it
+up. If not, report it.
 
-### F. Hand-back (§5.8)
+**The AI answered *after* an agent had already replied.**
+The most serious failure — report it immediately with the time. The customer got
+two conflicting answers.
 
-| Step | What to verify |
-|---|---|
-| After a takeover, agent sets the conversation back to **Pending** | The next customer message is answered by the AI again. |
+**Nothing appears in the CRM at all, even though WhatsApp works.**
+Report it — messages are reaching the phone but not the CRM.
 
-If it stays silent, the bot is latched — see Troubleshooting.
+**When reporting anything**, include the time, the phone number you used, what
+you sent, and what you got back. A screenshot is ideal.
 
-## What to check in the CRM
+---
 
-```bash
-gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --command='
-sudo docker exec aeon360-chatwoot-rails bundle exec rails runner "
-c = Conversation.find_by(display_id: 3)
-puts %(status=#{c.status} assignee=#{c.assignee&.name.inspect})
-c.messages.order(:id).last(8).each { |m|
-  puts %([#{m.id}] #{m.message_type} #{m.sender_type}##{m.sender_id} priv=#{m.private} #{m.content.to_s[0,70]})
-}"'
-```
+## Results checklist
 
-Read it as: `message_type` (incoming = customer, outgoing = us), `sender_type`
-(`AgentBot` = the AI, `User` = a human agent), `private` (a note, invisible to
-the customer), and `status` on the conversation — the ownership flag.
+Copy this and tick as you go.
 
-## Offline testing (no phone, no CRM)
+| # | Test | Pass | Notes |
+|---|---|---|---|
+| 1 | First message gets a personalised reply | ☐ | |
+| 2 | Follow-up keeps the context | ☐ | |
+| 3 | Whole conversation visible in the CRM, right order | ☐ | |
+| 4 | Status shows **Pending** while the AI is handling it | ☐ | |
+| 5 | Agent reply mid-answer stops the AI | ☐ | |
+| 6 | AI stays silent while status is **Open** | ☐ | |
+| 7 | Setting back to **Pending** wakes the AI | ☐ | |
+| 8 | Private note does **not** interrupt | ☐ | |
+| 9 | Assigning does **not** interrupt | ☐ | |
+| 10 | "Cakap dengan manusia" hands over properly | ☐ | |
+| 11 | Admits when it does not know | ☐ | |
+| 12 | Handles off-topic questions gracefully | ☐ | |
 
-The whole decision table is covered by the suite in the WABA repo:
+---
 
-```bash
-cd ~/Archive/aeon360-customer/my-aeon360-customer-waba
-uv run pytest -q
-```
+## For engineers
 
-Most relevant: `tests/crm/test_service.py::TestAcceptanceTest7` (the interrupt
-race), `tests/crm/test_events.py` (the §5.3 decision table),
-`tests/api/test_entry_link.py` (deep-link round trip),
-`tests/agent/test_entry_token.py` (wire-format pin against the agent repo).
+The technical side — architecture, log queries, the signed-delivery probe, HMAC
+and duplicate-delivery checks, and the full 2026-08-21 cutover diagnosis — is in
+[`aeon360-whatsapp-cutover.md`](./aeon360-whatsapp-cutover.md), especially
+§3.1–§3.2c. Automated coverage lives in the WABA repo (`uv run pytest`), and
+`deploy/scripts/aeon360-mint-entry-links.sh` generates the test-customer links.
 
-To exercise the deployed bot without messaging a real customer, fire a signed
-delivery at a **nonexistent** conversation id and read the result in their logs:
-
-```bash
-export CHATWOOT_BOT_SECRET=...   # §7 of the credentials spec
-python3 deploy/scripts/aeon360-bot-probe.py \
-  --url https://innovation.dev.aeon360.net/aeon360-customer-waba/chatwoot/bot \
-  --conversation-id 999999 --content "probe"
-
-gcloud logging read 'resource.type="cloud_run_revision"
-  AND resource.labels.service_name="aeon360-customer-waba"' \
-  --project prj-dev-innovation-svc-8e --limit 25 --format='value(textPayload)'
-```
-
-A healthy result is `post_message failed: 404 {"error":"Resource could not be
-found"}` — the bot authenticated, and Chatwoot correctly reported the fake
-conversation missing. A `401` means authentication is broken again.
-
-## §9 acceptance test status (2026-08-21)
-
-| # | Scenario | Status |
-|---|---|---|
-| 1–4 | first message, multi-turn, chunking, product photo | needs a handset |
-| 5 | "connect me with a human" | needs a handset |
-| 6 | agent replies into a `pending` conversation | needs the CRM UI |
-| 7 | **agent replies mid-generation** | needs the CRM UI — and only truly passes once the race-guard patch ships |
-| 8 | status back to `pending`, AI resumes | needs the CRM UI |
-| 9 | private note | needs the CRM UI |
-| 10 | duplicate `X-Chatwoot-Delivery` | ✅ **PASS** — two `200`s, exactly one agent turn |
-| 11 | bad HMAC signature | ✅ **PASS** — `401`, nothing processed |
-| 12 | their backend down → §5.1.1 fail-safe | not run; needs their service stopped |
-
-Tests 10 and 11 were run with `deploy/scripts/aeon360-bot-probe.py` against a
-nonexistent conversation id, so nothing reached a customer. Test 10 is easy to
-misread: allow a **full 90 seconds** before concluding a turn did not happen —
-the first read of this test looked like a failure at 45 s and was not.
-
-## Troubleshooting
-
-- **No AI reply, and you clicked in the CRM just before sending.** Most likely
-  cause today. Reopening or resolving a conversation makes Chatwoot emit several
-  deliveries in one second, passing through `open` before settling on `pending`;
-  a sibling delivery overwrites the bot's status cache mid-turn and the guard
-  drops a reply that was ours to send. Look for
-  `reply_dropped conversation_id=N local_status=open` in their logs. Fixed by the
-  race-guard patch (branch `fix/crm-race-guard-remote-authoritative`); until it
-  ships, **leave the conversation in `pending` and don't touch it**.
-
-- **AI goes quiet ~10 minutes after the customer stops typing.** That was our
-  own lifecycle scanner: its idle warning posts as an outgoing `User` message,
-  which their decision table reads as a human takeover. Fixed by
-  `LIFECYCLE_SKIP_PENDING=true` on the aeon360 tenant (live since 2026-08-21) —
-  the scanner now sweeps only `open`. If it recurs, check the flag survived a
-  redeploy: `docker exec aeon360-agent python -c "from app.config import
-  get_settings; print(get_settings().lifecycle_skip_pending)"`.
-
-- **Bot permanently silent on one conversation.** It is latched: a
-  `toggle_status` failed, so the conversation is marked an unconfirmed interrupt
-  and every `pending` payload is ignored by design. Clear it with the §5.8
-  hand-back — set the conversation to **Open**, then back to **Pending**. A
-  revision restart clears all of them.
-
-- **`401` from Chatwoot with body `{"errors":["You need to sign in..."]}`.**
-  That is Devise's, not Chatwoot's — it means **no** `api_access_token` header
-  arrived, not a bad token. Check Caddy is still on 2.10.x
-  (`sudo docker exec platform-infra-caddy-1 caddy version`); 2.11.4 silently
-  drops underscore headers. A genuinely wrong token gives
-  `{"error":"Invalid Access Token"}` instead.
-
-- **Reply reaches the CRM but not the handset.** A Chatwoot/Twilio delivery
-  problem, not an AI one. Check the message's `status` and `source_id`: no
-  `source_id` means Chatwoot never handed it to Twilio.
-
-- **Generic answer instead of a member-aware one.** Bindings live in process
-  memory under `--max-instances=1`, so a restart drops them. The ladder should
-  re-resolve from `conversation.meta.sender.phone_number` — if it does not, check
-  the number's format against `member.directory` (`whatsapp:+E164`).
-
-- **Nothing in the CRM at all.** Twilio is not reaching Chatwoot. Verify the
-  Sender webhook is `https://aeon360.crm.34-50-103-151.nip.io/twilio/callback` —
-  note this is governed by the **Sender**, not the number's `SmsUrl`.
-
-## Related docs
-
-- [`aeon360-whatsapp-cutover.md`](./aeon360-whatsapp-cutover.md) — the cutover
-  runbook, the full 2026-08-21 diagnosis, and rollback
-- `docs/superpowers/specs/2026-08-19-aeon360-whatsapp-chatwoot-integration-spec.md`
-  — the integration spec, incl. §9 acceptance tests
-- `my-aeon360-customer-waba/docs/chatwoot-mapping.md` — their decision log (D2 is
-  retracted; see the race-guard patch)
-- `apac-aeon360-foundry-prototype/docs/whatsapp/whatsapp-scenario-testing.md` —
-  the pre-CRM prototype guide, superseded for this number
+> For anyone holding the older prototype guide
+> (`apac-aeon360-foundry-prototype/docs/whatsapp/whatsapp-scenario-testing.md`):
+> its 14 persona links no longer work on this number. The Twilio Sender was
+> repointed at the CRM on 2026-08-21, and the old `[sarah]`-style tags now
+> identify nobody — they are read as ordinary text.

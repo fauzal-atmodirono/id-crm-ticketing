@@ -132,6 +132,80 @@ docker logs -f aeon360-chatwoot-rails 2>&1 | grep -i 'twilio\|agent_bot'
 
 ---
 
+## 3.1 Diagnosis 2026-08-21 — the bot accepts events and never replies
+
+First live message after cutover (conversation 2, "hello") produced no AI reply,
+and the conversation stayed `pending`. Chain verified link by link:
+
+| Link | Result |
+|---|---|
+| Twilio → CRM | ✅ conversation created, `pending`, inbox 1 |
+| CRM → `AgentBots::WebhookJob` | ✅ fired |
+| `outgoing_url` | ✅ `/chatwoot/bot` |
+| Our documented token + secret vs the live bot | ✅ SHA256 fingerprints identical |
+| AEON360 endpoint, valid signature | ✅ `200` |
+| AEON360 endpoint, bad signature | ✅ `401` (acceptance test 11 passes) |
+
+So the CRM side is healthy and the event reaches them. The failure is **after
+their 200 ack**, inside the background task — invisible to Chatwoot by design.
+
+`aeon360-bot-probe.py` exposed it. Because the probe posts to conversation
+`999999`, which does not exist, their reply attempt showed up in the CRM's own
+request log:
+
+```
+REQ GET  /api/v1/accounts/1/conversations/999999          → 401 Unauthorized
+REQ POST /api/v1/accounts/1/conversations/999999/messages → 401 Unauthorized
+```
+
+That proves their service receives the event, parses it, decides to answer, and
+dies on the write back.
+
+**The 401 is a bad token, not a permissions limit.** Chatwoot's
+`AccessTokenAuthHelper::BOT_ACCESSIBLE_ENDPOINTS` explicitly allows agent bots
+on `conversations#show`, `conversations#toggle_status` and
+`conversations/messages#create`, and `agent_bot_accessible?` checks only
+controller + action — there is no inbox scoping and no conversation-existence
+check at the auth layer. Confirmed against the live CRM with the real token read
+from the database:
+
+```
+GET /conversations/2       real token   → 200
+GET /conversations/999999  real token   → 404  Resource could not be found
+GET /conversations/2       bogus token  → 401  Invalid Access Token
+```
+
+A valid token on a nonexistent conversation returns **404**. AEON360 got **401**.
+Therefore their deployed `crm.bot_token` is not a token Chatwoot knows.
+
+Two candidates, both theirs, indistinguishable from our side:
+
+1. **A stale or mistyped token value.** The token in spec §7 is current — its
+   fingerprint matches `AgentBot.find(1).access_token.token` exactly.
+2. **The token sent in the wrong header.** Chatwoot reads `api_access_token`
+   only. An `Authorization: Bearer …` leaves `@access_token` blank and yields
+   the same `Invalid Access Token` 401.
+
+Not a token swap: their `/chatwoot/bot` verifies our signature correctly, so
+their `crm.bot_secret` is right.
+
+**Consequence for their `docs/chatwoot-mapping.md` D2.** They concluded from a
+401 on `GET /conversations/{1,7}` that "agent bots are not documented as having
+read access to conversations at all", and narrowed the §5.6 race guard to local
+status only. That premise is false — `conversations#show` is on Chatwoot's bot
+allowlist and returns 200 with a valid token. They hit the same bad token and
+read it as a permissions model. Once the token is fixed, the **full** §5.6 guard
+is available to them and the narrowing can be reverted.
+
+Reproduce any of this with:
+
+```bash
+export CHATWOOT_BOT_SECRET=...
+python3 deploy/scripts/aeon360-bot-probe.py     --url https://innovation.dev.aeon360.net/aeon360-customer-waba/chatwoot/bot
+```
+
+---
+
 ## 4. Rollback
 
 One change, AEON360 side. Point the Twilio **Sender** back at:

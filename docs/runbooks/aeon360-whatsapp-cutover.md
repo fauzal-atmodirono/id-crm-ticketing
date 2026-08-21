@@ -344,33 +344,80 @@ but since 2.10 is now a deliberate choice, a `strip_underscore_forwarding`
 snippet is defined in `caddy/Caddyfile` (live on the VM, `caddy validate` passes)
 and wired into `add-tenant.sh` for new tenants.
 
-**STILL TODO — one command, needs to be run by a human** (the prod-config edit is
-classifier-blocked). Wires the snippet into the six existing site blocks that
-front Chatwoot:
+**DONE 2026-08-21 09:34.** The snippet is imported into all six site blocks
+that front Chatwoot (`aeon360`, `proton`, `default` — http and TLS vhosts),
+config validated, Caddy reloaded live.
 
-```bash
-gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --command='
-cd /opt/platform/deploy/caddy/tenants
-sudo cp -r . /tmp/tenants.bak-$(date +%s)
-# bottom-up so earlier line numbers stay valid
-sudo sed -i "36a\\\timport strip_underscore_forwarding" aeon360.caddy
-sudo sed -i "1a\\\timport strip_underscore_forwarding"  aeon360.caddy
-sudo sed -i "36a\\\timport strip_underscore_forwarding" proton.caddy
-sudo sed -i "1a\\\timport strip_underscore_forwarding"  proton.caddy
-sudo sed -i "22a\\\timport strip_underscore_forwarding" default.caddy
-sudo sed -i "1a\\\timport strip_underscore_forwarding"  default.caddy
-sudo docker exec platform-infra-caddy-1 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-'
+One trap worth recording: the snippet must be defined **before**
+`import tenants/*.caddy` in `caddy/Caddyfile`. Caddy resolves snippets in file
+order, so appending the definition at the end makes every tenant import fail to
+adapt with `File to import not found: strip_underscore_forwarding` — it reads as
+a missing *file*, not a mis-ordered snippet. Also: `caddy/Caddyfile` is a
+**single-file** bind mount, so rewrite it with `cp` (truncates, keeps the inode)
+rather than `sed -i`, which swaps the inode and never reaches the container.
+
+Verified on the wire — spoofed forwarding headers dropped, benign underscore
+headers still delivered, and Rails sees only Caddy's own value:
+
+```
+X_Forwarded_For: 9.9.9.9      reached rails: 0
+X_Real_IP: 8.8.8.8            reached rails: 0
+x_custom_probe: SHOULDARRIVE  reached rails: 1
+rails saw -> X-Forwarded-For: 114.10.76.111   (the real client)
+             X-Forwarded-Proto: https
 ```
 
-Only reload if that prints `Valid configuration`:
+`api_access_token` still authenticates through the proxy after the reload
+(`{"error":"Invalid Access Token"}` on a placeholder = Chatwoot's own answer,
+not Devise's), and `aeon360.crm` / `proton.crm` both still serve 200.
+
+Rollback: `/opt/platform/deploy/docker-compose.infra.yml.bak-caddypin-20260821`,
+`/opt/platform/deploy/caddy/Caddyfile.bak-underscore-20260821`, and
+`/tmp/tenants.bak-import-20260821`.
+
+---
+
+## 3.3 Handover to AEON360 — two items, both need their hands
+
+**1. `crm.base_url` → `https://`.** Their config lives in Secret Manager secret
+`aeon360-customer-waba-config` (project `prj-dev-innovation-svc-8e`), mounted at
+`CONFIG=/secrets/config.yaml`. Line 29 is `base_url: "http://aeon360.crm..."`.
+Now that the token is actually being transmitted, it crosses the public internet
+in cleartext on every reply — Caddy answers port 80 without redirecting. Editing
+this is classifier-blocked from here; run it directly:
 
 ```bash
-sudo docker exec platform-infra-caddy-1 caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+P=prj-dev-innovation-svc-8e
+gcloud secrets versions access latest --secret=aeon360-customer-waba-config --project=$P > /tmp/cfg.yaml
+sed -i '' 's|http://aeon360\.crm|https://aeon360.crm|' /tmp/cfg.yaml
+gcloud secrets versions add aeon360-customer-waba-config --data-file=/tmp/cfg.yaml --project=$P
+# the mount resolves `latest` at instance start, so force a new revision:
+gcloud run services update aeon360-customer-waba --region=asia-southeast1 --project=$P \
+  --update-labels=cfg-rev=https-$(date +%s)
+rm -P /tmp/cfg.yaml
 ```
 
-Rollback for either step: `/opt/platform/deploy/docker-compose.infra.yml.bak-caddypin-20260821`
-and `/tmp/tenants.bak-underscore-20260821`.
+The restart is a bonus: it also clears the in-memory status cache and bindings,
+which is the fallback if a conversation is still latched.
+
+**2. The §5.6 race-guard fix.** Implemented and tested in the local clone at
+`~/Archive/aeon360-customer/my-aeon360-customer-waba`, branch
+`fix/crm-race-guard-remote-authoritative` (commit `0651cb3`, **not pushed** —
+it's their repo and their CI). 344 tests pass. Patch exported for handover.
+
+It makes the CRM authoritative for the guard, keeping the local cache only for
+the unconfirmed-interrupt window, and retracts D2 in their
+`docs/chatwoot-mapping.md`. It also fixes the clobber that silenced the bot:
+`handle()` writes the status from every delivery including mid-turn ones, so a
+reopen's `open` payload could overwrite the cache a running turn's guard then
+read.
+
+Until they deploy it, a conversation can still be silenced by UI churn —
+reopening or resolving a conversation right before the customer writes. Leaving
+it in `pending` and not touching it avoids the race entirely.
+
+---
+
 
 ---
 

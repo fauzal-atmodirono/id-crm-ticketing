@@ -221,6 +221,14 @@ conversation missing. A `401` means authentication is broken again.
   race-guard patch (branch `fix/crm-race-guard-remote-authoritative`); until it
   ships, **leave the conversation in `pending` and don't touch it**.
 
+- **AI goes quiet ~10 minutes after the customer stops typing.** That was our
+  own lifecycle scanner: its idle warning posts as an outgoing `User` message,
+  which their decision table reads as a human takeover. Fixed by
+  `LIFECYCLE_SKIP_PENDING=true` on the aeon360 tenant (live since 2026-08-21) —
+  the scanner now sweeps only `open`. If it recurs, check the flag survived a
+  redeploy: `docker exec aeon360-agent python -c "from app.config import
+  get_settings; print(get_settings().lifecycle_skip_pending)"`.
+
 - **Bot permanently silent on one conversation.** It is latched: a
   `toggle_status` failed, so the conversation is marked an unconfirmed interrupt
   and every `pending` payload is ignored by design. Clear it with the §5.8

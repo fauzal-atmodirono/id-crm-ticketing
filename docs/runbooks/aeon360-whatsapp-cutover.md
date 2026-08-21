@@ -418,6 +418,52 @@ takeover signal, nothing else.
 
 ---
 
+## 3.2c Our own lifecycle scanner was silencing their bot — fixed 2026-08-21 10:43
+
+`LIFECYCLE_ENABLED=true` on this tenant, so after ten minutes of customer
+silence *our* `aeon360-agent` posts customer-facing messages as an outgoing
+**User**:
+
+> "Your chat will close in 5 minutes" → "Closed due to inactivity." → "Is your
+> case resolved? Please reply YES"
+
+AEON360's §5.3 decision table treats `outgoing` + `sender_type == "user"` on a
+`pending` conversation as a human takeover. So each of those posts cancelled
+their in-flight generation, flipped the conversation to `open`, and marked an
+unconfirmed interrupt — permanently silencing the AI on that conversation.
+
+The timestamps leave no room for doubt. Conversation 2, this morning:
+
+| Our lifecycle post | Their `toggle_status` → 401 |
+|---|---|
+| `[9] 03:26:35` "Your chat will close in 5 minutes" | `03:26:35` |
+| `[10] 03:41:44` "Closed due to inactivity." | `03:41:45` |
+| `[11] 03:41:45` "Is your case resolved?" | `03:41:45` |
+
+Their bot was faithfully reacting to *our robot* as though it were a human
+agent. The 401s hid the effect while the header bug lasted; the moment
+authentication started working it would have landed for real.
+
+**Fix: `LIFECYCLE_SKIP_PENDING`** (`agent/app/config.py`, default `false`).
+True sweeps only `open` — bot-owned conversations are left alone, human-owned
+ones still auto-close. Default false keeps every other tenant byte-identical,
+which matters: on proton *our* orchestrator is the bot, `pending` is ours to
+sweep, and turning this on there would stop idle warnings entirely.
+
+Live on aeon360 since 10:43, verified by watching the scanner's own calls:
+
+```
+aeon360 (fixed):   10:44:27 status=open      10:45:28 status=open
+proton  (control):  2× status=open           2× status=pending
+```
+
+**The general lesson for any third-party bot on a shared inbox:** anything we
+post as a `User` is indistinguishable from a human agent to that bot. Automated
+posts on a bot-owned conversation are not neutral — they are a takeover signal.
+Audit any future automation that writes to an inbox we do not drive.
+
+---
+
 ## 3.3 Handover to AEON360 — one item left (https is DONE 2026-08-21 09:57)
 
 **1. ✅ DONE 2026-08-21 09:57** — secret version 3, revision `aeon360-customer-waba-00004-pwh` at 100%. Their CRM calls now log `https://aeon360.crm...` where they logged `http://` an hour earlier. Original instructions kept for reference. Their config lives in Secret Manager secret

@@ -10,3 +10,19 @@
 #   <tenant>.agent.<ip>.nip.io   -> <tenant>-agent:8000
 #   <tenant>.mail.<ip>.nip.io    -> shared mailpit:8025 (basic_auth)
 import tenants/*.caddy
+
+# Caddy is pinned to 2.10 so that `api_access_token` survives the proxy at all
+# (see docker-compose.infra.yml for why). The price of allowing underscore
+# header names back is a smuggling vector specific to Rack apps like Chatwoot:
+# Rack folds both `-` and `_` into the same CGI variable, so a client-supplied
+# `X_Forwarded_For` lands in HTTP_X_FORWARDED_FOR next to the one Caddy sets
+# itself and can win on ordering. Drop the underscore twins of the headers the
+# proxy is authoritative for; every other underscore header still passes.
+# Import this into any site block that fronts a Rack app.
+(strip_underscore_forwarding) {
+	request_header -X_Forwarded_For
+	request_header -X_Forwarded_Proto
+	request_header -X_Forwarded_Host
+	request_header -X_Forwarded_Port
+	request_header -X_Real_IP
+}

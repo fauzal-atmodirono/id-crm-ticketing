@@ -123,6 +123,10 @@ docker compose -p "${INFRA_PROJECT}" -f "${INFRA_FILE}" exec -T postgres \
 # --- 3. Render + install the Caddy route, then reload -----------------------
 cat > "caddy/tenants/${TENANT}.caddy" <<CADDY
 http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io {
+	# Chatwoot is a Rack app, so it needs the underscore-twin strip. See the
+	# snippet's own comment in caddy/Caddyfile for why the proxy allows
+	# underscore headers through at all.
+	import strip_underscore_forwarding
 	# Proton AI backend paths proxied same-origin so the Chatwoot SPA reaches the
 	# backend without CORS or a browser-unreachable internal host.
 	#

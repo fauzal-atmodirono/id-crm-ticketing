@@ -17,7 +17,17 @@ volumes:
 
 services:
   caddy:
-    image: caddy:2-alpine
+    # PINNED, do not float back to caddy:2-alpine. v2.11.4 silently drops every
+    # request header whose name contains an underscore, with no opt-out and no
+    # log line (caddyserver/caddy#7808). That kills `api_access_token` — the
+    # spelling Chatwoot's own API docs specify — for every caller outside this
+    # VM, and surfaces as a 401 that reads exactly like a bad credential. Cost
+    # us most of 2026-08-21 on the AEON360 integration; see
+    # docs/runbooks/aeon360-whatsapp-cutover.md §3.1.
+    # v2.8.4/2.9.1/2.10.2 all pass the header through; 2.11.4 does not. The fix
+    # is milestoned for v2.11.5 — re-test with the probe in that runbook and
+    # move back to a floating tag once it ships.
+    image: caddy:2.10-alpine
     restart: unless-stopped
     ports:
       - "80:80"

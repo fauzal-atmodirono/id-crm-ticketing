@@ -23,7 +23,7 @@ mid-sentence.
 | **Agent bot** | id 1, "AEON360 Assistant" → `https://innovation.dev.aeon360.net/aeon360-customer-waba/chatwoot/bot` |
 | **Brain** | `aeon360-customer-waba` → `aeon360-customer-agent`, Cloud Run `asia-southeast1`, project `prj-dev-innovation-svc-8e` |
 | **Reverse proxy** | Caddy **2.10.2, pinned** — 2.11.4 silently drops `api_access_token` and breaks every reply |
-| **Turn latency** | 5–45 s. Do not judge a test at 10 seconds. |
+| **Turn latency** | 5–90 s, observed. Do not judge a test at 10 seconds — a turn taking 85 s has been seen in production. |
 
 Health checks:
 
@@ -55,7 +55,7 @@ sender=AgentBot#1  private=false  status=read  source_id="SMb61eba03444efbd6965b
    says "the bot owns this"). A brand-new conversation starts `pending`.
 2. Send any message from WhatsApp to `+16823993949`. **No keyword or prefix is
    needed** — the AI answers any message on a `pending` conversation.
-3. Wait up to 45 s. The reply lands on your handset *and* in the CRM thread.
+3. Wait up to 90 s. The reply lands on your handset *and* in the CRM thread.
 
 **Do not click around in the CRM while a turn is running** — see
 [Troubleshooting](#troubleshooting).
@@ -108,7 +108,7 @@ The assistant is a live agent, so exact wording varies — verify the **behaviou
 
 | You send | What to verify |
 |---|---|
-| `mau beli mamypoko` | A reply within ~45 s that is **member-aware** — it should reference real purchase history, e.g. *"anda pernah beli MamyPoko Extra Dry Tape saiz XL (40 keping) … bulan Mac lepas"*. Not a generic catalogue answer. |
+| `mau beli mamypoko` | A reply within ~90 s that is **member-aware** — it should reference real purchase history, e.g. *"anda pernah beli MamyPoko Extra Dry Tape saiz XL (40 keping) … bulan Mac lepas"*. Not a generic catalogue answer. |
 | `yes` | Continues the thread coherently — the thread id is held per conversation, so context carries. |
 
 Proves: identity resolves from the phone number alone on the Chatwoot path, and
@@ -209,6 +209,25 @@ gcloud logging read 'resource.type="cloud_run_revision"
 A healthy result is `post_message failed: 404 {"error":"Resource could not be
 found"}` — the bot authenticated, and Chatwoot correctly reported the fake
 conversation missing. A `401` means authentication is broken again.
+
+## §9 acceptance test status (2026-08-21)
+
+| # | Scenario | Status |
+|---|---|---|
+| 1–4 | first message, multi-turn, chunking, product photo | needs a handset |
+| 5 | "connect me with a human" | needs a handset |
+| 6 | agent replies into a `pending` conversation | needs the CRM UI |
+| 7 | **agent replies mid-generation** | needs the CRM UI — and only truly passes once the race-guard patch ships |
+| 8 | status back to `pending`, AI resumes | needs the CRM UI |
+| 9 | private note | needs the CRM UI |
+| 10 | duplicate `X-Chatwoot-Delivery` | ✅ **PASS** — two `200`s, exactly one agent turn |
+| 11 | bad HMAC signature | ✅ **PASS** — `401`, nothing processed |
+| 12 | their backend down → §5.1.1 fail-safe | not run; needs their service stopped |
+
+Tests 10 and 11 were run with `deploy/scripts/aeon360-bot-probe.py` against a
+nonexistent conversation id, so nothing reached a customer. Test 10 is easy to
+misread: allow a **full 90 seconds** before concluding a turn did not happen —
+the first read of this test looked like a failure at 45 s and was not.
 
 ## Troubleshooting
 

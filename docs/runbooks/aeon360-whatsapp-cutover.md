@@ -161,97 +161,108 @@ REQ POST /api/v1/accounts/1/conversations/999999/messages → 401 Unauthorized
 That proves their service receives the event, parses it, decides to answer, and
 dies on the write back.
 
-**Correction 2026-08-21 (second pass, with access to their GCP project).** The
-first pass called this a *bad* token. It is not — the token is **absent**.
-Chatwoot distinguishes the two, and the distinction is the whole diagnosis:
+**FINAL DIAGNOSIS 2026-08-21 — Caddy strips request headers containing
+underscores. The bug is ours, not AEON360's.**
 
-| What the client sends | Chatwoot's 401 body |
+Two earlier readings of this 401 were wrong and are recorded here because each
+was wrong in an instructive way:
+
+1. *"Stale or mistyped token."* Wrong — their `bot_token` fingerprints to
+   `ae48f0823de7`, byte-identical to `AgentBot.find(1).access_token.token`.
+2. *"Token absent from their config."* Wrong — it is present in Secret Manager
+   version 2 (created `2026-08-20T00:40:04`, i.e. **before** the live revision
+   `aeon360-customer-waba-00003-dxm` was created at `00:42:27`, so the running
+   process has it). Their `CrmSettings._require_credentials_when_enabled`
+   validator refuses to boot with an empty token, and the service boots and
+   serves `/chatwoot/bot` — which alone disproves the theory.
+
+The header is correct in their code too (`src/crm/client.py:61` returns
+`{"api_access_token": self._settings.bot_token}` — exactly what Chatwoot's API
+docs specify). It never arrives.
+
+**Proof.** Same request, two spellings, through the production URL:
+
+```
+api_access_token:  → 401 {"errors":["You need to sign in or sign up before continuing."]}
+api-access-token:  → 200 {"meta":{"sender":{...}}}
+```
+
+Direct to Rails on `localhost:3000`, bypassing Caddy, **both** spellings return
+`200`. So Rack normalises them identically and Chatwoot is indifferent; the loss
+happens in the proxy. Confirmed on the wire with `tcpdump` on the Caddy→Rails
+bridge, using neutral throwaway headers so the result cannot be Chatwoot-specific:
+
+| Sent by client | Reached Rails |
 |---|---|
-| an unknown `api_access_token` | `{"error":"Invalid Access Token"}` |
-| **no** `api_access_token` header | `{"errors":["You need to sign in or sign up before continuing."]}` |
+| `api_access_token: …` | ❌ dropped |
+| `api-access-token: …` | ✅ as `Api-Access-Token` |
+| `x_custom_probe: …` | ❌ dropped |
+| `x-custom-probe: …` | ✅ as `X-Custom-Probe` |
 
-`api/base_controller.rb` is why:
+Caddy `v2.11.4` (`caddy:2-alpine`). No `header` directive in
+`/etc/caddy/tenants/aeon360.caddy` does this — it is Caddy's own strict header
+handling, and it applies to **every tenant and every integration behind this
+proxy**, not just AEON360.
+
+This also explains the Devise error body rather than Chatwoot's own. With the
+header gone, `api/base_controller.rb`'s `authenticate_by_access_token?` fails
+`.present?`, skips the access-token branch entirely and falls through to
+`authenticate_user!`:
 
 ```ruby
 before_action :authenticate_access_token!, if:     :authenticate_by_access_token?
 before_action :authenticate_user!,         unless: :authenticate_by_access_token?
-
-def authenticate_by_access_token?
-  request.headers[:api_access_token].present? || request.headers[:HTTP_API_ACCESS_TOKEN].present?
-end
 ```
 
-A missing **or empty** header fails `.present?`, skips the access-token branch
-entirely, and falls through to Devise — which is why the message is Devise's,
-not Chatwoot's. AEON360's own Cloud Run logs show exactly that body:
+An unknown token yields `{"error":"Invalid Access Token"}`; a *missing* one
+yields Devise's `"You need to sign in"`. AEON360's logs carry the second. That
+distinction is what finally separated "wrong credential" from "no credential",
+and it is worth remembering — the two failures look identical in a status code.
+
+Their agent was never at fault: the Cloud Run logs show `agent turn ok`
+immediately before each failed write. The answer is composed and then discarded.
+
+**Verified fix.** Posting as the agent bot through Caddy with the dashed header,
+private note so nothing reaches the customer:
 
 ```
-INFO  src.agent.client: agent turn ok thread_id=939476e9-…
-INFO  httpx: GET  http://…/api/v1/accounts/1/conversations/999999          "401 Unauthorized"
-WARN  src.crm.client: chatwoot get_status non-2xx for conversation 999999: 401
-INFO  httpx: POST http://…/api/v1/accounts/1/conversations/999999/messages "401 Unauthorized"
-ERROR src.crm.service: chatwoot_send_failed conversation_id=999999
-src.exceptions.ChatwootApiError: chatwoot post_message failed: 401
-  '{"errors":["You need to sign in or sign up before continuing."]}'
+POST /api/v1/accounts/1/conversations/3/messages
+  api-access-token → 200 {"id":31,...,"status":"sent"}
+  api_access_token → 401 {"errors":["You need to sign in..."]}
 ```
 
-Reproduced against the live CRM with no credential at all — byte-identical:
+Two ways to fix, in preference order:
 
-```bash
-curl -sS https://aeon360.crm.34-50-103-151.nip.io/api/v1/accounts/1/conversations/2
-{"errors":["You need to sign in or sign up before continuing."]}
-```
+- **Ours (durable).** Stop Caddy discarding underscore headers, so every current
+  and future integration that follows Chatwoot's documented contract works. This
+  is the real fix; nothing else here is.
+- **Theirs (one character, deployable today).** `src/crm/client.py:61` →
+  `{"api-access-token": self._settings.bot_token}`. Standards-correct: HTTP
+  header names conventionally use hyphens, and Rack maps both to
+  `HTTP_API_ACCESS_TOKEN`.
 
-Note the first log line: **the AI answer is generated successfully**
-(`agent turn ok`). Nothing is wrong with their model, prompt, member scoping or
-BigQuery marts. The reply is composed and then thrown away on the write back.
+Do the second to unblock the cutover, then the first so the trap is gone.
 
-**Where the value has to be set.** `aeon360-customer-waba` takes its whole
-config from `CONFIG=/secrets/config.yaml`, mounted from Secret Manager secret
-`aeon360-customer-waba-config` (project `prj-dev-innovation-svc-8e`, region
-`asia-southeast1`, live revision `aeon360-customer-waba-00003-dxm`). The CRM bot
-token is empty or unset in that secret. Check it without printing the value:
-
-```bash
-gcloud secrets versions access latest \
-  --secret=aeon360-customer-waba-config \
-  --project=prj-dev-innovation-svc-8e \
-  | grep -iE 'token|secret' | awk -F': *' '{printf "%s len=%d\n", $1, length($2)}'
-```
-
-A `len=0` on the CRM bot token line confirms it. The correct value is in spec
-§7; its fingerprint matches `AgentBot.find(1).access_token.token` exactly.
-Deploying a new secret version requires a revision restart to pick up the mount.
-
-**Second, independent defect: they call the CRM over plain `http://`.** Caddy
-serves the API on port 80 without redirecting:
-
-```
-http  → 401   (no redirect)
-https → 401
-```
-
-Today that leaks nothing because no token is being sent. The moment the token is
-set, it crosses the public internet in cleartext on every reply. Their CRM base
-URL must be `https://aeon360.crm.34-50-103-151.nip.io`, fixed in the same
-change.
+**Independent second defect, unchanged.** `crm.base_url` in their config is
+`http://aeon360.crm.34-50-103-151.nip.io`. Caddy serves port 80 without
+redirecting, so the token will cross the public internet in cleartext on every
+reply once it is being sent. Their own `client.py:31-34` already carries a
+warning about exactly this. Switch to `https://` in the same change.
 
 **Consequence for their `docs/chatwoot-mapping.md` D2.** They concluded from a
 401 on `GET /conversations/{1,7}` that "agent bots are not documented as having
 read access to conversations at all", and narrowed the §5.6 race guard to local
-status only. That premise is false twice over: `conversations#show` is on
-Chatwoot's `BOT_ACCESSIBLE_ENDPOINTS` allowlist, and the 401 they saw was the
-missing header, not a permissions model. Confirmed against the live CRM with the
-real bot token read from the database:
+status only. False — `conversations#show` is on Chatwoot's
+`BOT_ACCESSIBLE_ENDPOINTS` allowlist and returns 200 once the header survives
+the proxy. Verified with the real bot token:
 
 ```
-GET /conversations/2       real token   → 200
-GET /conversations/999999  real token   → 404  Resource could not be found
-GET /conversations/2       bogus token  → 401  Invalid Access Token
+GET /conversations/3       real token, dashed header → 200
+GET /conversations/999999  real token                → 404 Resource could not be found
+GET /conversations/3       bogus token               → 401 Invalid Access Token
 ```
 
-Once the header is sent, the **full** §5.6 guard is available and the narrowing
-can be reverted.
+The full §5.6 guard is available to them and the narrowing can be reverted.
 
 Reproduce any of this with:
 

@@ -1,5 +1,22 @@
 # Converting `POST /webhooks/whatsapp` from Twilio to Chatwoot
 
+> **⚠️ Superseded 2026-08-21 — kept as a wire-format reference only.**
+>
+> This guide was written on the assumption that AEON360 would convert the existing
+> `/webhooks/whatsapp` route in place. They did not: they built a **separate**
+> `/chatwoot/bot` route (`src/api/chatwoot.py` in `my-aeon360-customer-waba`), and
+> it is deployed and live. The CRM's `outgoing_url` was corrected to match on
+> 2026-08-21.
+>
+> **Stale here:** §0's "you keep the URL" premise, and every route/`Content-Type`
+> branching instruction that follows from it — there is no shared path and so no
+> mixed-format window to branch on.
+>
+> **Still accurate and still worth reading:** §2's captured payload (including the
+> two properties you only find by looking — `conversation.id` is the display_id the
+> REST URLs want, and `sender.type` is absent entirely for contacts), the event
+> list, the verified HMAC signature code, and §5's error-policy rules.
+
 **Date:** 2026-08-20
 **Audience:** AEON360 backend engineer
 **Companion to:** `AEON360 WhatsApp × CRM Integration Spec` — that document explains
@@ -11,8 +28,10 @@ behaviour; this document is authoritative on wire format.
 
 ## 0. Orientation — what actually changes
 
-You keep the URL `https://innovation.dev.aeon360.net/aeon360-customer-waba/webhooks/whatsapp`.
-AEON360 chose to reuse it rather than add a second route.
+~~You keep the URL `https://innovation.dev.aeon360.net/aeon360-customer-waba/webhooks/whatsapp`.
+AEON360 chose to reuse it rather than add a second route.~~ **Superseded** — the
+handler lives at `/chatwoot/bot` on a separate route (see the banner above). Read
+the rest of this section as describing that endpoint.
 
 **Everything behind that URL changes.** Today it is a Twilio callback handler. After
 this change it is a Chatwoot agent-bot handler. Those are different protocols that

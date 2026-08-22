@@ -303,7 +303,7 @@ index 15591d4..914b58c 100644
          class="flex items-center gap-1 px-2 py-1 text-xs border rounded-lg border-n-weak text-n-slate-11"
          :disabled="translating"
 diff --git a/app/javascript/dashboard/composables/useProtonInboundAlerts.js b/app/javascript/dashboard/composables/useProtonInboundAlerts.js
-index d8ec7ab..2b49dd7 100644
+index d8ec7ab..bd573e0 100644
 --- a/app/javascript/dashboard/composables/useProtonInboundAlerts.js
 +++ b/app/javascript/dashboard/composables/useProtonInboundAlerts.js
 @@ -22,7 +22,7 @@
@@ -315,21 +315,113 @@ index d8ec7ab..2b49dd7 100644
  import Auth from 'dashboard/api/auth';
  import { getMyAlertRules } from 'dashboard/api/protonAlerts';
  import {
-@@ -55,11 +55,12 @@ let installed = false;
+@@ -55,21 +55,22 @@ let installed = false;
  const NEW_INBOUND = 'new_inbound';
  
  export function useProtonInboundAlerts() {
 -  const { hasFeature } = useProtonConfig();
-+  const { hasFeature } = useCustomFeatures();
-   // The fork's real client-side gate. See this patch's header: it is NOT the
-   // same switch as the backend's INBOUND_ALERTS_ENABLED, and nothing here
-   // pretends otherwise. Off → this composable does nothing at all and the
+-  // The fork's real client-side gate. See this patch's header: it is NOT the
+-  // same switch as the backend's INBOUND_ALERTS_ENABLED, and nothing here
+-  // pretends otherwise. Off → this composable does nothing at all and the
 -  // page behaves exactly as it did before this patch.
-+  // page behaves exactly as it did before this patch. Reads the platform
-+  // switchboard (task 8 / patch 0074) rather than the old ERB-stamped list.
-   if (!hasFeature('inbound_alerts')) return { enabled: false, mode: ref('off') };
-   if (installed) return { enabled: true, mode: ref('installed-elsewhere') };
-   installed = true;
+-  if (!hasFeature('inbound_alerts')) return { enabled: false, mode: ref('off') };
+-  if (installed) return { enabled: true, mode: ref('installed-elsewhere') };
+-  installed = true;
++  const { hasFeature } = useCustomFeatures();
+ 
++  // useStore()/useMapGetter() must be called synchronously during setup()
++  // (Vue's composable rule) -- but whether we ever actually install anything
++  // is now decided reactively below, not by an early return, so these are
++  // hoisted here unconditionally rather than gated behind the feature check
++  // the way they used to be. They are inert on their own: no timers, no
++  // fetches, no subscriptions started merely by calling them, so "the
++  // feature is off → this composable does nothing observable" still holds.
+   const store = useStore();
+   const currentUser = useMapGetter('getCurrentUser');
+   const currentAccountId = useMapGetter('getCurrentAccountId');
+ 
++  const enabled = ref(false);
++  const mode = ref('off');
+   const rules = ref({ ...DEFAULT_ALERT_RULES });
+-  const mode = ref('stream');
+   const streamCoverage = ref('none');
+   // Messages that existed before this page loaded are not news. Without this,
+   // every reload replays the morning's backlog as a burst of toasts.
+@@ -228,19 +229,62 @@ export function useProtonInboundAlerts() {
+     paintIndicator();
+   };
+ 
+-  // ---- boot ---------------------------------------------------------------
+-  loadRules();
+-  scanStream();
++  // ---- boot, gated reactively ----------------------------------------------
++  //
++  // Task 8 fix round 1 (finding 2). Patch 0058 deliberately kept every
++  // feature check synchronous rather than fetched, specifically to avoid
++  // this exact hazard -- quoting that patch's own header: "Making the
++  // backend report its enabled features over HTTP would mean turning that
++  // read async and auditing every call site for a load-order race in which
++  // a feature is briefly 'off' -- a large change to verify, for a list whose
++  // values are already available at render time." useCustomFeatures() (task
++  // 6) reversed exactly that decision app-wide, so the race 0058 predicted
++  // is real here now: hasFeature('inbound_alerts') reads a ref that is still
++  // null the instant this composable runs, Sidebar.vue -- this composable's
++  // only call site -- is never remounted by in-app navigation (Dashboard.vue
++  // nests every route behind an un-keyed <router-view/>), and a one-shot
++  // synchronous check has no second chance to re-evaluate. That would make
++  // this composable read "off" deterministically on every page load even
++  // when the tenant has the feature on -- silently dead in production,
++  // exactly what this file's own "NEVER GO SILENT" header forbids. The fix
++  // is to make the gate itself reactive: re-run install() once, whenever
++  // hasFeature() first turns true, however late the switchboard fetch
++  // resolves.
++  const install = () => {
++    // Sidebar.vue can be re-created (route changes, hot reload). Installing
++    // twice would double every alert, which is the same failure as the
++    // reconnection race and is prevented the same way: once only, at module
++    // scope.
++    if (installed) {
++      enabled.value = true;
++      mode.value = 'installed-elsewhere';
++      return;
++    }
++    installed = true;
++    enabled.value = true;
++    mode.value = 'stream';
++
++    loadRules();
++    scanStream();
++    watch(
++      () => conversationSignature(readConversations(store).conversations),
++      () => scanStream()
++    );
++    watchdogTimer = setInterval(runWatchdog, STREAM_WATCHDOG_MS);
++    onScopeDispose(() => {
++      if (watchdogTimer) clearInterval(watchdogTimer);
++      watchdogTimer = null;
++      installed = false;
++    });
++  };
++
+   watch(
+-    () => conversationSignature(readConversations(store).conversations),
+-    () => scanStream()
++    () => hasFeature('inbound_alerts'),
++    isOn => {
++      if (isOn) install();
++    },
++    { immediate: true }
+   );
+-  watchdogTimer = setInterval(runWatchdog, STREAM_WATCHDOG_MS);
+-  onScopeDispose(() => {
+-    if (watchdogTimer) clearInterval(watchdogTimer);
+-    watchdogTimer = null;
+-    installed = false;
+-  });
+ 
+-  return { enabled: true, mode, rules, streamCoverage };
++  return { enabled, mode, rules, streamCoverage };
+ }
 diff --git a/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue b/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue
 index e8ab332..7fe415f 100644
 --- a/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue
@@ -366,31 +458,45 @@ index e8ab332..7fe415f 100644
    },
    data() {
 diff --git a/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue b/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue
-index f5c46a6..9e1952e 100644
+index f5c46a6..6728540 100644
 --- a/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue
 +++ b/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue
-@@ -16,6 +16,7 @@ import Icon from 'dashboard/components-next/icon/Icon.vue';
+@@ -16,6 +16,8 @@ import Icon from 'dashboard/components-next/icon/Icon.vue';
  import TagInput from 'dashboard/components-next/taginput/TagInput.vue';
  import assignmentPoliciesAPI from 'dashboard/api/assignmentPolicies';
  import { useI18n } from 'vue-i18n';
 +import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
++import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';
  import AgentPrioritiesEditor from 'dashboard/components/proton/AgentPrioritiesEditor.vue';
  
  const props = defineProps({
-@@ -30,6 +31,7 @@ const route = useRoute();
+@@ -30,6 +32,17 @@ const route = useRoute();
  const router = useRouter();
  const { t } = useI18n();
  const { isEnterprise } = useConfig();
++// Two-gate rule (fix round 1 / task 8 finding 1): the registry pairs
++// `agent_priorities` with the `workforce.manage` permission
++// (custom_features.py), so the feature switch alone is not enough --
++// `workforce.manage` is a separate, tenant-withholdable RBAC permission
++// (status_router.py's MANAGE_PERMISSION), not Chatwoot's blanket
++// `administrator` role that inbox.routes.js already restricts this page to.
++// Without this check, any tenant that turns the feature on hands the
++// priorities editor to every Chatwoot administrator regardless of that
++// tenant's own RBAC config.
 +const { hasFeature: protonHasFeature } = useCustomFeatures();
++const { hasPermission } = useProtonPermissions();
  
  const selectedAgentIds = ref([]);
  const isAgentListUpdating = ref(false);
-@@ -669,7 +671,7 @@ onMounted(() => {
+@@ -669,7 +682,10 @@ onMounted(() => {
           five channel chips to wrap. The label moves above the table so the
           table gets the whole width. The editor renders its own explanatory
           paragraph, so the section's help-text is not duplicated here. -->
 -    <div class="w-full py-2 mb-2">
-+    <div v-if="protonHasFeature('agent_priorities')" class="w-full py-2 mb-2">
++    <div
++      v-if="protonHasFeature('agent_priorities') && hasPermission('workforce.manage')"
++      class="w-full py-2 mb-2"
++    >
        <label class="text-heading-3 text-n-slate-12">
          Agent Channel Priorities
        </label>

@@ -31,6 +31,7 @@ from app.config import get_settings
 from app.db.models import AiAction
 from app.db.session import async_session_maker
 from app.services import lifecycle, lifecycle_store, whatsapp_format
+from app.services.customer_context import format_customer_context
 from app.services.media import fetch_attachment_bytes
 from app.services.media_registry import drop_order
 
@@ -81,7 +82,7 @@ SYSTEM_PROMPT = (
 )
 
 
-def _build_system_prompt(persona: dict | None) -> str:
+def _persona_prompt(persona: dict | None) -> str:
     """Compose the agent-bot decision prompt from an assistant persona.
 
     None or all-empty persona -> the module SYSTEM_PROMPT verbatim (byte-identical
@@ -110,6 +111,24 @@ def _build_system_prompt(persona: dict | None) -> str:
             "always match the language the customer writes in."
         )
     return "\n\n".join(parts)
+
+
+def _build_system_prompt(persona: dict | None, customer_context: str = "") -> str:
+    """The persona prompt, plus this customer's profile when we have one.
+
+    `customer_context` defaults to "" and appends nothing when empty, so every
+    caller and every tenant that has no nasabah profile on the contact gets the
+    persona prompt byte for byte. That default is what
+    `test_no_persona_no_context_is_byte_identical_to_today` pins.
+
+    The profile goes LAST, after the persona's guardrails. An operator-authored
+    guardrail should constrain what the model does with the profile, not be
+    buried under it.
+    """
+    base = _persona_prompt(persona)
+    if not customer_context:
+        return base
+    return f"{base}\n\n{customer_context}"
 
 
 def _sender_type(payload: dict) -> str | None:
@@ -353,6 +372,7 @@ async def _process_conversation(conversation_id: int) -> None:
     # so the decision is always based on fresh state.
     proton = get_proton_config_client()
     inbox_id: int | None = None
+    conversation_data: dict | None = None
     if proton is not None:
         try:
             conversation_data = await chatwoot.get_conversation(conversation_id)
@@ -394,7 +414,33 @@ async def _process_conversation(conversation_id: int) -> None:
                 "proceeding with default system prompt",
                 inbox_id,
             )
-    system_prompt = _build_system_prompt(persona)
+
+    # Fetch this contact's stored profile and fold it into the decision prompt.
+    # Entirely best-effort: any failure, a conversation with no sender, or a
+    # contact carrying attributes this build doesn't recognise all leave
+    # customer_context empty, which makes _build_system_prompt a no-op. Runs as
+    # part of a background task, so it must never raise (see CLAUDE.md).
+    customer_context = ""
+    try:
+        if conversation_data is None:
+            conversation_data = await chatwoot.get_conversation(conversation_id)
+        sender = (conversation_data.get("meta") or {}).get("sender") or {}
+        contact_id = sender.get("id")
+        if contact_id is not None:
+            contact = await chatwoot.get_contact(int(contact_id))
+            body = contact.get("payload") if isinstance(contact, dict) else None
+            body = body if isinstance(body, dict) else contact
+            customer_context = format_customer_context(
+                body.get("custom_attributes") if isinstance(body, dict) else None
+            )
+    except Exception:
+        logger.debug(
+            "orchestrator: could not resolve customer context for conversation %s; "
+            "proceeding without a customer profile",
+            conversation_id,
+        )
+
+    system_prompt = _build_system_prompt(persona, customer_context)
 
     # Fetch persona messages for the inbox (fail-open: None on any error).
     # Only handoff_message is consumed here; welcome_message is consumed at

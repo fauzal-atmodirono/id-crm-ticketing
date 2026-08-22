@@ -44,54 +44,82 @@ Append to `backend/apps/backend/src/chatbot/features/authz/test_identity.py`:
 
 ```python
 @pytest.mark.asyncio
-async def test_resolve_identity_reports_super_admin_type(respx_mock) -> None:
-    respx_mock.get("https://cw.test/api/v1/profile").respond(
-        json={"id": 7, "type": "SuperAdmin"}
+@respx.mock
+async def test_resolve_identity_reports_super_admin_type():
+    settings = get_settings()
+    respx.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 7, "type": "SuperAdmin"})
     )
-    validator = TokenValidator(_settings())
-    assert await validator.resolve_identity("tok", "cli", "uid@x") == (7, True)
+    validator = TokenValidator(settings)
+    assert await validator.resolve_identity("tok-a", "client-1", "uid-1") == (7, True)
 
 
 @pytest.mark.asyncio
-async def test_resolve_identity_treats_null_type_as_not_super_admin(respx_mock) -> None:
+@respx.mock
+async def test_resolve_identity_treats_null_type_as_not_super_admin():
     """A regular Chatwoot user's `type` is null, NOT the string "User". A
     truthiness check would pass here and hand the switchboard to everyone."""
-    respx_mock.get("https://cw.test/api/v1/profile").respond(
-        json={"id": 9, "type": None}
+    settings = get_settings()
+    respx.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 9, "type": None})
     )
-    validator = TokenValidator(_settings())
-    assert await validator.resolve_identity("tok", "cli", "uid@x") == (9, False)
+    validator = TokenValidator(settings)
+    assert await validator.resolve_identity("tok-b", "client-1", "uid-1") == (9, False)
 
 
 @pytest.mark.asyncio
-async def test_resolve_identity_caches_both_halves(respx_mock) -> None:
-    route = respx_mock.get("https://cw.test/api/v1/profile").respond(
-        json={"id": 1, "type": "SuperAdmin"}
+@respx.mock
+async def test_resolve_identity_omitted_type_is_not_super_admin():
+    """Some Chatwoot versions omit the key entirely rather than sending null."""
+    settings = get_settings()
+    respx.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 9})
     )
-    validator = TokenValidator(_settings())
-    await validator.resolve_identity("tok", "cli", "uid@x")
-    await validator.resolve_identity("tok", "cli", "uid@x")
+    validator = TokenValidator(settings)
+    assert await validator.resolve_identity("tok-c", "client-1", "uid-1") == (9, False)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_resolve_identity_caches_both_halves():
+    settings = get_settings()
+    route = respx.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 1, "type": "SuperAdmin"})
+    )
+    validator = TokenValidator(settings)
+    await validator.resolve_identity("tok-d", "client-1", "uid-1")
+    await validator.resolve_identity("tok-d", "client-1", "uid-1")
     assert route.call_count == 1
 
 
 @pytest.mark.asyncio
-async def test_resolve_user_id_still_returns_a_bare_int(respx_mock) -> None:
+@respx.mock
+async def test_resolve_user_id_still_returns_a_bare_int():
     """Existing callers pass an int straight into repo.permissions_for_user."""
-    respx_mock.get("https://cw.test/api/v1/profile").respond(
-        json={"id": 4, "type": None}
+    settings = get_settings()
+    respx.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 4, "type": None})
     )
-    validator = TokenValidator(_settings())
-    assert await validator.resolve_user_id("tok", "cli", "uid@x") == 4
+    validator = TokenValidator(settings)
+    assert await validator.resolve_user_id("tok-e", "client-1", "uid-1") == 4
 
 
 @pytest.mark.asyncio
-async def test_resolve_identity_returns_none_on_http_failure(respx_mock) -> None:
-    respx_mock.get("https://cw.test/api/v1/profile").respond(status_code=401)
-    validator = TokenValidator(_settings())
-    assert await validator.resolve_identity("tok", "cli", "uid@x") is None
+@respx.mock
+async def test_resolve_identity_returns_none_on_http_failure():
+    settings = get_settings()
+    respx.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(401)
+    )
+    validator = TokenValidator(settings)
+    assert await validator.resolve_identity("tok-f", "client-1", "uid-1") is None
 ```
 
-If `_settings()` and the `respx_mock` fixture are not already defined in this file, read the top of `test_identity.py` and reuse whatever helper it already uses to build a `Settings` with `chatwoot_api_url="https://cw.test"`.
+This file already imports `httpx`, `pytest`, `respx`, `TokenValidator` and
+`get_settings`, and its existing tests use the `@respx.mock` decorator with
+module-level `respx.get(...)` — match that style exactly rather than
+introducing a `respx_mock` fixture. Each test uses a distinct access token
+because `TokenValidator`'s cache is per-instance but keyed on the triplet.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -552,19 +580,25 @@ CUSTOM_FEATURE_REGISTRY: dict[str, CustomFeature] = {
 # invalidation story. They are listed here so the switchboard can show them
 # read-only: a page that silently omits half a tenant's configuration is worse
 # than one that shows it and says who owns it.
+# Every attribute below was verified to exist on the backend's `Settings`.
+# Note what is ABSENT: LIFECYCLE_ENABLED, KB_GROUNDED_REPLIES and
+# CHAT_AGENT_ENABLED are read by the `agent/` service's own Settings, not by
+# this one, so they cannot be reported here and are deliberately omitted
+# rather than rendered as a permanent "off" the operator cannot explain.
 BEHAVIOR_FLAGS: dict[str, str] = {
-    "behavior_lifecycle": "lifecycle_enabled",
     "behavior_routing": "routing_enabled",
     "behavior_presence_tracking": "presence_tracking_enabled",
     "behavior_sla_engine": "sla_engine_enabled",
     "behavior_escalation_email": "escalation_email_enabled",
-    "behavior_email_escalation": "email_escalation_enabled",
     "behavior_phone_handoff": "phone_handoff_enabled",
     "behavior_phone_recording": "phone_recording_enabled",
-    "behavior_kb_grounded_replies": "kb_grounded_replies",
+    "behavior_phone_transcription": "phone_recording_transcription_enabled",
     "behavior_knowledge_pg": "knowledge_pg_enabled",
-    "behavior_chat_agent": "chat_agent_enabled",
     "behavior_rbac": "rbac_enabled",
+    "behavior_translation": "translation_enabled",
+    "behavior_rsa": "rsa_enabled",
+    "behavior_taxonomy_admin": "taxonomy_admin_enabled",
+    "behavior_inbound_alerts": "inbound_alerts_enabled",
 }
 
 
@@ -725,7 +759,7 @@ def test_read_exposes_the_registry_to_a_superadmin() -> None:
     assert len(body["registry"]) == 24
     assert body["registry"][0]["key"]
     assert body["registry"][0]["label"]
-    assert "behavior_lifecycle" in body["behavior"]
+    assert "behavior_routing" in body["behavior"]
 
 
 def test_write_is_refused_for_a_non_superadmin() -> None:
@@ -756,7 +790,7 @@ def test_write_rejects_a_behavior_key_with_409() -> None:
     does not exist, so the operator can tell "not yet" from "typo"."""
     res = _client(_FakeStore(), (1, False)).post(
         "/admin/custom-features",
-        json={"key": "behavior_lifecycle", "enabled": True},
+        json={"key": "behavior_routing", "enabled": True},
         headers=_SESSION,
     )
     assert res.status_code == 409
@@ -1307,11 +1341,11 @@ diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app
 +          path: 'admin/custom-features',
 +          name: 'custom_features',
 +          component: () => import('../../views/CustomFeaturesPage.vue'),
-+          meta: { permissions: ['administrator'] },
++          meta: { permissions: ['administrator', 'agent'] },
          },
 ```
 
-Before finalising, open `0053-workforce-dashboard.patch` and copy its `dashboard.routes.js` hunk header and context lines exactly — the `@@` arithmetic and the surrounding lines must be that file's, not invented. The `meta.permissions` guard is Chatwoot's own route guard and is a coarse pre-filter only; the real gate is the backend's 403 plus the `isSuperadmin` branch in the template.
+Before finalising, open `0053-workforce-dashboard.patch` and copy its `dashboard.routes.js` hunk header and context lines exactly — the `@@` arithmetic and the surrounding lines must be that file's, not invented. `meta.permissions` is `['administrator', 'agent']`, matching `proton_knowledge` in `0025`. It must NOT be `['administrator']` alone: a Chatwoot SuperAdmin can hold the account-level role `agent`, and this guard would then bounce the platform owner off their own switchboard before the page ever rendered. It is a coarse pre-filter; the real gate is the backend's 403 plus the `isSuperadmin` branch in the template.
 
 - [ ] **Step 2: Add the nav entry**
 
@@ -1407,16 +1441,41 @@ Repeat for every row in the Step 1 mapping. For surfaces with no paired permissi
 
 Take each hunk's context from the patch that introduced that nav entry — `0053` for workforce, `0041` for customer360, `0060` for taxonomy, and so on. Do not guess context lines.
 
-- [ ] **Step 3: Verify no surface was missed**
+- [ ] **Step 3: Convert the seven component-level gates too**
+
+Seventeen of the registry's 24 keys gate a route. The other seven gate a
+panel, a button or an in-conversation action, and several already call the
+OLD synchronous `useProtonConfig().hasFeature`:
+
+| key | where it is gated today | patch |
+|---|---|---|
+| `ai_assist` | Suggest-a-reply button | `0002` / `0003` |
+| `copilot` | Ask Copilot panel | `0005` |
+| `faq_suggestion_popup` | `ReplyTopPanel.vue` strip | `0056` |
+| `translate` | message translate action | `0055` |
+| `agent_softphone` | softphone panel | `0069` |
+| `knowledge` | also gates the nav section | `0009` |
+| `agent_priorities` | priorities table inside Workforce | `0063` |
+
+Convert each from `useProtonConfig().hasFeature` to the new composable, so
+one store drives every gate rather than two sources disagreeing — which is
+the exact two-switch defect patch `0058` exists to prevent. `knowledge`
+appears in both lists because it gates a nav section *and* a route; gate both.
+
+- [ ] **Step 4: Verify no surface was missed**
 
 ```bash
 cd deploy/chatwoot-fork/patches
-rtk proxy grep -c 'protonHasFeature' 0074-feature-gate-surfaces.patch
+rtk proxy grep -c 'protonHasFeature\|hasFeature' 0074-feature-gate-surfaces.patch
+rtk proxy grep -c "useProtonConfig" 0074-feature-gate-surfaces.patch
 ```
 
-Expected: at least 17 — one per route in the Step 1 mapping. If the count is lower, a surface is ungated and will render on a blank tenant.
+Expected: at least 23 gates (17 routes + 6 component sites, `knowledge`
+counted once per site). The second count must be **0 added lines** — any
+remaining `useProtonConfig().hasFeature` is a surface still reading the dead
+ERB list, which on a blank tenant renders a feature nobody switched on.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add deploy/chatwoot-fork/patches/0074-feature-gate-surfaces.patch

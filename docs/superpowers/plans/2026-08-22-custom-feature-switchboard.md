@@ -672,8 +672,16 @@ class CustomFeatureStore:
         self._cached_client: firestore.Client | None = None
 
     def _client(self) -> firestore.Client:
+        # Same project/database pair PicStore uses, but CACHED, which PicStore
+        # deliberately is not. PicStore backs admin CRUD that an operator hits
+        # a few times a week; this document is read on every SPA page load by
+        # every agent, so building a fresh Firestore client per request would
+        # be a connection setup on the hot path.
         if self._cached_client is None:
-            self._cached_client = firestore.Client(project=self._settings.gcp_project_id)
+            self._cached_client = firestore.Client(
+                project=self._settings.firestore_project_id,
+                database=self._settings.firestore_database_id,
+            )
         return self._cached_client
 
     def _doc_ref(self) -> firestore.DocumentReference:
@@ -701,7 +709,7 @@ class CustomFeatureStore:
         )
 ```
 
-If `Settings` has no `gcp_project_id` field, use whatever attribute `PicStore._client()` in `features/chat/pic_store.py` uses — copy it verbatim rather than inventing a name.
+`firestore_project_id` and `firestore_database_id` are both verified to exist on `Settings` (they default to `lv-playground-genai` / `proton-db`). There is no `gcp_project_id` field — do not invent one.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 

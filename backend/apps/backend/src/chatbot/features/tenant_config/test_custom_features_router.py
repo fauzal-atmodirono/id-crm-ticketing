@@ -297,3 +297,17 @@ def test_valid_override_is_still_accepted() -> None:
     )
     assert res.status_code == 200
     assert store.document["terms"]["overrides"] == {"partner": {"singular": "Branch"}}
+
+
+def test_plural_lower_override_is_accepted() -> None:
+    """`plural_lower` is a real field on `Term`/`resolve_terms`, same as
+    singular/plural/lower -- rejecting it here would make it write-only
+    from `term_dictionary.py`'s side and unreachable from this endpoint."""
+    store = _FakeDocStore()
+    res = _client(store, (1, False)).post(
+        "/admin/custom-features/terms",
+        json={"overrides": {"partner": {"plural_lower": "branches"}}},
+        headers=_SESSION,
+    )
+    assert res.status_code == 200
+    assert store.document["terms"]["overrides"] == {"partner": {"plural_lower": "branches"}}

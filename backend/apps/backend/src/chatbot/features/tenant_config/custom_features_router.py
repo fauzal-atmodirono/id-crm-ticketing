@@ -57,7 +57,7 @@ class TermsBody(BaseModel):
 # there is no public constant for it -- but kept in lockstep by the fact that
 # a field this endpoint accepts and `resolve_terms` does not read would be
 # the same silent no-op this validation exists to close off.
-_OVERRIDE_FIELDS = frozenset({"singular", "plural", "lower"})
+_OVERRIDE_FIELDS = frozenset({"singular", "plural", "lower", "plural_lower"})
 
 
 def build_custom_features_router(
@@ -182,7 +182,7 @@ def build_custom_features_router(
             # Key validation alone lets a well-formed noun through with a
             # malformed patch -- `resolve_terms` defends itself against that
             # (`isinstance(patch, dict)`, only ever reading singular/plural/
-            # lower, skipping an empty string) so nothing crashes, but the
+            # lower/plural_lower, skipping an empty string) so nothing crashes, but the
             # write would still persist and answer 200 while doing nothing.
             # That is the same lie a dropped store write would tell, in a
             # different place, so it is rejected here instead.
@@ -192,7 +192,7 @@ def build_custom_features_router(
                         status_code=400,
                         detail=(
                             f"{noun}: override must be an object with "
-                            f"singular/plural/lower fields, got {type(patch).__name__}"
+                            f"singular/plural/lower/plural_lower fields, got {type(patch).__name__}"
                         ),
                     )
                 bad_fields = sorted(set(patch) - _OVERRIDE_FIELDS)

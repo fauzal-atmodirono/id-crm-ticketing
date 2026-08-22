@@ -36,6 +36,10 @@ class Term:
     # incident" and on "DMS/TSP" gives "dms/tsp" -- precisely the
     # half-broken output that makes people stop trusting a terminology layer.
     lower: str
+    # Same reasoning as `lower`, for the plural. `.lower()` on "RSA
+    # Incidents" is just as broken as it is on the singular -- an acronym
+    # doesn't stop being an acronym because there's more than one of it.
+    plural_lower: str
 
 
 TERM_KEYS: tuple[str, ...] = (
@@ -54,32 +58,50 @@ TERM_KEYS: tuple[str, ...] = (
 
 PROFILES: dict[str, dict[str, Term]] = {
     "generic": {
-        "partner": Term("Partner", "Partners", "partner"),
-        "partner_principal": Term("Partner Manager", "Partner Managers", "partner manager"),
-        "partner_owner": Term("Partner Owner", "Partner Owners", "partner owner"),
-        "partner_rep": Term("Partner Rep", "Partner Reps", "partner rep"),
-        "asset": Term("Asset", "Assets", "asset"),
-        "asset_model": Term("Asset Type", "Asset Types", "asset type"),
-        "asset_id": Term("Asset ID", "Asset IDs", "asset ID"),
-        "asset_serial": Term("Serial No.", "Serial Nos.", "serial no."),
-        "field_incident": Term("Field Incident", "Field Incidents", "field incident"),
-        "job_no": Term("Job No.", "Job Nos.", "job no."),
-        "partner_system": Term("Business System", "Business Systems", "business system"),
+        "partner": Term("Partner", "Partners", "partner", "partners"),
+        "partner_principal": Term(
+            "Partner Manager", "Partner Managers", "partner manager", "partner managers"
+        ),
+        "partner_owner": Term(
+            "Partner Owner", "Partner Owners", "partner owner", "partner owners"
+        ),
+        "partner_rep": Term("Partner Rep", "Partner Reps", "partner rep", "partner reps"),
+        "asset": Term("Asset", "Assets", "asset", "assets"),
+        "asset_model": Term("Asset Type", "Asset Types", "asset type", "asset types"),
+        "asset_id": Term("Asset ID", "Asset IDs", "asset ID", "asset IDs"),
+        "asset_serial": Term("Serial No.", "Serial Nos.", "serial no.", "serial nos."),
+        "field_incident": Term(
+            "Field Incident", "Field Incidents", "field incident", "field incidents"
+        ),
+        "job_no": Term("Job No.", "Job Nos.", "job no.", "job nos."),
+        "partner_system": Term(
+            "Business System", "Business Systems", "business system", "business systems"
+        ),
     },
     # Mirrors the strings the fork ships today, so the next automotive
     # customer is a profile selection rather than a fork.
     "automotive": {
-        "partner": Term("Dealer", "Dealers", "dealer"),
-        "partner_principal": Term("Dealer Principal", "Dealer Principals", "dealer principal"),
-        "partner_owner": Term("Dealer Owner", "Dealer Owners", "dealer owner"),
-        "partner_rep": Term("Dealer CRE", "Dealer CREs", "dealer CRE"),
-        "asset": Term("Vehicle", "Vehicles", "vehicle"),
-        "asset_model": Term("Vehicle Model", "Vehicle Models", "vehicle model"),
-        "asset_id": Term("Vehicle No.", "Vehicle Nos.", "vehicle no."),
-        "asset_serial": Term("Chassis No.", "Chassis Nos.", "chassis no."),
-        "field_incident": Term("RSA Incident", "RSA Incidents", "RSA incident"),
-        "job_no": Term("WIP No.", "WIP Nos.", "WIP no."),
-        "partner_system": Term("DMS/TSP", "DMS/TSP", "DMS/TSP"),
+        "partner": Term("Dealer", "Dealers", "dealer", "dealers"),
+        "partner_principal": Term(
+            "Dealer Principal", "Dealer Principals", "dealer principal", "dealer principals"
+        ),
+        "partner_owner": Term(
+            "Dealer Owner", "Dealer Owners", "dealer owner", "dealer owners"
+        ),
+        "partner_rep": Term("Dealer CRE", "Dealer CREs", "dealer CRE", "dealer CREs"),
+        "asset": Term("Vehicle", "Vehicles", "vehicle", "vehicles"),
+        "asset_model": Term(
+            "Vehicle Model", "Vehicle Models", "vehicle model", "vehicle models"
+        ),
+        "asset_id": Term("Vehicle No.", "Vehicle Nos.", "vehicle no.", "vehicle nos."),
+        "asset_serial": Term(
+            "Chassis No.", "Chassis Nos.", "chassis no.", "chassis nos."
+        ),
+        "field_incident": Term(
+            "RSA Incident", "RSA Incidents", "RSA incident", "RSA incidents"
+        ),
+        "job_no": Term("WIP No.", "WIP Nos.", "WIP no.", "WIP nos."),
+        "partner_system": Term("DMS/TSP", "DMS/TSP", "DMS/TSP", "DMS/TSP"),
     },
 }
 
@@ -118,13 +140,14 @@ def resolve_terms(
             "singular": term.singular,
             "plural": term.plural,
             "lower": term.lower,
+            "plural_lower": term.plural_lower,
         }
         for key, term in table.items()
     }
     for key, patch in (overrides or {}).items():
         if key not in resolved or not isinstance(patch, dict):
             continue
-        for field in ("singular", "plural", "lower"):
+        for field in ("singular", "plural", "lower", "plural_lower"):
             value = patch.get(field)
             if isinstance(value, str) and value:
                 resolved[key][field] = value

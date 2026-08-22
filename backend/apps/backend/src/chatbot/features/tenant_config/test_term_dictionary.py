@@ -69,12 +69,24 @@ def test_acronym_lowercase_is_stored_not_derived() -> None:
     assert PROFILES["automotive"]["partner_system"].lower == "DMS/TSP"
 
 
+def test_plural_acronym_lowercase_is_stored_not_derived() -> None:
+    """The plural has exactly the same trap: `.lower()` on "RSA Incidents"
+    gives "rsa incidents". `plural_lower` must be a stored field, not a
+    `.lower()` of `plural` computed at call time -- this test must fail
+    against a derived implementation."""
+    assert PROFILES["automotive"]["field_incident"].plural_lower == "RSA incidents"
+    assert PROFILES["automotive"]["partner_system"].plural_lower == "DMS/TSP"
+    assert PROFILES["automotive"]["partner_rep"].plural_lower == "dealer CREs"
+    assert PROFILES["automotive"]["job_no"].plural_lower == "WIP nos."
+
+
 def test_resolve_terms_returns_a_flat_serialisable_map() -> None:
     terms = resolve_terms("generic", None)
     assert terms["partner"] == {
         "singular": "Partner",
         "plural": "Partners",
         "lower": "partner",
+        "plural_lower": "partners",
     }
 
 
@@ -84,6 +96,7 @@ def test_overrides_apply_on_top_of_the_profile() -> None:
     assert terms["partner"]["plural"] == "Branches"
     # Unspecified fields keep the profile's value rather than becoming empty.
     assert terms["partner"]["lower"] == "partner"
+    assert terms["partner"]["plural_lower"] == "partners"
 
 
 def test_unknown_override_keys_are_ignored_not_raised() -> None:

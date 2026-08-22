@@ -142,35 +142,52 @@ labels, empty states, toast messages.
 
 ## Rollout — `default` first, proton untouched
 
-1. **Backend**: registry, profiles, resolution, response field. No SPA change,
-   so nothing renders differently anywhere.
-2. **`default` tenant**: set profile `generic`. It is not live, so it is the
-   safe place to see every screen in neutral wording.
-3. **Chatwoot image** with the `t()` call sites. `default` now renders
-   generic.
-4. **aeon360**: set profile `generic`, then pull the image.
-5. **proton: nothing.** No config written, no image pull, no restart.
+1. **Backend + pin every existing tenant**: registry, profiles, resolution,
+   response field, and a profile row for proton (`automotive`), aeon360 and
+   default (both `generic`). No SPA change, so nothing renders differently
+   anywhere — the rows are inert on the day they are written.
+2. **Chatwoot image** with the `t()` call sites. `default` is not live, so it
+   is the safe place to see every screen in neutral wording first.
+3. **aeon360** pulls the image and renders generic.
+4. **proton: no image pull, no restart, no env edit.** Its row from step 1
+   means that whenever it does eventually pull a later image — on its own
+   schedule, for its own reasons — it keeps saying Dealer, Vehicle, RSA
+   and WIP.
 
-### The proton trap, stated plainly
+### Every existing tenant is pinned in step 1, not later
 
-**Proton is safe only for as long as it keeps running its current Chatwoot
-image** (`c9c4828` / `-rc9`). The `t()` call sites live in the SPA, so an
-instance that never pulls a new image never renders a resolved term.
+An earlier draft made step 1 backend-only and left proton's profile to be
+written "before its next Chatwoot image pull". That is a trap dressed as a
+runbook step. The `t()` call sites live in the SPA, so proton renders no
+resolved term while it runs its current image (`c9c4828` / `-rc9`) — but the
+moment it pulls **any** later Chatwoot image, for a completely unrelated fix,
+it gets the call sites. With no profile set it would resolve to `generic`,
+and proton's operators would open the CRM to "Partner Escalation Turnaround"
+where it has always said "Dealer". Nothing about that pull would look
+vocabulary-related to whoever performs it.
 
-The moment proton pulls any later Chatwoot image — for an unrelated fix — it
-gets the `t()` call sites, and with no profile set it resolves to `generic`.
-Its operators would open the CRM to "Partner Escalation Turnaround" where
-"Dealer Escalation Turnaround" has always been.
+So the pin is not a follow-up ops step. **Step 1 writes a profile row for
+every tenant that exists**, in the same change that creates the store:
 
-So: **proton's profile must be set to `automotive` before its next Chatwoot
-image pull.** That is a one-line store write, not an env edit, and it can be
-done at any time before the pull — including immediately, since writing it
-changes nothing while proton runs an image with no `t()` calls in it.
+| tenant | profile |
+|---|---|
+| proton | `automotive` |
+| aeon360 | `generic` |
+| default | `generic` |
 
-Doing it early is strictly safer than remembering it later, and is the
-recommended course despite the "don't touch proton" instruction: the write is
-invisible to proton's running instance and removes a trap that is otherwise
-armed indefinitely. Flagging rather than deciding — the call is Yuda's.
+All three writes are invisible on the day they happen — no tenant is running
+an image containing a `t()` call — which is exactly what makes step 1 the
+safe place for them. `add-tenant.sh` writes `generic` for every tenant
+provisioned afterwards, so no tenant ever relies on the fallback.
+
+The fallback for a tenant with no row stays `generic`, because the product's
+default vocabulary should be the neutral one rather than a vertical. That is
+defensible only because the fallback is unreachable for every real tenant:
+a vertical-as-default would otherwise be one skipped provisioning step away
+from showing a bank the word "Dealer".
+
+A test asserts proton resolves to `automotive`, so the pin cannot be
+regressed by a later edit to the profile table.
 
 ## Testing
 
@@ -181,6 +198,8 @@ armed indefinitely. Flagging rather than deciding — the call is Yuda's.
   rather than an approximation.
 - Unknown override keys are ignored, not raised.
 - Store unreachable → `generic`, never a partial map.
+- **proton resolves to `automotive`.** Asserted directly against the tenant
+  pin table, so the pin cannot be silently dropped by a later edit.
 - Acronym terms have an explicit `lower` that is not the naive `.lower()` of
   the singular.
 

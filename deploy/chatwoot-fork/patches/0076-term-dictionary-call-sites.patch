@@ -777,8 +777,59 @@ index 64adc16..bea4d01 100644
        </p>
        <div v-else class="overflow-x-auto border rounded-lg border-n-weak">
          <table class="w-full text-sm border-collapse text-n-slate-11">
+diff --git a/app/javascript/dashboard/views/ProtonIntegrationsPage.vue b/app/javascript/dashboard/views/ProtonIntegrationsPage.vue
+index ed02031..7fa4e63 100644
+--- a/app/javascript/dashboard/views/ProtonIntegrationsPage.vue
++++ b/app/javascript/dashboard/views/ProtonIntegrationsPage.vue
+@@ -18,10 +18,15 @@
+      page that isn't being actively read. -->
+ <script>
+ import { useAlert } from 'dashboard/composables';
++import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
+ import { getDmsIntegration } from 'dashboard/api/protonAdmin';
+ 
+ export default {
+   name: 'ProtonIntegrationsPage',
++  setup() {
++    const { t } = useCustomFeatures();
++    return { t };
++  },
+   data() {
+     return {
+       dmsLoading: true,
+@@ -50,7 +55,7 @@ export default {
+     } catch (err) {
+       this.dmsErrored = true;
+       useAlert(
+-        'Failed to load the DMS/TSP integration status: ' +
++        `Failed to load the ${this.t('partner_system')} integration status: ` +
+           (err.message || String(err))
+       );
+     } finally {
+@@ -73,7 +78,9 @@ export default {
+         class="block p-4 border rounded-lg border-n-weak hover:border-n-brand"
+       >
+         <div class="flex items-start justify-between mb-2">
+-          <h2 class="text-sm font-medium text-n-slate-12">DMS / TSP</h2>
++          <h2 class="text-sm font-medium text-n-slate-12">
++            {{ t('partner_system') }}
++          </h2>
+           <span
+             class="px-2 py-0.5 text-xs font-medium rounded-full whitespace-nowrap"
+             :class="{
+@@ -86,8 +93,8 @@ export default {
+           </span>
+         </div>
+         <p class="text-xs text-n-slate-11">
+-          Dealer Management / Telematics Service Provider connection, used to
+-          look up vehicle and service history from Customer 360.
++          {{ t('partner_system') }} connection, used to look up
++          {{ t('asset', 'lower') }} and service history from Customer 360.
+         </p>
+         <p
+           v-if="dmsStatus.tone === 'positive'"
 diff --git a/app/javascript/dashboard/views/ProtonRsaPage.vue b/app/javascript/dashboard/views/ProtonRsaPage.vue
-index 633dcea..dcc1b83 100644
+index 633dcea..f466d4c 100644
 --- a/app/javascript/dashboard/views/ProtonRsaPage.vue
 +++ b/app/javascript/dashboard/views/ProtonRsaPage.vue
 @@ -8,6 +8,7 @@
@@ -924,7 +975,7 @@ index 633dcea..dcc1b83 100644
        <!-- (b) Data-entry form -->
        <h2 class="mb-3 text-base font-medium text-n-slate-12">
 -        Log an incident
-+        Log {{ t('field_incident', 'lower') }}
++        New {{ t('field_incident') }}
        </h2>
        <form
          class="grid max-w-3xl grid-cols-1 gap-4 mb-10 md:grid-cols-2"
@@ -960,7 +1011,7 @@ index 633dcea..dcc1b83 100644
              class="px-4 py-2 text-sm font-medium rounded-lg w-fit bg-n-brand text-white hover:opacity-90 disabled:opacity-50"
            >
 -            Log incident
-+            Log {{ t('field_incident', 'lower') }}
++            New {{ t('field_incident') }}
            </button>
          </div>
        </form>

@@ -933,3 +933,136 @@ class MockMetricsQuery:
         )
         metrics.attach_scopes({"volume": self._scope, "first_response": self._scope})
         return metrics
+
+
+class EmptyMetricsQuery:
+    """The read side for a tenant with no warehouse -- every block empty.
+
+    This is what `metrics_provider = "noop"` (the default) now means, and it
+    is a different thing from both of `MockMetricsQuery`'s two modes:
+
+    - It is not the deliberate-mock path. `MockMetricsQuery()`'s rows are
+      fixtures with a tenant's fingerprints on them ("Dealer KL",
+      "Aftersales"/"Ali", "e.MAS 5", 682 cases in "2026-06"). Serving those
+      to *every* provider-less deployment is how a freshly provisioned
+      tenant's Reports pages came to show another customer's dealers and
+      vehicle models as if they were its own. Canned rows are still the
+      right dev/test answer, but they now require asking for them:
+      `metrics_provider = "mock"`.
+    - It is not the degraded fallback either. `MockMetricsQuery(degraded=
+      True)` reports "unavailable" because the tenant *asked* for BigQuery
+      and the client would not initialise -- something is broken and the
+      page should say so. Here nothing is broken: no warehouse was ever
+      configured, so "no rows, all-time" is the accurate answer and the
+      scope stays `unfiltered`. A "temporarily unavailable" badge on a
+      tenant that simply has no data yet would be its own small lie.
+
+    Every method returns the same shape its BigQuery counterpart does, so
+    the SPA's existing empty-list rendering ("no data") is all that changes.
+    `fetch_hourly_anomalies` returns `ok=False` for the reason the Protocol
+    documents: nothing was examined, which is not the same as "no anomalies".
+    """
+
+    def __init__(self) -> None:
+        self._scope = _UNFILTERED_SCOPE
+
+    async def fetch_anomalies(self) -> list[AnomalyRow]:
+        return []
+
+    async def fetch_hourly_anomalies(self) -> tuple[list[HourlyAnomalyRow], bool]:
+        return [], False
+
+    async def fetch_departments(
+        self, period: PeriodRange | None = None, filters: object | None = None
+    ) -> DepartmentsMetrics:
+        del period, filters
+        return DepartmentsMetrics(dept_pic=[], reopen=[], category_by_vehicle_model=[])
+
+    async def fetch_callcenter(
+        self, period: PeriodRange | None = None, filters: object | None = None
+    ) -> CallCentreMetrics:
+        del period, filters
+        return CallCentreMetrics(
+            sla=[],
+            tasks_per_agent=[],
+            first_response=[],
+            resolution_time=[],
+            complaint_types=[],
+            peak_hours=[],
+            nps_by_agent=[],
+        )
+
+    async def fetch_dealer_escalation(
+        self, period: PeriodRange | None = None, filters: object | None = None
+    ) -> DealerEscalationMetrics:
+        del period, filters
+        return DealerEscalationMetrics(by_dealer=[], slowest_cases=[])
+
+    async def fetch_sla_buckets(
+        self, period: PeriodRange | None = None, filters: object | None = None
+    ) -> SlaBucketMetrics:
+        del period, filters
+        return SlaBucketMetrics(buckets=[])
+
+    async def fetch_case_aging(
+        self, period: PeriodRange | None = None, filters: object | None = None
+    ) -> CaseAgingMetrics:
+        del period, filters
+        return CaseAgingMetrics(cases=[])
+
+    async def fetch_dashboard(self, period: PeriodRange | None = None) -> DashboardMetrics:
+        del period
+        metrics = DashboardMetrics(
+            volume=[],
+            resolution=[],
+            csat=[],
+            nps=[],
+            speed=[],
+            fallback=[],
+            bounce=[],
+            quality=[],
+        )
+        metrics.attach_scopes(
+            dict.fromkeys(
+                (
+                    "volume",
+                    "resolution",
+                    "csat",
+                    "nps",
+                    "speed",
+                    "fallback",
+                    "bounce",
+                    "quality",
+                ),
+                self._scope,
+            )
+        )
+        return metrics
+
+    async def fetch_lifecycle(self, period: PeriodRange | None = None) -> LifecycleMetrics:
+        del period
+        metrics = LifecycleMetrics(cases=[], state_trend=[])
+        metrics.attach_scopes({"cases": self._scope, "state_trend": self._scope})
+        return metrics
+
+    async def fetch_volume_by_type_division(
+        self, period: PeriodRange | None = None
+    ) -> VolumeByTypeDivisionMetrics:
+        del period
+        metrics = VolumeByTypeDivisionMetrics(volume=[])
+        metrics.attach_scopes({"volume": self._scope})
+        return metrics
+
+    async def fetch_by_tag(
+        self, period: PeriodRange | None = None, tag: str | None = None
+    ) -> TagVolumeMetrics:
+        del period, tag
+        metrics = TagVolumeMetrics(by_tag=[])
+        metrics.attach_scopes({"by_tag": self._scope})
+        return metrics
+
+    async def fetch_after_hours(self, period: PeriodRange | None = None) -> AfterHoursMetrics:
+        del period
+        metrics = AfterHoursMetrics(volume=[], first_response=[])
+        metrics.attach_scopes({"volume": self._scope, "first_response": self._scope})
+        return metrics

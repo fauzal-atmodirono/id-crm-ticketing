@@ -299,8 +299,14 @@ class Settings(BaseSettings):
     bigquery_dataset: str = "demo_proton"
     bigquery_conversations_table: str = "conversations"
 
-    # Bot-metrics Phase 2 (per-turn MetricsPort -> BigQuery streaming)
-    metrics_provider: Literal["noop", "bigquery"] = "noop"
+    # Bot-metrics Phase 2 (per-turn MetricsPort -> BigQuery streaming).
+    # Also the read side's switch (`build_metrics_query_port`). "noop" -- the
+    # default, and what every tenant without a warehouse runs -- means EMPTY
+    # reports, not canned ones: the demo fixtures carry one tenant's dealers
+    # and vehicle models, so serving them by default put another customer's
+    # figures on a freshly provisioned tenant's Reports pages. "mock" is the
+    # opt-in for local dev and demos that still want those rows.
+    metrics_provider: Literal["noop", "mock", "bigquery"] = "noop"
     bigquery_turn_events_table: str = "turn_events"
 
     # Bot-metrics Phase 2 (in-app Zendesk -> BQ sync scheduler / the "trigger")

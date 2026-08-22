@@ -95,6 +95,7 @@ from chatbot.features.metrics.query_port import (
     DealerSlowCaseRow,
     DepartmentsMetrics,
     DeptPicRow,
+    EmptyMetricsQuery,
     FallbackRow,
     FirstResponseRow,
     HourlyAnomalyRow,
@@ -733,18 +734,27 @@ class BigQueryMetricsQuery:
 def build_metrics_query_port(settings: Settings) -> MetricsQueryPort:
     """Pick the read-side implementation from settings (reuses metrics_provider).
 
-    The two `MockMetricsQuery` constructions below are NOT the same thing
-    (Package E final fix, finding I6). The last line is a deliberate
-    choice of canned data -- the operator set `metrics_provider` to
-    something other than "bigquery", and all-time mock rows labelled
-    "unfiltered" are the intended answer. The `except` branch is a
-    *failure*: the tenant asked for BigQuery and the client could not be
-    built, so the same canned rows (682 cases, "2026-06") would render as
-    a plausible-looking real figure on a client-facing page. `degraded=True`
-    makes every block report `"unavailable"` instead, which a period-scoped
-    consumer renders as "temporarily unavailable" rather than as data.
-    Still fail-open -- a misconfigured warehouse must not raise or 500 the
-    page -- just no longer fail-open into invented numbers.
+    Three outcomes, and the two non-BigQuery ones are NOT the same thing:
+
+    - `"mock"` -- a deliberate choice of canned data (local dev, a demo).
+      The rows are the intended answer and every block reports "unfiltered":
+      all-time figures, honestly labelled as such.
+    - anything else, i.e. the `"noop"` default -- a tenant with no
+      warehouse. Empty blocks (`EmptyMetricsQuery`), because the canned rows
+      are one tenant's fixtures ("Dealer KL", "Aftersales"/"Ali", "e.MAS 5")
+      and serving them here is what made a freshly provisioned tenant's
+      Reports pages show another customer's data as if it were its own.
+      Canned rows must now be asked for by name.
+    - the `except` branch -- a *failure*: the tenant asked for BigQuery and
+      the client could not be built, so canned rows (682 cases, "2026-06")
+      would render as a plausible-looking real figure on a client-facing
+      page. `degraded=True` makes every block report `"unavailable"`, which
+      a period-scoped consumer renders as "temporarily unavailable" rather
+      than as data. Still fail-open -- a misconfigured warehouse must not
+      raise or 500 the page -- just no longer fail-open into invented
+      numbers. Deliberately NOT `EmptyMetricsQuery`: an empty report and a
+      broken one look identical to a reader, and only one of them is worth
+      paging someone about.
     """
     if settings.metrics_provider == "bigquery":
         try:
@@ -752,4 +762,6 @@ def build_metrics_query_port(settings: Settings) -> MetricsQueryPort:
         except Exception as e:  # never let init crash the app
             _log.error("metrics_query_init_failed_falling_back_to_mock", error=str(e))
             return MockMetricsQuery(degraded=True)
-    return MockMetricsQuery()
+    if settings.metrics_provider == "mock":
+        return MockMetricsQuery()
+    return EmptyMetricsQuery()

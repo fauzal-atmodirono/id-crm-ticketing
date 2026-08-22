@@ -54,15 +54,20 @@ def test_includes_the_staged_offer_and_its_rationale():
 
 
 def test_forbids_inventing_or_substituting_a_product():
+    # Pin the specific regulatory clauses, not a loose "only"/"never"
+    # disjunction -- a future edit that drops the anti-substitution or
+    # no-quoting language must fail this test, not slip through it.
     out = format_customer_context(FULL)
     lowered = out.lower()
-    assert "only" in lowered or "never" in lowered
-    assert "do not recommend" in lowered or "not investment advice" in lowered
+    assert "never substitute, invent, or add another product" in lowered
+    assert "never quote a return, yield, price, or fee" in lowered
+    assert "not investment advice" in lowered
+    assert "do not recommend buying or selling" in lowered
 
 
 def test_answers_the_question_first():
     out = format_customer_context(FULL)
-    assert "answer" in out.lower()
+    assert "answer the customer's actual question first" in out.lower()
 
 
 def test_partial_profile_renders_only_what_is_present():
@@ -89,3 +94,13 @@ def test_blank_values_are_skipped():
 
 def test_is_deterministic():
     assert format_customer_context(FULL) == format_customer_context(FULL)
+
+
+def test_int_value_is_stringified():
+    out = format_customer_context({"days_since_last_transaction": 47})
+    assert "47" in out
+
+
+def test_whitespace_only_offer_is_treated_as_absent():
+    out = format_customer_context({"risk_profile": "Moderat", "next_best_offer": "   "})
+    assert "offer" not in out.lower()

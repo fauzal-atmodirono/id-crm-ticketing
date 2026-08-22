@@ -23,7 +23,11 @@
   `cd backend/apps/backend && GOOGLE_API_KEY=test-dummy uv run pytest src/chatbot -q`.
   The env var is mandatory — without it five modules fail at collection and the run reports nothing about the rest. Baseline before this plan: **3186 passed, 2 skipped**; a task's run must show no failures and a total at or above that.
   This constraint is here because a narrow per-directory run already let a Critical regression through: changing `require_permission_with_identity` to use `resolve_identity` broke five tests in `features/chat/phone/test_softphone_router.py`, a consumer two directories away that mocks the validator.
-- **Fork patches: this sandbox cannot reach github.com to clone upstream.** New-file patches are pure additions and can be written directly. Patches that modify an upstream file must have their context lines transcribed from an existing patch that already touches that file — never guessed.
+- **Fork patches are verified against a reconstructed pre-image, never by eye.** The sandbox cannot clone upstream Chatwoot, so a tree was built from the running `proton-chatwoot-rails` container (its `app/javascript` ships upstream) with fork patches 0001-0071 applied. That is exactly the tree a new patch lands on at image-build time.
+  - Pre-image tree: `/private/tmp/claude-501/-Users-yudaadipratama-Archive-id-crm-ticketing/24a5f84b-319c-4eda-8466-49a5a9c1f213/scratchpad/cw-preimage`
+  - Verify with: `/private/tmp/claude-501/-Users-yudaadipratama-Archive-id-crm-ticketing/24a5f84b-319c-4eda-8466-49a5a9c1f213/scratchpad/verify-patch.sh /abs/path/to/00NN-name.patch` — it runs `git apply --check` and prints file:line for every bad hunk.
+  - A patch task is NOT done until this prints `PATCH APPLIES CLEANLY`.
+  - Read context lines out of the pre-image tree (`sed -n 'START,ENDp' <file>`), never from another patch's diff — a patch shows that file at ITS point in the stack, not at yours.
 
 ---
 

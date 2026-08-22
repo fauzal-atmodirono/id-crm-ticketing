@@ -1,0 +1,177 @@
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 4c8d6fa..48fabec 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -12,6 +12,7 @@ import { FEATURE_FLAGS } from 'dashboard/featureFlags';
+ import { useWindowSize, useEventListener } from '@vueuse/core';
+ import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
+ import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';
++import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
+ import { useProtonInboundAlerts } from 'dashboard/composables/useProtonInboundAlerts';
+ 
+ import Button from 'dashboard/components-next/button/Button.vue';
+@@ -68,6 +69,7 @@ const isFeatureEnabledonAccount = useMapGetter(
+ const { hasFeature: protonHasFeature } = useProtonConfig();
+ const protonAiAssistEnabled = computed(() => protonHasFeature('ai_assist'));
+ const { hasPermission: protonHasPermission } = useProtonPermissions();
++const { isSuperadmin } = useCustomFeatures();
+ // P9 tasks 2/3: alert on a new inbound customer message in the window the
+ // agent is actually looking at. Installed from the sidebar because the sidebar
+ // is mounted on every dashboard page; no-ops unless `inbound_alerts` is in
+@@ -736,6 +738,22 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
++    // The platform feature switchboard — superadmin-only, and gated on the
++    // composable's isSuperadmin ref (not a permission) because this isn't an
++    // RBAC surface: it's the platform owner's own control, invisible to every
++    // tenant admin no matter what their Chatwoot role grants. isSuperadmin
++    // starts false and flips true once the composable's fetch resolves, so
++    // the entry appears a moment after load rather than never.
++    ...(isSuperadmin.value
++      ? [
++          {
++            name: 'Custom features',
++            label: 'Custom features',
++            icon: 'i-lucide-settings',
++            to: accountScopedRoute('custom_features'),
++          },
++        ]
++      : []),
+     {
+       name: 'Contacts',
+       label: t('SIDEBAR.CONTACTS'),
+diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+index a36156d..4f753b1 100644
+--- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+@@ -88,6 +88,18 @@ export default {
+           component: () => import('../../views/ProtonWorkforceDashboardPage.vue'),
+           meta: { permissions: ['administrator'] },
+         },
++        {
++          // Coarse pre-filter only, matching proton_knowledge (0025): a
++          // Chatwoot SuperAdmin can hold the account-level role `agent`, so
++          // ['administrator'] alone would bounce the platform owner off
++          // their own switchboard before the page ever rendered. The real
++          // gate is the backend's 403 plus the isSuperadmin branch in
++          // CustomFeaturesPage.vue itself.
++          path: 'admin/custom-features',
++          name: 'custom_features',
++          component: () => import('../../views/CustomFeaturesPage.vue'),
++          meta: { permissions: ['administrator', 'agent'] },
++        },
+         {
+           path: 'proton/my-status',
+           name: 'proton_my_status',
+diff --git a/app/javascript/dashboard/views/CustomFeaturesPage.vue b/app/javascript/dashboard/views/CustomFeaturesPage.vue
+new file mode 100644
+index 0000000..25dda4f
+--- /dev/null
++++ b/app/javascript/dashboard/views/CustomFeaturesPage.vue
+@@ -0,0 +1,105 @@
++<!-- CustomFeaturesPage.vue — OUR file. The platform switchboard: which
++     custom surfaces this tenant's CRM has.
++
++     Superadmin-only, and invisible rather than disabled for everyone else.
++     A tenant admin who could see the switched-off surfaces would be reading
++     a product roadmap; the backend already withholds the registry from a
++     non-superadmin, so this component simply has nothing to render for them.
++
++     Behaviour flags are shown read-only. They are env-owned and not yet
++     switchable, and a page that silently omitted them would imply this
++     tenant has no configuration beyond these toggles. -->
++<script setup>
++import { ref } from 'vue';
++import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
++import { setCustomFeature } from 'dashboard/api/protonAdmin';
++
++const { loading, loadFailed, isSuperadmin, registry, behavior, refresh } =
++  useCustomFeatures();
++
++const saving = ref('');
++const error = ref('');
++
++function groups(rows) {
++  const out = [];
++  rows.forEach(row => {
++    const found = out.find(g => g.name === row.group);
++    if (found) found.rows.push(row);
++    else out.push({ name: row.group, rows: [row] });
++  });
++  return out;
++}
++
++async function toggle(row) {
++  saving.value = row.key;
++  error.value = '';
++  try {
++    await setCustomFeature(row.key, !row.enabled);
++    await refresh();
++  } catch (e) {
++    error.value = e.message || 'Could not save';
++  } finally {
++    saving.value = '';
++  }
++}
++</script>
++
++<template>
++  <div class="p-6 overflow-auto">
++    <h1 class="text-lg font-semibold text-n-slate-12 mb-1">Custom features</h1>
++    <p class="text-sm text-n-slate-11 mb-6">
++      Which surfaces this tenant's CRM has. Every feature is off until switched
++      on here.
++    </p>
++
++    <woot-loading-state v-if="loading" message="Loading features" />
++
++    <div v-else-if="loadFailed" class="text-sm text-n-amber-11">
++      Could not load the feature list. Nothing has been changed.
++    </div>
++
++    <div v-else-if="!isSuperadmin" class="text-sm text-n-slate-11">
++      This page is available to platform superadmins only.
++    </div>
++
++    <template v-else>
++      <div v-if="error" class="text-sm text-n-ruby-11 mb-4">{{ error }}</div>
++
++      <div v-for="group in groups(registry)" :key="group.name" class="mb-6">
++        <h2 class="text-sm font-semibold text-n-slate-12 mb-2">
++          {{ group.name }}
++        </h2>
++        <div
++          v-for="row in group.rows"
++          :key="row.key"
++          class="flex items-center justify-between py-2 border-b border-n-container"
++        >
++          <span class="text-sm text-n-slate-12">{{ row.label }}</span>
++          <button
++            class="text-sm px-3 py-1 rounded-lg"
++            :class="row.enabled ? 'bg-n-teal-3 text-n-teal-11' : 'bg-n-slate-3 text-n-slate-11'"
++            :disabled="saving === row.key"
++            @click="toggle(row)"
++          >
++            {{ row.enabled ? 'On' : 'Off' }}
++          </button>
++        </div>
++      </div>
++
++      <h2 class="text-sm font-semibold text-n-slate-12 mb-2 mt-8">
++        Env-controlled behaviour
++      </h2>
++      <p class="text-xs text-n-slate-11 mb-2">
++        Read-only. These are set in the tenant's environment file.
++      </p>
++      <div
++        v-for="(value, key) in behavior"
++        :key="key"
++        class="flex items-center justify-between py-1.5 text-sm"
++      >
++        <span class="text-n-slate-11">{{ key }}</span>
++        <span class="text-n-slate-12">{{ value ? 'on' : 'off' }}</span>
++      </div>
++    </template>
++  </div>
++</template>

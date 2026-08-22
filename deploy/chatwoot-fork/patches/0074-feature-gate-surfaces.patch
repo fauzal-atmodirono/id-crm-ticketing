@@ -1,17 +1,16 @@
 diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
-index 4c8d6fa..03efa7e 100644
+index 48fabec..d216af4 100644
 --- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
 +++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
-@@ -10,7 +10,7 @@ import { useSidebarKeyboardShortcuts } from './useSidebarKeyboardShortcuts';
+@@ -10,7 +10,6 @@ import { useSidebarKeyboardShortcuts } from './useSidebarKeyboardShortcuts';
  import { vOnClickOutside } from '@vueuse/components';
  import { FEATURE_FLAGS } from 'dashboard/featureFlags';
  import { useWindowSize, useEventListener } from '@vueuse/core';
 -import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
-+import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
  import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';
+ import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
  import { useProtonInboundAlerts } from 'dashboard/composables/useProtonInboundAlerts';
- 
-@@ -65,7 +65,11 @@ const isFeatureEnabledonAccount = useMapGetter(
+@@ -66,7 +65,13 @@ const isFeatureEnabledonAccount = useMapGetter(
    'accounts/isFeatureEnabledonAccount'
  );
  
@@ -19,12 +18,14 @@ index 4c8d6fa..03efa7e 100644
 +// Task 8 (0074): every call below now reads the platform switchboard
 +// (useCustomFeatures) instead of the old ERB-stamped useProtonConfig list.
 +// The local alias name is kept as `protonHasFeature` so no call site below
-+// had to change shape -- only what it reads changed.
++// had to change shape -- only what it reads changed. `isSuperadmin` (0073)
++// comes from the same module-level singleton, so calling useCustomFeatures()
++// a second time here is free -- it does not refetch.
 +const { hasFeature: protonHasFeature } = useCustomFeatures();
  const protonAiAssistEnabled = computed(() => protonHasFeature('ai_assist'));
  const { hasPermission: protonHasPermission } = useProtonPermissions();
- // P9 tasks 2/3: alert on a new inbound customer message in the window the
-@@ -523,6 +527,10 @@ const menuItems = computed(() => {
+ const { isSuperadmin } = useCustomFeatures();
+@@ -525,6 +530,10 @@ const menuItems = computed(() => {
            },
          ]
        : []),
@@ -35,7 +36,7 @@ index 4c8d6fa..03efa7e 100644
      ...(protonHasFeature('knowledge')
        ? [
            {
-@@ -595,7 +603,11 @@ const menuItems = computed(() => {
+@@ -597,7 +606,11 @@ const menuItems = computed(() => {
            },
          ]
        : []),
@@ -48,7 +49,7 @@ index 4c8d6fa..03efa7e 100644
        ? [
            {
              name: 'SlaPolicies',
-@@ -605,7 +617,7 @@ const menuItems = computed(() => {
+@@ -607,7 +620,7 @@ const menuItems = computed(() => {
            },
          ]
        : []),
@@ -57,7 +58,7 @@ index 4c8d6fa..03efa7e 100644
        ? [
            {
              name: 'AuditLog',
-@@ -615,7 +627,8 @@ const menuItems = computed(() => {
+@@ -617,7 +630,8 @@ const menuItems = computed(() => {
            },
          ]
        : []),
@@ -67,7 +68,7 @@ index 4c8d6fa..03efa7e 100644
        ? [
            {
              name: 'RolesPermissions',
-@@ -625,7 +638,8 @@ const menuItems = computed(() => {
+@@ -627,7 +641,8 @@ const menuItems = computed(() => {
            },
          ]
        : []),
@@ -77,7 +78,7 @@ index 4c8d6fa..03efa7e 100644
        ? [
            {
              name: 'EscalationRouting',
-@@ -635,7 +649,8 @@ const menuItems = computed(() => {
+@@ -637,7 +652,8 @@ const menuItems = computed(() => {
            },
          ]
        : []),
@@ -87,7 +88,7 @@ index 4c8d6fa..03efa7e 100644
        ? [
            {
              name: 'Integrations',
-@@ -645,7 +660,7 @@ const menuItems = computed(() => {
+@@ -647,7 +663,7 @@ const menuItems = computed(() => {
            },
          ]
        : []),
@@ -96,7 +97,7 @@ index 4c8d6fa..03efa7e 100644
        ? [
            {
              name: 'WorkforceDashboard',
-@@ -655,7 +670,8 @@ const menuItems = computed(() => {
+@@ -657,7 +673,8 @@ const menuItems = computed(() => {
            },
          ]
        : []),
@@ -106,7 +107,7 @@ index 4c8d6fa..03efa7e 100644
        ? [
            {
              name: 'ProtonMyStatus',
-@@ -670,7 +686,7 @@ const menuItems = computed(() => {
+@@ -672,7 +689,7 @@ const menuItems = computed(() => {
      // used by SLA/Audit/Roles, so there is no dedicated `rsa.manage` permission
      // in the authz seed. Gate on `sla.manage` — the same operational-admin
      // cohort that manages SLA policies owns roadside-assistance data entry.
@@ -115,7 +116,7 @@ index 4c8d6fa..03efa7e 100644
        ? [
            {
              name: 'RsaIncidents',
-@@ -680,7 +696,8 @@ const menuItems = computed(() => {
+@@ -682,7 +699,8 @@ const menuItems = computed(() => {
            },
          ]
        : []),
@@ -125,7 +126,7 @@ index 4c8d6fa..03efa7e 100644
        ? [
            {
              name: 'Customer360',
-@@ -695,7 +712,7 @@ const menuItems = computed(() => {
+@@ -697,7 +715,7 @@ const menuItems = computed(() => {
      // route to match the way RSA/SLA/escalation have one. Gate on
      // `customer360.view`, the nearest fitting existing permission: both are
      // read-only CRM case-lookup surfaces for the same operator cohort.
@@ -134,7 +135,7 @@ index 4c8d6fa..03efa7e 100644
        ? [
            {
              name: 'ProtonCases',
-@@ -710,7 +727,8 @@ const menuItems = computed(() => {
+@@ -712,7 +730,8 @@ const menuItems = computed(() => {
      // the default `agent` role, because choosing how loudly your own alerts
      // fire is the agent's own call; the ACCOUNT-default half of the page is
      // gated separately on `alerts.manage` inside the page itself.
@@ -144,7 +145,7 @@ index 4c8d6fa..03efa7e 100644
        ? [
            {
              name: 'ProtonAlertPreferences',
-@@ -726,7 +744,7 @@ const menuItems = computed(() => {
+@@ -728,7 +747,7 @@ const menuItems = computed(() => {
      // an agent-level action. The nav gate and the route's own
      // `meta.permissions` agree, and neither is the boundary — the router's
      // require_permission dependency is.
@@ -153,7 +154,7 @@ index 4c8d6fa..03efa7e 100644
        ? [
            {
              name: 'ProtonTaxonomy',
-@@ -825,11 +843,18 @@ const menuItems = computed(() => {
+@@ -843,11 +862,18 @@ const menuItems = computed(() => {
        label: t('SIDEBAR.REPORTS'),
        icon: 'i-lucide-chart-spline',
        children: [
@@ -177,7 +178,7 @@ index 4c8d6fa..03efa7e 100644
          {
            name: 'Report Overview',
            label: t('SIDEBAR.REPORTS_OVERVIEW'),
-@@ -856,21 +881,33 @@ const menuItems = computed(() => {
+@@ -874,21 +900,33 @@ const menuItems = computed(() => {
            label: t('SIDEBAR.REPORTS_BOT'),
            to: accountScopedRoute('bot_reports'),
          },
@@ -226,7 +227,7 @@ index 4c8d6fa..03efa7e 100644
        ],
      },
      {
-@@ -1231,7 +1268,8 @@ const menuItems = computed(() => {
+@@ -1249,7 +1287,8 @@ const menuItems = computed(() => {
      <!-- Transferred-call softphone. Rendered from the sidebar because the
           sidebar is on every dashboard page; the panel teleports itself to
           <body>, so it is not clipped by this aside. Gated twice: the

@@ -1355,3 +1355,146 @@ cd deploy/scripts/seed_demo_data && python3 -m pytest # full seeder suite
 
 Both must be green. Then the live rehearsal in runbook step 8 is the real
 verification — the unit tests prove the pieces, the rehearsal proves the demo.
+
+---
+
+### Task 7: Provision the `bahana` tenant on the VM
+
+Added after the plan was written, at the user's request. This is the only
+task that touches production infrastructure. `remove-tenant.sh` exists, so
+every step here is reversible.
+
+**Files:**
+- Create (on the VM, not in this repo): `deploy/tenants/bahana.env`,
+  `deploy/caddy/tenants/bahana.caddy`
+- No repo files change.
+
+**Target:** GCE instance `crm-ticketing`, zone `asia-southeast2-a`, project
+`lv-playground-genai`, public IP `34.50.103.151`. Reached with
+`gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playground-genai`.
+
+**Interfaces:**
+- Consumes: `seed-nasabah` (Task 3), the agent image (Task 5)
+- Produces: a running tenant at `bahana.crm.34-50-103-151.nip.io`
+
+#### Findings from the live VM that change what this task must do
+
+These were verified by inspection before the task was written. Do not
+re-derive them; do verify they still hold.
+
+1. **`add-tenant.sh` produces an HTTP-only tenant.** The Caddy block it
+   renders is `http://<prefix>crm.<ip>.nip.io { ... }` — there is no `https://`
+   block and no global `tls`/`acme` directive in `caddy/Caddyfile`. Both live
+   tenants have a **hand-added** `https://` block at line 37 of their
+   `.caddy` file, alongside `.bak-tls-*` backups showing when it was added.
+   **Twilio will not deliver WhatsApp webhooks to a plain-HTTP endpoint**, so a
+   freshly provisioned `bahana` cannot receive messages until that block is
+   added. This is the single highest-risk step in the whole demo.
+2. **Hostnames use the dashed nip.io form**: `34-50-103-151.nip.io`, not
+   `34.50.103.151.nip.io`. The script derives it from `PUBLIC_IP` in
+   `infra.env`. Earlier drafts of this plan and the design spec said
+   `<ip>.nip.io` — cosmetic, but get it right in anything an operator copies.
+3. **Disk is the binding constraint, not memory.** At inspection: 15 Gi RAM
+   with 8.7 Gi available (a tenant stack costs roughly 2–2.5 Gi, so memory is
+   fine), but the root filesystem was **83% full with 9.9 G free**, already
+   hosting three tenant stacks (`default`, `proton`, `aeon360`) plus infra.
+   Building the `agent` and `backend` images for a fourth tenant consumes
+   several GB of layers.
+4. **A fourth tenant shares a VM with live customers.** `proton` and
+   `aeon360` are running. Nothing in this task modifies them, but a full disk
+   would affect all of them.
+
+- [ ] **Step 1: Pre-flight — confirm headroom and get it back if needed**
+
+```bash
+gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playground-genai \
+  --command='df -h /; free -h; docker system df'
+```
+
+If free disk is under ~12 G, reclaim before provisioning:
+
+```bash
+gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playground-genai \
+  --command='docker image prune -f && docker builder prune -f && docker system df'
+```
+
+**Do not** run `docker system prune -a` — it removes images that running
+tenants would need on their next recreate, including the custom Chatwoot
+image, which cannot be rebuilt on this VM (it is an amd64 Cloud Build
+artifact). Stop and report if pruning does not clear enough.
+
+- [ ] **Step 2: Diff the provisioning inputs against what aeon360 needed**
+
+`example.env` has grown since the last provisioning. Compare it against a
+live tenant's env so no newly-required key lands unset:
+
+```bash
+gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playground-genai \
+  --command='cd /opt/platform/deploy && \
+    diff <(grep -oE "^[A-Z_]+=" tenants/example.env | sort -u) \
+         <(grep -oE "^[A-Z_]+=" tenants/aeon360.env | sort -u)'
+```
+
+Record which keys are new since aeon360, and which of those must be set for
+this demo (the WhatsApp/Gemini/Chatwoot token groups) versus left at
+defaults. Report the list rather than guessing values.
+
+- [ ] **Step 3: Provision**
+
+```bash
+gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playground-genai \
+  --command='cd /opt/platform/deploy && ./scripts/add-tenant.sh bahana'
+```
+
+**Not `--bare`.** That mode serves the un-prefixed hostnames and is already
+taken by `default`; using it here would collide with a live tenant.
+
+Expected: writes `tenants/bahana.env`, creates `chatwoot_bahana` /
+`agent_bahana` / `backend_bahana` roles and databases with the pgvector and
+pg_stat_statements extensions, renders `caddy/tenants/bahana.caddy`, reloads
+Caddy, runs `db:chatwoot_prepare`, and brings the stack up.
+
+- [ ] **Step 4: Add the HTTPS block — the step the script does not do**
+
+Copy the shape from the live tenant, which is the known-good reference:
+
+```bash
+gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playground-genai \
+  --command='cd /opt/platform/deploy && sed -n "37,\$p" caddy/tenants/aeon360.caddy'
+```
+
+Append the equivalent `https://bahana.crm.34-50-103-151.nip.io { ... }` block
+to `caddy/tenants/bahana.caddy`, keeping a `.bak-` copy first (the existing
+`.bak-tls-*` files are the house convention). Reload and verify:
+
+```bash
+gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playground-genai \
+  --command='cd /opt/platform/deploy && \
+    docker compose -p platform-infra -f docker-compose.infra.yml exec -T caddy \
+      caddy reload --config /etc/caddy/Caddyfile'
+curl -sS -o /dev/null -w "%{http_code} %{ssl_verify_result}\n" \
+  https://bahana.crm.34-50-103-151.nip.io/
+```
+
+A valid certificate here is the gate for everything downstream. If Let's
+Encrypt does not issue, stop and report — Twilio cannot deliver without it.
+
+- [ ] **Step 5: Verify the stack is healthy**
+
+```bash
+gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playground-genai \
+  --command='docker ps --filter name=bahana --format "{{.Names}}\t{{.Status}}"'
+curl -sS https://bahana.agent.34-50-103-151.nip.io/healthz
+```
+
+Expected: six `bahana-*` containers, rails and agent and backend healthy.
+
+- [ ] **Step 6: Report, do not proceed past this point autonomously**
+
+Everything remaining needs either a credential or a console:
+Chatwoot admin user, the Twilio WhatsApp inbox (needs the account SID and
+auth token), the Twilio webhook repoint, the contact custom attribute
+definitions, and the persona text. Those belong to the runbook (Task 6) and
+to the operator. Report the tenant URL, the container status, the TLS result,
+and the Step 2 key list.
+

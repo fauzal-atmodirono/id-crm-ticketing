@@ -70,3 +70,29 @@ async def test_get_all_raises_rather_than_returning_empty_on_a_store_failure() -
 
     with pytest.raises(CustomFeatureStoreUnavailable):
         await store.get_all()
+
+
+from chatbot.features.tenant_config.custom_features import stored_terms
+
+
+def test_stored_terms_of_an_empty_document_is_unset() -> None:
+    """Unset, NOT "generic" — the caller must be able to tell "nobody chose"
+    from "somebody chose generic", because those resolve differently."""
+    assert stored_terms({}) == (None, {})
+
+
+def test_stored_terms_reads_profile_and_overrides() -> None:
+    doc = {"terms": {"profile": "generic", "overrides": {"partner": {"singular": "Branch"}}}}
+    profile, overrides = stored_terms(doc)
+    assert profile == "generic"
+    assert overrides == {"partner": {"singular": "Branch"}}
+
+
+def test_stored_terms_tolerates_a_malformed_terms_block() -> None:
+    assert stored_terms({"terms": "nonsense"}) == (None, {})
+
+
+def test_features_and_terms_share_one_document() -> None:
+    doc = {"features": {"knowledge": True}, "terms": {"profile": "generic"}}
+    assert enabled_features(doc.get("features") or {}) == ["knowledge"]
+    assert stored_terms(doc)[0] == "generic"

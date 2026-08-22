@@ -153,15 +153,19 @@ class CustomFeatureStore:
     def _doc_ref(self) -> firestore.DocumentReference:
         return self._client().collection(_COLLECTION).document(_DOCUMENT)
 
-    async def get_all(self) -> dict[str, bool]:
-        """Fail CLOSED for rendering (a caller that swallows
-        `CustomFeatureStoreUnavailable` and treats it as "no features" never
-        shows a tenant a surface it does not have), but the failure itself is
-        never silent: a genuinely unreachable store raises rather than
-        returning `{}`, so it cannot be confused with a real, empty document
-        (a tenant that has nothing switched on -- also `{}`, and a completely
-        different, valid state). See `CustomFeatureStoreUnavailable` for why
-        that distinction matters end to end."""
+    async def get_document(self) -> dict:
+        """The whole config document. Features and terms are one Firestore
+        read because the SPA fetches both on every page load.
+
+        RAISES `CustomFeatureStoreUnavailable` on an unreachable store, exactly
+        as `get_all` already does. Returning `{}` here instead would reinstate
+        the bug the switchboard plan's final review caught: an outage and a
+        brand-new tenant both look like an empty document, the router answers
+        200 with an empty feature list, the composable takes its success path,
+        and two live tenants' CRMs go blank for the page session with no error
+        and no self-heal. A MISSING document is still a normal `{}` -- that is
+        the blank-tenant case the whole product depends on.
+        """
         try:
             snap = await asyncio.to_thread(self._doc_ref().get)
         except Exception as e:
@@ -169,7 +173,15 @@ class CustomFeatureStore:
             raise CustomFeatureStoreUnavailable(str(e)) from e
         if not snap.exists:
             return {}
-        raw = (snap.to_dict() or {}).get("features") or {}
+        return snap.to_dict() or {}
+
+    async def get_all(self) -> dict[str, bool]:
+        """Kept after the router moved to `get_document`. It is the store's
+        narrow public read and is directly tested; a caller wanting only the
+        feature map should not have to know the document's shape. Its
+        raise-on-unreachable contract is unchanged -- it now inherits it from
+        `get_document`."""
+        raw = (await self.get_document()).get("features") or {}
         return {str(k): bool(v) for k, v in raw.items()}
 
     async def set(self, key: str, enabled: bool) -> None:
@@ -178,3 +190,34 @@ class CustomFeatureStore:
         await asyncio.to_thread(
             self._doc_ref().set, {"features": {key: enabled}}, merge=True
         )
+
+    async def set_terms(self, profile: str | None, overrides: dict | None) -> None:
+        """Merge-write the term block. Only the fields given are touched, so
+        setting a profile does not wipe a tenant's overrides (and vice
+        versa)."""
+        block: dict = {}
+        if profile is not None:
+            block["profile"] = profile
+        if overrides is not None:
+            block["overrides"] = overrides
+        if not block:
+            return
+        await asyncio.to_thread(self._doc_ref().set, {"terms": block}, merge=True)
+
+
+def stored_terms(document: dict) -> tuple[str | None, dict]:
+    """Pull the term block out of the shared document.
+
+    Returns `None` for an unset profile rather than a default, because the
+    caller's fallback chain needs to distinguish "nobody has chosen" from
+    "somebody chose generic" -- those resolve to different vocabularies.
+    """
+    block = document.get("terms")
+    if not isinstance(block, dict):
+        return None, {}
+    profile = block.get("profile")
+    overrides = block.get("overrides")
+    return (
+        profile if isinstance(profile, str) else None,
+        overrides if isinstance(overrides, dict) else {},
+    )

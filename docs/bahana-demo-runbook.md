@@ -264,6 +264,16 @@ the Account SID and Auth Token from the Twilio console for the **PT Devoteam
 Cloud Services** account, and the number `+16292843510` marked as WhatsApp.
 Save — Chatwoot shows this inbox's own webhook/callback URL after creation.
 
+> **Chatwoot displays that URL as `http://`, and you must not paste it into
+> Twilio as-is.** It is built from `FRONTEND_URL`, which
+> `docker-compose.tenant.yml` renders as
+> `http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io` for every tenant (proton runs
+> the same way, which is why this is cosmetic rather than a bug worth fixing on
+> demo eve — there is a `FRONTEND_URL_OVERRIDE` if you ever want to change it).
+> Swap the scheme to `https://` by hand when you register it in §3.4. Twilio
+> will not deliver WhatsApp webhooks over plain HTTP, and this is the single
+> easiest way to end up with a demo where nothing arrives and nothing errors.
+
 **Note the inbox id** shown in its URL/settings — you need it for §3.5 (agent
 bot registration) and again for §6 (seeding: `seed-nasabah` targets this same
 inbox id, deliberately, see §6.1).
@@ -278,11 +288,18 @@ https://bahana.crm.34-50-103-151.nip.io/twilio/callback
 
 Must be the **https** host from §2.3 — Twilio will not deliver to `http://`.
 
-Sanity check already done (§0): `https://bahana.crm.34-50-103-151.nip.io/twilio/callback`
-currently returns `404`. That's correct and expected — the route only exists
-once the Chatwoot Twilio inbox above is created; the point of checking it now
-is confirming TLS terminates and Chatwoot answers (404, not a connection
-failure or a Caddy error page).
+**Verified live 2026-08-22, after the inbox was created:** a `POST` to
+`https://bahana.crm.34-50-103-151.nip.io/twilio/callback` returns **204**, and
+so does the `http://` twin. Before the inbox existed it returned 404. So:
+
+- 404 → the inbox does not exist yet (or the id is wrong). Go back to §3.3.
+- 204 → the route is live and Chatwoot accepted the post. This is what you want.
+- Connection failure or a Caddy error page → a TLS or routing problem, not an
+  inbox problem. See §2.3.
+
+Both schemes answering 204 is expected — the `http://` vhost is kept so any
+already-registered webhook keeps working. It does **not** mean you can register
+the `http://` one with Twilio.
 
 ### 3.5 Register the agent bot and assign it to the WhatsApp inbox
 

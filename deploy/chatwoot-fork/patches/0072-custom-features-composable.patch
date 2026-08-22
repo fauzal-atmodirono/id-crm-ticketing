@@ -21,10 +21,10 @@ index ecb7aea..b1402a8 100644
 +}
 diff --git a/app/javascript/dashboard/composables/useCustomFeatures.js b/app/javascript/dashboard/composables/useCustomFeatures.js
 new file mode 100644
-index 0000000..046d58e
+index 0000000..5d17c48
 --- /dev/null
 +++ b/app/javascript/dashboard/composables/useCustomFeatures.js
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,106 @@
 +// useCustomFeatures.js — OUR file. The read side of the platform feature
 +// switchboard. Deliberately shaped exactly like useProtonPermissions.js:
 +// module-level cache shared by every importer, one in-flight promise, and a
@@ -48,6 +48,19 @@ index 0000000..046d58e
 +let loadPromise = null;
 +let retryTimer = null;
 +
++// Capped exponential backoff, not a fixed interval: on a tenant whose backend
++// is down (or PROTON_BACKEND_URL is unset, where adminRequest throws
++// synchronously), a fixed 3s retry means every open dashboard tab polls
++// /admin/custom-features forever, every 3 seconds, for as long as the tab
++// stays open. Starting at 3s and doubling up to a 60s ceiling keeps the fast
++// retry for a genuinely transient blip (the common case this exists for)
++// while not hammering a backend that is actually down for a while. Reset to
++// the floor on the next successful load, so a flaky-then-recovered backend
++// does not leave a stale multi-minute delay behind for its next hiccup.
++const RETRY_FLOOR_MS = 3000;
++const RETRY_CEILING_MS = 60000;
++let retryDelayMs = RETRY_FLOOR_MS;
++
 +function ensureLoaded() {
 +  if (features.value !== null || loadPromise) return loadPromise;
 +  loading.value = true;
@@ -63,6 +76,7 @@ index 0000000..046d58e
 +          ? data.behavior
 +          : {};
 +      loadFailed.value = false;
++      retryDelayMs = RETRY_FLOOR_MS;
 +    })
 +    .catch(() => {
 +      // Do NOT poison the module-level singleton with [] on a transient
@@ -83,10 +97,12 @@ index 0000000..046d58e
 +      loadFailed.value = true;
 +      loadPromise = null;
 +      if (retryTimer === null) {
++        const delay = retryDelayMs;
++        retryDelayMs = Math.min(retryDelayMs * 2, RETRY_CEILING_MS);
 +        retryTimer = setTimeout(() => {
 +          retryTimer = null;
 +          ensureLoaded();
-+        }, 3000);
++        }, delay);
 +      }
 +    })
 +    .finally(() => {

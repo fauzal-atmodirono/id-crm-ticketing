@@ -194,7 +194,15 @@ class CustomFeatureStore:
     async def set_terms(self, profile: str | None, overrides: dict | None) -> None:
         """Merge-write the term block. Only the fields given are touched, so
         setting a profile does not wipe a tenant's overrides (and vice
-        versa)."""
+        versa).
+
+        `None` and `{}` are NOT interchangeable for `overrides`: `None` omits
+        the field from the write entirely, leaving whatever is already
+        stored untouched. `{}` is a deliberate clear -- Firestore's
+        `merge=True` replaces the whole `terms.overrides` leaf with exactly
+        what is given, so an explicit empty dict wipes every override the
+        tenant had. A caller that wants "no change" must pass `None`, not
+        `{}`."""
         block: dict = {}
         if profile is not None:
             block["profile"] = profile

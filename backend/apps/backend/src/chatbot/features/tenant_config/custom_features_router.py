@@ -52,6 +52,14 @@ class TermsBody(BaseModel):
     overrides: dict | None = None
 
 
+# Mirrors the fields `term_dictionary.Term` carries and the exact tuple
+# `resolve_terms` iterates when applying a patch. Not imported from there --
+# there is no public constant for it -- but kept in lockstep by the fact that
+# a field this endpoint accepts and `resolve_terms` does not read would be
+# the same silent no-op this validation exists to close off.
+_OVERRIDE_FIELDS = frozenset({"singular", "plural", "lower"})
+
+
 def build_custom_features_router(
     store: CustomFeatureStore,
     validator: TokenValidator,
@@ -171,6 +179,34 @@ def build_custom_features_router(
                 raise HTTPException(
                     status_code=400, detail=f"Unknown term keys: {', '.join(unknown)}"
                 )
+            # Key validation alone lets a well-formed noun through with a
+            # malformed patch -- `resolve_terms` defends itself against that
+            # (`isinstance(patch, dict)`, only ever reading singular/plural/
+            # lower, skipping an empty string) so nothing crashes, but the
+            # write would still persist and answer 200 while doing nothing.
+            # That is the same lie a dropped store write would tell, in a
+            # different place, so it is rejected here instead.
+            for noun, patch in body.overrides.items():
+                if not isinstance(patch, dict):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"{noun}: override must be an object with "
+                            f"singular/plural/lower fields, got {type(patch).__name__}"
+                        ),
+                    )
+                bad_fields = sorted(set(patch) - _OVERRIDE_FIELDS)
+                if bad_fields:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{noun}: unknown override fields {', '.join(bad_fields)}",
+                    )
+                for field, value in patch.items():
+                    if not isinstance(value, str) or not value:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"{noun}.{field}: must be a non-empty string",
+                        )
         await store.set_terms(body.profile, body.overrides)
         return {"profile": body.profile, "status": "ok"}
 

@@ -236,3 +236,64 @@ def test_override_of_an_unknown_noun_is_rejected() -> None:
         headers=_SESSION,
     )
     assert res.status_code == 400
+
+
+def test_override_value_that_is_not_an_object_is_rejected() -> None:
+    """A key check alone would accept `{"partner": "oops"}` -- a valid noun
+    with a string where a `{singular, plural, lower}` patch belongs. That
+    would persist and answer 200 while doing nothing at read time, because
+    `resolve_terms` silently skips a non-dict patch."""
+    res = _client(_FakeDocStore(), (1, False)).post(
+        "/admin/custom-features/terms",
+        json={"overrides": {"partner": "oops"}},
+        headers=_SESSION,
+    )
+    assert res.status_code == 400
+    assert "partner" in res.json()["detail"]
+
+
+def test_override_with_an_unrecognised_field_is_rejected() -> None:
+    """A capital `Singular` is not a typo `resolve_terms` will ever read --
+    it silently ignores it. Reject it here instead of persisting a no-op."""
+    res = _client(_FakeDocStore(), (1, False)).post(
+        "/admin/custom-features/terms",
+        json={"overrides": {"partner": {"Singular": "Branch"}}},
+        headers=_SESSION,
+    )
+    assert res.status_code == 400
+    body = res.json()["detail"]
+    assert "partner" in body
+    assert "Singular" in body
+
+
+def test_override_field_with_a_non_string_value_is_rejected() -> None:
+    res = _client(_FakeDocStore(), (1, False)).post(
+        "/admin/custom-features/terms",
+        json={"overrides": {"partner": {"singular": 5}}},
+        headers=_SESSION,
+    )
+    assert res.status_code == 400
+
+
+def test_override_field_with_an_empty_string_is_rejected() -> None:
+    """`resolve_terms` already ignores an empty-string patch value, so
+    accepting one here would be the same silent no-op with extra steps."""
+    res = _client(_FakeDocStore(), (1, False)).post(
+        "/admin/custom-features/terms",
+        json={"overrides": {"partner": {"singular": ""}}},
+        headers=_SESSION,
+    )
+    assert res.status_code == 400
+
+
+def test_valid_override_is_still_accepted() -> None:
+    """The new validation must not become so strict it rejects the ordinary
+    case the rest of this file already exercises end to end."""
+    store = _FakeDocStore()
+    res = _client(store, (1, False)).post(
+        "/admin/custom-features/terms",
+        json={"overrides": {"partner": {"singular": "Branch"}}},
+        headers=_SESSION,
+    )
+    assert res.status_code == 200
+    assert store.document["terms"]["overrides"] == {"partner": {"singular": "Branch"}}

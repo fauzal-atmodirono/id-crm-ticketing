@@ -141,3 +141,23 @@ async def test_set_terms_omits_a_field_that_was_not_given() -> None:
     args, kwargs = doc_ref.calls[0]
     assert args == ({"terms": {"profile": "automotive"}},)
     assert kwargs == {"merge": True}
+
+
+async def test_set_terms_with_an_empty_dict_overrides_clears_the_stored_block() -> None:
+    """`overrides=None` (tested above) and `overrides={}` are NOT the same
+    input. `None` omits the field and leaves the stored block alone; an
+    explicit `{}` is a deliberate clear, because Firestore's `merge=True`
+    replaces the whole `terms.overrides` leaf with whatever is given here.
+    Pinning both so a later edit cannot quietly collapse the distinction by
+    defaulting the missing case to `{}`."""
+    from chatbot.platform.config import Settings
+
+    store = CustomFeatureStore(Settings())
+    doc_ref = _RecordingDocRef()
+    store._doc_ref = lambda: doc_ref  # type: ignore[method-assign]
+
+    await store.set_terms(None, {})
+
+    args, kwargs = doc_ref.calls[0]
+    assert args == ({"terms": {"overrides": {}}},)
+    assert kwargs == {"merge": True}

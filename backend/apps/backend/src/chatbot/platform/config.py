@@ -1389,6 +1389,23 @@ class Settings(BaseSettings):
     # decision. Must be >= 1 (see `_retention_windows_are_positive`).
     audit_log_retention_days: int = 2557
 
+    # --- Term dictionary -------------------------------------------------
+    # Which vocabulary this tenant's UI renders. Default "automotive" is
+    # DEFAULT-PRESERVING, not a product statement: unset means today's
+    # wording, byte-identical, which is what every tenant deployed before the
+    # dictionary existed needs. proton has no value set and must keep saying
+    # Dealer/Vehicle/RSA/WIP with nothing written and nothing deployed.
+    #
+    # The cost is that the product's default vocabulary is a vertical, so a
+    # tenant provisioned without TERM_PROFILE=generic would show a bank the
+    # word "Dealer". That is the safer failure: it is loud and immediate,
+    # caught the first time anyone opens the new tenant. The other direction
+    # is silent and lands on a live customer during an unrelated deploy.
+    # add-tenant.sh writes TERM_PROFILE=generic so neither happens.
+    #
+    # A superadmin's stored choice overrides this; see term_dictionary.py.
+    term_profile: Literal["generic", "automotive"] = "automotive"
+
     # Settings configurations
     model_config = SettingsConfigDict(
         env_file=".env",

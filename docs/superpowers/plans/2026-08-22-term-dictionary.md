@@ -431,6 +431,9 @@ Then refactor `CustomFeatureStore` so both readers share one fetch:
         return snap.to_dict() or {}
 
     async def get_all(self) -> dict[str, bool]:
+        """Kept after the router moved to `get_document`. It is the store's
+        narrow public read and is directly tested; a caller wanting only the
+        feature map should not have to know the document's shape."""
         raw = (await self.get_document()).get("features") or {}
         return {str(k): bool(v) for k, v in raw.items()}
 
@@ -580,7 +583,12 @@ def test_override_of_an_unknown_noun_is_rejected() -> None:
     assert res.status_code == 400
 ```
 
-Replace `_FakeStore` with `_FakeDocStore` in the existing `_client(...)` calls in this file.
+`_FakeDocStore` REPLACES `_FakeStore` outright — rename it and update every
+reference in the file, not just the `_client(...)` calls. In particular the
+switchboard plan's Task 4 left a `_BrokenStore(_FakeStore)` subclass behind
+(the one asserting a failed write returns 503); it must become
+`_BrokenStore(_FakeDocStore)` or that test dies with a `NameError` the moment
+the old class disappears.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 

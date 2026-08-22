@@ -33,10 +33,20 @@ class TokenValidator:
     def __init__(self, settings: Settings, cache_ttl_seconds: float = 60.0) -> None:
         self._settings = settings
         self._ttl = cache_ttl_seconds
-        # (access_token, client, uid) -> (user_id, expires_at)
-        self._cache: dict[tuple[str, str, str], tuple[int, float]] = {}
+        # (access_token, client, uid) -> ((user_id, is_super_admin), expires_at)
+        self._cache: dict[tuple[str, str, str], tuple[tuple[int, bool], float]] = {}
 
-    async def resolve_user_id(self, access_token: str, client: str, uid: str) -> int | None:
+    async def resolve_identity(
+        self, access_token: str, client: str, uid: str
+    ) -> tuple[int, bool] | None:
+        """Resolve a session to `(user_id, is_super_admin)`.
+
+        `type` is Chatwoot's STI discriminator on `users.type`: `SuperAdmin`
+        for a platform super admin, and **null** for everyone else — not the
+        string "User". The comparison is therefore an equality test against
+        "SuperAdmin" rather than a truthiness check, which would grant every
+        ordinary agent superadmin status.
+        """
         cache_key = (access_token, client, uid)
         cached = self._cache.get(cache_key)
         if cached is not None and cached[1] > time.monotonic():
@@ -51,10 +61,15 @@ class TokenValidator:
                     timeout=5.0,
                 )
                 res.raise_for_status()
-                user_id = res.json()["id"]
+                payload = res.json()
+                identity = (int(payload["id"]), payload.get("type") == "SuperAdmin")
         except Exception as exc:
             _log.warning("authz_token_validation_failed", error=str(exc))
             return None
 
-        self._cache[cache_key] = (user_id, time.monotonic() + self._ttl)
-        return user_id
+        self._cache[cache_key] = (identity, time.monotonic() + self._ttl)
+        return identity
+
+    async def resolve_user_id(self, access_token: str, client: str, uid: str) -> int | None:
+        identity = await self.resolve_identity(access_token, client, uid)
+        return None if identity is None else identity[0]

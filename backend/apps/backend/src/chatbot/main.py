@@ -437,8 +437,11 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # PicRegistry/EscalationNotifier can read operator-edited routing config even when
     # RBAC — and therefore the admin CRUD router below — is off. The RBAC block reuses
     # these same instances rather than constructing duplicates.
+    from chatbot.features.tenant_config.custom_features import CustomFeatureStore
+
     pic_store = PicStore(settings)
     dealer_store = DealerStore(settings)
+    custom_feature_store = CustomFeatureStore(settings)
     pic_registry = build_pic_registry(settings, store=pic_store)
     email_sender = SmtpEmailSender(settings)
 
@@ -1410,6 +1413,22 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     )
 
     _wire_metrics_features(app, settings)
+
+    # Mounted unconditionally, unlike the RBAC admin routers: the switchboard
+    # is a platform-level authority that exists whether or not a tenant has
+    # opted into RBAC, and the SPA reads it on every page load.
+    from chatbot.features.authz.identity import TokenValidator as _TokenValidator
+    from chatbot.features.tenant_config.custom_features_router import (
+        build_custom_features_router,
+    )
+
+    app.include_router(
+        build_custom_features_router(
+            custom_feature_store,
+            _TokenValidator(settings),
+            settings,
+        )
+    )
 
     # --- SLA-timer escalation engine (Chatwoot has no native SLA engine) ---
     # Guarded behind sla_engine_enabled (default OFF) exactly like the metrics

@@ -1042,21 +1042,41 @@ git commit -m "feat(tenant-config): custom-feature switchboard endpoints"
 - [ ] **Step 1: Write the failing test**
 
 ```python
+"""Integration smoke test: boot the full app and assert the route exists."""
+
 from __future__ import annotations
 
-from chatbot.main import create_app
+from fastapi.testclient import TestClient
+
+from chatbot.main import bootstrap_application
 
 
-def test_custom_features_routes_are_mounted() -> None:
-    """Reads must be mounted unconditionally: the SPA calls this on every page
-    load, and a 404 there fails closed into a blank CRM on a tenant that has
-    features switched on."""
-    app = create_app()
-    paths = {getattr(r, "path", None) for r in app.routes}
+def test_custom_features_route_is_mounted() -> None:
+    """Reads must be mounted UNCONDITIONALLY, outside every feature-flag
+    branch. The SPA calls this on every page load, and the composable fails
+    closed — so a 404 here renders a blank CRM on a tenant that has features
+    switched on."""
+    paths = {getattr(r, "path", None) for r in bootstrap_application().routes}
+    assert "/admin/custom-features" in paths
+
+
+def test_custom_features_route_is_mounted_without_rbac() -> None:
+    """The switchboard is a platform-level authority that exists whether or
+    not a tenant opted into RBAC. If this route only appears inside the
+    rbac_enabled branch, every tenant with RBAC off gets a blank CRM it
+    cannot fix."""
+    from chatbot.platform.config import get_settings
+
+    assert get_settings().rbac_enabled is False  # the default this test relies on
+    paths = {getattr(r, "path", None) for r in bootstrap_application().routes}
     assert "/admin/custom-features" in paths
 ```
 
-If `create_app` is not the factory name, read `main.py` and use whatever the existing `test_wiring.py` in `features/metrics/` calls.
+The app factory is `bootstrap_application()`, NOT `create_app` — match
+`features/metrics/test_wiring.py`, which is the existing example of this
+exact kind of test. If the second test's `rbac_enabled is False` assertion
+fails, the test environment enables RBAC by default; in that case drop that
+one assertion but keep the route check.
 
 - [ ] **Step 2: Run the test to verify it fails**
 

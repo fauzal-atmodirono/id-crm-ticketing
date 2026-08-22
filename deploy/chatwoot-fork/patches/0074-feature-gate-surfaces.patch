@@ -1,0 +1,396 @@
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 4c8d6fa..03efa7e 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -10,7 +10,7 @@ import { useSidebarKeyboardShortcuts } from './useSidebarKeyboardShortcuts';
+ import { vOnClickOutside } from '@vueuse/components';
+ import { FEATURE_FLAGS } from 'dashboard/featureFlags';
+ import { useWindowSize, useEventListener } from '@vueuse/core';
+-import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
+ import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';
+ import { useProtonInboundAlerts } from 'dashboard/composables/useProtonInboundAlerts';
+ 
+@@ -65,7 +65,11 @@ const isFeatureEnabledonAccount = useMapGetter(
+   'accounts/isFeatureEnabledonAccount'
+ );
+ 
+-const { hasFeature: protonHasFeature } = useProtonConfig();
++// Task 8 (0074): every call below now reads the platform switchboard
++// (useCustomFeatures) instead of the old ERB-stamped useProtonConfig list.
++// The local alias name is kept as `protonHasFeature` so no call site below
++// had to change shape -- only what it reads changed.
++const { hasFeature: protonHasFeature } = useCustomFeatures();
+ const protonAiAssistEnabled = computed(() => protonHasFeature('ai_assist'));
+ const { hasPermission: protonHasPermission } = useProtonPermissions();
+ // P9 tasks 2/3: alert on a new inbound customer message in the window the
+@@ -523,6 +527,10 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
++    // No dedicated nav-level permission check here (see task 8 notes): the
++    // Knowledge console's own pages enforce `knowledge.edit` server-side.
++    // protonHasFeature now reads useCustomFeatures(), same as every other
++    // gate in this file.
+     ...(protonHasFeature('knowledge')
+       ? [
+           {
+@@ -595,7 +603,11 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
+-    ...(protonHasPermission('sla.manage')
++    // Task 8 (0074): every permission-only nav gate below gains a feature
++    // check beside it -- never in place of it. The two answer different
++    // questions: hasFeature is the vendor's "is this in the product at
++    // all", hasPermission is the tenant admin's "who may use it".
++    ...(protonHasFeature('sla_policies') && protonHasPermission('sla.manage')
+       ? [
+           {
+             name: 'SlaPolicies',
+@@ -605,7 +617,7 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
+-    ...(protonHasPermission('audit.view')
++    ...(protonHasFeature('audit_log') && protonHasPermission('audit.view')
+       ? [
+           {
+             name: 'AuditLog',
+@@ -615,7 +627,8 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
+-    ...(protonHasPermission('roles.manage')
++    ...(protonHasFeature('roles_permissions') &&
++    protonHasPermission('roles.manage')
+       ? [
+           {
+             name: 'RolesPermissions',
+@@ -625,7 +638,8 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
+-    ...(protonHasPermission('escalation.manage')
++    ...(protonHasFeature('escalation_routing') &&
++    protonHasPermission('escalation.manage')
+       ? [
+           {
+             name: 'EscalationRouting',
+@@ -635,7 +649,8 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
+-    ...(protonHasPermission('integration.manage')
++    ...(protonHasFeature('integrations') &&
++    protonHasPermission('integration.manage')
+       ? [
+           {
+             name: 'Integrations',
+@@ -645,7 +660,7 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
+-    ...(protonHasPermission('workforce.view')
++    ...(protonHasFeature('workforce') && protonHasPermission('workforce.view')
+       ? [
+           {
+             name: 'WorkforceDashboard',
+@@ -655,7 +670,8 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
+-    ...(protonHasPermission('presence.set_own_status')
++    ...(protonHasFeature('agent_status') &&
++    protonHasPermission('presence.set_own_status')
+       ? [
+           {
+             name: 'ProtonMyStatus',
+@@ -670,7 +686,7 @@ const menuItems = computed(() => {
+     // used by SLA/Audit/Roles, so there is no dedicated `rsa.manage` permission
+     // in the authz seed. Gate on `sla.manage` — the same operational-admin
+     // cohort that manages SLA policies owns roadside-assistance data entry.
+-    ...(protonHasPermission('sla.manage')
++    ...(protonHasFeature('rsa_incidents') && protonHasPermission('sla.manage')
+       ? [
+           {
+             name: 'RsaIncidents',
+@@ -680,7 +696,8 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
+-    ...(protonHasPermission('customer360.view')
++    ...(protonHasFeature('customer360') &&
++    protonHasPermission('customer360.view')
+       ? [
+           {
+             name: 'Customer360',
+@@ -695,7 +712,7 @@ const menuItems = computed(() => {
+     // route to match the way RSA/SLA/escalation have one. Gate on
+     // `customer360.view`, the nearest fitting existing permission: both are
+     // read-only CRM case-lookup surfaces for the same operator cohort.
+-    ...(protonHasPermission('customer360.view')
++    ...(protonHasFeature('cases') && protonHasPermission('customer360.view')
+       ? [
+           {
+             name: 'ProtonCases',
+@@ -710,7 +727,8 @@ const menuItems = computed(() => {
+     // the default `agent` role, because choosing how loudly your own alerts
+     // fire is the agent's own call; the ACCOUNT-default half of the page is
+     // gated separately on `alerts.manage` inside the page itself.
+-    ...(protonHasPermission('alerts.set_own_preferences')
++    ...(protonHasFeature('alert_preferences') &&
++    protonHasPermission('alerts.set_own_preferences')
+       ? [
+           {
+             name: 'ProtonAlertPreferences',
+@@ -726,7 +744,7 @@ const menuItems = computed(() => {
+     // an agent-level action. The nav gate and the route's own
+     // `meta.permissions` agree, and neither is the boundary — the router's
+     // require_permission dependency is.
+-    ...(protonHasPermission('taxonomy.manage')
++    ...(protonHasFeature('taxonomy') && protonHasPermission('taxonomy.manage')
+       ? [
+           {
+             name: 'ProtonTaxonomy',
+@@ -825,11 +843,18 @@ const menuItems = computed(() => {
+       label: t('SIDEBAR.REPORTS'),
+       icon: 'i-lucide-chart-spline',
+       children: [
+-        {
+-          name: 'Reports Weekly',
+-          label: 'Weekly Report',
+-          to: accountScopedRoute('proton_weekly_report'),
+-        },
++        // Task 8 (0074): these four proton-specific report entries used to
++        // render unconditionally to anyone who could already see the
++        // Reports section. Each now gains its own feature key.
++        ...(protonHasFeature('reports_weekly')
++          ? [
++              {
++                name: 'Reports Weekly',
++                label: 'Weekly Report',
++                to: accountScopedRoute('proton_weekly_report'),
++              },
++            ]
++          : []),
+         {
+           name: 'Report Overview',
+           label: t('SIDEBAR.REPORTS_OVERVIEW'),
+@@ -856,21 +881,33 @@ const menuItems = computed(() => {
+           label: t('SIDEBAR.REPORTS_BOT'),
+           to: accountScopedRoute('bot_reports'),
+         },
+-        {
+-          name: 'Reports Anomaly',
+-          label: 'Anomaly',
+-          to: accountScopedRoute('proton_anomaly_reports'),
+-        },
+-        {
+-          name: 'Reports Departments',
+-          label: 'Departments & PIC',
+-          to: accountScopedRoute('proton_departments_reports'),
+-        },
+-        {
+-          name: 'Reports CaseLifecycle',
+-          label: 'Case Lifecycle',
+-          to: accountScopedRoute('proton_case_lifecycle_reports'),
+-        },
++        ...(protonHasFeature('reports_anomaly')
++          ? [
++              {
++                name: 'Reports Anomaly',
++                label: 'Anomaly',
++                to: accountScopedRoute('proton_anomaly_reports'),
++              },
++            ]
++          : []),
++        ...(protonHasFeature('reports_departments')
++          ? [
++              {
++                name: 'Reports Departments',
++                label: 'Departments & PIC',
++                to: accountScopedRoute('proton_departments_reports'),
++              },
++            ]
++          : []),
++        ...(protonHasFeature('reports_case_lifecycle')
++          ? [
++              {
++                name: 'Reports CaseLifecycle',
++                label: 'Case Lifecycle',
++                to: accountScopedRoute('proton_case_lifecycle_reports'),
++              },
++            ]
++          : []),
+       ],
+     },
+     {
+@@ -1231,7 +1268,8 @@ const menuItems = computed(() => {
+     <!-- Transferred-call softphone. Rendered from the sidebar because the
+          sidebar is on every dashboard page; the panel teleports itself to
+          <body>, so it is not clipped by this aside. Gated twice: the
+-         `agent_softphone` feature AND the `voice.answer` permission. -->
++         `agent_softphone` feature (now via useCustomFeatures, task 8/0074)
++         AND the `voice.answer` permission. -->
+     <ProtonSoftphonePanel
+       v-if="protonHasFeature('agent_softphone') && protonHasPermission('voice.answer')"
+     />
+diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+index 15591d4..914b58c 100644
+--- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
++++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+@@ -10,6 +10,7 @@ import NextButton from 'dashboard/components-next/button/Button.vue';
+ import EditorModeToggle from './EditorModeToggle.vue';
+ import CopilotMenuBar from './CopilotMenuBar.vue';
+ import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
+ import { callAssist } from 'dashboard/api/protonAssist';
+ import { useUISettings } from 'dashboard/composables/useUISettings';
+ import { useStore } from 'dashboard/composables/store';
+@@ -103,15 +104,26 @@ export default {
+     };
+ 
+     const { captainTasksEnabled } = useCaptain();
+-    const { hasFeature, backendUrl } = useProtonConfig();
++    const { backendUrl } = useProtonConfig();
++    // Task 8 (0074): hasFeature now reads the platform switchboard
++    // (useCustomFeatures) instead of the old ERB-stamped useProtonConfig
++    // list. backendUrl stays on useProtonConfig -- that part is unrelated
++    // to feature gating.
++    const { hasFeature } = useCustomFeatures();
+     const { updateUISettings } = useUISettings();
+     const store = useStore();
+     const protonEnabled = computed(() => hasFeature('ai_assist'));
++    // Its own switchboard key, deliberately decoupled from `ai_assist`: the
++    // Translate button used to piggyback on `protonEnabled`, which meant a
++    // tenant with ai_assist on always got translate too, with no way to sell
++    // (or withhold) the two separately.
++    const protonTranslateEnabled = computed(() => hasFeature('translate'));
+     const showAiButton = computed(
+       () => captainTasksEnabled.value || protonEnabled.value
+     );
+     const faqSuggestion = ref(null);
+     const dismissedFaqMessageId = ref(null);
++    // Also reads useCustomFeatures() now (task 8 / patch 0074).
+     const faqSuggestionPopupEnabled = computed(() =>
+       hasFeature('faq_suggestion_popup')
+     );
+@@ -268,7 +280,7 @@ export default {
+     // above, which both assume exactly that: text to insert somewhere.
+     const translating = ref(false);
+     const handleTranslateLastCustomerMessage = async () => {
+-      if (!protonEnabled.value || translating.value) return;
++      if (!protonTranslateEnabled.value || translating.value) return;
+       const chat = store.getters.getSelectedChat;
+       const lastCustomerMessage = [...(chat?.messages || [])]
+         .reverse()
+@@ -333,6 +345,7 @@ export default {
+       REPLY_EDITOR_MODES,
+       captainTasksEnabled,
+       protonEnabled,
++      protonTranslateEnabled,
+       showAiButton,
+       faqSuggestion,
+       faqSuggestionVisible,
+@@ -387,7 +400,7 @@ export default {
+         </span>
+       </div>
+     </div>
+-    <div v-if="protonEnabled" class="flex items-center gap-2">
++    <div v-if="protonTranslateEnabled" class="flex items-center gap-2">
+       <button
+         class="flex items-center gap-1 px-2 py-1 text-xs border rounded-lg border-n-weak text-n-slate-11"
+         :disabled="translating"
+diff --git a/app/javascript/dashboard/composables/useProtonInboundAlerts.js b/app/javascript/dashboard/composables/useProtonInboundAlerts.js
+index d8ec7ab..2b49dd7 100644
+--- a/app/javascript/dashboard/composables/useProtonInboundAlerts.js
++++ b/app/javascript/dashboard/composables/useProtonInboundAlerts.js
+@@ -22,7 +22,7 @@
+ // mechanics are here.
+ import { onScopeDispose, ref, watch } from 'vue';
+ import { useMapGetter, useStore } from 'dashboard/composables/store';
+-import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
+ import Auth from 'dashboard/api/auth';
+ import { getMyAlertRules } from 'dashboard/api/protonAlerts';
+ import {
+@@ -55,11 +55,12 @@ let installed = false;
+ const NEW_INBOUND = 'new_inbound';
+ 
+ export function useProtonInboundAlerts() {
+-  const { hasFeature } = useProtonConfig();
++  const { hasFeature } = useCustomFeatures();
+   // The fork's real client-side gate. See this patch's header: it is NOT the
+   // same switch as the backend's INBOUND_ALERTS_ENABLED, and nothing here
+   // pretends otherwise. Off → this composable does nothing at all and the
+-  // page behaves exactly as it did before this patch.
++  // page behaves exactly as it did before this patch. Reads the platform
++  // switchboard (task 8 / patch 0074) rather than the old ERB-stamped list.
+   if (!hasFeature('inbound_alerts')) return { enabled: false, mode: ref('off') };
+   if (installed) return { enabled: true, mode: ref('installed-elsewhere') };
+   installed = true;
+diff --git a/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue b/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue
+index e8ab332..7fe415f 100644
+--- a/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue
++++ b/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue
+@@ -11,7 +11,8 @@ import { emitter } from 'shared/helpers/mitt';
+ import SidepanelSwitch from 'dashboard/components-next/Conversation/SidepanelSwitch.vue';
+ import ConversationSidebar from 'dashboard/components/widgets/conversation/ConversationSidebar.vue';
+ import ProtonCopilotPanel from 'dashboard/components/copilot/ProtonCopilotPanel.vue';
+-import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++import { computed } from 'vue';
++import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
+ 
+ export default {
+   components: {
+@@ -59,13 +60,18 @@ export default {
+   setup() {
+     const { uiSettings, updateUISettings } = useUISettings();
+     const { accountId } = useAccount();
+-    const { hasFeature: protonHasFeature } = useProtonConfig();
++    const { hasFeature: protonHasFeature } = useCustomFeatures();
++    // A computed, not a snapshot: useCustomFeatures() loads the tenant's
++    // switchboard asynchronously, so a value read once here would be stuck
++    // at `false` (the pre-load default) even after the fetch resolves and
++    // the account genuinely has `copilot` switched on.
++    const protonCopilotEnabled = computed(() => protonHasFeature('copilot'));
+ 
+     return {
+       uiSettings,
+       updateUISettings,
+       accountId,
+-      protonCopilotEnabled: protonHasFeature('copilot'),
++      protonCopilotEnabled,
+     };
+   },
+   data() {
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue b/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue
+index f5c46a6..9e1952e 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/CollaboratorsPage.vue
+@@ -16,6 +16,7 @@ import Icon from 'dashboard/components-next/icon/Icon.vue';
+ import TagInput from 'dashboard/components-next/taginput/TagInput.vue';
+ import assignmentPoliciesAPI from 'dashboard/api/assignmentPolicies';
+ import { useI18n } from 'vue-i18n';
++import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
+ import AgentPrioritiesEditor from 'dashboard/components/proton/AgentPrioritiesEditor.vue';
+ 
+ const props = defineProps({
+@@ -30,6 +31,7 @@ const route = useRoute();
+ const router = useRouter();
+ const { t } = useI18n();
+ const { isEnterprise } = useConfig();
++const { hasFeature: protonHasFeature } = useCustomFeatures();
+ 
+ const selectedAgentIds = ref([]);
+ const isAgentListUpdating = ref(false);
+@@ -669,7 +671,7 @@ onMounted(() => {
+          five channel chips to wrap. The label moves above the table so the
+          table gets the whole width. The editor renders its own explanatory
+          paragraph, so the section's help-text is not duplicated here. -->
+-    <div class="w-full py-2 mb-2">
++    <div v-if="protonHasFeature('agent_priorities')" class="w-full py-2 mb-2">
+       <label class="text-heading-3 text-n-slate-12">
+         Agent Channel Priorities
+       </label>

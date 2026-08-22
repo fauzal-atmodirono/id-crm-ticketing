@@ -1,4 +1,4 @@
-# Platform feature switchboard — a new tenant opens empty
+# Platform feature switchboard — every tenant ships whole, starts empty
 
 **Date:** 2026-08-22
 **Status:** design, awaiting approval
@@ -17,36 +17,86 @@ Audit log, Roles & Permissions) is gated on an RBAC *permission* instead, and
 registry. So the first person to log into a new tenant sees nearly the whole
 product.
 
-That is wrong in two directions. Commercially, a customer sees surfaces they
-did not buy. Operationally, an empty CRM full of empty pages is a worse first
-impression than a small CRM that grows as things are switched on.
-
-Changing which features a tenant has today means editing an env file on the
-VM and redeploying. There is no in-app control at any level.
+Meanwhile the real control surface is 47 environment variables in a file on
+the VM. proton has 47 flags on; `default` has 3. Changing what a customer
+has means a `sed` and a redeploy, by hand, on production.
 
 ## What we are building
 
-A per-tenant **feature switchboard**, owned by the platform superadmin, that
-defaults to everything off.
+Every tenant ships with the **whole** feature set — same image, nothing
+withheld at build or deploy time — and **every feature starts off**. A new
+tenant's first deployment looks exactly like `default` does today: a blank
+CRM. The platform superadmin then switches on what that customer bought,
+from a page inside the CRM, with no deploy.
 
 Two gates, deliberately orthogonal:
 
 - **Feature** — *is this capability part of this tenant's product at all?*
-  Owned by the platform superadmin (us, the vendor). Per tenant.
+  Owned by the platform superadmin (the vendor). Per tenant.
 - **Permission** — *which of the enabled capabilities may this person use?*
   Owned by the tenant's own administrator, through the existing Roles &
   Permissions page. Per role.
 
 A surface renders only when both agree: `hasFeature(f) && hasPermission(p)`.
 With every feature off, nothing renders regardless of how permissive the
-tenant's roles are — which is exactly the "opens empty" requirement, and it
-holds even against a tenant admin who grants themselves everything.
+tenant's roles are — which is the "starts empty" requirement, and it holds
+even against a tenant admin who grants themselves everything.
 
 This orthogonality is the core of the design. Today the two questions are
-conflated: page visibility is driven by permission alone, which means the
-only way to withhold a capability from a customer is to withhold it from
-every one of their users individually, and nothing stops their admin from
-granting it back.
+conflated: page visibility is driven by permission alone, so the only way to
+withhold a capability from a customer is to withhold it from each of their
+users individually, and nothing stops their admin granting it back.
+
+### There is no licensing ceiling
+
+An earlier draft kept `PROTON_FEATURES` as a per-tenant ceiling bounding what
+the superadmin could switch on. That is dropped, deliberately.
+
+A ceiling only earns its keep if someone *other than the vendor* can flip
+switches — it bounds a power you have delegated. Here the switchboard is
+superadmin-only and invisible to the tenant's own admin, so the ceiling was a
+second lock on a door only one person can open. It added a concept, a failure
+mode ("enabled but not licensed"), and a production env edit to every
+rollout, in exchange for no authority that the switchboard did not already
+provide.
+
+`PROTON_FEATURES` and the ERB block that stamps it therefore become **inert**
+once the SPA reads the store (see Rollout). They are left in place rather than
+unpicked — patches 0001 and 0058 own that code and are load-bearing for other
+things — but an env var that looks live and decides nothing is its own trap,
+so it is documented as vestigial in `example.env` and removed in a follow-up
+once no gate reads it.
+
+Note there is no `CUSTOM_FEATURES` env var replacing it. With the ceiling
+gone the store is the only input, and reintroducing an env var — under any
+name — would put back the second source of truth this section just removed.
+The generic naming applies to the concept and the code (below), not to a
+resurrected variable.
+
+## Naming: "custom features", not "Proton features"
+
+Everything new in this design is named generically. The platform is meant to
+be sold to any tenant, and proton is one customer of several — a switchboard
+literally called `PROTON_FEATURES` is awkward to show an AEON360 operator.
+
+| thing | name |
+|---|---|
+| backend module | `features/platform/custom_features.py` |
+| store | `CustomFeatureStore` |
+| registry | `CUSTOM_FEATURE_REGISTRY` |
+| endpoints | `GET/POST /admin/custom-features` |
+| composable | `useCustomFeatures.js` |
+| SPA page | `CustomFeaturesPage.vue` |
+| route | `custom_features` at `admin/custom-features` |
+
+This does **not** start a rename of the existing fork. The `Proton*`
+component prefix, the `proton_*` route names, `useProtonConfig`,
+`PROTON_BACKEND_URL` and the rest stay exactly as they are: renaming them
+touches all 70 patches, every route name the SPA resolves, and live env files
+on production, for no behavioural gain. The rule adopted here is narrower and
+cheap to hold — **new code stops adding to the Proton-branded surface.**
+De-branding what already exists is a separate piece of work with its own
+risk profile, worth doing when something else already forces those files open.
 
 ## Who the superadmin is
 
@@ -54,10 +104,10 @@ granting it back.
 
 Verified live on 2026-08-22 across all three tenants:
 
-| tenant  | id 1                          | type         | other SuperAdmins |
-|---------|-------------------------------|--------------|-------------------|
+| tenant  | id 1                            | type         | other SuperAdmins |
+|---------|---------------------------------|--------------|-------------------|
 | aeon360 | `yuda.adi.pratama@devoteam.com` | `SuperAdmin` | id 4              |
-| proton  | `yudaa0110@gmail.com`         | `SuperAdmin` | ids 6, 8          |
+| proton  | `yudaa0110@gmail.com`           | `SuperAdmin` | ids 6, 8          |
 | default | `yuda.adi.pratama@devoteam.com` | `SuperAdmin` | —                 |
 
 Both halves earn their place:
@@ -66,7 +116,10 @@ Both halves earn their place:
   platform up, on every tenant. Hardcoding it means no sequence of
   administrative accidents can lock the platform owner out of the switchboard
   — the classic failure where the last privileged user removes their own
-  privilege. It is never stored anywhere and can never be revoked.
+  privilege. It is never stored and can never be revoked. This convention is
+  already load-bearing here: proton sets `RBAC_BOOTSTRAP_ADMIN_USER_ID=1`,
+  which auto-assigns user 1 the `administrator` role at boot
+  (`main.py:1093`).
 - **`type == "SuperAdmin"` is Chatwoot's own concept**, already in
   multi-person use here (three superadmins on proton, two on aeon360).
   `SuperAdmin < User`, STI on `users.type`, and `/api/v1/profile` already
@@ -77,8 +130,8 @@ Both halves earn their place:
 `/super_admin` console already does it, and is already how the existing
 superadmins were made. We deliberately do *not* build a parallel grant store:
 a second list of superadmin ids would be free to disagree with `users.type`,
-producing a user who is revoked in our UI and still a Chatwoot superadmin, or
-the reverse. One source of truth.
+producing a user revoked in our UI but still a Chatwoot superadmin, or the
+reverse. One source of truth.
 
 Implementation note that will bite if missed: a regular user's `type` is
 `nil`, **not** `"User"`. The check must be an equality test against
@@ -101,123 +154,123 @@ The converse also needs saying: a Chatwoot SuperAdmin is treated as holding
 tenant's Roles & Permissions page on any tenant where they were never
 assigned a role — which is most of them.
 
+### The switchboard is invisible to tenants
+
+A non-superadmin gets no nav entry, no route, and a 403 on the write endpoint.
+They cannot enumerate which features exist but are off. This is a deliberate
+choice against a read-only "here's what else you could buy" view: an upsell
+surface inside the customer's own admin console invites questions we would
+rather answer in a sales conversation, and it leaks the product roadmap of
+every other tenant.
+
 ## Architecture
 
 ### Feature registry (static)
 
-`features/platform/feature_registry.py` — a static dict, one entry per custom
-surface: key, human label, description, group, and the permission it pairs
-with. Static because a feature that can be enabled by typing its name into a
-store is a feature that can be enabled by *mistyping* something else. The
+`features/platform/custom_features.py` — a static dict, one entry per
+feature: key, label, description, group, `kind`, and the RBAC permission it
+pairs with. Static because a feature that can be enabled by typing its name
+into a store is one that can be enabled by *mistyping* something else. The
 registry is the closed set of things that exist.
 
-Initial keys, grouped as the admin page will show them:
+`kind` distinguishes two genuinely different things, and the distinction
+drives the phasing below:
+
+- **`surface`** — a page, panel or nav entry. Gating it means the SPA not
+  rendering it. This is the whole of Phase 1.
+- **`behavior`** — a backend runtime path with no UI of its own (the
+  lifecycle scanner, escalation email, recording transcription, KB-grounded
+  replies, auto-routing). Gating it means the backend consulting the store at
+  runtime rather than `Settings` at boot.
+
+**Phase 1 implements `surface` keys only.** `behavior` keys are registered
+and listed in the admin page as read-only "env-controlled", showing their
+current value, so the page tells the whole truth about the tenant from day
+one rather than implying the 47 env flags do not exist. Phase 2 moves them to
+the store. This is called out because a switchboard that silently omits half
+the tenant's configuration is worse than one that shows it and says who owns
+it.
+
+Surface keys (Phase 1), grouped as the admin page will show them:
 
 | group | keys |
 |---|---|
-| AI | `ai_assist`, `copilot`, `faq_suggestion_popup` |
+| AI | `ai_assist`, `copilot`, `faq_suggestion_popup`, `translate` |
 | Knowledge | `knowledge` |
 | Reports | `reports_departments`, `reports_case_lifecycle`, `reports_anomaly`, `reports_weekly` |
 | Cases | `cases`, `taxonomy`, `rsa_incidents` |
-| Operations | `workforce`, `agent_softphone`, `sla_policies`, `escalation_routing`, `inbound_alerts` |
+| Operations | `workforce`, `agent_softphone`, `sla_policies`, `escalation_routing`, `inbound_alerts`, `alert_preferences`, `agent_status`, `agent_priorities` |
 | Data | `customer360`, `integrations` |
 | Admin | `audit_log`, `roles_permissions` |
 
-`nav_menu` is retired as a feature key: it gates the nav container rather
-than a capability, and with per-surface keys an empty nav follows from every
-surface being off.
+`knowledge` stays a single key covering all eight console sections
+(Assistants, FAQs, Documents, Playground, Scenarios, Inboxes, Tools,
+Settings) — they are one console and splitting them would produce a nav
+section that can be half-present for no operator benefit.
+
+`nav_menu` is retired as a key: it gates the nav container rather than a
+capability, and with per-surface keys an empty nav follows from every surface
+being off.
 
 ### Feature store (per tenant)
 
-`features/platform/feature_store.py` — Firestore-backed, the same shape as
-the existing `PicStore`/`DealerStore` (which is the precedent for
-operator-editable per-tenant config in this codebase). Maps feature key →
-bool. **An absent key is off**, so a store that has never been written to
-yields a completely blank CRM. No seeding, no migration, no first-boot marker.
+`CustomFeatureStore` (same module) — Firestore-backed, the same shape as
+the existing `PicStore`/`DealerStore`, which is this codebase's precedent for
+operator-editable per-tenant config. Maps feature key → bool.
 
-### The ceiling
-
-Effective set = `{k in registry : store[k] is true and k in PROTON_FEATURES}`.
-
-`PROTON_FEATURES` keeps its name and its place but changes meaning: it is now
-the **licensed ceiling** — what this tenant is *allowed* to switch on —
-rather than what is currently on. The superadmin moves things within that
-ceiling; a key outside it renders in the admin page as a disabled toggle
-labelled "not licensed", so the boundary is visible rather than mysterious.
-
-This gives a clean commercial story: the ceiling is set per contract when the
-tenant is provisioned and only changes when the contract does; day-to-day
-enablement is a UI action needing no deploy.
-
-The compose default becomes the full registry (everything licensed) so a new
-tenant's superadmin is not blocked from switching anything on, and the vendor
-narrows it deliberately per contract. The tenant still opens empty, because
-the *store* is empty — the ceiling permits, it does not enable.
-
-A key in `PROTON_FEATURES` that is not in the registry is ignored rather than
-rejected. This matters immediately: `nav_menu` is retired as a key but sits
-in both live tenants' env files, and an unknown-key error there would fail
-the tenants this change is meant to leave alone.
-
-**The ceiling must be widened before it is enforced.** Today
-`PROTON_FEATURES` gates only four names while every other surface is
-permission-gated, so proton's and aeon360's Reports, Cases, Taxonomy,
-Workforce and the rest are reachable *despite* not being in that list.
-Reinterpreting the same four-item string as a ceiling would newly block all
-of them. Both tenants' `PROTON_FEATURES` are therefore widened to the full
-registry as part of rollout — their effective ceiling today is already
-everything, so this records reality rather than granting anything new.
+**An absent key is off.** A store that has never been written yields a
+completely blank CRM. There is no seeding, no migration, no first-boot
+marker, and no default-on list anywhere — "starts empty" is a property of the
+data model rather than a value someone has to remember to set.
 
 ### Read path
 
-`GET /admin/features/effective` — returns the effective key list plus
+`GET /admin/custom-features` — returns the enabled key list plus
 `is_superadmin` for the calling session. Authenticated as any signed-in
-Chatwoot session; there is nothing sensitive in "what is switched on for the
+Chatwoot session; there is nothing sensitive in "what is switched on in the
 CRM I am already looking at".
 
-`useProtonFeatures.js` — a new composable mirroring `useProtonPermissions.js`
-exactly: module-level cache, single in-flight promise, fail-closed to `[]` on
-error.
+`useCustomFeatures.js` — a new composable mirroring `useProtonPermissions.js`
+exactly: module-level cache, single in-flight promise, fail-closed to `[]`.
 
-Patch 0058 deliberately avoided making `hasFeature` async, on the grounds
-that auditing every synchronous call site for a load-order race was a large
-change to verify. That reasoning was sound then and is weaker now:
-`useProtonPermissions.js` has since shipped and does this exact thing for
-nav gating, so the pattern is proven in this fork rather than novel. The
-synchronous `useProtonConfig().hasFeature` stays in place, still reading the
-ERB-stamped list, so nothing that reads it today breaks; new gating uses the
-composable.
+Patch 0058 deliberately avoided making `hasFeature` async, on the grounds that
+auditing every synchronous call site for a load-order race was a large change
+to verify. That reasoning was sound then and is weaker now:
+`useProtonPermissions.js` has since shipped and does this exact thing for nav
+gating, so the pattern is proven in this fork rather than novel. The
+synchronous `useProtonConfig().hasFeature` stays in place so nothing that
+reads it today breaks; new gating uses the composable.
 
 **The cost, stated plainly:** fail-closed means a backend blip briefly renders
 the CRM empty rather than briefly rendering surfaces the tenant should not
-see. That is the right trade for a licensing gate, and it is identical to
-what permissions already do — but it does mean a backend outage looks like a
-missing product rather than an error, so the composable surfaces a distinct
-`loadFailed` state the nav can use to say so.
+see. That is the right trade for a licensing gate and is identical to what
+permissions already do — but it does mean a backend outage looks like a
+missing product rather than an error, so the composable exposes a distinct
+`loadFailed` state the nav uses to say so.
 
 ### Admin page
 
-New fork patch: `ProtonPlatformFeaturesPage.vue` at `proton/platform/features`,
-nav entry visible only when `is_superadmin`. Registry grouped into sections,
-one toggle per feature, ceiling-blocked entries disabled with an explanatory
-label. Writes go to `POST /admin/features` behind
-`require_platform_superadmin`.
+New fork patch: `CustomFeaturesPage.vue` at `admin/custom-features`,
+nav entry rendered only when `is_superadmin`. Registry grouped into sections,
+one toggle per surface feature, `behavior` keys listed read-only with their
+env-derived value and an "env-controlled" label. Writes go to
+`POST /admin/custom-features` behind `require_platform_superadmin`.
 
 ## Data flow
 
 ```
 Chatwoot session (access-token/client/uid)
-  └─> TokenValidator.resolve_identity()  ── GET /api/v1/profile ──> (user_id, type)
+  └─> TokenValidator.resolve_identity() ── GET /api/v1/profile ──> (user_id, type)
         └─> is_superadmin = user_id == 1 or type == "SuperAdmin"
 
-GET /admin/features/effective
-  └─> registry ∩ store(enabled) ∩ PROTON_FEATURES  ──> ["knowledge", ...]
-        └─> useProtonFeatures (cached, fail-closed)
+GET /admin/custom-features
+  └─> {k in registry : store[k] is true}  ──> ["knowledge", ...]
+        └─> useCustomFeatures (cached, fail-closed)
               └─> nav + route gates:  hasFeature(f) && hasPermission(p)
 
-POST /admin/features {key, enabled}
+POST /admin/custom-features {key, enabled}
   └─> require_platform_superadmin
-        └─> reject key ∉ registry (400) or key ∉ ceiling (403)
+        └─> reject key ∉ registry (400), reject kind == "behavior" (409)
               └─> store.set(key, enabled)
 ```
 
@@ -225,69 +278,73 @@ POST /admin/features {key, enabled}
 
 - Token resolution failure → 401. Never a silent allow. Unchanged from the
   existing `require_permission` posture.
-- Not a superadmin → 403 on writes; reads still succeed and simply report
+- Not a superadmin → 403 on writes; reads succeed and report
   `is_superadmin: false`.
-- Key outside the registry → 400. Key outside the ceiling → 403. These are
-  different failures and get different codes: one is a bad request, the other
-  is a licensing boundary.
+- Key outside the registry → 400. Writing a `behavior` key in Phase 1 → 409,
+  because it is a real key that is simply not yet writable — distinct from a
+  key that does not exist.
 - Store unreachable → reads fail closed (empty list, `loadFailed: true`);
   writes 503 rather than reporting a success that was not persisted.
 - `TokenValidator`'s existing short-TTL cache covers both `user_id` and
   `type`, so superadmin status is not a per-request round trip. A promotion in
-  the `/super_admin` console takes up to the TTL to be visible.
+  the `/super_admin` console takes up to the TTL to become visible.
 
 ## Testing
 
 Backend:
 
-- Registry/store unit tests, including the invariant that an unwritten store
-  yields an empty effective list.
-- Ceiling intersection: enabled-but-unlicensed stays off; licensed-but-not-
-  enabled stays off.
+- An unwritten store yields an empty effective list — the "starts empty"
+  invariant, asserted directly.
 - `is_superadmin`: id 1 with `type = nil` → true (the floor); id 7 with
   `type = "SuperAdmin"` → true; id 7 with `type = nil` → false. The first and
-  third cases together are the regression guard against a truthiness check.
-- `require_platform_superadmin`: 401 without a session, 403 for a non-
-  superadmin, pass for both superadmin routes, and no shared-secret bypass.
-- SuperAdmin holds all RBAC permissions, on a tenant where they have no role.
-- Write path rejects unregistered keys and ceiling violations with distinct
-  codes.
+  third together are the regression guard against a truthiness check.
+- `require_platform_superadmin`: 401 without a session, 403 for a
+  non-superadmin, pass for both superadmin routes, no shared-secret bypass.
+- A Chatwoot SuperAdmin holds all RBAC permissions on a tenant where they
+  have no role assigned.
+- Write path rejects unregistered keys (400) and `behavior` keys (409) with
+  distinct codes.
+- Every `surface` key in the registry names a permission that exists in
+  `PERMISSION_REGISTRY` — catches a typo pairing at test time rather than as
+  a permanently invisible page.
 
 Fork patch: no JS test harness exists for patches in this repo, so
-verification is a Cloud Build plus manual check of the three states — feature
-off, feature on, feature ceiling-blocked.
+verification is a Cloud Build plus a manual check of feature-off, feature-on,
+and non-superadmin-sees-nothing.
 
 ## Rollout
 
-Ordered so nothing goes dark. proton and aeon360 both set
-`PROTON_FEATURES=ai_assist,nav_menu,copilot,knowledge` today.
+Ordered so nothing goes dark. proton and aeon360 are live; `default` is not.
 
 1. **Backend image first.** Store, registry, endpoints, identity change. The
    SPA still reads the ERB-stamped list, so this is invisible to users.
-2. **Widen the ceiling** — set `PROTON_FEATURES` to the full registry in
-   `proton.env` and `aeon360.env` (see "The ceiling must be widened before it
-   is enforced" above). Hand the `sed` to Yuda; the classifier blocks prod
-   env edits from this session.
-3. **Enable in the store** every surface each live tenant reaches today —
-   which for both is effectively all of them, since their admins hold every
-   permission. Their stores then match what their users already see.
-4. **Chatwoot image** (`amd64`, Cloud Build — never on the prod VM) with the
+2. **Populate the stores** for proton and aeon360 through the new API — every
+   surface they reach today, which for both is effectively all of them, since
+   their admins hold every permission. Their stores then match what their
+   users already see.
+3. **Chatwoot image** (`amd64`, Cloud Build — never on the prod VM) with the
    admin page and the composable-based gates.
 
-`default` is deliberately left with an empty store, so it opens blank — it is
-the first tenant to demonstrate the new default.
+No production env edit is needed at any step; dropping the ceiling removed it.
 
-Between 3 and 4 the store and the ERB list agree, so there is no window in
-which a live tenant's CRM empties out. Steps 2 and 3 are the ones that must
-not be skipped, and the sequencing exists entirely to make skipping them
-survivable: if step 4 shipped first, both live tenants would open blank.
+`default` is deliberately left with an empty store, so it opens blank and
+becomes the living example of the new baseline.
+
+Between 2 and 3 the store and the ERB list agree, so there is no window in
+which a live tenant's CRM empties out. Step 2 is the one that must not be
+skipped, and the sequencing exists to make skipping it survivable: if step 3
+shipped first, both live tenants would open blank.
 
 ## What this does not do
 
+- **Phase 1 does not move the 47 backend env flags into the store.** They stay
+  env-driven and are shown read-only in the switchboard. Phase 2 covers them,
+  and it is a real piece of work: those flags are read from `Settings` at boot,
+  so making them store-driven means runtime-mutable settings with their own
+  caching and invalidation story.
 - No cross-tenant identity. Each tenant has its own Chatwoot and its own user
   table, so this is a per-tenant superadmin. "Platform superadmin" means the
-  same *person* holds it on every tenant, not that there is one account
-  spanning them.
+  same *person* holds it on every tenant, not one account spanning them.
 - No superadmin grant UI — Chatwoot's `/super_admin` console already does it.
 - No change to what any RBAC permission means, or to the Roles & Permissions
   page, beyond superadmins holding everything.

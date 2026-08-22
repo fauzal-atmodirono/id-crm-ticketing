@@ -1160,6 +1160,47 @@ git commit -m "feat(tenant-config): mount the switchboard unconditionally"
 
 ---
 
+## How to produce a fork patch (Tasks 6, 7 and 8)
+
+**Do not hand-write diff hunks.** Hand-computed `@@` arithmetic and
+copied-from-another-patch context lines are the failure mode this section
+exists to remove — a patch shows a file at ITS point in the 71-patch stack,
+not at yours.
+
+Instead, edit the real pre-image tree and let git write the diff:
+
+```bash
+TREE=/private/tmp/claude-501/-Users-yudaadipratama-Archive-id-crm-ticketing/24a5f84b-319c-4eda-8466-49a5a9c1f213/scratchpad/cw-preimage
+
+# 1. Make sure the tree is clean before you start.
+git -C $TREE status --short          # must print nothing
+git -C $TREE checkout .              # if it does not, reset first
+
+# 2. Edit the files normally, in $TREE. Read existing content with
+#    sed -n 'START,ENDp' to see exactly what is there.
+
+# 3. Let git produce the patch, headers and hunk arithmetic included.
+git -C $TREE add -A
+git -C $TREE diff --cached > /Users/yudaadipratama/Archive/id-crm-ticketing/deploy/chatwoot-fork/patches/<NNNN-name>.patch
+
+# 4. Reset the tree so the next task starts from the same pre-image.
+git -C $TREE reset -q && git -C $TREE checkout . && git -C $TREE clean -fdq
+
+# 5. Verify the patch applies to the untouched pre-image.
+/private/tmp/claude-501/-Users-yudaadipratama-Archive-id-crm-ticketing/24a5f84b-319c-4eda-8466-49a5a9c1f213/scratchpad/verify-patch.sh /Users/yudaadipratama/Archive/id-crm-ticketing/deploy/chatwoot-fork/patches/<NNNN-name>.patch
+```
+
+Step 5 must print `PATCH APPLIES CLEANLY`. A patch task is not done until it
+does.
+
+The tree is `app/javascript` + `app/views` from the running
+`proton-chatwoot-rails` image with fork patches 0001-0071 applied. It is
+scratch — if it gets into a bad state, say so in your report rather than
+improvising, because a corrupted tree silently invalidates every later
+patch's verification.
+
+---
+
 ### Task 6: SPA client and composable
 
 The first fork patch. Both files are new, so no upstream context lines are needed.
@@ -1173,38 +1214,39 @@ The first fork patch. Both files are new, so no upstream context lines are neede
   - `dashboard/api/protonAdmin.js`: `fetchCustomFeatures()`, `setCustomFeature(key, enabled)`.
   - `dashboard/composables/useCustomFeatures.js`: `{ loading, loadFailed, hasFeature, isSuperadmin, registry, behavior, refresh }`.
 
-- [ ] **Step 1: Write the patch**
+- [ ] **Step 1: Edit the pre-image tree**
 
-`protonAdmin.js` is an existing file, so its hunk needs real context. Take the context lines verbatim from the end of `0025-sla-policies-admin.patch`'s `protonAdmin.js` hunk — the `myPermissions` function is the last thing in that file, so append after it.
+Follow "How to produce a fork patch" above. Two files:
 
-Create `deploy/chatwoot-fork/patches/0072-custom-features-composable.patch`:
+**A. Append to `app/javascript/dashboard/api/protonAdmin.js`.** Do NOT assume where this file ends — it is 287 lines and ends with `upsertPresenceStatus`, not with `myPermissions`. (An earlier draft of this plan used `myPermissions` as context, taken from patch `0025` where it was added; 46 patches have landed since and the patch would not have applied.) Read the tail first with `sed -n '280,287p'`, then append:
 
-```diff
-diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
---- a/app/javascript/dashboard/api/protonAdmin.js
-+++ b/app/javascript/dashboard/api/protonAdmin.js
-@@ -66,3 +66,17 @@ export async function myPermissions() {
-   const data = await adminRequest('/authz/permissions');
-   return Array.isArray(data.permissions) ? data.permissions : [];
- }
-+
-+// ── Custom features (the platform switchboard) ─────────────────────────────
-+
-+export async function fetchCustomFeatures() {
-+  return adminRequest('/admin/custom-features');
-+}
-+
-+export async function setCustomFeature(key, enabled) {
-+  return adminRequest('/admin/custom-features', {
-+    method: 'POST',
-+    body: { key, enabled },
-+  });
-+}
-diff --git a/app/javascript/dashboard/composables/useCustomFeatures.js b/app/javascript/dashboard/composables/useCustomFeatures.js
-new file mode 100644
---- /dev/null
-+++ b/app/javascript/dashboard/composables/useCustomFeatures.js
-@@ -0,0 +1,58 @@
+**B. Create `app/javascript/dashboard/composables/useCustomFeatures.js`** — a new file.
+
+The content of both is below. After editing, generate the patch as
+`deploy/chatwoot-fork/patches/0072-custom-features-composable.patch` with
+`git -C $TREE diff --cached`, reset the tree, and verify.
+
+Append verbatim to the END of `protonAdmin.js`:
+
+```javascript
+
+// ── Custom features (the platform switchboard) ─────────────────────────────
+
+export async function fetchCustomFeatures() {
+  return adminRequest('/admin/custom-features');
+}
+
+export async function setCustomFeature(key, enabled) {
+  return adminRequest('/admin/custom-features', {
+    method: 'POST',
+    body: { key, enabled },
+  });
+}
+```
+
+Create `useCustomFeatures.js` with exactly this content (the `+` prefixes below are NOT part of the file — strip them):
+
+```javascript
 +// useCustomFeatures.js — OUR file. The read side of the platform feature
 +// switchboard. Deliberately shaped exactly like useProtonPermissions.js:
 +// module-level cache shared by every importer, one in-flight promise, and a

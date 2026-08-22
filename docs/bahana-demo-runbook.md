@@ -278,6 +278,28 @@ Save — Chatwoot shows this inbox's own webhook/callback URL after creation.
 bot registration) and again for §6 (seeding: `seed-nasabah` targets this same
 inbox id, deliberately, see §6.1).
 
+> **STATUS 2026-08-22: §3.3, §3.5 and §4 are DONE — do not redo them.**
+> Applied directly against the tenant:
+> - Inbox `1` "Bahana Whatsapp" (`Channel::TwilioSms`) exists.
+> - Agent bot `1` "Gemini Agent" created, `outgoing_url`
+>   `http://bahana.agent.34-50-103-151.nip.io/webhooks/chatwoot/bot`, attached to
+>   inbox 1 with status **active**. (Note `AgentBotInbox.statuses` is
+>   `{"active"=>0, "inactive"=>1}` — the enum reads backwards from what you would
+>   guess, and setting `status: 1` silently gives you an *inactive* bot.)
+> - All **nine** contact custom attribute definitions created, type Text.
+> - `CHATWOOT_API_TOKEN`, `CHATWOOT_BOT_TOKEN` and `CHATWOOT_BOT_SECRET` written
+>   into `tenants/bahana.env` (backup `bahana.env.bak-tokens`) and the agent
+>   recreated. Verified the agent can now call the Chatwoot contacts API.
+>   **`CHATWOOT_API_TOKEN` being empty was a silent demo-killer**: the
+>   customer-context fetch calls `get_contact()` with it, and an empty token
+>   fails, fails open, and produces a bot that answers with no personalization
+>   and no error anywhere.
+> - `CHATWOOT_WEBHOOK_SECRET` is still empty. That one gates the *account*
+>   webhook (`/webhooks/chatwoot`, escalation + lifecycle), not the bot path.
+>   Not needed for the demo; set it if you want those flows.
+>
+> **Still yours: §3.4 below.**
+
 ### 3.4 Point Twilio's inbound webhook at that inbox
 
 In the Twilio console, set the number's inbound webhook to:

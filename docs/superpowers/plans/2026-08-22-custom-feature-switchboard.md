@@ -1203,7 +1203,7 @@ patch's verification.
 
 ### Task 6: SPA client and composable
 
-The first fork patch. Both files are new, so no upstream context lines are needed.
+The first fork patch. One file is new (`useCustomFeatures.js`); the other (`protonAdmin.js`) already exists and is appended to — so this patch is generated from the pre-image tree like every other, not hand-written.
 
 **Files:**
 - Create: `deploy/chatwoot-fork/patches/0072-custom-features-composable.patch`

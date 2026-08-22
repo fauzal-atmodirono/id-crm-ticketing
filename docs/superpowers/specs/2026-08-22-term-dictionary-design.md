@@ -130,9 +130,12 @@ second round trip: `GET /admin/custom-features` returns `{features: [...],
 terms: {...}, is_superadmin: bool}`. `useCustomFeatures.js` exposes a `t()`
 helper alongside `hasFeature()`.
 
-**Fallback when the store is unreachable is `generic`**, not the last-known
-value. A tenant briefly seeing neutral wording is a much smaller failure than
-a bank's operators briefly seeing "Dealer".
+**When the store is unreachable, resolution falls through to
+`settings.term_profile`** — the same chain as an unset row, so an outage
+renders a tenant's normal vocabulary rather than a different one. Terms are
+not a security gate, so unlike features there is nothing to fail closed
+about; the failure to avoid here is a tenant's words changing under them
+because a Firestore read timed out.
 
 ### Rendering
 
@@ -142,52 +145,57 @@ labels, empty states, toast messages.
 
 ## Rollout — `default` first, proton untouched
 
-1. **Backend + pin every existing tenant**: registry, profiles, resolution,
-   response field, and a profile row for proton (`automotive`), aeon360 and
-   default (both `generic`). No SPA change, so nothing renders differently
-   anywhere — the rows are inert on the day they are written.
-2. **Chatwoot image** with the `t()` call sites. `default` is not live, so it
-   is the safe place to see every screen in neutral wording first.
-3. **aeon360** pulls the image and renders generic.
-4. **proton: no image pull, no restart, no env edit.** Its row from step 1
-   means that whenever it does eventually pull a later image — on its own
-   schedule, for its own reasons — it keeps saying Dealer, Vehicle, RSA
-   and WIP.
+1. **Backend**: registry, profiles, resolution, `TERM_PROFILE` setting,
+   response field. Nothing renders differently anywhere — there are no `t()`
+   call sites yet.
+2. **`default`**: set `TERM_PROFILE=generic` in `default.env`, then ship the
+   Chatwoot image with the `t()` call sites. `default` is not live, so it is
+   the safe place to see every screen in neutral wording first.
+3. **aeon360**: set `TERM_PROFILE=generic`, then pull the image.
+4. **proton: nothing at all.** No row, no env var, no image pull, no restart.
+   It falls through to the `automotive` default and keeps its vocabulary
+   whenever it eventually pulls a later image, on its own schedule.
 
-### Every existing tenant is pinned in step 1, not later
+### The pin is a fallback, not a remembered write
 
-An earlier draft made step 1 backend-only and left proton's profile to be
-written "before its next Chatwoot image pull". That is a trap dressed as a
-runbook step. The `t()` call sites live in the SPA, so proton renders no
-resolved term while it runs its current image (`c9c4828` / `-rc9`) — but the
-moment it pulls **any** later Chatwoot image, for a completely unrelated fix,
-it gets the call sites. With no profile set it would resolve to `generic`,
-and proton's operators would open the CRM to "Partner Escalation Turnaround"
-where it has always said "Dealer". Nothing about that pull would look
-vocabulary-related to whoever performs it.
+An earlier draft had step 1 write a profile row for every existing tenant,
+keyed by tenant name. That is wrong twice over.
 
-So the pin is not a follow-up ops step. **Step 1 writes a profile row for
-every tenant that exists**, in the same change that creates the store:
+First, it needs the backend to know which tenant it is, and this codebase has
+already decided against deriving behaviour from the compose `TENANT` name —
+see `app_environment` in `config.py`: *"a guard whose answer is guessed from a
+name someone chose for unrelated reasons is one rename away from being wrong
+in the dangerous direction."* A `{"proton": "automotive"}` lookup is exactly
+that guard.
 
-| tenant | profile |
-|---|---|
-| proton | `automotive` |
-| aeon360 | `generic` |
-| default | `generic` |
+Second, a written row is still a thing somebody has to have done. If it is
+missed, proton flips to generic on its next image pull.
 
-All three writes are invisible on the day they happen — no tenant is running
-an image containing a `t()` call — which is exactly what makes step 1 the
-safe place for them. `add-tenant.sh` writes `generic` for every tenant
-provisioned afterwards, so no tenant ever relies on the fallback.
+So the profile resolves through a fallback chain instead, with no boot-time
+write and no tenant-name lookup anywhere:
 
-The fallback for a tenant with no row stays `generic`, because the product's
-default vocabulary should be the neutral one rather than a vertical. That is
-defensible only because the fallback is unreachable for every real tenant:
-a vertical-as-default would otherwise be one skipped provisioning step away
-from showing a bank the word "Dealer".
+```
+profile = stored_profile (superadmin's choice, if ever set)
+       or settings.term_profile (TERM_PROFILE env, default "automotive")
+```
 
-A test asserts proton resolves to `automotive`, so the pin cannot be
-regressed by a later edit to the profile table.
+**`TERM_PROFILE` defaults to `automotive`**, which is this codebase's usual
+default-preserving posture — unset means *today's behaviour, byte-identical*.
+proton has no row and no env var, so it resolves to automotive and keeps
+saying Dealer, Vehicle, RSA and WIP forever, with nothing to remember and
+nothing to write.
+
+The cost is real and worth stating: the *product's* default vocabulary is
+then a vertical, so a tenant provisioned without `TERM_PROFILE=generic` would
+show a bank the word "Dealer". That is the safer of the two failures. Getting
+it wrong in this direction is loud and immediate — someone opens the new
+tenant during onboarding and sees the wrong words. Getting it wrong in the
+other direction is silent and lands on a live customer months later, during a
+deploy nobody connected to terminology. `add-tenant.sh` writes
+`TERM_PROFILE=generic` so the loud failure does not happen either.
+
+Once a superadmin picks a profile in the UI, the stored value wins and the
+env var stops mattering for that tenant.
 
 ## Testing
 
@@ -198,8 +206,10 @@ regressed by a later edit to the profile table.
   rather than an approximation.
 - Unknown override keys are ignored, not raised.
 - Store unreachable → `generic`, never a partial map.
-- **proton resolves to `automotive`.** Asserted directly against the tenant
-  pin table, so the pin cannot be silently dropped by a later edit.
+- **A tenant with no stored profile and no `TERM_PROFILE` resolves to
+  `automotive`** — proton's exact situation, asserted so the default cannot
+  be flipped to `generic` by a later edit without a test going red.
+- A stored profile beats the env var; the env var beats the built-in default.
 - Acronym terms have an explicit `lower` that is not the naive `.lower()` of
   the singular.
 

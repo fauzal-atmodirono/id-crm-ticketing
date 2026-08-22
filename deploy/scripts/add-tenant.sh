@@ -74,6 +74,13 @@ MAILPIT_AUTH_HASH="$(get_infra_var MAILPIT_AUTH_HASH)"
 echo "==> Provisioning tenant '${TENANT}' (PUBLIC_IP=${PUBLIC_IP})"
 
 # --- 1. Generate per-tenant secrets + env file ------------------------------
+# New tenants are industry-neutral. The backend's TERM_PROFILE default is
+# `automotive` for backwards compatibility with tenants that predate the term
+# dictionary, so provisioning must say `generic` explicitly or a non-
+# automotive customer opens their CRM reading "Dealer" and "Vehicle". The
+# template ships that line commented out (`# TERM_PROFILE=generic`) so an
+# unprovisioned example.env stays inert; this sed uncomments it, the same way
+# every other per-tenant value below is substituted into the template.
 CHATWOOT_DB_PASSWORD="$(openssl rand -hex 16)"
 AGENT_DB_PASSWORD="$(openssl rand -hex 16)"
 BACKEND_DB_PASSWORD="$(openssl rand -hex 16)"
@@ -90,6 +97,7 @@ sed \
   -e "s/^REDIS_PASSWORD=.*/REDIS_PASSWORD=${REDIS_PASSWORD}/" \
   -e "s/^SECRET_KEY_BASE=.*/SECRET_KEY_BASE=${SECRET_KEY_BASE}/" \
   -e "s|^HOST_PREFIX=.*|HOST_PREFIX=${HOST_PREFIX}|" \
+  -e "s/^# TERM_PROFILE=generic$/TERM_PROFILE=generic/" \
   tenants/example.env > "${ENV_FILE}"
 echo "==> Wrote ${ENV_FILE} (hostnames: ${HOST_PREFIX:-<bare>}crm.${PUBLIC_IP}.nip.io)"
 

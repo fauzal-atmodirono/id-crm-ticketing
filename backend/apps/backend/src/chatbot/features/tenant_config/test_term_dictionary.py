@@ -96,3 +96,13 @@ def test_pic_is_not_a_dictionary_key() -> None:
     """Deliberate: PIC reads correctly to a bank as readily as to a
     dealership, and generalising it would make every tenant's UI worse."""
     assert "pic" not in TERM_KEYS
+
+
+def test_add_tenant_script_writes_generic_for_new_tenants() -> None:
+    """The product's default vocabulary is a vertical, which is only safe
+    because provisioning always overrides it. If this line is ever dropped, a
+    new bank tenant opens saying "Dealer"."""
+    from pathlib import Path
+
+    script = Path(__file__).parents[7] / "deploy" / "scripts" / "add-tenant.sh"
+    assert "TERM_PROFILE=generic" in script.read_text()

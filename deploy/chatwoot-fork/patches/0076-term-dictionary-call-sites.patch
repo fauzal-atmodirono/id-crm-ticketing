@@ -21,7 +21,7 @@ index d216af4..37c5fb6 100644
            },
          ]
 diff --git a/app/javascript/dashboard/components/widgets/ProtonCasesTable.vue b/app/javascript/dashboard/components/widgets/ProtonCasesTable.vue
-index b3c361f..270b265 100644
+index b3c361f..c7eabc7 100644
 --- a/app/javascript/dashboard/components/widgets/ProtonCasesTable.vue
 +++ b/app/javascript/dashboard/components/widgets/ProtonCasesTable.vue
 @@ -17,6 +17,7 @@
@@ -57,7 +57,7 @@ index b3c361f..270b265 100644
 -            {{ option === 'all' ? 'All dealers' : option }}
 +            {{
 +              option === 'all'
-+                ? `All ${t('partner', 'plural').toLowerCase()}`
++                ? `All ${t('partner', 'plural_lower')}`
 +                : option
 +            }}
            </option>
@@ -336,7 +336,7 @@ index 83ac453..a2b8287 100644
  
      <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
 diff --git a/app/javascript/dashboard/views/ProtonCustomer360Page.vue b/app/javascript/dashboard/views/ProtonCustomer360Page.vue
-index fd89d5c..983f524 100644
+index fd89d5c..1519678 100644
 --- a/app/javascript/dashboard/views/ProtonCustomer360Page.vue
 +++ b/app/javascript/dashboard/views/ProtonCustomer360Page.vue
 @@ -23,11 +23,16 @@
@@ -387,7 +387,7 @@ index fd89d5c..983f524 100644
 +      </h2>
        <p v-if="!rsaIncidents.length" class="text-sm text-n-slate-11">
 -        No RSA incidents found.
-+        No {{ t('field_incident', 'plural').toLowerCase() }} found.
++        No {{ t('field_incident', 'plural_lower') }} found.
        </p>
        <div v-else class="overflow-x-auto border rounded-lg border-n-weak">
          <table class="w-full text-sm border-collapse text-n-slate-11">
@@ -448,7 +448,7 @@ index fd89d5c..983f524 100644
 +            </h3>
              <p v-if="!dms.vehicles.length" class="mb-4 text-sm text-n-slate-11">
 -              No vehicles on file.
-+              No {{ t('asset', 'plural').toLowerCase() }} on file.
++              No {{ t('asset', 'plural_lower') }} on file.
              </p>
              <ul
                v-else
@@ -556,7 +556,7 @@ index 0606e27..1a4abcf 100644
        </div>
      </template>
 diff --git a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
-index 64adc16..8f38dce 100644
+index 64adc16..bea4d01 100644
 --- a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
 +++ b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
 @@ -9,6 +9,7 @@
@@ -773,12 +773,12 @@ index 64adc16..8f38dce 100644
  
        <p v-if="!dealers.length" class="text-sm text-n-slate-11">
 -        No dealers configured yet.
-+        No {{ t('partner', 'plural').toLowerCase() }} configured yet.
++        No {{ t('partner', 'plural_lower') }} configured yet.
        </p>
        <div v-else class="overflow-x-auto border rounded-lg border-n-weak">
          <table class="w-full text-sm border-collapse text-n-slate-11">
 diff --git a/app/javascript/dashboard/views/ProtonRsaPage.vue b/app/javascript/dashboard/views/ProtonRsaPage.vue
-index 633dcea..c52db4b 100644
+index 633dcea..dcc1b83 100644
 --- a/app/javascript/dashboard/views/ProtonRsaPage.vue
 +++ b/app/javascript/dashboard/views/ProtonRsaPage.vue
 @@ -8,6 +8,7 @@
@@ -805,7 +805,7 @@ index 633dcea..c52db4b 100644
          this.errored = true;
          useAlert(
 -          'Failed to load RSA incidents: ' + (err.message || String(err))
-+          `Failed to load ${this.t('field_incident', 'plural').toLowerCase()}: ` +
++          `Failed to load ${this.t('field_incident', 'plural_lower')}: ` +
 +            (err.message || String(err))
          );
        } finally {
@@ -883,7 +883,7 @@ index 633dcea..c52db4b 100644
 -      Log roadside-assistance incidents and review a running summary by cause
 -      and dealer. Manual staff data entry — this does not connect to any
 -      dispatch system.
-+      Log {{ t('field_incident', 'plural').toLowerCase() }} and review a
++      Log {{ t('field_incident', 'plural_lower') }} and review a
 +      running summary by cause and {{ t('partner', 'lower') }}. Manual staff
 +      data entry — this does not connect to any dispatch system.
      </p>
@@ -893,7 +893,7 @@ index 633dcea..c52db4b 100644
      </div>
      <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">
 -      Could not load RSA incidents.
-+      Could not load {{ t('field_incident', 'plural').toLowerCase() }}.
++      Could not load {{ t('field_incident', 'plural_lower') }}.
      </div>
  
      <template v-else>
@@ -902,7 +902,7 @@ index 633dcea..c52db4b 100644
            </h2>
            <p v-if="!aggregate.by_cause.length" class="text-sm text-n-slate-11">
 -            No incidents yet.
-+            No {{ t('field_incident', 'plural').toLowerCase() }} yet.
++            No {{ t('field_incident', 'plural_lower') }} yet.
            </p>
            <ul v-else class="flex flex-col gap-1 m-0 list-none">
              <li
@@ -915,7 +915,7 @@ index 633dcea..c52db4b 100644
            </h2>
            <p v-if="!aggregate.by_dealer.length" class="text-sm text-n-slate-11">
 -            No incidents yet.
-+            No {{ t('field_incident', 'plural').toLowerCase() }} yet.
++            No {{ t('field_incident', 'plural_lower') }} yet.
            </p>
            <ul v-else class="flex flex-col gap-1 m-0 list-none">
              <li
@@ -972,7 +972,7 @@ index 633dcea..c52db4b 100644
 +      </h2>
        <p v-if="!incidents.length" class="text-sm text-n-slate-11">
 -        No incidents logged yet.
-+        No {{ t('field_incident', 'plural').toLowerCase() }} logged yet.
++        No {{ t('field_incident', 'plural_lower') }} logged yet.
        </p>
        <div v-else class="overflow-x-auto border rounded-lg border-n-weak">
          <table class="w-full text-sm border-collapse text-n-slate-11">

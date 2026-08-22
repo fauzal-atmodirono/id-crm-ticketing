@@ -30,6 +30,7 @@ Verified 2026-08-22, same day this runbook was written.
 | AI credentials bug | found + worked around (§2.2) |
 | HTTP-only Caddy vhost bug | found + worked around (§2.3) |
 | Missing `PROTON_BACKEND_URL`/`PROTON_BACKEND_KEY` bug | found + worked around (§2.4) |
+| `purge`'s RSA sweep is unconditional | expected traceback, documented — not fixable without enabling RSA (§2.5) |
 | Task 5 code change (`agent`'s customer-context prompt) | merged to `dev-yuda` (commit `7d2b9aa`), **not yet deployed to the VM** — §5 below |
 
 VM access: `gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playground-genai`. GCE instance `crm-ticketing`, zone `asia-southeast2-a`, project `lv-playground-genai`, public IP `34.50.103.151`.
@@ -182,6 +183,36 @@ unmodified template will silently lose its persona the same way, with
 nothing in any log to point at why. Fix belongs in the same follow-up as
 §2.1's (default/document the required override in `example.env` and/or
 `add-tenant.sh`); out of scope here.
+
+### 2.5 `purge`'s RSA sweep is unconditional — repo bug, will hit any tenant with `RSA_ENABLED=false`
+
+`purge()` in `deploy/scripts/seed_demo_data/client.py` deletes the batch's
+Chatwoot contacts and conversations first, then unconditionally does `GET
+/rsa/incidents` on the backend and `raise_for_status()`s the response —
+confirmed by reading the function: the contact/conversation delete loop
+runs to completion, then `rsa_response = await
+_backend.get("/rsa/incidents")` followed by `rsa_response.raise_for_status()`,
+with no branch that skips it. There's no flag to opt out either — `purge`'s
+own `--help` lists only `--tenant`, `--batch`, `--dry-run`, and the
+Chatwoot/backend connection flags.
+
+On `bahana`, `RSA_ENABLED=false` in `tenants/bahana.env` — it's
+`example.env`'s own default; `proton` is the outlier with `RSA_ENABLED=true`
+— so the backend never mounts the RSA router (`main.py`: `if
+settings.rsa_enabled and settings.rsa_database_url`). `GET /rsa/incidents`
+then 404s regardless of URL or credentials, and every `purge` run on this
+tenant ends in a traceback *after* the Chatwoot deletions have already
+succeeded. See §6.2/§6.3 for what this looks like in practice and how to
+confirm the deletion went through anyway.
+
+**Not a bahana bug — a repo bug.** `purge()` treats the RSA sweep as
+mandatory for every tenant, but RSA is an opt-in feature that's *off* by
+default (`example.env`'s `RSA_ENABLED=false`). Any tenant that doesn't
+enable RSA hits this same traceback on every purge. Fix belongs in
+`client.py` (skip the sweep when the backend reports RSA isn't mounted, or
+make it conditional on a flag); out of scope here — and do not enable RSA
+on bahana to route around it, it's an automotive roadside-assistance
+feature with no place on a securities demo tenant.
 
 ---
 
@@ -508,17 +539,36 @@ commands below are inert.
 inert.** `purge()` in `client.py` unconditionally sweeps `GET
 /rsa/incidents` on the backend and `raise_for_status()`s the response,
 *after* it has already deleted the batch's Chatwoot contacts and
-conversations. Point it at a placeholder URL/key (as the smoke/real-batch
-purge commands below used to) and every purge run ends in a traceback —
-against a junk key on the Chatwoot origin, that's a 404 or 401 — right
-after the destructive half already completed, so an operator re-seeding
-under time pressure sees "purge crashed" with no way to tell whether
-anything was actually deleted. Every `purge` command below therefore points
-`--backend-url` at bahana's real backend, reachable in-cluster at
-`http://bahana-backend:8080`, with the real `PROTON_BACKEND_KEY` value —
-get it from `tenants/bahana.env` on the VM (`grep ^PROTON_BACKEND_KEY=
+conversations, with no flag to skip that sweep — see §2.5. Point it at a
+placeholder URL/key (as the smoke/real-batch purge commands below used to)
+and the sweep fails for the wrong reason (a junk key or unreachable host)
+instead of the real one below, which makes the failure harder to read, not
+easier.
+
+**Use bahana's public HTTPS origin for `--backend-url`, not the
+docker-compose alias.** `http://bahana-backend:8080` is a Docker-network
+hostname — it only resolves for containers on the tenant's own compose
+network, not from the bare VM shell these commands run in (§3's banner
+above). `https://bahana.crm.34-50-103-151.nip.io` *is* reachable from that
+shell, and `add-tenant.sh`'s Caddy rule already proxies its `/rsa/*` prefix
+to `bahana-backend:8080` for you (see the `@proton_backend` block in
+`deploy/scripts/add-tenant.sh`) — same backend, reachable from the right
+place. Pair it with the real `PROTON_BACKEND_KEY` value — get it from
+`tenants/bahana.env` on the VM (`grep ^PROTON_BACKEND_KEY=
 tenants/bahana.env`, read directly off the VM's own terminal; don't paste
 the value into this document, a chat, or a commit).
+
+**Even with the right URL and key, expect a traceback anyway — that's
+expected, not a failure.** `bahana` runs with `RSA_ENABLED=false` (§2.5),
+so the backend never mounts the RSA router and `/rsa/incidents` 404s no
+matter what you pass. Every `purge` command below will delete the batch's
+Chatwoot contacts and conversations first — that part succeeds — and then
+raise on the RSA sweep. **The traceback is expected and does not mean the
+purge failed.** To confirm the deletion actually happened: check the
+Chatwoot contacts list for the batch's `[DEMO]`-prefixed contacts (they
+should be gone), or just re-run the same `purge` command — a second run
+against an already-purged batch finds nothing left to delete and only the
+(still-expected) RSA-sweep traceback remains.
 
 ### 6.3 Smoke batch — run this first, watch it
 
@@ -548,10 +598,16 @@ python3 -m seed_demo_data purge \
   --chatwoot-url https://bahana.crm.34-50-103-151.nip.io \
   --chatwoot-token <CHATWOOT_API_TOKEN from §3.2> \
   --account-id 1 \
-  --backend-url http://bahana-backend:8080 \
+  --backend-url https://bahana.crm.34-50-103-151.nip.io \
   --backend-key <PROTON_BACKEND_KEY from tenants/bahana.env on the VM> \
   --batch smoke
 ```
+
+**Expect this to end in a traceback on the RSA sweep — that's normal on
+this tenant, see §6.2/§2.5.** The contact/conversation deletion above the
+traceback already succeeded; confirm it by checking the Chatwoot contacts
+list for the `smoke` batch's `[DEMO]`-prefixed contacts (they should be
+gone) or by re-running this same command and seeing nothing left to delete.
 
 ### 6.4 Real batch — pin the demo handset
 
@@ -588,10 +644,13 @@ python3 -m seed_demo_data purge \
   --chatwoot-url https://bahana.crm.34-50-103-151.nip.io \
   --chatwoot-token <CHATWOOT_API_TOKEN from §3.2> \
   --account-id 1 \
-  --backend-url http://bahana-backend:8080 \
+  --backend-url https://bahana.crm.34-50-103-151.nip.io \
   --backend-key <PROTON_BACKEND_KEY from tenants/bahana.env on the VM> \
   --batch demo1
 ```
+
+Same as §6.3: this will delete `demo1`'s contacts/conversations
+successfully and then traceback on the RSA sweep — expected, see §6.2/§2.5.
 
 ---
 
@@ -848,9 +907,11 @@ python3 -m seed_demo_data seed-nasabah --tenant bahana \
   --account-id 1 --inbox-id <whatsapp-inbox-id> \
   --backend-url https://bahana.crm.34-50-103-151.nip.io --backend-key unused \
   --count 3 --batch-id smoke
+# purge ends in a traceback on the RSA sweep -- expected on this tenant
+# (RSA_ENABLED=false), the deletions above it already succeeded. §6.2/§2.5.
 python3 -m seed_demo_data purge --tenant bahana \
   --chatwoot-url https://bahana.crm.34-50-103-151.nip.io --chatwoot-token <token> \
-  --account-id 1 --backend-url http://bahana-backend:8080 \
+  --account-id 1 --backend-url https://bahana.crm.34-50-103-151.nip.io \
   --backend-key <PROTON_BACKEND_KEY from tenants/bahana.env on the VM> \
   --batch smoke
 # ...then the real batch: --count 25 --batch-id demo1 --pinned-phone <E.164>

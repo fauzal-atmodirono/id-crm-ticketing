@@ -486,6 +486,28 @@ to `false` and recreate `agent`/`backend` before proceeding.
 
 ## 6. Seed demo data
 
+> **Run the seeder from YOUR MACHINE, not from the VM.** Verified 2026-08-22:
+> the VM's host Python is 3.11.2 with **no `httpx`**, so
+> `python3 -m seed_demo_data ...` on the VM dies at import with
+> `ModuleNotFoundError: No module named 'httpx'` before it does anything. The
+> seeder is a plain HTTP client and Chatwoot is publicly reachable, so run it
+> locally against the public origin:
+>
+> ```bash
+> cd /Users/yudaadipratama/Archive/id-crm-ticketing/deploy/scripts
+> python3 -m seed_demo_data seed-nasabah --tenant bahana ...
+> ```
+>
+> Do **not** `pip install httpx` on the VM to work around this — that host
+> Python is externally managed and it buys nothing, since running locally
+> works today and uses the current source rather than whatever was last
+> synced to `/opt/platform`.
+>
+> Every command in this section therefore needs `--chatwoot-url
+> https://bahana.crm.34-50-103-151.nip.io` and a `--chatwoot-token`, read from
+> `CHATWOOT_API_TOKEN` in `tenants/bahana.env` on the VM.
+
+
 Small batch first, watch it land in Chatwoot, then the real batch.
 
 ### 6.1 `--inbox-id` here is the WhatsApp inbox itself — not a dedicated API inbox

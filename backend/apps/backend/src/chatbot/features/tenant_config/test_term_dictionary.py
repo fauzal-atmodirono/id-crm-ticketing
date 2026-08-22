@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from chatbot.features.tenant_config.term_dictionary import (
     PROFILES,
+    TERM_FIELDS,
     TERM_KEYS,
     resolve_profile,
     resolve_terms,
@@ -109,6 +110,15 @@ def test_pic_is_not_a_dictionary_key() -> None:
     """Deliberate: PIC reads correctly to a bank as readily as to a
     dealership, and generalising it would make every tenant's UI worse."""
     assert "pic" not in TERM_KEYS
+
+
+def test_term_fields_is_derived_not_hand_mirrored() -> None:
+    """`resolve_terms` and `custom_features_router._OVERRIDE_FIELDS` both
+    read this tuple instead of hand-copying it. If a field is ever added to
+    (or removed from) `Term` without updating this expectation, this test
+    goes red instead of the two call sites silently drifting apart again --
+    that already happened once, for `plural_lower`."""
+    assert TERM_FIELDS == ("singular", "plural", "lower", "plural_lower")
 
 
 def test_add_tenant_script_writes_generic_for_new_tenants() -> None:

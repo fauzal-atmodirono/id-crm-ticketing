@@ -29,6 +29,7 @@ from chatbot.features.tenant_config.custom_features import (
 )
 from chatbot.features.tenant_config.term_dictionary import (
     PROFILES,
+    TERM_FIELDS,
     TERM_KEYS,
     resolve_profile,
     resolve_terms,
@@ -52,12 +53,15 @@ class TermsBody(BaseModel):
     overrides: dict | None = None
 
 
-# Mirrors the fields `term_dictionary.Term` carries and the exact tuple
-# `resolve_terms` iterates when applying a patch. Not imported from there --
-# there is no public constant for it -- but kept in lockstep by the fact that
-# a field this endpoint accepts and `resolve_terms` does not read would be
-# the same silent no-op this validation exists to close off.
-_OVERRIDE_FIELDS = frozenset({"singular", "plural", "lower", "plural_lower"})
+# The set of fields an override may patch. Imported from `term_dictionary`
+# rather than hand-mirrored: this and `resolve_terms`' own field loop are
+# both derived from `TERM_FIELDS` (itself read off `Term`'s dataclass
+# fields), so a field added to `Term` without touching this file can no
+# longer drift out of sync the way it once did -- adding `plural_lower`
+# required fixing both copies by hand and one was missed the first time.
+# Derivation makes that mismatch structurally impossible, not merely tested
+# for.
+_OVERRIDE_FIELDS = frozenset(TERM_FIELDS)
 
 
 def build_custom_features_router(

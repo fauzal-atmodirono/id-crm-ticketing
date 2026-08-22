@@ -21,6 +21,7 @@ tenant's UI worse to serve a problem no tenant has.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -42,6 +43,14 @@ class Term:
     plural_lower: str
 
 
+# Derived, not hand-typed: the one and only enumeration of `Term`'s fields.
+# `resolve_terms` below and `custom_features_router.py`'s `_OVERRIDE_FIELDS`
+# both used to hand-mirror this tuple; adding `plural_lower` required fixing
+# both by hand and one was missed the first time. Reading it off the
+# dataclass makes that class of mismatch structurally impossible rather than
+# merely tested for.
+TERM_FIELDS: tuple[str, ...] = tuple(f.name for f in dataclasses.fields(Term))
+
 TERM_KEYS: tuple[str, ...] = (
     "partner",
     "partner_principal",
@@ -50,6 +59,12 @@ TERM_KEYS: tuple[str, ...] = (
     "asset",
     "asset_model",
     "asset_id",
+    # `asset_serial` and `job_no` have no call sites anywhere in the SPA --
+    # their values come from Chatwoot custom attributes, not from a
+    # rendered noun a `t()` call replaces. They stay in the closed list
+    # (an operator can still override them) but a reader searching for
+    # where `t('asset_serial')` or `t('job_no')` is called will not find
+    # one; that is expected, not a missed conversion.
     "asset_serial",
     "field_incident",
     "job_no",
@@ -147,7 +162,7 @@ def resolve_terms(
     for key, patch in (overrides or {}).items():
         if key not in resolved or not isinstance(patch, dict):
             continue
-        for field in ("singular", "plural", "lower", "plural_lower"):
+        for field in TERM_FIELDS:
             value = patch.get(field)
             if isinstance(value, str) and value:
                 resolved[key][field] = value

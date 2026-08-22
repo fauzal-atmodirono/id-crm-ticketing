@@ -303,7 +303,7 @@ index 15591d4..914b58c 100644
          class="flex items-center gap-1 px-2 py-1 text-xs border rounded-lg border-n-weak text-n-slate-11"
          :disabled="translating"
 diff --git a/app/javascript/dashboard/composables/useProtonInboundAlerts.js b/app/javascript/dashboard/composables/useProtonInboundAlerts.js
-index d8ec7ab..bd573e0 100644
+index d8ec7ab..45e0808 100644
 --- a/app/javascript/dashboard/composables/useProtonInboundAlerts.js
 +++ b/app/javascript/dashboard/composables/useProtonInboundAlerts.js
 @@ -22,7 +22,7 @@
@@ -315,7 +315,7 @@ index d8ec7ab..bd573e0 100644
  import Auth from 'dashboard/api/auth';
  import { getMyAlertRules } from 'dashboard/api/protonAlerts';
  import {
-@@ -55,21 +55,22 @@ let installed = false;
+@@ -55,27 +55,44 @@ let installed = false;
  const NEW_INBOUND = 'new_inbound';
  
  export function useProtonInboundAlerts() {
@@ -329,13 +329,24 @@ index d8ec7ab..bd573e0 100644
 -  installed = true;
 +  const { hasFeature } = useCustomFeatures();
  
-+  // useStore()/useMapGetter() must be called synchronously during setup()
-+  // (Vue's composable rule) -- but whether we ever actually install anything
-+  // is now decided reactively below, not by an early return, so these are
-+  // hoisted here unconditionally rather than gated behind the feature check
-+  // the way they used to be. They are inert on their own: no timers, no
-+  // fetches, no subscriptions started merely by calling them, so "the
-+  // feature is off → this composable does nothing observable" still holds.
++  // Fix round 2: EVERY Vue composition-API call in this file -- useStore(),
++  // useMapGetter(), watch(), onScopeDispose() -- is now made exactly once,
++  // unconditionally, here at the top level of the function body. None of
++  // them are called lazily from inside install() or a watcher's callback
++  // any more. Reason: these calls only reliably attach to this component's
++  // effect scope while `activeEffectScope` is set, which Vue only guarantees
++  // synchronously during setup() -- never during a watcher's job-flush
++  // callback, which is exactly where install() can run on the deferred path
++  // below (the async switchboard fetch resolving after mount). Round 1
++  // registered onScopeDispose() and a watch() from inside install(); on the
++  // deferred path both would have silently failed to attach (Vue warns and
++  // drops an onScopeDispose() called with no active scope), leaving the
++  // module-level `installed` flag with no way to ever be reset. Hoisting
++  // everything here closes that whole class of bug, not just the one
++  // instance of it. useStore()/useMapGetter() are inert on their own (no
++  // timers, no fetches, no subscriptions started merely by calling them),
++  // so "the feature is off → this composable does nothing observable" still
++  // holds even though they now always run.
    const store = useStore();
    const currentUser = useMapGetter('getCurrentUser');
    const currentAccountId = useMapGetter('getCurrentAccountId');
@@ -347,7 +358,18 @@ index d8ec7ab..bd573e0 100644
    const streamCoverage = ref('none');
    // Messages that existed before this page loaded are not news. Without this,
    // every reload replays the morning's backlog as a burst of toasts.
-@@ -228,19 +229,62 @@ export function useProtonInboundAlerts() {
+   const startedAtMs = Date.now();
+   const seen = new Set();
+   let watchdogTimer = null;
++  // Only the instance whose install() actually claimed the module-level
++  // `installed` flag may ever clear it again -- a non-owner instance's
++  // disposal (or an install() call that found the flag already taken by
++  // someone else) must not stomp on the real owner's state.
++  let isOwner = false;
+ 
+   const viewer = () => ({
+     id: currentUser.value && currentUser.value.id,
+@@ -228,19 +245,82 @@ export function useProtonInboundAlerts() {
      paintIndicator();
    };
  
@@ -374,7 +396,10 @@ index d8ec7ab..bd573e0 100644
 +  // exactly what this file's own "NEVER GO SILENT" header forbids. The fix
 +  // is to make the gate itself reactive: re-run install() once, whenever
 +  // hasFeature() first turns true, however late the switchboard fetch
-+  // resolves.
++  // resolves. install() itself now only ever touches refs, plain closures,
++  // and the two non-Vue browser timer APIs (setInterval/clearInterval) --
++  // see fix round 2's comment above for why no watch()/onScopeDispose() call
++  // may live inside it.
 +  const install = () => {
 +    // Sidebar.vue can be re-created (route changes, hot reload). Installing
 +    // twice would double every alert, which is the same failure as the
@@ -386,40 +411,51 @@ index d8ec7ab..bd573e0 100644
 +      return;
 +    }
 +    installed = true;
++    isOwner = true;
 +    enabled.value = true;
 +    mode.value = 'stream';
 +
 +    loadRules();
 +    scanStream();
-+    watch(
-+      () => conversationSignature(readConversations(store).conversations),
-+      () => scanStream()
-+    );
 +    watchdogTimer = setInterval(runWatchdog, STREAM_WATCHDOG_MS);
-+    onScopeDispose(() => {
-+      if (watchdogTimer) clearInterval(watchdogTimer);
-+      watchdogTimer = null;
-+      installed = false;
-+    });
 +  };
 +
++  // Fix round 2: created unconditionally here rather than lazily inside
++  // install() -- see the top-of-function comment. The callback is a no-op
++  // for every instance except the one that actually owns installation, so
++  // a non-owner instance created before install() has ever run still costs
++  // nothing beyond this one idle watcher.
    watch(
--    () => conversationSignature(readConversations(store).conversations),
+     () => conversationSignature(readConversations(store).conversations),
 -    () => scanStream()
++    () => {
++      if (isOwner) scanStream();
++    }
+   );
+-  watchdogTimer = setInterval(runWatchdog, STREAM_WATCHDOG_MS);
++
++  // Fix round 2: registered exactly once, unconditionally, here at the top
++  // level where the effect scope is guaranteed active -- not inside
++  // install(), which round 1 did and which silently failed to register
++  // whenever install() ran from the deferred (async-flag-turns-true-later)
++  // path this file exists to handle. `isOwner` keeps a non-owner instance's
++  // disposal from clearing the real owner's `installed` flag.
+   onScopeDispose(() => {
++    if (!isOwner) return;
+     if (watchdogTimer) clearInterval(watchdogTimer);
+     watchdogTimer = null;
+     installed = false;
+   });
+ 
+-  return { enabled: true, mode, rules, streamCoverage };
++  watch(
 +    () => hasFeature('inbound_alerts'),
 +    isOn => {
 +      if (isOn) install();
 +    },
 +    { immediate: true }
-   );
--  watchdogTimer = setInterval(runWatchdog, STREAM_WATCHDOG_MS);
--  onScopeDispose(() => {
--    if (watchdogTimer) clearInterval(watchdogTimer);
--    watchdogTimer = null;
--    installed = false;
--  });
- 
--  return { enabled: true, mode, rules, streamCoverage };
++  );
++
 +  return { enabled, mode, rules, streamCoverage };
  }
 diff --git a/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue b/app/javascript/dashboard/routes/dashboard/conversation/ConversationView.vue

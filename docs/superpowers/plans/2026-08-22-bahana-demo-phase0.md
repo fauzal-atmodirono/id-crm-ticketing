@@ -151,7 +151,7 @@ def test_pinning_does_not_change_the_other_nasabah():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd deploy/scripts/seed_demo_data && python -m pytest test_nasabah.py -v`
+Run: `cd deploy/scripts/seed_demo_data && python3 -m pytest test_nasabah.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'nasabah'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -411,7 +411,7 @@ def generate_nasabah(
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd deploy/scripts/seed_demo_data && python -m pytest test_nasabah.py -v`
+Run: `cd deploy/scripts/seed_demo_data && python3 -m pytest test_nasabah.py -v`
 Expected: PASS, 13 tests
 
 - [ ] **Step 5: Commit**
@@ -513,7 +513,7 @@ def test_rdn_balance_is_formatted_for_a_human_reader():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd deploy/scripts/seed_demo_data && python -m pytest test_nasabah_attributes.py -v`
+Run: `cd deploy/scripts/seed_demo_data && python3 -m pytest test_nasabah_attributes.py -v`
 Expected: FAIL — `ImportError: cannot import name 'build_nasabah_custom_attributes'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -622,12 +622,12 @@ DemoNasabah` in each signature.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd deploy/scripts/seed_demo_data && python -m pytest test_nasabah_attributes.py -v`
+Run: `cd deploy/scripts/seed_demo_data && python3 -m pytest test_nasabah_attributes.py -v`
 Expected: PASS, 6 tests
 
 Then confirm nothing regressed:
 
-Run: `cd deploy/scripts/seed_demo_data && python -m pytest -v`
+Run: `cd deploy/scripts/seed_demo_data && python3 -m pytest -v`
 Expected: PASS, all pre-existing tests still green
 
 - [ ] **Step 5: Commit**
@@ -701,7 +701,7 @@ def test_inbox_id_is_required():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd deploy/scripts/seed_demo_data && python -m pytest test_nasabah_cli.py -v`
+Run: `cd deploy/scripts/seed_demo_data && python3 -m pytest test_nasabah_cli.py -v`
 Expected: FAIL — argparse errors with `invalid choice: 'seed-nasabah'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -811,10 +811,10 @@ both itself, and `_run_nasabah_seed` reads both.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd deploy/scripts/seed_demo_data && python -m pytest test_nasabah_cli.py -v`
+Run: `cd deploy/scripts/seed_demo_data && python3 -m pytest test_nasabah_cli.py -v`
 Expected: PASS, 5 tests
 
-Run: `cd deploy/scripts/seed_demo_data && python -m pytest -v`
+Run: `cd deploy/scripts/seed_demo_data && python3 -m pytest -v`
 Expected: PASS, whole seeder suite green
 
 - [ ] **Step 5: Commit**
@@ -1332,7 +1332,7 @@ Create `docs/bahana-demo-runbook.md` covering, in this order:
 
 - [ ] **Step 2: Verify the attribute keys against the code**
 
-Run: `cd deploy/scripts/seed_demo_data && python -c "from nasabah import generate_nasabah; from client import build_nasabah_custom_attributes; print(sorted(build_nasabah_custom_attributes(generate_nasabah(1, batch_id='x')[0], 'x')))"`
+Run: `cd deploy/scripts/seed_demo_data && python3 -c "from nasabah import generate_nasabah; from client import build_nasabah_custom_attributes; print(sorted(build_nasabah_custom_attributes(generate_nasabah(1, batch_id='x')[0], 'x')))"`
 Expected: the printed list matches the keys written in runbook step 4 exactly.
 
 - [ ] **Step 3: Commit**
@@ -1350,7 +1350,7 @@ After all six tasks:
 
 ```bash
 cd agent && pytest                                   # full agent suite
-cd deploy/scripts/seed_demo_data && python -m pytest # full seeder suite
+cd deploy/scripts/seed_demo_data && python3 -m pytest # full seeder suite
 ```
 
 Both must be green. Then the live rehearsal in runbook step 8 is the real

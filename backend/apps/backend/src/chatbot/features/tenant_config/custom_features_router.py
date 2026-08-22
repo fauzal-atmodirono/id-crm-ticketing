@@ -23,6 +23,7 @@ from chatbot.features.authz.deps import (
 from chatbot.features.tenant_config.custom_features import (
     BEHAVIOR_FLAGS,
     CUSTOM_FEATURE_REGISTRY,
+    CustomFeatureStoreUnavailable,
     enabled_features,
 )
 
@@ -65,7 +66,19 @@ def build_custom_features_router(
     async def read(identity: tuple[int, bool] = Depends(_identity)) -> dict:
         user_id, is_super_admin_type = identity
         superadmin = is_platform_superadmin(user_id, is_super_admin_type)
-        stored = await store.get_all()
+        try:
+            stored = await store.get_all()
+        except CustomFeatureStoreUnavailable as e:
+            # 503, not a 200 with an empty feature list: the two are
+            # indistinguishable to a caller that just reads `features`, and a
+            # 200 here is the lie that used to blank a live tenant's CRM for
+            # the rest of the page session on a transient Firestore blip --
+            # with no error shown and no retry, because the composable's
+            # success branch (`features.value = []`) never schedules one.
+            # A 503 makes the SPA's adminRequest() throw, which routes into
+            # useCustomFeatures.js's existing `.catch()` self-heal instead.
+            _log.error("custom_feature_store_read_failed", error=str(e))
+            raise HTTPException(status_code=503, detail="Could not load features") from e
 
         registry: list[dict] = []
         behavior: dict[str, bool] = {}

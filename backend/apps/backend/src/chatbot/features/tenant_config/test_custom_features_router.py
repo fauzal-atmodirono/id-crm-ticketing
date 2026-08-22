@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from chatbot.features.tenant_config.custom_features import (
+    CustomFeatureStoreUnavailable,
+)
 from chatbot.features.tenant_config.custom_features_router import (
     build_custom_features_router,
 )
@@ -115,6 +117,25 @@ def test_write_rejects_a_behavior_key_with_409() -> None:
 def test_read_401s_without_a_session() -> None:
     res = _client(_FakeStore(), (1, False)).get("/admin/custom-features")
     assert res.status_code == 401
+
+
+def test_a_read_that_could_not_reach_the_store_reports_503_not_200() -> None:
+    """The read-path counterpart of the write-path test below. A 200 with an
+    empty `features` list is indistinguishable from "this tenant has nothing
+    switched on" -- that used to be the response for BOTH a real empty store
+    and an unreachable one, which permanently blanked a live tenant's CRM on
+    a Firestore blip with no error and no self-heal. A 503 here is what makes
+    the SPA's adminRequest() throw and hit useCustomFeatures.js's existing
+    `.catch()` retry path instead of its success path."""
+
+    class _BrokenStore(_FakeStore):
+        async def get_all(self) -> dict[str, bool]:
+            raise CustomFeatureStoreUnavailable("firestore unavailable")
+
+    res = _client(_BrokenStore(), (1, False)).get(
+        "/admin/custom-features", headers=_SESSION
+    )
+    assert res.status_code == 503
 
 
 def test_a_write_that_did_not_persist_reports_503_not_200() -> None:

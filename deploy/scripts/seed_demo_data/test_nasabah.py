@@ -173,3 +173,66 @@ def test_generated_nasabah_are_never_offered_a_tracked_product_they_already_hold
         "product, so the fallback branch was never exercised -- widen the "
         "population or batch_id"
     )
+
+
+# --- Amendment: product_gaps must never leak a risk-inappropriate product -
+
+
+def test_gaps_for_never_includes_a_product_outside_the_profiles_catalogue():
+    # Constructed directly, not sampled from a population: a Konservatif
+    # nasabah who holds nothing at all would, under the old (unfiltered)
+    # implementation, have every other _PRODUCTS entry in their gaps --
+    # including "Reksa Dana Saham", an Agresif-only catalogue entry, and
+    # "Reksa Dana Campuran" / "Obligasi Korporasi", both Moderat-only. That
+    # is exactly the leak design spec §7.4 forbids reaching the model's
+    # context: the candidate set the model sees must be filtered before it
+    # gets there, not after.
+    from nasabah import _gaps_for  # noqa: PLC0415 -- private, test-only import
+
+    gaps = _gaps_for("Konservatif", held_products=[])
+    assert set(gaps) == CONSERVATIVE_ONLY
+    assert "Reksa Dana Saham" not in gaps
+    assert "Reksa Dana Campuran" not in gaps
+    assert "Obligasi Korporasi" not in gaps
+    assert "Saham" not in gaps
+
+
+def test_gaps_for_shrinks_as_suitable_products_are_held():
+    from nasabah import _gaps_for
+
+    assert _gaps_for("Konservatif", held_products=["Reksa Dana Pasar Uang"]) == [
+        "Obligasi Ritel (ORI)"
+    ]
+    assert (
+        _gaps_for(
+            "Konservatif",
+            held_products=["Reksa Dana Pasar Uang", "Obligasi Ritel (ORI)"],
+        )
+        == []
+    )
+
+
+def test_gaps_for_falls_back_to_conservative_for_an_unknown_risk_profile():
+    from nasabah import _gaps_for
+
+    assert set(_gaps_for("nonsense-profile", held_products=[])) == CONSERVATIVE_ONLY
+
+
+def test_generated_nasabah_never_carry_an_out_of_profile_product_gap():
+    # Integration-level check that _make_nasabah actually wires the filter
+    # in (not just that _gaps_for works in isolation).
+    people = generate_nasabah(300, batch_id="gap-suitability-integration")
+    exercised = {profile: False for profile in RISK_PROFILES}
+    for p in people:
+        suitable = SUITABLE_BY_RISK.get(p.risk_profile, CONSERVATIVE_ONLY)
+        if p.product_gaps:
+            exercised[p.risk_profile] = True
+        assert set(p.product_gaps) <= suitable, (
+            f"{p.name} ({p.risk_profile}) has {p.product_gaps!r}, which "
+            f"includes a product outside {suitable}"
+        )
+    assert all(exercised.values()), (
+        "this population never produced a non-empty product_gaps for every "
+        "risk profile, so the assertion above could have passed vacuously "
+        "-- widen the population or batch_id"
+    )

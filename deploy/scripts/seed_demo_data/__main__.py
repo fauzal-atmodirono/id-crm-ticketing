@@ -342,6 +342,30 @@ def _cmd_seed(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
 # --- seed-nasabah ------------------------------------------------------------
 
 
+def _nasabah_seed_summary(
+    args: argparse.Namespace, config: TenantConfig, batch_id: str, count: int
+) -> list[str]:
+    """Lines describing the resolved seed-nasabah write target, printed
+    before the confirmation prompt -- mirrors `_run_seed`'s dry-run summary
+    (tenant, Chatwoot base URL, account id, inbox id) plus this command's
+    own nasabah count, batch id and pinned-phone state, so an operator sees
+    exactly what a mistyped `--chatwoot-url`/`--chatwoot-token` is about to
+    write to before typing the tenant name back.
+
+    A plain function, not inlined, so a test can assert its content without
+    going through the async, network-touching command."""
+    return [
+        "=== Nasabah seed: summary ===",
+        f"Tenant:            {args.tenant}",
+        f"Batch id:          {batch_id}",
+        f"Nasabah count:     {count}",
+        f"Chatwoot base URL: {config.chatwoot_base_url}",
+        f"Chatwoot account:  {config.chatwoot_account_id}",
+        f"Chatwoot inbox:    {config.chatwoot_inbox_id}",
+        f"Pinned phone:      {args.pinned_phone or '(none -- no routable number will be written)'}",
+    ]
+
+
 async def _run_nasabah_seed(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     """Create `--count` synthetic nasabah contacts on the target tenant.
 
@@ -383,7 +407,14 @@ async def _run_nasabah_seed(args: argparse.Namespace, parser: argparse.ArgumentP
         pinned_name=args.pinned_name,
     )
 
-    if args.pinned_phone:
+    for line in _nasabah_seed_summary(args, config, batch_id, len(people)):
+        print(line)
+
+    if not _confirm(args.tenant, f"\nType the tenant name to confirm writing to it ({args.tenant}): "):
+        print("Confirmation did not match -- aborted, nothing written.", file=sys.stderr)
+        return 1
+
+    if people and args.pinned_phone:
         print(f"Pinned demo handset {args.pinned_phone} -> {people[0].name}")
 
     created = 0

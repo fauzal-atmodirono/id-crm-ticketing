@@ -26,6 +26,22 @@ novel product. A nasabah who already holds everything suitable for their
 profile simply gets re-offered from that same (unfiltered) catalogue; there
 is nothing else safe to offer them.
 
+**`product_gaps` is filtered to that same risk-profile catalogue, not the
+whole product universe.** Offer *selection* was always suitability-safe --
+that's the paragraph above -- but until this filter existed, `product_gaps`
+(what the rendered prompt calls "products not yet held") was the complement
+of `held_products` across every entry in `_PRODUCTS`, unfiltered. A
+Konservatif nasabah's prompt could therefore name `Reksa Dana Saham`, an
+Agresif-only catalogue entry -- nothing prevented the model from mentioning
+it except a sentence of prompt instruction, and design spec §7.4 is explicit
+that a suitability rule enforced only in a prompt eventually leaks. `_gaps_for`
+reuses `_catalogue_for` -- the exact lookup `offer_for` draws from, not a
+second copy of it -- so the set of products a nasabah's context can ever
+mention and the set `offer_for` could ever choose from are, structurally,
+the same set. Falls back to the Konservatif catalogue for an unrecognised
+risk profile, same as `offer_for`, for the same reason: degrade to the safest
+set, never to unfiltered.
+
 **Every phone is +999 except one.** +999 is the ITU-T E.164 reserved-for-
 testing country code: permanently unassigned, so no generated number can
 route to a real subscriber. The single exception is `pinned_phone`, which is
@@ -101,8 +117,10 @@ _AUM_BANDS = [
     "> Rp 1 miliar",
 ]
 
-# Product universe. `product_gaps` is this set minus what the nasabah holds,
-# which is what makes "belum memiliki X" a fact rather than a guess.
+# Product universe. `product_gaps` (see `_gaps_for`) is this set minus what
+# the nasabah holds and minus whatever falls outside that nasabah's own
+# risk-profile catalogue -- which is what makes "belum memiliki X" both a
+# fact and a suitable one, rather than merely a fact.
 _PRODUCTS = [
     "Saham",
     "Reksa Dana Pasar Uang",
@@ -163,6 +181,16 @@ def _weighted_choice(rnd: random.Random, weighted: list[tuple[T, int]]) -> T:
     return rnd.choices(items, weights=weights, k=1)[0]
 
 
+def _catalogue_for(risk_profile: str) -> list[tuple[str, str]]:
+    """The `(offer, rationale)` catalogue for one risk profile -- the single
+    source of truth both `offer_for` (what can be chosen) and `_gaps_for`
+    (what can be mentioned as not-yet-held) draw from, so the two can never
+    diverge. Falls back to the Konservatif catalogue for a profile value
+    this module doesn't recognise: degrade to "the safest catalogue", never
+    to "unfiltered" and never to "crashed the seeder"."""
+    return _OFFERS_BY_RISK.get(risk_profile, _OFFERS_BY_RISK["Konservatif"])
+
+
 def offer_for(
     risk_profile: str,
     rnd: random.Random,
@@ -186,9 +214,22 @@ def offer_for(
     Konservatif offers is simply re-offered one of the two, never something
     from another profile's catalogue.
     """
-    catalogue = _OFFERS_BY_RISK.get(risk_profile, _OFFERS_BY_RISK["Konservatif"])
+    catalogue = _catalogue_for(risk_profile)
     candidates = [item for item in catalogue if item[0] not in exclude] or catalogue
     return rnd.choice(candidates)
+
+
+def _gaps_for(risk_profile: str, held_products: list[str]) -> list[str]:
+    """The products to render as "not yet held": `_PRODUCTS` intersected
+    with `risk_profile`'s own suitable catalogue (via `_catalogue_for`),
+    minus whatever's already held.
+
+    Pure, like `offer_for`, for the same reason: a test can assert the
+    suitability rule directly rather than hoping a generated population
+    happens to exercise it. Order follows `_PRODUCTS`, matching the
+    pre-filter behaviour byte-for-byte for whichever entries survive."""
+    suitable = {name for name, _ in _catalogue_for(risk_profile)}
+    return [p for p in _PRODUCTS if p not in held_products and p in suitable]
 
 
 def _unique_phone(rnd: random.Random, used: set[str]) -> str:
@@ -213,7 +254,7 @@ def _make_nasabah(rnd: random.Random, index: int, used_phones: set[str]) -> Demo
     rdn_balance = rnd.randrange(500_000, 250_000_000, 500_000)
 
     held_products = rnd.sample(_PRODUCTS, k=rnd.randint(1, 3))
-    product_gaps = [p for p in _PRODUCTS if p not in held_products]
+    product_gaps = _gaps_for(risk_profile, held_products)
     holdings = (
         rnd.sample(_TICKERS, k=rnd.randint(1, 4)) if "Saham" in held_products else []
     )

@@ -2,7 +2,7 @@
 
 **Demo date:** Monday 2026-08-24
 **Owner:** Yuda
-**Spec:** `docs/superpowers/specs/2026-08-22-bahana-personalization-design.md` (§5 = Phase 0 scope, §7 = production security/compliance — cite this live during the demo, see §9 below)
+**Spec:** `docs/superpowers/specs/2026-08-22-bahana-personalization-design.md` (§5 = Phase 0 scope, §7 = production security/compliance — cite this live during the demo, see §10 below)
 **Plan:** `docs/superpowers/plans/2026-08-22-bahana-demo-phase0.md`
 
 This is the console/credential work the code in this repo can't do for you.
@@ -66,7 +66,7 @@ symptom to debug. Top it up before Monday, not during the rehearsal.
 
 Before configuring any webhook: `+16292843510` (the demo number) is in the
 **PT Devoteam Cloud Services** Twilio account. AEON360's live production
-number, `+1 682 399 3949`, is **not** in that account's WhatsApp sender list —
+number, `+16823993949`, is **not** in that account's WhatsApp sender list —
 it lives in a different account or subaccount entirely.
 
 Re-check this in the Twilio console before touching any webhook config. The
@@ -164,7 +164,7 @@ Nothing here has been done — the tenant is at the Chatwoot onboarding wizard,
 untouched. Needs a browser, the Chatwoot admin session, and Twilio console
 access for the PT Devoteam Cloud Services account.
 
-> **Shell commands below** (here and in §5-§8) assume you're already inside
+> **Shell commands below** (here and in §5-§9) assume you're already inside
 > an SSH session on the VM, `cd`'d to `/opt/platform/deploy` — that's how
 > they're shown. Where a command needs to run from your own machine instead
 > (only §5's sync step does), it's wrapped in `gcloud compute ssh ...
@@ -278,11 +278,10 @@ offer_rationale
 > JSON regardless of whether an admin-defined attribute exists for it; an
 > *undefined* key is written and retrievable via the API, but Chatwoot's
 > sidebar only renders keys that have a matching attribute definition. Get
-> one of these eight profile keys wrong (typo, wrong case, extra
-> underscore) and the AI still sees the data (it reads the contact API
-> directly) but the human agent sees nothing in the sidebar during the
-> demo — the most visible failure mode possible, with no error anywhere to
-> point at.
+> any one of these nine keys wrong (typo, wrong case, extra underscore) and
+> the AI still sees the data (it reads the contact API directly) but the
+> human agent sees nothing in the sidebar during the demo — the most
+> visible failure mode possible, with no error anywhere to point at.
 
 ### 4.1 Verification against the code — the code wins
 
@@ -421,6 +420,19 @@ usage: python3 -m seed_demo_data seed-nasabah [-h] --tenant TENANT
 `--inbox-id` is required with no env fallback and no default — per §6.1,
 pass the WhatsApp inbox id from §3.3.
 
+> **If you run `--help` yourself, ignore what it says about `--inbox-id`.**
+> The usage line above is real, but the full `--help` output's description
+> for `--inbox-id` is shared code (`_add_chatwoot_flags`'s `inbox_help` in `__main__.py`,
+> lines 142-148) written for the `seed` subcommand, and it reads: *"Pick
+> (or create) a dedicated inbox for demo data and pass its id explicitly
+> every time."* That is correct advice for `seed` and the opposite of
+> correct for `seed-nasabah` — §6.1's guidance wins: pass the WhatsApp
+> inbox id, not a dedicated one. The reason the shared text is safe to
+> ignore here is the same reason §6.1 gives — `seed-nasabah` never creates
+> a conversation, so the hazard a "dedicated inbox" protects against
+> (bot-enabled inbox + a live conversation = a real AI reply per seeded
+> contact) can't happen through this command.
+
 `purge`'s flag is `--batch`, **not** `--batch-id` — confirmed the same way:
 
 ```
@@ -500,8 +512,8 @@ country code — the ITU-T reserved-for-testing prefix, permanently unassigned,
 so it can never route to a real subscriber. `--pinned-phone` is the **one**
 routable number the seeder ever writes, and it must be the exact E.164 number
 of the handset the demo will be performed from, or the bot will not recognize
-the sender and the whole personalization beat (§9, step 3) silently degrades
-to generic (§10 covers this as a fallback, but it shouldn't be a surprise on
+the sender and the whole personalization beat (§10, step 3) silently degrades
+to generic (§11 covers this as a fallback, but it shouldn't be a surprise on
 the day — get this number right and confirm it before the meeting).
 
 Keep the purge command for this batch handy in case a re-seed is needed
@@ -550,7 +562,89 @@ the point of that surface.)
 
 ---
 
-## 8. Rehearse end to end from the pinned handset
+## 8. Demo hygiene — trim `PROTON_FEATURES`, do not build a custom role
+
+**Not done yet — do this before the rehearsal in §9, not just before the
+meeting.** Design spec §5.6 mandates it and it's easy to skip because the
+tenant otherwise looks ready: containers healthy, Chatwoot wired, data
+seeded. This step is about what the *admin sees on screen*, not whether
+anything works.
+
+### 8.1 A fresh tenant does not open empty
+
+The platform feature switchboard is still design-only, so `bahana`'s admin
+account does **not** see a blank product. Most surfaces (Cases, Taxonomy,
+RSA incidents, the DMS card, the report pages) are gated on **Chatwoot
+permissions**, not on `PROTON_FEATURES` — and the `administrator` role
+(what §3.1's admin user holds) has every permission. Left alone, all of
+that is one click away in the left nav during the demo — several of those
+surfaces are automotive-flavored (vehicle/dealer language), and the report
+pages render blank because this tenant has no warehouse (per
+`CLAUDE.md`/recent `fix(metrics)` work: no warehouse → empty reports, not
+another tenant's numbers, but empty is still the wrong thing to have on
+screen in front of a securities firm).
+
+**Trimming `PROTON_FEATURES` does not hide any of that.** It only gates
+`ai_assist`/`copilot`/`knowledge` (verified against the fork's own
+`hasFeature(...)` call sites — Cases/Taxonomy/RSA/DMS/Reports don't check
+it at all). So this step is two separate, both-required halves, not one:
+
+1. **Trim `PROTON_FEATURES`** to what the demo actually uses.
+2. **Simply don't navigate to the rest** — nothing hides Cases/Taxonomy/
+   RSA/DMS/Reports, so staying out of them is the only mitigation for those
+   specific surfaces.
+
+### 8.2 Trim `PROTON_FEATURES`
+
+The demo script (§10) only ever touches the Knowledge nav (§7's persona
+editor) — never Ask Copilot, never the ✨ inline-assist button. Set:
+
+```
+PROTON_FEATURES=knowledge
+```
+
+in `tenants/bahana.env` (currently blank, which defaults via
+`docker-compose.tenant.yml` to the full `ai_assist,nav_menu,copilot,knowledge`
+set). `nav_menu` isn't checked by any `hasFeature(...)` call in the current
+fork — it's effectively inert either way, so dropping it changes nothing
+observable; `knowledge` is the one load-bearing name here, since §7's
+Assistants/Inboxes tabs live behind it.
+
+Recreate `chatwoot-rails` to pick up the env change (Compose detects the
+value changed and recreates automatically — no `--build` needed, the image
+is unchanged):
+
+```bash
+cd /opt/platform/deploy
+docker compose -p bahana -f docker-compose.tenant.yml \
+  --env-file tenants/bahana.env up -d chatwoot-rails chatwoot-sidekiq
+```
+
+### 8.3 Do NOT create a custom Chatwoot role to hide the rest
+
+It would be tempting to reach for a custom role scoped to just the demo
+surfaces instead of "just don't click there." **Don't.** A Chatwoot custom
+role **replaces** `administrator` outright rather than subtracting
+permissions from it — it is not a narrower administrator, it is a
+different, smaller role. Assign one to the account you're about to demo
+from and you lose every permission `administrator` had that the custom role
+didn't explicitly re-grant, **including the ability to fix the role
+itself** — a real, previously-hit lockout hazard recorded in this repo's
+own project memory (`rbac-mirror-demotes-admins`: "a Chatwoot custom role
+REPLACES `administrator`; never tick 'Chatwoot access' on a role whose
+members are admins"). Doing this under Monday-morning time pressure, an
+hour before the meeting, with no second admin account to fall back on, is
+exactly how the demo tenant becomes unreachable right when it needs to be
+reachable most.
+
+The safe combination is §8.2's env trim plus discipline, not a role. If the
+trim alone feels insufficient, the fallback is narrower still: log in,
+confirm the left nav, and simply stay off Cases/Taxonomy/RSA/DMS/Reports
+for the whole meeting — no config change needed for that half at all.
+
+---
+
+## 9. Rehearse end to end from the pinned handset
 
 Do this before Monday, not for the first time in front of the prospect.
 Verify each of these, **in order** — each one only makes sense if the
@@ -574,7 +668,7 @@ previous one worked:
    Chatwoot; confirm the bot goes quiet for the rest of that conversation
    (per `CLAUDE.md`: only acts on a `pending` conversation).
 6. **The `ai_actions` row exists.** Every AI decision is logged before
-   execution — this is the demo's audit-trail beat (§9, step 5). Query it
+   execution — this is the demo's audit-trail beat (§10, step 5). Query it
    directly (no admin UI page for this table):
 
    ```bash
@@ -585,13 +679,13 @@ previous one worked:
    ```
 
 If step 1 fails on the day itself (contact not matched, e.g. because someone
-had to borrow a different handset), you're not stuck — see §10's second
+had to borrow a different handset), you're not stuck — see §11's second
 fallback. Everything through step 6 should be exercised once, calmly, before
 the actual meeting.
 
 ---
 
-## 9. Demo script — the beats
+## 10. Demo script — the beats
 
 1. **Show the CRM contact list.** Portfolio attributes visible in the
    sidebar for a seeded nasabah. **Say out loud that the data is
@@ -621,7 +715,7 @@ the actual meeting.
 
 ---
 
-## 10. Fallbacks
+## 11. Fallbacks
 
 - **WhatsApp fails on the day** (Twilio outage, balance issue despite §1.2,
   number/webhook misconfiguration): Chatwoot's **website widget** gives the
@@ -634,7 +728,7 @@ the actual meeting.
   behavior — per `CLAUDE.md`'s fail-open design, no contact/no match/no
   attributes yields today's behavior byte-identical, so it still answers,
   just without the personalization beat. Still a working demo of the base
-  AI-assist story; just skip claiming beat 3 in §9 and move to beat 4.
+  AI-assist story; just skip claiming beat 3 in §10 and move to beat 4.
 
 ---
 
@@ -653,6 +747,11 @@ docker compose -p bahana -f docker-compose.tenant.yml --env-file tenants/bahana.
 docker compose -p bahana -f docker-compose.tenant.yml --env-file tenants/bahana.env \
   up -d --build agent
 
+# Demo hygiene: trim PROTON_FEATURES (§8) -- edit tenants/bahana.env to
+# PROTON_FEATURES=knowledge, then:
+docker compose -p bahana -f docker-compose.tenant.yml --env-file tenants/bahana.env \
+  up -d chatwoot-rails chatwoot-sidekiq
+
 # Seed (§6) — from deploy/scripts. Full flag set (see §6.2 for why --tenant
 # alone isn't enough) is in §6.3/§6.4; abbreviated here for reference:
 python3 -m seed_demo_data seed-nasabah --tenant bahana \
@@ -667,7 +766,7 @@ python3 -m seed_demo_data purge --tenant bahana \
 # ...then the real batch: --count 25 --batch-id demo1 --pinned-phone <E.164>
 #    --pinned-name "Budi Santoso" — see §6.4 for the full command.
 
-# ai_actions audit row (§8, step 6)
+# ai_actions audit row (§9, step 6)
 docker exec platform-infra-postgres-1 psql -U postgres -d agent_bahana \
   -c "SELECT id, conversation_ref, decision, model, created_at FROM ai_actions ORDER BY created_at DESC LIMIT 5;"
 ```

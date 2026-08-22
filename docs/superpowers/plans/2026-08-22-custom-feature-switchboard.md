@@ -1644,7 +1644,40 @@ Not part of the TDD loop — these are deploy steps, ordered so nothing goes dar
 1. **Backend image only.** Sync source to `/opt/platform`, then per tenant:
    `docker compose -p <tenant> -f docker-compose.tenant.yml --env-file tenants/<tenant>.env up -d --build backend`.
    Invisible to users: the SPA still reads the ERB-stamped list.
-2. **Populate the stores** for proton and aeon360 — POST every registry key with `enabled: true`, as a superadmin session. Verify with `GET /admin/custom-features`: `features` must have 24 entries for both.
+2. **Populate the stores** for proton and aeon360 — POST every registry key with `enabled: true`, as a superadmin session. Verify with `GET /admin/custom-features`: `features` must have 24 entries for both. **This step has no admin-page UI yet** (that ships in step 3, chicken-and-egg with step 2) — see "How to run step 2 before the admin page exists" immediately below for the concrete, worked path.
 3. **Only then** build the Chatwoot image via Cloud Build (`amd64`, never on the prod VM) and pull it.
 
 Skipping step 2 opens both live tenants' CRMs blank. `default` is deliberately left with an empty store — it becomes the working example of the new baseline.
+
+### How to run step 2 before the admin page exists
+
+`require_platform_superadmin` (`backend/apps/backend/src/chatbot/features/authz/deps.py`) deliberately never honours the shared secret (`x-api-key` / `PROTON_BACKEND_KEY`) — it accepts only a real Chatwoot session, identified by the same `x-chatwoot-access-token` / `x-chatwoot-client` / `x-chatwoot-uid` triplet every other RBAC-gated Proton admin endpoint uses (`protonAdmin.js`'s `adminRequest`). So step 2 needs that triplet before the in-app "Custom features" page (which reads it automatically via `Auth.getAuthData()`) exists to hand it to you.
+
+**1. Obtain the triplet from browser devtools**, logged into the tenant's CRM as the platform superadmin (Chatwoot user id 1, or a user with Chatwoot's own SuperAdmin type — see `is_platform_superadmin`):
+
+- Open DevTools → Application (Chrome) or Storage (Firefox) → Cookies → the tenant's CRM origin.
+- Find the cookie named `cw_d_session_info` (Chatwoot's own devise_token_auth session cookie — this is upstream Chatwoot behaviour, not fork-specific; see `app/javascript/dashboard/api/auth.js::getAuthData`).
+- Its value is URL-encoded JSON. Decode it (DevTools shows the decoded value directly, or `python3 -c "import urllib.parse,sys;print(urllib.parse.unquote(sys.argv[1]))" '<raw value>'`) to get an object with `access-token`, `client`, and `uid` keys — these map directly to the three headers.
+
+**2. A worked curl, switching one key on** (repeat once per registry key — see `CUSTOM_FEATURE_REGISTRY` in `custom_features.py` for the full list of 24):
+
+```bash
+curl -X POST "https://<tenant-backend-public-url>/admin/custom-features" \
+  -H "Content-Type: application/json" \
+  -H "x-chatwoot-access-token: <access-token from the cookie>" \
+  -H "x-chatwoot-client: <client from the cookie>" \
+  -H "x-chatwoot-uid: <uid from the cookie>" \
+  -d '{"key": "knowledge", "enabled": true}'
+```
+
+A 200 with `{"key": "knowledge", "enabled": true, "status": "ok"}` confirms the write landed; a 403 means the session resolved to a user who is not a platform superadmin; a 401 means the triplet is stale (re-open devtools and re-copy it — the cookie rotates on token refresh).
+
+**3. Firestore fallback**, for when no live session is convenient (e.g. scripting the rollout, or Cloud Run redeploying the backend mid-rollout and disrupting an in-flight session): write directly to the document `CustomFeatureStore` reads —
+
+- Collection: `platform_config`
+- Document: `custom_features`
+- Field: `features`, a map of `{"<registry key>": true, ...}`
+
+A merge-write of `{"features": {"knowledge": true}}` onto that document (Firestore console, or the `google-cloud-firestore` SDK with `merge=True`, exactly like `CustomFeatureStore.set()` does) has the identical effect to the curl above, without going through HTTP or RBAC at all.
+
+**Reassurance if step 2 is skipped or only partially done:** this is recoverable, not a lockout. `GET /admin/custom-features` returns `is_superadmin` independently of the `features` list — computed from the caller's identity before the store is even read (`custom_features_router.py::read`) — so the "Custom features" nav entry in Sidebar.vue (gated on `isSuperadmin.value`, not on any feature key) still renders on a completely blank CRM. A superadmin who logs into a tenant with an empty store sees every ordinary surface hidden, but can still reach the switchboard page itself and switch things on in-app from there. The failure mode of skipping step 2 is "blank CRM until someone with superadmin logs in and fixes it," never "nobody can ever fix it."

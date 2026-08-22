@@ -355,6 +355,26 @@ async def _run_nasabah_seed(args: argparse.Namespace, parser: argparse.ArgumentP
     config = _resolve_tenant_config(args, parser)
     configure(config)
 
+    # Deliberately no assert_inbox_is_safe_to_seed() call here, unlike
+    # _run_seed. That guard refuses an inbox that either has an agent bot
+    # attached or isn't Channel::Api -- and the Bahana demo's target inbox
+    # is a Twilio WhatsApp inbox (Channel::TwilioSms) with the agent bot
+    # deliberately attached, i.e. it trips BOTH refusal conditions by
+    # design. Calling the guard here would refuse the exact inbox this
+    # command exists to seed.
+    #
+    # Omitting it is safe only because this path creates contacts, and
+    # nothing else: no conversation is created, so nothing lands in
+    # `pending` and orchestrator.py never fires; no message is posted, so
+    # nothing is delivered over a real transport. Those are the two
+    # hazards the guard exists to prevent, and neither is reachable here.
+    #
+    # TRIPWIRE: if this function ever grows conversation or message
+    # creation, that reasoning stops holding and the guard's hazard is
+    # back -- unguarded, that's ~140 Gemini calls and 140 AI replies
+    # posted into a tenant a client can see, the exact scenario
+    # assert_inbox_is_safe_to_seed was written to prevent. Add the guard
+    # call back the moment this path stops being contacts-only.
     people = generate_nasabah(
         args.count,
         batch_id=batch_id,

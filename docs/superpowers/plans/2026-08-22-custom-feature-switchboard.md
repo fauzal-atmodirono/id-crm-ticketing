@@ -212,81 +212,135 @@ Two changes in `deps.py`. A new dependency for the switchboard's write path, and
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `test_deps.py`:
+Append to `test_deps.py`. This file's conventions differ from
+`test_identity.py`'s — it uses the `respx_mock` FIXTURE (not the `@respx.mock`
+decorator), builds settings with `get_settings().model_copy(update={...})`,
+exercises dependencies through the existing `_app_with_endpoint(dep)` +
+`TestClient` helper rather than calling `_check` directly, and uses a REAL
+`AuthzRepository` over sqlite rather than a fake. Match all of that.
+
+Add these imports to the existing import block:
 
 ```python
 from chatbot.features.authz.deps import (
     is_platform_superadmin,
+    require_permission,
     require_platform_superadmin,
 )
+```
+
+Then append:
+
+```python
+_SESSION_HEADERS = {
+    "x-chatwoot-access-token": "tok-sa",
+    "x-chatwoot-client": "client-1",
+    "x-chatwoot-uid": "uid-1",
+}
 
 
-def test_user_one_is_always_a_platform_superadmin() -> None:
+def test_user_one_is_always_a_platform_superadmin():
     """The floor. Id 1 set the platform up on every tenant, and hardcoding it
-    means no administrative accident can lock the owner out."""
+    means no administrative accident — a revoked role, a stripped SuperAdmin
+    type — can lock the owner out of the switchboard."""
     assert is_platform_superadmin(1, False) is True
 
 
-def test_chatwoot_super_admin_type_is_a_platform_superadmin() -> None:
+def test_chatwoot_super_admin_type_is_a_platform_superadmin():
     assert is_platform_superadmin(7, True) is True
 
 
-def test_ordinary_user_is_not_a_platform_superadmin() -> None:
+def test_ordinary_user_is_not_a_platform_superadmin():
     assert is_platform_superadmin(7, False) is False
 
 
-@pytest.mark.asyncio
-async def test_require_platform_superadmin_401s_without_a_session() -> None:
-    check = require_platform_superadmin(validator=None, settings=_settings())
-    with pytest.raises(HTTPException) as exc:
-        await check(None, None, None)
-    assert exc.value.status_code == 401
+def test_platform_superadmin_requires_a_session():
+    dep = require_platform_superadmin(validator=None, settings=get_settings())
+    assert _app_with_endpoint(dep).get("/protected").status_code == 401
+
+
+def test_platform_superadmin_ignores_the_shared_secret():
+    """A shared secret identifies a service, not a person, and the switchboard
+    changes what a tenant's product IS. There must be a person."""
+    settings = get_settings().model_copy(update={"faq_admin_api_key": "secret123"})
+    dep = require_platform_superadmin(validator=None, settings=settings)
+    client = _app_with_endpoint(dep)
+    assert client.get("/protected", headers={"x-api-key": "secret123"}).status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_require_platform_superadmin_403s_for_an_ordinary_user() -> None:
-    check = require_platform_superadmin(
-        validator=_FakeValidator((7, False)), settings=_settings()
+async def test_platform_superadmin_denies_an_ordinary_user(respx_mock):
+    settings = get_settings()
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 7, "type": None})
     )
-    with pytest.raises(HTTPException) as exc:
-        await check("tok", "cli", "uid@x")
-    assert exc.value.status_code == 403
+    dep = require_platform_superadmin(validator=TokenValidator(settings), settings=settings)
+    client = _app_with_endpoint(dep)
+    assert client.get("/protected", headers=_SESSION_HEADERS).status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_require_platform_superadmin_allows_user_one_without_the_type() -> None:
-    check = require_platform_superadmin(
-        validator=_FakeValidator((1, False)), settings=_settings()
+async def test_platform_superadmin_allows_user_one_without_the_type(respx_mock):
+    settings = get_settings()
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 1, "type": None})
     )
-    assert await check("tok", "cli", "uid@x") == 1
+    dep = require_platform_superadmin(validator=TokenValidator(settings), settings=settings)
+    client = _app_with_endpoint(dep)
+    assert client.get("/protected", headers=_SESSION_HEADERS).status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_require_platform_superadmin_ignores_the_shared_secret() -> None:
-    """A shared secret identifies a service, not a person. The switchboard
-    records who changed a tenant's product, so there must be a person."""
-    check = require_platform_superadmin(validator=None, settings=_settings())
-    with pytest.raises(HTTPException) as exc:
-        await check(None, None, None, x_api_key="the-shared-secret")
-    assert exc.value.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_super_admin_holds_every_rbac_permission_without_a_role() -> None:
-    """Otherwise the platform owner cannot open Roles & Permissions on a
-    tenant where nobody ever assigned them a role — which is most of them."""
-    settings = _settings(rbac_enabled=True)
-    repo = _FakeRepo(perms=set())  # no role, no permissions
-    check = require_permission(
-        "roles.manage",
-        repo=repo,
-        validator=_FakeValidator((7, True)),
-        settings=settings,
+async def test_platform_superadmin_allows_the_super_admin_type(respx_mock):
+    settings = get_settings()
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 9, "type": "SuperAdmin"})
     )
-    await check(None, "tok", "cli", "uid@x")  # must not raise
+    dep = require_platform_superadmin(validator=TokenValidator(settings), settings=settings)
+    client = _app_with_endpoint(dep)
+    assert client.get("/protected", headers=_SESSION_HEADERS).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_super_admin_holds_every_permission_without_a_role(tmp_path, respx_mock):
+    """Otherwise the platform owner cannot open Roles & Permissions on a tenant
+    where nobody ever assigned them a role — which is most tenants. Note there
+    is deliberately NO assign_role call here."""
+    settings = get_settings().model_copy(update={"rbac_enabled": True})
+    engine = build_engine(f"sqlite+aiosqlite:///{tmp_path}/deps_superadmin.db")
+    await init_authz_db(engine)
+    repo = AuthzRepository(build_session_maker(engine))
+    await seed_defaults(repo)
+
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 9, "type": "SuperAdmin"})
+    )
+    dep = require_permission(
+        "roles.manage", repo=repo, validator=TokenValidator(settings), settings=settings
+    )
+    client = _app_with_endpoint(dep)
+    assert client.get("/protected", headers=_SESSION_HEADERS).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_ordinary_user_with_no_role_is_still_denied(tmp_path, respx_mock):
+    """The regression guard for the bypass above: it must key on superadmin
+    status, not merely on having survived token resolution."""
+    settings = get_settings().model_copy(update={"rbac_enabled": True})
+    engine = build_engine(f"sqlite+aiosqlite:///{tmp_path}/deps_noroleuser.db")
+    await init_authz_db(engine)
+    repo = AuthzRepository(build_session_maker(engine))
+    await seed_defaults(repo)
+
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 42, "type": None})
+    )
+    dep = require_permission(
+        "roles.manage", repo=repo, validator=TokenValidator(settings), settings=settings
+    )
+    client = _app_with_endpoint(dep)
+    assert client.get("/protected", headers=_SESSION_HEADERS).status_code == 403
 ```
-
-Read the existing `test_deps.py` first and reuse its `_settings()`, `_FakeRepo` and validator-double helpers. If its validator double only implements `resolve_user_id`, add a `_FakeValidator` that implements `resolve_identity` returning the tuple it was constructed with, and `resolve_user_id` returning `identity[0]`.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 

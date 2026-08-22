@@ -29,6 +29,7 @@ Verified 2026-08-22, same day this runbook was written.
 | RBAC bootstrap bug | found + worked around (§2.1) |
 | AI credentials bug | found + worked around (§2.2) |
 | HTTP-only Caddy vhost bug | found + worked around (§2.3) |
+| Missing `PROTON_BACKEND_URL`/`PROTON_BACKEND_KEY` bug | found + worked around (§2.4) |
 | Task 5 code change (`agent`'s customer-context prompt) | merged to `dev-yuda` (commit `7d2b9aa`), **not yet deployed to the VM** — §5 below |
 
 VM access: `gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playground-genai`. GCE instance `crm-ticketing`, zone `asia-southeast2-a`, project `lv-playground-genai`, public IP `34.50.103.151`.
@@ -155,6 +156,32 @@ there's nothing to fix.
 **Same repo bug as §2.1**: `add-tenant.sh` itself is unpatched. The next
 tenant needs the same by-hand `https://` block, from the same aeon360-shaped
 template, before Twilio (or any other webhook sender) can reach it.
+
+### 2.4 `PROTON_BACKEND_URL`/`PROTON_BACKEND_KEY` ship empty — repo bug, will hit the next tenant too
+
+`tenants/bahana.env` shipped both **`PROTON_BACKEND_URL=`** and
+**`PROTON_BACKEND_KEY=`** empty — they ship empty in `example.env`, and
+`add-tenant.sh` does not populate them for a new tenant. `agent/app/clients/
+deps.py`'s `get_proton_config_client()` returns `None` when either is
+falsy, and every caller of it is fail-open by design — so nothing errors
+and nothing logs. The practical effect: the agent never fetches the §7
+persona at all. §7's persona step would have been a silent no-op — no
+error, no log entry, just an English-ish default prompt with none of the
+Bahana framing, none of the configured language, and none of the buy/sell
+guardrail, indistinguishable on screen from a persona that "just isn't
+showing yet."
+
+Fixed by hand: set **`PROTON_BACKEND_URL=http://bahana-backend:8080`** and
+generated a fresh 64-hex-char **`PROTON_BACKEND_KEY`** in `tenants/bahana.env`
+(backup: `tenants/bahana.env.bak-backendkey`) — both `agent` and `backend`
+read the same value from the same env file, so setting it once wires both
+sides. Recreated `agent` and `backend`; both healthy.
+
+**Not fixed in `example.env`.** The next tenant provisioned with the
+unmodified template will silently lose its persona the same way, with
+nothing in any log to point at why. Fix belongs in the same follow-up as
+§2.1's (default/document the required override in `example.env` and/or
+`add-tenant.sh`); out of scope here.
 
 ---
 
@@ -319,7 +346,7 @@ on the VM: `/opt/platform` is not a git checkout (synced source only, per
 at all — it's a real gap, not a formality.
 
 > **Never copy a single file wholesale to `/opt/platform`.** A lone file
-> import its whole future import graph — this has crash-looped production
+> imports its whole future import graph — this has crash-looped production
 > before (see project memory `feedback_vm-source-lags-dev-yuda`). Sync the
 > full `agent/` (and `backend/` if it also changed) directory tree.
 
@@ -365,6 +392,25 @@ gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playgroun
 If either check comes back empty, the sync didn't take — do not proceed to
 seeding/rehearsal on a stale agent, the whole personalization beat depends on
 this.
+
+**Also confirm `CHAT_AGENT_ENABLED` and `KB_GROUNDED_REPLIES` are both
+`false`** in `tenants/bahana.env`. Both default false, so bahana is almost
+certainly fine, but each one silently discards the customer-context prompt
+on a different code path — `orchestrator.py` bypasses `system_prompt`
+entirely for the WhatsApp `/chat/turn` agent when `CHAT_AGENT_ENABLED` is
+set, and `KB_GROUNDED_REPLIES` overwrites the reply text with a backend
+answer that is not grounded in the nasabah profile — and neither failure
+raises an error. It's the last way the demo's headline personalization beat
+can vanish silently.
+
+```bash
+gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playground-genai --command='
+  grep -E "^(CHAT_AGENT_ENABLED|KB_GROUNDED_REPLIES)=" /opt/platform/deploy/tenants/bahana.env
+'
+```
+
+Both lines should be absent or `=false`. If either is `=true`, set it back
+to `false` and recreate `agent`/`backend` before proceeding.
 
 ---
 
@@ -455,7 +501,24 @@ without an extra step. `--chatwoot-token` is the `CHATWOOT_API_TOKEN` from
 `--backend-url`/`--backend-key` are also required — `TenantConfig` needs
 *a* value even though `seed-nasabah` never calls the backend (it creates
 contacts only; RSA-incident creation is `seed`'s path, not this one). Any
-non-empty placeholder satisfies this; the values below are inert.
+non-empty placeholder satisfies this for `seed-nasabah`; the values in its
+commands below are inert.
+
+**`purge` is different — its `--backend-url`/`--backend-key` are NOT
+inert.** `purge()` in `client.py` unconditionally sweeps `GET
+/rsa/incidents` on the backend and `raise_for_status()`s the response,
+*after* it has already deleted the batch's Chatwoot contacts and
+conversations. Point it at a placeholder URL/key (as the smoke/real-batch
+purge commands below used to) and every purge run ends in a traceback —
+against a junk key on the Chatwoot origin, that's a 404 or 401 — right
+after the destructive half already completed, so an operator re-seeding
+under time pressure sees "purge crashed" with no way to tell whether
+anything was actually deleted. Every `purge` command below therefore points
+`--backend-url` at bahana's real backend, reachable in-cluster at
+`http://bahana-backend:8080`, with the real `PROTON_BACKEND_KEY` value —
+get it from `tenants/bahana.env` on the VM (`grep ^PROTON_BACKEND_KEY=
+tenants/bahana.env`, read directly off the VM's own terminal; don't paste
+the value into this document, a chat, or a commit).
 
 ### 6.3 Smoke batch — run this first, watch it
 
@@ -485,8 +548,8 @@ python3 -m seed_demo_data purge \
   --chatwoot-url https://bahana.crm.34-50-103-151.nip.io \
   --chatwoot-token <CHATWOOT_API_TOKEN from §3.2> \
   --account-id 1 \
-  --backend-url https://bahana.crm.34-50-103-151.nip.io \
-  --backend-key unused \
+  --backend-url http://bahana-backend:8080 \
+  --backend-key <PROTON_BACKEND_KEY from tenants/bahana.env on the VM> \
   --batch smoke
 ```
 
@@ -525,14 +588,30 @@ python3 -m seed_demo_data purge \
   --chatwoot-url https://bahana.crm.34-50-103-151.nip.io \
   --chatwoot-token <CHATWOOT_API_TOKEN from §3.2> \
   --account-id 1 \
-  --backend-url https://bahana.crm.34-50-103-151.nip.io \
-  --backend-key unused \
+  --backend-url http://bahana-backend:8080 \
+  --backend-key <PROTON_BACKEND_KEY from tenants/bahana.env on the VM> \
   --batch demo1
 ```
 
 ---
 
 ## 7. Set the persona
+
+**Before touching the UI, verify `PROTON_BACKEND_KEY` is non-empty in
+`tenants/bahana.env`** (§2.4 — it ships empty and `add-tenant.sh` doesn't
+populate it):
+
+```bash
+gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playground-genai --command='
+  grep -c "^PROTON_BACKEND_KEY=." /opt/platform/deploy/tenants/bahana.env
+'
+```
+
+This should print `1` (one non-empty match). If it prints `0`, everything
+below in this section will still complete without any error — the symptom
+is the persona being **silently absent**: the bot answers with a generic
+default prompt, none of the Bahana framing/language/guardrail below takes
+effect, and nothing in any log says why. Fix per §2.4 before continuing.
 
 **Chatwoot admin → Knowledge (left nav) → Assistants tab** → create/edit an
 assistant with:
@@ -674,9 +753,14 @@ previous one worked:
    ```bash
    gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playground-genai --command='
      docker exec platform-infra-postgres-1 psql -U postgres -d agent_bahana \
-       -c "SELECT id, conversation_ref, decision, model, created_at FROM ai_actions ORDER BY created_at DESC LIMIT 5;"
+       -c "SELECT id, conversation_ref, decision, model, output, created_at FROM ai_actions ORDER BY created_at DESC LIMIT 5;"
    '
    ```
+
+   `output` is the column worth pointing at on screen — it is the actual
+   reply text the row's `decision` produced, next to its `model` and
+   `created_at`. See §10 step 5 for what this table does and does not
+   claim.
 
 If step 1 fails on the day itself (contact not matched, e.g. because someone
 had to borrow a different handset), you're not stuck — see §11's second
@@ -699,10 +783,15 @@ the actual meeting.
 4. **Interrupt from the CRM.** An agent takes over mid-conversation from
    Chatwoot; the bot goes silent; the human continues with the full
    profile still visible beside them.
-5. **Show `ai_actions`.** Every AI decision logged with the inputs that
-   produced it — the audit-trail story, and per the design spec's §7.5,
-   the thing a regulated buyer actually wants to hear: "every suggestion
-   is reproducible."
+5. **Show `ai_actions`.** Every AI decision the bot makes is logged before
+   it executes — the model that produced it, its token cost, and the reply
+   text itself, keyed to the conversation. That's the audit-trail beat: a
+   complete, timestamped record of what the AI decided and said, for every
+   conversation, queryable directly (§9 step 6). **Say what this doesn't
+   yet cover, don't imply it**: the prompt/persona/customer-context inputs
+   that produced each decision aren't captured in this table today — full
+   reproducibility (design spec §7.5) is later-phase work, not a Phase 0
+   claim.
 6. **Close on the production picture.** Point at design spec §6 (the
    roadmap: real data feed, RM suggestion queue, governance/scale) and §7
    (security/compliance) — and **say, explicitly, that authentication is
@@ -761,12 +850,13 @@ python3 -m seed_demo_data seed-nasabah --tenant bahana \
   --count 3 --batch-id smoke
 python3 -m seed_demo_data purge --tenant bahana \
   --chatwoot-url https://bahana.crm.34-50-103-151.nip.io --chatwoot-token <token> \
-  --account-id 1 --backend-url https://bahana.crm.34-50-103-151.nip.io --backend-key unused \
+  --account-id 1 --backend-url http://bahana-backend:8080 \
+  --backend-key <PROTON_BACKEND_KEY from tenants/bahana.env on the VM> \
   --batch smoke
 # ...then the real batch: --count 25 --batch-id demo1 --pinned-phone <E.164>
 #    --pinned-name "Budi Santoso" — see §6.4 for the full command.
 
 # ai_actions audit row (§9, step 6)
 docker exec platform-infra-postgres-1 psql -U postgres -d agent_bahana \
-  -c "SELECT id, conversation_ref, decision, model, created_at FROM ai_actions ORDER BY created_at DESC LIMIT 5;"
+  -c "SELECT id, conversation_ref, decision, model, output, created_at FROM ai_actions ORDER BY created_at DESC LIMIT 5;"
 ```

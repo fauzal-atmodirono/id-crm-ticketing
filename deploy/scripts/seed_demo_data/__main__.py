@@ -72,10 +72,12 @@ from client import (  # noqa: E402
     configure,
     create_case,
     create_contact,
+    create_nasabah_contact,
     create_rsa_incident,
     purge,
 )
 from generator import generate  # noqa: E402
+from nasabah import generate_nasabah  # noqa: E402
 
 
 # --- shared CLI plumbing ------------------------------------------------------
@@ -337,6 +339,55 @@ def _cmd_seed(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     return asyncio.run(_run_seed(args, parser))
 
 
+# --- seed-nasabah ------------------------------------------------------------
+
+
+async def _run_nasabah_seed(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    """Create `--count` synthetic nasabah contacts on the target tenant.
+
+    Contacts only -- no conversations, no RSA rows. The Bahana Phase 0 demo
+    needs profiles visible in the agent sidebar and recognisable by the bot;
+    it never opens a seeded case. Generating cases too would mean porting the
+    whole automotive case/division/RSA vocabulary to a securities one for
+    surfaces the demo never visits (design spec §5.3).
+    """
+    batch_id = args.batch_id or _default_batch_id()
+    config = _resolve_tenant_config(args, parser)
+    configure(config)
+
+    people = generate_nasabah(
+        args.count,
+        batch_id=batch_id,
+        seed=args.rng_seed,
+        pinned_phone=args.pinned_phone,
+        pinned_name=args.pinned_name,
+    )
+
+    if args.pinned_phone:
+        print(f"Pinned demo handset {args.pinned_phone} -> {people[0].name}")
+
+    created = 0
+    try:
+        for nasabah in people:
+            await create_nasabah_contact(nasabah, batch_id)
+            created += 1
+            if created % 10 == 0:
+                print(f"  {created}/{len(people)} nasabah created")
+    finally:
+        await aclose()
+
+    print(f"Created {created} nasabah contacts on tenant {args.tenant!r}.")
+    print(f"BATCH ID: {batch_id}")
+    # `purge` spells this flag --batch, not --batch-id. Getting it wrong here
+    # sends an operator hunting for a command that argparse rejects.
+    print(f"Purge with: python3 -m seed_demo_data purge --tenant {args.tenant} --batch {batch_id}")
+    return 0
+
+
+def _cmd_seed_nasabah(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    return asyncio.run(_run_nasabah_seed(args, parser))
+
+
 # --- purge -----------------------------------------------------------------
 
 
@@ -535,6 +586,41 @@ def _build_parser() -> argparse.ArgumentParser:
     # subcommand's own usage line, not the top-level `{seed,purge,backdate}`
     # one -- argparse subparsers don't share error-reporting context.
     seed.set_defaults(func=_cmd_seed, parser=seed)
+
+    nasabah_cmd = subparsers.add_parser(
+        "seed-nasabah",
+        help="Create synthetic nasabah contacts (Bahana demo; contacts only, no cases)",
+    )
+    nasabah_cmd.add_argument("--tenant", required=True, help="Tenant slug (e.g. 'bahana')")
+    nasabah_cmd.add_argument(
+        "--count", type=int, default=25, help="Number of nasabah contacts (default: 25)"
+    )
+    nasabah_cmd.add_argument(
+        "--pinned-phone",
+        default=None,
+        help=(
+            "E.164 phone of the handset the demo will be performed from. "
+            "Replaces the first nasabah's number so the bot recognises it. "
+            "This is the ONLY routable number the seeder will ever write."
+        ),
+    )
+    nasabah_cmd.add_argument(
+        "--pinned-name",
+        default=None,
+        help="Display name for the pinned demo contact (still prefixed [DEMO])",
+    )
+    nasabah_cmd.add_argument(
+        "--rng-seed",
+        type=int,
+        default=20260822,
+        help="nasabah.py's determinism seed (advanced; default matches generate_nasabah()'s own default).",
+    )
+    nasabah_cmd.add_argument("--batch-id", default=None, help="Override the auto-generated batch id.")
+    _add_chatwoot_flags(nasabah_cmd, require_inbox=True)
+    # `parser=nasabah_cmd` mirrors the `seed` subparser: `_resolve_tenant_config`
+    # calls `parser.error()`, and stashing the SUBcommand's parser is what makes
+    # that print this subcommand's usage line instead of the top-level one.
+    nasabah_cmd.set_defaults(func=_cmd_seed_nasabah, parser=nasabah_cmd)
 
     purge_cmd = subparsers.add_parser("purge", help="Delete everything a batch created.")
     purge_cmd.add_argument("--tenant", required=True, help="Tenant slug. No default -- always explicit.")

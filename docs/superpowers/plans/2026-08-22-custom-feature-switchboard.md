@@ -19,7 +19,10 @@
 - **Fail closed.** Feature reads that error resolve to `[]`, never to a last-known or default-on list.
 - **New code uses generic names** — `custom_features`, `CustomFeatureStore`, `/admin/custom-features`, `useCustomFeatures`. Do not add to the `Proton*` surface. Do not rename anything that already exists.
 - **Tests live beside their source** as `test_<module>.py`, matching this codebase.
-- **Run tests from `backend/apps/backend`** with `uv run pytest`. A whole-suite run needs `GOOGLE_API_KEY=test-dummy` set or 5 modules fail at collection.
+- **Every backend task runs the FULL suite before reporting DONE**, not just its own directory:
+  `cd backend/apps/backend && GOOGLE_API_KEY=test-dummy uv run pytest src/chatbot -q`.
+  The env var is mandatory — without it five modules fail at collection and the run reports nothing about the rest. Baseline before this plan: **3186 passed, 2 skipped**; a task's run must show no failures and a total at or above that.
+  This constraint is here because a narrow per-directory run already let a Critical regression through: changing `require_permission_with_identity` to use `resolve_identity` broke five tests in `features/chat/phone/test_softphone_router.py`, a consumer two directories away that mocks the validator.
 - **Fork patches: this sandbox cannot reach github.com to clone upstream.** New-file patches are pure additions and can be written directly. Patches that modify an upstream file must have their context lines transcribed from an existing patch that already touches that file — never guessed.
 
 ---

@@ -420,12 +420,22 @@ Then refactor `CustomFeatureStore` so both readers share one fetch:
 ```python
     async def get_document(self) -> dict:
         """The whole config document. Features and terms are one Firestore
-        read because the SPA fetches both on every page load."""
+        read because the SPA fetches both on every page load.
+
+        RAISES `CustomFeatureStoreUnavailable` on an unreachable store, exactly
+        as `get_all` already does. Returning `{}` here instead would reinstate
+        the bug the switchboard plan's final review caught: an outage and a
+        brand-new tenant both look like an empty document, the router answers
+        200 with an empty feature list, the composable takes its success path,
+        and two live tenants' CRMs go blank for the page session with no error
+        and no self-heal. A MISSING document is still a normal `{}` — that is
+        the blank-tenant case the whole product depends on.
+        """
         try:
             snap = await asyncio.to_thread(self._doc_ref().get)
         except Exception as e:
             _log.error("custom_feature_store_get_failed", error=str(e))
-            return {}
+            raise CustomFeatureStoreUnavailable(str(e)) from e
         if not snap.exists:
             return {}
         return snap.to_dict() or {}
@@ -433,7 +443,9 @@ Then refactor `CustomFeatureStore` so both readers share one fetch:
     async def get_all(self) -> dict[str, bool]:
         """Kept after the router moved to `get_document`. It is the store's
         narrow public read and is directly tested; a caller wanting only the
-        feature map should not have to know the document's shape."""
+        feature map should not have to know the document's shape. Its
+        raise-on-unreachable contract is unchanged — it now inherits it from
+        `get_document`."""
         raw = (await self.get_document()).get("features") or {}
         return {str(k): bool(v) for k, v in raw.items()}
 
@@ -626,7 +638,14 @@ Rewrite `read` to fetch the document once and serve both halves:
         user_id, is_super_admin_type = identity
         superadmin = is_platform_superadmin(user_id, is_super_admin_type)
 
-        document = await store.get_document()
+        # The 503 handling the switchboard's final review added must survive
+        # this rewrite: `get_document` raises on an unreachable store, and a
+        # 200 with an empty feature list would tell the operator this tenant
+        # owns nothing when in fact we could not look.
+        try:
+            document = await store.get_document()
+        except CustomFeatureStoreUnavailable as e:
+            raise HTTPException(status_code=503, detail="Feature store unavailable") from e
         stored = {str(k): bool(v) for k, v in (document.get("features") or {}).items()}
         stored_profile, overrides = stored_terms(document)
         profile = resolve_profile(stored_profile, settings)

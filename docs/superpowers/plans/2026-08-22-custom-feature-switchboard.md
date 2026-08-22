@@ -1537,74 +1537,96 @@ The last patch. Every nav entry and route that today checks only a permission ga
 - Consumes: `useCustomFeatures().hasFeature` (Task 6), the 24 registry keys (Task 3).
 - Produces: nav and routes rendering only when `hasFeature(key) && hasPermission(perm)`.
 
-- [ ] **Step 1: Map every surface to its key before editing**
+- [ ] **Step 1: Enumerate the real gates from the pre-image tree**
+
+Do NOT work from a mapping written in this plan — an earlier draft's table was
+wrong in both directions. Derive it from the tree:
 
 ```bash
-cd deploy/chatwoot-fork/patches
-rtk proxy grep -rhoE "accountScopedRoute\('proton_[a-z0-9_]+'" *.patch | sort -u
-rtk proxy grep -rn "protonHasPermission\('[a-z0-9_.]+'\)" *.patch | head -40
+TREE=<pre-image tree from the how-to section above>
+grep -rhoE "protonHasFeature\('[a-z_]+'\)|hasFeature\('[a-z_]+'\)" $TREE/app/javascript | sort | uniq -c
+grep -rhoE "protonHasPermission\('[a-z0-9_.]+'\)" $TREE/app/javascript | sort | uniq -c
+grep -rlE "protonHasFeature\(|hasFeature\(" $TREE/app/javascript
 ```
 
-Write the mapping down before touching anything. It must match `CUSTOM_FEATURE_REGISTRY` exactly — `proton_knowledge` → `knowledge`, `proton_cases` → `cases`, `proton_workforce` → `workforce`, `proton_customer360` → `customer360`, `proton_taxonomy` → `taxonomy`, `proton_rsa_incidents` → `rsa_incidents`, `proton_sla_policies` → `sla_policies`, `proton_escalation_routing` → `escalation_routing`, `proton_audit_log` → `audit_log`, `proton_roles_permissions` → `roles_permissions`, `proton_integrations` → `integrations`, `proton_departments_reports` → `reports_departments`, `proton_case_lifecycle_reports` → `reports_case_lifecycle`, `proton_anomaly_reports` → `reports_anomaly`, `proton_weekly_report` → `reports_weekly`, `proton_alert_preferences` → `alert_preferences`, `proton_my_status` → `agent_status`.
+**Verified ground truth as of this plan** — your enumeration must match, and if
+it does not, the tree has drifted and you should say so rather than proceed:
 
-- [ ] **Step 2: Write the patch**
+Existing feature gates, 8 call sites across 4 files:
 
-In the sidebar file, import the composable alongside the existing permissions one and destructure `hasFeature`:
+| file | gate |
+|---|---|
+| `components-next/sidebar/Sidebar.vue` | `protonHasFeature('ai_assist')`, `('copilot')`, `('knowledge')`, `('agent_softphone')` |
+| `composables/useProtonInboundAlerts.js` | `hasFeature('inbound_alerts')` |
+| `components/widgets/WootWriter/ReplyTopPanel.vue` | `hasFeature('faq_suggestion_popup')` |
+| `routes/dashboard/conversation/ConversationView.vue` | `hasFeature(...)` |
 
-```diff
- import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';
-+import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
+All of these read the OLD synchronous `useProtonConfig()`. Every one must move
+to `useCustomFeatures()`. Leaving any behind recreates the two-switch defect
+patch `0058` exists to prevent — one gate reading the dead ERB list, another
+reading the store.
+
+Existing permission gates, 15 call sites in `Sidebar.vue`, covering 13 distinct
+permissions: `alerts.manage`, `alerts.set_own_preferences`, `audit.view`,
+`customer360.view` (×2), `escalation.manage`, `integration.manage`,
+`presence.set_own_status`, `roles.manage`, `sla.manage` (×2),
+`taxonomy.manage` (×2), `voice.answer`, `workforce.manage`, `workforce.view`.
+
+Note what this means: `cases.view`, `translation.use` and `knowledge.edit`
+appear in `PERMISSION_REGISTRY` but have NO `protonHasPermission` nav gate, so
+the `cases`, `translate` and `knowledge` surfaces reach the user by a
+different route. Find how each is currently reached before gating it — a
+feature gate added to the wrong place leaves the surface reachable.
+
+- [ ] **Step 2: Add the feature gate beside every existing gate**
+
+Every one of the 24 registry keys must end up gated. In `Sidebar.vue`, import
+the composable next to the permissions one and destructure it:
+
+```javascript
+import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
+
+const { hasFeature: protonHasFeature } = useCustomFeatures();
 ```
 
-```diff
- const { hasPermission: protonHasPermission } = useProtonPermissions();
-+const { hasFeature: protonHasFeature } = useCustomFeatures();
+That shadows the old `protonHasFeature` from `useProtonConfig()` — remove the
+old destructuring so there is exactly one source. Then each permission-gated
+nav entry gains its feature check:
+
+```javascript
+...(protonHasFeature('workforce') && protonHasPermission('workforce.view')
 ```
 
-Then convert each nav spread from a permission-only check to both gates:
+and each currently feature-only gate keeps its shape but now reads the store.
 
-```diff
--    ...(protonHasPermission('workforce.view')
-+    ...(protonHasFeature('workforce') && protonHasPermission('workforce.view')
-```
-
-Repeat for every row in the Step 1 mapping. For surfaces with no paired permission (the four report pages, `ai_assist`, `copilot`, `faq_suggestion_popup`), the feature check replaces whatever gate is there today rather than joining it.
-
-Take each hunk's context from the patch that introduced that nav entry — `0053` for workforce, `0041` for customer360, `0060` for taxonomy, and so on. Do not guess context lines.
-
-- [ ] **Step 3: Convert the seven component-level gates too**
-
-Seventeen of the registry's 24 keys gate a route. The other seven gate a
-panel, a button or an in-conversation action, and several already call the
-OLD synchronous `useProtonConfig().hasFeature`:
-
-| key | where it is gated today | patch |
-|---|---|---|
-| `ai_assist` | Suggest-a-reply button | `0002` / `0003` |
-| `copilot` | Ask Copilot panel | `0005` |
-| `faq_suggestion_popup` | `ReplyTopPanel.vue` strip | `0056` |
-| `translate` | message translate action | `0055` |
-| `agent_softphone` | softphone panel | `0069` |
-| `knowledge` | also gates the nav section | `0009` |
-| `agent_priorities` | priorities table inside Workforce | `0063` |
-
-Convert each from `useProtonConfig().hasFeature` to the new composable, so
-one store drives every gate rather than two sources disagreeing — which is
-the exact two-switch defect patch `0058` exists to prevent. `knowledge`
-appears in both lists because it gates a nav section *and* a route; gate both.
-
-- [ ] **Step 4: Verify no surface was missed**
+- [ ] **Step 3: Prove all 24 keys are gated**
 
 ```bash
-cd deploy/chatwoot-fork/patches
-rtk proxy grep -c 'protonHasFeature\|hasFeature' 0074-feature-gate-surfaces.patch
-rtk proxy grep -c "useProtonConfig" 0074-feature-gate-surfaces.patch
+cd /Users/yudaadipratama/Archive/id-crm-ticketing/backend/apps/backend
+uv run python - <<'EOF'
+import re, pathlib
+from chatbot.features.tenant_config.custom_features import CUSTOM_FEATURE_REGISTRY
+patch = pathlib.Path("../../../deploy/chatwoot-fork/patches/0074-feature-gate-surfaces.patch").read_text()
+gated = set(re.findall(r"[Hh]asFeature\('([a-z0-9_]+)'\)", patch))
+missing = sorted(set(CUSTOM_FEATURE_REGISTRY) - gated)
+print("gated:", len(gated))
+print("UNGATED (must be empty):", missing)
+assert not missing, missing
+EOF
 ```
 
-Expected: at least 23 gates (17 routes + 6 component sites, `knowledge`
-counted once per site). The second count must be **0 added lines** — any
-remaining `useProtonConfig().hasFeature` is a surface still reading the dead
-ERB list, which on a blank tenant renders a feature nobody switched on.
+An ungated key is a surface that renders on a tenant where nobody switched it
+on — the exact failure this whole plan exists to prevent. This check must
+print an empty list.
+
+- [ ] **Step 4: Confirm no gate still reads the dead ERB list**
+
+```bash
+grep -nE "^\+.*useProtonConfig" deploy/chatwoot-fork/patches/0074-feature-gate-surfaces.patch
+```
+
+Must return nothing on ADDED lines. Then verify the patch applies with
+`verify-patch.sh` — it must print `PATCH APPLIES CLEANLY`.
 
 - [ ] **Step 5: Commit**
 

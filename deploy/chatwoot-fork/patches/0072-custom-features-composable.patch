@@ -1,0 +1,93 @@
+diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
+index ecb7aea..b1402a8 100644
+--- a/app/javascript/dashboard/api/protonAdmin.js
++++ b/app/javascript/dashboard/api/protonAdmin.js
+@@ -285,3 +285,16 @@ export function upsertPresenceStatus(key, entry) {
+     body: entry,
+   });
+ }
++
++// ── Custom features (the platform switchboard) ─────────────────────────────
++
++export async function fetchCustomFeatures() {
++  return adminRequest('/admin/custom-features');
++}
++
++export async function setCustomFeature(key, enabled) {
++  return adminRequest('/admin/custom-features', {
++    method: 'POST',
++    body: { key, enabled },
++  });
++}
+diff --git a/app/javascript/dashboard/composables/useCustomFeatures.js b/app/javascript/dashboard/composables/useCustomFeatures.js
+new file mode 100644
+index 0000000..649f0b2
+--- /dev/null
++++ b/app/javascript/dashboard/composables/useCustomFeatures.js
+@@ -0,0 +1,66 @@
++// useCustomFeatures.js — OUR file. The read side of the platform feature
++// switchboard. Deliberately shaped exactly like useProtonPermissions.js:
++// module-level cache shared by every importer, one in-flight promise, and a
++// fail-CLOSED error path.
++//
++// Fail-closed is the whole point and it has a visible cost: a backend blip
++// renders the CRM empty rather than briefly rendering surfaces the tenant
++// does not have. That is the right trade for a licensing gate, but it means
++// an outage looks like a missing product — so `loadFailed` is exposed
++// separately, letting the nav say "couldn't load" instead of silently
++// showing nothing.
++import { ref } from 'vue';
++import { fetchCustomFeatures } from 'dashboard/api/protonAdmin';
++
++const features = ref(null); // null = not yet loaded
++const isSuperadmin = ref(false);
++const registry = ref([]);
++const behavior = ref({});
++const loading = ref(false);
++const loadFailed = ref(false);
++let loadPromise = null;
++
++function ensureLoaded() {
++  if (features.value !== null || loadPromise) return loadPromise;
++  loading.value = true;
++  loadPromise = fetchCustomFeatures()
++    .then(data => {
++      features.value = Array.isArray(data.features) ? data.features : [];
++      isSuperadmin.value = Boolean(data.is_superadmin);
++      registry.value = Array.isArray(data.registry) ? data.registry : [];
++      behavior.value = data.behavior || {};
++      loadFailed.value = false;
++    })
++    .catch(() => {
++      features.value = []; // fail closed — no feature renders
++      isSuperadmin.value = false;
++      registry.value = [];
++      behavior.value = {};
++      loadFailed.value = true;
++    })
++    .finally(() => {
++      loading.value = false;
++    });
++  return loadPromise;
++}
++
++// Force a re-read after a toggle, so the nav reflects the change without a
++// page reload.
++async function refresh() {
++  features.value = null;
++  loadPromise = null;
++  return ensureLoaded();
++}
++
++export function useCustomFeatures() {
++  ensureLoaded();
++  return {
++    loading,
++    loadFailed,
++    isSuperadmin,
++    registry,
++    behavior,
++    refresh,
++    hasFeature: key => (features.value || []).includes(key),
++  };
++}

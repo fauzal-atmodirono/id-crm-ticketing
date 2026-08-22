@@ -121,15 +121,32 @@ async def test_resolve_identity_omitted_type_is_not_super_admin():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_resolve_identity_rejects_a_truthy_non_superadmin_type():
+    """The test that actually separates equality from truthiness. A
+    `bool(payload.get("type"))` implementation passes every other test in
+    this file — None and "SuperAdmin" agree under both readings — and fails
+    only here. Chatwoot emits only null/"SuperAdmin" today, so this guards
+    the invariant rather than a live payload."""
+    settings = get_settings()
+    respx.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 11, "type": "Agent"})
+    )
+    validator = TokenValidator(settings)
+    assert await validator.resolve_identity("tok-g", "client-1", "uid-1") == (11, False)
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_resolve_identity_caches_both_halves():
     settings = get_settings()
     route = respx.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
         return_value=httpx.Response(200, json={"id": 1, "type": "SuperAdmin"})
     )
     validator = TokenValidator(settings)
-    await validator.resolve_identity("tok-d", "client-1", "uid-1")
-    await validator.resolve_identity("tok-d", "client-1", "uid-1")
+    first = await validator.resolve_identity("tok-d", "client-1", "uid-1")
+    second = await validator.resolve_identity("tok-d", "client-1", "uid-1")
     assert route.call_count == 1
+    assert first == second == (1, True)
 
 
 @pytest.mark.asyncio

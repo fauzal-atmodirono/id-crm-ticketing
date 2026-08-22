@@ -283,8 +283,15 @@ POST /admin/custom-features {key, enabled}
 - Key outside the registry → 400. Writing a `behavior` key in Phase 1 → 409,
   because it is a real key that is simply not yet writable — distinct from a
   key that does not exist.
-- Store unreachable → reads fail closed (empty list, `loadFailed: true`);
-  writes 503 rather than reporting a success that was not persisted.
+- Store unreachable → **reads 503**, they do not answer 200 with an empty
+  list. `get_all()`/`get_document()` raise `CustomFeatureStoreUnavailable` and
+  the router converts it. A 200 would be indistinguishable from a brand-new
+  tenant, the SPA composable would take its success path, and its
+  `features !== null` guard would then block any refetch — blanking the CRM
+  for the whole page session with no error and no self-heal. A MISSING
+  document is different and still returns a normal empty `{}`: that is the
+  blank-tenant case this design exists to produce.
+  Writes 503 rather than reporting a success that was not persisted.
 - `TokenValidator`'s existing short-TTL cache covers both `user_id` and
   `type`, so superadmin status is not a per-request round trip. A promotion in
   the `/super_admin` console takes up to the TTL to become visible.

@@ -140,8 +140,11 @@ helper alongside `hasFeature()`.
 empty map.** `CustomFeatureStore.get_document()` raises
 `CustomFeatureStoreUnavailable`, and `/admin/custom-features` turns that into
 an HTTP 503 rather than a 200 carrying an empty `terms`/`features` payload —
-inherited from the sibling feature-switchboard plan, where a 200-with-empty
-was found to blank two live tenants' CRMs on a transient Firestore blip.
+inherited from the sibling feature-switchboard plan, whose final review
+identified that a 200-with-empty would blank a tenant's CRM for the whole
+page session on a transient Firestore blip — the composable takes its success
+path, and the guard on `features !== null` then prevents any refetch. That was
+a defect caught in review, not an incident in production.
 `useCustomFeatures.js`'s existing `.catch()` handles that 503 the same way it
 already handles a features fetch failure: it schedules a retry and leaves
 `terms`/`termProfile`/`termProfiles` exactly as they were, so a page that had

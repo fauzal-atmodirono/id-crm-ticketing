@@ -1,0 +1,70 @@
+diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+index 914b58c..6c32cd4 100644
+--- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
++++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+@@ -15,14 +15,37 @@ import { callAssist } from 'dashboard/api/protonAssist';
+ import { useUISettings } from 'dashboard/composables/useUISettings';
+ import { useStore } from 'dashboard/composables/store';
+ 
+-// Actions intercepted by Proton backend when ai_assist feature is enabled
++// Actions intercepted by Proton backend when ai_assist feature is enabled.
++// A value is either the endpoint name alone (string -- the original three,
++// which send the conversation transcript) or `{ endpoint, mode }` (the six
++// Improve/Change tone/Fix grammar actions added by patch 0078, which all hit
++// POST /assist/rewrite and send the agent's current draft instead -- `mode`
++// tells the backend which of its rewrite system prompts to use).
++//
++// `improve_selection` is folded into `improve`: the CopilotMenuBar only ever
++// emits it with `hasSelection` hard-disabled (see that component), and this
++// composer has no selection-range plumbing to thread through anyway, so
++// "improve the selection" is treated as "improve the whole draft" until that
++// plumbing exists. Not a bug -- there is no selection to improve yet.
+ const PROTON_ACTIONS = {
+   reply_suggestion: 'suggest',
+   summarize: 'summarize',
+   ask_copilot: 'ask',
++  improve: { endpoint: 'rewrite', mode: 'improve' },
++  improve_selection: { endpoint: 'rewrite', mode: 'improve' },
++  fix_spelling_grammar: { endpoint: 'rewrite', mode: 'fix_grammar' },
++  professional: { endpoint: 'rewrite', mode: 'tone_professional' },
++  casual: { endpoint: 'rewrite', mode: 'tone_casual' },
++  straightforward: { endpoint: 'rewrite', mode: 'tone_straightforward' },
++  confident: { endpoint: 'rewrite', mode: 'tone_confident' },
++  friendly: { endpoint: 'rewrite', mode: 'tone_friendly' },
+ };
+ 
+ // Where each action's result is inserted: the 'reply' box or a private 'note'.
++// The six rewrite actions (patch 0078) have no entry here on purpose: they
++// always replace the reply box, which is exactly what the `|| 'reply'`
++// fallback below already does, so adding `improve: 'reply', ...` etc. would
++// only restate the default.
+ const PROTON_ACTION_MODE = {
+   reply_suggestion: 'reply',
+   summarize: 'note',
+@@ -233,7 +256,11 @@ export default {
+       }
+ 
+       if (protonEnabled.value && PROTON_ACTIONS[actionKey]) {
+-        const protonAction = PROTON_ACTIONS[actionKey];
++        const actionConfig = PROTON_ACTIONS[actionKey];
++        // Rewrite actions (patch 0078) carry their config as an object; the
++        // original three are still a bare endpoint-name string.
++        const isRewrite = typeof actionConfig === 'object';
++        const protonAction = isRewrite ? actionConfig.endpoint : actionConfig;
+         const chat = store.getters.getSelectedChat;
+         // Structured, NOT pre-rendered: the backend owns transcript wording
+         // and attachment markers from one registry. Keeping a label table
+@@ -256,6 +283,13 @@ export default {
+           messages,
+         };
+         if (actionKey === 'ask_copilot' && data) payload.question = data;
++        if (isRewrite) {
++          // /assist/rewrite operates on the agent's current draft, not the
++          // transcript above -- `messages` still rides along only to satisfy
++          // the shared request shape's validation.
++          payload.content = props.editorContent || '';
++          payload.mode = actionConfig.mode;
++        }
+         try {
+           const result = await callAssist(protonAction, payload);
+           const text = result.draft || result.summary || result.answer || '';

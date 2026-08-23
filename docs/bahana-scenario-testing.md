@@ -5,8 +5,8 @@ what data exists, how it reaches the CRM and the conversation, and what to send
 to prove each claim.
 
 Modelled on `apac-aeon360-foundry-prototype/docs/whatsapp/whatsapp-scenario-testing.md`.
-**One difference is deliberate and explained in §3: we do not use `[slug]`
-persona switching, and cannot.**
+**One difference is deliberate and explained in §3: we swap the contact record
+instead of using `[slug]` persona switching.**
 
 ---
 
@@ -116,11 +116,20 @@ advisory finding, and a natural opening to the Phase 1 conversation.
 AEON360 rides identity on a `[slug]` in the message text because its backend
 owns the session and can rebind it per message.
 
-**We cannot do that, and the reason is structural.** A WhatsApp number has
-exactly one inbound webhook; Chatwoot resolves an inbound message to a contact
-**by phone number**. One handset is one contact, permanently. A slug in the
-message body would not change which contact record the agent reads, so it could
-not change the profile.
+**A slug cannot change which contact record exists**, and that is structural: a
+WhatsApp number has exactly one inbound webhook, and Chatwoot resolves an
+inbound message to a contact **by phone number**. One handset is one contact,
+permanently.
+
+The agent *could* be taught to read a slug and override the profile it injects
+into the prompt — perhaps 30-60 lines plus tests. We deliberately did not,
+because it would make things **worse for this demo**: the slug would change what
+the **AI** sees while the **CRM sidebar still showed the old profile**. You would
+be on stage with Sari Wijaya's record open while the bot answered as Rizki
+Pratama. Swapping the record keeps the sidebar, the warehouse and the AI all
+telling the same story, which is the thing the demo exists to prove.
+
+So this is a design choice, not a missing capability.
 
 So instead of switching handsets, we switch **what that one contact is**:
 

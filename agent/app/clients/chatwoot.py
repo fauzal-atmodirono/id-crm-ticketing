@@ -98,6 +98,22 @@ class ChatwootClient:
         response.raise_for_status()
         return response.json()
 
+    async def update_contact(self, contact_id: int, payload: dict[str, Any]) -> Any:
+        """Patch a contact. Used only by the demo persona-slug path.
+
+        Chatwoot REPLACES `custom_attributes` on update rather than merging, so
+        callers must send the full object they want the contact to end up with.
+        The caller here builds it from a complete persona fixture, so there is
+        nothing to merge -- but the constraint is worth stating at the boundary,
+        because sending a subset silently deletes every other attribute.
+        """
+        response = await self._client.put(
+            f"/api/v1/accounts/{self.account_id}/contacts/{contact_id}",
+            json=payload,
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def get_agent_bot(self, agent_bot_id: int) -> Any:
         """Account-scoped agent bot lookup — used only by
         `scripts.register_bot` to read back the bot's `secret`, which the

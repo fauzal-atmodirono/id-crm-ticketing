@@ -32,6 +32,7 @@ from app.db.models import AiAction
 from app.db.session import async_session_maker
 from app.services import lifecycle, lifecycle_store, whatsapp_format
 from app.services.customer_context import format_customer_context
+from app.services import demo_persona
 from app.services.media import fetch_attachment_bytes
 from app.services.media_registry import drop_order
 
@@ -363,6 +364,55 @@ async def _log_decision(conversation_id: int, decision: gemini.Decision) -> None
         )
 
 
+async def _maybe_apply_persona_slug(
+    chatwoot: Any, conversation_id: int, contact_id: int
+) -> str | None:
+    """Apply a demo persona if the newest customer message ends in a `[slug]`.
+
+    Returns the slug applied, or None. Never raises: this is a demo affordance
+    inside a background task, and a failed persona switch must cost at most the
+    switch -- not the personalization, and certainly not the reply.
+
+    Only the newest incoming message is examined. Scanning the whole history
+    would re-apply a slug from earlier in the conversation on every subsequent
+    turn, pinning the persona forever instead of switching it once.
+    """
+    try:
+        raw = await chatwoot.get_messages(conversation_id)
+        payload = raw.get("payload") if isinstance(raw, dict) else raw
+        if not isinstance(payload, list):
+            return None
+        newest = None
+        for message in payload:
+            if isinstance(message, dict) and message.get("message_type") == 0:
+                newest = message
+        if newest is None:
+            return None
+        slug = demo_persona.detect_slug(newest.get("content"))
+        if slug is None:
+            return None
+        attributes = demo_persona.attributes_for(slug)
+        name = demo_persona.display_name_for(slug)
+        if attributes is None or name is None:
+            return None
+        await chatwoot.update_contact(
+            contact_id, {"name": name, "custom_attributes": attributes}
+        )
+        logger.info(
+            "orchestrator: applied demo persona %r to contact %s (conversation %s)",
+            slug,
+            contact_id,
+            conversation_id,
+        )
+        return slug
+    except Exception:
+        logger.debug(
+            "orchestrator: demo persona slug not applied for conversation %s",
+            conversation_id,
+        )
+        return None
+
+
 async def _process_conversation(conversation_id: int) -> None:
     settings = get_settings()
     chatwoot = get_chatwoot_client()
@@ -427,6 +477,17 @@ async def _process_conversation(conversation_id: int) -> None:
         sender = (conversation_data.get("meta") or {}).get("sender") or {}
         contact_id = sender.get("id")
         if contact_id is not None:
+            # Demo-only: a trailing `[slug]` in the customer's latest message
+            # repoints this contact at a different persona before the profile is
+            # read. It REWRITES the contact rather than only overriding the
+            # prompt, so the agent sidebar and the AI never disagree about who
+            # this nasabah is -- see app/services/demo_persona.py. Sits inside
+            # the surrounding try, so a failure here degrades to "no persona
+            # switch" rather than "no personalization at all".
+            if settings.demo_persona_slugs_enabled:
+                await _maybe_apply_persona_slug(
+                    chatwoot, conversation_id, int(contact_id)
+                )
             contact = await chatwoot.get_contact(int(contact_id))
             body = contact.get("payload") if isinstance(contact, dict) else None
             body = body if isinstance(body, dict) else contact

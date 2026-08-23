@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     vertex_location: str = "us-central1"
     gemini_model: str = "gemini-2.5-flash"
     agent_mode: str = "suggest"
+    # Demo-only. When true, a trailing `[slug]` in a customer message repoints
+    # that contact at a different demo persona (app/services/demo_persona.py).
+    # Off by default: this REWRITES a contact record, which is not something a
+    # real tenant should be one stray bracket away from.
+    demo_persona_slugs_enabled: bool = False
     kb_grounded_replies: bool = False
     auto_resolve: bool = False
     # Route the agent-bot's decision through the backend's full ADK conversational

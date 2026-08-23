@@ -717,6 +717,27 @@ successfully and then traceback on the RSA sweep — expected, see §6.2/§2.5.
 
 ## 7. Set the persona
 
+> **STATUS 2026-08-23: DONE — applied and verified, do not redo.**
+> Written to assistant `asst_4795a27308f0` ("Default Assistant"), which inbox 1
+> resolves to because it has no explicit assignment and that assistant is the
+> tenant default. Set: `instructions`, `language` = Bahasa Indonesia,
+> 5 `guardrails`, 3 `response_guidelines`, and the welcome / handoff /
+> resolution messages in Indonesian.
+>
+> Verified the whole chain end to end, not just the write: called
+> `get_assistant_persona(1)` from inside `bahana-agent` and got the persona
+> back. That exercises `PROTON_BACKEND_URL` + `PROTON_BACKEND_KEY` too — the
+> pair that shipped empty and would have made this step a silent no-op (§2.4).
+>
+> **One thing to know if you edit it:** `instructions` **replaces** the agent's
+> built-in `SYSTEM_PROMPT` rather than adding to it, and that base prompt is
+> what tells the model to choose exactly one of `send_reply` /
+> `escalate_to_ticket` / `handoff_to_human`. The persona written here restates
+> that framing deliberately. If you rewrite `instructions` and drop it, the
+> decision loop degrades — `decide()` still forces a function call, but the
+> model is choosing blind.
+
+
 **Before touching the UI, verify `PROTON_BACKEND_KEY` is non-empty in
 `tenants/bahana.env`** (§2.4 — it ships empty and `add-tenant.sh` doesn't
 populate it):
@@ -890,6 +911,52 @@ the actual meeting.
 ---
 
 ## 10. Demo script — the beats
+
+### 10.0 The profile-swap device — how to show personalization is real
+
+The demo's claim is that the AI's answer and its offer come from the customer's
+stored profile. The way to *prove* that on stage is to change the profile and
+ask the same question again.
+
+You cannot do it with several handsets: a WhatsApp number has exactly one
+inbound webhook, and Chatwoot matches an inbound message to a contact by phone
+number. One handset is one contact, permanently. So instead of switching
+handsets, switch what that contact is:
+
+```bash
+export CW_TOKEN=$(gcloud compute ssh crm-ticketing --zone=asia-southeast2-a \
+  --project=lv-playground-genai --command='sudo grep -E "^CHATWOOT_API_TOKEN=" \
+  /opt/platform/deploy/tenants/bahana.env | cut -d= -f2-')
+
+cd deploy/scripts
+python3 bahana_demo_profile.py --show          # what the handset currently is
+python3 bahana_demo_profile.py konservatif     # Sari Wijaya, idle RDN cash
+python3 bahana_demo_profile.py agresif         # Rizki Pratama, active trader
+python3 bahana_demo_profile.py moderat         # Budi Santoso — starting state
+```
+
+Takes about a second and is safe mid-conversation: the agent re-reads the
+contact on every turn, so the next message is answered against the new profile.
+
+**Suggested choreography.** Ask the bot the same mundane question three times,
+swapping between:
+
+| Profile | Who | Offer it will steer toward |
+|---|---|---|
+| `moderat` | Budi Santoso — holds BBCA, BBRI, TLKM | Reksa Dana Campuran |
+| `konservatif` | Sari Wijaya — Rp 82.5jt idle in RDN, holds nothing | Reksa Dana Pasar Uang |
+| `agresif` | Rizki Pratama — 4 equities, traded 3 days ago | Reksa Dana Saham |
+
+The point to land, out loud: **the conservative investor is never offered the
+equity fund, and that is not the model being careful — it is a lookup in code.**
+The offer was chosen before the model saw anything, and the model is only
+allowed to phrase the one it was handed. That is the difference between a rule
+and a hope, and it is the single most persuasive thing in the demo for a
+compliance audience.
+
+**Leave the handset on `moderat` before you start** so the opening beat matches
+the sidebar you show first.
+
 
 1. **Show the CRM contact list.** Portfolio attributes visible in the
    sidebar for a seeded nasabah. **Say out loud that the data is

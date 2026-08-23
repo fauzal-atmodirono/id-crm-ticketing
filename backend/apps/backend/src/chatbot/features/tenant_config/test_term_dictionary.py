@@ -150,3 +150,31 @@ def test_add_tenant_script_pins_the_custom_chatwoot_image() -> None:
     assert "proton-chatwoot:" in text, "it must pin OUR fork image, not upstream"
     # Guard the direction of the mistake: never provision onto upstream.
     assert "CHATWOOT_IMAGE=chatwoot/chatwoot" not in text
+
+
+def test_add_tenant_script_provisions_firestore() -> None:
+    """A tenant with no Firestore database is a broken tenant, silently.
+
+    `FIRESTORE_PROJECT_ID`/`FIRESTORE_DATABASE_ID` ship blank in the template.
+    Left blank, every store read raises `CustomFeatureStoreUnavailable`, the
+    switchboard 503s, the SPA fails closed, and the operator gets a CRM with
+    no features and no page to turn any on — the exact failure this design
+    exists to prevent. That is how the bahana tenant came up unusable.
+
+    The location is asserted too because a Firestore database's location is
+    IMMUTABLE: getting it wrong means creating a second database and
+    migrating, not editing a field. Bahana must be Jakarta
+    (asia-southeast2) for data residency, so the script must not silently
+    inherit another tenant's region.
+    """
+    from pathlib import Path
+
+    script = (
+        Path(__file__).parents[7] / "deploy" / "scripts" / "add-tenant.sh"
+    ).read_text()
+
+    assert "FIRESTORE_DATABASE_ID=" in script, "must write the database id"
+    assert "FIRESTORE_PROJECT_ID=" in script, "must write the project id"
+    assert "firestore databases" in script, "must create/verify the database"
+    assert "FIRESTORE_LOCATION" in script, "location must be an explicit knob"
+    assert "immutable" in script.lower(), "the location's immutability must be documented"

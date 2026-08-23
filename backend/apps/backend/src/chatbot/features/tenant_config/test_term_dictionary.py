@@ -178,3 +178,25 @@ def test_add_tenant_script_provisions_firestore() -> None:
     assert "firestore databases" in script, "must create/verify the database"
     assert "FIRESTORE_LOCATION" in script, "location must be an explicit knob"
     assert "immutable" in script.lower(), "the location's immutability must be documented"
+
+
+def test_add_tenant_script_sets_the_browser_facing_backend_url() -> None:
+    """The SPA calls the backend from the USER'S BROWSER, not from Docker.
+
+    `PROTON_BACKEND_URL` in a tenant env is the container-to-container address
+    (`http://<tenant>-backend:8080`), which a browser cannot resolve. What the
+    Rails layout stamps into the page comes from `PROTON_BACKEND_PUBLIC_URL`,
+    and compose falls back to `http://crm.localhost` when it is blank.
+
+    Left blank, every call the SPA makes fails, `useCustomFeatures` fails
+    closed, `is_superadmin` comes back false, and the operator sees a CRM with
+    no custom menus and no Custom features page to fix it from — while the
+    backend is perfectly healthy. That is exactly how the bahana tenant
+    presented, and it is indistinguishable from "this tenant owns nothing".
+    """
+    from pathlib import Path
+
+    script = (
+        Path(__file__).parents[7] / "deploy" / "scripts" / "add-tenant.sh"
+    ).read_text()
+    assert "PROTON_BACKEND_PUBLIC_URL=" in script

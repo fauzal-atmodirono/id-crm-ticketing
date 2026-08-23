@@ -73,6 +73,19 @@ MAILPIT_AUTH_HASH="$(get_infra_var MAILPIT_AUTH_HASH)"
 
 echo "==> Provisioning tenant '${TENANT}' (PUBLIC_IP=${PUBLIC_IP})"
 
+# The address the SPA uses to reach the backend FROM THE USER'S BROWSER.
+# PROTON_BACKEND_URL (container-to-container, http://<tenant>-backend:8080) is
+# NOT usable there — a browser cannot resolve a Docker service name. The Rails
+# layout stamps PROTON_BACKEND_PUBLIC_URL into the page, and compose falls back
+# to http://crm.localhost when it is blank.
+#
+# Blank here is the quietest of the three "blank means broken" traps: the
+# backend is healthy, the tenant looks up, and every SPA call still fails ->
+# useCustomFeatures fails closed -> is_superadmin false -> a CRM with no custom
+# menus and no Custom features page to fix it from, indistinguishable from a
+# tenant that owns nothing. bahana presented exactly this way.
+PROTON_BACKEND_PUBLIC_URL_VALUE="https://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io"
+
 # --- Firestore -------------------------------------------------------------
 # Every tenant gets its OWN Firestore database; it is where the custom-feature
 # switchboard, the term dictionary and the escalation stores live.
@@ -136,6 +149,7 @@ sed \
   -e "s|^CHATWOOT_IMAGE=.*|CHATWOOT_IMAGE=${CHATWOOT_IMAGE_PIN}|" \
   -e "s|^FIRESTORE_PROJECT_ID=.*|FIRESTORE_PROJECT_ID=${FIRESTORE_PROJECT_ID_VALUE}|" \
   -e "s|^FIRESTORE_DATABASE_ID=.*|FIRESTORE_DATABASE_ID=${FIRESTORE_DB}|" \
+  -e "s|^PROTON_BACKEND_PUBLIC_URL=.*|PROTON_BACKEND_PUBLIC_URL=${PROTON_BACKEND_PUBLIC_URL_VALUE}|" \
   tenants/example.env > "${ENV_FILE}"
 # Create the tenant's Firestore database if it does not exist. Idempotent:
 # `describe` succeeding means someone already made it, and we must NOT try to

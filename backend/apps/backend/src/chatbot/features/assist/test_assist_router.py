@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from chatbot.features.assist.router import (
     _ASK_SYSTEM,
+    _REWRITE_TASKS,
     _SUGGEST_SYSTEM,
     _SUMMARIZE_SYSTEM,
     _retrieval_query,
@@ -559,3 +560,179 @@ def test_suggest_system_prompt_instructs_full_context_and_no_repeat_handoff() ->
     assert "return only the reply text" in p
     # Template placeholder still present.
     assert "{faq_context}" in _SUGGEST_SYSTEM
+
+
+# ---------------------------------------------------------------------------
+# /rewrite (patch 0078: Improve reply / Change tone / Fix grammar & spelling)
+# ---------------------------------------------------------------------------
+
+
+def test_rewrite_requires_api_key() -> None:
+    client, _ = _client()
+    r = client.post(
+        "/assist/rewrite",
+        json={"conversation_id": "42", "messages": ["Hi"], "content": "sori bos", "mode": "improve"},
+    )
+    assert r.status_code == 401
+
+
+def test_rewrite_returns_draft() -> None:
+    client, mock_genai = _client()
+    r = client.post(
+        "/assist/rewrite",
+        json={
+            "conversation_id": "42",
+            "messages": ["Hi"],
+            "content": "sori bos, unit nya belum siap",
+            "mode": "improve",
+        },
+        headers={"x-api-key": "testkey"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {"draft": "This is the AI output."}
+
+
+def test_rewrite_sends_content_as_user_prompt() -> None:
+    """The draft goes to Gemini as the user prompt, not folded into a transcript."""
+    client, mock_genai = _client()
+    r = client.post(
+        "/assist/rewrite",
+        json={
+            "conversation_id": "42",
+            "messages": ["Hi"],
+            "content": "unit nya belum siap ya",
+            "mode": "fix_grammar",
+        },
+        headers={"x-api-key": "testkey"},
+    )
+    assert r.status_code == 200
+    call_kwargs = mock_genai.aio.models.generate_content.call_args.kwargs
+    assert call_kwargs["contents"] == "unit nya belum siap ya"
+
+
+def test_rewrite_unknown_mode_rejected() -> None:
+    client, _ = _client()
+    r = client.post(
+        "/assist/rewrite",
+        json={"conversation_id": "42", "messages": ["Hi"], "content": "hello", "mode": "bogus_mode"},
+        headers={"x-api-key": "testkey"},
+    )
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "bogus_mode" in detail
+    # Every valid mode name is listed so an operator can self-correct.
+    for mode in _REWRITE_TASKS:
+        assert mode in detail
+
+
+def test_rewrite_missing_content_rejected() -> None:
+    client, _ = _client()
+    r = client.post(
+        "/assist/rewrite",
+        json={"conversation_id": "42", "messages": ["Hi"], "mode": "improve"},
+        headers={"x-api-key": "testkey"},
+    )
+    assert r.status_code == 422
+
+
+def test_rewrite_blank_content_rejected() -> None:
+    client, _ = _client()
+    r = client.post(
+        "/assist/rewrite",
+        json={"conversation_id": "42", "messages": ["Hi"], "content": "", "mode": "improve"},
+        headers={"x-api-key": "testkey"},
+    )
+    assert r.status_code == 422
+
+
+def test_rewrite_missing_mode_rejected() -> None:
+    client, _ = _client()
+    r = client.post(
+        "/assist/rewrite",
+        json={"conversation_id": "42", "messages": ["Hi"], "content": "hello"},
+        headers={"x-api-key": "testkey"},
+    )
+    assert r.status_code == 422
+
+
+def test_rewrite_503_when_key_unconfigured() -> None:
+    mock_genai = MagicMock()
+    app = FastAPI()
+    app.include_router(
+        build_assist_router(
+            settings=Settings(proton_backend_key=""),
+            knowledge_port=_FakeKnowledge(),
+            genai_client=mock_genai,
+        )
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+    r = client.post(
+        "/assist/rewrite",
+        json={"conversation_id": "42", "messages": ["Hi"], "content": "hello", "mode": "improve"},
+        headers={"x-api-key": "anything"},
+    )
+    assert r.status_code == 503
+
+
+def test_rewrite_each_mode_reaches_model_with_a_distinct_system_prompt() -> None:
+    """Every mode is a real, distinct system prompt -- no silent fallback to improve."""
+    client, mock_genai = _client()
+    systems: dict[str, str] = {}
+    for mode in _REWRITE_TASKS:
+        r = client.post(
+            "/assist/rewrite",
+            json={
+                "conversation_id": "42",
+                "messages": ["Hi"],
+                "content": "unit nya belum siap ya",
+                "mode": mode,
+            },
+            headers={"x-api-key": "testkey"},
+        )
+        assert r.status_code == 200
+        systems[mode] = mock_genai.aio.models.generate_content.call_args.kwargs["config"][
+            "system_instruction"
+        ]
+
+    # Every mode's system prompt is unique.
+    assert len(set(systems.values())) == len(_REWRITE_TASKS)
+    # Each system prompt actually contains that mode's own task instruction.
+    for mode, task in _REWRITE_TASKS.items():
+        assert task in systems[mode]
+    # The shared rules (language/meaning preservation, output-only) are on
+    # every mode, not just some of them.
+    for system in systems.values():
+        assert "Return ONLY the rewritten message" in system
+        assert "Preserve the original language" in system
+        assert "Preserve meaning and every factual claim" in system
+    # fix_grammar's instruction is restyle/shorten/add-averse; the tone modes'
+    # are not -- spot check they are not the same prompt.
+    assert systems["fix_grammar"] != systems["improve"]
+    assert systems["tone_professional"] != systems["tone_casual"]
+
+
+def test_rewrite_includes_assistant_persona_in_system_prompt() -> None:
+    assistant = _make_assistant(
+        product_name="Proton X50",
+        guardrails=["Never promise a delivery date"],
+    )
+    astore = _FakeAssistantsStore(assistant)
+    client, mock_genai = _client_with_stores(assistants_store=astore)
+
+    r = client.post(
+        "/assist/rewrite",
+        json={
+            "conversation_id": "42",
+            "messages": ["Hi"],
+            "content": "unit nya belum siap ya",
+            "mode": "tone_friendly",
+            "assistant_id": "asst_test",
+        },
+        headers={"x-api-key": "testkey"},
+    )
+    assert r.status_code == 200
+    system = mock_genai.aio.models.generate_content.call_args.kwargs["config"]["system_instruction"]
+    assert "Product: Proton X50" in system
+    assert "Never promise a delivery date" in system
+    assert _REWRITE_TASKS["tone_friendly"] in system

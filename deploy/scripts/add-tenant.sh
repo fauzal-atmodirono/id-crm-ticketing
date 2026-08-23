@@ -73,7 +73,62 @@ MAILPIT_AUTH_HASH="$(get_infra_var MAILPIT_AUTH_HASH)"
 
 echo "==> Provisioning tenant '${TENANT}' (PUBLIC_IP=${PUBLIC_IP})"
 
+# The address the SPA uses to reach the backend FROM THE USER'S BROWSER.
+# PROTON_BACKEND_URL (container-to-container, http://<tenant>-backend:8080) is
+# NOT usable there — a browser cannot resolve a Docker service name. The Rails
+# layout stamps PROTON_BACKEND_PUBLIC_URL into the page, and compose falls back
+# to http://crm.localhost when it is blank.
+#
+# Blank here is the quietest of the three "blank means broken" traps: the
+# backend is healthy, the tenant looks up, and every SPA call still fails ->
+# useCustomFeatures fails closed -> is_superadmin false -> a CRM with no custom
+# menus and no Custom features page to fix it from, indistinguishable from a
+# tenant that owns nothing. bahana presented exactly this way.
+PROTON_BACKEND_PUBLIC_URL_VALUE="https://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io"
+
+# --- Firestore -------------------------------------------------------------
+# Every tenant gets its OWN Firestore database; it is where the custom-feature
+# switchboard, the term dictionary and the escalation stores live.
+#
+# LEAVING THIS UNSET IS NOT A NO-OP, IT IS A BROKEN TENANT. example.env ships
+# FIRESTORE_PROJECT_ID/FIRESTORE_DATABASE_ID blank, and with them blank every
+# store read raises CustomFeatureStoreUnavailable -> the switchboard 503s ->
+# the SPA fails closed -> the operator opens a CRM with no features and no
+# page to switch any on. The bahana tenant came up exactly that way.
+#
+# FIRESTORE_LOCATION IS IMMUTABLE once the database exists. Changing it later
+# means creating a SECOND database and migrating, not editing a field — so it
+# is an explicit knob, deliberately NOT inherited from whatever region another
+# tenant happens to use. Set it to the customer's data-residency region:
+# bahana is Jakarta (asia-southeast2); proton and aeon360 are asia-southeast1.
+# The default below is the VM's own region, which is the right answer when
+# there is no residency requirement pulling the other way.
+FIRESTORE_PROJECT_ID_VALUE="${FIRESTORE_PROJECT_ID_VALUE:-$(gcloud config get-value project 2>/dev/null)}"
+FIRESTORE_LOCATION="${FIRESTORE_LOCATION:-asia-southeast2}"
+FIRESTORE_DB="${TENANT}-db"
+
+# The Chatwoot image a NEW tenant boots. Bump this when a newer custom image
+# ships; it is the one line that decides whether a tenant gets this platform
+# or stock Chatwoot.
+#
+# Why it is pinned here rather than left to the compose default:
+# docker-compose.tenant.yml says `${CHATWOOT_IMAGE:-chatwoot/chatwoot:v4.15.1}`
+# and example.env ships CHATWOOT_IMAGE blank. `:-` fires on empty as well as
+# unset, so a tenant provisioned from the template silently comes up on
+# UPSTREAM Chatwoot: Captain and the SAML settings that patches 0029/0032
+# remove are back, and none of the Knowledge / RBAC / SLA / Audit Log pages
+# this platform exists to provide are present. It looks like a working CRM,
+# which is exactly why it went unnoticed on the bahana tenant.
+CHATWOOT_IMAGE_PIN="${CHATWOOT_IMAGE_PIN:-asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images/proton-chatwoot:v4.15.1-custom-rc12}"
+
 # --- 1. Generate per-tenant secrets + env file ------------------------------
+# New tenants are industry-neutral. The backend's TERM_PROFILE default is
+# `automotive` for backwards compatibility with tenants that predate the term
+# dictionary, so provisioning must say `generic` explicitly or a non-
+# automotive customer opens their CRM reading "Dealer" and "Vehicle". The
+# template ships that line commented out (`# TERM_PROFILE=generic`) so an
+# unprovisioned example.env stays inert; this sed uncomments it, the same way
+# every other per-tenant value below is substituted into the template.
 CHATWOOT_DB_PASSWORD="$(openssl rand -hex 16)"
 AGENT_DB_PASSWORD="$(openssl rand -hex 16)"
 BACKEND_DB_PASSWORD="$(openssl rand -hex 16)"
@@ -90,7 +145,35 @@ sed \
   -e "s/^REDIS_PASSWORD=.*/REDIS_PASSWORD=${REDIS_PASSWORD}/" \
   -e "s/^SECRET_KEY_BASE=.*/SECRET_KEY_BASE=${SECRET_KEY_BASE}/" \
   -e "s|^HOST_PREFIX=.*|HOST_PREFIX=${HOST_PREFIX}|" \
+  -e "s/^# TERM_PROFILE=generic$/TERM_PROFILE=generic/" \
+  -e "s|^CHATWOOT_IMAGE=.*|CHATWOOT_IMAGE=${CHATWOOT_IMAGE_PIN}|" \
+  -e "s|^FIRESTORE_PROJECT_ID=.*|FIRESTORE_PROJECT_ID=${FIRESTORE_PROJECT_ID_VALUE}|" \
+  -e "s|^FIRESTORE_DATABASE_ID=.*|FIRESTORE_DATABASE_ID=${FIRESTORE_DB}|" \
+  -e "s|^PROTON_BACKEND_PUBLIC_URL=.*|PROTON_BACKEND_PUBLIC_URL=${PROTON_BACKEND_PUBLIC_URL_VALUE}|" \
   tenants/example.env > "${ENV_FILE}"
+# Create the tenant's Firestore database if it does not exist. Idempotent:
+# `describe` succeeding means someone already made it, and we must NOT try to
+# recreate it — nor silently accept it if its location differs from what this
+# run intends, because that location cannot be changed afterwards.
+if gcloud firestore databases describe --database="${FIRESTORE_DB}" \
+     --project="${FIRESTORE_PROJECT_ID_VALUE}" >/dev/null 2>&1; then
+  EXISTING_LOC=$(gcloud firestore databases describe --database="${FIRESTORE_DB}" \
+    --project="${FIRESTORE_PROJECT_ID_VALUE}" --format="value(locationId)" 2>/dev/null)
+  if [[ "${EXISTING_LOC}" != "${FIRESTORE_LOCATION}" ]]; then
+    echo "ERROR: ${FIRESTORE_DB} already exists in ${EXISTING_LOC}, but this run" >&2
+    echo "       intends ${FIRESTORE_LOCATION}. A Firestore location is immutable." >&2
+    echo "       Either re-run with FIRESTORE_LOCATION=${EXISTING_LOC}, or pick a" >&2
+    echo "       different database name and migrate deliberately." >&2
+    exit 1
+  fi
+  echo "==> Firestore ${FIRESTORE_DB} already exists in ${EXISTING_LOC}"
+else
+  echo "==> Creating Firestore ${FIRESTORE_DB} in ${FIRESTORE_LOCATION} (IMMUTABLE)"
+  gcloud firestore databases create --database="${FIRESTORE_DB}" \
+    --location="${FIRESTORE_LOCATION}" --type=firestore-native \
+    --project="${FIRESTORE_PROJECT_ID_VALUE}"
+fi
+
 echo "==> Wrote ${ENV_FILE} (hostnames: ${HOST_PREFIX:-<bare>}crm.${PUBLIC_IP}.nip.io)"
 
 # --- 2. Create Postgres roles + databases on the running server -------------

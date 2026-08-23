@@ -20,8 +20,14 @@ A **term dictionary**: a closed set of nouns whose display text is resolved
 per tenant, with two profiles at launch.
 
 - **`generic`** — industry-neutral. The default for every new tenant.
-- **`automotive`** — mirrors Proton's current wording exactly, so the next
-  automotive customer is a profile selection rather than a fork.
+- **`automotive`** — mirrors Proton's current vocabulary, so the next
+  automotive customer is a profile selection rather than a fork. Not a
+  byte-for-byte mirror: roughly 15 strings differ cosmetically where
+  converting a call site was also an opportunity to fix an inconsistency
+  already present in the fork (`"Vehicle no."` → `"Vehicle No."`,
+  `"DMS / TSP"` → `"DMS/TSP"`, and two acronym expansions that are dropped
+  rather than repeated at every call site). The noun itself is unchanged in
+  every case.
 
 A tenant picks a profile; it may then override individual nouns (a bank that
 prefers "Branch" to "Partner"). Overrides are only accepted for keys already
@@ -130,12 +136,25 @@ second round trip: `GET /admin/custom-features` returns `{features: [...],
 terms: {...}, is_superadmin: bool}`. `useCustomFeatures.js` exposes a `t()`
 helper alongside `hasFeature()`.
 
-**When the store is unreachable, resolution falls through to
-`settings.term_profile`** — the same chain as an unset row, so an outage
-renders a tenant's normal vocabulary rather than a different one. Terms are
-not a security gate, so unlike features there is nothing to fail closed
-about; the failure to avoid here is a tenant's words changing under them
-because a Firestore read timed out.
+**When the store is unreachable, the router answers 503, not 200 with an
+empty map.** `CustomFeatureStore.get_document()` raises
+`CustomFeatureStoreUnavailable`, and `/admin/custom-features` turns that into
+an HTTP 503 rather than a 200 carrying an empty `terms`/`features` payload —
+inherited from the sibling feature-switchboard plan, whose final review
+identified that a 200-with-empty would blank a tenant's CRM for the whole
+page session on a transient Firestore blip — the composable takes its success
+path, and the guard on `features !== null` then prevents any refetch. That was
+a defect caught in review, not an incident in production.
+`useCustomFeatures.js`'s existing `.catch()` handles that 503 the same way it
+already handles a features fetch failure: it schedules a retry and leaves
+`terms`/`termProfile`/`termProfiles` exactly as they were, so a page that had
+already loaded once keeps showing its last known vocabulary through an
+outage. A **cold load with no prior fetch** has no last-known value to fall
+back to, so `t()` renders its own fallback instead: the raw key with
+underscores turned to spaces (e.g. `field_incident` → "field incident")
+rather than an empty label or the automotive wording. That fallback is a
+last resort, not a design goal — it is what a first-ever page view shows
+during an outage, and it is deliberately still greppable.
 
 ### Rendering
 
@@ -205,7 +224,10 @@ env var stops mattering for that tenant.
   against the literal current wording, so the preset is provably a mirror
   rather than an approximation.
 - Unknown override keys are ignored, not raised.
-- Store unreachable → `generic`, never a partial map.
+- Store unreachable → the router answers 503 (never a 200 with a partial or
+  empty map); the SPA's `.catch()` keeps whatever vocabulary was already
+  loaded, and `t()`'s own fallback (humanised key, e.g. "field incident")
+  covers the cold-load case where there is no prior vocabulary to keep.
 - **A tenant with no stored profile and no `TERM_PROFILE` resolves to
   `automotive`** — proton's exact situation, asserted so the default cannot
   be flipped to `generic` by a later edit without a test going red.

@@ -33,6 +33,21 @@ _COLLECTION = "platform_config"
 _DOCUMENT = "custom_features"
 
 
+class CustomFeatureStoreUnavailable(RuntimeError):
+    """Raised by `CustomFeatureStore.get_all()` when Firestore could not be
+    read at all -- as opposed to a real, empty document, which is a tenant
+    that genuinely has nothing switched on.
+
+    The two look identical if get_all() just returned `{}` for both: the
+    router would answer 200 `{"features": []}` either way, the composable
+    would take its success branch, and a Firestore blip would blank two live
+    tenants' CRMs for the rest of the page session with no error shown and no
+    retry scheduled -- silently indistinguishable from "this tenant bought
+    nothing". Raising instead lets the router answer 503 for the outage case
+    only, which is what drives the composable's existing `.catch()` self-heal
+    (see useCustomFeatures.js) instead of its success path."""
+
+
 @dataclass(frozen=True)
 class CustomFeature:
     key: str
@@ -138,18 +153,35 @@ class CustomFeatureStore:
     def _doc_ref(self) -> firestore.DocumentReference:
         return self._client().collection(_COLLECTION).document(_DOCUMENT)
 
-    async def get_all(self) -> dict[str, bool]:
-        """Fail CLOSED. An unreachable store yields {} -- every feature off --
-        because the alternative is briefly showing a tenant surfaces it does
-        not have."""
+    async def get_document(self) -> dict:
+        """The whole config document. Features and terms are one Firestore
+        read because the SPA fetches both on every page load.
+
+        RAISES `CustomFeatureStoreUnavailable` on an unreachable store, exactly
+        as `get_all` already does. Returning `{}` here instead would reinstate
+        the bug the switchboard plan's final review caught: an outage and a
+        brand-new tenant both look like an empty document, the router answers
+        200 with an empty feature list, the composable takes its success path,
+        and two live tenants' CRMs go blank for the page session with no error
+        and no self-heal. A MISSING document is still a normal `{}` -- that is
+        the blank-tenant case the whole product depends on.
+        """
         try:
             snap = await asyncio.to_thread(self._doc_ref().get)
         except Exception as e:
             _log.error("custom_feature_store_get_failed", error=str(e))
-            return {}
+            raise CustomFeatureStoreUnavailable(str(e)) from e
         if not snap.exists:
             return {}
-        raw = (snap.to_dict() or {}).get("features") or {}
+        return snap.to_dict() or {}
+
+    async def get_all(self) -> dict[str, bool]:
+        """Kept after the router moved to `get_document`. It is the store's
+        narrow public read and is directly tested; a caller wanting only the
+        feature map should not have to know the document's shape. Its
+        raise-on-unreachable contract is unchanged -- it now inherits it from
+        `get_document`."""
+        raw = (await self.get_document()).get("features") or {}
         return {str(k): bool(v) for k, v in raw.items()}
 
     async def set(self, key: str, enabled: bool) -> None:
@@ -158,3 +190,42 @@ class CustomFeatureStore:
         await asyncio.to_thread(
             self._doc_ref().set, {"features": {key: enabled}}, merge=True
         )
+
+    async def set_terms(self, profile: str | None, overrides: dict | None) -> None:
+        """Merge-write the term block. Only the fields given are touched, so
+        setting a profile does not wipe a tenant's overrides (and vice
+        versa).
+
+        `None` and `{}` are NOT interchangeable for `overrides`: `None` omits
+        the field from the write entirely, leaving whatever is already
+        stored untouched. `{}` is a deliberate clear -- Firestore's
+        `merge=True` replaces the whole `terms.overrides` leaf with exactly
+        what is given, so an explicit empty dict wipes every override the
+        tenant had. A caller that wants "no change" must pass `None`, not
+        `{}`."""
+        block: dict = {}
+        if profile is not None:
+            block["profile"] = profile
+        if overrides is not None:
+            block["overrides"] = overrides
+        if not block:
+            return
+        await asyncio.to_thread(self._doc_ref().set, {"terms": block}, merge=True)
+
+
+def stored_terms(document: dict) -> tuple[str | None, dict]:
+    """Pull the term block out of the shared document.
+
+    Returns `None` for an unset profile rather than a default, because the
+    caller's fallback chain needs to distinguish "nobody has chosen" from
+    "somebody chose generic" -- those resolve to different vocabularies.
+    """
+    block = document.get("terms")
+    if not isinstance(block, dict):
+        return None, {}
+    profile = block.get("profile")
+    overrides = block.get("overrides")
+    return (
+        profile if isinstance(profile, str) else None,
+        overrides if isinstance(overrides, dict) else {},
+    )

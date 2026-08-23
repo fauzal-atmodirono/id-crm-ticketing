@@ -23,7 +23,16 @@ from chatbot.features.authz.deps import (
 from chatbot.features.tenant_config.custom_features import (
     BEHAVIOR_FLAGS,
     CUSTOM_FEATURE_REGISTRY,
+    CustomFeatureStoreUnavailable,
     enabled_features,
+    stored_terms,
+)
+from chatbot.features.tenant_config.term_dictionary import (
+    PROFILES,
+    TERM_FIELDS,
+    TERM_KEYS,
+    resolve_profile,
+    resolve_terms,
 )
 
 if TYPE_CHECKING:
@@ -37,6 +46,22 @@ _log = structlog.get_logger(__name__)
 class ToggleBody(BaseModel):
     key: str
     enabled: bool
+
+
+class TermsBody(BaseModel):
+    profile: str | None = None
+    overrides: dict | None = None
+
+
+# The set of fields an override may patch. Imported from `term_dictionary`
+# rather than hand-mirrored: this and `resolve_terms`' own field loop are
+# both derived from `TERM_FIELDS` (itself read off `Term`'s dataclass
+# fields), so a field added to `Term` without touching this file can no
+# longer drift out of sync the way it once did -- adding `plural_lower`
+# required fixing both copies by hand and one was missed the first time.
+# Derivation makes that mismatch structurally impossible, not merely tested
+# for.
+_OVERRIDE_FIELDS = frozenset(TERM_FIELDS)
 
 
 def build_custom_features_router(
@@ -65,7 +90,28 @@ def build_custom_features_router(
     async def read(identity: tuple[int, bool] = Depends(_identity)) -> dict:
         user_id, is_super_admin_type = identity
         superadmin = is_platform_superadmin(user_id, is_super_admin_type)
-        stored = await store.get_all()
+
+        # One document, one read: features and terms live in the same
+        # Firestore document precisely so the SPA's single page-load fetch
+        # covers both. The 503 handling below MUST survive this rewrite from
+        # get_all() to get_document() -- get_document() raises on the same
+        # unreachable-store condition get_all() used to, and a 200 with an
+        # empty feature list would tell the operator this tenant owns
+        # nothing when in fact we could not look: the composable's success
+        # branch (`features.value = []`) never schedules a retry, so a
+        # transient Firestore blip would blank a live tenant's CRM for the
+        # rest of the page session with no error shown. A 503 makes the
+        # SPA's adminRequest() throw, which routes into
+        # useCustomFeatures.js's existing `.catch()` self-heal instead.
+        try:
+            document = await store.get_document()
+        except CustomFeatureStoreUnavailable as e:
+            _log.error("custom_feature_store_read_failed", error=str(e))
+            raise HTTPException(status_code=503, detail="Could not load features") from e
+
+        stored = {str(k): bool(v) for k, v in (document.get("features") or {}).items()}
+        stored_profile, overrides = stored_terms(document)
+        profile = resolve_profile(stored_profile, settings)
 
         registry: list[dict] = []
         behavior: dict[str, bool] = {}
@@ -91,6 +137,11 @@ def build_custom_features_router(
             "is_superadmin": superadmin,
             "registry": registry,
             "behavior": behavior,
+            # Vocabulary is served to EVERY session, unlike the registry: the
+            # UI cannot render a heading without it.
+            "terms": resolve_terms(profile, overrides),
+            "term_profile": profile,
+            "term_profiles": sorted(PROFILES) if superadmin else [],
         }
 
     @router.post("")
@@ -116,5 +167,51 @@ def build_custom_features_router(
             _log.error("custom_feature_write_failed", key=body.key, error=str(e))
             raise HTTPException(status_code=503, detail="Could not save") from e
         return {"key": body.key, "enabled": body.enabled, "status": "ok"}
+
+    @router.post("/terms")
+    async def set_terms(
+        body: TermsBody,
+        _user_id: int = Depends(superadmin_only),
+    ) -> dict:
+        if body.profile is not None and body.profile not in PROFILES:
+            raise HTTPException(status_code=400, detail=f"Unknown profile: {body.profile}")
+        if body.overrides is not None:
+            unknown = sorted(set(body.overrides) - set(TERM_KEYS))
+            if unknown:
+                # The noun list is closed on purpose. Accepting arbitrary keys
+                # is exactly how a capped dictionary stops being capped.
+                raise HTTPException(
+                    status_code=400, detail=f"Unknown term keys: {', '.join(unknown)}"
+                )
+            # Key validation alone lets a well-formed noun through with a
+            # malformed patch -- `resolve_terms` defends itself against that
+            # (`isinstance(patch, dict)`, only ever reading singular/plural/
+            # lower/plural_lower, skipping an empty string) so nothing crashes, but the
+            # write would still persist and answer 200 while doing nothing.
+            # That is the same lie a dropped store write would tell, in a
+            # different place, so it is rejected here instead.
+            for noun, patch in body.overrides.items():
+                if not isinstance(patch, dict):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"{noun}: override must be an object with "
+                            f"singular/plural/lower/plural_lower fields, got {type(patch).__name__}"
+                        ),
+                    )
+                bad_fields = sorted(set(patch) - _OVERRIDE_FIELDS)
+                if bad_fields:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{noun}: unknown override fields {', '.join(bad_fields)}",
+                    )
+                for field, value in patch.items():
+                    if not isinstance(value, str) or not value:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"{noun}.{field}: must be a non-empty string",
+                        )
+        await store.set_terms(body.profile, body.overrides)
+        return {"profile": body.profile, "status": "ok"}
 
     return router

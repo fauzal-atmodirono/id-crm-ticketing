@@ -1,0 +1,111 @@
+diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+index 914b58c..33a6ef1 100644
+--- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
++++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+@@ -15,14 +15,44 @@ import { callAssist } from 'dashboard/api/protonAssist';
+ import { useUISettings } from 'dashboard/composables/useUISettings';
+ import { useStore } from 'dashboard/composables/store';
+ 
+-// Actions intercepted by Proton backend when ai_assist feature is enabled
++// Actions intercepted by Proton backend when ai_assist feature is enabled.
++// A value is either the endpoint name alone (string -- the original three,
++// which send the conversation transcript) or `{ endpoint, mode }` (the six
++// Improve/Change tone/Fix grammar actions added by patch 0078, which all hit
++// POST /assist/rewrite and send the agent's current draft instead -- `mode`
++// tells the backend which of its rewrite system prompts to use).
++//
++// `improve_selection` is folded into `improve`: the CopilotMenuBar only ever
++// emits it with `hasSelection` hard-disabled (see that component), and this
++// composer has no selection-range plumbing to thread through anyway, so
++// "improve the selection" is treated as "improve the whole draft" until that
++// plumbing exists. Not a bug -- there is no selection to improve yet.
+ const PROTON_ACTIONS = {
+   reply_suggestion: 'suggest',
+   summarize: 'summarize',
+   ask_copilot: 'ask',
++  improve: { endpoint: 'rewrite', mode: 'improve' },
++  improve_selection: { endpoint: 'rewrite', mode: 'improve' },
++  fix_spelling_grammar: { endpoint: 'rewrite', mode: 'fix_grammar' },
++  professional: { endpoint: 'rewrite', mode: 'tone_professional' },
++  casual: { endpoint: 'rewrite', mode: 'tone_casual' },
++  straightforward: { endpoint: 'rewrite', mode: 'tone_straightforward' },
++  confident: { endpoint: 'rewrite', mode: 'tone_confident' },
++  friendly: { endpoint: 'rewrite', mode: 'tone_friendly' },
+ };
+ 
+ // Where each action's result is inserted: the 'reply' box or a private 'note'.
++// The six rewrite actions (patch 0078) have no entry here on purpose, but
++// NOT because they always target 'reply' -- an earlier version of this
++// comment claimed that and was wrong. CopilotMenuBar gates `improve` on
++// REPLY mode, but `fix_spelling_grammar` and all five `change_tone`
++// sub-items are gated on `hasContent` ALONE, so they are just as reachable
++// from a private Note as from a Reply. Sending a note rewrite to the
++// fallback 'reply' target would move private note text into the
++// customer-facing reply box and clobber whatever the agent had already
++// typed there. Instead, `handleCopilotAction` below computes the rewrite
++// target from `props.mode` (the composer's actual current mode) and never
++// consults this map for those six keys at all.
+ const PROTON_ACTION_MODE = {
+   reply_suggestion: 'reply',
+   summarize: 'note',
+@@ -233,7 +263,11 @@ export default {
+       }
+ 
+       if (protonEnabled.value && PROTON_ACTIONS[actionKey]) {
+-        const protonAction = PROTON_ACTIONS[actionKey];
++        const actionConfig = PROTON_ACTIONS[actionKey];
++        // Rewrite actions (patch 0078) carry their config as an object; the
++        // original three are still a bare endpoint-name string.
++        const isRewrite = typeof actionConfig === 'object';
++        const protonAction = isRewrite ? actionConfig.endpoint : actionConfig;
+         const chat = store.getters.getSelectedChat;
+         // Structured, NOT pre-rendered: the backend owns transcript wording
+         // and attachment markers from one registry. Keeping a label table
+@@ -256,12 +290,45 @@ export default {
+           messages,
+         };
+         if (actionKey === 'ask_copilot' && data) payload.question = data;
++        // Captured synchronously, BEFORE the await below -- `props.mode`
++        // is a live, reactive binding to the composer's Reply/Note toggle,
++        // and nothing disables that toggle while a rewrite call is in
++        // flight (Alt+P/Alt+L flip it directly regardless). A rewrite call
++        // is an LLM round-trip of hundreds of milliseconds to seconds, so
++        // reading `props.mode` again AFTER the await would route the result
++        // to whichever box the agent happens to be looking at when the
++        // response lands, not the one the draft actually came from -- the
++        // same note-into-reply leak this capture exists to prevent, just
++        // gated by a timing window instead of unconditional. Do not
++        // "simplify" this back into an inline read of `props.mode` post-await.
++        const requestMode = props.mode;
++        if (isRewrite) {
++          // /assist/rewrite operates on the agent's current draft, not the
++          // transcript above -- `messages` still rides along only to satisfy
++          // the shared request shape's validation.
++          payload.content = props.editorContent || '';
++          payload.mode = actionConfig.mode;
++        }
+         try {
+           const result = await callAssist(protonAction, payload);
+           const text = result.draft || result.summary || result.answer || '';
+-          const mode = PROTON_ACTION_MODE[actionKey] || 'reply';
++          // Rewrite actions (patch 0078) are reachable from a private Note
++          // as well as a Reply (see PROTON_ACTION_MODE above) -- the result
++          // must go back to whichever one the draft actually came from, not
++          // a fixed target, or a note rewrite would land in the customer-
++          // facing reply box and destroy any reply already being drafted.
++          // Uses `requestMode`, captured above the await, not `props.mode`.
++          const insertMode = isRewrite
++            ? requestMode === REPLY_EDITOR_MODES.NOTE
++              ? 'note'
++              : 'reply'
++            : PROTON_ACTION_MODE[actionKey] || 'reply';
+           if (text)
+-            emit('protonAssistResult', { text, mode, sources: result.sources || [] });
++            emit('protonAssistResult', {
++              text,
++              mode: insertMode,
++              sources: result.sources || [],
++            });
+         } catch (err) {
+           // eslint-disable-next-line no-console
+           console.error('[proton-assist]', actionKey, 'failed', err);

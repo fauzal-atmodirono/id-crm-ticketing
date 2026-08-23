@@ -73,6 +73,20 @@ MAILPIT_AUTH_HASH="$(get_infra_var MAILPIT_AUTH_HASH)"
 
 echo "==> Provisioning tenant '${TENANT}' (PUBLIC_IP=${PUBLIC_IP})"
 
+# The Chatwoot image a NEW tenant boots. Bump this when a newer custom image
+# ships; it is the one line that decides whether a tenant gets this platform
+# or stock Chatwoot.
+#
+# Why it is pinned here rather than left to the compose default:
+# docker-compose.tenant.yml says `${CHATWOOT_IMAGE:-chatwoot/chatwoot:v4.15.1}`
+# and example.env ships CHATWOOT_IMAGE blank. `:-` fires on empty as well as
+# unset, so a tenant provisioned from the template silently comes up on
+# UPSTREAM Chatwoot: Captain and the SAML settings that patches 0029/0032
+# remove are back, and none of the Knowledge / RBAC / SLA / Audit Log pages
+# this platform exists to provide are present. It looks like a working CRM,
+# which is exactly why it went unnoticed on the bahana tenant.
+CHATWOOT_IMAGE_PIN="${CHATWOOT_IMAGE_PIN:-asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images/proton-chatwoot:v4.15.1-custom-rc12}"
+
 # --- 1. Generate per-tenant secrets + env file ------------------------------
 # New tenants are industry-neutral. The backend's TERM_PROFILE default is
 # `automotive` for backwards compatibility with tenants that predate the term
@@ -98,6 +112,7 @@ sed \
   -e "s/^SECRET_KEY_BASE=.*/SECRET_KEY_BASE=${SECRET_KEY_BASE}/" \
   -e "s|^HOST_PREFIX=.*|HOST_PREFIX=${HOST_PREFIX}|" \
   -e "s/^# TERM_PROFILE=generic$/TERM_PROFILE=generic/" \
+  -e "s|^CHATWOOT_IMAGE=.*|CHATWOOT_IMAGE=${CHATWOOT_IMAGE_PIN}|" \
   tenants/example.env > "${ENV_FILE}"
 echo "==> Wrote ${ENV_FILE} (hostnames: ${HOST_PREFIX:-<bare>}crm.${PUBLIC_IP}.nip.io)"
 

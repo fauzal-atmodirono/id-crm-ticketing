@@ -129,3 +129,24 @@ def test_add_tenant_script_writes_generic_for_new_tenants() -> None:
 
     script = Path(__file__).parents[7] / "deploy" / "scripts" / "add-tenant.sh"
     assert "TERM_PROFILE=generic" in script.read_text()
+
+
+def test_add_tenant_script_pins_the_custom_chatwoot_image() -> None:
+    """A new tenant must boot OUR fork, not upstream Chatwoot.
+
+    `docker-compose.tenant.yml` falls back to `chatwoot/chatwoot:v4.15.1` when
+    `CHATWOOT_IMAGE` is empty OR unset (`:-` fires on both), and `example.env`
+    ships it blank. So a tenant provisioned without this line silently comes up
+    on stock upstream: Captain and the SAML settings that patches 0029/0032
+    remove are back, and none of the Knowledge / RBAC / SLA / Audit Log pages
+    this platform is built around exist at all. It looks like a working CRM,
+    which is why it went unnoticed on the bahana tenant.
+    """
+    from pathlib import Path
+
+    script = Path(__file__).parents[7] / "deploy" / "scripts" / "add-tenant.sh"
+    text = script.read_text()
+    assert "CHATWOOT_IMAGE=" in text, "add-tenant.sh must write CHATWOOT_IMAGE"
+    assert "proton-chatwoot:" in text, "it must pin OUR fork image, not upstream"
+    # Guard the direction of the mistake: never provision onto upstream.
+    assert "CHATWOOT_IMAGE=chatwoot/chatwoot" not in text

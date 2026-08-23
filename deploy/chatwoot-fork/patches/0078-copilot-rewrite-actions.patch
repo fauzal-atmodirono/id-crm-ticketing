@@ -1,8 +1,8 @@
 diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
-index 914b58c..6c32cd4 100644
+index 914b58c..4725bc0 100644
 --- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
 +++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
-@@ -15,14 +15,37 @@ import { callAssist } from 'dashboard/api/protonAssist';
+@@ -15,14 +15,44 @@ import { callAssist } from 'dashboard/api/protonAssist';
  import { useUISettings } from 'dashboard/composables/useUISettings';
  import { useStore } from 'dashboard/composables/store';
  
@@ -34,14 +34,21 @@ index 914b58c..6c32cd4 100644
  };
  
  // Where each action's result is inserted: the 'reply' box or a private 'note'.
-+// The six rewrite actions (patch 0078) have no entry here on purpose: they
-+// always replace the reply box, which is exactly what the `|| 'reply'`
-+// fallback below already does, so adding `improve: 'reply', ...` etc. would
-+// only restate the default.
++// The six rewrite actions (patch 0078) have no entry here on purpose, but
++// NOT because they always target 'reply' -- an earlier version of this
++// comment claimed that and was wrong. CopilotMenuBar gates `improve` on
++// REPLY mode, but `fix_spelling_grammar` and all five `change_tone`
++// sub-items are gated on `hasContent` ALONE, so they are just as reachable
++// from a private Note as from a Reply. Sending a note rewrite to the
++// fallback 'reply' target would move private note text into the
++// customer-facing reply box and clobber whatever the agent had already
++// typed there. Instead, `handleCopilotAction` below computes the rewrite
++// target from `props.mode` (the composer's actual current mode) and never
++// consults this map for those six keys at all.
  const PROTON_ACTION_MODE = {
    reply_suggestion: 'reply',
    summarize: 'note',
-@@ -233,7 +256,11 @@ export default {
+@@ -233,7 +263,11 @@ export default {
        }
  
        if (protonEnabled.value && PROTON_ACTIONS[actionKey]) {
@@ -54,7 +61,7 @@ index 914b58c..6c32cd4 100644
          const chat = store.getters.getSelectedChat;
          // Structured, NOT pre-rendered: the backend owns transcript wording
          // and attachment markers from one registry. Keeping a label table
-@@ -256,6 +283,13 @@ export default {
+@@ -256,12 +290,32 @@ export default {
            messages,
          };
          if (actionKey === 'ask_copilot' && data) payload.question = data;
@@ -68,3 +75,24 @@ index 914b58c..6c32cd4 100644
          try {
            const result = await callAssist(protonAction, payload);
            const text = result.draft || result.summary || result.answer || '';
+-          const mode = PROTON_ACTION_MODE[actionKey] || 'reply';
++          // Rewrite actions (patch 0078) are reachable from a private Note
++          // as well as a Reply (see PROTON_ACTION_MODE above) -- the result
++          // must go back to whichever one the draft actually came from, not
++          // a fixed target, or a note rewrite would land in the customer-
++          // facing reply box and destroy any reply already being drafted.
++          const insertMode = isRewrite
++            ? props.mode === REPLY_EDITOR_MODES.NOTE
++              ? 'note'
++              : 'reply'
++            : PROTON_ACTION_MODE[actionKey] || 'reply';
+           if (text)
+-            emit('protonAssistResult', { text, mode, sources: result.sources || [] });
++            emit('protonAssistResult', {
++              text,
++              mode: insertMode,
++              sources: result.sources || [],
++            });
+         } catch (err) {
+           // eslint-disable-next-line no-console
+           console.error('[proton-assist]', actionKey, 'failed', err);

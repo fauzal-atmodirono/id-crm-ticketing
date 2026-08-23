@@ -50,6 +50,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import httpx
 
@@ -191,8 +192,8 @@ def main() -> int:
         print("\nDry run. Re-run with --apply to write these.")
         return 0
 
-    written = 0
-    for phone, contact, row, changes in planned:
+    written, failed = 0, []
+    for index, (phone, contact, row, changes) in enumerate(planned, start=1):
         # Chatwoot REPLACES custom_attributes on update, so merge over the
         # existing object rather than sending only the profile keys -- sending
         # a subset silently deletes everything else on the contact.
@@ -205,16 +206,37 @@ def main() -> int:
         name = str(row.get("name") or "").strip()
         if name and name != contact.get("name"):
             body["name"] = name
-        r = httpx.put(
-            f"{args.chatwoot_url}/api/v1/accounts/{args.account_id}/contacts/{contact['id']}",
-            headers={"api_access_token": token, "Content-Type": "application/json"},
-            json=body,
-            timeout=60,
+        # This tenant's contact PUT is slow enough to trip a 60s read timeout
+        # mid-loop, which left a partial apply on the first real run. Retry with
+        # backoff rather than making the operator re-run and re-diff: the write
+        # is idempotent, so a retry is always safe, and a partial apply that
+        # reports which contacts were missed is far better than a traceback that
+        # reports nothing.
+        url = (
+            f"{args.chatwoot_url}/api/v1/accounts/{args.account_id}"
+            f"/contacts/{contact['id']}"
         )
-        r.raise_for_status()
-        written += 1
+        headers = {"api_access_token": token, "Content-Type": "application/json"}
+        for attempt in range(1, 4):
+            try:
+                r = httpx.put(url, headers=headers, json=body, timeout=180)
+                r.raise_for_status()
+                written += 1
+                print(f"  [{index}/{len(planned)}] {contact.get('name')}")
+                break
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                if attempt == 3:
+                    failed.append((contact.get("name"), phone, type(exc).__name__))
+                    print(f"  [{index}/{len(planned)}] FAILED {contact.get('name')}: {type(exc).__name__}")
+                else:
+                    time.sleep(2 * attempt)
 
-    print(f"\napplied to {written} contacts.")
+    print(f"\napplied to {written} of {len(planned)} contacts.")
+    if failed:
+        print("failed (re-run to retry -- the write is idempotent):")
+        for name, phone, err in failed:
+            print(f"    {name} {phone} ({err})")
+        return 1
     return 0
 
 

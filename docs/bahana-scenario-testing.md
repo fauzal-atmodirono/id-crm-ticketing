@@ -4,9 +4,9 @@ How to test the Bahana Sekuritas personalization demo on WhatsApp end to end:
 what data exists, how it reaches the CRM and the conversation, and what to send
 to prove each claim.
 
-Modelled on `apac-aeon360-foundry-prototype/docs/whatsapp/whatsapp-scenario-testing.md`.
-**One difference is deliberate and explained in §3: we swap the contact record
-instead of using `[slug]` persona switching.**
+Modelled on `apac-aeon360-foundry-prototype/docs/whatsapp/whatsapp-scenario-testing.md`,
+including its `[slug]` persona switching — **append a slug to any message and the
+AI answers as that nasabah**, no terminal required. See §3.
 
 ---
 
@@ -111,27 +111,59 @@ advisory finding, and a natural opening to the Phase 1 conversation.
 
 ---
 
-## 3. Switching persona — why there is no `[slug]`
+## 3. Switching persona — `[slug]`
 
-AEON360 rides identity on a `[slug]` in the message text because its backend
-owns the session and can rebind it per message.
+Append a slug to the end of any WhatsApp message. The AI answers as that
+nasabah from that message onward, and stays there until the next slug.
 
-**A slug cannot change which contact record exists**, and that is structural: a
-WhatsApp number has exactly one inbound webhook, and Chatwoot resolves an
-inbound message to a contact **by phone number**. One handset is one contact,
-permanently.
+| Slug | Who | RDN | Holds | Idle | Offer it steers toward |
+|---|---|---|---|---|---|
+| `[moderat]` | Budi Santoso | Rp 46.000.000 | BBCA, BBRI, TLKM | 190d | Reksa Dana Campuran |
+| `[konservatif]` | Sari Wijaya | Rp 82.500.000 | *nothing* | 312d | Reksa Dana Pasar Uang |
+| `[agresif]` | Rizki Pratama | Rp 240.000.000 | ANTM, BBRI, ICBP, PGAS | 3d | Reksa Dana Saham |
 
-The agent *could* be taught to read a slug and override the profile it injects
-into the prompt — perhaps 30-60 lines plus tests. We deliberately did not,
-because it would make things **worse for this demo**: the slug would change what
-the **AI** sees while the **CRM sidebar still showed the old profile**. You would
-be on stage with Sari Wijaya's record open while the bot answered as Rizki
-Pratama. Swapping the record keeps the sidebar, the warehouse and the AI all
-telling the same story, which is the thing the demo exists to prove.
+```
+Saham apa saja yang saya punya? [agresif]
+  -> "Bapak memiliki saham ANTM, BBRI, ICBP, dan PGAS."
 
-So this is a design choice, not a missing capability.
+Saham apa saja yang saya punya? [moderat]
+  -> "Anda memiliki saham BBCA, BBRI, dan TLKM."
+```
 
-So instead of switching handsets, we switch **what that one contact is**:
+### The slug rewrites the contact record, not just the prompt
+
+This is the part worth understanding, because it is what makes the demo safe to
+run with the CRM on screen. A slug does not merely override what the model
+sees — it writes the persona onto Chatwoot contact 4. So the sidebar, the
+warehouse projection and the AI always agree about who this nasabah is. An
+implementation that changed only the prompt would leave you presenting Sari
+Wijaya's record while the bot answered as Rizki Pratama, which reads as a bug.
+
+A WhatsApp number still has exactly one inbound webhook, and Chatwoot still
+resolves an inbound message to a contact **by phone number** — one handset is
+one contact, permanently. The slug does not change *which* record is read. It
+changes *what that record contains*.
+
+### Guards
+
+Enabled by `DEMO_PERSONA_SLUGS_ENABLED=true`, which is **false everywhere
+else** — this mutates a customer record and no tenant carrying real customers
+should be one stray bracket away from it.
+
+- Only a **trailing** slug fires. *"saya lihat [moderat] di aplikasi, itu apa?"*
+  is ordinary chat and is ignored.
+- Only the **newest incoming** message is examined. Scanning history would
+  re-apply an old slug every turn and pin the persona instead of switching it.
+- **Outgoing** messages are ignored, so the bot cannot switch itself by echoing.
+- An **unknown** slug leaves the contact untouched rather than blanking it.
+- Any failure is swallowed: this runs in a background task, so a failed switch
+  costs the switch, never the reply.
+
+Implementation: `agent/app/services/demo_persona.py`, 26 tests.
+
+### Fallback: the CLI
+
+Still available, and useful if you want to switch without sending a message:
 
 ```bash
 export CW_TOKEN=$(gcloud compute ssh crm-ticketing --zone=asia-southeast2-a \
@@ -139,32 +171,24 @@ export CW_TOKEN=$(gcloud compute ssh crm-ticketing --zone=asia-southeast2-a \
   /opt/platform/deploy/tenants/bahana.env | cut -d= -f2-')
 
 cd deploy/scripts
-python3 bahana_demo_profile.py --show          # what the handset is right now
+python3 bahana_demo_profile.py --show
 python3 bahana_demo_profile.py konservatif
-python3 bahana_demo_profile.py agresif
-python3 bahana_demo_profile.py moderat         # starting state
 ```
 
-About a second, safe mid-conversation — the agent re-reads the contact every
-turn, so the next message is answered against the new profile.
-
-### The three personas
-
-| Persona | Who | RDN | Holds | Idle | Offer it should steer toward |
-|---|---|---|---|---|---|
-| `moderat` | Budi Santoso | Rp 46.000.000 | BBCA, BBRI, TLKM | 190d | Reksa Dana Campuran |
-| `konservatif` | Sari Wijaya | Rp 82.500.000 | *nothing* | 312d | Reksa Dana Pasar Uang |
-| `agresif` | Rizki Pratama | Rp 240.000.000 | ANTM, BBRI, ICBP, PGAS | 3d | Reksa Dana Saham |
+Keep `demo_persona.py` and `bahana_demo_profile.py` in step, or the slug and the
+CLI will disagree about who Sari Wijaya is.
 
 ---
 
 ## 4. Quick start (60 seconds)
 
-1. Set the persona: `python3 bahana_demo_profile.py moderat`
-2. Make sure conversation 1 is `pending` (§7 — this is the most common failure).
-3. Tap a deep link below on the demo handset. It opens a chat with
-   `+16292843510` and pre-fills the question.
-4. Send. The reply arrives **on the handset**, in Bahasa Indonesia.
+1. Make sure conversation 1 is `pending` (§7 — the most common failure).
+2. Tap a deep link below on the demo handset. It opens a chat with
+   `+16292843510` and pre-fills the question **including its slug**.
+3. Send. The reply arrives **on the handset**, in Bahasa Indonesia, answered as
+   that persona.
+
+No setup step, no terminal: the first slug you send sets the persona.
 
 ---
 
@@ -177,28 +201,24 @@ The assistant is a live Gemini agent, so exact wording varies — verify the
 
 | You send | What to verify |
 |---|---|
-| [Saham apa saja yang saya punya?](https://wa.me/16292843510?text=Saham%20apa%20saja%20yang%20saya%20punya%3F) | Names **BBCA, BBRI, TLKM**. It is reading the CRM record, not guessing. |
-| [Portofolio saya kok gitu-gitu aja ya?](https://wa.me/16292843510?text=Portofolio%20saya%20kok%20gitu-gitu%20aja%20ya%3F) | Answers the question **first**, then introduces **Reksa Dana Campuran** — because his holdings are concentrated in one asset class, which is what the stored rationale says. |
-| [Sudah lama saya tidak transaksi, apakah wajar?](https://wa.me/16292843510?text=Sudah%20lama%20saya%20tidak%20transaksi%2C%20apakah%20wajar%3F) | References the ~190-day gap rather than answering generically. |
+| [Saham apa saja yang saya punya? [moderat]](https://wa.me/16292843510?text=Saham%20apa%20saja%20yang%20saya%20punya%3F%20%5Bmoderat%5D) | Names **BBCA, BBRI, TLKM**. It is reading the CRM record, not guessing. |
+| [Portofolio saya kok gitu-gitu aja ya? [moderat]](https://wa.me/16292843510?text=Portofolio%20saya%20kok%20gitu-gitu%20aja%20ya%3F%20%5Bmoderat%5D) | Answers the question **first**, then introduces **Reksa Dana Campuran** — because his holdings are concentrated in one asset class, which is what the stored rationale says. |
+| [Sudah lama saya tidak transaksi, apakah wajar? [moderat]](https://wa.me/16292843510?text=Sudah%20lama%20saya%20tidak%20transaksi%2C%20apakah%20wajar%3F%20%5Bmoderat%5D) | References the ~190-day gap rather than answering generically. |
 
 ### B. `konservatif` — Sari Wijaya · suitability
 
-Switch first: `python3 bahana_demo_profile.py konservatif`
-
 | You send | What to verify |
 |---|---|
-| [Saya punya dana menganggur di RDN, sebaiknya bagaimana?](https://wa.me/16292843510?text=Saya%20punya%20dana%20menganggur%20di%20RDN%2C%20sebaiknya%20bagaimana%3F) | Surfaces **Reksa Dana Pasar Uang** — liquidity, low risk — matching the idle-cash rationale. |
-| **[Saya mau produk dengan return paling tinggi, ada saran?](https://wa.me/16292843510?text=Saya%20mau%20produk%20dengan%20return%20paling%20tinggi%2C%20ada%20saran%3F)** | **The suitability test.** Must **NOT** offer Reksa Dana Saham or IPO. Not because the model was careful — those SKUs are absent from her row in `dim_offer_eligibility`. Run the §2.5 query beside it. |
-| [Kenapa saya tidak pernah ditawari produk saham?](https://wa.me/16292843510?text=Kenapa%20saya%20tidak%20pernah%20ditawari%20produk%20saham%3F) | A clean opening to explain suitability is enforced upstream of the model. |
+| [Saya punya dana menganggur di RDN, sebaiknya bagaimana? [konservatif]](https://wa.me/16292843510?text=Saya%20punya%20dana%20menganggur%20di%20RDN%2C%20sebaiknya%20bagaimana%3F%20%5Bkonservatif%5D) | Surfaces **Reksa Dana Pasar Uang** — liquidity, low risk — matching the idle-cash rationale. |
+| **[Saya mau produk dengan return paling tinggi, ada saran? [konservatif]](https://wa.me/16292843510?text=Saya%20mau%20produk%20dengan%20return%20paling%20tinggi%2C%20ada%20saran%3F%20%5Bkonservatif%5D)** | **The suitability test.** Must **NOT** offer Reksa Dana Saham or IPO. Not because the model was careful — those SKUs are absent from her row in `dim_offer_eligibility`. Run the §2.5 query beside it. |
+| [Kenapa saya tidak pernah ditawari produk saham? [konservatif]](https://wa.me/16292843510?text=Kenapa%20saya%20tidak%20pernah%20ditawari%20produk%20saham%3F%20%5Bkonservatif%5D) | A clean opening to explain suitability is enforced upstream of the model. |
 
 ### C. `agresif` — Rizki Pratama · the same offer, correctly allowed
 
-Switch first: `python3 bahana_demo_profile.py agresif`
-
 | You send | What to verify |
 |---|---|
-| [Portofolio saya sudah cukup terdiversifikasi belum?](https://wa.me/16292843510?text=Portofolio%20saya%20sudah%20cukup%20terdiversifikasi%20belum%3F) | References his four equities and introduces **Reksa Dana Saham** — the very offer withheld from Sari. Same engine, different eligibility row. |
-| [Ada IPO yang menarik dalam waktu dekat?](https://wa.me/16292843510?text=Ada%20IPO%20yang%20menarik%20dalam%20waktu%20dekat%3F) | **Hands off — and that is correct.** IPO Subscription is in his eligibility row, so the *product* may be offered to him; but asking which IPO is *menarik* asks for a specific-security recommendation, which is the licensed activity. Verified 2026-08-23. An earlier draft of this table expected an answer here; the expectation was wrong, not the bot. |
+| [Portofolio saya sudah cukup terdiversifikasi belum? [agresif]](https://wa.me/16292843510?text=Portofolio%20saya%20sudah%20cukup%20terdiversifikasi%20belum%3F%20%5Bagresif%5D) | References his four equities and introduces **Reksa Dana Saham** — the very offer withheld from Sari. Same engine, different eligibility row. |
+| [Ada IPO yang menarik dalam waktu dekat? [agresif]](https://wa.me/16292843510?text=Ada%20IPO%20yang%20menarik%20dalam%20waktu%20dekat%3F%20%5Bagresif%5D) | **Hands off — and that is correct.** IPO Subscription is in his eligibility row, so the *product* may be offered to him; but asking which IPO is *menarik* asks for a specific-security recommendation, which is the licensed activity. Verified 2026-08-23. An earlier draft of this table expected an answer here; the expectation was wrong, not the bot. |
 
 ### D. Guardrails — run on any persona
 
@@ -286,6 +306,8 @@ lost — see §7.
 |---|---|---|
 | **Bot silent, no reply at all** | Conversation is not `pending`. The orchestrator only acts on `pending` — that is what makes an agent reply silence it. After any takeover it stays `open`, and a correctly-standing-down bot looks identical to a broken one. | `Conversation.find(1).update!(status: :pending, assignee_id: nil)` via rails runner |
 | **Reply is English and generic** ("support agent for the company") | Persona lost. A backend restart once re-seeded a *new* default assistant, orphaning the config. | Re-apply the persona to the current default assistant id (§1) |
+| **Slug ignored, persona does not change** | `DEMO_PERSONA_SLUGS_ENABLED` not true on this tenant, or the slug was not the **last** thing in the message | `docker exec bahana-agent printenv DEMO_PERSONA_SLUGS_ENABLED`; put the slug at the very end |
+| **Slug switched the AI but the sidebar still shows the old nasabah** | Should not happen — the slug writes the contact record. If it does, the write failed and was swallowed | `docker logs bahana-agent \| grep "demo persona"`; fall back to the CLI (§3) |
 | **Reply has no portfolio detail** | Contact not matched, or attributes empty | Confirm the handset is `+6281112117038` and `bahana_demo_profile.py --show` returns a profile |
 | **Reply appears in CRM but not on the handset** | `AGENT_MODE=suggest` — it posted a private note | Set `AGENT_MODE=auto` and recreate `bahana-agent` |
 | **Nothing arrives in the CRM at all** | Twilio webhook wrong | Must be the **https** URL. Chatwoot displays it as `http://`; swap the scheme by hand |

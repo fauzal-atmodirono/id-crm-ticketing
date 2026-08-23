@@ -1,5 +1,5 @@
 diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
-index 914b58c..4725bc0 100644
+index 914b58c..33a6ef1 100644
 --- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
 +++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
 @@ -15,14 +15,44 @@ import { callAssist } from 'dashboard/api/protonAssist';
@@ -61,10 +61,22 @@ index 914b58c..4725bc0 100644
          const chat = store.getters.getSelectedChat;
          // Structured, NOT pre-rendered: the backend owns transcript wording
          // and attachment markers from one registry. Keeping a label table
-@@ -256,12 +290,32 @@ export default {
+@@ -256,12 +290,45 @@ export default {
            messages,
          };
          if (actionKey === 'ask_copilot' && data) payload.question = data;
++        // Captured synchronously, BEFORE the await below -- `props.mode`
++        // is a live, reactive binding to the composer's Reply/Note toggle,
++        // and nothing disables that toggle while a rewrite call is in
++        // flight (Alt+P/Alt+L flip it directly regardless). A rewrite call
++        // is an LLM round-trip of hundreds of milliseconds to seconds, so
++        // reading `props.mode` again AFTER the await would route the result
++        // to whichever box the agent happens to be looking at when the
++        // response lands, not the one the draft actually came from -- the
++        // same note-into-reply leak this capture exists to prevent, just
++        // gated by a timing window instead of unconditional. Do not
++        // "simplify" this back into an inline read of `props.mode` post-await.
++        const requestMode = props.mode;
 +        if (isRewrite) {
 +          // /assist/rewrite operates on the agent's current draft, not the
 +          // transcript above -- `messages` still rides along only to satisfy
@@ -81,8 +93,9 @@ index 914b58c..4725bc0 100644
 +          // must go back to whichever one the draft actually came from, not
 +          // a fixed target, or a note rewrite would land in the customer-
 +          // facing reply box and destroy any reply already being drafted.
++          // Uses `requestMode`, captured above the await, not `props.mode`.
 +          const insertMode = isRewrite
-+            ? props.mode === REPLY_EDITOR_MODES.NOTE
++            ? requestMode === REPLY_EDITOR_MODES.NOTE
 +              ? 'note'
 +              : 'reply'
 +            : PROTON_ACTION_MODE[actionKey] || 'reply';

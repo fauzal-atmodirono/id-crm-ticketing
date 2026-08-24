@@ -50,10 +50,33 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import ssl
 import sys
 import urllib.error
 import urllib.request
 from typing import Any
+
+
+def _ssl_context() -> ssl.SSLContext | None:
+    """Trust store for the Chatwoot call.
+
+    A framework Python on macOS does not read the system keychain, so
+    `urlopen` against the tenant's Let's Encrypt cert fails with
+    CERTIFICATE_VERIFY_FAILED even though `curl` to the same URL succeeds.
+    Prefer certifi's bundle when it is importable -- it comes in with httpx,
+    which the other bahana scripts already depend on -- and fall back to the
+    default context elsewhere. Returning None (rather than an unverified
+    context) keeps `urlopen` on its normal verified path: this script carries
+    an admin token, so disabling verification is not an acceptable fallback.
+    """
+    try:
+        import certifi
+    except ImportError:
+        return None
+    return ssl.create_default_context(cafile=certifi.where())
+
+
+_SSL_CONTEXT = _ssl_context()
 
 # ---------------------------------------------------------------------------
 # Vocabulary. These values are a contract with the seeder --
@@ -291,7 +314,9 @@ def _request(
     req.add_header("api_access_token", token)
     req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=30) as res:  # noqa: S310
+        with urllib.request.urlopen(  # noqa: S310
+            req, timeout=30, context=_SSL_CONTEXT
+        ) as res:
             raw = res.read()
             return res.status, (json.loads(raw) if raw else None)
     except urllib.error.HTTPError as exc:

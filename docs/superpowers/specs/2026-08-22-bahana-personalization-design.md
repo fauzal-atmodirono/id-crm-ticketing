@@ -227,6 +227,18 @@ naturally, and never at the expense of answering the customer's question.
 Delivery is recorded so the same offer is not repeated, and `ai_actions`
 retains the decision with its inputs.
 
+### 4.5 The CRM's own automation engine
+
+Chatwoot ships a rule engine (events → conditions → actions) that this platform
+had never switched on for any tenant. It composes with everything above without
+new plumbing, because it reads the same contact custom attributes the
+orchestrator reads and writes labels our webhook already consumes. That is what
+makes the "who" half of §4.3 operator-editable rather than ours to deploy.
+
+Designed and provisioned separately — see
+**`docs/bahana-automation-personalization.md`** and
+`deploy/scripts/provision-bahana-automation.py`.
+
 ---
 
 ## 5. Phase 0 — the Monday demo

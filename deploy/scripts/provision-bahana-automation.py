@@ -439,9 +439,26 @@ def ensure_team(api: Api, report: list[str]) -> int | None:
     if created and created.get("id"):
         report.append(f"  CREATE    team {TEAM_NAME} (id {created['id']})")
         return int(created["id"])
+
+    if api.apply:
+        # The create succeeded but its response did not carry an id where we
+        # look for it. Re-read rather than proceeding with team_id=None: that
+        # would write the opt-out rule WITHOUT its assign_team action and skip
+        # the two governance rules, and a later re-run could not repair it --
+        # the opt-out rule would already exist and be reported `unchanged`.
+        for team in api.get("/teams"):
+            if team.get("name") == TEAM_NAME:
+                report.append(f"  CREATE    team {TEAM_NAME} (id {team['id']}, re-read)")
+                return int(team["id"])
+        api.failures.append(
+            f"team {TEAM_NAME}: created but no id could be resolved; "
+            "team-assigning rules were skipped. Re-run after confirming the "
+            "team exists in Settings -> Teams."
+        )
+        return None
+
     report.append(
-        f"  CREATE    team {TEAM_NAME}"
-        + ("" if api.apply else " (dry run: id unknown, team-assigning rules deferred)")
+        f"  CREATE    team {TEAM_NAME} (dry run: id unknown, team-assigning rules deferred)"
     )
     return None
 

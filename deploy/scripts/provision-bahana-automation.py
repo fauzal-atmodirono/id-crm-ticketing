@@ -486,8 +486,44 @@ def remove_rules(api: Api, report: list[str]) -> None:
     )
 
 
+def verify_rules(api: Api, report: list[str]) -> None:
+    """Print what Chatwoot actually STORED, not what we sent.
+
+    A 201 only says the payload was accepted. Chatwoot normalises conditions
+    server-side, and a condition that silently lost its `custom_attribute_type`
+    is indistinguishable from a working one until a rule fails to fire on a
+    live conversation. Reading the rules back is the cheapest way to see it.
+    """
+    ours = {r["name"] for r in _rules(0)}
+    found = 0
+    for rule in api.get("/automation_rules"):
+        if rule.get("name") not in ours:
+            continue
+        found += 1
+        state = "ON " if rule.get("active") else "OFF"
+        report.append(f"  [{state}] {rule.get('event_name')} -- {rule.get('name')}")
+        for cond in rule.get("conditions") or []:
+            kind = cond.get("custom_attribute_type") or "standard"
+            report.append(
+                f"          if {cond.get('attribute_key')} "
+                f"{cond.get('filter_operator')} {cond.get('values')} [{kind}]"
+            )
+        for act in rule.get("actions") or []:
+            report.append(
+                f"          -> {act.get('action_name')} {act.get('action_params')}"
+            )
+    report.append(f"\n  {found}/{len(ours)} of this script's rules present")
+    if found != len(ours):
+        report.append("  WARNING: some rules are missing -- re-run without --verify")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="read the rules back from Chatwoot and print them (read-only)",
+    )
     parser.add_argument(
         "--apply", action="store_true", help="actually write (default: dry run)"
     )
@@ -507,11 +543,18 @@ def main() -> int:
 
     api = Api(base, account, token, apply=args.apply)
     report: list[str] = []
-    mode = "APPLY" if args.apply else "DRY RUN (nothing is written)"
+    if args.verify:
+        mode = "VERIFY (read-only)"
+    elif args.apply:
+        mode = "APPLY"
+    else:
+        mode = "DRY RUN (nothing is written)"
     print(f"{base} account {account} -- {mode}\n")
 
     try:
-        if args.remove:
+        if args.verify:
+            verify_rules(api, report)
+        elif args.remove:
             remove_rules(api, report)
         else:
             if not ensure_attribute(api, report):
@@ -537,7 +580,9 @@ def main() -> int:
             print(f"  {line}")
         return 1
 
-    if not args.apply:
+    if args.verify:
+        pass
+    elif not args.apply:
         print("\nRe-run with --apply to write. Nothing was changed.")
     elif not args.remove:
         print(

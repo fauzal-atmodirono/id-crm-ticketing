@@ -180,3 +180,32 @@ def test_int_value_is_stringified():
 def test_whitespace_only_offer_is_treated_as_absent():
     out = format_customer_context({"risk_profile": "Moderat", "next_best_offer": "   "})
     assert "offer" not in out.lower()
+
+
+def test_a_greeting_is_not_a_selling_moment():
+    # Caught by replay: on a bare "halo" the Agresif persona opened with an
+    # unprompted product pitch. Answering a pleasantry with a pitch is the
+    # most obvious tell that a bot is running a script.
+    out = format_customer_context(FULL).lower()
+    assert "a greeting, a pleasantry, or a question with no product angle" in out
+
+
+def test_the_rationale_is_internal_not_customer_copy():
+    # Caught by replay: the Agresif persona read its offer_rationale out loud
+    # three turns running ("Kami melihat Bapak belum terdiversifikasi di..."),
+    # which is the CRM's note to itself, not something you say to a customer.
+    out = format_customer_context(FULL).lower()
+    assert "working material, not customer-facing copy" in out
+
+
+def test_an_actionable_request_routes_to_a_human():
+    # Caught by replay: asked to place an IPO order, the bot declined and
+    # offered to explain instead. A refusal that routes nowhere is its own
+    # kind of dead end.
+    out = format_customer_context(FULL).lower()
+    assert "hand off to a human rather than explaining that you cannot" in out
+    # ...but scoped to transactions only. Broadened once, it made the
+    # Moderat persona hand off on "am I diversified?" -- a question about
+    # the customer's own record, which the product exists to answer.
+    assert "that rule does not reach ordinary questions" in out
+    assert "handing them to a human is a worse answer, not a safer one" in out

@@ -56,6 +56,10 @@ agent package, both of which live in that venv:
     agent/.venv/bin/python deploy/scripts/bahana_replay.py --slug agresif \\
         --turn "halo" --turn "ada produk apa buat saya?" --show-prompt
 
+    # the full hello-to-escalation scripts behind the v3 demo guide
+    agent/.venv/bin/python deploy/scripts/bahana_replay.py --slug moderat \\
+        --script deploy/scripts/demo-scripts/bahana-moderat.txt
+
 Gemini credentials come from the ambient environment exactly as they do in
 production (Vertex ADC by default, or `GEMINI_API_KEY` with
 `GOOGLE_GENAI_USE_VERTEXAI=false`). Everything else `Settings` demands —

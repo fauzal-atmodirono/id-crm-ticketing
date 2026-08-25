@@ -413,3 +413,18 @@ nothing about whether the conversation was any good.
 
 Every prompt change from here should be replayed across the population before
 it goes near a handset — every §9 item touches this prompt.
+
+Running full hello-to-escalation scripts (rather than single turns) then caught
+three more defects in one pass: a bare "halo" answered with a product pitch,
+`offer_rationale` — the CRM's internal note on why an offer was picked — recited
+at the customer as though it were copy, and a request to place an IPO order
+declined into a cul-de-sac instead of routed to a human. The fix for that last
+one went in too broad on the first attempt and made the Moderat persona hand off
+on "am I diversified?", which is the question the product exists to answer; it
+is now scoped to carrying out a transaction. All four are pinned by tests.
+
+Those scripts live in `deploy/scripts/demo-scripts/` and are the source of the
+transcripts quoted in `docs/bahana-demo-guide-customer-v3.md` §5 — kept in the
+repo so that document's claim to quote real output stays checkable. Each ends on
+a different escalation trigger (customer asks / operational request / compliance
+boundary), which is what v3 §6 tabulates.

@@ -446,11 +446,30 @@ def ensure_labels(api: Api, report: list[str]) -> None:
         report.append(f"  CREATE    label {title}")
 
 
-def ensure_team(api: Api, report: list[str]) -> int | None:
+def _find_team(api: Api) -> dict | None:
+    """The RM team, matched case-insensitively.
+
+    Chatwoot lowercases a team name on create: this script asks for
+    "RM Prioritas" and the account ends up holding "rm prioritas". An `==`
+    match therefore never finds the team the script created itself, so every
+    re-run tried to create a duplicate -- and on `--apply` that either trips
+    Chatwoot's uniqueness check or leaves two teams with the same name and the
+    governance rules pointing at whichever one won. Observed on the bahana
+    tenant 2026-08-26, where all 8 rules were already correctly assigned to
+    team 1 while the script still reported `CREATE team`.
+    """
+    wanted = TEAM_NAME.strip().lower()
     for team in api.get("/teams"):
-        if team.get("name") == TEAM_NAME:
-            report.append(f"  unchanged team {TEAM_NAME} (id {team.get('id')})")
-            return int(team["id"])
+        if str(team.get("name") or "").strip().lower() == wanted:
+            return team
+    return None
+
+
+def ensure_team(api: Api, report: list[str]) -> int | None:
+    existing = _find_team(api)
+    if existing is not None:
+        report.append(f"  unchanged team {TEAM_NAME} (id {existing.get('id')})")
+        return int(existing["id"])
     created = api.create(
         "/teams",
         {
@@ -470,10 +489,10 @@ def ensure_team(api: Api, report: list[str]) -> int | None:
         # would write the opt-out rule WITHOUT its assign_team action and skip
         # the two governance rules, and a later re-run could not repair it --
         # the opt-out rule would already exist and be reported `unchanged`.
-        for team in api.get("/teams"):
-            if team.get("name") == TEAM_NAME:
-                report.append(f"  CREATE    team {TEAM_NAME} (id {team['id']}, re-read)")
-                return int(team["id"])
+        reread = _find_team(api)
+        if reread is not None:
+            report.append(f"  CREATE    team {TEAM_NAME} (id {reread['id']}, re-read)")
+            return int(reread["id"])
         api.failures.append(
             f"team {TEAM_NAME}: created but no id could be resolved; "
             "team-assigning rules were skipped. Re-run after confirming the "

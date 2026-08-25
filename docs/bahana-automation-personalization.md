@@ -423,6 +423,28 @@ one went in too broad on the first attempt and made the Moderat persona hand off
 on "am I diversified?", which is the question the product exists to answer; it
 is now scoped to carrying out a transaction. All four are pinned by tests.
 
+### 10.5 The provisioner could never find its own team
+
+Re-running the provisioner against bahana on 2026-08-26 to create the
+`holdings_sectors` definition surfaced an unrelated idempotency bug worth
+recording, because it had been silently latent since the team was first
+created.
+
+`ensure_team` matched on `team["name"] == "RM Prioritas"`. **Chatwoot lowercases
+a team name on create**, so the account holds `rm prioritas` and the exact match
+never hits — every re-run reported `CREATE team` and, under `--apply`, would
+have tried to create a duplicate while all 8 rules were already correctly
+assigned to team 1. The `--verify` output and the dry run disagreed with each
+other, which is what made it visible: 8/8 rules present, yet the team they
+assign to "did not exist".
+
+The re-read fallback added in `6075460` carried the same `==`, so it could not
+have repaired it either. Both now compare case-insensitively via `_find_team`.
+
+Worth generalising: this class of bug only shows up on the *second* run, and a
+provisioner is usually only run once per tenant. `--verify` disagreeing with
+`--dry-run` is the cheapest signal there is.
+
 Those scripts live in `deploy/scripts/demo-scripts/` and are the source of the
 transcripts quoted in `docs/bahana-demo-guide-customer-v3.md` §5 — kept in the
 repo so that document's claim to quote real output stays checkable. Each ends on

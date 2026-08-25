@@ -85,6 +85,7 @@ def test_every_profile_carries_the_full_attribute_contract():
         "aum_band",
         "rdn_balance",
         "holdings",
+        "holdings_sectors",
         "days_since_last_transaction",
         "product_gaps",
         "next_best_offer",
@@ -92,6 +93,22 @@ def test_every_profile_carries_the_full_attribute_contract():
     }
     for slug in PROFILES:
         assert set(attributes_for(slug)) == required, slug
+
+
+def test_sector_breakdown_covers_every_holding():
+    # `holdings_sectors` is hand-maintained here (the seeder derives it via
+    # `nasabah.sectors_for`, which this package deliberately does not import).
+    # The realistic drift is editing a persona's tickers and forgetting the
+    # sector line, which leaves the prompt stating two different portfolios
+    # three lines apart -- so pin coverage rather than the exact grouping.
+    for slug, profile in PROFILES.items():
+        holdings = profile["holdings"]
+        sectors = profile["holdings_sectors"]
+        if holdings == "Tidak ada":
+            assert sectors == "Tidak ada", slug
+            continue
+        for ticker in (t.strip() for t in holdings.split(",")):
+            assert ticker in sectors, (slug, ticker)
 
 
 def test_offers_respect_suitability():

@@ -107,6 +107,23 @@ _TICKERS = [
     "PGAS", "KLBF",
 ]
 
+# IDX sector per ticker. Public because `bahana_bq_warehouse.INSTRUMENTS`
+# builds `dim_instrument` from it: sector has to be defined in exactly one
+# place or the warehouse and the CRM contact end up disagreeing about what a
+# nasabah is concentrated in, which is the one fact this field exists to say.
+TICKER_SECTORS: dict[str, str] = {
+    "BBCA": "Keuangan",
+    "BBRI": "Keuangan",
+    "BMRI": "Keuangan",
+    "TLKM": "Infrastruktur",
+    "ASII": "Aneka Industri",
+    "UNVR": "Barang Konsumen",
+    "ICBP": "Barang Konsumen",
+    "ANTM": "Barang Baku",
+    "PGAS": "Energi",
+    "KLBF": "Kesehatan",
+}
+
 _RISK_WEIGHTS = [("Konservatif", 35), ("Moderat", 45), ("Agresif", 20)]
 
 _AUM_BANDS = [
@@ -230,6 +247,34 @@ def _gaps_for(risk_profile: str, held_products: list[str]) -> list[str]:
     pre-filter behaviour byte-for-byte for whichever entries survive."""
     suitable = {name for name, _ in _catalogue_for(risk_profile)}
     return [p for p in _PRODUCTS if p not in held_products and p in suitable]
+
+
+def sectors_for(holdings: list[str]) -> str:
+    """Holdings grouped by IDX sector, e.g. `"Keuangan (BBCA, BBRI),
+    Infrastruktur (TLKM)"`. `"Tidak ada"` when there are none.
+
+    Derived rather than stored, deliberately. `bahana_bq_warehouse` pins the
+    demo contact's holdings by `dataclasses.replace`-ing the generated record
+    (`PINNED_OVERRIDE`), and a stored sector field would survive that
+    replacement while the holdings it describes changed underneath it --
+    silently, and on the one record that will be on screen.
+
+    Biggest sector first, ties broken by name, tickers sorted within a group:
+    concentration is the point of this field, so the thing the nasabah is
+    most concentrated in leads. Ordering is total, so the output is stable
+    across runs and the SQL twin in `v_nasabah_profile` can match it exactly.
+
+    An unknown ticker is grouped under "Lainnya" rather than dropped: losing a
+    holding entirely would make the sector breakdown disagree with the
+    `holdings` field sitting directly above it in the prompt.
+    """
+    if not holdings:
+        return "Tidak ada"
+    grouped: dict[str, list[str]] = {}
+    for ticker in holdings:
+        grouped.setdefault(TICKER_SECTORS.get(ticker, "Lainnya"), []).append(ticker)
+    ordered = sorted(grouped.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    return ", ".join(f"{sector} ({', '.join(sorted(tickers))})" for sector, tickers in ordered)
 
 
 def _unique_phone(rnd: random.Random, used: set[str]) -> str:

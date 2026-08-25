@@ -54,6 +54,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent / "seed_demo_data"))
 from nasabah import (  # noqa: E402
     _OFFERS_BY_RISK,
     _PRODUCTS,
+    TICKER_SECTORS,
     generate_nasabah,
 )
 
@@ -86,18 +87,23 @@ PRODUCTS = [
 ]
 PRODUCT_BY_NAME = {name: sku for sku, name, _, _, _ in PRODUCTS}
 
-INSTRUMENTS = [
-    ("BBCA", "Bank Central Asia", "Keuangan"),
-    ("BBRI", "Bank Rakyat Indonesia", "Keuangan"),
-    ("BMRI", "Bank Mandiri", "Keuangan"),
-    ("TLKM", "Telkom Indonesia", "Infrastruktur"),
-    ("ASII", "Astra International", "Aneka Industri"),
-    ("UNVR", "Unilever Indonesia", "Barang Konsumen"),
-    ("ICBP", "Indofood CBP", "Barang Konsumen"),
-    ("ANTM", "Aneka Tambang", "Barang Baku"),
-    ("PGAS", "Perusahaan Gas Negara", "Energi"),
-    ("KLBF", "Kalbe Farma", "Kesehatan"),
+# Company names only. Sector comes from `nasabah.TICKER_SECTORS`, which the
+# CRM contact's `holdings_sectors` attribute is also built from -- defining it
+# twice is how `dim_instrument` and the contact sidebar end up disagreeing
+# about which sector a nasabah is concentrated in.
+INSTRUMENT_NAMES = [
+    ("BBCA", "Bank Central Asia"),
+    ("BBRI", "Bank Rakyat Indonesia"),
+    ("BMRI", "Bank Mandiri"),
+    ("TLKM", "Telkom Indonesia"),
+    ("ASII", "Astra International"),
+    ("UNVR", "Unilever Indonesia"),
+    ("ICBP", "Indofood CBP"),
+    ("ANTM", "Aneka Tambang"),
+    ("PGAS", "Perusahaan Gas Negara"),
+    ("KLBF", "Kalbe Farma"),
 ]
+INSTRUMENTS = [(t, n, TICKER_SECTORS[t]) for t, n in INSTRUMENT_NAMES]
 
 
 def customer_id(index: int) -> str:
@@ -272,6 +278,25 @@ WITH holdings AS (
   SELECT customer_id, STRING_AGG(ticker, ', ' ORDER BY ticker) AS holdings
   FROM {fq}.fact_holding GROUP BY customer_id
 ),
+sectors AS (
+  -- The SQL twin of `nasabah.sectors_for`. Same ordering rule (biggest
+  -- sector first, ties by name, tickers sorted within a group) so a contact
+  -- written by the seeder and one written by the sync job carry the exact
+  -- same string, not merely the same facts in a different arrangement.
+  SELECT customer_id,
+         STRING_AGG(sector_group, ', ' ORDER BY n DESC, sector) AS holdings_sectors
+  FROM (
+    SELECT h.customer_id,
+           i.sector,
+           COUNT(*) AS n,
+           FORMAT('%s (%s)', i.sector,
+                  STRING_AGG(h.ticker, ', ' ORDER BY h.ticker)) AS sector_group
+    FROM {fq}.fact_holding h
+    JOIN {fq}.dim_instrument i USING (ticker)
+    GROUP BY h.customer_id, i.sector
+  )
+  GROUP BY customer_id
+),
 gaps AS (
   SELECT e.risk_profile, c.customer_id,
          STRING_AGG(e.product_name, ', ' ORDER BY e.product_name) AS product_gaps
@@ -290,6 +315,7 @@ SELECT
   c.aum_band,
   FORMAT('Rp %s', FORMAT('%\\'d', c.rdn_balance_idr))      AS rdn_balance,
   IFNULL(h.holdings, 'Tidak ada')                          AS holdings,
+  IFNULL(s.holdings_sectors, 'Tidak ada')                  AS holdings_sectors,
   CAST(c.days_since_last_transaction AS STRING)            AS days_since_last_transaction,
   IFNULL(g.product_gaps, 'Tidak ada')                      AS product_gaps,
   p.product_name                                           AS next_best_offer,
@@ -297,6 +323,7 @@ SELECT
   c.batch_id                                               AS demo_seed
 FROM {fq}.dim_customer c
 LEFT JOIN holdings h USING (customer_id)
+LEFT JOIN sectors s  USING (customer_id)
 LEFT JOIN gaps g     USING (customer_id)
 LEFT JOIN {fq}.fact_next_best_offer f USING (customer_id)
 LEFT JOIN {fq}.dim_product p ON p.product_sku = f.product_sku

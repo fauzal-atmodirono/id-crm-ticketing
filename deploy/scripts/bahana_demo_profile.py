@@ -63,6 +63,7 @@ PROFILES: dict[str, dict[str, str]] = {
         "aum_band": "Rp 100-500 juta",
         "rdn_balance": "Rp 46,000,000",
         "holdings": "BBCA, BBRI, TLKM",
+        "holdings_sectors": "Keuangan (BBCA, BBRI), Infrastruktur (TLKM)",
         "days_since_last_transaction": "190",
         "product_gaps": "Reksa Dana Campuran, Obligasi Korporasi",
         "next_best_offer": "Reksa Dana Campuran",
@@ -77,6 +78,7 @@ PROFILES: dict[str, dict[str, str]] = {
         "aum_band": "Rp 50-100 juta",
         "rdn_balance": "Rp 82,500,000",
         "holdings": "Tidak ada",
+        "holdings_sectors": "Tidak ada",
         "days_since_last_transaction": "312",
         "product_gaps": "Reksa Dana Pasar Uang, Obligasi Ritel (ORI)",
         "next_best_offer": "Reksa Dana Pasar Uang",
@@ -91,6 +93,7 @@ PROFILES: dict[str, dict[str, str]] = {
         "aum_band": "> Rp 1 miliar",
         "rdn_balance": "Rp 240,000,000",
         "holdings": "ANTM, BBRI, ICBP, PGAS",
+        "holdings_sectors": "Barang Baku (ANTM), Barang Konsumen (ICBP), Energi (PGAS), Keuangan (BBRI)",
         "days_since_last_transaction": "3",
         "product_gaps": "Reksa Dana Saham, IPO Subscription",
         "next_best_offer": "Reksa Dana Saham",
@@ -150,6 +153,7 @@ def apply(tok: str, profile: str) -> None:
 
     print(f"contact {CONTACT_ID} is now: {name} ({data['risk_profile']})")
     print(f"  holdings        : {data['holdings']}")
+    print(f"  holdings_sectors: {data['holdings_sectors']}")
     print(f"  next best offer : {data['next_best_offer']}")
     print("\nSend the same question again from the demo handset.")
 

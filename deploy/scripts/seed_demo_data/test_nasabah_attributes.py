@@ -15,6 +15,7 @@ EXPECTED_KEYS = {
     "aum_band",
     "rdn_balance",
     "holdings",
+    "holdings_sectors",
     "days_since_last_transaction",
     "product_gaps",
     "next_best_offer",

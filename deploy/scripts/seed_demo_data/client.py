@@ -101,7 +101,7 @@ from typing import Any
 import httpx
 
 from generator import DemoCase, DemoContact, canonical_division
-from nasabah import DemoNasabah
+from nasabah import DemoNasabah, sectors_for
 
 # Delay between API calls. A burst of ~1,500 requests at a tenant's Rails
 # app in one go is a self-inflicted outage (plan's Global Constraints).
@@ -499,6 +499,7 @@ def build_nasabah_custom_attributes(nasabah: DemoNasabah, batch_id: str) -> dict
         "aum_band": nasabah.aum_band,
         "rdn_balance": f"Rp {nasabah.rdn_balance:,}",
         "holdings": ", ".join(nasabah.holdings) if nasabah.holdings else "Tidak ada",
+        "holdings_sectors": sectors_for(nasabah.holdings),
         "days_since_last_transaction": str(nasabah.days_since_last_transaction),
         "product_gaps": ", ".join(nasabah.product_gaps) if nasabah.product_gaps else "Tidak ada",
         "next_best_offer": nasabah.next_best_offer,

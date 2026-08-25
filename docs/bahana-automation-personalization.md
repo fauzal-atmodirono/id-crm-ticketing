@@ -336,3 +336,80 @@ than discovering in a POC:
 5. **Roll the pattern to other tenants.** Nothing here is Bahana-specific
    except the attribute vocabulary; proton and aeon360 have the same engine
    switched off.
+
+---
+
+## 10. 2026-08-25 — the offer stopped being a dead end
+
+Added after the first live WhatsApp run of the demo. Recorded here rather than
+in a new document because it changes something §3 and spec §4.3 assert.
+
+### 10.1 What the live run showed
+
+The bot answered every question correctly and then quit the moment the nasabah
+declined the offer:
+
+> **nasabah:** tapi saya ingin fokusnya ke saham ajaa, gimana yaa?
+> **bot:** ...Ada hal lain yang bisa saya bantu?
+
+Replaying the same four turns offline against all three personas
+(`deploy/scripts/bahana_replay.py`) showed it was not a one-off: **all three
+handed off on that same turn.** The Konservatif persona's handoff reason
+quoted the cause almost verbatim — *"tidak dapat merekomendasikan produk di
+luar penawaran hubungan yang sudah ditentukan"*.
+
+That was `customer_context._OFFER_INSTRUCTIONS` doing exactly what it said:
+*"You may only mention the offer named above."* One product, and the customer
+had just said no to it, so the model had no legal move left.
+
+### 10.2 The rule that changed
+
+**From** "the model may name exactly one product" **to** "the model may name
+any product from this customer's suitability-checked set".
+
+The set is `product_gaps` — which both writers already compute as *eligible
+for this risk profile, and not owned* (`nasabah._gaps_for`; the
+`dim_offer_eligibility` join in `v_nasabah_profile`) — minus the staged offer.
+No new data, no second suitability rule.
+
+**The compliance guarantee is unchanged in substance.** Code still decides
+which products are legal for this nasabah; the model still cannot reach one
+that is not. A reviewer is still shown a suitability table, and it is still
+the same table. What moved is only *how many* of the already-approved rows the
+model may choose between — and the old answer of "one" was not a safety
+property, it was a bug wearing a compliance costume. Pinned by
+`test_forbids_reaching_outside_the_eligible_set`.
+
+Behaviour when the nasabah wants something genuinely outside the set is now
+specified rather than left to the model: say plainly that it does not match
+the recorded risk profile, and offer an RM review of that profile. The
+Konservatif persona asking for equities does exactly this — it does *not*
+start pitching stocks.
+
+### 10.3 Two smaller fixes in the same block
+
+- **The profile is no longer recited.** Handed a labelled field list and no
+  instruction, the model read it back as a labelled field list — which is why
+  a freshly generated reply read as a template. It is now told to quote only
+  the one or two details the question calls for.
+- **`holdings_sectors`** now reaches the prompt. Sector lived only in
+  `dim_instrument` and never left BigQuery, so the AI could say "concentrated
+  in stocks" but never "two of your three holdings are banks". Derived, not
+  stored (`nasabah.sectors_for`), because `PINNED_OVERRIDE` replaces holdings
+  after generation and a stored field would go stale on the one record that
+  is on screen. It has a SQL twin in `v_nasabah_profile`; the ordering rules
+  match so the seeder and the sync job write byte-identical values.
+
+### 10.4 The harness is the durable part
+
+`deploy/scripts/bahana_replay.py` builds the **real** system prompt and calls
+the **real** Gemini, faking only the transport. Before it, the only way to see
+what the model said was to WhatsApp the Twilio number from a handset — one
+persona, one turn at a time, a live 24-hour window per iteration. Every test
+in `agent/tests` stubs the model, so the suite pinned plumbing and said
+nothing about whether the conversation was any good.
+
+    agent/.venv/bin/python deploy/scripts/bahana_replay.py --all
+
+Every prompt change from here should be replayed across the population before
+it goes near a handset — every §9 item touches this prompt.

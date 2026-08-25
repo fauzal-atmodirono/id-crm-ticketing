@@ -99,20 +99,43 @@ TOP_AUM_BAND = "> Rp 1 miliar"
 # missing definition is rejected at rule-create time with an opaque 422.
 REQUIRED_CONTACT_ATTRIBUTES = ("risk_profile", "aum_band", "next_best_offer")
 
-# Consent is the one attribute the seeder does not write. It is created here
-# because Pattern B (spec §7.3) is theoretical without it: a consent gate you
-# cannot express as a condition is a paragraph, not a control.
-CONSENT_ATTRIBUTE = {
-    "attribute_display_name": "Consent Marketing",
-    "attribute_key": "consent_marketing",
-    "attribute_display_type": "text",
-    "attribute_description": (
-        "true/false. Marketing consent under UU PDP 27/2022. When 'false', "
-        "the consent automation rule routes the conversation to a human and "
-        "the AI never speaks -- see docs/bahana-automation-personalization.md."
-    ),
-    "attribute_model": "contact_attribute",
-}
+# Attributes the seeder does not define, created here so the operator does not
+# have to click them into Settings -> Custom Attributes by hand.
+#
+# Consent: Pattern B (spec §7.3) is theoretical without it -- a consent gate
+# you cannot express as a rule condition is a paragraph, not a control.
+#
+# Holdings by sector: written by the seeder and the BQ sync, and already read
+# by the AI (`customer_context._PROFILE_FIELDS`) with or without a definition,
+# because the agent reads `custom_attributes` straight off the contact JSON.
+# The definition is what makes it RENDER in the agent sidebar -- and a field
+# the AI cites that a human cannot see while reading the same conversation is
+# how an operator loses trust in the sidebar.
+DEFINED_ATTRIBUTES = (
+    {
+        "attribute_display_name": "Consent Marketing",
+        "attribute_key": "consent_marketing",
+        "attribute_display_type": "text",
+        "attribute_description": (
+            "true/false. Marketing consent under UU PDP 27/2022. When 'false', "
+            "the consent automation rule routes the conversation to a human and "
+            "the AI never speaks -- see docs/bahana-automation-personalization.md."
+        ),
+        "attribute_model": "contact_attribute",
+    },
+    {
+        "attribute_display_name": "Holdings by Sector",
+        "attribute_key": "holdings_sectors",
+        "attribute_display_type": "text",
+        "attribute_description": (
+            "Equity holdings grouped by IDX sector, biggest first, e.g. "
+            "'Keuangan (BBCA, BBRI), Infrastruktur (TLKM)'. Written by the "
+            "seeder and the BigQuery sync; read by the AI so it can talk about "
+            "sector concentration rather than only listing tickers."
+        ),
+        "attribute_model": "contact_attribute",
+    },
+)
 
 TEAM_NAME = "RM Prioritas"
 TEAM_DESCRIPTION = (
@@ -394,11 +417,12 @@ def ensure_attribute(api: Api, report: list[str]) -> bool:
         f"  ok       {len(REQUIRED_CONTACT_ATTRIBUTES)} required contact attributes defined"
     )
 
-    key = CONSENT_ATTRIBUTE["attribute_key"]
-    if key in keys:
-        report.append(f"  unchanged attribute {key}")
-    else:
-        api.create("/custom_attribute_definitions", CONSENT_ATTRIBUTE, f"attribute {key}")
+    for definition in DEFINED_ATTRIBUTES:
+        key = definition["attribute_key"]
+        if key in keys:
+            report.append(f"  unchanged attribute {key}")
+            continue
+        api.create("/custom_attribute_definitions", definition, f"attribute {key}")
         report.append(f"  CREATE    attribute {key}")
     return True
 

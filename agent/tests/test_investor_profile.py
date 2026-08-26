@@ -67,3 +67,9 @@ def test_recorded_risk_tier_refuses_to_guess():
     assert ip.recorded_risk_tier("Sangat Agresif") is None
     assert ip.recorded_risk_tier("") is None
     assert ip.recorded_risk_tier(None) is None
+
+
+def test_profiling_is_off_unless_a_tenant_opts_in():
+    from app.config import Settings
+
+    assert Settings().investor_profiling_enabled is False

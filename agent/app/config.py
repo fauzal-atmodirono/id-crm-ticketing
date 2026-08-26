@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     # Off by default: this REWRITES a contact record, which is not something a
     # real tenant should be one stray bracket away from.
     demo_persona_slugs_enabled: bool = False
+    # Let the agent-bot ask the four investor-profiling questions (goal,
+    # horizon, reaction to a 20% drawdown, experience) and store the answers
+    # on the contact. Off by default, and off means the tool is not offered to
+    # the model at all -- see orchestrator._tools_for_turn.
+    investor_profiling_enabled: bool = False
     kb_grounded_replies: bool = False
     auto_resolve: bool = False
     # Route the agent-bot's decision through the backend's full ADK conversational

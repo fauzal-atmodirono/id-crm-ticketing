@@ -145,7 +145,21 @@ def _persona_prompt(persona: dict | None) -> str:
     return "\n\n".join(parts)
 
 
-def _build_system_prompt(persona: dict | None, customer_context: str = "") -> str:
+PROFILING_INSTRUCTION = (
+    "You also have record_investor_preference. Call it when the customer tells "
+    "you what they are investing for, when they need the money, how they would "
+    "react to a 20% drop, or how experienced they are. Ask at most one of those "
+    "four questions per reply, only when the conversation gives you a natural "
+    "opening, and never instead of answering what they actually asked. Record "
+    "only what they said -- never infer an answer they did not give. These "
+    "preferences shape how you explain things; they do not change which "
+    "products the customer is eligible for."
+)
+
+
+def _build_system_prompt(
+    persona: dict | None, customer_context: str = "", profiling_enabled: bool = False
+) -> str:
     """The persona prompt, plus this customer's profile when we have one.
 
     `customer_context` defaults to "" and appends nothing when empty, so every
@@ -158,6 +172,11 @@ def _build_system_prompt(persona: dict | None, customer_context: str = "") -> st
     buried under it.
     """
     base = _persona_prompt(persona)
+    # Only advertised when the tool is actually in this turn's action space.
+    # Naming an action the model was not given makes it try to call one that
+    # isn't there, and `gemini._extract_decision` turns that into a handoff.
+    if profiling_enabled:
+        base = f"{base}\n\n{PROFILING_INSTRUCTION}"
     if not customer_context:
         return base
     return f"{base}\n\n{customer_context}"
@@ -546,7 +565,9 @@ async def _process_conversation(conversation_id: int) -> None:
             conversation_id,
         )
 
-    system_prompt = _build_system_prompt(persona, customer_context)
+    system_prompt = _build_system_prompt(
+        persona, customer_context, settings.investor_profiling_enabled
+    )
 
     # Fetch persona messages for the inbox (fail-open: None on any error).
     # Only handoff_message is consumed here; welcome_message is consumed at

@@ -100,3 +100,39 @@ def test_the_profiling_tool_cannot_take_a_risk_profile():
     # The gate stays on the KYC record: the model has no argument for it.
     assert "risk_profile" not in properties
     assert set(properties) == {"goal", "horizon", "drawdown_reaction", "experience"}
+
+
+def test_no_profiling_path_can_reach_risk_profile():
+    """The one guarantee feature B makes (design spec §2.3, §5.3).
+
+    Asserted three ways, because each could regress independently: the tool
+    cannot accept it, the attribute contract does not contain it, and the
+    canonicalizer will not emit it even when handed it directly.
+    """
+    from app.ai import tools
+    from app.services import investor_profile as ip
+
+    by_name = {
+        d.name: d for d in tools.TOOLS_WITH_PROFILING[0].function_declarations
+    }
+    properties = by_name["record_investor_preference"].parameters.properties
+    assert "risk_profile" not in properties
+    assert "risk_profile" not in ip.ATTRIBUTE_KEYS
+
+    hostile = {
+        "goal": "retirement",
+        "risk_profile": "Agresif",
+        "investor_risk_profile": "Agresif",
+    }
+    assert "risk_profile" not in ip.canonical_attributes(hostile, captured_at="x")
+
+
+def test_the_agent_is_told_about_the_tool_only_when_it_has_it():
+    from app.services.orchestrator import _build_system_prompt
+
+    # Off: the prompt must not advertise an action the model was not given,
+    # or it will try to call it and fall through to a handoff.
+    assert "record_investor_preference" not in _build_system_prompt(None, "")
+    assert "record_investor_preference" in _build_system_prompt(
+        None, "", profiling_enabled=True
+    )

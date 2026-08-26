@@ -29,7 +29,7 @@ AI answers as that nasabah**, no terminal required. See §3.
 
 **`AGENT_MODE=auto`** — the AI replies **directly to the nasabah's handset**.
 No human clicks send. (In `suggest` mode it posts a private note instead and the
-customer receives nothing — that is a different, equally valid demo; see §7.)
+customer receives nothing — that is a different, equally valid demo; see §8.)
 
 ---
 
@@ -197,6 +197,10 @@ No setup step, no terminal: the first slug you send sets the persona.
 The assistant is a live Gemini agent, so exact wording varies — verify the
 **behaviour**, not the phrasing.
 
+These are single-message probes, one claim each. For three **complete**
+conversations — greeting through to a human agent picking the conversation up,
+one per risk profile — see §6.
+
 ### A. `moderat` — Budi Santoso · portfolio awareness
 
 | You send | What to verify |
@@ -260,7 +264,7 @@ public reply. 8 scenarios, all behaving correctly.
 | Action | What to verify |
 |---|---|
 | Reply from the CRM as an agent while the bot is active | The conversation leaves `pending`; the bot **stops**. Your message reaches the handset. |
-| Send another customer message | The bot stays silent — a human owns the conversation now. Reset per §7 to hand it back. |
+| Send another customer message | The bot stays silent — a human owns the conversation now. Reset per §8 to hand it back. |
 
 ### F. Warehouse → conversation (the pipeline beat)
 
@@ -273,7 +277,306 @@ public reply. 8 scenarios, all behaving correctly.
 
 ---
 
-## 6. Offline testing (no phone needed)
+## 6. Full conversation walkthroughs — from "halo" to the human agent
+
+§5 tests one claim per message. This section runs three whole conversations
+instead, one per risk profile, each ending where a real one does: with a person
+taking over. Use these when you want to see the product rather than probe it —
+a customer demo, a compliance walkthrough, or a regression check after touching
+the persona or the prompt.
+
+### 6.0 How to read this section, and what is verified
+
+**The nasabah and bot lines are real output**, produced 2026-08-26 by replaying
+the scripts in `deploy/scripts/demo-scripts/` through the live prompt. The
+wording will differ when you run it — the model composes every reply from
+scratch. What must not differ is the **behaviour**: which facts it cites, which
+products it may and may not name, and where it hands off.
+
+**The human-agent lines are a script for you**, not model output. Nothing
+generates them. They are written so a demo has a satisfying ending and so a
+tester knows what "handled correctly" looks like on the CRM side.
+
+Run each with:
+
+```bash
+agent/.venv/bin/python deploy/scripts/bahana_replay.py --slug <profile> \
+  --script deploy/scripts/demo-scripts/bahana-<profile>.txt \
+  --handoff-message "Baik, saya hubungkan Anda dengan tim Bahana Sekuritas ya. Mohon tunggu sebentar."
+```
+
+...or send the turns from the handset with the slug appended to the **first**
+message only.
+
+### 6.1 What "handing off" actually does
+
+Worth knowing before you watch it, because two of the three effects are
+invisible on the handset. `orchestrator._handoff_to_human_via_chatwoot` does
+exactly three things, in this order:
+
+1. **Posts the persona's `handoff` message to the customer** — currently
+   *"Baik, saya hubungkan Anda dengan tim Bahana Sekuritas ya. Mohon tunggu
+   sebentar."* It falls back to `HANDOFF_DEFAULT_MESSAGE`, which is **empty**
+   on bahana, so if the persona message is ever cleared the bot goes silent
+   with no goodbye. Best-effort: a failed post never blocks step 2.
+2. **Sets the conversation to `open`.** This is the load-bearing one. The
+   orchestrator only ever acts on `pending` (`_is_eligible`), so this single
+   status change is what takes the AI off the air — structurally, not by
+   instruction.
+3. **Calls `POST /routing/assign` on the backend** to pick an assignee.
+   Fail-open; the conversation is already visible to humans either way.
+
+`escalate_to_ticket` and `handoff_to_human` both land here — there is no
+external ticketing backend, so they differ only in the reason recorded in
+`ai_actions`. Do not read one as more severe than the other.
+
+### 6.2 What the agent sees when it lands
+
+Same for all three walkthroughs. Have the CRM open on a second screen; this is
+the half that sells the product.
+
+| Where | What should be there |
+|---|---|
+| Conversation status | `open` (was `pending`) — and the bot has stopped |
+| Labels | `segmen-<profil>`, plus `offer-staged`, plus `nasabah-prioritas` for the top two AUM bands — applied by automation rules, no AI involved |
+| Contact sidebar | 11 attributes, including **Holdings by Sector** (added 2026-08-26) |
+| Last customer-visible message | the handoff line above |
+
+The sidebar is the point to linger on: the agent inherits the same profile the
+AI was reasoning from, so they are not starting cold.
+
+---
+
+### 6.3 `[konservatif]` — Sari Wijaya
+
+**The suitability walkthrough.** Idle Rp 82,5 juta, 312 days dormant, holds
+nothing. Ends when the nasabah asks for a human herself.
+
+> **nasabah:** halo
+> **bot:** Halo juga! Ada yang bisa saya bantu?
+
+> **nasabah:** bagaimana profil investasi saya?
+> **bot:** Halo! Berdasarkan catatan kami, profil investasi Anda adalah
+> konservatif. Dengan dana sebesar Rp 82.500.000 yang saat ini belum
+> ditempatkan, Reksa Dana Pasar Uang bisa menjadi pilihan yang menarik untuk
+> Anda. Apakah Anda tertarik untuk mengetahui lebih lanjut?
+
+> **nasabah:** dana saya kok mengendap terus di RDN ya, sayang tidak berkembang
+> **bot:** Saya memahami kekhawatiran Anda. Dana yang mengendap di RDN memang
+> kurang optimal. Reksa Dana Pasar Uang cocok untuk nasabah dengan profil
+> konservatif seperti Anda, agar dana bisa lebih berkembang sambil tetap
+> menjaga risiko.
+
+> **nasabah:** reksa dana pasar uang itu apa sih?
+> **bot:** Reksa Dana Pasar Uang adalah jenis reksa dana yang berinvestasi pada
+> instrumen pasar uang dan obligasi jangka pendek. Tujuannya adalah untuk
+> menjaga stabilitas modal dan memberikan likuiditas yang tinggi, sehingga
+> cocok untuk Anda yang memiliki profil risiko konservatif.
+
+> **nasabah:** sebenarnya saya mau yang return-nya tinggi, saham gitu
+> **bot:** Untuk investasi dengan return tinggi seperti saham, itu tidak sesuai
+> dengan profil risiko konservatif Anda. Jika Anda ingin meninjau ulang profil
+> risiko Anda, saya bisa bantu agar manajer hubungan kami dapat menghubungi Anda.
+
+**← verify here.** Saham was requested and **not** offered. Not caution: no
+equity SKU exists in her row of `dim_offer_eligibility`. Run the §2.5 query
+beside this. Note it also did not dead-end — it offered the profile review,
+which is the only correct route to what she is asking for.
+
+> **nasabah:** kalau begitu saya mau bicara dengan relationship manager, bisa
+> dijadwalkan?
+> **bot:** Baik, saya hubungkan Anda dengan tim Bahana Sekuritas ya. Mohon
+> tunggu sebentar.
+>
+> → `escalate_to_ticket` · *"Customer requests to speak with a relationship
+> manager to review their risk profile."*
+
+**Human agent takes over** — suggested script:
+
+> **agen:** Selamat siang Ibu Sari, saya Andi dari tim Relationship Management
+> Bahana Sekuritas. Saya sudah membaca percakapan Ibu dengan asisten kami.
+>
+> **agen:** Betul bahwa profil risiko Ibu saat ini tercatat Konservatif, dan
+> itulah sebabnya produk saham belum kami tawarkan. Profil ini bisa ditinjau
+> ulang — prosesnya lewat kuesioner profil risiko, dan hasilnya yang
+> menentukan produk apa saja yang bisa Ibu akses.
+>
+> **agen:** Boleh saya jadwalkan sesi 30 menit minggu ini untuk membahas tujuan
+> investasi Ibu sekaligus meninjau profil risikonya? Sekalian kita bahas dana
+> Rp 82.500.000 di RDN yang belum ditempatkan.
+
+*Why this script:* the agent uses the sidebar (profile, idle balance, 312 days)
+rather than asking the nasabah to repeat herself — which is the whole argument
+for handing over context rather than just a transcript.
+
+---
+
+### 6.4 `[moderat]` — Budi Santoso
+
+**The operational-request walkthrough.** Concentrated portfolio, 190 days
+dormant. Ends on something the AI must not do.
+
+> **nasabah:** haloo admin
+> **bot:** Halo juga! Ada yang bisa saya bantu?
+
+> **nasabah:** bagaimana profile saya?
+> **bot:** Halo, Bapak Budi. Berdasarkan catatan kami, Anda memiliki profil
+> risiko Moderat. Saldo kas RDN Anda saat ini Rp 46.000.000, dan Anda memiliki
+> saham BBCA, BBRI, serta TLKM. **Portofolio Anda saat ini terkonsentrasi pada
+> sektor Keuangan dan Infrastruktur.** Apakah ada hal lain yang ingin Anda
+> ketahui?
+
+**← verify here.** The bolded clause is the `holdings_sectors` attribute added
+2026-08-26. Before it, the AI could list tickers but had no idea BBCA and BBRI
+are both banks. If this sentence is missing, the contact is stale — re-run
+`bahana_bq_to_crm_sync.py`.
+
+> **nasabah:** portofolio saya sudah cukup terdiversifikasi belum?
+> **bot:** Bapak Budi, portofolio Anda saat ini terkonsentrasi pada sektor
+> Keuangan dan Infrastruktur. Untuk membantu diversifikasi, kami
+> merekomendasikan Reksa Dana Campuran yang sesuai dengan profil risiko moderat
+> Anda.
+
+> **nasabah:** hmmm portfolio saya gitu gitu aja yaa
+> **bot:** Kami memahami, Bapak Budi. Untuk membantu portofolio Anda agar tidak
+> "gitu-gitu saja" dan lebih terdiversifikasi, kami merekomendasikan Reksa Dana
+> Campuran. Produk ini cocok dengan profil risiko moderat Anda.
+
+> **nasabah:** tapi saya ingin fokusnya ke saham ajaa, gimana yaa?
+> **bot:** Kami memahami Anda ingin fokus pada saham, Bapak Budi. Saat ini Anda
+> sudah memiliki saham BBCA, BBRI, dan TLKM. Produk yang kami tawarkan
+> sebelumnya, Reksa Dana Campuran, bertujuan untuk diversifikasi portofolio
+> secara lebih luas dan bukan hanya saham. Jika Anda ingin berdiskusi lebih
+> lanjut mengenai peluang atau produk investasi saham lainnya, kami bisa
+> membantu menghubungkan Anda dengan manajer hubungan nasabah kami.
+
+**← verify here.** This turn used to end the conversation. Until 2026-08-25 the
+prompt allowed exactly one product, so declining it left the model with no legal
+move and it closed with *"ada lagi yang bisa saya bantu?"*. If you see that
+again, the deployed prompt is stale — check §8.
+
+> **nasabah:** oke deh nanti saya pikirkan, tapi tolong ubah nomor rekening bank
+> saya dulu ya
+> **bot:** Baik, saya hubungkan Anda dengan tim Bahana Sekuritas ya. Mohon
+> tunggu sebentar.
+>
+> → `handoff_to_human` · *"Customer is asking to change their bank account
+> number, which requires human verification and processing."*
+
+**Human agent takes over** — suggested script:
+
+> **agen:** Selamat siang Pak Budi, saya Rina dari tim Customer Care Bahana
+> Sekuritas. Terkait perubahan nomor rekening bank, prosesnya memang harus
+> lewat kami dan tidak bisa dilakukan otomatis.
+>
+> **agen:** Untuk keamanan, saya perlu memverifikasi identitas Bapak dulu.
+> Mohon kirimkan nomor SID/CIF dan foto KTP, lalu kami kirimkan formulir
+> perubahan data rekening untuk ditandatangani.
+>
+> **agen:** Sementara formulirnya kami siapkan — apakah Bapak ingin saya
+> teruskan juga diskusi soal portofolio tadi ke Relationship Manager Bapak?
+
+*Why this script:* it shows the agent doing the thing the bot refused, and
+picking the offer thread back up. The refusal was not the end of the sales
+conversation, only the end of the bot's part in it.
+
+---
+
+### 6.5 `[agresif]` — Rizki Pratama
+
+**The cross-sell and the compliance line, in one conversation.** Active trader,
+last traded 3 days ago.
+
+> **nasabah:** halo
+> **bot:** Halo juga, ada yang bisa saya bantu?
+
+**← verify here.** No product pitch on a bare greeting. This regressed once
+(2026-08-25, `[agresif]` opened with an unprompted recommendation in mangled
+Indonesian) and is now pinned by a test.
+
+> **nasabah:** bagaimana profil saya?
+> **bot:** Berdasarkan profil Anda, Anda memiliki profil risiko Agresif dengan
+> aset yang dikelola lebih dari Rp 1 miliar. Portofolio Anda saat ini mencakup
+> saham-saham seperti ANTM, BBRI, ICBP, dan PGAS, yang tersebar di sektor
+> Barang Baku, Keuangan, Barang Konsumen, dan Energi.
+
+> **nasabah:** portofolio saya sudah cukup terdiversifikasi belum?
+> **bot:** Meskipun portofolio Anda saat ini mencakup saham dari empat sektor
+> berbeda, diversifikasinya masih dapat ditingkatkan. Saat ini kepemilikan Anda
+> terkonsentrasi pada saham individu. Reksa Dana Saham dapat menjadi pilihan
+> yang baik untuk menambah diversifikasi investasi Anda.
+
+> **nasabah:** saya ingin fokus ke saham saja
+> **bot:** Baik, jika Anda ingin fokus pada saham, kami memiliki penawaran
+> langganan IPO yang mungkin menarik bagi Anda untuk menambah koleksi saham di
+> portofolio Anda. Apakah Anda ingin tahu lebih banyak tentang langganan IPO?
+
+**← the beat worth demoing.** Same sentence Sari sent in §6.3 — *"I only want
+stocks"* — and the opposite outcome. Rizki gets moved to **IPO Subscription**;
+Sari got a profile review. Neither is the model being clever or cautious: it is
+`dim_offer_eligibility`, applied before Gemini is called. Show the two side by
+side.
+
+> **nasabah:** IPO itu menarik, ada IPO apa yang bagus minggu ini?
+> **bot:** Baik, saya hubungkan Anda dengan tim Bahana Sekuritas ya. Mohon
+> tunggu sebentar.
+>
+> → `handoff_to_human` · *"Customer is asking for specific IPO recommendations,
+> which is investment advice that the AI cannot provide."*
+
+**← verify here.** It offered the IPO *product* one message earlier and refuses
+to name a specific issue here. Offering a product is marketing; naming which
+IPO is *bagus* is a licensed recommendation. That line is the demo's single
+strongest compliance artefact.
+
+**Human agent takes over** — suggested script:
+
+> **agen:** Selamat siang Pak Rizki, saya Dimas, Relationship Manager Bahana
+> Sekuritas. Asisten kami tidak bisa memberikan rekomendasi efek tertentu —
+> itu memang harus lewat kami yang berizin.
+>
+> **agen:** Untuk IPO yang sedang dalam masa penawaran, saya kirimkan
+> prospektus dan jadwalnya ya, supaya Bapak bisa menilai sendiri. Saya juga
+> siap membahas pertimbangannya lewat telepon.
+>
+> **agen:** Sekadar catatan, keputusan investasi sepenuhnya ada pada Bapak, dan
+> kinerja masa lalu tidak menjamin hasil di masa depan.
+
+*Why this script:* the agent supplies documents and context rather than a
+verdict, which is what a licensed person actually does. If your demo audience
+includes compliance, this is the exchange to walk them through.
+
+---
+
+### 6.6 Handing the conversation back to the bot
+
+Each walkthrough leaves its conversation `open` and owned by a human, so the
+bot will not answer the next message — including if you immediately try
+another profile from the same handset. Reset before the next run:
+
+```bash
+gcloud compute ssh crm-ticketing --zone=asia-southeast2-a --project=lv-playground-genai \
+  --command='sudo docker exec bahana-chatwoot-rails bundle exec rails runner "
+c = Contact.find_by(phone_number: %q(+6281112117038))
+v = Conversation.where(contact_id: c.id).order(:last_activity_at).last
+v.update!(status: :pending, assignee_id: nil)
+puts %Q(conversation #{v.display_id} -> #{v.status})
+"'
+```
+
+**Resolve it by contact, not by id.** The demo handset (contact **4**) already
+owns more than one conversation — as of 2026-08-26, display 1 (`resolved`) and
+display 3 (`pending`) — so the `Conversation.find(1)` this guide used to
+recommend resets a stale thread and leaves the live one exactly as stuck as it
+was. The query above always takes the most recently active one.
+
+A bot correctly standing down is indistinguishable from a broken one, so if
+"the bot stopped replying" is ever reported, check the status before anything
+else (§8).
+
+---
+
+## 7. Offline testing (no phone needed)
 
 Render the exact system prompt Gemini will receive for the current persona:
 
@@ -293,18 +596,55 @@ asyncio.run(m())"'
 ```
 
 Expect it to start **"You are a relationship assistant for Bahana Sekuritas"**,
-then Guardrails, then `## Customer profile`, then the offer.
+then Guardrails, then `## Customer profile`, then the offer — and, since
+2026-08-26, `## Other products this customer is eligible for` whenever the
+nasabah has a suitable product beyond the staged one.
+
+### 7.1 Replaying whole conversations offline
+
+The block above shows what the model is *told*. To see what it actually *says*
+— without a handset, a Twilio message, or a 24-hour WhatsApp window — use the
+replay harness. It imports the same `_build_system_prompt` and
+`format_customer_context` and calls the real Gemini; only the transport is
+faked.
+
+```bash
+# one persona, the full §6 script
+agent/.venv/bin/python deploy/scripts/bahana_replay.py --slug agresif \
+  --script deploy/scripts/demo-scripts/bahana-agresif.txt \
+  --handoff-message "Baik, saya hubungkan Anda dengan tim Bahana Sekuritas ya. Mohon tunggu sebentar."
+
+# all three personas against the transcript that started this work
+agent/.venv/bin/python deploy/scripts/bahana_replay.py --all
+
+# real warehouse rows rather than the built-in fixtures
+agent/.venv/bin/python deploy/scripts/bahana_replay.py --source bq \
+  --project lv-playground-genai --dataset bahana_demo --location asia-southeast2
+```
+
+Needs Vertex credentials in the environment (`GOOGLE_GENAI_USE_VERTEXAI=true`,
+`VERTEX_PROJECT_ID`, `VERTEX_LOCATION`, `GEMINI_MODEL`); everything else it
+stubs. `--persona-json` applies a candidate persona without saving it to the
+tenant, which is the cheap way to test a wording change.
+
+**Run this before any prompt or persona edit reaches the handset.** Every test
+in `agent/tests` stubs the model, so the suite proves the profile reaches the
+prompt and says nothing about whether the conversation is any good. Four
+separate conversation defects — the dead-end on a declined offer, a pitch in
+answer to "halo", the internal offer rationale being read out to the customer,
+and a transaction request refused without being routed anywhere — were all
+found this way and none of them would have failed a unit test.
 
 If it starts **"You are a support agent for the company"**, the persona has been
 lost — see §7.
 
 ---
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| **Bot silent, no reply at all** | Conversation is not `pending`. The orchestrator only acts on `pending` — that is what makes an agent reply silence it. After any takeover it stays `open`, and a correctly-standing-down bot looks identical to a broken one. | `Conversation.find(1).update!(status: :pending, assignee_id: nil)` via rails runner |
+| **Bot silent, no reply at all** | Conversation is not `pending`. The orchestrator only acts on `pending` — that is what makes an agent reply silence it. After any takeover it stays `open`, and a correctly-standing-down bot looks identical to a broken one. | Reset the contact's **most recent** conversation, not id 1 — see the query in §6.6. The handset owns several conversations, so a hardcoded id silently resets the wrong one. |
 | **Reply is English and generic** ("support agent for the company") | Persona lost. A backend restart once re-seeded a *new* default assistant, orphaning the config. | Re-apply the persona to the current default assistant id (§1) |
 | **Slug ignored, persona does not change** | `DEMO_PERSONA_SLUGS_ENABLED` not true on this tenant, or the slug was not the **last** thing in the message | `docker exec bahana-agent printenv DEMO_PERSONA_SLUGS_ENABLED`; put the slug at the very end |
 | **Slug switched the AI but the sidebar still shows the old nasabah** | Should not happen — the slug writes the contact record. If it does, the write failed and was swallowed | `docker logs bahana-agent \| grep "demo persona"`; fall back to the CLI (§3) |
@@ -315,7 +655,7 @@ lost — see §7.
 
 ---
 
-## 8. Honesty notes for the demo
+## 9. Honesty notes for the demo
 
 State these out loud rather than waiting to be asked:
 
@@ -329,7 +669,7 @@ State these out loud rather than waiting to be asked:
 
 ---
 
-## 9. Related docs
+## 10. Related docs
 
 - `docs/bahana-demo-runbook.md` — setup, provisioning, demo choreography
 - `docs/superpowers/specs/2026-08-22-bahana-personalization-design.md` — the design and Phase 1+

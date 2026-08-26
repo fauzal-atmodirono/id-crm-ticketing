@@ -216,6 +216,7 @@ async def _replay_one(
     turns: list[str],
     persona: dict | None,
     show_prompt: bool,
+    handoff_message: str = "",
 ) -> dict:
     """Drive one persona through the script, returning a structured result."""
     customer_context = format_customer_context(attributes)
@@ -246,9 +247,21 @@ async def _replay_one(
         # of `pending`, which is the only status the orchestrator acts on. The
         # bot is off the air from here, so the replay ends rather than
         # pretending otherwise.
+        #
+        # Production posts one more customer-visible message before it goes
+        # quiet: `_handoff_to_human_via_chatwoot` sends the assistant persona's
+        # `handoff` text (falling back to HANDOFF_DEFAULT_MESSAGE, and posting
+        # nothing when both are empty). That message is fetched from the
+        # backend, which this process deliberately does not talk to -- so pass
+        # it in with --handoff-message when you want the transcript to match
+        # what the customer actually sees. Without it the replay would end one
+        # message early and quietly misrepresent the handover.
         reason = decision.args.get("reason") or decision.args.get("summary") or ""
+        if handoff_message:
+            print(f"  \033[36mbot\033[0m      {handoff_message}")
+            record["handoff_message"] = handoff_message
         print(f"  \033[33m{decision.action}\033[0m  {reason}")
-        print("  (conversation leaves `pending` — the AI stops here in production)")
+        print("  (conversation goes to `open` and is routed to a human — the AI stops here)")
         break
 
     return {
@@ -288,7 +301,10 @@ async def _main_async(args: argparse.Namespace) -> int:
     results = []
     for display_name, attributes in profiles:
         results.append(
-            await _replay_one(display_name, attributes, turns, persona, args.show_prompt)
+            await _replay_one(
+                display_name, attributes, turns, persona, args.show_prompt,
+                args.handoff_message,
+            )
         )
 
     if args.json:
@@ -331,6 +347,16 @@ def main() -> int:
     parser.add_argument("--script", help="file of customer turns, one per line")
     parser.add_argument("--persona-json", help="operator assistant persona JSON to apply")
     parser.add_argument("--show-prompt", action="store_true", help="dump the system prompt")
+    parser.add_argument(
+        "--handoff-message",
+        default="",
+        help=(
+            "the assistant persona's handoff text, printed when the model hands "
+            "off. Production posts this to the customer before going quiet; this "
+            "process never reaches the backend, so supply it here to make the "
+            "transcript match what the handset receives."
+        ),
+    )
     parser.add_argument("--json", help="also write structured results to this path")
     args = parser.parse_args()
 

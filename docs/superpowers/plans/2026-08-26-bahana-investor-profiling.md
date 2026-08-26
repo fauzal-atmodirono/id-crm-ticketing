@@ -928,10 +928,30 @@ git commit -m "feat(bahana): ask the profiling questions; pin the risk_profile g
 ## Verification before calling this done
 
 - [ ] `pytest` — full suite green from `agent/`.
-- [ ] With `INVESTOR_PROFILING_ENABLED` unset, confirm `Settings().investor_profiling_enabled is False`. **Note:** Tasks 4–7 add the tool to the action space unconditionally; if the flag must also gate whether the tool is offered at all, that is a follow-up — decide explicitly rather than assuming. See "Known gap" below.
-- [ ] Re-read `deploy/tenants/example.env` and confirm `INVESTOR_PROFILING_ENABLED` is documented there with the same name used in `app/config.py`.
+- [x] With `INVESTOR_PROFILING_ENABLED` unset, `Settings().investor_profiling_enabled is False` — pinned by `test_profiling_is_off_unless_a_tenant_opts_in`.
+- [x] `INVESTOR_PROFILING_ENABLED` documented in `deploy/tenants/example.env` under the same name used in `app/config.py`.
 
-**Known gap, stated rather than hidden:** this plan wires the flag into `Settings` but does not branch on it in the orchestrator. The tool is offered to the model on every tenant. That is defensible — the model only calls it when a customer volunteers the information, and the write is merge-safe — but it is not what "default off" implies to someone reading the env file. Either gate the `TOOLS` list per turn or reword the env comment. Raise it at review rather than picking silently.
+**The "known gap" was resolved during execution, not shipped.** The plan as
+written appended the tool to `TOOLS`, which would have offered it to every
+tenant and made "default off" untrue at the only layer that matters — the one
+the model sees. What was built instead:
+
+- `TOOLS` stays byte-identical at three declarations; `TOOLS_WITH_PROFILING`
+  is a separate four-declaration list (`test_the_default_action_space_is_unchanged`).
+- `gemini.decide` gained an optional `tools` override, but the orchestrator
+  passes it **only** when the flag is on (`_decide_kwargs`). The disabled path
+  is therefore the same call today makes, with the same arity — which is also
+  why none of the 13 existing `decide` stubs needed touching.
+- The prompt clause is gated by the same flag
+  (`_build_system_prompt(..., profiling_enabled=...)`). Advertising an action
+  the model was not given makes it try to call one that isn't there, and
+  `_extract_decision` turns that into a handoff, so prompt and tool list must
+  be gated together.
+
+One small addition beyond the plan: `investor_profile.recorded_risk_tier`,
+so the Konservatif/Moderat/Agresif ordering lives in one module rather than
+being re-derived in the orchestrator. Tested, and it refuses to guess a tier
+for an unrecognised profile.
 
 ---
 

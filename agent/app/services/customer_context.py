@@ -56,6 +56,12 @@ _PROFILE_FIELDS: tuple[tuple[str, str], ...] = (
     ("holdings_sectors", "Holdings by sector"),
     ("days_since_last_transaction", "Days since last transaction"),
     ("product_gaps", "Products not yet held"),
+    # Captured in conversation by `record_investor_preference`, not from the
+    # back office. Appended rather than interleaved so the portfolio fields
+    # above keep the order they already render in.
+    ("investor_goal", "Stated goal"),
+    ("investor_horizon", "Investment horizon"),
+    ("investor_experience", "Investing experience"),
 )
 
 # How both writers of `product_gaps` -- the seeder's
@@ -71,7 +77,13 @@ _PROFILE_INSTRUCTIONS = (
     "details that bear on what they actually asked. The figures above are the "
     "CRM's record: never invent, round, or adjust them. Prefer closing with a "
     "question that moves the conversation forward over a generic "
-    "\"is there anything else?\"."
+    "\"is there anything else?\". "
+    "Where an investing-experience level is recorded, match your explanation "
+    "to it: explain what a product actually is to a beginner, and do not "
+    "explain the basics to an experienced investor. The stated goal and "
+    "horizon are what the customer told us in conversation, not their "
+    "official risk profile -- use them for framing, never to justify a "
+    "product their risk profile does not allow."
 )
 
 _ELIGIBLE_INSTRUCTIONS = (

@@ -209,3 +209,28 @@ def test_an_actionable_request_routes_to_a_human():
     # the customer's own record, which the product exists to answer.
     assert "that rule does not reach ordinary questions" in out
     assert "handing them to a human is a worse answer, not a safer one" in out
+
+
+def test_renders_the_conversational_investor_profile():
+    out = format_customer_context(
+        {
+            "risk_profile": "Moderat",
+            "investor_horizon": "> 10 tahun",
+            "investor_experience": "Pemula",
+            "investor_goal": "Dana pensiun",
+        }
+    )
+    assert "Investment horizon: > 10 tahun" in out
+    assert "Investing experience: Pemula" in out
+    assert "Stated goal: Dana pensiun" in out
+    # Experience must steer how much is explained, or the field is decoration.
+    assert "experience" in out.lower()
+
+
+def test_a_contact_with_no_investor_fields_is_unchanged():
+    # Every other tenant's contacts carry none of these keys. Their prompt
+    # must not gain an empty row.
+    out = format_customer_context({"risk_profile": "Moderat"})
+    assert "Investment horizon" not in out
+    assert "Investing experience" not in out
+    assert "Stated goal" not in out

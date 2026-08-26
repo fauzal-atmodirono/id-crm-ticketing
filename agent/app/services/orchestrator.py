@@ -25,7 +25,10 @@ import logging
 import httpx
 from sqlalchemy.exc import SQLAlchemyError
 
+from datetime import datetime, timezone
+
 from app.ai import gemini
+from app.ai import tools as ai_tools
 from app.clients.deps import get_chatwoot_client, get_proton_config_client
 from app.config import get_settings
 from app.db.models import AiAction
@@ -33,6 +36,7 @@ from app.db.session import async_session_maker
 from app.services import lifecycle, lifecycle_store, whatsapp_format
 from app.services.customer_context import format_customer_context
 from app.services import demo_persona
+from app.services import investor_profile
 from app.services.media import fetch_attachment_bytes
 from app.services.media_registry import drop_order
 
@@ -81,6 +85,33 @@ SYSTEM_PROMPT = (
     "actually says — never invent facts, prices, policies, or commitments "
     "you can't verify from it. " + LANGUAGE_MATCH_INSTRUCTION
 )
+
+
+def _utc_now_iso() -> str:
+    """Capture time as an ISO-8601 Z string.
+
+    A named function rather than an inline call so a test can pin it without
+    freezing the clock for everything else in the process.
+    """
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _decide_kwargs(profiling_enabled: bool) -> dict:
+    """The extra keyword arguments for `gemini.decide` this turn.
+
+    Returns `{}` when profiling is off, so the disabled call is not merely
+    equivalent to today's -- it is the same call, with the same arity. That is
+    a stronger guarantee than passing `tools=TOOLS` would give, and it is why
+    this returns kwargs rather than a tool list.
+    """
+    if not profiling_enabled:
+        return {}
+    return {"tools": ai_tools.TOOLS_WITH_PROFILING}
 
 
 def _persona_prompt(persona: dict | None) -> str:
@@ -471,6 +502,11 @@ async def _process_conversation(conversation_id: int) -> None:
     # customer_context empty, which makes _build_system_prompt a no-op. Runs as
     # part of a background task, so it must never raise (see CLAUDE.md).
     customer_context = ""
+    # Hoisted out of the try so they survive a failure inside it: a contact we
+    # could not read must degrade to "no profiling this turn", not to a
+    # NameError at the call site below.
+    resolved_contact_id: int | None = None
+    resolved_risk_profile = ""
     try:
         if conversation_data is None:
             conversation_data = await chatwoot.get_conversation(conversation_id)
@@ -488,12 +524,21 @@ async def _process_conversation(conversation_id: int) -> None:
                 await _maybe_apply_persona_slug(
                     chatwoot, conversation_id, int(contact_id)
                 )
+            resolved_contact_id = int(contact_id)
             contact = await chatwoot.get_contact(int(contact_id))
             body = contact.get("payload") if isinstance(contact, dict) else None
             body = body if isinstance(body, dict) else contact
-            customer_context = format_customer_context(
+            contact_attributes = (
                 body.get("custom_attributes") if isinstance(body, dict) else None
             )
+            # Read for the divergence check only (design spec §5.3). Nothing on
+            # this path ever writes it back.
+            resolved_risk_profile = (
+                str(contact_attributes.get("risk_profile") or "")
+                if isinstance(contact_attributes, dict)
+                else ""
+            )
+            customer_context = format_customer_context(contact_attributes)
     except Exception:
         logger.debug(
             "orchestrator: could not resolve customer context for conversation %s; "
@@ -542,7 +587,11 @@ async def _process_conversation(conversation_id: int) -> None:
 
     context = _build_context(message_list)
 
-    decision = await gemini.decide(system_prompt, context)
+    decision = await gemini.decide(
+        system_prompt,
+        context,
+        **_decide_kwargs(settings.investor_profiling_enabled),
+    )
     await _log_decision(conversation_id, decision)
 
     # KB-grounded reply: for a plain answer, source the text from the backend
@@ -570,6 +619,8 @@ async def _process_conversation(conversation_id: int) -> None:
         await _execute_decision(
             conversation_id, decision, effective_mode, chatwoot,
             handoff_message=handoff_message,
+            contact_id=resolved_contact_id,
+            recorded_risk_profile=resolved_risk_profile,
         )
     except httpx.HTTPError:
         logger.exception(
@@ -909,8 +960,49 @@ async def _handoff_to_human_via_chatwoot(
 
 
 async def _execute_decision(
-    conversation_id, decision, mode: str, chatwoot, *, handoff_message: str = ""
+    conversation_id, decision, mode: str, chatwoot, *, handoff_message: str = "",
+    contact_id: int | None = None, recorded_risk_profile: str = "",
 ) -> None:
+    if decision.action == "record_investor_preference":
+        # Personalization only. The four answers land on the contact so the
+        # sidebar and the next turn's prompt both see them; the risk_profile
+        # that gates eligibility is untouched by construction -- there is no
+        # mapping for it in investor_profile (design spec §2.3, §5.3).
+        #
+        # Deliberately silent. The customer just told us this in conversation;
+        # a "noted!" reply would be the bot narrating its own bookkeeping, and
+        # the model still gets a turn to answer whatever they actually asked.
+        #
+        # Handled before the trailing else, which hands off on any action it
+        # does not recognise.
+        if contact_id is None:
+            logger.info(
+                "orchestrator: no contact for conversation %s; cannot record "
+                "investor preference",
+                conversation_id,
+            )
+            return
+        attributes = investor_profile.canonical_attributes(
+            decision.args, captured_at=_utc_now_iso()
+        )
+        if not attributes:
+            logger.info(
+                "orchestrator: investor preference for conversation %s recognised "
+                "no answers; nothing written",
+                conversation_id,
+            )
+            return
+        await chatwoot.merge_contact_attributes(contact_id, attributes)
+
+        # Their answers and their KYC record disagree -> tell a human. This
+        # notifies; it never reconciles. Only a licensed person changes a risk
+        # profile, and only upward divergence matters: a customer who answers
+        # more cautiously than their file is already inside their eligible set.
+        implied = investor_profile.implied_risk_tier(decision.args)
+        recorded = investor_profile.recorded_risk_tier(recorded_risk_profile)
+        if implied is not None and recorded is not None and implied > recorded:
+            await chatwoot.add_labels(conversation_id, ["profile_review"])
+        return
     if decision.action == "send_reply":
         text = decision.args.get("text", "")
         if mode == "auto":

@@ -134,13 +134,20 @@ async def decide(
     system_prompt: str,
     conversation_context: str,
     client: genai.Client | None = None,
+    tools: list | None = None,
 ) -> Decision:
+    """Force exactly one function call from the model.
+
+    `tools` defaults to the module-level TOOLS, so every existing caller is
+    unchanged. A caller passes a different action space only to widen it for a
+    tenant that opted in -- see orchestrator._tools_for_turn.
+    """
     settings = get_settings()
     genai_client = client if client is not None else _client()
 
     config = types.GenerateContentConfig(
         system_instruction=system_prompt,
-        tools=TOOLS,
+        tools=TOOLS if tools is None else tools,
         tool_config=types.ToolConfig(
             function_calling_config=types.FunctionCallingConfig(mode="ANY"),
         ),

@@ -114,6 +114,35 @@ class ChatwootClient:
         response.raise_for_status()
         return response.json()
 
+    async def merge_contact_attributes(
+        self, contact_id: int, attributes: dict[str, str]
+    ) -> bool:
+        """Add `attributes` to a contact, keeping everything already there.
+
+        `update_contact` REPLACES `custom_attributes`, so a caller writing a
+        subset silently deletes the rest -- for a Bahana nasabah that is their
+        whole portfolio. This reads the current object and merges over it.
+
+        Returns True if a write happened. An empty `attributes` short-circuits
+        before the GET: a capture that recognised nothing must not cost two API
+        calls, and must not touch the contact at all.
+
+        Not atomic, and deliberately not: Chatwoot has no compare-and-swap on
+        contacts. A concurrent write between the GET and the PUT loses. The
+        exposure is one contact's attributes during a single chat turn, and the
+        alternative is a lock held across a network call.
+        """
+        if not attributes:
+            return False
+        contact = await self.get_contact(contact_id)
+        body = contact.get("payload") if isinstance(contact, dict) else None
+        body = body if isinstance(body, dict) else contact
+        current = body.get("custom_attributes") if isinstance(body, dict) else None
+        merged = dict(current) if isinstance(current, dict) else {}
+        merged.update(attributes)
+        await self.update_contact(contact_id, {"custom_attributes": merged})
+        return True
+
     async def get_agent_bot(self, agent_bot_id: int) -> Any:
         """Account-scoped agent bot lookup — used only by
         `scripts.register_bot` to read back the bot's `secret`, which the

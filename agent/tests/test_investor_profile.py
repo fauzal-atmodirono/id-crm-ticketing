@@ -73,3 +73,30 @@ def test_profiling_is_off_unless_a_tenant_opts_in():
     from app.config import Settings
 
     assert Settings().investor_profiling_enabled is False
+
+
+def test_the_default_action_space_is_unchanged():
+    """Off must mean the model is never offered the tool.
+
+    Every existing tenant runs on `TOOLS`; if this grew a fourth entry, a
+    proton or aeon360 conversation could call it. That is why the profiling
+    variant is a separate list rather than an append.
+    """
+    from app.ai import tools
+
+    names = {d.name for d in tools.TOOLS[0].function_declarations}
+    assert names == {"send_reply", "escalate_to_ticket", "handoff_to_human"}
+
+
+def test_the_profiling_tool_cannot_take_a_risk_profile():
+    from app.ai import tools
+
+    by_name = {
+        d.name: d for d in tools.TOOLS_WITH_PROFILING[0].function_declarations
+    }
+    assert "record_investor_preference" in by_name
+
+    properties = by_name["record_investor_preference"].parameters.properties
+    # The gate stays on the KYC record: the model has no argument for it.
+    assert "risk_profile" not in properties
+    assert set(properties) == {"goal", "horizon", "drawdown_reaction", "experience"}

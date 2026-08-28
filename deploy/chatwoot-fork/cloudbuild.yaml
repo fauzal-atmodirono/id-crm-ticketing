@@ -4,7 +4,7 @@
 # Required substitutions (set in the Cloud Build trigger or --substitutions flag):
 #   _REGISTRY    e.g. asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images
 #   _TAG_SUFFIX  OPTIONAL, and the safety valve. Appended to the image tag, so
-#                _TAG_SUFFIX=-p6p14 builds proton-chatwoot:v4.15.1-custom-p6p14
+#                _TAG_SUFFIX=-p6p14 builds <_IMAGE_NAME>:v4.15.1-custom-p6p14
 #                instead of overwriting v4.15.1-custom.
 #
 #                THIS MATTERS: every tenant that pins v4.15.1-custom shares it.
@@ -30,16 +30,23 @@ substitutions:
   _REGISTRY: asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images
   _BUILD_SHA: unknown
   _TAG_SUFFIX: ""
+  # Image (repository) name inside _REGISTRY. Defaults to the historical
+  # `proton-chatwoot` so existing tenants and their pinned CHATWOOT_IMAGE keep
+  # resolving unchanged. OVERRIDE IT for any registry belonging to a different
+  # customer -- shipping an image carrying another customer's name into their
+  # Artifact Registry is a disclosure, not just untidy naming.
+  _IMAGE_NAME: proton-chatwoot
 
 steps:
   - id: read-version
     name: bash
     env:
       - _TAG_SUFFIX=${_TAG_SUFFIX}
+      - _IMAGE_NAME=${_IMAGE_NAME}
     script: |
       VERSION=$(cat UPSTREAM_VERSION)
       echo "UPSTREAM_VERSION=${VERSION}" >> /workspace/build.env
-      echo "Building proton-chatwoot:${VERSION}-custom${_TAG_SUFFIX}"
+      echo "Building ${_IMAGE_NAME}:${VERSION}-custom${_TAG_SUFFIX}"
 
   - id: build
     name: gcr.io/cloud-builders/docker
@@ -51,12 +58,13 @@ steps:
         docker build \
           --build-arg UPSTREAM_VERSION=$${UPSTREAM_VERSION} \
           --build-arg PROTON_BUILD_SHA=$${_BUILD_SHA} \
-          -t $${_REGISTRY}/proton-chatwoot:$${UPSTREAM_VERSION}-custom$${_TAG_SUFFIX} \
+          -t $${_REGISTRY}/$${_IMAGE_NAME}:$${UPSTREAM_VERSION}-custom$${_TAG_SUFFIX} \
           .
     env:
       - _REGISTRY=${_REGISTRY}
       - _BUILD_SHA=${_BUILD_SHA}
       - _TAG_SUFFIX=${_TAG_SUFFIX}
+      - _IMAGE_NAME=${_IMAGE_NAME}
 
   - id: push
     name: gcr.io/cloud-builders/docker
@@ -65,10 +73,11 @@ steps:
       - -c
       - |
         source /workspace/build.env
-        docker push $${_REGISTRY}/proton-chatwoot:$${UPSTREAM_VERSION}-custom$${_TAG_SUFFIX}
+        docker push $${_REGISTRY}/$${_IMAGE_NAME}:$${UPSTREAM_VERSION}-custom$${_TAG_SUFFIX}
     env:
       - _REGISTRY=${_REGISTRY}
       - _TAG_SUFFIX=${_TAG_SUFFIX}
+      - _IMAGE_NAME=${_IMAGE_NAME}
 
 options:
   machineType: E2_HIGHCPU_8

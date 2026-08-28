@@ -178,8 +178,14 @@ services:
       - tenants/${TENANT}.env
     environment:
       CHATWOOT_URL: http://${TENANT}-chatwoot-rails:3000
-      CHATWOOT_PUBLIC_URL: http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io
-      AGENT_PUBLIC_URL: http://${HOST_PREFIX}agent.${PUBLIC_IP}.nip.io
+      # Human-facing links the agent stamps into notes/emails (the *_display_url
+      # properties). Overridable for the same reason FRONTEND_URL is: a tenant
+      # behind a real domain -- or behind a load balancer, where the VM has no
+      # public IP at all and the nip.io pattern is meaningless -- must be able to
+      # state its own public origin. Defaults preserve the nip.io form exactly,
+      # so tenants that set neither are unaffected.
+      CHATWOOT_PUBLIC_URL: ${CHATWOOT_PUBLIC_URL_OVERRIDE:-http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io}
+      AGENT_PUBLIC_URL: ${AGENT_PUBLIC_URL_OVERRIDE:-http://${HOST_PREFIX}agent.${PUBLIC_IP}.nip.io}
       CHATWOOT_API_TOKEN: ${CHATWOOT_API_TOKEN}
       CHATWOOT_PLATFORM_TOKEN: ${CHATWOOT_PLATFORM_TOKEN}
       CHATWOOT_ACCOUNT_ID: ${CHATWOOT_ACCOUNT_ID}

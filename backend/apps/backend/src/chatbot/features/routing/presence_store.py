@@ -157,12 +157,33 @@ class PresenceEventStore:
 
     ``latest()`` and ``stamp_alert()`` are bounded server-side:
     ``where("agent_id", "==", agent_id).order_by("at",
-    direction=DESCENDING).limit(_LATEST_QUERY_LIMIT)``. A single equality
-    filter plus a single ``order_by`` on a *different* field is one of
-    Firestore's documented exemptions from composite indexing -- it is
-    served entirely by the automatic single-field indexes Firestore
-    maintains for every field, so this bound needs nothing provisioned. This
-    matters because ``latest()`` is on the routing hot path:
+    direction=DESCENDING).limit(_LATEST_QUERY_LIMIT)``.
+
+    **This REQUIRES a provisioned composite index on ``(agent_id ASC, at
+    DESC)``.** An earlier version of this docstring claimed a single
+    equality filter plus an ``order_by`` on a *different* field was one of
+    Firestore's exemptions from composite indexing, served by the automatic
+    single-field indexes. **That is wrong.** Firestore requires a composite
+    index for exactly that combination. Without it every call raises
+    ``400 The query requires an index``, which the fail-open ``except``
+    below swallows into ``None`` -- so ``RoutingService._is_routable``
+    treats every agent's presence as unknown and presence-aware routing
+    silently degrades to no-presence routing, with nothing wrong visible in
+    the UI. Both the Devoteam and AEON360 tenants ran that way until
+    2026-08-29, logging ``presence_store_latest_failed`` once per candidate
+    agent per routing decision.
+
+    The index cannot be created from application code; provision it per
+    database::
+
+        gcloud firestore indexes composite create \
+          --collection-group=presence_events \
+          --field-config=field-path=agent_id,order=ascending \
+          --field-config=field-path=at,order=descending \
+          --database=<db> --project=<project>
+
+    The server-side bound itself is still the right design, and the reason
+    for it stands: ``latest()`` is on the routing hot path;
     ``RoutingService._is_routable`` calls it once per candidate agent on
     every ``pick_agent`` call, so its cost must not grow with how many
     presence transitions an agent has accumulated over the account's

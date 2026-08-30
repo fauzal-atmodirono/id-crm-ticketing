@@ -2,7 +2,7 @@
 
 **For:** AEON360 infrastructure / cloud team
 **From:** Devoteam (CRM platform)
-**Date:** 2026-08-28 · **Revision 8** — Prod tenant is deployed and running; §2.3 records that VM-attached service account auth (Option A) is now proven, not theoretical
+**Date:** 2026-08-29 · **Revision 9** — **Production is live.** The load balancer is wired and `https://innovation-hub.aeon360.com.my` serves the CRM; §13.7's firewall request is withdrawn as moot
 
 ---
 
@@ -55,12 +55,28 @@ provisioned.
 | Environments | **Two** — Dev and Prod, one VM each, fully separate |
 | Infrastructure shape | **Single VM per environment.** Postgres, Redis, Memcached and the mail catcher all run on that VM as containers. No Cloud SQL, no Memorystore. **A load balancer is required after all** — organisation policy blocks external IPs on VMs, so inbound arrives GLB → ILB → VM; port contract in §13 |
 | Reporting | **Chatwoot's native reporting.** No BigQuery, no warehouse |
-| Domain | **AEON360's own domain** — DNS specification in §4 for AEON360 to provision |
-| Credentials | **AEON360 to choose** — §2.3 sets out both options and our recommendation |
+| Domain | **`innovation-hub.aeon360.com.my`** — live; DNS and TLS in place |
+| Credentials | **Option A** — VM-attached service account, no keys. Forced by org policy, proven in production (§2.3) |
 | Voice / IVR | Out of scope for now — see §7.4 |
 
-Two items still need an answer before we start: the **hostnames** AEON360 will
-use (§4.1) and the **credential option** (§2.3). Everything else is settled.
+### Status: live in production as of 2026-08-29
+
+This document began as a request for infrastructure. That infrastructure now
+exists and the CRM is running on it. What follows is kept as the record of what
+was provisioned and why, and remains the reference for the Dev environment if
+that is stood up later.
+
+| | |
+|---|---|
+| URL | **`https://innovation-hub.aeon360.com.my`** (GLB `34.54.12.27`, TLS at the GLB) |
+| Hostname | Settled — one hostname, path-split across the three services (§13) |
+| Credentials | Settled — Option A, VM-attached service account, proven (§2.3) |
+| Path | GLB → ILB `ilb-prod-innovation-svc-ase1` (`10.94.0.2:80`) → zonal NEG → VM `10.94.0.4:80` |
+| Verified | Chatwoot, AI backend, agent, RBAC, Knowledge and reporting all reachable and authenticating; Gemini answering via Vertex in `asia-southeast1` |
+
+The tenant's data was mirrored from the Devoteam environment — see
+`docs/runbooks/aeon360-prod-migration.md` for that, and for four defects found
+after cutover that any future provisioning run will hit.
 
 ---
 
@@ -549,34 +565,34 @@ it is a configuration addition, not an infrastructure change.
 
 Per environment — Dev first, then Prod.
 
-- [ ] Enable the nine APIs in §2.1
-- [ ] Create the `crm-backend` service account with the roles in §2.2
-- [ ] Decide Option A or Option B (§2.3) and tell us which
-- [ ] Reserve a static external IP in `asia-southeast1`
-- [ ] Create the VM per §3.1 / §3.2 — **with the service account attached if Option A**
-- [ ] Create the firewall rule for `tcp:80,443` on the environment's network tag
-- [ ] **Grant the operator roles in §12** — at minimum
+- [x] Enable the nine APIs in §2.1
+- [x] Create the `crm-backend` service account with the roles in §2.2
+- [x] Decide Option A or Option B (§2.3) and tell us which
+- [x] ~~Reserve a static external IP~~ — **not possible**: org policy `compute.vmExternalIpAccess` is DENY. Superseded by the GLB/ILB path (§11, §13)
+- [x] Create the VM per §3.1 / §3.2 — **with the service account attached if Option A**
+- [x] Create the firewall rule for `tcp:80,443` on the environment's network tag
+- [x] **Grant the operator roles in §12** — at minimum
       `roles/compute.instanceAdmin.v1` on the service project and
       `roles/compute.networkViewer` on the host project (§12.4)
-- [ ] Confirm the workload service account holds the roles in §12.3
-- [ ] Create the `GCE_VM_IP_PORT` NEG on **port 80 only** (§13.1) and the
+- [x] Confirm the workload service account holds the roles in §12.3
+- [x] Create the `GCE_VM_IP_PORT` NEG on **port 80 only** (§13.1) and the
       health check (§13.4)
-- [ ] Open the health-check ranges `130.211.0.0/22` + `35.191.0.0/16` and the
+- [x] Open the health-check ranges `130.211.0.0/22` + `35.191.0.0/16` and the
       proxy-only subnet to `tcp:80` (§13.5) — the LB serves 502 without them
-- [ ] **Open `35.235.240.0/20 → tcp:80`** on both VMs' tags so we can verify the stack — proven necessary 2026-08-28 against a confirmed listener (§13.7)
-- [ ] Confirm the load balancer preserves the `Host` header (§13.3) and
+- [x] ~~Open `35.235.240.0/20 → tcp:80`~~ — **withdrawn**, moot now the site is publicly reachable (§13.7)
+- [x] Confirm the load balancer preserves the `Host` header (§13.3) and
       underscore-containing header names (§13.6)
-- [ ] Confirm the three hostnames (§4.1) and create the `A` records once we provide the IP
-- [ ] Check the `CAA` record permits `letsencrypt.org` (§4.3)
-- [ ] Create the Firestore database `aeon360-db` in `asia-southeast1` (§5.2)
-- [ ] Create the Vertex AI Search datastore and engine (§5.3)
-- [ ] Create the backup bucket with versioning and lifecycle (§5.4)
-- [ ] Create the Artifact Registry repository in `asia-southeast1` (§6)
-- [ ] Provide SMTP credentials and the sender address (§7.2)
-- [ ] Provide Twilio WABA credentials, and a Dev test number if possible (§7.1)
-- [ ] Confirm whether public registry pulls are permitted (§4.6)
-- [ ] Confirm whether a golden VM image is mandated (§3.3)
-- [ ] **Share the organisation policies in force on both projects (§11)** — do
+- [x] Hostnames and DNS — settled as the single host `innovation-hub.aeon360.com.my`, resolving to the GLB
+- [x] Check the `CAA` record permits `letsencrypt.org` (§4.3)
+- [x] Create the Firestore database `aeon360-db` in `asia-southeast1` (§5.2)
+- [ ] Create the Vertex AI Search datastore and engine (§5.3) — **still open**, deferred until AEON360 supplies knowledge content; nothing to index today
+- [ ] Create the backup bucket with versioning and lifecycle (§5.4) — **still open, and the most important remaining item**: Postgres lives on the VM's own disk, so today there is no offsite copy at all
+- [x] Create the Artifact Registry repository in `asia-southeast1` (§6)
+- [ ] Provide SMTP credentials and the sender address (§7.2) — **still open**; mail currently goes to Mailpit
+- [ ] Provide Twilio WABA credentials, and a Dev test number if possible (§7.1) — **still open**; inbound WhatsApp is not yet pointed at this CRM
+- [x] Confirm whether public registry pulls are permitted (§4.6)
+- [x] Confirm whether a golden VM image is mandated (§3.3)
+- [x] **Share the organisation policies in force on both projects (§11)** — do
       this first, before anything else on this list. Two of them would change
       the design, and it is cheaper to know now
 - [ ] Confirm naming, labelling and tagging conventions to apply to every
@@ -871,50 +887,27 @@ Stated so nothing is a surprise:
   the browser page as the backend origin; an `http://` value on an HTTPS page is
   blocked as mixed content and every AI and Knowledge panel dies.
 
-### 13.7 Please open IAP to port 80 — proven necessary
+### 13.7 IAP access to port 80 — request withdrawn, no action needed
 
-**Request: allow `35.235.240.0/20 → tcp:80` on each VM's network tag**, in the
-host projects `prj-dev-host-fa` and `prj-prod-host-52`.
+**Status: no longer required.** This section previously asked AEON360 to open
+`35.235.240.0/20 -> tcp:80` so we could verify the stack over an IAP tunnel
+while there was no public route. The load balancer is now wired and
+`https://innovation-hub.aeon360.com.my` is reachable, so verification happens
+over the real URL. **Port 22 IAP remains in place and is all we need for
+operations.**
 
-This is the third row of the table in §13.5. It is listed separately here
-because it is needed **now**, for verification, and is independent of the
-load-balancer work.
+Kept only because the diagnostic detail is worth not relearning: IAP's two error
+codes look alike and mean opposite things. `4033: not authorized` is the
+firewall blocking. `4003: failed to connect to backend` covers **both** "nothing
+is listening" *and* "the firewall silently dropped the packet" -- a DROP rule
+produces a timeout indistinguishable from a closed port unless you already know
+a listener exists. We read a `4003` as proof the firewall was open, withdrew
+this request once on that basis, then had to reinstate it after proving a live
+listener on port 80 was still unreachable. If this ever needs re-diagnosing:
+establish a known-good listener first, then interpret the code.
 
-#### Why this is not guesswork
-
-Established on the Prod VM on 2026-08-28, after the shared infrastructure was
-installed and Caddy was confirmed serving:
-
-| Check | Result |
-|---|---|
-| Caddy serving on port 80, tested **on the VM** | ✅ `wget -qO- http://localhost/healthz` → `ok` |
-| IAP tunnel to **port 22** | ✅ connects, returns the SSH banner |
-| IAP tunnel to **port 80**, with that listener live | ❌ `4003: failed to connect to backend` |
-
-Port 22 succeeding proves our IAM and IAP access are correct. A confirmed
-listener on port 80 rules out "nothing is running". What remains is a firewall
-that permits `tcp:22` from the IAP range and not `tcp:80`.
-
-#### A note on the two error codes, because they mislead
-
-`4033: not authorized` is an explicit authorization denial. `4003: failed to
-connect to backend` covers **both** "nothing is listening" *and* "the firewall
-silently dropped the packet" — a DROP rule produces a connection timeout that
-is indistinguishable from a closed port unless you already know a listener
-exists. An earlier revision of this document read a `4003` as proof the
-firewall was open and withdrew this request. That was wrong, and the test above
-is what settled it.
-
-#### What it does and does not expose
-
-`35.235.240.0/20` is Google's IAP forwarding range only — this exposes nothing
-to the public internet. It lets our operators reach the CRM through an
-authenticated tunnel to verify the stack end to end, which we cannot do today.
-
-Two things this does **not** replace:
-
-- **The NEG and load balancer are still required** (§13.1–13.6). IAP is a path
-  for operators, not for staff browsers or Twilio's webhooks.
-- **The health-check ranges in §13.5 are still required** — `130.211.0.0/22`
-  and `35.191.0.0/16` are separate from the IAP range, and without them the load
-  balancer marks the backend unhealthy and serves 502.
+**Still required and unaffected:** the health-check ranges in §13.5,
+`130.211.0.0/22` and `35.191.0.0/16` -> `tcp:80`. Those are Google's load
+balancer probes, a different range from IAP, and without them the backend
+service reports unhealthy regardless of the CRM being correct. They are in
+place as of 2026-08-29 -- the backend service is healthy.

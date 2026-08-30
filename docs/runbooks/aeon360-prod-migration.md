@@ -58,17 +58,119 @@ The migration described below was executed end to end. Result:
    carries a live WhatsApp number and a sent message cannot be recalled. Flip it
    deliberately, not by inheritance.
 
+### Post-cutover, 2026-08-29 — the CRM is live
+
+AEON360's infra team attached the NEG; `https://innovation-hub.aeon360.com.my`
+now serves the CRM end to end. Four things were fixed after the tenant was
+already provisioned, three of which `add-tenant.sh` will hand to anyone who
+provisions again.
+
+**1. `PROTON_BACKEND_KEY` / `METRICS_API_KEY` are never generated.** This is
+the nastiest of the three, because it presents as a broken product rather than
+missing config. `add-tenant.sh` leaves both blank, so the Rails layout injects
+`backendKey: ""` into the SPA, and every gated backend call — Knowledge, AI
+assist, RBAC, reporting — returns 401 on a stack that is otherwise perfect.
+Fixed by generating fresh 64-char values on the tenant:
+
+```bash
+openssl rand -hex 32   # PROTON_BACKEND_KEY
+openssl rand -hex 32   # METRICS_API_KEY
+```
+
+Deliberately **generated, not copied from the source tenant**: they are shared
+only between the SPA, agent and backend of one tenant, all reading the same env
+file, so each environment should hold its own.
+
+**2. The Redis onboarding flag survives a Postgres restore.**
+`add-tenant.sh` runs `db:chatwoot_prepare` against an empty database, which sets
+`CHATWOOT_INSTALLATION_ONBOARDING=true` in **Redis**. Restoring users into
+**Postgres** does not clear it, so Chatwoot redirects every visitor to the
+install wizard and the CRM looks empty — as though the restore silently failed
+when it in fact succeeded. Clear it after any restore-into-a-fresh-tenant:
+
+```bash
+docker exec <tenant>-chatwoot-rails bundle exec rails runner \
+  'Redis::Alfred.delete(Redis::Alfred::CHATWOOT_INSTALLATION_ONBOARDING)'
+```
+
+**3. `RBAC_DATABASE_URL` / `RSA_DATABASE_URL` are never rewritten.** Only
+`KNOWLEDGE_DATABASE_URL` is. Left blank, RBAC and RSA bind to nothing and their
+restored tables are unreachable. Both should point at the tenant's backend DB.
+
+**4. A pre-existing Firestore index bug, not a migration artefact.**
+`presence_store.py`'s `latest()` issues
+`where(agent_id ==).order_by(at DESC).limit(n)`, and its docstring claimed that
+shape was exempt from composite indexing. It is not. Every call raised
+`400 The query requires an index`, the fail-open `except` swallowed it into
+`None`, and `RoutingService._is_routable` read that as "presence unknown" — so
+presence-aware routing silently degraded to no-presence routing on **both**
+tenants, with nothing visible in the UI. Fixed by provisioning the index on each
+database and correcting the docstring (commit `b5050f0`):
+
+```bash
+gcloud firestore indexes composite create \
+  --collection-group=presence_events \
+  --field-config=field-path=agent_id,order=ascending \
+  --field-config=field-path=at,order=descending \
+  --database=aeon360-db --project=<project>
+```
+
+Verified on both: `presence_store_latest_failed` dropped to zero and `latest()`
+returns rows.
+
+### Domain mapping, as built
+
+One hostname serves all three services, because AEON360 provided one. Caddy
+splits by path in `caddy/tenants/aeon360-domain.caddy`:
+
+| Path | Goes to |
+|---|---|
+| `/healthz` | Caddy itself (200 `ok`) — also on the catch-all vhost, deliberately duplicated so a health check that sends the real `Host` still works |
+| `/webhooks/chatwoot`, `/webhooks/chatwoot/*`, `/apps/*` | agent `:8000` |
+| `/metrics/* /kb/* /assist/* /routing/* /authz/* /admin/* /rsa/* /voice/* /alerts/* /calls/*` | backend `:8080` |
+| everything else | chatwoot-rails `:3000` |
+
+**The agent matcher is deliberately narrow.** Chatwoot serves
+`/webhooks/twilio`, `/webhooks/whatsapp/<number>` and friends for inbound
+channel delivery; a blanket `/webhooks/*` would swallow them and lose every
+inbound message with no error on either side. Verified: `/webhooks/twilio` and
+`/twilio/callback` both reach Chatwoot.
+
+TLS terminates at the GLB (`34.54.12.27`), so the vhost is plain `http://` and
+Caddy never attempts ACME — it could not anyway, the VM has no public IP.
+
 ### Still outstanding
 
-- **NEG + health-check firewall (AEON360's infra team).** NEG endpoint
-  `10.94.0.4:80`; health-check ranges `130.211.0.0/22` and `35.191.0.0/16` must
-  reach `tcp:80` on the VM's network tag or the backend service reports
-  unhealthy regardless of the CRM being correct.
+All of these need a decision or an input rather than engineering work. Nothing
+is half-applied.
+
 - **SMTP.** Deliberately not ported — the destination has no credentials, so
   mail falls back to Mailpit. `SMTP_PORT=587` from the source would have pointed
-  Chatwoot at Mailpit on the wrong port and failed silently.
-- **Vertex AI Search datastore** in AEON360's project, once there is content.
+  Chatwoot at Mailpit on the wrong port and failed silently. Needs a relay host,
+  port, username, password and sender address.
 - **A dedicated escalation mailbox**, if email escalation threading is wanted.
+  It must not be shared with another tenant — the threading keys off
+  conversation ids and two tenants sharing one mailbox collide.
+- **Vertex AI Search datastore** in AEON360's project, once they supply
+  knowledge content. `VERTEX_SEARCH_*` is intentionally blank until then;
+  `KNOWLEDGE_PG_ENABLED=true` already serves the pgvector half.
+- **`AGENT_MODE`** is `suggest`. Flip to `auto` deliberately when the AI replies
+  have been reviewed in practice.
+- **Prod WABA endpoint.** The agent bot points at
+  `innovation.dev.aeon360.net` — AEON360's *dev* WABA. Confirm whether a prod
+  endpoint should replace it.
+- **The Dev environment.** `prj-dev-innovation-svc-8e` has a VM (`10.90.0.3`)
+  but no CRM. If it is provisioned, expect the same four post-cutover items
+  above — they are properties of `add-tenant.sh`, not of this migration.
+
+### Resolved — no longer outstanding
+
+- ~~NEG + health-check firewall~~ — done by AEON360's infra team 2026-08-29.
+  `https://innovation-hub.aeon360.com.my` serves the CRM; the earlier
+  `503 no healthy upstream` is gone.
+- ~~IAP access to port 80~~ — was requested so we could verify over a tunnel.
+  Moot now the site is publicly reachable. Port 22 IAP remains available for
+  operations.
 
 ---
 

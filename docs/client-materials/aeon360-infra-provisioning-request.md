@@ -2,7 +2,7 @@
 
 **For:** AEON360 infrastructure / cloud team
 **From:** Devoteam (CRM platform)
-**Date:** 2026-08-29 · **Revision 9** — **Production is live.** The load balancer is wired and `https://innovation-hub.aeon360.com.my` serves the CRM; §13.7's firewall request is withdrawn as moot
+**Date:** 2026-08-30 · **Revision 10** — adds §4.6.1: outbound SMTP is blocked from the VM, which stops invitations and password resets reaching anyone; consolidated open asks for the infra team near the top
 
 ---
 
@@ -77,6 +77,23 @@ that is stood up later.
 The tenant's data was mirrored from the Devoteam environment — see
 `docs/runbooks/aeon360-prod-migration.md` for that, and for four defects found
 after cutover that any future provisioning run will hit.
+
+### Open requests for AEON360's infra team
+
+Everything needed to make the CRM *serve traffic* is done. These are what remain,
+in priority order. Two of them are one firewall rule each.
+
+| # | Ask | Why it matters | Blocks |
+|---|---|---|---|
+| 1 | **Allow outbound `tcp:587` (or `465`)** from the CRM VM — or name an internal SMTP relay reachable on the VPC | All outbound SMTP is currently blocked (§4.6.1), verified against a working control. No relay or credentials can work until this changes — the TCP connection fails before authentication | **Agent invitations and password resets reaching users.** Adding a colleague or recovering an account is not self-service today |
+| 2 | **A Cloud Storage bucket for backups** (§5.4) | Postgres runs on the VM's own disk. There is **no offsite copy of production data at all** right now, so losing the VM loses the CRM and its backups together | Disaster recovery |
+| 3 | **SMTP relay credentials** — host, port, username, password, sender address | Needed once #1 is open | Same as #1 |
+| 4 | **Twilio WABA credentials**, and the inbound webhook repointed at this CRM (§7.1) | Inbound WhatsApp does not yet route here | Live WhatsApp traffic |
+| 5 | **Vertex AI Search datastore** (§5.3) | Deferred deliberately — there is no knowledge content to index yet | AI knowledge answers |
+| 6 | Confirm naming, labelling and tagging conventions | Ours are placeholders | Nothing; tidiness |
+
+**Note on #1:** do not ask for port 25 — GCP blocks it for every VM as a matter
+of policy and that cannot be changed. It must be 587 or 465.
 
 ---
 
@@ -383,11 +400,48 @@ it has no external webhook callers until WhatsApp is pointed at it.
   (`registry-1.docker.io`) for `caddy`, `pgvector`, `redis`, `memcached`, `mailpit`
 - `download.docker.com` and Debian apt mirrors — host bootstrap and patching
 - `acme-v02.api.letsencrypt.org` — certificate issuance and renewal
-- Twilio (WhatsApp) and the chosen SMTP relay
+- Twilio (WhatsApp)
+- **An SMTP relay on `tcp:587` (or `465`) — currently BLOCKED, see below**
 
 **If AEON360 blocks public registry pulls**, Artifact Registry remote
 repositories mirroring Docker Hub must exist before day one, or the stack cannot
 start.
+
+#### 4.6.1 Outbound SMTP is blocked, and it stops all user administration
+
+Verified from the Prod VM on 2026-08-30, with a working control on the same
+method:
+
+| Target | Result |
+|---|---|
+| `registry-1.docker.io:443` | **OPEN** (control — general egress works) |
+| `smtp.gmail.com:587` | BLOCKED |
+| `smtp.gmail.com:465` | BLOCKED |
+| `smtp.sendgrid.net:587` | BLOCKED |
+| `email-smtp.ap-southeast-1.amazonaws.com:587` | BLOCKED |
+| any host `:25` | BLOCKED — GCP blocks port 25 for all VMs by policy, permanently |
+
+**Consequence:** the CRM cannot send mail to anyone, whatever relay or
+credentials are configured — the TCP connection fails before authentication is
+attempted. That means **agent invitations and password resets do not reach
+users**, so adding a colleague or recovering an account is not self-service.
+Mail is generated correctly and captured locally in Mailpit; an operator has to
+retrieve the link and pass it on by hand.
+
+**The ask, in order of preference:**
+
+1. **Allow egress on `tcp:587`** (and/or `465`) from the CRM VM. Any relay then
+   works — AEON360 Workspace, SendGrid, SES, an internal host. One firewall rule
+   and the problem is closed. *Do not ask for port 25; GCP blocks it regardless.*
+2. **Name an internal corporate relay** reachable on the VPC. Often permitted
+   where internet SMTP is not, and preferable for a corporate system.
+3. **Accept an HTTP-API provider instead.** SendGrid/Mailgun/SES all offer REST
+   over 443, which is already open, and this needs no firewall change — but
+   Chatwoot speaks SMTP, so it would need a local relay container. More work on
+   our side, zero dependency on the network team.
+
+Whichever route, we still need the relay's host, port, username, password and
+the sender address the CRM should send from.
 
 ---
 
@@ -588,7 +642,8 @@ Per environment — Dev first, then Prod.
 - [ ] Create the Vertex AI Search datastore and engine (§5.3) — **still open**, deferred until AEON360 supplies knowledge content; nothing to index today
 - [ ] Create the backup bucket with versioning and lifecycle (§5.4) — **still open, and the most important remaining item**: Postgres lives on the VM's own disk, so today there is no offsite copy at all
 - [x] Create the Artifact Registry repository in `asia-southeast1` (§6)
-- [ ] Provide SMTP credentials and the sender address (§7.2) — **still open**; mail currently goes to Mailpit
+- [ ] **Allow outbound `tcp:587` (or `465`) from the CRM VM, or name an internal SMTP relay (§4.6.1)** — currently blocked, so invitations and password resets cannot reach users at all
+- [ ] Provide SMTP credentials and the sender address (§7.2) — **still open**; mail is captured in Mailpit, not delivered
 - [ ] Provide Twilio WABA credentials, and a Dev test number if possible (§7.1) — **still open**; inbound WhatsApp is not yet pointed at this CRM
 - [x] Confirm whether public registry pulls are permitted (§4.6)
 - [x] Confirm whether a golden VM image is mandated (§3.3)

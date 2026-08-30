@@ -65,6 +65,22 @@ services:
   mailpit:
     image: axllent/mailpit
     restart: unless-stopped
+    # Accept ANY credentials, over a plaintext connection.
+    #
+    # Not laziness -- without it the Mailpit fallback cannot work at all.
+    # Chatwoot's config/initializers/mailer.rb sets
+    # `smtp_settings[:user_name] = ENV.fetch('SMTP_USERNAME', nil)`
+    # unconditionally (no `.present?` guard, unlike the authentication line
+    # directly above it), and compose always defines `SMTP_USERNAME:
+    # ${SMTP_USERNAME:-}`. So user_name is always `""`, which is truthy in
+    # Ruby, so the Mail gem always issues AUTH -- and a default Mailpit answers
+    # `502 5.5.1 Command not implemented`, failing every outbound mail with
+    # nothing visible in the CRM. Agent invitations and password resets
+    # included. Found on AEON360 prod 2026-08-30.
+    #
+    # This only ever listens on the internal `platform` network and holds no
+    # real mail, so accepting any login costs nothing.
+    command: ["--smtp-auth-accept-any", "--smtp-auth-allow-insecure"]
     mem_limit: 128m
     networks:
       - platform

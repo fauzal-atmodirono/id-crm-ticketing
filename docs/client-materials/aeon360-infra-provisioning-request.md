@@ -2,7 +2,7 @@
 
 **For:** AEON360 infrastructure / cloud team
 **From:** Devoteam (CRM platform)
-**Date:** 2026-08-30 · **Revision 10** — adds §4.6.1: outbound SMTP is blocked from the VM, which stops invitations and password resets reaching anyone; consolidated open asks for the infra team near the top
+**Date:** 2026-08-31 · **Revision 11** — adds §4.6.2: the complete list of what is mandatory before agent invitations and password resets work at all. Revision 10 added §4.6.1 (outbound SMTP is blocked from the VM) and the consolidated open-asks table near the top
 
 ---
 
@@ -87,7 +87,7 @@ in priority order. Two of them are one firewall rule each.
 |---|---|---|---|
 | 1 | **Allow outbound `tcp:587` (or `465`)** from the CRM VM — or name an internal SMTP relay reachable on the VPC | All outbound SMTP is currently blocked (§4.6.1), verified against a working control. No relay or credentials can work until this changes — the TCP connection fails before authentication | **Agent invitations and password resets reaching users.** Adding a colleague or recovering an account is not self-service today |
 | 2 | **A Cloud Storage bucket for backups** (§5.4) | Postgres runs on the VM's own disk. There is **no offsite copy of production data at all** right now, so losing the VM loses the CRM and its backups together | Disaster recovery |
-| 3 | **SMTP relay credentials** — host, port, username, password, sender address | Needed once #1 is open | Same as #1 |
+| 3 | **SMTP relay details** — host, port, auth, sender address, TLS mode, SPF | Needed once #1 is open. **§4.6.2 lists all nine mandatory items** for invitations and password resets, with owners — that is the checklist to work through | Same as #1 |
 | 4 | **Twilio WABA credentials**, and the inbound webhook repointed at this CRM (§7.1) | Inbound WhatsApp does not yet route here | Live WhatsApp traffic |
 | 5 | **Vertex AI Search datastore** (§5.3) | Deferred deliberately — there is no knowledge content to index yet | AI knowledge answers |
 | 6 | Confirm naming, labelling and tagging conventions | Ours are placeholders | Nothing; tidiness |
@@ -440,8 +440,36 @@ retrieve the link and pass it on by hand.
    Chatwoot speaks SMTP, so it would need a local relay container. More work on
    our side, zero dependency on the network team.
 
-Whichever route, we still need the relay's host, port, username, password and
-the sender address the CRM should send from.
+Whichever route, the full set of things we still need is in §4.6.2 below.
+
+#### 4.6.2 What is mandatory before invitations and password resets work
+
+Both features are the same mechanism: Chatwoot generates a tokenised link and
+hands it to an SMTP relay. Every item below is **required** — if any one is
+missing, no mail is delivered and both features stay manual. They are listed in
+the order they must be satisfied; there is no partial credit.
+
+| # | Requirement | Owner | Status |
+|---|---|---|---|
+| M1 | **Outbound egress from the CRM VM on `tcp:587` or `tcp:465`** to the relay host. Not port 25 — GCP blocks it permanently | AEON360 network | **OPEN — blocking** |
+| M2 | **Relay hostname and port** it should be reached on | AEON360 | **OPEN** |
+| M3 | **Authentication for the relay** — username and password (for Google Workspace, an app password; for SendGrid/SES, the API key used as the SMTP password). If the relay is internal and authenticates by source IP instead, say so explicitly | AEON360 | **OPEN** |
+| M4 | **The sender address** the CRM sends as, and confirmation the relay is permitted to send as it | AEON360 | **OPEN** |
+| M5 | **The relay accepts mail from this VM** — if it allowlists by source address, the VM's Cloud NAT egress address must be added. NAT lives in the host project, so AEON360 owns this | AEON360 network | **OPEN** |
+| M6 | **Which TLS mode** — STARTTLS on 587, or implicit TLS on 465. They are configured differently and are not interchangeable | AEON360 | **OPEN** |
+| M7 | **SPF (and ideally DKIM/DMARC) for the sender domain** to include the relay. Without it mail is delivered but lands in junk, which for a one-time password-reset link is indistinguishable from failure | AEON360 DNS | **OPEN** |
+| M8 | SMTP settings applied to the Chatwoot containers and the mail catcher taken out of the path | Devoteam | Ready — waiting on M1–M6 |
+| M9 | Links in the mail point at the public hostname | Devoteam | **Done and verified** — a real reset mail rendered `https://innovation-hub.aeon360.com.my/app/auth/password/edit?...` |
+
+**Not required, to save a round trip:** no MX record, no inbound mail routing
+and no mailbox for the CRM host. Invitations and password resets are outbound
+only. A mailbox is needed *only* for the separate email-escalation feature
+(§7.2), which is a different thing and not what blocks user administration.
+
+**Until M1–M7 are supplied**, adding an agent or recovering an account requires
+an operator to open the local mail catcher, copy the link and pass it to the
+person by hand. It works, but it is not something to hand to AEON360's own
+administrators.
 
 ---
 
@@ -643,7 +671,12 @@ Per environment — Dev first, then Prod.
 - [ ] Create the backup bucket with versioning and lifecycle (§5.4) — **still open, and the most important remaining item**: Postgres lives on the VM's own disk, so today there is no offsite copy at all
 - [x] Create the Artifact Registry repository in `asia-southeast1` (§6)
 - [ ] **Allow outbound `tcp:587` (or `465`) from the CRM VM, or name an internal SMTP relay (§4.6.1)** — currently blocked, so invitations and password resets cannot reach users at all
-- [ ] Provide SMTP credentials and the sender address (§7.2) — **still open**; mail is captured in Mailpit, not delivered
+- [ ] Provide the relay host and port (§4.6.2 M2) — **still open**
+- [ ] Provide relay authentication, or confirm it authenticates by source IP (§4.6.2 M3) — **still open**
+- [ ] Confirm the sender address the CRM may send as (§4.6.2 M4) — **still open**
+- [ ] Allowlist the VM's Cloud NAT egress address on the relay, if it filters by source (§4.6.2 M5) — **still open**
+- [ ] Confirm TLS mode: STARTTLS on 587 or implicit TLS on 465 (§4.6.2 M6) — **still open**
+- [ ] Add the relay to SPF for the sender domain, ideally DKIM/DMARC too (§4.6.2 M7) — **still open**; without it reset links land in junk
 - [ ] Provide Twilio WABA credentials, and a Dev test number if possible (§7.1) — **still open**; inbound WhatsApp is not yet pointed at this CRM
 - [x] Confirm whether public registry pulls are permitted (§4.6)
 - [x] Confirm whether a golden VM image is mandated (§3.3)

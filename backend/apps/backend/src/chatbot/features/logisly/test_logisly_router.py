@@ -7,20 +7,21 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from chatbot.features.logisly import trips
-from chatbot.features.logisly.router import ChatwootDriverChannel, build_logisly_router
+from chatbot.features.logisly.channel import ChatwootDriverChannel
+from chatbot.features.logisly.router import build_logisly_router
 
 CW = "http://cw:3000/api/v1/accounts/1"
 
 
 def _settings(**over):
-    base = dict(
-        proton_backend_key="k",
-        logisly_demo_driver_phone="+62 811-0000-1111",
-        logisly_driver_inbox_id=4,
-        chatwoot_api_url="http://cw:3000",
-        chatwoot_account_id=1,
-        chatwoot_api_token="t",
-    )
+    base = {
+        "proton_backend_key": "k",
+        "logisly_demo_driver_phone": "+62 811-0000-1111",
+        "logisly_driver_inbox_id": 4,
+        "chatwoot_api_url": "http://cw:3000",
+        "chatwoot_account_id": 1,
+        "chatwoot_api_token": "t",
+    }
     base.update(over)
     return SimpleNamespace(**base)
 
@@ -43,7 +44,7 @@ def test_routes_need_the_api_key_but_console_does_not():
     assert c.get("/logisly/trips").status_code == 401
     assert c.get("/logisly/trips", headers={"X-API-Key": "k"}).status_code == 200
     page = c.get("/logisly/console")
-    assert page.status_code == 200 and "Tracking Simulator" in page.text and "k" != ""
+    assert page.status_code == 200 and "Tracking Simulator" in page.text
 
 
 @respx.mock

@@ -24,6 +24,7 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from chatbot.features.logisly.channel import ChatwootDriverChannel, _e164
 from chatbot.features.logisly.console import CONSOLE_HTML
 from chatbot.features.logisly.trips import ANOMALIES, TRIPS, register_session, render
 
@@ -36,63 +37,6 @@ _log = structlog.get_logger(__name__)
 class AnomalyBody(BaseModel):
     order_id: str
     kind: str
-
-
-def _e164(phone: str) -> str:
-    digits = "".join(ch for ch in phone if ch.isdigit())
-    return f"+{digits}" if digits else ""
-
-
-class ChatwootDriverChannel:
-    """The four Chatwoot calls the simulator needs, nothing more."""
-
-    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
-        self._base = f"{settings.chatwoot_api_url.rstrip('/')}/api/v1/accounts/{settings.chatwoot_account_id}"
-        self._headers = {"api_access_token": settings.chatwoot_api_token}
-        self._client = client
-
-    async def _request(self, method: str, path: str, **kw: Any) -> Any:
-        if self._client is not None:
-            res = await self._client.request(method, self._base + path, headers=self._headers, **kw)
-        else:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                res = await client.request(method, self._base + path, headers=self._headers, **kw)
-        res.raise_for_status()
-        return res.json() if res.content else {}
-
-    async def find_or_create_contact(self, phone: str, name: str) -> int:
-        found = await self._request("GET", "/contacts/search", params={"q": phone})
-        for contact in found.get("payload") or []:
-            if _e164(contact.get("phone_number") or "") == phone:
-                return int(contact["id"])
-        created = await self._request("POST", "/contacts", json={"name": name, "phone_number": phone})
-        payload = created.get("payload") or created
-        contact = payload.get("contact") or payload
-        return int(contact["id"])
-
-    async def resolve_open_conversations(self, contact_id: int, inbox_id: int) -> None:
-        """A driver reply lands in the contact's latest unresolved conversation,
-        so close the others first or the reply could go to an older one."""
-        listed = await self._request("GET", f"/contacts/{contact_id}/conversations")
-        for conv in listed.get("payload") or []:
-            if conv.get("inbox_id") == inbox_id and conv.get("status") != "resolved":
-                await self._request(
-                    "POST", f"/conversations/{conv['id']}/toggle_status", json={"status": "resolved"}
-                )
-
-    async def open_conversation(self, contact_id: int, inbox_id: int, phone: str, text: str) -> int:
-        created = await self._request(
-            "POST",
-            "/conversations",
-            json={
-                "source_id": f"whatsapp:{phone}",
-                "inbox_id": inbox_id,
-                "contact_id": contact_id,
-                "status": "pending",
-                "message": {"content": text},
-            },
-        )
-        return int(created["id"])
 
 
 def build_logisly_router(settings: Settings, channel: ChatwootDriverChannel | None = None) -> APIRouter:

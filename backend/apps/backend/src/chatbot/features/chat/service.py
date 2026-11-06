@@ -49,6 +49,8 @@ from chatbot.features.chat.prompts import (
     build_agent_instruction,
     instructions_for_persona,
 )
+from chatbot.features.logisly.escalation import file_escalation
+from chatbot.features.logisly.trips import context_for_session
 from chatbot.features.metrics.events import build_turn_event
 from chatbot.features.metrics.mapping import CATEGORY_TO_DIVISION
 from chatbot.platform.metered_genai import (
@@ -345,6 +347,17 @@ class OrchestratorService:
             composed = registered
         return self._with_trip_context(session_id, composed)
 
+    async def _file_logisly_escalation(self, session_id: str, session_state: Any) -> None:
+        """Logisly persona only: pre-filled Chatwoot ticket + trip record for
+        the operations team (features/logisly/escalation.py). Fail-open inside;
+        guarded again here so nothing in it can cost the turn its handoff."""
+        if getattr(getattr(self, "_settings", None), "agent_persona", "proton") != "logisly":
+            return
+        try:
+            await file_escalation(self._settings, session_id, dict(session_state))
+        except Exception as e:
+            _log.warning("logisly_escalation_hook_failed", session_id=session_id, error=str(e))
+
     def _with_trip_context(self, session_id: str, instruction: str) -> str:
         """Logisly persona only: append the trip a tracking alert opened this
         conversation about (see features/logisly/trips.context_for_session).
@@ -352,8 +365,6 @@ class OrchestratorService:
         if getattr(getattr(self, "_settings", None), "agent_persona", "proton") != "logisly":
             return instruction
         try:
-            from chatbot.features.logisly.trips import context_for_session
-
             extra = context_for_session(session_id)
         except Exception:
             return instruction
@@ -859,6 +870,7 @@ class OrchestratorService:
             )
             if not self._settings.handoff_return_ai_reply:
                 reply_text = None
+            await self._file_logisly_escalation(session_id, session_state)
         elif reply_text:
             # 6. Append assistant message to history (skip when handing off).
             updated_session = await self._adk_sessions.get_session(

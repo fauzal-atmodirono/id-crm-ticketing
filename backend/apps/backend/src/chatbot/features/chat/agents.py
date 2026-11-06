@@ -337,12 +337,29 @@ def build_ai_agent(  # noqa: PLR0915 — one builder, many tool closures
         _log.info("logisly_trip_updated", order_id=trip["order_id"], status=status, note=note)
         return f"[internal] recorded on {trip['order_id']}: {status}."
 
+    async def escalate_to_operations_tool(
+        tool_context: ToolContext, reason: str, summary: str
+    ) -> str:
+        """Hand the conversation to Logisly's operations team.
+
+        Args:
+            tool_context: Context injected by the ADK runner.
+            reason: One of safety_incident, cargo_issue, trip_blocked, help_request.
+            summary: Two or three sentences in Bahasa Indonesia for the operations
+                person taking over: what happened, where, what the driver's photo,
+                video or voice note showed, and what the driver needs.
+        """
+        tool_context.state["handoff_triggered"] = True
+        tool_context.state["handoff_reason"] = reason
+        tool_context.state["handoff_summary"] = summary
+        return f"[internal] escalated to operations (Reason: {reason})."
+
     if persona == "logisly":
         tools = [
             get_trip_tool,
             update_trip_status_tool,
             classify_ticket_tool,
-            emit_handoff_tool,
+            escalate_to_operations_tool,
             flag_for_ticket_tool,
         ]
     else:

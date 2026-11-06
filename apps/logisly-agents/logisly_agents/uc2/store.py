@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import MutableMapping
 from typing import Any
 
+from logisly_agents.uc2.pricing import company_key
 from logisly_agents.uc2.schemas import Quotation, Tender
 
 TENDER_KEY = "uc2:tender"
@@ -19,7 +20,8 @@ State = MutableMapping[str, Any]
 
 
 def _tkey(name: str) -> str:
-    return " ".join(name.lower().split())
+    """Group key for one transporter: "PT. Trans Cahaya" and "PT Trans Cahaya" are the same."""
+    return company_key(name)
 
 
 def set_tender(state: State, tender: Tender) -> dict:

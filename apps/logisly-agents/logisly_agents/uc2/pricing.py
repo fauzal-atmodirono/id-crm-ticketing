@@ -27,6 +27,11 @@ def _company(name: str) -> str:
     return re.sub(r"^(pt|cv)\s+", "", n)
 
 
+def company_key(name: str) -> str:
+    """Normalised company name: punctuation and a leading PT/CV dropped, lower case."""
+    return _company(name)
+
+
 def _matches(lane_part: str, wanted: str) -> bool:
     return bool(lane_part) and bool(wanted) and (
         lane_part == wanted or wanted in lane_part or lane_part in wanted

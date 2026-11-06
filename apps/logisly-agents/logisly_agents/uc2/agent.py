@@ -34,11 +34,16 @@ berlaku sudah lewat), transporter_unknown (transporter belum ada di data master,
 direkomendasikan), above_baseline (lebih mahal dari baseline 90 hari), \
 below_baseline_check_hidden_cost (jauh lebih murah dari baseline, periksa biaya tersembunyi), \
 on_time_below_threshold (ketepatan waktu rendah), payment_term_too_short (termin pembayaran \
-terlalu pendek). Sebutkan juga penawaran yang digantikan revisi dan baris yang tidak cocok \
+terlalu pendek), unit_not_normalisable (harga per kg atau satuan lain yang tidak dapat diubah \
+ke per trip, minta transporter mengajukan ulang harga per trip). Sebutkan juga penawaran yang \
+digantikan revisi dan baris yang tidak cocok \
 dengan lane tender (unmatched_lines).
 6. Untuk penawaran yang terblokir, tawarkan draf email tindak lanjut ke transporter. Tulis draf \
 itu di chat saja, jangan mengirim apa pun.
-7. Untuk pertanyaan lanjutan gunakan list_quotations, price_history dan query_pricing_sql.
+7. Untuk pertanyaan lanjutan gunakan list_quotations, price_history dan query_pricing_sql. \
+Kolom period pada rate_history berupa teks 'YYYY-MM'. Saring periode relatif terhadap tanggal \
+hari ini di bawah, tulis periodenya secara eksplisit (misalnya period >= '2026-08'), dan jangan \
+pernah memakai date('now') atau fungsi tanggal sistem lain.
 8. Keputusan akhir ada di tim purchasing. Tanyakan persetujuan pengguna sebelum memanggil \
 record_decision, dan jangan memanggilnya tanpa jawaban jelas.
 
@@ -53,7 +58,8 @@ def build_uc2_agent(settings: Settings | None = None) -> LlmAgent:
         name="logisly_purchasing",
         model=settings.model,
         description="Asisten purchasing Logisly: catat tender dan penawaran, bandingkan, rekomendasikan.",
-        instruction=INSTRUCTION,
+        instruction=INSTRUCTION
+        + f"\nTanggal hari ini: {settings.as_of:%d-%m-%Y} (gunakan tanggal ini, bukan tanggal sistem).\n",
         tools=[
             tools.record_tender,
             tools.record_quotation,

@@ -78,3 +78,10 @@ async def test_uc2_agent_live():
     rec = {k: v["recommended_transporter"] for k, v in res["lanes"].items()}
     assert all("Trans Cahaya" in rec[k] for k in ("T1", "T2", "T3")), rec
     assert "Prima Fleet" in rec["T4"], rec
+    by_id = {q["quote_id"]: q for q in quotes}
+    assert len(res["superseded"]) == 1, res["superseded"]
+    (old, new), = res["superseded"].items()
+    assert "TCL-1" in by_id[old]["document_name"] and "TCL-2" in by_id[new]["document_name"], (
+        by_id[old]["document_name"],
+        by_id[new]["document_name"],
+    )

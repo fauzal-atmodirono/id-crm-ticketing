@@ -122,3 +122,19 @@ def test_state_is_json_safe():
     store.add_decision(s, "A-B", "Q1", "accept", "cheapest")
     json.dumps(dict(s))
     assert len(s["uc2:decisions"]) == 1
+
+
+def test_company_prefix_and_punctuation_normalised_for_supersede():
+    s: dict = {}
+    r1 = store.add_quotation(s, _q(transporter="PT. Trans Cahaya Logistik"))
+    r2 = store.add_quotation(s, _q(transporter="PT Trans Cahaya Logistik", d=date(2026, 11, 5), rev=True))
+    assert r2["supersedes"] == r1["quote_id"]
+    live = store.list_quotations(s, include_superseded=False)
+    assert [r["quote_id"] for r in live] == [r2["quote_id"]]
+
+
+def test_company_key_without_prefix_matches():
+    s: dict = {}
+    r1 = store.add_quotation(s, _q(transporter="Trans Cahaya Logistik"))
+    r2 = store.add_quotation(s, _q(transporter="pt trans cahaya logistik"))
+    assert r2["replaced"] is True and r2["quote_id"] == r1["quote_id"]

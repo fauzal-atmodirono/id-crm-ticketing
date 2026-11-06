@@ -104,3 +104,33 @@ def test_unknown_transporter_flagged(repo, rules):
     row = next(r for r in res["lanes"]["T1"]["quotes"] if r["transporter"] == "PT Tidak Dikenal")
     assert "transporter_unknown" in row["blocking_issues"] and row["on_time_pct"] is None
     assert res["lanes"]["T1"]["recommended"] != row["quote_id"]
+
+
+@pytest.mark.parametrize("unit", ["kg", "other"])
+def test_unit_not_normalisable_blocks(repo, rules, unit):
+    state, ids = build(repo)
+    t = tender()
+    lane = t.lanes[0]
+    q = Quotation(
+        transporter="PT Garuda Angkut Sejahtera",
+        document_name="per_kg",
+        document_date="2026-11-08",
+        payment_term_days=30,
+        valid_until="2026-12-31",
+        lines=[
+            QuoteLine(
+                origin=lane.origin,
+                destination=lane.destination,
+                truck_type=lane.truck_type,
+                price_idr=350,
+                unit=unit,
+            )
+        ],
+    )
+    added = store.add_quotation(state, q)
+    res = compare(t, store.list_quotations(state), repo, rules, as_of=AS_OF)
+    row = next(r for r in res["lanes"]["T1"]["quotes"] if r["quote_id"] == added["quote_id"])
+    assert "unit_not_normalisable" in row["blocking_issues"]
+    assert res["lanes"]["T1"]["recommended"] != row["quote_id"]
+    ask = next(f["ask"] for f in res["lanes"]["T1"]["follow_up"] if f["quote_id"] == row["quote_id"])
+    assert "ajukan ulang harga per trip" in ask

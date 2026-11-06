@@ -49,3 +49,14 @@ def test_declarations_hide_tool_context():
 def test_adk_entry_imports():
     mod = importlib.import_module("adk_apps.uc2_purchasing.agent")
     assert mod.root_agent.name == "logisly_purchasing"
+
+
+def test_instruction_carries_demo_date():
+    from datetime import date
+
+    agent = build_uc2_agent(Settings(as_of=date(2026, 11, 9)))
+    assert "Tanggal hari ini: 09-11-2026 (gunakan tanggal ini, bukan tanggal sistem)." in agent.instruction
+    assert "date('now')" in agent.instruction  # told never to use it
+    assert "YYYY-MM" in agent.instruction
+    assert "unit_not_normalisable" in agent.instruction
+    assert "—" not in agent.instruction

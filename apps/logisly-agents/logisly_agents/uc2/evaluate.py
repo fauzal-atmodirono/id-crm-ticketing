@@ -35,6 +35,8 @@ def _ask(issues: list[str]) -> str:
         asks.append("lengkapi termin pembayaran dan masa berlaku")
     if "truck_type_mismatch" in issues:
         asks.append("ajukan ulang dengan armada sesuai tender")
+    if "unit_not_normalisable" in issues:
+        asks.append("ajukan ulang harga per trip")
     if "transporter_unknown" in issues:
         asks.append("verifikasi data transporter sebelum dinilai")
     return "; ".join(asks)
@@ -93,6 +95,10 @@ def compare(tender: Tender, quotes: list[dict], repo: PricingRepo, rules: Rules,
                 cap = repo.capacity_ton(req_truck)
                 price = price * cap
                 notes.append(f"dinormalisasi dari {_idr(ln['price_idr'])}/ton x {cap:g} ton")
+            elif ln["unit"] != "trip":
+                # Per kg or another unit has no defensible per-trip conversion: never rank it.
+                issues.append("unit_not_normalisable")
+                notes.append(f"harga per {ln['unit']} tidak dapat dinormalisasi ke per trip")
             if ln.get("excludes_toll"):
                 toll = repo.toll(sp["lane_id"], req_truck)
                 price += toll

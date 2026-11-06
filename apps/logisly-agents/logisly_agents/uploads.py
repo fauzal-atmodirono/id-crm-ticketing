@@ -66,11 +66,42 @@ def _eml(data: bytes) -> str:
     return "\n".join(lines)
 
 
+_GENERIC_MIMES = ("", "application/octet-stream")
+_NATIVE_BY_EXT = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
+
+
+def _norm(mime: str | None) -> str:
+    """Strip parameters such as `; charset=utf-8` and lower-case the media type."""
+    return (mime or "").split(";")[0].strip().lower()
+
+
+def _is_native(mime: str) -> bool:
+    if mime in ("application/pdf", "text/plain"):
+        return True
+    return mime.startswith(("image/", "audio/", "video/"))
+
+
+def native_mime(name: str | None, mime: str | None) -> str | None:
+    """The mime Gemini should see for a natively readable upload, or None if it is not one.
+
+    A generic mime (empty or application/octet-stream) is resolved from the file extension.
+    """
+    mime = _norm(mime)
+    if mime in _GENERIC_MIMES:
+        return _NATIVE_BY_EXT.get(_ext(name))
+    return mime if _is_native(mime) else None
+
+
 def part_to_text(name: str | None, mime: str, data: bytes) -> str | None:
     """Return text for an upload Gemini cannot take natively, or None to leave it unchanged."""
-    mime = (mime or "").lower()
+    mime = _norm(mime)
     ext = _ext(name)
-    if mime == "application/pdf" or mime.startswith(("image/", "audio/", "video/")) or mime == "text/plain":
+    if native_mime(name, mime) is not None:
         return None
     label = name or "tanpa nama"
     try:
@@ -86,21 +117,51 @@ def part_to_text(name: str | None, mime: str, data: bytes) -> str | None:
             kind = mime or ext or "tidak dikenal"
             return f"[Lampiran {label} tidak dapat dibaca: format {kind} tidak didukung]"
     except Exception as exc:  # noqa: BLE001 - any parser failure becomes a readable note
-        return f"[Lampiran {label} tidak dapat dibaca: {exc}]"
+        return f"[Lampiran {label} tidak dapat dibaca: {str(exc) or type(exc).__name__}]"
     text = f"[Lampiran {label}]\n{body}"
     if len(text) > MAX_CHARS:
         text = text[:MAX_CHARS] + "\n... (dipotong)"
     return text
 
 
+def _unreadable_note(name: str | None) -> str:
+    label = name or "tanpa nama"
+    return f"[Lampiran {label} tidak dapat dibaca langsung; unggah sebagai PDF atau tempel isinya]"
+
+
+def _file_data_name(fd: types.FileData) -> str | None:
+    if fd.display_name:
+        return fd.display_name
+    uri = (fd.file_uri or "").rstrip("/")
+    return uri.rsplit("/", 1)[-1] or None
+
+
 def convert_uploads(callback_context, llm_request) -> None:
-    """ADK before_model_callback: replace unsupported inline_data parts with text parts."""
+    """ADK before_model_callback: make every upload part something Gemini accepts.
+
+    inline_data: natively readable kinds keep their bytes (a generic mime is rewritten from the
+    file extension); office, email and text kinds become text parts. file_data (a URI we cannot
+    fetch here): natively readable kinds stay, everything else becomes a note asking for a PDF.
+    """
     for content in llm_request.contents or []:
         for i, part in enumerate(content.parts or []):
             blob = part.inline_data
-            if blob is None or blob.data is None:
+            if blob is not None and blob.data is not None:
+                native = native_mime(blob.display_name, blob.mime_type)
+                if native is not None:
+                    blob.mime_type = native
+                    continue
+                text = part_to_text(blob.display_name, blob.mime_type or "", blob.data)
+                if text is not None:
+                    content.parts[i] = types.Part.from_text(text=text)
                 continue
-            text = part_to_text(blob.display_name, blob.mime_type or "", blob.data)
-            if text is not None:
-                content.parts[i] = types.Part.from_text(text=text)
+            fd = part.file_data
+            if fd is not None:
+                name = _file_data_name(fd)
+                native = native_mime(name, fd.mime_type)
+                if native is not None:
+                    if _norm(fd.mime_type) != native:
+                        fd.mime_type = native
+                    continue
+                content.parts[i] = types.Part.from_text(text=_unreadable_note(name))
     return None

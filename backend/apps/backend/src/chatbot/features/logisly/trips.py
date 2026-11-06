@@ -187,7 +187,7 @@ def context_for_session(session_id: str) -> str:
         "## This conversation\n"
         "You started this conversation because the tracking system raised an alert "
         f"({ANOMALIES[active['anomaly']]['label']}). You already sent the driver this "
-        f"WhatsApp message:\n\"{active['opening']}\"\n"
+        f'WhatsApp message:\n"{active["opening"]}"\n'
         "The driver's messages are replies to it. Do not ask for the order number.\n\n"
         f"Trip:\n{describe(trip)}\n"
     )

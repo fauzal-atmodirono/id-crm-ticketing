@@ -10,15 +10,24 @@ from chatbot.features.logisly.trips import TripStore, describe
 
 
 def test_proton_is_the_default_persona_and_unchanged():
-    assert instructions_for_persona("proton") == (AGENT_INSTRUCTION, DEFAULT_MEDIA_DIAGNOSIS_INSTRUCTION)
-    assert build_agent_instruction(media_diagnosis_prompt_enabled=True, has_image=False) == AGENT_INSTRUCTION
+    assert instructions_for_persona("proton") == (
+        AGENT_INSTRUCTION,
+        DEFAULT_MEDIA_DIAGNOSIS_INSTRUCTION,
+    )
+    assert (
+        build_agent_instruction(media_diagnosis_prompt_enabled=True, has_image=False)
+        == AGENT_INSTRUCTION
+    )
 
 
 def test_logisly_persona_swaps_base_and_media_wording():
     base, media = instructions_for_persona("logisly")
     assert base is LOGISLY_AGENT_INSTRUCTION and media is LOGISLY_MEDIA_INSTRUCTION
     out = build_agent_instruction(
-        media_diagnosis_prompt_enabled=True, has_image=True, base=base, default_media_instruction=media
+        media_diagnosis_prompt_enabled=True,
+        has_image=True,
+        base=base,
+        default_media_instruction=media,
     )
     assert out == f"{LOGISLY_AGENT_INSTRUCTION}\n\n{LOGISLY_MEDIA_INSTRUCTION}"
     assert "Proton" not in out

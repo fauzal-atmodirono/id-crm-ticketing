@@ -27,7 +27,10 @@ def _fresh(monkeypatch):
 
 
 def _state(**over):
-    s = {"handoff_reason": "cargo_issue", "handoff_summary": "Truk diserempet di Tol Cipali, 3 karton penyok."}
+    s = {
+        "handoff_reason": "cargo_issue",
+        "handoff_summary": "Truk diserempet di Tol Cipali, 3 karton penyok.",
+    }
     s.update(over)
     return s
 
@@ -54,7 +57,9 @@ async def test_alert_conversation_files_full_ticket_and_records_trip():
 
 async def test_safety_incident_is_urgent_and_unknown_trip_is_stated():
     ch = _FakeChannel()
-    await escalation.file_escalation(None, "crm-9", _state(handoff_reason="safety_incident"), channel=ch)
+    await escalation.file_escalation(
+        None, "crm-9", _state(handoff_reason="safety_incident"), channel=ch
+    )
     assert ch.calls[2] == ("priority", 9, "urgent")
     assert "belum teridentifikasi" in ch.calls[0][2]
 

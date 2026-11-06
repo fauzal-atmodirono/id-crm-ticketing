@@ -57,7 +57,12 @@ def build_ticket_note(session_id: str, state: dict[str, Any]) -> str:
     reason = state.get("handoff_reason") or "help_request"
     _, priority, heading = REASONS.get(reason, ("", "medium", reason))
     summary = (state.get("handoff_summary") or "").strip() or "(tidak ada ringkasan)"
-    lines = [f"🚨 Eskalasi driver: {heading} (prioritas {priority.upper()})", "", "Ringkasan AI:", summary]
+    lines = [
+        f"🚨 Eskalasi driver: {heading} (prioritas {priority.upper()})",
+        "",
+        "Ringkasan AI:",
+        summary,
+    ]
 
     order_id = order_for_session(session_id, state)
     trip = trips_module.TRIPS.get(order_id) if order_id else None
@@ -73,7 +78,11 @@ def build_ticket_note(session_id: str, state: dict[str, Any]) -> str:
         active = trips_module.ACTIVE_SESSIONS.get(session_id)
         if active:
             label = trips_module.ANOMALIES[active["anomaly"]]["label"]
-            lines += ["", f"Alert pelacakan: {label}", f"Pesan pembuka ke driver: \"{active['opening']}\""]
+            lines += [
+                "",
+                f"Alert pelacakan: {label}",
+                f'Pesan pembuka ke driver: "{active["opening"]}"',
+            ]
         reports = [e for e in trip["events"] if not str(e["status"]).startswith("alert:")]
         if reports:
             lines += ["", "Laporan driver:"]
@@ -110,6 +119,13 @@ async def file_escalation(
         await cw.add_labels(conversation_id, [ESCALATION_LABEL, label])
         await cw.set_priority(conversation_id, priority)
     except Exception as exc:  # fail-open: the handoff itself must still happen
-        _log.warning("logisly_escalation_ticket_failed", conversation_id=conversation_id, error=str(exc))
+        _log.warning(
+            "logisly_escalation_ticket_failed", conversation_id=conversation_id, error=str(exc)
+        )
         return
-    _log.info("logisly_escalation_filed", conversation_id=conversation_id, reason=reason, order_id=order_id)
+    _log.info(
+        "logisly_escalation_filed",
+        conversation_id=conversation_id,
+        reason=reason,
+        order_id=order_id,
+    )

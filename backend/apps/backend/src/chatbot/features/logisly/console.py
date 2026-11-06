@@ -39,6 +39,8 @@ CONSOLE_HTML = """<!doctype html>
            background:transparent; border-radius:6px; padding:6px 10px; cursor:pointer; }
   button:hover { background:var(--accent); color:#fff; }
   button:disabled { opacity:.5; cursor:wait; }
+  button.call { border-color:var(--ok); color:var(--ok); }
+  button.call:hover { background:var(--ok); color:#fff; }
   ol { margin:8px 0 0; padding-left:18px; font-size:12px; color:var(--muted); }
   ol li { margin:2px 0; }
   #msg { font-size:13px; min-height:18px; color:var(--muted); }
@@ -76,19 +78,24 @@ async function load() {
       </div>
       <div class="actions">
         ${Object.entries(anomalies).map(([k, label]) => `<button data-order="${esc(t.order_id)}" data-kind="${esc(k)}">${esc(label)}</button>`).join("")}
+        <button class="call" data-order="${esc(t.order_id)}" data-call="1">📞 Telepon driver</button>
       </div>
     </div>`).join("");
 }
 
 box.addEventListener("click", async ev => {
   const b = ev.target.closest("button"); if (!b) return;
-  b.disabled = true; msg.textContent = "Sending to driver…";
+  b.disabled = true; msg.textContent = b.dataset.call ? "Calling driver…" : "Sending to driver…";
   try {
-    const r = await fetch("/logisly/anomaly", { method: "POST",
+    const path = b.dataset.call ? "/logisly/call" : "/logisly/anomaly";
+    const payload = b.dataset.call ? { order_id: b.dataset.order } : { order_id: b.dataset.order, kind: b.dataset.kind };
+    const r = await fetch(path, { method: "POST",
       headers: { "Content-Type": "application/json", "X-API-Key": key },
-      body: JSON.stringify({ order_id: b.dataset.order, kind: b.dataset.kind }) });
+      body: JSON.stringify(payload) });
     const d = await r.json();
-    msg.textContent = r.ok ? `Sent to driver (conversation #${d.conversation_id}): "${d.message}"` : `Failed: ${d.detail || r.status}`;
+    msg.textContent = !r.ok ? `Failed: ${d.detail || r.status}`
+      : b.dataset.call ? "Ringing the driver app…"
+      : `Sent to driver (conversation #${d.conversation_id}): "${d.message}"`;
   } catch (e) { msg.textContent = "Failed: " + e; }
   b.disabled = false; load();
 });

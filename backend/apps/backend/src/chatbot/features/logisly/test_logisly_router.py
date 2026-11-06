@@ -50,25 +50,42 @@ def test_routes_need_the_api_key_but_console_does_not():
 @respx.mock
 def test_anomaly_opens_conversation_and_registers_trip_context():
     respx.get(f"{CW}/contacts/search").mock(
-        return_value=httpx.Response(200, json={"payload": [{"id": 13, "phone_number": "+6281100001111"}]})
+        return_value=httpx.Response(
+            200, json={"payload": [{"id": 13, "phone_number": "+6281100001111"}]}
+        )
     )
     respx.get(f"{CW}/contacts/13/conversations").mock(
-        return_value=httpx.Response(200, json={"payload": [
-            {"id": 21, "inbox_id": 4, "status": "open"},
-            {"id": 5, "inbox_id": 1, "status": "open"},
-        ]})
+        return_value=httpx.Response(
+            200,
+            json={
+                "payload": [
+                    {"id": 21, "inbox_id": 4, "status": "open"},
+                    {"id": 5, "inbox_id": 1, "status": "open"},
+                ]
+            },
+        )
     )
-    resolve = respx.post(f"{CW}/conversations/21/toggle_status").mock(return_value=httpx.Response(200, json={}))
-    create = respx.post(f"{CW}/conversations").mock(return_value=httpx.Response(200, json={"id": 22}))
+    resolve = respx.post(f"{CW}/conversations/21/toggle_status").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    create = respx.post(f"{CW}/conversations").mock(
+        return_value=httpx.Response(200, json={"id": 22})
+    )
 
     r = _client(_settings()).post(
-        "/logisly/anomaly", json={"order_id": "lgs-24017", "kind": "gps_stop"}, headers={"X-API-Key": "k"}
+        "/logisly/anomaly",
+        json={"order_id": "lgs-24017", "kind": "gps_stop"},
+        headers={"X-API-Key": "k"},
     )
 
     assert r.status_code == 200 and r.json()["conversation_id"] == 22
     assert resolve.call_count == 1  # only the driver-inbox conversation is closed
     sent = create.calls.last.request.content
-    assert b'"source_id":"whatsapp:+6281100001111"' in sent and b"LGS-24017" in sent and b'"pending"' in sent
+    assert (
+        b'"source_id":"whatsapp:+6281100001111"' in sent
+        and b"LGS-24017" in sent
+        and b'"pending"' in sent
+    )
     assert b"di sekitar Tol Cipali KM 102" in sent
     ctx = trips.context_for_session("crm-22")
     assert "LGS-24017" in ctx and "Do not ask for the order number" in ctx
@@ -79,10 +96,25 @@ def test_anomaly_opens_conversation_and_registers_trip_context():
 def test_anomaly_validates_order_kind_and_configuration():
     c = _client(_settings())
     h = {"X-API-Key": "k"}
-    assert c.post("/logisly/anomaly", json={"order_id": "LGS-0", "kind": "gps_stop"}, headers=h).status_code == 404
-    assert c.post("/logisly/anomaly", json={"order_id": "LGS-24017", "kind": "x"}, headers=h).status_code == 422
+    assert (
+        c.post(
+            "/logisly/anomaly", json={"order_id": "LGS-0", "kind": "gps_stop"}, headers=h
+        ).status_code
+        == 404
+    )
+    assert (
+        c.post(
+            "/logisly/anomaly", json={"order_id": "LGS-24017", "kind": "x"}, headers=h
+        ).status_code
+        == 422
+    )
     c2 = _client(_settings(logisly_demo_driver_phone=""))
-    assert c2.post("/logisly/anomaly", json={"order_id": "LGS-24017", "kind": "no_pod"}, headers=h).status_code == 503
+    assert (
+        c2.post(
+            "/logisly/anomaly", json={"order_id": "LGS-24017", "kind": "no_pod"}, headers=h
+        ).status_code
+        == 503
+    )
 
 
 def test_driver_started_conversation_has_no_trip_context():

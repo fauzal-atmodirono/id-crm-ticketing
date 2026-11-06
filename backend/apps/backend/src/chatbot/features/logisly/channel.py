@@ -38,7 +38,9 @@ class ChatwootDriverChannel:
         for contact in found.get("payload") or []:
             if _e164(contact.get("phone_number") or "") == phone:
                 return int(contact["id"])
-        created = await self._request("POST", "/contacts", json={"name": name, "phone_number": phone})
+        created = await self._request(
+            "POST", "/contacts", json={"name": name, "phone_number": phone}
+        )
         payload = created.get("payload") or created
         contact = payload.get("contact") or payload
         return int(contact["id"])
@@ -50,7 +52,9 @@ class ChatwootDriverChannel:
         for conv in listed.get("payload") or []:
             if conv.get("inbox_id") == inbox_id and conv.get("status") != "resolved":
                 await self._request(
-                    "POST", f"/conversations/{conv['id']}/toggle_status", json={"status": "resolved"}
+                    "POST",
+                    f"/conversations/{conv['id']}/toggle_status",
+                    json={"status": "resolved"},
                 )
 
     async def open_conversation(self, contact_id: int, inbox_id: int, phone: str, text: str) -> int:
@@ -67,7 +71,6 @@ class ChatwootDriverChannel:
         )
         return int(created["id"])
 
-
     async def add_private_note(self, conversation_id: int, text: str) -> None:
         await self._request(
             "POST",
@@ -78,9 +81,16 @@ class ChatwootDriverChannel:
     async def add_labels(self, conversation_id: int, labels: list[str]) -> None:
         current = await self._request("GET", f"/conversations/{conversation_id}/labels")
         merged = sorted(set(current.get("payload") or []) | set(labels))
-        await self._request("POST", f"/conversations/{conversation_id}/labels", json={"labels": merged})
+        await self._request(
+            "POST", f"/conversations/{conversation_id}/labels", json={"labels": merged}
+        )
 
     async def set_priority(self, conversation_id: int, priority: str) -> None:
         await self._request(
             "POST", f"/conversations/{conversation_id}/toggle_priority", json={"priority": priority}
+        )
+
+    async def set_status(self, conversation_id: int, status: str) -> None:
+        await self._request(
+            "POST", f"/conversations/{conversation_id}/toggle_status", json={"status": status}
         )

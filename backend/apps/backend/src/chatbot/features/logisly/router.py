@@ -16,6 +16,7 @@ crm.localhost is also reachable through the Twilio tunnel.
 from __future__ import annotations
 
 import hmac
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -24,9 +25,16 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from chatbot.features.chat.phone.gemini_live import connect_live
+from chatbot.features.logisly.call_router import build_call_router
 from chatbot.features.logisly.channel import ChatwootDriverChannel, _e164
 from chatbot.features.logisly.console import CONSOLE_HTML
-from chatbot.features.logisly.trips import ANOMALIES, TRIPS, register_session, render
+from chatbot.features.logisly.trips import (
+    ANOMALIES,
+    TRIPS,
+    register_session,
+    render,
+)
 
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
@@ -39,16 +47,28 @@ class AnomalyBody(BaseModel):
     kind: str
 
 
-def build_logisly_router(settings: Settings, channel: ChatwootDriverChannel | None = None) -> APIRouter:
-    router = APIRouter()
-    driver_channel = channel or ChatwootDriverChannel(settings)
-
+def make_authorizer(settings: Settings) -> Callable[[str | None], None]:
     def _authorize(x_api_key: str | None) -> None:
         key = settings.proton_backend_key
-        if not key or x_api_key is None or not hmac.compare_digest(
-            x_api_key.encode("utf-8"), key.encode("utf-8")
+        if (
+            not key
+            or x_api_key is None
+            or not hmac.compare_digest(x_api_key.encode("utf-8"), key.encode("utf-8"))
         ):
             raise HTTPException(status_code=401, detail="Unauthorized")
+
+    return _authorize
+
+
+def build_logisly_router(
+    settings: Settings,
+    channel: ChatwootDriverChannel | None = None,
+    live_session_factory: Callable[..., Any] = connect_live,
+) -> APIRouter:
+    router = APIRouter()
+    driver_channel = channel or ChatwootDriverChannel(settings)
+    _authorize = make_authorizer(settings)
+    router.include_router(build_call_router(settings, _authorize, channel, live_session_factory))
 
     @router.get("/logisly/console", response_class=HTMLResponse)
     async def console() -> str:
@@ -63,7 +83,9 @@ def build_logisly_router(settings: Settings, channel: ChatwootDriverChannel | No
         }
 
     @router.post("/logisly/anomaly")
-    async def raise_anomaly(body: AnomalyBody, x_api_key: str | None = Header(default=None)) -> dict[str, Any]:
+    async def raise_anomaly(
+        body: AnomalyBody, x_api_key: str | None = Header(default=None)
+    ) -> dict[str, Any]:
         _authorize(x_api_key)
         trip = TRIPS.get(body.order_id)
         if trip is None:
@@ -82,13 +104,26 @@ def build_logisly_router(settings: Settings, channel: ChatwootDriverChannel | No
         try:
             contact_id = await driver_channel.find_or_create_contact(phone, trip["driver_name"])
             await driver_channel.resolve_open_conversations(contact_id, inbox_id)
-            conversation_id = await driver_channel.open_conversation(contact_id, inbox_id, phone, opening)
+            conversation_id = await driver_channel.open_conversation(
+                contact_id, inbox_id, phone, opening
+            )
         except httpx.HTTPError as exc:
-            _log.warning("logisly_anomaly_chatwoot_failed", order_id=trip["order_id"], error=str(exc))
+            _log.warning(
+                "logisly_anomaly_chatwoot_failed", order_id=trip["order_id"], error=str(exc)
+            )
             raise HTTPException(status_code=502, detail="Chatwoot call failed") from exc
         register_session(f"crm-{conversation_id}", trip["order_id"], body.kind, opening)
         TRIPS.update(trip["order_id"], f"alert:{body.kind}", render(anomaly["event"], trip))
-        _log.info("logisly_anomaly_raised", order_id=trip["order_id"], kind=body.kind, conversation_id=conversation_id)
-        return {"conversation_id": conversation_id, "order_id": trip["order_id"], "message": opening}
+        _log.info(
+            "logisly_anomaly_raised",
+            order_id=trip["order_id"],
+            kind=body.kind,
+            conversation_id=conversation_id,
+        )
+        return {
+            "conversation_id": conversation_id,
+            "order_id": trip["order_id"],
+            "message": opening,
+        }
 
     return router

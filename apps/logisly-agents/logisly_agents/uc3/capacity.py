@@ -88,6 +88,10 @@ def capacity_check(items: list[dict], roster: dict, calendar: dict) -> dict:
             "proposed": proposed[t],
             "utilisation_pct": round(proposed[t] / free * 100) if free > 0 else 0,
         }
+        if free <= 0 and proposed[t] > 0:
+            # 0% would hide an over-commitment: flag it explicitly instead.
+            teams[t]["utilisation_pct"] = None
+            teams[t]["overloaded"] = True
     return {
         "window": window,
         "teams": teams,

@@ -82,3 +82,15 @@ def test_leave_inside_window_is_prorated():
             p["leave"] = [{"from": "2026-11-23", "to": "2026-11-27"}]  # 5 of 10 days in 26.23
     r = capacity_check([], roster, ctx["calendar"])
     assert r["teams"]["mobile"]["capacity"] == 69 - 6.5
+
+
+def test_overloaded_team_reports_none_not_zero():
+    ctx = _ctx()
+    roster = json.loads(json.dumps(ctx["roster"], default=str))
+    names = [p["name"] for p in roster["people"]]
+    roster["committed"] = {s["name"]: {n: 999 for n in names} for s in ctx["calendar"]["sprints"]}
+    r = capacity_check([{"assignee": "rizky-r", "sp": 3, "sprint": "Sprint 26.23"}], roster, ctx["calendar"])
+    m = r["teams"]["mobile"]
+    assert m["free"] <= 0 and m["proposed"] == 3
+    assert m["utilisation_pct"] is None and m["overloaded"] is True
+    assert "overloaded" not in r["teams"]["backend"] or r["teams"]["backend"]["proposed"] == 0

@@ -1,3 +1,4 @@
+import os
 from datetime import date
 
 from logisly_agents.config import configure_vertex_env, get_settings
@@ -15,11 +16,11 @@ def test_env_override(monkeypatch):
 
 
 def test_configure_vertex_env_keeps_existing(monkeypatch):
+    for k in ("GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"):
+        monkeypatch.setenv(k, "x")
+        monkeypatch.delenv(k)
     monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
     configure_vertex_env()
-    import os
-
     assert os.environ["GOOGLE_CLOUD_LOCATION"] == "us-central1"
     assert os.environ["GOOGLE_CLOUD_PROJECT"] == "lv-playground-genai"
     monkeypatch.delenv("GOOGLE_CLOUD_LOCATION")

@@ -59,6 +59,9 @@ DRIVER_HTML = """<!doctype html>
   button.round { width:64px; height:64px; font-size:24px; border:0; border-radius:50%; cursor:pointer; color:#fff; }
   .answer { background:var(--ok); } .decline, .hang { background:#dc2626; }
   .start { font:inherit; font-weight:700; background:var(--accent); color:#fff; border:0; border-radius:999px; padding:14px 22px; font-size:15px; cursor:pointer; }
+  .preview { display:flex; align-items:center; gap:10px; padding:8px 10px; background:#fff; border-top:1px solid #e5e7eb; }
+  .preview img, .preview video { width:56px; height:56px; object-fit:cover; border-radius:8px; display:block; }
+  .preview-hint { flex:1; font-size:12px; color:var(--muted); }
   .hidden { display:none !important; }
 </style>
 </head>
@@ -67,6 +70,11 @@ DRIVER_HTML = """<!doctype html>
   <div class="top"><b>Logisly Driver</b><div>Pak Budi Santoso · B 9123 KXT</div></div>
   <div id="chat"><div class="empty">Belum ada pesan.</div></div>
   <div id="status"></div>
+  <div class="preview hidden" id="preview">
+    <div id="preview-media"></div>
+    <div class="preview-hint">Tambahkan keterangan di bawah, lalu kirim</div>
+    <button class="icon" id="btn-unpick" title="Batal">✕</button>
+  </div>
   <div class="composer">
     <input type="file" id="file" accept="image/*,video/*" class="hidden">
     <button class="icon" id="btn-photo" title="Foto / video">📷</button>
@@ -136,10 +144,31 @@ async function send(text, file) {
   status(r.ok ? "" : "Gagal mengirim (" + r.status + ")");
   loadMessages();
 }
-$("btn-send").onclick = () => { const t = $("text").value.trim(); if (!t) return; $("text").value = ""; send(t); };
+// A picked photo/video waits in a preview so the driver can add a caption;
+// the text box becomes the caption and Send posts both together.
+let picked = null, pickedUrl = null;
+function unpick() {
+  picked = null; if (pickedUrl) URL.revokeObjectURL(pickedUrl); pickedUrl = null;
+  $("preview").classList.add("hidden"); $("preview-media").innerHTML = "";
+  $("text").placeholder = "Tulis pesan…";
+}
+$("btn-send").onclick = () => {
+  const t = $("text").value.trim();
+  if (!t && !picked) return;
+  const f = picked; $("text").value = ""; unpick(); send(t, f);
+};
 $("text").addEventListener("keydown", e => { if (e.key === "Enter") $("btn-send").click(); });
 $("btn-photo").onclick = () => $("file").click();
-$("file").onchange = () => { const f = $("file").files[0]; if (f) send("", f); $("file").value = ""; };
+$("btn-unpick").onclick = unpick;
+$("file").onchange = () => {
+  const f = $("file").files[0]; $("file").value = "";
+  if (!f) return;
+  unpick(); picked = f; pickedUrl = URL.createObjectURL(f);
+  $("preview-media").innerHTML = f.type.startsWith("video/")
+    ? `<video src="${pickedUrl}" muted></video>` : `<img src="${pickedUrl}">`;
+  $("preview").classList.remove("hidden");
+  $("text").placeholder = "Tambahkan keterangan…"; $("text").focus();
+};
 
 // ---- voice notes: record, then re-encode to 16 kHz mono WAV -----------
 let rec = null, chunks = [], recStart = 0, recTick = null;

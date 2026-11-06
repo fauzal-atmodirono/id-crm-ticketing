@@ -39,6 +39,7 @@ def test_capacity_matches_report():
         "free": 45,
         "proposed": 31,
         "utilisation_pct": 69,
+        "overloaded": False,
     }
     assert t["backend"] == {
         "capacity": 69,
@@ -46,6 +47,7 @@ def test_capacity_matches_report():
         "free": 51,
         "proposed": 28,
         "utilisation_pct": 55,
+        "overloaded": False,
     }
     assert t["frontend"] == {
         "capacity": 30,
@@ -53,6 +55,7 @@ def test_capacity_matches_report():
         "free": 17,
         "proposed": 11,
         "utilisation_pct": 65,
+        "overloaded": False,
     }
     json.dumps(r)
 
@@ -94,3 +97,24 @@ def test_overloaded_team_reports_none_not_zero():
     assert m["free"] <= 0 and m["proposed"] == 3
     assert m["utilisation_pct"] is None and m["overloaded"] is True
     assert "overloaded" not in r["teams"]["backend"] or r["teams"]["backend"]["proposed"] == 0
+
+
+def test_unknown_sprint_is_separate_from_after_window():
+    r = _run(
+        [
+            {"assignee": "bayu-p", "sp": 5, "sprint": "Sprint 99.99"},
+            {"assignee": "bayu-p", "sp": 8, "sprint": "Sprint 27.02"},
+        ]
+    )
+    assert r["unknown_sprints"] == [{"assignee": "bayu-p", "sp": 5, "sprint": "Sprint 99.99"}]
+    assert r["after_window"] == [{"assignee": "bayu-p", "sp": 8, "sprint": "Sprint 27.02"}]
+    assert r["teams"]["mobile"]["proposed"] == 0
+
+
+def test_overloaded_when_proposed_exceeds_free():
+    ctx = _ctx()
+    free = capacity_check([], ctx["roster"], ctx["calendar"])["teams"]["mobile"]["free"]
+    r = _run([{"assignee": "bayu-p", "sp": free + 1, "sprint": "Sprint 26.23"}])
+    m = r["teams"]["mobile"]
+    assert m["overloaded"] is True
+    assert m["utilisation_pct"] == round((free + 1) / free * 100)

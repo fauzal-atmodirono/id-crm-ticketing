@@ -48,6 +48,7 @@ def capacity_check(items: list[dict], roster: dict, calendar: dict) -> dict:
     freeze = _d(calendar["code_freeze"]["start"])
     sprints = [s for s in calendar["sprints"] if _d(s["end"]) < freeze]
     window = [s["name"] for s in sprints]
+    known_sprints = {s["name"] for s in calendar["sprints"]}
     people = roster["people"]
     by_login = {p["github"]: p for p in people}
     committed_map = roster.get("committed") or {}
@@ -63,7 +64,7 @@ def capacity_check(items: list[dict], roster: dict, calendar: dict) -> dict:
             com[team] += (committed_map.get(s["name"]) or {}).get(p["name"], 0)
 
     proposed = {t: 0 for t in TEAM_REPOS}
-    after_window, no_team, unknown = [], [], []
+    after_window, no_team, unknown, unknown_sprints = [], [], [], []
     for it in items:
         person = by_login.get(it["assignee"])
         if person is None:
@@ -73,6 +74,9 @@ def capacity_check(items: list[dict], roster: dict, calendar: dict) -> dict:
         team = _team_of(person)
         if team is None:
             no_team.append(dict(it))
+        elif it["sprint"] not in known_sprints:
+            # A typo or invented sprint name is not "after code freeze": report it on its own.
+            unknown_sprints.append(dict(it))
         elif it["sprint"] not in window:
             after_window.append(dict(it))
         else:
@@ -86,16 +90,15 @@ def capacity_check(items: list[dict], roster: dict, calendar: dict) -> dict:
             "committed": _num(com[t]),
             "free": _num(free),
             "proposed": proposed[t],
-            "utilisation_pct": round(proposed[t] / free * 100) if free > 0 else 0,
+            # A percentage of zero or negative free capacity is meaningless: report None.
+            "utilisation_pct": round(proposed[t] / free * 100) if free > 0 else None,
+            "overloaded": proposed[t] > free,
         }
-        if free <= 0 and proposed[t] > 0:
-            # 0% would hide an over-commitment: flag it explicitly instead.
-            teams[t]["utilisation_pct"] = None
-            teams[t]["overloaded"] = True
     return {
         "window": window,
         "teams": teams,
         "after_window": after_window,
         "no_team": no_team,
         "unknown_assignees": unknown,
+        "unknown_sprints": unknown_sprints,
     }

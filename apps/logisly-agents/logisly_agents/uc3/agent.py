@@ -33,7 +33,8 @@ setelah code freeze. Mulai dari sprint paling dekat dari tanggal hari ini menuru
 dahulukan story yang memblokir story lain. Susun story mengikuti template user story dan \
 konvensi (label, judul, story point, sprint), lalu panggil capacity_check dengan story \
 usulan (assignee, sp, sprint). Laporkan utilisasi tiap tim, item di luar \
-jendela sprint, dan tim yang overloaded.
+jendela sprint, sprint yang tidak ada di kalender (unknown_sprints, perbaiki namanya), dan tim \
+yang overloaded.
 5. Panggil propose_changes dengan SEMUA usulan sekaligus: creates (issue baru), updates \
 (perubahan issue yang ada, termasuk komentar) dan closes (penutupan duplikat). Tool ini hanya \
 memvalidasi, tidak menulis. Bila ada item berstatus error, perbaiki lalu panggil propose_changes \

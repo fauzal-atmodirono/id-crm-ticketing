@@ -8,17 +8,28 @@ stay in Bahasa Indonesia.
 
 from __future__ import annotations
 
+import copy
 import json
 from functools import lru_cache
+from typing import Any
 
 from google.adk.tools import ToolContext
 
 from logisly_agents.config import get_settings
 from logisly_agents.uc3.capacity import capacity_check as _capacity_check
 from logisly_agents.uc3.context import read_context
+from logisly_agents.uc3.tracker import KEY as TRACKER_KEY
 from logisly_agents.uc3.tracker import MockTracker, TrackerError
 
 DOCS_KEY = "uc3:docs"
+PROPOSAL_KEY = "uc3:proposal"
+
+# Keys each proposal item may carry; the first set is required.
+_ITEM_KEYS: dict[str, tuple[set[str], set[str]]] = {
+    "create": ({"repo", "title", "labels"}, {"body", "milestone", "assignees"}),
+    "update": ({"ref"}, {"add_labels", "remove_labels", "milestone", "assignees", "body_append", "comment"}),
+    "close": ({"ref", "reason"}, {"comment"}),
+}
 
 
 def _uc3_dir():
@@ -32,9 +43,13 @@ def _context() -> dict:
 
 
 def _tracker(tool_context: ToolContext) -> MockTracker:
+    return _tracker_on(tool_context.state)
+
+
+def _tracker_on(state) -> MockTracker:
     ctx = _context()
     snapshot = _uc3_dir() / "github" / "issues_snapshot.json"
-    return MockTracker(tool_context.state, snapshot, ctx["conventions"], ctx["calendar"])
+    return MockTracker(state, snapshot, ctx["conventions"], ctx["calendar"])
 
 
 def _err(prefix: str, exc: Exception) -> dict:
@@ -223,3 +238,145 @@ def close_issue(tool_context: ToolContext, ref: str, reason: str, comment: str =
         return _tracker(tool_context).close(ref, reason, comment)  # type: ignore[arg-type]
     except Exception as exc:
         return _err("Gagal menutup issue", exc)
+
+
+def _check_item(kind: str, args: Any) -> dict:
+    if not isinstance(args, dict):
+        raise TrackerError("setiap usulan harus berupa objek")
+    required, optional = _ITEM_KEYS[kind]
+    missing = sorted(required - set(args))
+    unknown = sorted(set(args) - required - optional)
+    if missing:
+        raise TrackerError(f"kolom wajib tidak ada: {missing}")
+    if unknown:
+        raise TrackerError(f"kolom tidak dikenal: {unknown}")
+    return args
+
+
+def _run_item(tracker: MockTracker, kind: str, args: dict) -> dict:
+    """Apply one proposal item to ``tracker``. The same code runs for the dry run and the real apply."""
+    args = _check_item(kind, args)
+    if kind == "create":
+        return tracker.create(
+            args["repo"],
+            args["title"],
+            args.get("body") or "",
+            list(args.get("labels") or []),
+            args.get("milestone") or None,
+            list(args.get("assignees") or []),
+        )
+    if kind == "update":
+        out = tracker.update(
+            args["ref"],
+            add_labels=list(args.get("add_labels") or []),
+            remove_labels=list(args.get("remove_labels") or []),
+            milestone=args.get("milestone") or None,
+            assignees=list(args["assignees"]) if args.get("assignees") else None,
+            body_append=args.get("body_append") or "",
+        )
+        if args.get("comment"):
+            tracker.comment(args["ref"], args["comment"])
+        return out
+    return tracker.close(args["ref"], args["reason"], args.get("comment") or "")
+
+
+def _label(kind: str, args: Any) -> str:
+    if not isinstance(args, dict):
+        return kind
+    if kind == "create":
+        return f"buat {args.get('repo', '?')}: {args.get('title', '?')}"
+    verb = "ubah" if kind == "update" else "tutup"
+    return f"{verb} {args.get('ref', '?')}"
+
+
+def propose_changes(
+    tool_context: ToolContext,
+    creates: list[dict],
+    updates: list[dict],
+    closes: list[dict],
+) -> dict:
+    """Validasi seluruh usulan perubahan backlog TANPA menulis apa pun, lalu simpan sebagai usulan P1..Pn.
+
+    Panggil sebelum menyajikan tabel usulan. Bila ada item berstatus error, perbaiki lalu panggil
+    lagi dengan seluruh usulan. Usulan baru menggantikan usulan sebelumnya.
+
+    Args:
+        creates: Issue baru. Tiap elemen: repo, title ('[area] kalimat'), labels (tepat satu type:*,
+            area:*, priority:*), body, milestone (nama sprint), assignees (login GitHub).
+        updates: Perubahan issue yang ada. Tiap elemen: ref ('<repo>#<nomor>'), dan opsional
+            add_labels, remove_labels, milestone, assignees, body_append, comment.
+        closes: Penutupan issue. Tiap elemen: ref, reason (completed, not_planned atau duplicate),
+            comment (mis. rujukan ke issue pengganti).
+    """
+    try:
+        sim = {TRACKER_KEY: copy.deepcopy(_tracker(tool_context).state[TRACKER_KEY])}
+        tracker = _tracker_on(sim)
+        items: list[dict] = []
+        report: list[dict] = []
+        batches = (("create", creates), ("update", updates), ("close", closes))
+        for kind, batch in batches:
+            for args in batch or []:
+                pid = f"P{len(items) + 1}"
+                row: dict[str, Any] = {"id": pid, "kind": kind, "usulan": _label(kind, args)}
+                try:
+                    out = _run_item(tracker, kind, args)
+                    row["status"] = "ok"
+                    if kind == "create":
+                        row["predicted_ref"] = out["ref"]
+                except Exception as exc:  # noqa: BLE001 - every item failure is reported, not raised
+                    row["status"] = "error"
+                    row["error"] = str(exc) or type(exc).__name__
+                items.append({"id": pid, "kind": kind, "args": copy.deepcopy(args), "applied": False})
+                report.append(row)
+        tool_context.state[PROPOSAL_KEY] = {"items": items}  # re-assign: State persists on assignment
+        ok = sum(1 for r in report if r["status"] == "ok")
+        return {"items": report, "ok": ok, "errors": len(report) - ok}
+    except Exception as exc:
+        return {"error": f"Gagal memvalidasi usulan: {str(exc) or type(exc).__name__}"}
+
+
+def apply_proposal(tool_context: ToolContext, ids: list[str] | None = None) -> dict:
+    """Terapkan usulan yang disimpan propose_changes, berurutan. Panggil SEKALI setelah pengguna setuju.
+
+    Item yang sudah diterapkan tidak diterapkan ulang. Laporkan setiap error ke pengguna.
+
+    Args:
+        ids: Id usulan yang disetujui, mis. ["P1", "P3"]. Kosong berarti semua usulan.
+    """
+    try:
+        proposal = tool_context.state.get(PROPOSAL_KEY)
+        if not proposal or not proposal.get("items"):
+            return {"error": "Belum ada usulan. Panggil propose_changes dulu."}
+        items = copy.deepcopy(proposal["items"])
+        known = {i["id"] for i in items}
+        wanted = list(ids or [])
+        tracker = _tracker(tool_context)
+        results: list[dict] = []
+        applied = failed = already = 0
+        for item in items:
+            if wanted and item["id"] not in wanted:
+                continue
+            if item["applied"]:
+                already += 1
+                results.append({"id": item["id"], "status": "already_applied", **(item.get("result") or {})})
+                continue
+            try:
+                out = _run_item(tracker, item["kind"], item["args"])
+            except Exception as exc:  # noqa: BLE001 - every item failure is reported, not raised
+                failed += 1
+                results.append({"id": item["id"], "status": "error", "error": str(exc) or type(exc).__name__})
+                continue
+            item["applied"] = True
+            item["result"] = {"ref": out["ref"]}
+            applied += 1
+            results.append({"id": item["id"], "status": "applied", "ref": out["ref"]})
+            # Persist after each item so a crash mid-way never re-applies finished items.
+            tool_context.state[PROPOSAL_KEY] = {"items": copy.deepcopy(items)}
+        for pid in wanted:
+            if pid not in known:
+                failed += 1
+                results.append({"id": pid, "status": "error", "error": f"usulan {pid} tidak ada"})
+        tool_context.state[PROPOSAL_KEY] = {"items": items}
+        return {"applied": applied, "failed": failed, "already_applied": already, "results": results}
+    except Exception as exc:
+        return {"error": f"Gagal menerapkan usulan: {str(exc) or type(exc).__name__}"}

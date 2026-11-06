@@ -25,6 +25,10 @@ class TrackerError(Exception):
     pass
 
 
+def _title_key(title: str) -> str:
+    return " ".join((title or "").casefold().split())
+
+
 class MockTracker:
     def __init__(
         self,
@@ -117,6 +121,11 @@ class MockTracker:
         self._check_labels(labels)
         self._check_milestone(milestone)
         data = self._data()
+        key = _title_key(title)
+        for i in data["issues"]:
+            if i["repo"] == repo and i["state"] == "open" and _title_key(i["title"]) == key:
+                # Idempotent retries: the same story is never created twice.
+                raise TrackerError(f"issue terbuka dengan judul sama sudah ada: {repo}#{i['number']}")
         n = data["next"].get(repo, 1)
         data["next"][repo] = n + 1
         data["issues"].append(

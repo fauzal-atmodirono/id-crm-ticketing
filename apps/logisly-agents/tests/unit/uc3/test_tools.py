@@ -79,3 +79,98 @@ def test_context_tools_are_json_safe():
 
     for out in (tools.get_conventions(), tools.get_team(), tools.get_templates()):
         json.dumps(out)
+
+
+FEAT = ["type:feature", "area:driver-app", "priority:P2"]
+
+
+def _create(title, **kw):
+    return {"repo": "driver-app", "title": title, "body": "isi", "labels": FEAT, **kw}
+
+
+def test_propose_validates_without_writing():
+    ctx = _ctx()
+    before = tools.search_issues(ctx, state="all")["issues"]
+    tracker_before = dict(ctx.state)
+    res = tools.propose_changes(
+        ctx,
+        creates=[
+            _create("[driver-app] Layar chat", milestone="Sprint 26.23", assignees=["rizky-r"]),
+            _create("tanpa prefix"),
+            _create("[driver-app] Layar chat"),  # duplicate of P1 inside the proposal
+        ],
+        updates=[{"ref": "driver-app#142", "add_labels": ["sp:3"], "comment": "terkait"}],
+        closes=[
+            {"ref": "driver-app#148", "reason": "duplicate", "comment": "dup"},
+            {"ref": "driver-app#999", "reason": "duplicate"},
+        ],
+    )
+    items = {i["id"]: i for i in res["items"]}
+    assert list(items) == ["P1", "P2", "P3", "P4", "P5", "P6"]
+    assert items["P1"]["status"] == "ok" and items["P1"]["predicted_ref"] == "driver-app#154"
+    assert items["P2"]["status"] == "error" and "judul" in items["P2"]["error"]
+    assert items["P3"]["status"] == "error" and "driver-app#154" in items["P3"]["error"]
+    assert items["P4"]["status"] == "ok" and items["P5"]["status"] == "ok"
+    assert items["P6"]["status"] == "error"
+    assert res["ok"] == 3 and res["errors"] == 3
+    # No tracker writes happened.
+    assert tools.search_issues(ctx, state="all")["issues"] == before
+    assert ctx.state.get("uc3:tracker") == tracker_before.get("uc3:tracker")
+    assert [i["id"] for i in ctx.state["uc3:proposal"]["items"]] == ["P1", "P2", "P3", "P4", "P5", "P6"]
+
+
+def test_propose_rejects_unknown_and_missing_keys():
+    ctx = _ctx()
+    res = tools.propose_changes(ctx, creates=[{"repo": "driver-app", "titel": "x"}], updates=[], closes=[])
+    assert res["items"][0]["status"] == "error"
+
+
+def test_apply_all_then_reapply_is_noop():
+    ctx = _ctx()
+    tools.propose_changes(
+        ctx,
+        creates=[_create("[driver-app] Layar chat"), _create("[driver-app] Voice note")],
+        updates=[{"ref": "driver-app#142", "add_labels": ["sp:3"], "comment": "terkait"}],
+        closes=[{"ref": "driver-app#148", "reason": "duplicate", "comment": "dup"}],
+    )
+    res = tools.apply_proposal(ctx)
+    assert res["applied"] == 4 and res["failed"] == 0, res
+    refs = [r.get("ref") for r in res["results"]]
+    assert refs[:2] == ["driver-app#154", "driver-app#155"]
+    t = _tracker(ctx.state)
+    assert t.get("driver-app#148")["state"] == "closed"
+    assert "sp:3" in t.get("driver-app#142")["labels"]
+    assert t.get("driver-app#142")["comments"][-1]["body"] == "terkait"
+    snapshot = ctx.state["uc3:tracker"]
+    again = tools.apply_proposal(ctx)
+    assert again["applied"] == 0 and again["already_applied"] == 4
+    assert ctx.state["uc3:tracker"] == snapshot
+
+
+def test_apply_subset_and_unknown_id():
+    ctx = _ctx()
+    tools.propose_changes(
+        ctx, creates=[_create("[driver-app] A satu"), _create("[driver-app] B dua")], updates=[], closes=[]
+    )
+    res = tools.apply_proposal(ctx, ids=["P2", "P9"])
+    assert res["applied"] == 1
+    assert [r["id"] for r in res["results"]] == ["P2", "P9"]
+    assert res["results"][1]["status"] == "error"
+    titles = [i["title"] for i in ctx.state["uc3:tracker"]["issues"] if i["author"] == "ai-agent"]
+    assert titles == ["[driver-app] B dua"]
+    res = tools.apply_proposal(ctx)
+    assert res["applied"] == 1 and res["already_applied"] == 1
+
+
+def test_apply_without_proposal_is_error():
+    assert "error" in tools.apply_proposal(_ctx())
+
+
+def test_apply_reports_item_failure_and_continues():
+    ctx = _ctx()
+    tools.propose_changes(
+        ctx, creates=[_create("tanpa prefix"), _create("[driver-app] Valid")], updates=[], closes=[]
+    )
+    res = tools.apply_proposal(ctx)
+    assert res["applied"] == 1 and res["failed"] == 1
+    assert res["results"][0]["status"] == "error"

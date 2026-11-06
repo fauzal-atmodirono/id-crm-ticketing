@@ -34,12 +34,19 @@ dahulukan story yang memblokir story lain. Susun story mengikuti template user s
 konvensi (label, judul, story point, sprint), lalu panggil capacity_check dengan story \
 usulan (assignee, sp, sprint). Laporkan utilisasi tiap tim, item di luar \
 jendela sprint, dan tim yang overloaded.
-5. Sajikan semua usulan (setiap story satu baris) sebagai tabel: \
-issue baru (repo, judul, label, sprint, assignee) dan perubahan issue yang ada \
-(ref, perubahan, alasan, termasuk penutupan duplikat). Minta persetujuan.
-6. HANYA setelah pengguna setuju, panggil create_issue, update_issue, comment_issue dan close_issue \
-untuk semua usulan yang disetujui. Bila pengguna menyetujui sebagian, terapkan hanya bagian itu. \
-Laporkan ref issue yang dibuat dan setiap error dari tool.
+5. Panggil propose_changes dengan SEMUA usulan sekaligus: creates (issue baru), updates \
+(perubahan issue yang ada, termasuk komentar) dan closes (penutupan duplikat). Tool ini hanya \
+memvalidasi, tidak menulis. Bila ada item berstatus error, perbaiki lalu panggil propose_changes \
+lagi dengan seluruh usulan sampai semua item ok. Sajikan usulan dari hasil tool sebagai tabel \
+dengan kolom id (P1, P2, ...): issue baru (repo, judul, label, sprint, assignee) dan perubahan \
+issue yang ada (ref, perubahan, alasan). Setiap story satu baris. Minta persetujuan.
+6. HANYA setelah pengguna setuju, panggil apply_proposal SATU KALI: tanpa ids bila semua \
+disetujui, atau dengan ids yang disetujui bila hanya sebagian. Jangan memanggil create_issue, \
+update_issue, comment_issue atau close_issue untuk usulan yang ada di tabel. Setelah itu \
+bandingkan jumlah item applied dengan jumlah baris yang disetujui, lalu laporkan ref issue yang \
+dibuat, item yang sudah diterapkan sebelumnya, dan setiap error. create_issue, update_issue, \
+comment_issue dan close_issue hanya untuk perubahan kecil satu item yang diminta pengguna \
+di luar tabel usulan.
 
 Aturan:
 - Jangan mengarang tanggal atau story point yang tidak ada di sumber atau konvensi. Bila tidak ada \
@@ -60,7 +67,8 @@ def build_uc3_agent(settings: Settings | None = None) -> LlmAgent:
         name="logisly_product_manager",
         model=settings.model,
         description="Asisten product manager Logisly: PRD, cek konsistensi backlog, usulan perubahan GitHub.",
-        instruction=INSTRUCTION,
+        instruction=INSTRUCTION
+        + f"\nTanggal hari ini: {settings.as_of:%d-%m-%Y} (gunakan tanggal ini, bukan tanggal sistem).\n",
         tools=[
             tools.get_templates,
             tools.get_conventions,
@@ -69,6 +77,8 @@ def build_uc3_agent(settings: Settings | None = None) -> LlmAgent:
             tools.get_issue,
             tools.capacity_check,
             tools.save_document,
+            tools.propose_changes,
+            FunctionTool(tools.apply_proposal, require_confirmation=confirm),
             FunctionTool(tools.create_issue, require_confirmation=confirm),
             FunctionTool(tools.update_issue, require_confirmation=confirm),
             FunctionTool(tools.comment_issue, require_confirmation=confirm),

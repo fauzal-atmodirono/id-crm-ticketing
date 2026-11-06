@@ -8,9 +8,10 @@ from logisly_agents.uploads import convert_uploads
 
 NAMES = {
     "get_templates", "get_conventions", "get_team", "search_issues", "get_issue", "capacity_check",
-    "save_document", "create_issue", "update_issue", "comment_issue", "close_issue",
+    "save_document", "propose_changes", "apply_proposal",
+    "create_issue", "update_issue", "comment_issue", "close_issue",
 }
-WRITES = {"create_issue", "update_issue", "comment_issue", "close_issue"}
+WRITES = {"apply_proposal", "create_issue", "update_issue", "comment_issue", "close_issue"}
 
 
 def _tools(agent):
@@ -45,3 +46,12 @@ def test_instruction_copy_rules():
 def test_adk_entry_imports():
     mod = importlib.import_module("adk_apps.uc3_product.agent")
     assert mod.root_agent.name == "logisly_product_manager"
+
+
+def test_instruction_carries_demo_date_and_proposal_flow():
+    from datetime import date
+
+    agent = build_uc3_agent(Settings(as_of=date(2026, 11, 9)))
+    assert "Tanggal hari ini: 09-11-2026 (gunakan tanggal ini, bukan tanggal sistem)." in agent.instruction
+    assert "propose_changes" in agent.instruction and "apply_proposal" in agent.instruction
+    assert "—" not in agent.instruction

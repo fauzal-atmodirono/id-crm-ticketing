@@ -183,3 +183,18 @@ def test_search_results_do_not_alias_store():
     t, state = _tracker()
     t.search(repo="driver-app")[0]["labels"].append("zzz")
     assert all("zzz" not in i["labels"] for i in state[KEY]["issues"])
+
+
+def test_create_rejects_open_duplicate_title_case_insensitive():
+    t, state = _tracker()
+    t.create("driver-app", "[driver-app] Layar chat AI", "b", LABELS, None, [])
+    before = copy.deepcopy(state[KEY])
+    with pytest.raises(TrackerError, match="driver-app#154"):
+        t.create("driver-app", "[driver-app]  LAYAR chat ai ", "b", LABELS, None, [])
+    assert state[KEY] == before
+    # Same title in another repo, or after the first is closed, is fine.
+    other = ["type:feature", "area:platform", "priority:P2"]
+    t.create("platform-api", "[driver-app] Layar chat AI", "b", other, None, [])
+    t.close("driver-app#154", "not_planned")
+    again = t.create("driver-app", "[driver-app] Layar chat AI", "b", LABELS, None, [])
+    assert again["ref"] == "driver-app#155"

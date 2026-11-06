@@ -1,23 +1,15 @@
 import json
-import sys
 from datetime import date
 
 import pytest
 
-from logisly_agents.config import get_settings
 from logisly_agents.uc2 import store
 from logisly_agents.uc2.evaluate import baseline_periods, compare
 from logisly_agents.uc2.pricing import PricingRepo
 from logisly_agents.uc2.rules import load_rules
-from logisly_agents.uc2.schemas import Quotation, QuoteLine, Tender, TenderLine
+from logisly_agents.uc2.schemas import Quotation, QuoteLine
 
-DATA = get_settings().data_dir
-sys.path.insert(0, str(DATA))
-import common  # noqa: E402
-import gen_uc2  # noqa: E402
-
-AS_OF = date(2026, 11, 9)
-PERIODS = ("2026-08", "2026-09", "2026-10")
+from .helpers import AS_OF, DATA, PERIODS, build, tender
 
 
 @pytest.fixture(scope="module")
@@ -30,61 +22,12 @@ def rules():
     return load_rules(DATA / "uc2" / "business_rules.yaml")
 
 
-def _route(lane_id):
-    lane = common.LANE[lane_id]
-    return lane.origin, lane.destination
-
-
-def _tender():
-    lanes = []
-    for lane_id, truck, trips in gen_uc2.TENDER.values():
-        o, d = _route(lane_id)
-        lanes.append(
-            TenderLine(origin=o, destination=d, truck_type=common.TRUCK[truck].name, trips_per_month=trips)
-        )
-    return Tender(reference=gen_uc2.RFQ_ID, customer=gen_uc2.CUSTOMER, lanes=lanes)
-
-
-def _build(repo, extra_line=None):
-    base = {k: repo.baseline(lane, truck, PERIODS) for k, (lane, truck, _) in gen_uc2.TENDER.items()}
-    state: dict = {}
-    ids = {}
-    for q in gen_uc2.QUOTES:
-        lines = []
-        for ln in gen_uc2.quote_lines(q, base):
-            o, d = _route(ln["lane_id"])
-            lines.append(
-                QuoteLine(
-                    origin=o,
-                    destination=d,
-                    truck_type=common.TRUCK[ln["truck_type"]].name,
-                    price_idr=ln["price"],
-                    unit=ln["unit"],
-                    trips_per_month=ln["trips"],
-                    excludes_toll=ln["key"] in q.get("toll_excluded", []),
-                )
-            )
-        if extra_line and q["id"] == "Q-LJE-1":
-            lines.append(extra_line)
-        quo = Quotation(
-            transporter=gen_uc2.TRANSPORTER[q["trp"]].name,
-            document_name=q["id"],
-            document_date=q["date"],
-            is_revision=bool(q.get("revision_of")),
-            payment_term_days=q["payment"],
-            valid_until=q["valid_to"],
-            lines=lines,
-        )
-        ids[q["id"]] = store.add_quotation(state, quo)["quote_id"]
-    return state, ids
-
-
 def _expected():
     return json.loads((DATA / "uc2" / "expected" / "recommendation.json").read_text())
 
 
 def _run(repo, rules, state):
-    return compare(_tender(), store.list_quotations(state), repo, rules, as_of=AS_OF)
+    return compare(tender(), store.list_quotations(state), repo, rules, as_of=AS_OF)
 
 
 def _check(res, ids, exp):
@@ -108,7 +51,7 @@ def _check(res, ids, exp):
 
 
 def test_matches_answer_key(repo, rules):
-    state, ids = _build(repo)
+    state, ids = build(repo)
     res = _run(repo, rules, state)
     _check(res, ids, _expected())
     assert res["superseded"] == {ids["Q-TCL-1"]: ids["Q-TCL-2"]}
@@ -119,7 +62,7 @@ def test_matches_answer_key(repo, rules):
 
 def test_unmatched_line_is_reported(repo, rules):
     extra = QuoteLine(origin="Bogor", destination="Surabaya", truck_type="Fuso Wingbox", price_idr=9_000_000)
-    state, ids = _build(repo, extra)
+    state, ids = build(repo, extra)
     res = _run(repo, rules, state)
     assert len(res["unmatched_lines"]) == 1
     u = res["unmatched_lines"][0]
@@ -138,8 +81,8 @@ def test_baseline_periods():
 
 
 def test_unknown_transporter_flagged(repo, rules):
-    state, _ = _build(repo)
-    t = _tender()
+    state, _ = build(repo)
+    t = tender()
     lane = t.lanes[0]
     q = Quotation(
         transporter="PT Tidak Dikenal",

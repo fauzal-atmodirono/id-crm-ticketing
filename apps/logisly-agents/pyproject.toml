@@ -31,8 +31,12 @@ select = ["E", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = '-m "not live"'
 markers = ["live: calls Vertex AI (deselected by default)"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-filterwarnings = ["ignore:BaseAgentConfig is deprecated:DeprecationWarning"]
+filterwarnings = [
+  "ignore:BaseAgentConfig is deprecated:DeprecationWarning",
+  "ignore:.*JSON_SCHEMA_FOR_FUNC_DECL.*:UserWarning",
+]

@@ -23,7 +23,11 @@ apa pun sebelum langkah ini selesai.
 Tampilkan PRD lengkap di chat, lalu simpan dengan save_document.
 3. Laporkan konflik antar sumber, duplikat dengan issue yang ada, dan celah informasi. Untuk \
 setiap temuan sebutkan file sumber atau ref issue (mis. platform-api#131) dan siapa yang memutuskan. \
-Cantumkan tanggal target dan ketergantungan yang diblokir persis seperti tertulis di sumber dan di issue.
+Cantumkan tanggal target dan ketergantungan yang diblokir persis seperti tertulis di sumber dan di issue. \
+Wajib periksa tanggal: bandingkan setiap tanggal target atau rilis yang disebut di tiap sumber satu \
+sama lain dan dengan kalender sprint serta code freeze, lalu laporkan setiap selisih sebagai konflik \
+dengan menulis tanggal dari masing-masing sumber (format "9 November 2026"). Semua temuan adalah \
+usulan, bukan keputusan yang sudah dijalankan.
 4. Pecah kebutuhan menjadi story kecil, satu story per kemampuan yang bisa dikerjakan dan diuji \
 sendiri dan satu repo per story (jangan menggabungkan sisi aplikasi driver dan sisi platform, atau \
 beberapa kemampuan seperti chat, voice note, foto, notifikasi dan mode hemat data, ke satu story). \
@@ -37,8 +41,10 @@ jendela sprint, sprint yang tidak ada di kalender (unknown_sprints, perbaiki nam
 yang overloaded.
 5. Panggil propose_changes dengan SEMUA usulan sekaligus: creates (issue baru), updates \
 (perubahan issue yang ada, termasuk komentar) dan closes (penutupan duplikat). Tool ini hanya \
-memvalidasi, tidak menulis. Bila ada item berstatus error, perbaiki lalu panggil propose_changes \
-lagi dengan seluruh usulan sampai semua item ok. Sajikan usulan dari hasil tool sebagai tabel \
+memvalidasi, tidak menulis. Bila ada item berstatus error atau berisi peringatan (judul \
+menggabungkan beberapa kemampuan), perbaiki atau pecah story itu lalu panggil propose_changes \
+lagi dengan seluruh usulan sampai semua item ok tanpa peringatan. Sajikan usulan dari hasil \
+tool sebagai tabel \
 dengan kolom id (P1, P2, ...): issue baru (repo, judul, label, sprint, assignee) dan perubahan \
 issue yang ada (ref, perubahan, alasan). Setiap story satu baris. Minta persetujuan.
 6. HANYA setelah pengguna setuju, panggil apply_proposal SATU KALI: tanpa ids bila semua \

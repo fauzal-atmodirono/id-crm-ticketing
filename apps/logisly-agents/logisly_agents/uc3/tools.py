@@ -280,6 +280,20 @@ def _run_item(tracker: MockTracker, kind: str, args: dict) -> dict:
     return tracker.close(args["ref"], args["reason"], args.get("comment") or "")
 
 
+_SPLIT_WARNING = (
+    "judul menyebut beberapa kemampuan sekaligus; pecah menjadi story terpisah bila tiap kemampuan "
+    "bisa dikerjakan dan diuji sendiri"
+)
+
+
+def _combined(title: str) -> bool:
+    """A non-epic story title listing several capabilities ('chat, voice note, dan foto')."""
+    t = title.lower()
+    if "epic" in t or "epik" in t:
+        return False
+    return "," in t or t.count(" dan ") >= 2
+
+
 def _label(kind: str, args: Any) -> str:
     if not isinstance(args, dict):
         return kind
@@ -297,8 +311,9 @@ def propose_changes(
 ) -> dict:
     """Validasi seluruh usulan perubahan backlog TANPA menulis apa pun, lalu simpan sebagai usulan P1..Pn.
 
-    Panggil sebelum menyajikan tabel usulan. Bila ada item berstatus error, perbaiki lalu panggil
-    lagi dengan seluruh usulan. Usulan baru menggantikan usulan sebelumnya.
+    Panggil sebelum menyajikan tabel usulan. Bila ada item berstatus error, atau item dengan
+    peringatan (judul menggabungkan beberapa kemampuan), perbaiki lalu panggil lagi dengan seluruh
+    usulan. Usulan baru menggantikan usulan sebelumnya.
 
     Args:
         creates: Issue baru. Tiap elemen: repo, title ('[area] kalimat'), labels (tepat satu type:*,
@@ -323,6 +338,8 @@ def propose_changes(
                     row["status"] = "ok"
                     if kind == "create":
                         row["predicted_ref"] = out["ref"]
+                        if _combined(args["title"]):
+                            row["peringatan"] = _SPLIT_WARNING
                 except Exception as exc:  # noqa: BLE001 - every item failure is reported, not raised
                     row["status"] = "error"
                     row["error"] = str(exc) or type(exc).__name__
@@ -330,7 +347,8 @@ def propose_changes(
                 report.append(row)
         tool_context.state[PROPOSAL_KEY] = {"items": items}  # re-assign: State persists on assignment
         ok = sum(1 for r in report if r["status"] == "ok")
-        return {"items": report, "ok": ok, "errors": len(report) - ok}
+        warnings = sum(1 for r in report if "peringatan" in r)
+        return {"items": report, "ok": ok, "errors": len(report) - ok, "warnings": warnings}
     except Exception as exc:
         return {"error": f"Gagal memvalidasi usulan: {str(exc) or type(exc).__name__}"}
 

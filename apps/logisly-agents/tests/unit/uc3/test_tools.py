@@ -174,3 +174,22 @@ def test_apply_reports_item_failure_and_continues():
     res = tools.apply_proposal(ctx)
     assert res["applied"] == 1 and res["failed"] == 1
     assert res["results"][0]["status"] == "error"
+
+
+def test_propose_warns_on_combined_capabilities():
+    ctx = _ctx()
+    res = tools.propose_changes(
+        ctx,
+        creates=[
+            _create("[driver-app] Kirim chat, voice note, dan foto ke AI assistant"),
+            _create("[driver-app] Layar chat AI assistant"),
+            _create("[driver-app] Epic: AI assistant, chat dan foto"),
+        ],
+        updates=[],
+        closes=[],
+    )
+    items = res["items"]
+    assert items[0]["status"] == "ok" and "peringatan" in items[0]
+    assert "peringatan" not in items[1]
+    assert "peringatan" not in items[2]  # epics group capabilities by design
+    assert res["warnings"] == 1

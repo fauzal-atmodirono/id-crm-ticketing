@@ -1,4 +1,5 @@
 import copy
+from datetime import date
 
 import pytest
 
@@ -15,7 +16,7 @@ LABELS = ["type:feature", "area:driver-app", "priority:P2", "sp:3"]
 def _tracker(state=None):
     ctx = read_context(UC3)
     state = {} if state is None else state
-    return MockTracker(state, SNAP, ctx["conventions"], ctx["calendar"]), state
+    return MockTracker(state, SNAP, ctx["conventions"], ctx["calendar"], as_of=date(2026, 11, 9)), state
 
 
 def test_seeded():
@@ -125,3 +126,60 @@ def test_update_and_search():
     assert t.search(text="zzzznotfound") == []
     t.comment("driver-app#142", "halo")
     assert t.get("driver-app#142")["comments"][-1]["body"] == "halo"
+
+
+def test_dates_use_as_of():
+    t, _ = _tracker()
+    ref = t.create("driver-app", "[driver-app] Layar chat", "b", LABELS, None, [])["ref"]
+    assert t.get(ref)["created_at"] == "2026-11-09"
+    t.comment(ref, "c")
+    assert t.get(ref)["comments"][-1]["created_at"] == "2026-11-09"
+    t.close(ref, "completed")
+    assert t.get(ref)["closed_at"] == "2026-11-09"
+
+
+def test_default_as_of_from_settings():
+    ctx = read_context(UC3)
+    t = MockTracker({}, SNAP, ctx["conventions"], ctx["calendar"])
+    ref = t.create("driver-app", "[driver-app] Layar chat", "b", LABELS, None, [])["ref"]
+    assert t.get(ref)["created_at"] == get_settings().as_of.isoformat()
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda t: t.update("driver-app#999", add_labels=["sp:1"]),
+        lambda t: t.update("driver-app#142", add_labels=["nope:1"]),
+        lambda t: t.update("driver-app#142", milestone="Sprint 99"),
+        lambda t: t.comment("driver-app#999", "x"),
+        lambda t: t.close("driver-app#142", "bogus"),
+        lambda t: t.close("driver-app#139", "completed"),
+        lambda t: t.get("driver-app#abc"),
+        lambda t: t.get("#5"),
+        lambda t: t.get(None),
+    ],
+)
+def test_failures_leave_state_unchanged(call):
+    t, state = _tracker()
+    before = copy.deepcopy(state[KEY])
+    with pytest.raises(TrackerError):
+        call(t)
+    assert state[KEY] == before
+
+
+def test_write_replaces_not_mutates():
+    t, state = _tracker()
+    held = state[KEY]
+    snapshot = copy.deepcopy(held)
+    t.comment("driver-app#142", "x")
+    t.update("driver-app#142", add_labels=["sp:8"])
+    t.create("driver-app", "[driver-app] Layar chat", "b", LABELS, None, [])
+    t.close("driver-app#142", "completed")
+    assert held == snapshot
+    assert state[KEY] is not held
+
+
+def test_search_results_do_not_alias_store():
+    t, state = _tracker()
+    t.search(repo="driver-app")[0]["labels"].append("zzz")
+    assert all("zzz" not in i["labels"] for i in state[KEY]["issues"])

@@ -15,6 +15,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
+from logisly_agents.config import get_settings
+
 KEY = "uc3:tracker"
 TITLE_RE = re.compile(r"^\[[a-z-]+\] .+")
 
@@ -25,9 +27,15 @@ class TrackerError(Exception):
 
 class MockTracker:
     def __init__(
-        self, state: MutableMapping[str, Any], snapshot_path: Path, conventions: dict, calendar: dict
+        self,
+        state: MutableMapping[str, Any],
+        snapshot_path: Path,
+        conventions: dict,
+        calendar: dict,
+        as_of: date | None = None,
     ):
         self.state = state
+        self.today = (as_of or get_settings().as_of).isoformat()
         self.repos = set(conventions["repos"])
         self.labels: set[str] = set()
         for group in conventions["labels"].values():
@@ -49,7 +57,7 @@ class MockTracker:
 
     @staticmethod
     def _parse(ref: str) -> tuple[str, int]:
-        m = re.fullmatch(r"([a-z-]+)#(\d+)", ref or "")
+        m = re.fullmatch(r"([a-z-]+)#(\d+)", ref) if isinstance(ref, str) else None
         if not m:
             raise TrackerError(f"ref tidak valid: {ref!r} (format '<repo>#<n>')")
         return m.group(1), int(m.group(2))
@@ -72,9 +80,8 @@ class MockTracker:
 
     @staticmethod
     def _summary(i: dict) -> dict:
-        return {k: v for k, v in i.items() if k not in ("comments", "body")} | {
-            "ref": f"{i['repo']}#{i['number']}"
-        }
+        out = {k: v for k, v in i.items() if k not in ("comments", "body")}
+        return copy.deepcopy(out) | {"ref": f"{i['repo']}#{i['number']}"}
 
     # -- reads
     def search(
@@ -122,7 +129,7 @@ class MockTracker:
                 "milestone": milestone,
                 "assignees": list(assignees),
                 "author": "ai-agent",
-                "created_at": date.today().isoformat(),
+                "created_at": self.today,
                 "body": body,
                 "comments": [],
             }
@@ -158,7 +165,7 @@ class MockTracker:
     def comment(self, ref: str, body: str) -> dict:
         data = self._data()
         issue = self._find(data, ref)
-        issue["comments"].append({"author": "ai-agent", "created_at": date.today().isoformat(), "body": body})
+        issue["comments"].append({"author": "ai-agent", "created_at": self.today, "body": body})
         self._save(data)
         return {"ref": ref, "comments": len(issue["comments"])}
 
@@ -169,11 +176,13 @@ class MockTracker:
             raise TrackerError(f"alasan tidak valid: {reason}")
         data = self._data()
         issue = self._find(data, ref)
+        if issue["state"] == "closed":
+            raise TrackerError(f"issue sudah ditutup: {ref}")
         if reason == "duplicate" and "status:duplicate" not in issue["labels"]:
             issue["labels"].append("status:duplicate")
         issue["state"] = "closed"
         issue["state_reason"] = "completed" if reason == "completed" else "not_planned"
-        issue["closed_at"] = date.today().isoformat()
+        issue["closed_at"] = self.today
         if comment:
             issue["comments"].append(
                 {"author": "ai-agent", "created_at": issue["closed_at"], "body": comment}

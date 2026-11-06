@@ -16,6 +16,6 @@ web:
 serve agent="uc2":
     LOGISLY_AGENT={{agent}} PORT=8078 uv run python serve.py
 
-# Deploy one agent to Cloud Run: just deploy agent=uc2
+# Deploy one agent to Cloud Run: just deploy uc2  (positional, not agent=uc2)
 deploy agent="uc2":
     ./deploy.sh {{agent}}

@@ -14,6 +14,14 @@ Demo data lives in `../../demo-data/logisly/` (see its README). Everything in it
 - `uv`, Docker (only for local image checks) and `gcloud`.
 - Application Default Credentials: `gcloud auth application-default login`. The model is Gemini on Vertex AI; there is no API key anywhere.
 - `gcloud auth login` as a Devoteam account with access to project `lv-playground-genai`.
+- APIs enabled in `lv-playground-genai` (once, by someone with rights to do so): Cloud Run, Cloud Build and Artifact Registry, besides Vertex AI.
+
+  ```bash
+  gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com \
+    --project lv-playground-genai
+  ```
+
+  The first `gcloud run deploy --source` in the region creates the Artifact Registry repository `cloud-run-source-deploy` and asks to confirm; answer yes.
 - `cp .env.example .env` for local runs (git-ignored).
 
 ## Run locally
@@ -30,9 +38,11 @@ just lint
 ## Deploy to Cloud Run
 
 ```bash
-just deploy agent=uc2
-just deploy agent=uc3
+just deploy uc2
+just deploy uc3
 ```
+
+The argument is positional: `just deploy agent=uc2` would pass the literal `agent=uc2` to `deploy.sh`, which rejects it.
 
 `deploy.sh <uc2|uc3>` stages the needed demo data (pricing DB, business rules, UC3 templates, GitHub conventions and snapshot, team files) into the build context as `logisly_agents/data/`, then runs `gcloud run deploy logisly-<agent> --source .` in `asia-southeast2` with `--no-allow-unauthenticated`, `--min-instances=1 --max-instances=1`. A second step sets `LOGISLY_PUBLIC_URL` to the service URL so the agent card advertises the right address. The script never changes IAM; it checks the runtime service account and prints the command to run if `roles/aiplatform.user` is missing:
 
@@ -60,8 +70,20 @@ The deploy never registers anything. Do this once per agent in the Gemini Enterp
 
 1. Open the Gemini Enterprise app `<GEMINI_ENTERPRISE_APP_ID>` in the Google Cloud console, then Agents, Add agent, Custom agent via A2A.
 2. Paste the agent card from `<SERVICE_URL>/.well-known/agent-card.json` (or its URL, if the form asks for one).
-3. Authorisation: the services require Google identity. Grant the Gemini Enterprise service agent `roles/run.invoker` on `logisly-uc2` and `logisly-uc3` (a person with IAM rights runs this; it is not scripted here) and choose Google-service-account authentication in the form.
-4. Share the agent with the demo users, then run the demo scripts below.
+3. Authorisation: the services are private (`--no-allow-unauthenticated`), so whatever identity Gemini Enterprise calls them with needs `roles/run.invoker` on `logisly-uc2` and `logisly-uc3`. Not yet verified: the principal is likely the Discovery Engine service agent of the project that hosts the Gemini Enterprise app, `service-<GE_PROJECT_NUMBER>@gcp-sa-discoveryengine.iam.gserviceaccount.com`. Confirm during the smoke test (a 403 from the service in Cloud Run logs names the caller). The Gemini Enterprise project may differ from `lv-playground-genai`: take `<GE_PROJECT_NUMBER>` from the project that hosts the app (`gcloud projects describe <GE_PROJECT_ID> --format='value(projectNumber)'`). Nothing in this repo runs IAM changes; a person with IAM rights on `lv-playground-genai` runs, per service:
+
+   ```bash
+   for svc in logisly-uc2 logisly-uc3; do
+     gcloud run services add-iam-policy-binding "$svc" \
+       --project lv-playground-genai --region asia-southeast2 \
+       --member=serviceAccount:service-<GE_PROJECT_NUMBER>@gcp-sa-discoveryengine.iam.gserviceaccount.com \
+       --role=roles/run.invoker
+   done
+   ```
+
+   Pick the authentication option the registration form offers for calling a private Cloud Run service with that identity.
+4. Smoke test before the demo: send the UC3 first turn (four files plus the prompt) through Gemini Enterprise and time it. That turn reads every source, searches the tracker, writes the PRD and checks capacity, and takes minutes locally. If Gemini Enterprise times out the A2A call before the answer arrives, split the turn (upload first, then ask for the PRD, then the backlog). Streaming is not enabled on purpose; do not turn it on for this demo.
+5. Share the agent with the demo users, then run the demo scripts below.
 
 ## Environment variables
 
@@ -106,11 +128,12 @@ Files are in `demo-data/logisly/uc3/sources/`.
    - "Apa saja konflik antar sumber?"
    - "Apakah ada issue yang duplikat?"
    - "Apakah kapasitas tim cukup sebelum code freeze 18 Desember?"
-5. "Usulkan issue yang perlu dibuat atau diubah." Setelah disetujui: "Setuju, terapkan semuanya ke tracker." Perubahan hanya masuk ke tracker tiruan di sesi, bukan GitHub sungguhan.
+5. "Usulkan issue yang perlu dibuat atau diubah." Agen memvalidasi semua usulan lalu menampilkan tabel usulan bernomor P1, P2, dan seterusnya. Setelah tabel usulan muncul, setujui: "Setuju, terapkan semuanya ke tracker." (atau sebut id tertentu, mis. "Terapkan P1 sampai P5 saja."). Agen menerapkan usulan sekaligus dan melaporkan jumlah yang diterapkan. Perubahan hanya masuk ke tracker tiruan di sesi, bukan GitHub sungguhan.
 
 ## Known risks
 
 - The agent card advertises PDF, xlsx, docx, eml, PNG and JPEG input (see `INPUT_MODES` in `serve.py`). Whether Gemini Enterprise actually passes uploaded files through to a custom A2A agent still has to be checked right after registration. Fallbacks if it does not: upload PDFs, or paste the text.
 - Sessions, tracker state and saved documents are in memory on a single instance (`--max-instances=1`). A redeploy, restart or scale-to-zero clears demo chats.
 - `to_a2a` is marked experimental in ADK 2.2.0 and needs `google-adk[a2a]` plus `a2a-sdk[http-server]`.
-- The services are private. Gemini Enterprise needs `roles/run.invoker` before it can call them.
+- The services are private. Gemini Enterprise needs `roles/run.invoker` before it can call them, and the exact principal is unconfirmed until the smoke test (see Register in Gemini Enterprise).
+- UC3 turn 1 is long. Time it during the smoke test; a Gemini Enterprise A2A timeout shorter than that turn is the main live-demo risk.

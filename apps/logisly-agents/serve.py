@@ -40,14 +40,45 @@ INPUT_MODES = [
 ]
 
 
+# One short skill per agent. ADK's builder emits the full instruction plus one skill per tool,
+# which only adds noise for Gemini Enterprise's agent routing.
+SKILLS = {
+    "logisly_purchasing": {
+        "name": "Seleksi penawaran transporter",
+        "description": (
+            "Mencatat dokumen tender dan penawaran transporter, membandingkannya dengan baseline "
+            "harga dan aturan bisnis, lalu merekomendasikan transporter per lane."
+        ),
+        "tags": ["purchasing", "tender", "penawaran", "logistik"],
+    },
+    "logisly_product_manager": {
+        "name": "PRD dan backlog produk",
+        "description": (
+            "Mengubah permintaan, notulen, email dan chat menjadi PRD, memeriksa konflik dan duplikat "
+            "di backlog GitHub, mengecek kapasitas tim, dan mengusulkan perubahan issue."
+        ),
+        "tags": ["product", "prd", "backlog", "github"],
+    },
+}
+
+
 def build_card(agent, rpc_url: str):
     """ADK's builder hard-codes text/plain input; advertise the uploads users actually send."""
+    from a2a.types import AgentSkill
     from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
 
     card = asyncio.run(AgentCardBuilder(agent=agent, rpc_url=rpc_url).build())
     card.default_input_modes = list(INPUT_MODES)
-    for skill in card.skills:
-        skill.input_modes = list(INPUT_MODES)
+    meta = SKILLS[agent.name]
+    card.skills = [
+        AgentSkill(
+            id=agent.name,
+            name=meta["name"],
+            description=meta["description"],
+            tags=list(meta["tags"]),
+            input_modes=list(INPUT_MODES),
+        )
+    ]
     return card
 
 

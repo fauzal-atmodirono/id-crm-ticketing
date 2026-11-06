@@ -1,0 +1,163 @@
+import json
+import sys
+from datetime import date
+
+import pytest
+
+from logisly_agents.config import get_settings
+from logisly_agents.uc2 import store
+from logisly_agents.uc2.evaluate import baseline_periods, compare
+from logisly_agents.uc2.pricing import PricingRepo
+from logisly_agents.uc2.rules import load_rules
+from logisly_agents.uc2.schemas import Quotation, QuoteLine, Tender, TenderLine
+
+DATA = get_settings().data_dir
+sys.path.insert(0, str(DATA))
+import common  # noqa: E402
+import gen_uc2  # noqa: E402
+
+AS_OF = date(2026, 11, 9)
+PERIODS = ("2026-08", "2026-09", "2026-10")
+
+
+@pytest.fixture(scope="module")
+def repo():
+    return PricingRepo(DATA / "uc2" / "pricing" / "pricing.db")
+
+
+@pytest.fixture(scope="module")
+def rules():
+    return load_rules(DATA / "uc2" / "business_rules.yaml")
+
+
+def _route(lane_id):
+    lane = common.LANE[lane_id]
+    return lane.origin, lane.destination
+
+
+def _tender():
+    lanes = []
+    for lane_id, truck, trips in gen_uc2.TENDER.values():
+        o, d = _route(lane_id)
+        lanes.append(
+            TenderLine(origin=o, destination=d, truck_type=common.TRUCK[truck].name, trips_per_month=trips)
+        )
+    return Tender(reference=gen_uc2.RFQ_ID, customer=gen_uc2.CUSTOMER, lanes=lanes)
+
+
+def _build(repo, extra_line=None):
+    base = {k: repo.baseline(lane, truck, PERIODS) for k, (lane, truck, _) in gen_uc2.TENDER.items()}
+    state: dict = {}
+    ids = {}
+    for q in gen_uc2.QUOTES:
+        lines = []
+        for ln in gen_uc2.quote_lines(q, base):
+            o, d = _route(ln["lane_id"])
+            lines.append(
+                QuoteLine(
+                    origin=o,
+                    destination=d,
+                    truck_type=common.TRUCK[ln["truck_type"]].name,
+                    price_idr=ln["price"],
+                    unit=ln["unit"],
+                    trips_per_month=ln["trips"],
+                    excludes_toll=ln["key"] in q.get("toll_excluded", []),
+                )
+            )
+        if extra_line and q["id"] == "Q-LJE-1":
+            lines.append(extra_line)
+        quo = Quotation(
+            transporter=gen_uc2.TRANSPORTER[q["trp"]].name,
+            document_name=q["id"],
+            document_date=q["date"],
+            is_revision=bool(q.get("revision_of")),
+            payment_term_days=q["payment"],
+            valid_until=q["valid_to"],
+            lines=lines,
+        )
+        ids[q["id"]] = store.add_quotation(state, quo)["quote_id"]
+    return state, ids
+
+
+def _expected():
+    return json.loads((DATA / "uc2" / "expected" / "recommendation.json").read_text())
+
+
+def _run(repo, rules, state):
+    return compare(_tender(), store.list_quotations(state), repo, rules, as_of=AS_OF)
+
+
+def _check(res, ids, exp):
+    for key in ("T1", "T2", "T3", "T4"):
+        got, want = res["lanes"][key], exp["lanes"][key]
+        for k in (
+            "recommended",
+            "buy_per_trip",
+            "proposed_sell_per_trip_at_15pct_margin",
+            "current_contract_sell",
+        ):
+            expect = ids[want[k]] if k == "recommended" and want[k] else want[k]
+            assert got[k] == expect, (key, k)
+        by_id = {q["quote_id"]: q for q in got["quotes"]}
+        assert len(by_id) == len(want["quotes"]), key
+        for wq in want["quotes"]:
+            gq = by_id[ids[wq["quote_id"]]]
+            for k in ("normalised_per_trip", "blocking_issues", "vs_baseline_pct"):
+                assert gq[k] == wq[k], (key, wq["quote_id"], k)
+            assert sorted(gq["flags"]) == sorted(wq["flags"]), (key, wq["quote_id"])
+
+
+def test_matches_answer_key(repo, rules):
+    state, ids = _build(repo)
+    res = _run(repo, rules, state)
+    _check(res, ids, _expected())
+    assert res["superseded"] == {ids["Q-TCL-1"]: ids["Q-TCL-2"]}
+    assert res["unmatched_lines"] == []
+    assert set(res["lanes"]["T1"]) == set(_expected()["lanes"]["T1"])
+    assert set(res["lanes"]["T1"]["quotes"][0]) >= set(_expected()["lanes"]["T1"]["quotes"][1]) - {"score"}
+
+
+def test_unmatched_line_is_reported(repo, rules):
+    extra = QuoteLine(origin="Bogor", destination="Surabaya", truck_type="Fuso Wingbox", price_idr=9_000_000)
+    state, ids = _build(repo, extra)
+    res = _run(repo, rules, state)
+    assert len(res["unmatched_lines"]) == 1
+    u = res["unmatched_lines"][0]
+    assert u["quote_id"] == ids["Q-LJE-1"] and (u["origin"], u["destination"]) == ("Bogor", "Surabaya")
+    _check(res, ids, _expected())
+
+
+def test_rules_loaded(rules):
+    assert rules.scoring.price == 0.5
+    assert rules.margin.target_pct == 15
+
+
+def test_baseline_periods():
+    assert baseline_periods(AS_OF) == PERIODS
+    assert baseline_periods(date(2026, 2, 1)) == ("2025-11", "2025-12", "2026-01")
+
+
+def test_unknown_transporter_flagged(repo, rules):
+    state, _ = _build(repo)
+    t = _tender()
+    lane = t.lanes[0]
+    q = Quotation(
+        transporter="PT Tidak Dikenal",
+        document_name="x",
+        document_date="2026-11-05",
+        payment_term_days=30,
+        valid_until="2026-12-31",
+        lines=[
+            QuoteLine(
+                origin=lane.origin,
+                destination=lane.destination,
+                truck_type=lane.truck_type,
+                price_idr=1_000_000,
+            )
+        ],
+    )
+    store.add_quotation(state, q)
+    res = compare(t, store.list_quotations(state), repo, rules, as_of=AS_OF)
+    row = next(r for r in res["lanes"]["T1"]["quotes"] if r["transporter"] == "PT Tidak Dikenal")
+    assert "transporter_unknown" in row["blocking_issues"] and row["on_time_pct"] is None
+    assert res["lanes"]["T1"]["recommended"] != row["quote_id"]

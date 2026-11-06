@@ -13,6 +13,10 @@ x-chatwoot-env: &chatwoot-env
   INSTALLATION_ENV: docker
   RAILS_LOG_TO_STDOUT: "true"
   SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+  # Chatwoot's SafeFetch refuses webhooks/agent-bot calls to private addresses,
+  # which includes the in-stack ${TENANT}-agent / ${TENANT}-backend aliases.
+  # Off by default; a local tenant whose bot is the co-located agent sets true.
+  SAFE_FETCH_ALLOW_PRIVATE_NETWORK: ${SAFE_FETCH_ALLOW_PRIVATE_NETWORK:-false}
   # Override for local dev to dodge browsers' HTTPS-upgrade of "public-looking"
   # nip.io hostnames (Caddy only serves this site over plain http://, so a
   # forced-https retry gets connection-reset). *.localhost is exempt from that

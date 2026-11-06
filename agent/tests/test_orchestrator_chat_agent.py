@@ -256,6 +256,37 @@ async def test_chat_agent_handoff_signal_acks_and_reopens(monkeypatch):
 
 
 @respx.mock
+async def test_chat_agent_handoff_with_ai_reply_sends_it_instead_of_fixed_message(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "handoff_default_message", "Connecting you to a human agent.")
+    _mock_common_routes("auto")
+    respx.post(f"{PROTON}/chat/turn").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "reply": "Baik Pak, muatan yang rusak sudah kami laporkan ke tim operasional.",
+                "handoff": {"reason": "cargo_issue", "language": "id"},
+                "products": [],
+                "forwarded_to_agent": False,
+            },
+        )
+    )
+    create_message = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages"
+    ).mock(return_value=httpx.Response(200, json={"id": 999}))
+    toggle_status = respx.post(
+        f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status"
+    ).mock(return_value=httpx.Response(200, json={"success": True}))
+
+    await _run(monkeypatch)
+
+    assert create_message.call_count == 1
+    body = create_message.calls.last.request.content
+    assert b"muatan yang rusak" in body and b"Connecting you" not in body
+    assert toggle_status.call_count == 1
+
+
+@respx.mock
 async def test_chat_agent_backend_error_fails_open_to_handoff(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "handoff_default_message", "One moment please.")

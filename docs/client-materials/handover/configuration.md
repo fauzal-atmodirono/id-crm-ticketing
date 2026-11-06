@@ -37,7 +37,7 @@ These live in the generator rather than in a hand-edited section of the document
 
 The conversational AI backend: Gemini/Vertex, the knowledge base, metrics, RBAC, alerting and every admin surface.
 
-Source: `backend/apps/backend/src/chatbot/platform/config.py` — 237 settings.
+Source: `backend/apps/backend/src/chatbot/platform/config.py` — 238 settings.
 
 ### General
 
@@ -55,6 +55,7 @@ Source: `backend/apps/backend/src/chatbot/platform/config.py` — 237 settings.
 | `VERTEX_LOCATION` | `str` | `'us-central1'` | Content or identifier used in customer-visible output. | Tenant administrator | `example.env` | _(no comment in source)_ |
 | `GEMINI_MODEL` | `str` | `'gemini-2.5-flash'` | Content or identifier used in customer-visible output. | Tenant administrator | `example.env` | _(no comment in source)_ |
 | `AGENT_PERSONA` | `Literal['proton', 'logisly']` | `'proton'` | Provider selection. Switches which adapter is constructed at boot. | Platform operator | `example.env` | Which conversational persona /chat/turn runs: "proton" (the original customer-support assistant, default) or "logisly" (truck-driver trip follow-up demo). Swaps the base prompt, the media instruction and the tool set together; see prompts.instructions_for_persona. |
+| `HANDOFF_RETURN_AI_REPLY` | `bool` | `False` | Behaviour switch for this tenant. | Tenant administrator | `example.env` | On a handoff, return the model's own reply alongside the handoff signal (default false: the reply is suppressed and the agent posts the tenant's fixed handoff message). The agent sends this reply to the customer instead of the fixed message when present, so the acknowledgement names what was reported ("the damaged cargo has been reported…"). |
 | `VERTEX_SEARCH_PROJECT_ID` | `str` | `""` (blank) | Content or identifier used in customer-visible output. | Tenant administrator | `example.env` | Vertex AI Search settings |
 | `VERTEX_SEARCH_LOCATION` | `str` | `'global'` | Content or identifier used in customer-visible output. | Tenant administrator | `example.env` | _(no comment in source)_ |
 | `VERTEX_SEARCH_DATA_STORE_ID` | `str` | `'proton-kb'` | Content or identifier used in customer-visible output. | Tenant administrator | `example.env` | _(no comment in source)_ |
@@ -406,7 +407,7 @@ Every row below is set in **neither** `example.env` nor either compose file. It 
 
 **A row here is not automatically a bug.** Many are internal tunables no tenant should override. A row *is* a bug in two cases: when it is marked `required` (the service will not boot and nothing tells the operator which variable is missing), and when it gates a feature the client has been told they can enable — which is precisely how a feature ends up correct, tested and unreachable, nine times in this programme so far.
 
-11 of 291 settings are set nowhere but in code.
+11 of 292 settings are set nowhere but in code.
 
 | Env var | Service | Boot |
 |---|---|---|
@@ -434,7 +435,7 @@ Exempt from the check above, with the reason:
 
 These are read by Docker Compose, Caddy, Chatwoot or the provisioning scripts rather than by either `Settings` class, so they have no row above. They are listed because an operator editing `example.env` cannot otherwise tell the two kinds apart, and because an entry here that nothing reads is dead configuration.
 
-17 of 175 entries.
+17 of 176 entries.
 
 - `TENANT`
 - `PUBLIC_IP`

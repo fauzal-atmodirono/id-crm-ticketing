@@ -842,7 +842,8 @@ class OrchestratorService:
                 reason=session_state.get("handoff_reason", "help_request"),
                 language=session_state.get("language", "unknown"),
             )
-            reply_text = None
+            if not self._settings.handoff_return_ai_reply:
+                reply_text = None
         elif reply_text:
             # 6. Append assistant message to history (skip when handing off).
             updated_session = await self._adk_sessions.get_session(

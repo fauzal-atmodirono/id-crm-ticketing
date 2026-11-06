@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     # follow-up demo). Swaps the base prompt, the media instruction and the
     # tool set together; see prompts.instructions_for_persona.
     agent_persona: Literal["proton", "logisly"] = "proton"
+    # On a handoff, return the model's own reply alongside the handoff signal
+    # (default false: the reply is suppressed and the agent posts the tenant's
+    # fixed handoff message). The agent sends this reply to the customer instead
+    # of the fixed message when present, so the acknowledgement names what was
+    # reported ("the damaged cargo has been reported…").
+    handoff_return_ai_reply: bool = False
 
     # Vertex AI Search settings
     vertex_search_project_id: str = ""

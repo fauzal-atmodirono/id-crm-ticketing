@@ -71,7 +71,7 @@ async function load() {
       <div>
         <div class="id">${esc(t.order_id)}<span class="chip s-${esc(t.status)}">${esc(t.status.replace("_"," "))}</span></div>
         <div class="meta">${esc(t.driver_name)} · ${esc(t.plate)} · ${esc(t.origin)} → ${esc(t.destination)}</div>
-        <div class="meta">Last position: ${esc(t.milestone)} · ETA ${esc(t.eta)}</div>
+        <div class="meta">Last position: ${esc(t.location)} (${esc(t.milestone)}) · ETA ${esc(t.eta)}</div>
         ${t.events.length ? `<ol>${t.events.slice(-4).map(e => `<li>${esc(e.at.slice(11,16))} UTC · ${esc(e.note)}</li>`).join("")}</ol>` : ""}
       </div>
       <div class="actions">

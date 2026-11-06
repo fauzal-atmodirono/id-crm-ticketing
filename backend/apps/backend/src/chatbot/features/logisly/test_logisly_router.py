@@ -68,6 +68,7 @@ def test_anomaly_opens_conversation_and_registers_trip_context():
     assert resolve.call_count == 1  # only the driver-inbox conversation is closed
     sent = create.calls.last.request.content
     assert b'"source_id":"whatsapp:+6281100001111"' in sent and b"LGS-24017" in sent and b'"pending"' in sent
+    assert b"di sekitar Tol Cipali KM 102" in sent
     ctx = trips.context_for_session("crm-22")
     assert "LGS-24017" in ctx and "Do not ask for the order number" in ctx
     assert trips.TRIPS.get("LGS-24017")["events"][-1]["status"] == "alert:gps_stop"

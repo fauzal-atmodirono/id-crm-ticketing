@@ -20,6 +20,7 @@ from typing import Any
 _SEED: list[dict[str, Any]] = [
     {
         "order_id": "LGS-24017",
+        "location": "Tol Cipali KM 102",
         "driver_name": "Pak Budi Santoso",
         "plate": "B 9123 KXT",
         "truck_type": "CDD Box",
@@ -33,6 +34,7 @@ _SEED: list[dict[str, Any]] = [
     },
     {
         "order_id": "LGS-24021",
+        "location": "Karawang Barat",
         "driver_name": "Pak Agus Wibowo",
         "plate": "D 8812 FAB",
         "truck_type": "Fuso Wingbox",
@@ -46,6 +48,7 @@ _SEED: list[dict[str, Any]] = [
     },
     {
         "order_id": "LGS-24033",
+        "location": "Jl. Soekarno-Hatta, Bandung",
         "driver_name": "Pak Dedi Kurniawan",
         "plate": "B 9450 UQY",
         "truck_type": "CDE Box",
@@ -97,7 +100,7 @@ def describe(trip: dict[str, Any]) -> str:
         f"Rute: {trip['origin']} -> {trip['destination']}",
         f"Penerima: {trip['consignee']}",
         f"Muatan: {trip['cargo']}",
-        f"Posisi terakhir: {trip['milestone']}",
+        f"Posisi terakhir: {trip['location']} ({trip['milestone']})",
         f"ETA: {trip['eta']}",
         f"Status: {trip['status']}",
     ]
@@ -121,7 +124,7 @@ ANOMALIES: dict[str, dict[str, str]] = {
         "event": "GPS: truk berhenti lebih dari 40 menit",
         "opening": (
             "Halo {driver}, ini Logisly. Truk {plate} untuk order {order_id} terpantau "
-            "berhenti sekitar 40 menit di sekitar {milestone}. Apakah ada kendala, Pak?"
+            "berhenti sekitar 40 menit di sekitar {location}. Apakah ada kendala, Pak?"
         ),
     },
     "late_milestone": {
@@ -151,6 +154,7 @@ def render(template: str, trip: dict[str, Any]) -> str:
         plate=trip["plate"],
         order_id=trip["order_id"],
         milestone=trip["milestone"],
+        location=trip["location"],
         eta=trip["eta"],
         origin=trip["origin"],
         destination=trip["destination"],

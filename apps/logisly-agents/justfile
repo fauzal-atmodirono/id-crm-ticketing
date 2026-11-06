@@ -13,4 +13,9 @@ lint:
 web:
     uv run adk web adk_apps
 
-# deploy: added in Task 10
+serve agent="uc2":
+    LOGISLY_AGENT={{agent}} PORT=8078 uv run python serve.py
+
+# Deploy one agent to Cloud Run: just deploy agent=uc2
+deploy agent="uc2":
+    ./deploy.sh {{agent}}

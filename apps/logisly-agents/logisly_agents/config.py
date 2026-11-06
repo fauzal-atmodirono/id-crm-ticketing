@@ -11,7 +11,8 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _PKG_DIR = Path(__file__).resolve().parent
-_REPO_ROOT = _PKG_DIR.parents[2]
+# In the container the package sits at /app/logisly_agents, with no repo above it.
+_REPO_ROOT = _PKG_DIR.parents[2] if len(_PKG_DIR.parents) > 2 else _PKG_DIR
 
 
 def _default_data_dir() -> Path:

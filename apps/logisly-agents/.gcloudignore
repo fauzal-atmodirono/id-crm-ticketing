@@ -1,0 +1,10 @@
+# Deliberately NOT inheriting .gitignore: .stage/ holds the staged demo data.
+.venv/
+.env
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+tests/
+adk_apps/
+var/
+.git/

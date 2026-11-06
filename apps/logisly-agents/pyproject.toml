@@ -4,8 +4,9 @@ version = "0.1.0"
 description = "Logisly demo agents (ADK): UC2 quotation filtering, UC3 product manager"
 requires-python = ">=3.12"
 dependencies = [
-  "google-adk==2.2.0",
+  "google-adk[a2a]==2.2.0",
   "google-genai>=2.8.0",
+  "a2a-sdk[http-server]>=0.3,<0.4",
   "pydantic-settings>=2.6",
   "python-docx>=1.1",
   "openpyxl>=3.1",

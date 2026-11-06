@@ -1,0 +1,16 @@
+sync:
+    uv sync
+
+test:
+    uv run pytest -q
+
+test-live:
+    uv run pytest -q -m live
+
+lint:
+    uv run ruff check .
+
+web:
+    uv run adk web adk_apps
+
+# deploy: added in Task 10

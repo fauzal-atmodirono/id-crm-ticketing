@@ -1,0 +1,41 @@
+"""Settings and Vertex environment defaults."""
+
+from __future__ import annotations
+
+import os
+from datetime import date
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_PKG_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _PKG_DIR.parents[2]
+
+
+def _default_data_dir() -> Path:
+    bundled = _PKG_DIR / "data"
+    if bundled.is_dir():
+        return bundled
+    return _REPO_ROOT / "demo-data" / "logisly"
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="LOGISLY_", env_file=".env", extra="ignore")
+
+    data_dir: Path = Field(default_factory=_default_data_dir)
+    model: str = "gemini-3.5-flash"
+    as_of: date = date(2026, 11, 9)
+    require_confirmation: bool = False
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+
+def configure_vertex_env() -> None:
+    os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "true")
+    os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "lv-playground-genai")
+    os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")

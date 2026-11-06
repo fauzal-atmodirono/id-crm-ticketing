@@ -286,12 +286,28 @@ _SPLIT_WARNING = (
 )
 
 
+def _is_epic(title: str) -> bool:
+    t = (title or "").lower()
+    return "epic" in t or "epik" in t
+
+
 def _combined(title: str) -> bool:
     """A non-epic story title listing several capabilities ('chat, voice note, dan foto')."""
     t = title.lower()
-    if "epic" in t or "epik" in t:
+    if _is_epic(t):
         return False
     return "," in t or t.count(" dan ") >= 2
+
+
+def _check_estimate(args: dict) -> None:
+    """Definition of Ready: every story carries exactly one estimate label sp:1|2|3|5|8."""
+    if _is_epic(args.get("title", "")):
+        return
+    sp = [x for x in args.get("labels") or [] if str(x).startswith("sp:")]
+    if len(sp) != 1:
+        raise TrackerError(
+            "story wajib punya tepat satu label estimasi sp:1|2|3|5|8; bila lebih dari 8 poin, pecah story"
+        )
 
 
 def _label(kind: str, args: Any) -> str:
@@ -316,8 +332,9 @@ def propose_changes(
     usulan. Usulan baru menggantikan usulan sebelumnya.
 
     Args:
-        creates: Issue baru. Tiap elemen: repo, title ('[area] kalimat'), labels (tepat satu type:*,
-            area:*, priority:*), body, milestone (nama sprint), assignees (login GitHub).
+        creates: Issue baru. Tiap elemen: repo, title ('[area] kalimat' dalam Bahasa Indonesia),
+            labels (tepat satu type:*, area:*, priority:*, dan untuk story tepat satu sp:*), body,
+            milestone (nama sprint), assignees (login GitHub).
         updates: Perubahan issue yang ada. Tiap elemen: ref ('<repo>#<nomor>'), dan opsional
             add_labels, remove_labels, milestone, assignees, body_append, comment.
         closes: Penutupan issue. Tiap elemen: ref, reason (completed, not_planned atau duplicate),
@@ -334,6 +351,8 @@ def propose_changes(
                 pid = f"P{len(items) + 1}"
                 row: dict[str, Any] = {"id": pid, "kind": kind, "usulan": _label(kind, args)}
                 try:
+                    if kind == "create" and isinstance(args, dict):
+                        _check_estimate(args)
                     out = _run_item(tracker, kind, args)
                     row["status"] = "ok"
                     if kind == "create":

@@ -31,7 +31,9 @@ usulan, bukan keputusan yang sudah dijalankan.
 4. Pecah kebutuhan menjadi story kecil, satu story per kemampuan yang bisa dikerjakan dan diuji \
 sendiri dan satu repo per story (jangan menggabungkan sisi aplikasi driver dan sisi platform, atau \
 beberapa kemampuan seperti chat, voice note, foto, notifikasi dan mode hemat data, ke satu story). \
-Estimasi maksimal 8 poin per story; bila lebih, pecah lagi. Buat juga satu issue epik untuk fitur \
+Setiap story wajib punya tepat satu label estimasi sp:*, maksimal 8 poin; bila lebih, pecah \
+lagi. Judul dan isi issue ditulis dalam Bahasa Indonesia, kata kerja di depan. Buat juga satu \
+issue epik untuk fitur \
 utama, story untuk rencana uji pilot, dan story fase berikutnya sebagai issue terpisah di sprint \
 setelah code freeze. Mulai dari sprint paling dekat dari tanggal hari ini menurut kalender dan \
 dahulukan story yang memblokir story lain. Susun story mengikuti template user story dan \
@@ -59,8 +61,9 @@ Aturan:
 - Jangan mengarang tanggal atau story point yang tidak ada di sumber atau konvensi. Bila tidak ada \
 dasarnya, masukkan ke Pertanyaan terbuka.
 - Jangan menutup atau mengubah issue yang tidak disetujui pengguna.
-- Jangan membuat issue yang sudah ada. Bila ada duplikat, usulkan menutup yang lebih baru atau \
-memperkaya yang lama.
+- Jangan membuat issue yang sudah ada. Bila ada duplikat, usulkan keduanya: menutup issue yang \
+lebih baru (closes, reason duplicate, komentar merujuk issue yang lama) dan memperkaya issue yang \
+lama dengan kebutuhan baru (updates).
 - Angka kapasitas hanya dari capacity_check.
 
 Gaya: jawab dalam bahasa pengguna, ringkas, gunakan tabel untuk usulan.

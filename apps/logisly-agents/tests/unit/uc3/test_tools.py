@@ -85,7 +85,7 @@ FEAT = ["type:feature", "area:driver-app", "priority:P2"]
 
 
 def _create(title, **kw):
-    return {"repo": "driver-app", "title": title, "body": "isi", "labels": FEAT, **kw}
+    return {"repo": "driver-app", "title": title, "body": "isi", "labels": FEAT + ["sp:3"], **kw}
 
 
 def test_propose_validates_without_writing():
@@ -193,3 +193,21 @@ def test_propose_warns_on_combined_capabilities():
     assert "peringatan" not in items[1]
     assert "peringatan" not in items[2]  # epics group capabilities by design
     assert res["warnings"] == 1
+
+
+def test_propose_requires_one_estimate_label_on_stories():
+    ctx = _ctx()
+    res = tools.propose_changes(
+        ctx,
+        creates=[
+            {**_create("[driver-app] Tanpa estimasi"), "labels": FEAT},
+            {**_create("[driver-app] Dua estimasi"), "labels": FEAT + ["sp:3", "sp:5"]},
+            {**_create("[driver-app] Satu estimasi"), "labels": FEAT + ["sp:5"]},
+            _create("[driver-app] Epik: AI assistant driver"),
+        ],
+        updates=[],
+        closes=[],
+    )
+    st = [i["status"] for i in res["items"]]
+    assert st == ["error", "error", "ok", "ok"], res["items"]
+    assert "sp:" in res["items"][0]["error"]

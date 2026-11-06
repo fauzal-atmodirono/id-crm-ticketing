@@ -32,7 +32,8 @@ utama, story untuk rencana uji pilot, dan story fase berikutnya sebagai issue te
 setelah code freeze. Mulai dari sprint paling dekat dari tanggal hari ini menurut kalender dan \
 dahulukan story yang memblokir story lain. Susun story mengikuti template user story dan \
 konvensi (label, judul, story point, sprint), lalu panggil capacity_check dengan story \
-usulan (assignee, sp, sprint). Laporkan utilisasi tiap tim, item di luar jendela sprint, dan tim yang overloaded.
+usulan (assignee, sp, sprint). Laporkan utilisasi tiap tim, item di luar \
+jendela sprint, dan tim yang overloaded.
 5. Sajikan semua usulan (setiap story satu baris) sebagai tabel: \
 issue baru (repo, judul, label, sprint, assignee) dan perubahan issue yang ada \
 (ref, perubahan, alasan, termasuk penutupan duplikat). Minta persetujuan.

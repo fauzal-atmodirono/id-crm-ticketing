@@ -28,7 +28,9 @@ Wajib periksa tanggal: bandingkan setiap tanggal target atau rilis yang disebut 
 sama lain dan dengan kalender sprint serta code freeze, lalu laporkan setiap selisih sebagai konflik \
 dengan menulis tanggal dari masing-masing sumber (format "9 November 2026"). Semua temuan adalah \
 usulan, bukan keputusan yang sudah dijalankan.
-4. Pecah kebutuhan menjadi story kecil, satu story per kemampuan yang bisa dikerjakan dan diuji \
+4. Buat dulu daftar periksa setiap kemampuan yang diminta sumber, terpisah untuk sisi aplikasi \
+driver dan sisi platform atau AI, lalu pastikan tiap kemampuan di daftar itu punya story sendiri. \
+Pecah kebutuhan menjadi story kecil, satu story per kemampuan yang bisa dikerjakan dan diuji \
 sendiri dan satu repo per story (jangan menggabungkan sisi aplikasi driver dan sisi platform, atau \
 beberapa kemampuan seperti chat, voice note, foto, notifikasi dan mode hemat data, ke satu story). \
 Setiap story wajib punya tepat satu label estimasi sp:*, maksimal 8 poin; bila lebih, pecah \

@@ -208,10 +208,10 @@ def build_pricing(rng: random.Random) -> dict[str, list[dict]]:
             for t in TRANSPORTERS
         ],
         "truck_types": [
-            {"truck_type": t.code, "name": t.name, "capacity_ton": t.capacity_ton} for t in TRUCK_TYPES
+            {"truck_type": t.code, "name": t.name, "capacity_ton": t.capacity_ton, "toll_factor": t.toll_factor} for t in TRUCK_TYPES
         ],
         "lanes": [
-            {"lane_id": lane.id, "origin": lane.origin, "destination": lane.destination, "distance_km": lane.km, "ferry": int(lane.ferry)}
+            {"lane_id": lane.id, "origin": lane.origin, "destination": lane.destination, "distance_km": lane.km, "ferry": int(lane.ferry), "base_toll_idr": lane.toll}
             for lane in LANES
         ],
         "rate_history": rate_rows,
@@ -244,14 +244,16 @@ CREATE TABLE transporters (
 CREATE TABLE truck_types (
     truck_type    VARCHAR(12)   NOT NULL PRIMARY KEY,
     name          NVARCHAR(60)  NOT NULL,
-    capacity_ton  DECIMAL(5,1)  NOT NULL
+    capacity_ton  DECIMAL(5,1)  NOT NULL,
+    toll_factor   DECIMAL(4,2)  NOT NULL  -- multiplier on lanes.base_toll_idr (class I)
 );
 CREATE TABLE lanes (
     lane_id      VARCHAR(8)    NOT NULL PRIMARY KEY,
     origin       NVARCHAR(80)  NOT NULL,
     destination  NVARCHAR(80)  NOT NULL,
     distance_km  INT           NOT NULL,
-    ferry        BIT           NOT NULL
+    ferry        BIT           NOT NULL,
+    base_toll_idr  BIGINT      NOT NULL  -- class I toll per trip
 );
 -- Agreed buy rates from transporters, one row per transporter, lane, truck and month.
 CREATE TABLE rate_history (

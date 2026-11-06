@@ -59,12 +59,37 @@ def test_query_sql_error_is_dict():
     assert ok["rows"] == [[1]]
 
 
-def test_price_history_and_decision():
-    res = tools.price_history("Cikarang", "Surabaya", "Fuso Wingbox")
-    assert "error" in res or res["history"]
-    bad = tools.price_history("Nowhere", "Surabaya", "Fuso Wingbox")
-    assert "error" in bad
+def test_record_tender_accepts_dict_and_reports_invalid():
     ctx = _ctx()
+    ok = tools.record_tender(ctx, tender().model_dump(mode="json"))
+    assert ok["status"] == "ok" and ctx.state["uc2:tender"]["lanes"]
+    bad = tools.record_tender(_ctx(), {"reference": "X", "lanes": [{"origin": "A"}]})
+    assert "error" in bad and "customer" in bad["error"]
+
+
+def test_record_tender_unknown_route():
+    ctx = _ctx()
+    t = tender().model_copy(deep=True)
+    t.lanes[0].origin = "Atlantis"
+    res = tools.record_tender(ctx, t)
+    assert "error" in res and any("Atlantis" in u for u in res["unresolved"])
+    assert "uc2:tender" not in ctx.state
+
+
+def test_price_history():
+    res = tools.price_history("Cikarang", "Surabaya", "Fuso Wingbox")
+    assert "error" not in res and res["history"]
+    assert "error" in tools.price_history("Nowhere", "Surabaya", "Fuso Wingbox")
+
+
+def test_record_decision_validates_ids(repo):
+    ctx = _ctx()
+    assert "error" in tools.record_decision(ctx, "T1", "Q1", "approve")
+    tools.record_tender(ctx, tender())
+    state, ids = build(repo)
+    tools.record_quotation(ctx, store.list_quotations(state)[0] | {})
+    assert "error" in tools.record_decision(ctx, "T9", "Q1", "approve")
+    assert "error" in tools.record_decision(ctx, "T1", "Q99", "approve")
+    assert "error" in tools.record_decision(ctx, "T1", "Q1", "maybe")
     out = tools.record_decision(ctx, "T1", "Q1", "approve", "ok")
     assert out["status"] == "ok" and ctx.state["uc2:decisions"][0]["lane"] == "T1"
-    assert "error" in tools.record_decision(ctx, "T1", "Q1", "maybe")

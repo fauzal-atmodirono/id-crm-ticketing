@@ -35,6 +35,10 @@ def _norm(text: str) -> str:
     return " ".join(text.lower().split())
 
 
+def _fmt_errors(exc: ValidationError) -> str:
+    return "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())
+
+
 def record_tender(tool_context: ToolContext, tender: Tender) -> dict:
     """Catat dokumen tender (undangan tender / RFQ dari pelanggan) yang baru dibaca.
 
@@ -46,6 +50,8 @@ def record_tender(tool_context: ToolContext, tender: Tender) -> dict:
             armada, jumlah trip per bulan), periode, batas pengumpulan, dan persyaratan.
     """
     try:
+        if not isinstance(tender, Tender):
+            tender = Tender.model_validate(tender)
         repo = _repo()
         unresolved = []
         for ln in tender.lanes:
@@ -61,6 +67,8 @@ def record_tender(tool_context: ToolContext, tender: Tender) -> dict:
             }
         dump = store.set_tender(tool_context.state, tender)
         return {"status": "ok", "reference": dump["reference"], "lanes": len(tender.lanes)}
+    except ValidationError as exc:
+        return {"error": f"Tender tidak valid: {_fmt_errors(exc)}"}
     except Exception as exc:
         return {"error": f"Gagal mencatat tender: {exc}"}
 
@@ -85,8 +93,7 @@ def record_quotation(tool_context: ToolContext, quotation: Quotation) -> dict:
         res = store.add_quotation(tool_context.state, quotation)
         return {"status": "ok", **res, "transporter": quotation.transporter, "lines": len(quotation.lines)}
     except ValidationError as exc:
-        errs = "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())
-        return {"error": f"Penawaran tidak valid: {errs}"}
+        return {"error": f"Penawaran tidak valid: {_fmt_errors(exc)}"}
     except Exception as exc:
         return {"error": f"Gagal mencatat penawaran: {exc}"}
 
@@ -184,6 +191,15 @@ def record_decision(
     try:
         if decision not in ("approve", "reject"):
             return {"error": 'Keputusan harus "approve" atau "reject".'}
+        tender = store.get_tender(tool_context.state)
+        if tender is None:
+            return {"error": "Belum ada dokumen tender"}
+        lanes = [f"T{i}" for i in range(1, len(tender.lanes) + 1)]
+        if lane not in lanes:
+            return {"error": f"Lane {lane} tidak ada. Lane yang tersedia: {', '.join(lanes)}."}
+        ids = {r["quote_id"] for r in store.list_quotations(tool_context.state)}
+        if quote_id not in ids:
+            return {"error": f"Penawaran {quote_id} tidak ditemukan."}
         entry: dict[str, Any] = store.add_decision(tool_context.state, lane, quote_id, decision, note)
         return {"status": "ok", "decision": entry}
     except Exception as exc:

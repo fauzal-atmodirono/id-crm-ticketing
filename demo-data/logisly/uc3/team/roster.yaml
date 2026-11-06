@@ -1,0 +1,22 @@
+# Logisly product & engineering team (fictional). capacity_sp = story points
+# per two-week sprint at full availability. committed = points already taken
+# by existing issues (see github/issues_snapshot.json).
+people:
+  - {name: "Nadia Putri",     role: "Product Manager",  github: nadia-logisly}
+  - {name: "Rizky Ramadhan",  role: "Mobile Lead",      github: rizky-r,      repos: [driver-app],   capacity_sp: 13,
+     leave: [{from: 2026-12-21, to: 2026-12-31}]}
+  - {name: "Bayu Pratama",    role: "Mobile Engineer",  github: bayu-p,       repos: [driver-app],   capacity_sp: 10}
+  - {name: "Agung Setiawan",  role: "Backend Lead",     github: agung-s,      repos: [platform-api], capacity_sp: 13}
+  - {name: "Fikri Hakim",     role: "Backend Engineer", github: fikrih,       repos: [platform-api], capacity_sp: 10}
+  - {name: "Laras Ayu",       role: "Frontend Engineer", github: laras-ayu,   repos: [shipper-portal, ops-console], capacity_sp: 10}
+  - {name: "Wulan Sari",      role: "Data Analyst",     github: wulan-data,   repos: [data-pipelines], capacity_sp: 8}
+  - {name: "Tegar Wijaya",    role: "QA Engineer",      github: tegar-qa,     capacity_sp: 10}
+
+stakeholders:
+  - {name: "Hadi Pranoto", role: "Head of Operations"}
+  - {name: "Sari Indah",   role: "Customer Success Lead"}
+  - {name: "Dimas Ops",    role: "Ops Coordinator"}
+
+committed:   # points already planned per sprint from the existing backlog
+  "Sprint 26.22": {Rizky Ramadhan: 8, Bayu Pratama: 8, Agung Setiawan: 8, Fikri Hakim: 5, Laras Ayu: 8}
+  "Sprint 26.23": {Rizky Ramadhan: 5, Bayu Pratama: 3, Agung Setiawan: 5, Laras Ayu: 5}

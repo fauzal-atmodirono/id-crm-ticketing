@@ -1,0 +1,13 @@
+[02/11/26 08.14] Wulan Sari: Pagi semua, tagihan WA Oktober sudah keluar. Naik 18% dari September 😩
+[02/11/26 08.15] Hadi Pranoto: Wah. Yang paling banyak pesan apa?
+[02/11/26 08.17] Wulan Sari: Belum bisa dipecah Pak, dari BSP cuma dapat total per hari. Perkiraan saya paling banyak template follow-up tracking (lokasi tidak bergerak, telat ke titik muat)
+[02/11/26 08.18] Dimas Ops: Iya Pak, sehari bisa 3-4 follow-up ke driver yang sama kalau dia tidak balas
+[02/11/26 08.20] Hadi Pranoto: Itu yang harus dipotong. Kalau driver tidak balas 2x, jangan kirim lagi, langsung tiket saja
+[02/11/26 08.21] Dimas Ops: Siap Pak, tapi itu di setting agent atau di sistem?
+[02/11/26 08.22] Hadi Pranoto: Nanti saya bawa ke product sync
+[02/11/26 08.25] Wulan Sari: Saya butuh dashboard biaya per kategori pesan dan per driver/per transporter. Minimal mingguan
+[02/11/26 08.26] Wulan Sari: Dan idealnya ada perbandingan sebelum vs sesudah chat in-app jalan
+[02/11/26 08.30] Hadi Pranoto: Setuju. Wulan tolong siapkan data 3 bulan terakhir ya
+[02/11/26 08.31] Wulan Sari: Siap Pak 👍
+[02/11/26 09.02] Dimas Ops: Pak satu lagi, driver Pak Agus (D 8812 FAB) ganti nomor WA, follow-up kemarin masuk ke nomor lama
+[02/11/26 09.03] Hadi Pranoto: Update di master driver ya Dim. Ini juga alasan kita harus pindah ke app

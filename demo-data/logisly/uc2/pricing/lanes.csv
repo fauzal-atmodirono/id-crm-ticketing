@@ -1,0 +1,21 @@
+lane_id,origin,destination,distance_km,ferry
+LN-01,"Cikarang, Bekasi",Semarang,430,0
+LN-02,"Cikarang, Bekasi",Surabaya,780,0
+LN-03,Karawang,Surabaya,750,0
+LN-04,"Cibitung, Bekasi",Bandung,130,0
+LN-05,"Tanjung Priok, Jakarta",Bandung,150,0
+LN-06,Tangerang,Cirebon,260,0
+LN-07,"Cikarang, Bekasi",Yogyakarta,540,0
+LN-08,"Cikarang, Bekasi",Malang,860,0
+LN-09,Surabaya,Denpasar,420,1
+LN-10,Jakarta,Bandar Lampung,240,1
+LN-11,Jakarta,Palembang,560,1
+LN-12,Semarang,Solo,110,0
+LN-13,Surabaya,Malang,95,0
+LN-14,"Cikarang, Bekasi",Purwakarta,60,0
+LN-15,"Tanjung Priok, Jakarta","Cikarang, Bekasi",45,0
+LN-16,Surabaya,Semarang,350,0
+LN-17,Bandung,Semarang,370,0
+LN-18,Tangerang,Serang,70,0
+LN-19,"Cikarang, Bekasi",Cilacap,400,0
+LN-20,Medan,Pekanbaru,590,0

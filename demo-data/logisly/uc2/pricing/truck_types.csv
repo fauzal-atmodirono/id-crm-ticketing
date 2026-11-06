@@ -1,0 +1,7 @@
+truck_type,name,capacity_ton
+CDE_BOX,CDE Box,2.5
+CDD_BOX,CDD Box,5.0
+CDD_LONG,CDD Long,7.0
+FUSO_WB,Fuso Wingbox,8.0
+TRONTON_WB,Tronton Wingbox,15.0
+TRAILER_40,Trailer 40ft,25.0

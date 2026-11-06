@@ -1,0 +1,17 @@
+transporter_id,name,city,email,contact_person,regions
+TRP-001,PT Trans Cahaya Logistik,Bekasi,sales@transcahaya.example,Ibu Rina Marlina,"jawa,jabar,sumatra"
+TRP-002,CV Mitra Armada Jaya,Karawang,marketing@mitraarmada.example,Bapak Joko Susilo,"jawa,jabar"
+TRP-003,PT Samudra Truk Indonesia,Jakarta Utara,quotation@samudratruk.example,Bapak Hendra Gunawan,"jawa,jabar,sumatra"
+TRP-004,PT Lintas Jawa Ekspres,Semarang,cs@lintasjawa.example,Ibu Siti Rahayu,"jawa,jateng"
+TRP-005,PT Garuda Angkut Sejahtera,Tangerang,admin@garudaangkut.example,Bapak Rudi Hartono,"jabar,sumatra"
+TRP-006,PT Prima Fleet Nusantara,Cibitung,bid@primafleet.example,Bapak Andi Saputra,"jabar,sumatra,jawa"
+TRP-007,CV Bintang Timur Cargo,Surabaya,order@bintangtimur.example,Bapak Wahyu Prasetyo,"jatim,jawa"
+TRP-008,PT Sinar Muda Transport,Bandung,sales@sinarmuda.example,Ibu Dewi Lestari,"jabar,jateng"
+TRP-009,PT Andalas Trans Sumatera,Medan,info@andalastrans.example,Bapak Fauzi Nasution,sumatra
+TRP-010,PT Kencana Logistik Utama,Surabaya,sales@kencanalog.example,Ibu Maya Anggraini,"jatim,jawa"
+TRP-011,CV Sejahtera Abadi Truk,Cirebon,cv.sejahtera@abaditruk.example,Bapak Slamet Riyadi,jabar
+TRP-012,PT Mega Armada Sentosa,Cikarang,rfq@megaarmada.example,Bapak Yusuf Hidayat,"jawa,jabar"
+TRP-013,PT Nusa Kargo Mandiri,Semarang,marketing@nusakargo.example,Ibu Lina Kusuma,"jateng,jawa"
+TRP-014,PT Bahari Lintas Selat,Jakarta Utara,sales@baharilintas.example,Bapak Taufik Ismail,"sumatra,jatim"
+TRP-015,CV Cahaya Rejeki Transport,Malang,cahayarejeki@transport.example,Bapak Eko Purnomo,jatim
+TRP-016,PT Global Truk Persada,Tangerang,bd@globaltruk.example,Ibu Fitri Handayani,"jabar,jawa"

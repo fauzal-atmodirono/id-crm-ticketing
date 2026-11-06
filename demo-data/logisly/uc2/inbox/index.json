@@ -1,0 +1,83 @@
+[
+  {
+    "file": "01_tender_nal.eml",
+    "kind": "tender",
+    "attachments": [
+      "TND-NAL-2026-11_Undangan_Tender.pdf"
+    ]
+  },
+  {
+    "file": "02_quote_tcl.eml",
+    "kind": "quotation",
+    "quote_id": "Q-TCL-1",
+    "format": "pdf",
+    "attachments": [
+      "Penawaran_PT_Trans_Cahaya_Logistik_Q-TCL-1.pdf"
+    ]
+  },
+  {
+    "file": "03_quote_maj.eml",
+    "kind": "quotation",
+    "quote_id": "Q-MAJ-1",
+    "format": "xlsx",
+    "attachments": [
+      "Penawaran_CV_Mitra_Armada_Jaya_Q-MAJ-1.xlsx"
+    ]
+  },
+  {
+    "file": "04_quote_sti.eml",
+    "kind": "quotation",
+    "quote_id": "Q-STI-1",
+    "format": "body",
+    "attachments": []
+  },
+  {
+    "file": "05_quote_lje.eml",
+    "kind": "quotation",
+    "quote_id": "Q-LJE-1",
+    "format": "scan",
+    "attachments": [
+      "Penawaran_PT_Lintas_Jawa_Ekspres_Q-LJE-1.pdf"
+    ]
+  },
+  {
+    "file": "06_newsletter_dealer.eml",
+    "kind": "not_quotation",
+    "reason": "newsletter"
+  },
+  {
+    "file": "07_quote_gas.eml",
+    "kind": "quotation",
+    "quote_id": "Q-GAS-1",
+    "format": "pdf",
+    "attachments": [
+      "Penawaran_PT_Garuda_Angkut_Sejahtera_Q-GAS-1.pdf"
+    ]
+  },
+  {
+    "file": "08_quote_pfn.eml",
+    "kind": "quotation",
+    "quote_id": "Q-PFN-1",
+    "format": "xlsx",
+    "attachments": [
+      "Penawaran_PT_Prima_Fleet_Nusantara_Q-PFN-1.xlsx"
+    ]
+  },
+  {
+    "file": "09_quote_tcl_rev.eml",
+    "kind": "quotation",
+    "quote_id": "Q-TCL-2",
+    "format": "pdf",
+    "attachments": [
+      "Penawaran_PT_Trans_Cahaya_Logistik_Q-TCL-2.pdf"
+    ]
+  },
+  {
+    "file": "10_invoice_maj.eml",
+    "kind": "not_quotation",
+    "reason": "invoice",
+    "attachments": [
+      "INV-MAJ-2610-118.pdf"
+    ]
+  }
+]

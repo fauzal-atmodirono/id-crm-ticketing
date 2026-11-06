@@ -1,0 +1,40 @@
+# Business rules the UC2 agent applies. Illustrative values for the demo:
+# Logisly's real thresholds are an open item (MOM 29 Oct, data list UC2).
+currency: IDR
+price_unit: per_trip           # quotes in another unit are normalised to per trip
+baseline:
+  source: rate_history         # agreed buy rates, pricing DB
+  window_months: 3             # Aug-Oct 2026 for this tender
+  statistic: median            # across transporters, same lane and truck type
+flags:
+  above_baseline_pct: 10       # quote more than 10% above baseline -> flag "mahal"
+  below_baseline_pct: 15       # more than 15% below -> flag "cek biaya tersembunyi"
+  min_on_time_pct: 90          # last 4 quarters, transporter_performance
+  max_claim_pct: 1.5
+  min_payment_term_days: 30    # Logisly pays transporters no sooner than this
+  min_validity_days: 21        # validity must run at least 21 days past the quote date
+required_fields:               # a quotation missing any of these is incomplete
+  - transporter
+  - lane
+  - truck_type
+  - price
+  - price_basis                # what is included: toll, ferry, insurance
+  - payment_term
+  - validity
+tender_requirements:           # from the shipper's tender document
+  truck_type_must_match: true
+  cargo_insurance_min_idr: 500000000
+  gps_tracking: required
+scoring:                       # among quotes with no blocking issue
+  price: 0.5
+  on_time: 0.3
+  compliance: 0.2
+blocking_issues:               # these exclude a quote until resolved
+  - expired_validity
+  - truck_type_mismatch
+  - incomplete
+margin:
+  basis: sell_price            # gross margin = (sell - buy) / sell
+  min_pct: 10
+  target_pct: 15
+decision: human                # the agent recommends; purchasing approves

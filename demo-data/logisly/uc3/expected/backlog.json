@@ -1,0 +1,50 @@
+{
+  "note": "Answer key: the GitHub changes the UC3 agent should propose (and, after approval, apply). Story points match consistency_report.md.",
+  "epics": [
+    {
+      "key": "EPIC-AI", "repo": "platform-api",
+      "title": "[ai-agent] AI assistant untuk driver di driver app (MVP)",
+      "labels": ["type:feature", "area:ai-agent", "priority:P1"],
+      "milestone": "Sprint 26.24",
+      "prd": "expected/prd_driver-app-ai-assistant.md"
+    },
+    {
+      "key": "EPIC-POD", "repo": "driver-app", "existing": 142,
+      "title": "[driver-app] Upload foto POD setelah bongkar muat",
+      "note": "Existing issue becomes the e-POD epic."
+    }
+  ],
+  "create": [
+    {"key": "A1", "epic": "EPIC-AI", "repo": "driver-app", "title": "[driver-app] Layar chat dengan AI assistant", "labels": ["type:feature", "area:driver-app", "priority:P1", "sp:8"], "milestone": "Sprint 26.23", "assignee": "rizky-r", "replaces_spike": 151,
+     "acceptance": ["Given driver punya order aktif, when membuka tab Bantuan, then riwayat chat order tersebut tampil", "Given AI membalas, when app terbuka, then balasan muncul tanpa refresh manual"]},
+    {"key": "A2", "epic": "EPIC-AI", "repo": "driver-app", "title": "[driver-app] Rekam dan kirim voice note ke AI assistant", "labels": ["type:feature", "area:driver-app", "priority:P1", "sp:5"], "milestone": "Sprint 26.23", "assignee": "bayu-p",
+     "acceptance": ["Given driver menahan tombol mic, when dilepas, then voice note maks 2 menit terkirim", "Given sinyal putus, when sinyal kembali, then voice note terkirim otomatis"]},
+    {"key": "A3", "epic": "EPIC-AI", "repo": "driver-app", "title": "[driver-app] Kirim foto dan video pendek dengan keterangan", "labels": ["type:feature", "area:driver-app", "priority:P1", "sp:5"], "milestone": "Sprint 26.24", "assignee": "bayu-p",
+     "acceptance": ["Given driver memilih foto atau video maks 30 detik, when menambah keterangan dan kirim, then file dan keterangan diterima AI dalam satu pesan"]},
+    {"key": "A4", "epic": "EPIC-AI", "repo": "driver-app", "title": "[driver-app] Notifikasi pesan baru dari AI assistant", "labels": ["type:feature", "area:driver-app", "priority:P1", "sp:3", "status:blocked"], "milestone": "Sprint 26.24", "assignee": "rizky-r", "blocked_by": ["platform-api#131"],
+     "acceptance": ["Given app tertutup, when AI mengirim pesan, then driver menerima push notification", "Fallback selama #131 blocked: app cek pesan baru tiap 60 detik saat terbuka"]},
+    {"key": "A5", "epic": "EPIC-AI", "repo": "driver-app", "title": "[driver-app] Mode hemat data untuk chat", "labels": ["type:feature", "area:driver-app", "priority:P2", "sp:5"], "milestone": "Sprint 26.24", "assignee": "rizky-r",
+     "acceptance": ["Voice note dikompres ke 16 kbps", "Foto dikompres maks 300 KB sebelum upload", "Antrian kirim bertahan saat app ditutup"]},
+    {"key": "B1", "epic": "EPIC-AI", "repo": "platform-api", "title": "[platform] Endpoint chat driver ke AI assistant", "labels": ["type:feature", "area:platform", "priority:P1", "sp:5"], "milestone": "Sprint 26.23", "assignee": "fikrih"},
+    {"key": "B2", "epic": "EPIC-AI", "repo": "platform-api", "title": "[ai-agent] Pahami voice note dan foto dengan Gemini", "labels": ["type:feature", "area:ai-agent", "priority:P1", "sp:8"], "milestone": "Sprint 26.23", "assignee": "agung-s"},
+    {"key": "B3", "epic": "EPIC-AI", "repo": "platform-api", "title": "[ai-agent] Sapa driver duluan saat ada anomali tracking", "labels": ["type:feature", "area:ai-agent", "priority:P1", "sp:5"], "milestone": "Sprint 26.24", "assignee": "fikrih", "blocked_by": ["platform-api#135"]},
+    {"key": "B4", "epic": "EPIC-AI", "repo": "platform-api", "title": "[ai-agent] Tiket eskalasi otomatis berisi ringkasan, transkrip dan penjelasan foto", "labels": ["type:feature", "area:ai-agent", "priority:P1", "sp:5"], "milestone": "Sprint 26.24", "assignee": "agung-s", "related": ["ops-console#64"]},
+    {"key": "B5", "epic": "EPIC-AI", "repo": "platform-api", "title": "[ai-agent] Batasi follow-up: maksimal 2 pesan tanpa balasan, lalu tiket", "labels": ["type:feature", "area:ai-agent", "priority:P1", "sp:2"], "milestone": "Sprint 26.24", "assignee": "agung-s", "source": "04_ops-chat-export_whatsapp-cost.txt"},
+    {"key": "D1", "epic": "EPIC-AI", "repo": "driver-app", "title": "[driver-app] Rencana uji pilot 50 driver (Cikarang - Semarang)", "labels": ["type:chore", "area:driver-app", "priority:P1", "sp:5"], "milestone": "Sprint 26.24", "assignee": "tegar-qa"},
+    {"key": "E1", "epic": "EPIC-AI", "repo": "driver-app", "title": "[driver-app] Terima panggilan suara dari AI assistant", "labels": ["type:feature", "area:driver-app", "priority:P3", "sp:8"], "milestone": "Sprint 27.02", "phase": 2},
+    {"key": "E2", "epic": "EPIC-AI", "repo": "platform-api", "title": "[ai-agent] Telepon otomatis saat driver tidak membalas", "labels": ["type:feature", "area:ai-agent", "priority:P3", "sp:8"], "milestone": "Sprint 27.02", "phase": 2},
+    {"key": "P1", "epic": "EPIC-POD", "repo": "platform-api", "title": "[platform] API bukti terima: foto, nama penerima, jam terima", "labels": ["type:feature", "area:platform", "priority:P1", "sp:3"], "milestone": "Sprint 26.23", "assignee": "fikrih"},
+    {"key": "P2", "epic": "EPIC-POD", "repo": "shipper-portal", "title": "[shipper-portal] Tampilkan bukti terima di detail pengiriman", "labels": ["type:feature", "area:shipper-portal", "priority:P1", "sp:5"], "milestone": "Sprint 26.24", "assignee": "laras-ayu", "blocked_by": ["P1"]},
+    {"key": "P3", "epic": "EPIC-POD", "repo": "shipper-portal", "title": "[shipper-portal] Download bukti terima satu bulan sekaligus", "labels": ["type:feature", "area:shipper-portal", "priority:P2", "sp:3"], "milestone": "Sprint 26.24", "assignee": "laras-ayu", "blocked_by": ["P1"]},
+    {"key": "W1", "repo": "data-pipelines", "title": "[data] Dashboard biaya WhatsApp per kategori pesan dan per driver", "labels": ["type:feature", "area:data", "priority:P2", "sp:5"], "milestone": "Sprint 27.01", "assignee": "wulan-data", "blocked_by": ["data-pipelines#22"]}
+  ],
+  "update": [
+    {"ref": "driver-app#142", "set_labels": ["priority:P1"], "remove_labels": ["priority:P2"], "milestone": "Sprint 26.23", "assignee": "bayu-p",
+     "add_acceptance": ["Nama penerima dan jam terima wajib diisi", "Tanda tangan penerima di layar (opsional kalau surat jalan sudah ditandatangani)"]},
+    {"ref": "driver-app#148", "close": true, "set_labels": ["status:duplicate"], "comment": "Duplikat #142. Detail request shipper sudah ditambahkan ke sana."},
+    {"ref": "driver-app#151", "close": true, "comment": "Digantikan oleh story layar chat AI assistant (A1)."},
+    {"ref": "ops-console#64", "set_labels": ["priority:P1", "area:ai-agent", "sp:3"], "remove_labels": ["priority:P3"], "milestone": "Sprint 26.24", "assignee": "laras-ayu"},
+    {"ref": "platform-api#131", "comment": "Dibutuhkan oleh chat AI assistant (MVP 18 Des). Mohon eskalasi approval service account FCM ke security minggu ini."},
+    {"ref": "data-pipelines#22", "set_labels": ["priority:P2"], "remove_labels": ["priority:P3"], "comment": "Minta export CSV per template dan penerima ke BSP; dibutuhkan untuk dashboard biaya."}
+  ]
+}

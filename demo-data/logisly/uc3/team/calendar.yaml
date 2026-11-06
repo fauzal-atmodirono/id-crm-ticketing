@@ -1,0 +1,16 @@
+# Two-week sprints, Monday to Friday. Story-point capacity per person is in roster.yaml.
+sprints:
+  - {name: "Sprint 26.22", start: 2026-11-09, end: 2026-11-20}
+  - {name: "Sprint 26.23", start: 2026-11-23, end: 2026-12-04}
+  - {name: "Sprint 26.24", start: 2026-12-07, end: 2026-12-18}
+  - {name: "Sprint 26.25", start: 2026-12-21, end: 2027-01-01, note: "code freeze, hotfix only"}
+  - {name: "Sprint 27.01", start: 2027-01-04, end: 2027-01-15}
+  - {name: "Sprint 27.02", start: 2027-01-18, end: 2027-01-29}
+  - {name: "Sprint 27.03", start: 2027-02-01, end: 2027-02-12}
+
+code_freeze: {start: 2026-12-21, end: 2027-01-03, rule: "production deploys only for P0 hotfixes"}
+
+holidays:  # national holidays falling in the planning window
+  - {date: 2026-12-25, name: "Hari Raya Natal"}
+  - {date: 2027-01-01, name: "Tahun Baru Masehi"}
+  # Cuti bersama around Christmas is decreed yearly; not assumed here.

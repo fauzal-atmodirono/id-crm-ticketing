@@ -1,0 +1,44 @@
+From: Sari Indah <sari.indah@logisly.example>
+To: Nadia Putri <nadia.putri@logisly.example>
+Subject: Fwd: Permintaan bukti terima digital - PT Sumber Pangan Nusantara
+Date: Wed, 04 Nov 2026 10:32:00 +0700
+Message-ID: <03_email_cs_epod@mock.logisly.example>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+Hai Nadia,
+
+Sesuai product sync kemarin, berikut request dari PT Sumber Pangan Nusantara.=
+ Mereka shipper top 10 kita (sekitar 900 trip per bulan). Tolong dibantu prio=
+ritas ya.
+
+Ringkasan permintaan mereka:
+1. Foto surat jalan yang sudah ditandatangani penerima muncul di shipper port=
+al per pengiriman.
+2. Ada nama penerima dan jam terima.
+3. Bisa download semua bukti terima satu bulan sekaligus untuk audit.
+4. Mereka butuh ini sebelum 31 Desember 2026 untuk audit tahunan.
+
+Saya sempat buat issue di GitHub driver-app (Foto bukti terima di app driver)=
+, tapi belum ada yang pegang.
+
+Thanks,
+Sari
+
+---------- Forwarded message ----------
+From: Lukas Hartono <lukas.hartono@sumberpangan.example>
+Date: Mon, 2 Nov 2026 16:05
+Subject: Permintaan bukti terima digital
+
+Bu Sari,
+
+Tim audit kami minta semua bukti terima tahun 2026 tersedia digital. Saat ini=
+ bukti terima dari driver masih dikirim via WhatsApp ke admin kami dan sering=
+ tercecer. Apakah Logisly bisa menyediakan bukti terima (foto dan tanda tanga=
+n penerima) di portal, dan bisa diunduh per bulan? Kami butuh sebelum akhir D=
+esember.
+
+Salam,
+Lukas Hartono
+Logistics Manager, PT Sumber Pangan Nusantara

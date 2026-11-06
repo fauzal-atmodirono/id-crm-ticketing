@@ -1,0 +1,601 @@
+customer_id,name,segment,city,customer_since,payment_term_days,status
+CUST-0001,PT Sumber Pangan Nusantara,FMCG,Semarang,2020-01-01,45,active
+CUST-0002,PT Elektronik Jaya Abadi,Elektronik,Surabaya,2020-07-01,45,active
+CUST-0003,CV Berkah Retail,Retail,Bandung,2025-02-01,30,active
+CUST-0004,PT Nusantara Agro Lestari,Agribisnis,"Cikarang, Bekasi",2023-03-01,45,active
+CUST-0005,CV Prima Persada Kertas,Farmasi,Semarang,2021-10-01,60,active
+CUST-0006,PT Cahaya Lestari Farma,Kimia,"Cikarang, Bekasi",2025-03-01,45,active
+CUST-0007,PT Sentosa Persada Retailindo,Retail,Malang,2021-06-01,30,active
+CUST-0008,CV Duta Gemilang Plastik,Farmasi,Tangerang,2021-05-01,60,inactive
+CUST-0009,PT Inti Indah Retailindo,Farmasi,Solo,2025-01-01,45,active
+CUST-0010,PT Sumber Abadi Elektrik,Elektronik,Bekasi,2018-07-01,30,active
+CUST-0011,PT Indo Makmur Distribusi,Bahan Bangunan,Semarang,2023-11-01,60,active
+CUST-0012,PT Panca Perkasa Niaga,Tekstil,Karawang,2022-08-01,30,active
+CUST-0013,CV Mitra Abadi Kertas,Kimia,Tangerang,2023-04-01,45,active
+CUST-0014,PT Anugerah Sejahtera Baja,Suku Cadang Otomotif,Semarang,2024-04-01,45,active
+CUST-0015,PT Graha Makmur Industri,Agribisnis,Bekasi,2026-06-01,45,active
+CUST-0016,CV Tri Persada Food,Farmasi,Malang,2023-06-01,45,active
+CUST-0017,CV Jaya Gemilang Baja,Tekstil,Malang,2021-11-01,30,active
+CUST-0018,PT Mega Pratama Retailindo,FMCG,Medan,2023-09-01,45,active
+CUST-0019,PT Jaya Nusantara Distribusi,Elektronik,Yogyakarta,2025-11-01,45,inactive
+CUST-0020,PT Sinar Gemilang Retailindo,Farmasi,Jakarta,2024-10-01,30,active
+CUST-0021,PT Sentosa Selaras Distribusi,Farmasi,Jakarta,2023-05-01,45,active
+CUST-0022,CV Sinar Utama Kertas,Bahan Bangunan,Bekasi,2026-01-01,45,active
+CUST-0023,PT Mitra Raya Tekstil,FMCG,Medan,2019-03-01,30,active
+CUST-0024,PT Indo Makmur Kemasan,Bahan Bangunan,Cirebon,2021-03-01,30,active
+CUST-0025,PT Mega Utama Retailindo,Tekstil,Yogyakarta,2022-07-01,45,active
+CUST-0026,PT Sumber Perkasa Plastik,Retail,Tangerang,2026-06-01,30,active
+CUST-0027,PT Jaya Bersama Pangan,Farmasi,Semarang,2024-12-01,60,inactive
+CUST-0028,PT Sentosa Cemerlang Food,Farmasi,Medan,2019-07-01,60,active
+CUST-0029,PT Dwi Selaras Pangan,FMCG,Karawang,2021-06-01,45,active
+CUST-0030,PT Jaya Raya Logam,Retail,Tangerang,2024-10-01,30,active
+CUST-0031,CV Indo Kencana Tekstil,Bahan Bangunan,Palembang,2020-03-01,60,active
+CUST-0032,PT Harapan Gemilang Kertas,FMCG,Medan,2018-06-01,30,inactive
+CUST-0033,CV Dwi Kencana Pangan,Farmasi,Bandung,2023-05-01,45,active
+CUST-0034,PT Cahaya Makmur Elektrik,Suku Cadang Otomotif,Karawang,2021-05-01,60,active
+CUST-0035,PT Tunas Nusantara Kertas,Bahan Bangunan,Jakarta,2020-09-01,30,active
+CUST-0036,PT Citra Makmur Farma,Agribisnis,Solo,2024-10-01,45,active
+CUST-0037,CV Fajar Raya Tekstil,Tekstil,Yogyakarta,2023-10-01,45,inactive
+CUST-0038,PT Bumi Pratama Tekstil,Tekstil,Karawang,2026-05-01,45,active
+CUST-0039,PT Sentosa Perkasa Pangan,Kimia,Karawang,2024-04-01,45,active
+CUST-0040,PT Surya Indah Kemasan,Farmasi,"Cikarang, Bekasi",2019-09-01,45,active
+CUST-0041,PT Graha Gemala Food,Tekstil,Tangerang,2020-04-01,45,active
+CUST-0042,PT Tunas Persada Industri,Kimia,Bekasi,2019-10-01,45,inactive
+CUST-0043,PT Sinar Bersama Pangan,Retail,Bandung,2025-02-01,60,active
+CUST-0044,PT Jaya Selaras Pangan,Elektronik,Yogyakarta,2025-06-01,45,active
+CUST-0045,CV Sentosa Cemerlang Food,Agribisnis,"Cikarang, Bekasi",2024-03-01,45,active
+CUST-0046,PT Mega Lestari Niaga,Kimia,Denpasar,2021-12-01,45,active
+CUST-0047,PT Sentosa Indah Kimia,Agribisnis,Yogyakarta,2022-01-01,45,active
+CUST-0048,PT Sumber Lestari Elektrik,Bahan Bangunan,Semarang,2019-12-01,60,active
+CUST-0049,PT Sinar Gemala Kimia,Retail,Surabaya,2021-05-01,60,active
+CUST-0050,CV Jaya Persada Niaga,Suku Cadang Otomotif,Tangerang,2022-01-01,30,active
+CUST-0051,PT Dwi Persada Plastik,Tekstil,Tangerang,2023-03-01,30,active
+CUST-0052,PT Prima Nusantara Retailindo,Tekstil,Bandung,2022-09-01,30,active
+CUST-0053,PT Anugerah Bersama Kimia,Farmasi,Tangerang,2018-09-01,45,active
+CUST-0054,PT Prima Makmur Kemasan,Elektronik,Tangerang,2019-09-01,60,inactive
+CUST-0055,PT Citra Mandiri Retailindo,Agribisnis,Bekasi,2018-02-01,45,active
+CUST-0056,PT Jaya Kencana Kertas,Elektronik,Tangerang,2022-12-01,45,active
+CUST-0057,CV Citra Mandiri Kertas,FMCG,Yogyakarta,2025-01-01,60,active
+CUST-0058,PT Indo Sukses Niaga,Elektronik,Jakarta,2018-09-01,45,active
+CUST-0059,PT Dwi Cemerlang Kertas,Farmasi,Surabaya,2022-07-01,45,inactive
+CUST-0060,CV Jaya Gemala Logam,Kimia,Bekasi,2023-10-01,30,active
+CUST-0061,PT Anugerah Perkasa Distribusi,Bahan Bangunan,Cirebon,2022-09-01,45,active
+CUST-0062,PT Cahaya Abadi Kimia,FMCG,Jakarta,2025-11-01,30,active
+CUST-0063,PT Fajar Mandiri Industri,E-commerce,Medan,2021-11-01,30,active
+CUST-0064,PT Mulia Perkasa,E-commerce,Denpasar,2020-12-01,30,active
+CUST-0065,PT Sinar Cemerlang Pangan,Elektronik,Surabaya,2025-02-01,30,active
+CUST-0066,PT Graha Indah Farma,Suku Cadang Otomotif,Yogyakarta,2019-09-01,45,active
+CUST-0067,CV Fajar Nusantara Baja,FMCG,Semarang,2020-02-01,30,active
+CUST-0068,PT Surya Perkasa Logam,Kimia,Tangerang,2019-07-01,45,active
+CUST-0069,PT Tunas Gemala Distribusi,Farmasi,Karawang,2018-01-01,45,active
+CUST-0070,CV Anugerah Pratama,Elektronik,Karawang,2026-10-01,30,inactive
+CUST-0071,PT Tunas Nusantara Industri,Suku Cadang Otomotif,Denpasar,2022-04-01,30,active
+CUST-0072,CV Tunas Pratama Plastik,E-commerce,Malang,2022-12-01,30,active
+CUST-0073,PT Mitra Makmur Distribusi,Bahan Bangunan,Denpasar,2024-02-01,30,active
+CUST-0074,CV Prima Mandiri Tekstil,FMCG,Medan,2021-09-01,45,active
+CUST-0075,CV Surya Perkasa Industri,E-commerce,Bandung,2021-02-01,30,inactive
+CUST-0076,PT Indo Utama Kemasan,Bahan Bangunan,Cirebon,2025-05-01,30,active
+CUST-0077,PT Duta Raya Distribusi,Suku Cadang Otomotif,Solo,2021-12-01,30,active
+CUST-0078,PT Karya Gemilang Tekstil,Suku Cadang Otomotif,Semarang,2026-11-01,30,active
+CUST-0079,PT Indo Sukses Industri,Retail,Solo,2021-07-01,45,inactive
+CUST-0080,CV Prima Gemala Farma,Tekstil,Jakarta,2021-08-01,30,active
+CUST-0081,CV Sinar Indah Baja,Farmasi,Solo,2023-03-01,30,active
+CUST-0082,CV Karya Raya Tekstil,Agribisnis,Yogyakarta,2025-09-01,30,active
+CUST-0083,PT Tri Bersama Kimia,Tekstil,Malang,2021-02-01,30,active
+CUST-0084,PT Sentosa Mandiri Kertas,Tekstil,Tangerang,2019-06-01,60,active
+CUST-0085,PT Sinar Persada Distribusi,Retail,Tangerang,2020-05-01,45,active
+CUST-0086,CV Sumber Sejahtera Plastik,E-commerce,Tangerang,2024-08-01,30,active
+CUST-0087,PT Sentosa Sejahtera Industri,Suku Cadang Otomotif,Jakarta,2018-09-01,45,active
+CUST-0088,PT Panca Raya Retailindo,Farmasi,Solo,2021-06-01,30,active
+CUST-0089,PT Tunas Sejahtera Plastik,Elektronik,Medan,2025-06-01,30,active
+CUST-0090,PT Prima Makmur Farma,Bahan Bangunan,Tangerang,2026-11-01,30,active
+CUST-0091,CV Anugerah Gemala Elektrik,FMCG,Malang,2025-08-01,30,active
+CUST-0092,PT Anugerah Mandiri Industri,Farmasi,Bandung,2018-04-01,30,active
+CUST-0093,PT Harapan Gemala Baja,Kimia,Yogyakarta,2021-06-01,45,active
+CUST-0094,PT Sumber Kencana Tekstil,Tekstil,Denpasar,2025-04-01,60,active
+CUST-0095,PT Mega Mandiri Kemasan,Bahan Bangunan,Malang,2023-07-01,45,active
+CUST-0096,PT Indo Gemilang Plastik,Agribisnis,Denpasar,2026-01-01,45,active
+CUST-0097,PT Surya Perkasa Food,Bahan Bangunan,Solo,2019-11-01,30,active
+CUST-0098,PT Sumber Indah Baja,E-commerce,Karawang,2025-11-01,45,active
+CUST-0099,CV Duta Sejahtera Kemasan,Farmasi,Bekasi,2019-04-01,60,active
+CUST-0100,PT Citra Mandiri Farma,FMCG,Solo,2020-01-01,45,inactive
+CUST-0101,PT Citra Cemerlang Distribusi,FMCG,Palembang,2018-04-01,30,active
+CUST-0102,PT Mitra Sukses Industri,Agribisnis,Jakarta,2019-08-01,45,active
+CUST-0103,CV Fajar Sejahtera Kemasan,Bahan Bangunan,Surabaya,2022-03-01,45,active
+CUST-0104,PT Jaya Bersama Industri,Bahan Bangunan,Semarang,2020-02-01,30,active
+CUST-0105,PT Anugerah Persada Baja,Kimia,Bekasi,2018-09-01,60,active
+CUST-0106,PT Sentosa Nusantara Niaga,FMCG,Solo,2020-04-01,30,active
+CUST-0107,PT Sinar Indah Kemasan,Suku Cadang Otomotif,"Cikarang, Bekasi",2018-03-01,45,active
+CUST-0108,PT Bumi Persada Baja,E-commerce,Solo,2020-11-01,60,active
+CUST-0109,PT Sumber Raya Industri,FMCG,Semarang,2020-01-01,45,active
+CUST-0110,PT Mitra Perkasa Logam,Retail,Tangerang,2021-10-01,45,inactive
+CUST-0111,CV Anugerah Utama Pangan,Suku Cadang Otomotif,Surabaya,2024-02-01,30,active
+CUST-0112,PT Panca Selaras Industri,Agribisnis,Cirebon,2022-02-01,60,active
+CUST-0113,PT Tri Gemilang Plastik,Bahan Bangunan,Cirebon,2019-06-01,30,active
+CUST-0114,PT Tri Perkasa Tekstil,FMCG,Surabaya,2020-11-01,30,active
+CUST-0115,PT Duta Abadi Retailindo,Tekstil,Semarang,2024-08-01,45,active
+CUST-0116,CV Sumber Cemerlang Baja,Farmasi,Cirebon,2020-01-01,30,active
+CUST-0117,CV Sumber Perkasa Pangan,Suku Cadang Otomotif,Palembang,2025-02-01,45,active
+CUST-0118,PT Bina Persada Farma,Tekstil,Cirebon,2021-08-01,30,active
+CUST-0119,CV Sentosa Nusantara Elektrik,Kimia,Karawang,2022-10-01,45,active
+CUST-0120,CV Karya Makmur Plastik,Agribisnis,Denpasar,2025-02-01,45,active
+CUST-0121,PT Bina Persada Distribusi,Elektronik,Surabaya,2020-03-01,45,active
+CUST-0122,PT Duta Makmur Logam,Retail,Yogyakarta,2024-03-01,45,active
+CUST-0123,PT Bina Bersama Pangan,Farmasi,Tangerang,2020-09-01,45,active
+CUST-0124,PT Graha Gemala Farma,Suku Cadang Otomotif,Bekasi,2024-09-01,30,inactive
+CUST-0125,CV Bina Makmur Kertas,Agribisnis,"Cikarang, Bekasi",2018-11-01,30,active
+CUST-0126,PT Tri Sejahtera Kemasan,Kimia,"Cikarang, Bekasi",2024-02-01,45,active
+CUST-0127,PT Cahaya Makmur Baja,Farmasi,Bekasi,2024-04-01,60,inactive
+CUST-0128,CV Mega Nusantara Farma,Elektronik,Solo,2018-05-01,60,active
+CUST-0129,CV Cahaya Kencana Retailindo,Retail,Surabaya,2018-07-01,60,inactive
+CUST-0130,PT Prima Nusantara Industri,Tekstil,Medan,2019-02-01,30,active
+CUST-0131,PT Panca Sejahtera Industri,Suku Cadang Otomotif,Solo,2025-09-01,30,active
+CUST-0132,PT Fajar Nusantara Baja,Kimia,Tangerang,2025-06-01,45,active
+CUST-0133,CV Fajar Raya Elektrik,Agribisnis,Denpasar,2023-07-01,60,active
+CUST-0134,PT Surya Nusantara Tekstil,Agribisnis,Palembang,2025-04-01,30,active
+CUST-0135,PT Bumi Indah Kimia,Retail,Palembang,2020-06-01,45,active
+CUST-0136,PT Graha Agung Industri,Elektronik,Bandung,2026-03-01,45,inactive
+CUST-0137,PT Jaya Indah Retailindo,E-commerce,Jakarta,2018-10-01,30,active
+CUST-0138,PT Prima Nusantara Distribusi,Retail,Tangerang,2018-09-01,30,active
+CUST-0139,CV Indo Selaras Distribusi,Farmasi,Yogyakarta,2019-01-01,45,active
+CUST-0140,PT Dwi Kencana Food,Farmasi,Solo,2020-08-01,45,active
+CUST-0141,CV Sentosa Utama Farma,Tekstil,Solo,2018-05-01,45,active
+CUST-0142,PT Indo Makmur Elektrik,Suku Cadang Otomotif,Palembang,2021-06-01,45,inactive
+CUST-0143,PT Panca Makmur Kertas,Suku Cadang Otomotif,Medan,2023-03-01,60,active
+CUST-0144,PT Mitra Selaras Industri,Bahan Bangunan,Cirebon,2021-12-01,30,active
+CUST-0145,PT Anugerah Lestari Pangan,Bahan Bangunan,Bandung,2022-09-01,30,active
+CUST-0146,PT Bumi Cemerlang Tekstil,Tekstil,Tangerang,2023-01-01,60,active
+CUST-0147,PT Prima Nusantara Kimia,Kimia,Solo,2022-09-01,45,active
+CUST-0148,PT Sentosa Abadi Farma,Farmasi,Malang,2022-05-01,30,active
+CUST-0149,PT Mulia Bersama Kertas,Suku Cadang Otomotif,Cirebon,2019-08-01,60,active
+CUST-0150,PT Karya Indah Retailindo,Suku Cadang Otomotif,Denpasar,2022-02-01,30,inactive
+CUST-0151,CV Dwi Gemilang Niaga,Elektronik,Yogyakarta,2021-01-01,30,active
+CUST-0152,PT Harapan Selaras Distribusi,Farmasi,Palembang,2020-04-01,45,active
+CUST-0153,PT Duta Selaras Niaga,Tekstil,"Cikarang, Bekasi",2023-06-01,30,active
+CUST-0154,CV Anugerah Gemilang Retailindo,Farmasi,Semarang,2024-08-01,45,active
+CUST-0155,PT Fajar Gemilang Logam,Elektronik,"Cikarang, Bekasi",2021-11-01,30,active
+CUST-0156,PT Citra Lestari Pangan,Agribisnis,Solo,2024-06-01,45,inactive
+CUST-0157,CV Panca Kencana Industri,Agribisnis,Surabaya,2021-01-01,45,active
+CUST-0158,PT Indo Kencana Niaga,Kimia,Cirebon,2020-02-01,30,active
+CUST-0159,PT Prima Raya Food,E-commerce,Cirebon,2021-09-01,30,active
+CUST-0160,CV Inti Sukses Retailindo,Tekstil,Jakarta,2020-06-01,45,active
+CUST-0161,PT Cahaya Pratama Food,Bahan Bangunan,Semarang,2021-10-01,45,active
+CUST-0162,PT Panca Kencana Retailindo,Elektronik,Medan,2023-02-01,45,active
+CUST-0163,PT Bina Selaras Industri,Agribisnis,Denpasar,2023-12-01,45,active
+CUST-0164,PT Mulia Sukses Plastik,E-commerce,Bekasi,2024-12-01,30,active
+CUST-0165,PT Panca Persada Pangan,Retail,Denpasar,2021-11-01,45,active
+CUST-0166,PT Karya Abadi Baja,Agribisnis,Tangerang,2025-06-01,45,active
+CUST-0167,PT Cahaya Perkasa Food,Tekstil,Solo,2022-05-01,30,active
+CUST-0168,CV Tri Lestari Baja,Farmasi,Cirebon,2020-08-01,45,active
+CUST-0169,PT Mulia Gemilang Kemasan,Suku Cadang Otomotif,Palembang,2024-05-01,45,active
+CUST-0170,PT Mega Bersama Distribusi,Elektronik,Palembang,2026-01-01,30,active
+CUST-0171,PT Dwi Gemilang Tekstil,Farmasi,Bekasi,2018-01-01,45,inactive
+CUST-0172,PT Panca Bersama Pangan,Agribisnis,"Cikarang, Bekasi",2020-04-01,45,active
+CUST-0173,PT Tri Pratama,Bahan Bangunan,Bandung,2025-09-01,30,active
+CUST-0174,PT Tunas Gemilang Food,E-commerce,"Cikarang, Bekasi",2025-11-01,30,active
+CUST-0175,PT Bumi Pratama Kertas,Kimia,Karawang,2020-12-01,30,active
+CUST-0176,PT Prima Mandiri Retailindo,FMCG,Palembang,2026-08-01,45,active
+CUST-0177,PT Indo Selaras Baja,Bahan Bangunan,Malang,2024-08-01,45,active
+CUST-0178,PT Sumber Raya Kemasan,Tekstil,Malang,2020-04-01,30,active
+CUST-0179,PT Indo Makmur Tekstil,Tekstil,Karawang,2018-05-01,45,inactive
+CUST-0180,PT Sumber Abadi Retailindo,Kimia,Solo,2023-06-01,60,active
+CUST-0181,PT Prima Cemerlang Food,Suku Cadang Otomotif,Malang,2019-06-01,60,active
+CUST-0182,PT Karya Mandiri Kimia,Farmasi,Palembang,2020-09-01,45,inactive
+CUST-0183,PT Tri Lestari Food,E-commerce,Denpasar,2020-02-01,60,active
+CUST-0184,PT Mitra Abadi Kemasan,FMCG,Palembang,2026-09-01,30,active
+CUST-0185,PT Prima Gemilang Logam,Tekstil,Solo,2023-11-01,45,active
+CUST-0186,PT Surya Raya Retailindo,Bahan Bangunan,Karawang,2018-02-01,30,active
+CUST-0187,PT Mulia Mandiri Baja,E-commerce,Denpasar,2026-10-01,30,active
+CUST-0188,PT Bina Persada Kemasan,Tekstil,Bekasi,2025-12-01,45,inactive
+CUST-0189,PT Cahaya Nusantara Kimia,Tekstil,Karawang,2023-08-01,60,active
+CUST-0190,CV Mega Abadi Niaga,Tekstil,Jakarta,2022-04-01,60,active
+CUST-0191,PT Panca Nusantara Baja,Tekstil,Cirebon,2019-01-01,45,active
+CUST-0192,PT Citra Gemilang Industri,Bahan Bangunan,Surabaya,2018-01-01,45,inactive
+CUST-0193,PT Mulia Utama Plastik,Suku Cadang Otomotif,Yogyakarta,2019-03-01,60,active
+CUST-0194,PT Citra Perkasa Distribusi,Kimia,Tangerang,2020-05-01,30,active
+CUST-0195,CV Mulia Persada Distribusi,E-commerce,Bandung,2020-08-01,45,active
+CUST-0196,PT Bina Indah Retailindo,Farmasi,Tangerang,2018-03-01,30,active
+CUST-0197,PT Tri Abadi Industri,Bahan Bangunan,Tangerang,2025-05-01,30,active
+CUST-0198,PT Bumi Bersama Industri,Tekstil,Yogyakarta,2018-09-01,60,active
+CUST-0199,PT Anugerah Gemilang Kimia,Bahan Bangunan,Jakarta,2018-10-01,30,active
+CUST-0200,PT Duta Indah Pangan,Elektronik,Bandung,2021-04-01,30,active
+CUST-0201,PT Citra Gemala Retailindo,Suku Cadang Otomotif,Malang,2024-11-01,30,active
+CUST-0202,CV Karya Makmur Tekstil,Elektronik,Cirebon,2025-03-01,30,inactive
+CUST-0203,CV Anugerah Raya Plastik,Retail,Bekasi,2021-03-01,60,active
+CUST-0204,PT Surya Bersama Logam,Suku Cadang Otomotif,Malang,2022-05-01,45,active
+CUST-0205,PT Prima Raya Kimia,FMCG,Tangerang,2019-02-01,45,active
+CUST-0206,CV Cahaya Mandiri Elektrik,Retail,Denpasar,2026-05-01,45,inactive
+CUST-0207,CV Mega Gemala Pangan,Elektronik,Karawang,2024-12-01,45,active
+CUST-0208,PT Harapan Indah Distribusi,Kimia,Bekasi,2026-07-01,30,active
+CUST-0209,PT Bina Utama,Elektronik,Surabaya,2026-05-01,30,active
+CUST-0210,CV Duta Perkasa Retailindo,Bahan Bangunan,Surabaya,2020-07-01,30,active
+CUST-0211,PT Tri Sukses Distribusi,Tekstil,Surabaya,2020-12-01,30,inactive
+CUST-0212,PT Sentosa Perkasa Retailindo,FMCG,Solo,2024-06-01,45,active
+CUST-0213,PT Jaya Pratama Kertas,Agribisnis,Tangerang,2020-10-01,45,active
+CUST-0214,PT Sinar Kencana Kertas,Kimia,Solo,2021-04-01,60,active
+CUST-0215,PT Sinar Indah Baja,Agribisnis,Surabaya,2020-06-01,45,inactive
+CUST-0216,CV Mitra Pratama Distribusi,E-commerce,Yogyakarta,2020-02-01,60,active
+CUST-0217,PT Harapan Abadi Plastik,E-commerce,"Cikarang, Bekasi",2020-07-01,30,active
+CUST-0218,PT Tunas Raya Kimia,Bahan Bangunan,Semarang,2019-10-01,30,active
+CUST-0219,PT Jaya Lestari Plastik,Agribisnis,Bekasi,2026-08-01,45,active
+CUST-0220,PT Indo Sukses,Kimia,Cirebon,2021-05-01,45,active
+CUST-0221,PT Cahaya Lestari Retailindo,Bahan Bangunan,Karawang,2022-02-01,60,active
+CUST-0222,PT Harapan Indah Logam,FMCG,Malang,2019-08-01,60,active
+CUST-0223,CV Mega Perkasa Tekstil,Bahan Bangunan,"Cikarang, Bekasi",2019-10-01,60,active
+CUST-0224,CV Sinar Lestari Niaga,Elektronik,"Cikarang, Bekasi",2019-07-01,60,active
+CUST-0225,CV Sinar Pratama Baja,Bahan Bangunan,"Cikarang, Bekasi",2022-12-01,30,active
+CUST-0226,PT Fajar Agung Pangan,Bahan Bangunan,Medan,2024-09-01,45,active
+CUST-0227,PT Fajar Sukses Retailindo,Elektronik,Cirebon,2023-09-01,30,active
+CUST-0228,PT Indo Indah Kimia,Retail,Malang,2021-07-01,45,active
+CUST-0229,PT Sumber Nusantara Kemasan,Farmasi,Surabaya,2018-05-01,30,active
+CUST-0230,PT Karya Nusantara Farma,E-commerce,Solo,2023-08-01,30,active
+CUST-0231,PT Cahaya Sukses,Retail,Denpasar,2026-08-01,60,active
+CUST-0232,PT Bumi Sukses Distribusi,FMCG,Tangerang,2026-12-01,45,active
+CUST-0233,PT Mulia Cemerlang Elektrik,Suku Cadang Otomotif,Bekasi,2022-06-01,30,active
+CUST-0234,PT Mulia Abadi Farma,Kimia,Semarang,2019-10-01,45,active
+CUST-0235,PT Cahaya Utama Kemasan,Kimia,Surabaya,2019-03-01,30,active
+CUST-0236,PT Karya Utama Logam,Farmasi,Semarang,2026-06-01,45,active
+CUST-0237,PT Inti Bersama Kemasan,Tekstil,Yogyakarta,2021-10-01,30,active
+CUST-0238,PT Surya Makmur Kimia,FMCG,Cirebon,2018-07-01,60,active
+CUST-0239,PT Surya Agung Pangan,E-commerce,"Cikarang, Bekasi",2021-07-01,45,active
+CUST-0240,PT Jaya Persada Niaga,E-commerce,Malang,2018-03-01,45,active
+CUST-0241,PT Indo Gemala Niaga,Elektronik,Bekasi,2020-01-01,30,active
+CUST-0242,PT Panca Selaras Logam,Tekstil,"Cikarang, Bekasi",2026-06-01,60,active
+CUST-0243,CV Cahaya Selaras,Retail,Tangerang,2022-05-01,45,active
+CUST-0244,PT Dwi Makmur Kimia,Bahan Bangunan,"Cikarang, Bekasi",2021-04-01,30,active
+CUST-0245,PT Bumi Pratama Food,Agribisnis,Tangerang,2021-12-01,45,active
+CUST-0246,PT Indo Bersama Kemasan,Suku Cadang Otomotif,Karawang,2019-12-01,30,active
+CUST-0247,PT Mega Indah Food,Farmasi,Medan,2024-06-01,30,active
+CUST-0248,PT Harapan Raya Pangan,FMCG,Karawang,2025-03-01,45,active
+CUST-0249,PT Sentosa Mandiri Plastik,Farmasi,Semarang,2021-11-01,45,active
+CUST-0250,PT Sinar Selaras Logam,Suku Cadang Otomotif,Solo,2022-11-01,30,active
+CUST-0251,PT Mitra Raya Kimia,Retail,Surabaya,2020-02-01,60,inactive
+CUST-0252,CV Sinar Gemala Tekstil,Kimia,"Cikarang, Bekasi",2020-04-01,30,active
+CUST-0253,PT Bumi Lestari Niaga,FMCG,Semarang,2020-09-01,45,active
+CUST-0254,CV Cahaya Raya Industri,Retail,"Cikarang, Bekasi",2019-06-01,30,active
+CUST-0255,CV Mitra Abadi Food,Bahan Bangunan,Tangerang,2025-10-01,45,active
+CUST-0256,PT Cahaya Mandiri Logam,FMCG,Denpasar,2026-01-01,30,active
+CUST-0257,CV Citra Sukses Kimia,Farmasi,Yogyakarta,2020-02-01,45,active
+CUST-0258,PT Harapan Perkasa Baja,Elektronik,"Cikarang, Bekasi",2025-08-01,60,active
+CUST-0259,PT Anugerah Indah Elektrik,Bahan Bangunan,Semarang,2025-09-01,45,active
+CUST-0260,PT Mega Gemala Elektrik,Agribisnis,Surabaya,2018-01-01,30,active
+CUST-0261,PT Harapan Utama,Kimia,Tangerang,2022-10-01,30,active
+CUST-0262,PT Cahaya Mandiri Distribusi,Kimia,Medan,2018-11-01,45,active
+CUST-0263,CV Sentosa Lestari Elektrik,Farmasi,Semarang,2023-12-01,45,active
+CUST-0264,PT Karya Mandiri Farma,Agribisnis,Bekasi,2024-10-01,60,inactive
+CUST-0265,PT Inti Bersama Industri,Suku Cadang Otomotif,Malang,2026-03-01,60,active
+CUST-0266,PT Prima Sukses Kimia,Tekstil,"Cikarang, Bekasi",2026-03-01,45,active
+CUST-0267,CV Citra Mandiri Food,Agribisnis,Bekasi,2018-09-01,45,active
+CUST-0268,PT Panca Makmur Distribusi,Retail,Bekasi,2022-02-01,30,active
+CUST-0269,CV Mitra Pratama Niaga,Bahan Bangunan,Surabaya,2018-05-01,30,active
+CUST-0270,PT Mega Persada Retailindo,Agribisnis,Tangerang,2019-06-01,30,inactive
+CUST-0271,PT Tunas Abadi Baja,Bahan Bangunan,Medan,2021-05-01,45,active
+CUST-0272,PT Bumi Nusantara Tekstil,Tekstil,Palembang,2022-08-01,45,active
+CUST-0273,PT Harapan Kencana Pangan,Kimia,Palembang,2023-07-01,30,inactive
+CUST-0274,PT Cahaya Bersama Kimia,Elektronik,Bandung,2025-07-01,30,active
+CUST-0275,PT Harapan Persada,Elektronik,Malang,2020-01-01,45,active
+CUST-0276,PT Bina Perkasa Distribusi,Elektronik,Bekasi,2022-01-01,45,active
+CUST-0277,CV Indo Mandiri Kertas,Retail,Denpasar,2021-06-01,60,active
+CUST-0278,PT Tunas Nusantara Retailindo,FMCG,Jakarta,2024-08-01,45,inactive
+CUST-0279,PT Sentosa Utama Retailindo,Kimia,Bekasi,2021-03-01,45,active
+CUST-0280,PT Inti Utama Kimia,FMCG,Surabaya,2019-10-01,30,active
+CUST-0281,PT Mitra Gemilang Distribusi,E-commerce,Malang,2019-10-01,45,active
+CUST-0282,PT Mulia Utama Kemasan,FMCG,Malang,2021-06-01,60,active
+CUST-0283,PT Bina Bersama Kertas,FMCG,Jakarta,2024-03-01,30,active
+CUST-0284,PT Karya Perkasa Plastik,Farmasi,Bandung,2025-01-01,45,active
+CUST-0285,CV Fajar Nusantara Niaga,FMCG,Karawang,2025-08-01,45,inactive
+CUST-0286,PT Surya Bersama Niaga,Bahan Bangunan,Jakarta,2023-02-01,60,active
+CUST-0287,PT Sumber Persada,Farmasi,Denpasar,2024-06-01,60,inactive
+CUST-0288,PT Harapan Persada Pangan,Kimia,Bandung,2021-02-01,60,active
+CUST-0289,PT Anugerah Lestari Food,Elektronik,Surabaya,2019-07-01,30,active
+CUST-0290,CV Anugerah Bersama,Bahan Bangunan,Surabaya,2025-02-01,45,active
+CUST-0291,PT Mega Mandiri Tekstil,Retail,Surabaya,2025-07-01,45,active
+CUST-0292,PT Cahaya Sukses Farma,Retail,Denpasar,2023-08-01,60,active
+CUST-0293,PT Graha Raya Logam,E-commerce,Bekasi,2024-11-01,60,active
+CUST-0294,PT Sumber Agung Logam,Farmasi,"Cikarang, Bekasi",2019-09-01,60,active
+CUST-0295,CV Prima Agung Kimia,E-commerce,Karawang,2019-02-01,45,active
+CUST-0296,PT Jaya Raya Kimia,E-commerce,Malang,2018-05-01,30,active
+CUST-0297,PT Panca Nusantara Pangan,Farmasi,Semarang,2019-05-01,30,inactive
+CUST-0298,PT Sinar Agung Plastik,Bahan Bangunan,Malang,2020-12-01,30,active
+CUST-0299,PT Karya Persada Baja,Kimia,Jakarta,2021-02-01,45,active
+CUST-0300,PT Bumi Gemilang Niaga,Suku Cadang Otomotif,Bandung,2018-03-01,45,active
+CUST-0301,PT Tri Abadi Tekstil,Bahan Bangunan,Bandung,2026-10-01,45,inactive
+CUST-0302,PT Mulia Gemala Niaga,Tekstil,Bekasi,2024-06-01,30,active
+CUST-0303,PT Mega Makmur Distribusi,Tekstil,Karawang,2024-01-01,60,active
+CUST-0304,PT Anugerah Sukses Industri,Kimia,Solo,2021-04-01,45,active
+CUST-0305,PT Anugerah Makmur Pangan,E-commerce,Denpasar,2018-08-01,60,active
+CUST-0306,CV Mitra Makmur Industri,Bahan Bangunan,Bandung,2019-06-01,60,active
+CUST-0307,PT Mulia Lestari Retailindo,Bahan Bangunan,Bekasi,2025-07-01,60,inactive
+CUST-0308,PT Surya Persada Baja,Kimia,Tangerang,2025-12-01,30,active
+CUST-0309,CV Jaya Selaras Elektrik,FMCG,Malang,2023-08-01,60,active
+CUST-0310,PT Mulia Raya Elektrik,Bahan Bangunan,Yogyakarta,2023-09-01,30,active
+CUST-0311,PT Duta Makmur Niaga,Kimia,Malang,2020-12-01,30,active
+CUST-0312,PT Mulia Agung Plastik,E-commerce,Yogyakarta,2025-11-01,60,active
+CUST-0313,PT Dwi Persada Elektrik,FMCG,Malang,2023-11-01,60,active
+CUST-0314,PT Duta Bersama Pangan,E-commerce,Semarang,2025-07-01,45,active
+CUST-0315,PT Fajar Nusantara Kertas,Suku Cadang Otomotif,"Cikarang, Bekasi",2025-06-01,45,active
+CUST-0316,PT Graha Lestari Industri,FMCG,Medan,2021-08-01,60,active
+CUST-0317,CV Harapan Nusantara Niaga,Agribisnis,Denpasar,2023-01-01,30,active
+CUST-0318,PT Jaya Abadi Plastik,Kimia,Malang,2020-09-01,30,active
+CUST-0319,PT Karya Sejahtera Distribusi,Retail,Solo,2021-06-01,30,active
+CUST-0320,PT Duta Utama Logam,E-commerce,Denpasar,2021-10-01,60,active
+CUST-0321,PT Tunas Nusantara Tekstil,Tekstil,Jakarta,2022-11-01,30,active
+CUST-0322,PT Harapan Gemala Retailindo,Suku Cadang Otomotif,Tangerang,2019-11-01,60,active
+CUST-0323,PT Graha Pratama Food,E-commerce,"Cikarang, Bekasi",2022-08-01,30,active
+CUST-0324,CV Indo Nusantara Distribusi,Farmasi,"Cikarang, Bekasi",2022-10-01,45,active
+CUST-0325,CV Dwi Utama Logam,Retail,Tangerang,2023-09-01,45,active
+CUST-0326,PT Sinar Mandiri Niaga,Farmasi,Surabaya,2026-02-01,60,active
+CUST-0327,PT Citra Makmur Kimia,Bahan Bangunan,Cirebon,2024-02-01,45,active
+CUST-0328,PT Karya Perkasa Baja,FMCG,Denpasar,2026-04-01,30,active
+CUST-0329,CV Panca Cemerlang Niaga,Elektronik,Palembang,2020-12-01,30,active
+CUST-0330,PT Sentosa Abadi Kemasan,Agribisnis,Karawang,2023-06-01,30,active
+CUST-0331,PT Fajar Bersama Industri,Bahan Bangunan,Bekasi,2021-11-01,30,active
+CUST-0332,PT Inti Lestari Food,Retail,Jakarta,2024-02-01,30,active
+CUST-0333,PT Tunas Lestari Logam,Agribisnis,Solo,2026-05-01,45,inactive
+CUST-0334,PT Cahaya Sejahtera Retailindo,FMCG,Yogyakarta,2024-05-01,30,inactive
+CUST-0335,PT Bumi Utama Retailindo,Agribisnis,Surabaya,2025-01-01,30,active
+CUST-0336,CV Fajar Gemilang Elektrik,Farmasi,Tangerang,2025-05-01,45,active
+CUST-0337,PT Surya Makmur Retailindo,Elektronik,Yogyakarta,2024-12-01,30,active
+CUST-0338,CV Sumber Raya Industri,Bahan Bangunan,Malang,2022-10-01,30,active
+CUST-0339,PT Graha Abadi Logam,Farmasi,"Cikarang, Bekasi",2023-11-01,45,active
+CUST-0340,PT Surya Kencana Kimia,E-commerce,"Cikarang, Bekasi",2019-08-01,30,active
+CUST-0341,PT Fajar Indah Niaga,Retail,Yogyakarta,2020-01-01,30,active
+CUST-0342,PT Citra Agung Baja,Elektronik,Yogyakarta,2019-05-01,45,active
+CUST-0343,PT Fajar Gemala Kimia,Agribisnis,Cirebon,2022-05-01,30,active
+CUST-0344,PT Tri Abadi,Tekstil,Yogyakarta,2022-06-01,45,active
+CUST-0345,PT Fajar Agung Distribusi,Retail,Denpasar,2022-09-01,30,active
+CUST-0346,PT Sentosa Gemala,FMCG,Malang,2024-11-01,30,active
+CUST-0347,CV Mulia Cemerlang Kertas,Elektronik,Yogyakarta,2026-05-01,30,active
+CUST-0348,PT Dwi Gemilang Retailindo,Kimia,Bekasi,2018-01-01,45,inactive
+CUST-0349,CV Surya Selaras Distribusi,E-commerce,Bandung,2022-08-01,45,active
+CUST-0350,PT Mitra Lestari Baja,Elektronik,Solo,2025-05-01,45,active
+CUST-0351,PT Bumi Agung Niaga,Agribisnis,"Cikarang, Bekasi",2023-05-01,45,active
+CUST-0352,PT Karya Kencana Logam,FMCG,"Cikarang, Bekasi",2023-10-01,45,active
+CUST-0353,CV Karya Nusantara Food,E-commerce,Bekasi,2020-05-01,45,active
+CUST-0354,PT Anugerah Sukses Distribusi,Elektronik,Karawang,2026-10-01,45,active
+CUST-0355,PT Jaya Kencana Industri,Farmasi,Jakarta,2024-05-01,45,active
+CUST-0356,CV Graha Abadi Distribusi,Retail,Tangerang,2026-02-01,45,active
+CUST-0357,PT Panca Agung,Farmasi,Yogyakarta,2020-11-01,30,active
+CUST-0358,PT Indo Mandiri Tekstil,Elektronik,Denpasar,2020-11-01,60,active
+CUST-0359,CV Surya Raya Pangan,Elektronik,Bandung,2022-12-01,45,active
+CUST-0360,PT Mitra Lestari Kemasan,Suku Cadang Otomotif,Palembang,2021-08-01,45,inactive
+CUST-0361,PT Karya Lestari Plastik,Farmasi,Palembang,2022-07-01,45,active
+CUST-0362,CV Mulia Sejahtera Elektrik,Agribisnis,Palembang,2021-06-01,30,active
+CUST-0363,PT Karya Sejahtera Farma,Bahan Bangunan,Semarang,2026-11-01,45,active
+CUST-0364,PT Surya Pratama Retailindo,E-commerce,Surabaya,2018-06-01,45,active
+CUST-0365,PT Mitra Pratama,Bahan Bangunan,Bandung,2025-08-01,30,active
+CUST-0366,CV Mulia Bersama Niaga,Elektronik,Semarang,2019-11-01,30,active
+CUST-0367,PT Graha Gemilang Baja,E-commerce,Jakarta,2023-07-01,60,active
+CUST-0368,PT Mega Perkasa,E-commerce,"Cikarang, Bekasi",2025-02-01,45,active
+CUST-0369,PT Harapan Sukses Kemasan,Suku Cadang Otomotif,Solo,2021-11-01,60,active
+CUST-0370,PT Citra Pratama Baja,Elektronik,Solo,2018-02-01,30,active
+CUST-0371,PT Duta Cemerlang Farma,E-commerce,Bekasi,2022-03-01,45,active
+CUST-0372,PT Surya Mandiri Plastik,Kimia,Malang,2019-07-01,30,active
+CUST-0373,PT Graha Gemala Kimia,Elektronik,Bandung,2021-03-01,45,active
+CUST-0374,PT Tri Persada Elektrik,Bahan Bangunan,Surabaya,2021-11-01,45,inactive
+CUST-0375,CV Sumber Mandiri Logam,Bahan Bangunan,Medan,2020-10-01,30,active
+CUST-0376,CV Cahaya Selaras Kemasan,Retail,Palembang,2022-04-01,45,active
+CUST-0377,CV Dwi Pratama Farma,Tekstil,Bandung,2026-04-01,45,active
+CUST-0378,CV Dwi Selaras Logam,Bahan Bangunan,Solo,2018-09-01,30,active
+CUST-0379,CV Dwi Gemilang Distribusi,FMCG,Surabaya,2025-08-01,60,active
+CUST-0380,PT Jaya Sejahtera Food,Agribisnis,Karawang,2022-03-01,45,active
+CUST-0381,PT Prima Pratama Pangan,Agribisnis,"Cikarang, Bekasi",2023-07-01,45,active
+CUST-0382,PT Tri Bersama Plastik,Retail,Jakarta,2023-09-01,60,active
+CUST-0383,CV Anugerah Persada Kertas,Farmasi,Tangerang,2018-07-01,45,active
+CUST-0384,CV Sentosa Cemerlang Elektrik,Bahan Bangunan,Palembang,2021-11-01,45,active
+CUST-0385,PT Harapan Mandiri Kimia,Kimia,Palembang,2021-07-01,30,active
+CUST-0386,PT Fajar Persada Kemasan,Bahan Bangunan,Bandung,2019-08-01,45,active
+CUST-0387,CV Indo Raya Kertas,Retail,Bandung,2025-10-01,45,active
+CUST-0388,PT Jaya Pratama Distribusi,E-commerce,"Cikarang, Bekasi",2024-01-01,30,active
+CUST-0389,PT Harapan Indah Food,Suku Cadang Otomotif,Bekasi,2025-11-01,45,active
+CUST-0390,PT Graha Bersama Distribusi,Agribisnis,Karawang,2023-04-01,45,inactive
+CUST-0391,PT Bina Nusantara Kimia,Bahan Bangunan,Jakarta,2023-11-01,45,active
+CUST-0392,PT Sentosa Utama Kertas,FMCG,Palembang,2018-08-01,30,inactive
+CUST-0393,CV Tunas Gemala Industri,E-commerce,Solo,2023-05-01,30,active
+CUST-0394,PT Sumber Gemilang Baja,Elektronik,Karawang,2020-07-01,45,active
+CUST-0395,CV Tunas Raya Kertas,Tekstil,Malang,2018-03-01,30,active
+CUST-0396,PT Surya Selaras Industri,E-commerce,Cirebon,2024-09-01,30,active
+CUST-0397,PT Surya Nusantara Kimia,Retail,Denpasar,2023-12-01,45,active
+CUST-0398,PT Bina Utama Kemasan,Kimia,"Cikarang, Bekasi",2025-09-01,45,active
+CUST-0399,PT Citra Indah Tekstil,FMCG,Malang,2019-07-01,30,active
+CUST-0400,CV Sinar Cemerlang Plastik,Kimia,Tangerang,2026-04-01,45,active
+CUST-0401,PT Dwi Mandiri Kertas,Retail,Bandung,2023-05-01,30,active
+CUST-0402,PT Karya Indah Kertas,Bahan Bangunan,Medan,2021-02-01,60,inactive
+CUST-0403,PT Tunas Persada Farma,Tekstil,Bekasi,2022-12-01,45,active
+CUST-0404,CV Bumi Perkasa Pangan,Farmasi,Solo,2025-08-01,60,active
+CUST-0405,PT Mulia Lestari Elektrik,Suku Cadang Otomotif,Semarang,2020-09-01,30,active
+CUST-0406,PT Sinar Abadi Food,FMCG,Malang,2026-08-01,30,active
+CUST-0407,CV Tri Nusantara Food,FMCG,Yogyakarta,2024-09-01,45,active
+CUST-0408,PT Jaya Sejahtera Baja,Suku Cadang Otomotif,Karawang,2021-07-01,45,active
+CUST-0409,PT Harapan Selaras Plastik,Retail,Denpasar,2023-04-01,45,active
+CUST-0410,PT Sentosa Indah Distribusi,Bahan Bangunan,Bekasi,2023-06-01,45,active
+CUST-0411,CV Citra Cemerlang Baja,E-commerce,Medan,2019-03-01,30,active
+CUST-0412,PT Bumi Abadi Retailindo,Bahan Bangunan,Yogyakarta,2019-11-01,30,active
+CUST-0413,PT Graha Nusantara Niaga,Elektronik,Denpasar,2022-01-01,45,active
+CUST-0414,PT Duta Raya Plastik,Kimia,Cirebon,2021-01-01,30,active
+CUST-0415,PT Jaya Bersama Kimia,Elektronik,Semarang,2020-02-01,45,active
+CUST-0416,PT Inti Utama Logam,Retail,Palembang,2023-01-01,45,active
+CUST-0417,PT Duta Makmur Food,FMCG,Denpasar,2025-12-01,60,active
+CUST-0418,PT Graha Nusantara Pangan,Elektronik,"Cikarang, Bekasi",2024-04-01,45,active
+CUST-0419,PT Dwi Nusantara Industri,FMCG,Karawang,2026-03-01,60,active
+CUST-0420,PT Inti Gemala Retailindo,Farmasi,Bekasi,2019-02-01,45,active
+CUST-0421,PT Tunas Perkasa Plastik,Tekstil,Medan,2019-06-01,30,active
+CUST-0422,PT Cahaya Persada Tekstil,Kimia,Medan,2019-04-01,30,active
+CUST-0423,PT Fajar Agung Kertas,Kimia,Tangerang,2019-04-01,30,active
+CUST-0424,CV Sentosa Raya Industri,Retail,Tangerang,2022-04-01,30,inactive
+CUST-0425,PT Graha Mandiri Plastik,Suku Cadang Otomotif,Medan,2022-05-01,30,active
+CUST-0426,PT Prima Bersama Food,FMCG,Tangerang,2018-02-01,45,active
+CUST-0427,PT Jaya Gemilang Food,E-commerce,Semarang,2023-10-01,45,active
+CUST-0428,PT Sinar Persada Logam,Kimia,Solo,2025-12-01,45,active
+CUST-0429,CV Bina Sukses,Retail,Surabaya,2022-10-01,45,active
+CUST-0430,PT Sinar Gemala Pangan,FMCG,Denpasar,2024-09-01,30,active
+CUST-0431,PT Sinar Abadi Pangan,FMCG,Solo,2019-01-01,60,active
+CUST-0432,PT Mulia Indah Kertas,Agribisnis,Malang,2021-05-01,30,active
+CUST-0433,CV Mega Abadi Industri,E-commerce,Palembang,2021-09-01,45,active
+CUST-0434,PT Surya Mandiri Distribusi,Bahan Bangunan,Malang,2019-11-01,30,active
+CUST-0435,PT Mitra Kencana,Agribisnis,Yogyakarta,2018-03-01,60,active
+CUST-0436,PT Indo Selaras Pangan,Agribisnis,Solo,2022-06-01,30,active
+CUST-0437,PT Tri Indah Kertas,Farmasi,Karawang,2020-09-01,60,active
+CUST-0438,PT Harapan Agung Industri,Farmasi,Jakarta,2018-10-01,45,active
+CUST-0439,PT Citra Gemala Industri,Farmasi,Bekasi,2025-12-01,30,inactive
+CUST-0440,CV Inti Mandiri Logam,Agribisnis,Surabaya,2020-06-01,45,active
+CUST-0441,PT Prima Utama Pangan,Bahan Bangunan,Surabaya,2023-05-01,45,active
+CUST-0442,CV Panca Gemilang Industri,Retail,Karawang,2020-08-01,45,active
+CUST-0443,CV Cahaya Gemilang Logam,E-commerce,Cirebon,2020-02-01,45,active
+CUST-0444,PT Panca Raya Distribusi,Farmasi,Bekasi,2022-07-01,45,active
+CUST-0445,PT Indo Perkasa Niaga,Elektronik,Solo,2024-05-01,30,active
+CUST-0446,PT Harapan Nusantara Food,E-commerce,Medan,2022-05-01,30,inactive
+CUST-0447,PT Mega Sejahtera Food,Suku Cadang Otomotif,Tangerang,2021-06-01,45,active
+CUST-0448,CV Cahaya Mandiri Kimia,Elektronik,Bandung,2023-03-01,30,active
+CUST-0449,PT Surya Sukses Plastik,FMCG,Bandung,2026-01-01,60,active
+CUST-0450,PT Indo Kencana Logam,Farmasi,Bandung,2020-07-01,45,active
+CUST-0451,PT Duta Sejahtera Tekstil,Farmasi,Malang,2026-07-01,30,active
+CUST-0452,PT Bina Makmur Niaga,Agribisnis,"Cikarang, Bekasi",2021-04-01,60,active
+CUST-0453,CV Citra Bersama Tekstil,E-commerce,Medan,2026-07-01,30,active
+CUST-0454,PT Jaya Agung Farma,Agribisnis,Medan,2019-11-01,30,active
+CUST-0455,PT Bina Agung Plastik,Suku Cadang Otomotif,Surabaya,2024-06-01,60,active
+CUST-0456,PT Tunas Perkasa Pangan,FMCG,Tangerang,2023-09-01,30,active
+CUST-0457,PT Mega Sejahtera Industri,Retail,Bandung,2021-04-01,30,active
+CUST-0458,CV Sumber Bersama Elektrik,Agribisnis,Bekasi,2019-11-01,30,active
+CUST-0459,PT Duta Kencana Kimia,Tekstil,Malang,2026-03-01,30,active
+CUST-0460,PT Cahaya Mandiri Pangan,Kimia,Semarang,2018-03-01,30,inactive
+CUST-0461,CV Mitra Gemala Baja,Agribisnis,Tangerang,2018-02-01,30,active
+CUST-0462,PT Sinar Bersama,Tekstil,Bandung,2018-06-01,60,active
+CUST-0463,PT Citra Bersama Food,Agribisnis,Bandung,2021-08-01,45,active
+CUST-0464,CV Duta Kencana Distribusi,Kimia,"Cikarang, Bekasi",2025-01-01,30,active
+CUST-0465,PT Jaya Kencana Kemasan,Tekstil,Medan,2021-03-01,30,active
+CUST-0466,PT Karya Lestari Kimia,FMCG,Cirebon,2020-12-01,30,active
+CUST-0467,PT Sentosa Bersama,Retail,Semarang,2020-04-01,60,active
+CUST-0468,PT Anugerah Makmur,Bahan Bangunan,Semarang,2025-12-01,45,active
+CUST-0469,CV Bumi Sukses Pangan,FMCG,Malang,2024-08-01,30,inactive
+CUST-0470,PT Bumi Gemilang,Farmasi,Cirebon,2018-08-01,45,active
+CUST-0471,CV Prima Perkasa Logam,Retail,Cirebon,2022-05-01,30,active
+CUST-0472,PT Indo Nusantara Industri,FMCG,Semarang,2025-05-01,30,active
+CUST-0473,PT Indo Sejahtera Distribusi,Retail,Palembang,2022-02-01,45,active
+CUST-0474,CV Tri Cemerlang Food,FMCG,Semarang,2019-11-01,60,active
+CUST-0475,PT Jaya Gemilang Plastik,Retail,Cirebon,2025-08-01,45,active
+CUST-0476,CV Citra Raya Kertas,Bahan Bangunan,Cirebon,2023-09-01,30,active
+CUST-0477,PT Tri Abadi Distribusi,Tekstil,Bandung,2019-12-01,45,active
+CUST-0478,PT Mega Kencana Elektrik,Farmasi,Karawang,2022-08-01,45,active
+CUST-0479,PT Bumi Gemilang Retailindo,Farmasi,Semarang,2022-05-01,45,active
+CUST-0480,PT Harapan Bersama Elektrik,Suku Cadang Otomotif,Tangerang,2022-04-01,45,active
+CUST-0481,PT Cahaya Agung Logam,Retail,Semarang,2023-11-01,45,active
+CUST-0482,PT Jaya Bersama Farma,FMCG,Semarang,2026-10-01,60,active
+CUST-0483,PT Duta Mandiri Distribusi,Elektronik,Yogyakarta,2019-09-01,45,inactive
+CUST-0484,CV Fajar Gemilang Kertas,Kimia,Palembang,2026-07-01,30,active
+CUST-0485,PT Mulia Sukses Pangan,FMCG,Cirebon,2020-07-01,30,active
+CUST-0486,PT Bumi Mandiri Pangan,Tekstil,Bekasi,2019-11-01,30,inactive
+CUST-0487,PT Mega Agung Food,Bahan Bangunan,Medan,2023-12-01,30,active
+CUST-0488,CV Bina Raya Distribusi,E-commerce,Cirebon,2025-06-01,30,active
+CUST-0489,CV Bina Mandiri Kertas,Retail,Surabaya,2018-01-01,45,active
+CUST-0490,PT Mitra Agung Logam,Suku Cadang Otomotif,"Cikarang, Bekasi",2025-08-01,30,active
+CUST-0491,PT Cahaya Makmur Logam,Farmasi,Solo,2022-01-01,45,active
+CUST-0492,PT Sinar Sejahtera Distribusi,Tekstil,Cirebon,2026-09-01,30,active
+CUST-0493,PT Sinar Gemilang Logam,E-commerce,Solo,2026-10-01,45,inactive
+CUST-0494,PT Duta Sejahtera Pangan,Agribisnis,Semarang,2022-05-01,45,active
+CUST-0495,PT Fajar Perkasa,Suku Cadang Otomotif,Cirebon,2018-03-01,30,active
+CUST-0496,PT Anugerah Nusantara Retailindo,FMCG,Malang,2023-01-01,60,active
+CUST-0497,PT Bina Utama Pangan,Kimia,Bekasi,2024-09-01,30,active
+CUST-0498,PT Dwi Sejahtera Tekstil,Agribisnis,Palembang,2026-02-01,45,inactive
+CUST-0499,PT Cahaya Nusantara,E-commerce,Yogyakarta,2021-08-01,60,active
+CUST-0500,PT Bumi Abadi Plastik,Suku Cadang Otomotif,Solo,2025-01-01,45,active
+CUST-0501,PT Bina Bersama Baja,Suku Cadang Otomotif,Semarang,2025-11-01,30,active
+CUST-0502,CV Anugerah Sejahtera,Agribisnis,Karawang,2022-04-01,45,inactive
+CUST-0503,PT Harapan Kencana Food,Bahan Bangunan,Palembang,2019-03-01,60,active
+CUST-0504,CV Karya Gemilang Baja,Agribisnis,Karawang,2023-11-01,30,active
+CUST-0505,CV Mega Pratama,Bahan Bangunan,Karawang,2020-10-01,45,active
+CUST-0506,PT Jaya Sukses Distribusi,Farmasi,Solo,2023-04-01,45,inactive
+CUST-0507,PT Citra Abadi Elektrik,Elektronik,Malang,2018-06-01,30,active
+CUST-0508,PT Graha Utama Elektrik,Bahan Bangunan,Yogyakarta,2023-11-01,45,active
+CUST-0509,PT Mulia Indah Kemasan,Elektronik,Medan,2026-06-01,45,active
+CUST-0510,CV Dwi Gemilang Plastik,Retail,Palembang,2023-04-01,30,active
+CUST-0511,PT Sinar Pratama Plastik,Agribisnis,Jakarta,2023-04-01,30,active
+CUST-0512,CV Jaya Makmur Plastik,Suku Cadang Otomotif,Bandung,2022-09-01,30,active
+CUST-0513,PT Tri Gemala Kimia,Kimia,Denpasar,2025-05-01,45,active
+CUST-0514,PT Bina Kencana Elektrik,Suku Cadang Otomotif,"Cikarang, Bekasi",2023-05-01,30,active
+CUST-0515,PT Tunas Agung Plastik,E-commerce,Karawang,2020-11-01,30,active
+CUST-0516,PT Mulia Mandiri Retailindo,Tekstil,Medan,2018-08-01,30,active
+CUST-0517,CV Harapan Utama Plastik,FMCG,Denpasar,2025-06-01,60,active
+CUST-0518,CV Sentosa Sukses Niaga,FMCG,Cirebon,2020-08-01,30,active
+CUST-0519,PT Jaya Pratama Elektrik,E-commerce,Denpasar,2021-05-01,30,active
+CUST-0520,CV Bina Sukses Farma,E-commerce,Bandung,2019-12-01,45,active
+CUST-0521,CV Jaya Utama Baja,Tekstil,Bekasi,2018-08-01,45,active
+CUST-0522,PT Dwi Nusantara Kemasan,Suku Cadang Otomotif,Bandung,2018-04-01,30,active
+CUST-0523,PT Citra Sukses Niaga,Farmasi,Jakarta,2021-10-01,45,active
+CUST-0524,PT Prima Kencana Elektrik,Suku Cadang Otomotif,Jakarta,2026-07-01,30,active
+CUST-0525,CV Indo Persada Pangan,Tekstil,Malang,2026-07-01,45,active
+CUST-0526,PT Cahaya Abadi Kertas,Elektronik,"Cikarang, Bekasi",2025-02-01,30,active
+CUST-0527,PT Dwi Cemerlang Distribusi,Tekstil,"Cikarang, Bekasi",2026-06-01,45,active
+CUST-0528,PT Mitra Abadi Farma,FMCG,Semarang,2024-08-01,30,active
+CUST-0529,PT Jaya Raya Baja,Bahan Bangunan,"Cikarang, Bekasi",2022-03-01,45,active
+CUST-0530,PT Bina Utama Elektrik,Elektronik,Medan,2021-03-01,30,active
+CUST-0531,PT Bumi Gemilang Kemasan,Tekstil,Surabaya,2020-06-01,60,active
+CUST-0532,PT Bina Agung Baja,Elektronik,Jakarta,2022-03-01,45,active
+CUST-0533,PT Karya Persada Industri,Tekstil,Palembang,2024-08-01,45,active
+CUST-0534,PT Prima Gemala Distribusi,Farmasi,Palembang,2023-02-01,30,active
+CUST-0535,CV Mega Persada Baja,Kimia,Medan,2018-06-01,30,inactive
+CUST-0536,PT Surya Indah Elektrik,Tekstil,Palembang,2020-09-01,30,active
+CUST-0537,PT Bumi Persada Tekstil,Tekstil,Karawang,2023-03-01,30,active
+CUST-0538,PT Mega Sejahtera Tekstil,Kimia,Karawang,2024-08-01,30,active
+CUST-0539,PT Graha Perkasa Plastik,Kimia,Malang,2020-01-01,30,active
+CUST-0540,PT Sumber Gemilang,Elektronik,Palembang,2024-04-01,30,active
+CUST-0541,CV Duta Sukses Baja,Elektronik,Malang,2018-12-01,60,active
+CUST-0542,PT Anugerah Indah Distribusi,Retail,Bandung,2022-01-01,30,active
+CUST-0543,PT Bumi Agung Elektrik,Agribisnis,Denpasar,2024-03-01,45,active
+CUST-0544,PT Mega Makmur Kertas,Suku Cadang Otomotif,"Cikarang, Bekasi",2018-03-01,45,active
+CUST-0545,PT Bumi Bersama Elektrik,Retail,Surabaya,2025-08-01,60,active
+CUST-0546,PT Bina Sejahtera Baja,Suku Cadang Otomotif,Yogyakarta,2020-01-01,30,active
+CUST-0547,CV Indo Abadi Kemasan,Tekstil,Karawang,2026-08-01,45,inactive
+CUST-0548,PT Tri Gemala Food,Farmasi,Denpasar,2018-06-01,45,active
+CUST-0549,PT Anugerah Gemala Kertas,Bahan Bangunan,Cirebon,2026-12-01,30,inactive
+CUST-0550,PT Citra Agung Retailindo,Agribisnis,Tangerang,2026-06-01,30,inactive
+CUST-0551,PT Jaya Makmur Pangan,Retail,Medan,2021-06-01,60,active
+CUST-0552,PT Harapan Bersama Industri,E-commerce,Jakarta,2023-06-01,60,active
+CUST-0553,PT Panca Selaras Farma,Farmasi,Solo,2023-10-01,30,active
+CUST-0554,PT Surya Nusantara Kemasan,Bahan Bangunan,Malang,2020-03-01,60,active
+CUST-0555,PT Dwi Mandiri Plastik,Kimia,Bandung,2018-06-01,45,active
+CUST-0556,PT Tri Perkasa Elektrik,Kimia,Bekasi,2021-11-01,60,active
+CUST-0557,PT Mulia Nusantara Farma,Agribisnis,Cirebon,2024-10-01,45,active
+CUST-0558,CV Prima Utama Tekstil,Farmasi,Solo,2026-04-01,30,active
+CUST-0559,CV Surya Selaras Niaga,Bahan Bangunan,Semarang,2025-09-01,60,active
+CUST-0560,PT Panca Sejahtera Food,FMCG,Bandung,2018-04-01,60,active
+CUST-0561,PT Tunas Kencana Niaga,FMCG,Semarang,2021-01-01,45,active
+CUST-0562,PT Sentosa Bersama Industri,Farmasi,Semarang,2021-10-01,60,active
+CUST-0563,PT Surya Kencana Distribusi,Tekstil,Solo,2022-07-01,60,active
+CUST-0564,PT Graha Gemala Elektrik,Tekstil,Medan,2024-11-01,45,active
+CUST-0565,PT Bumi Kencana Food,Agribisnis,Cirebon,2020-07-01,45,active
+CUST-0566,PT Indo Selaras Kertas,FMCG,Medan,2018-12-01,45,active
+CUST-0567,CV Inti Lestari Kimia,Bahan Bangunan,Tangerang,2019-02-01,60,active
+CUST-0568,PT Inti Agung Baja,Elektronik,Semarang,2021-04-01,45,active
+CUST-0569,PT Indo Gemala Distribusi,FMCG,Bandung,2023-07-01,45,active
+CUST-0570,CV Fajar Cemerlang Plastik,FMCG,Bandung,2019-03-01,45,active
+CUST-0571,PT Anugerah Indah Niaga,Kimia,Medan,2023-01-01,30,active
+CUST-0572,CV Bina Gemala Niaga,Retail,Bekasi,2022-06-01,45,active
+CUST-0573,CV Bumi Sejahtera Logam,Farmasi,Malang,2024-07-01,45,active
+CUST-0574,PT Graha Mandiri Food,E-commerce,Solo,2023-01-01,30,active
+CUST-0575,PT Bina Utama Plastik,Farmasi,Denpasar,2026-04-01,60,active
+CUST-0576,PT Prima Indah Kertas,Retail,Surabaya,2025-10-01,45,active
+CUST-0577,PT Citra Utama Retailindo,Bahan Bangunan,Yogyakarta,2025-12-01,30,active
+CUST-0578,PT Graha Makmur Distribusi,FMCG,"Cikarang, Bekasi",2019-01-01,60,active
+CUST-0579,PT Sinar Gemilang Distribusi,Agribisnis,Malang,2022-09-01,60,active
+CUST-0580,PT Citra Selaras,Kimia,Palembang,2018-02-01,30,active
+CUST-0581,PT Bumi Gemala Kertas,Bahan Bangunan,Malang,2022-09-01,45,active
+CUST-0582,PT Mulia Sejahtera Elektrik,Bahan Bangunan,Jakarta,2025-08-01,45,active
+CUST-0583,PT Fajar Gemala Niaga,Tekstil,Surabaya,2025-10-01,60,active
+CUST-0584,PT Bina Sejahtera Kemasan,Farmasi,Denpasar,2020-06-01,45,active
+CUST-0585,PT Prima Cemerlang Elektrik,Retail,Tangerang,2018-08-01,45,inactive
+CUST-0586,PT Duta Indah Farma,Suku Cadang Otomotif,Malang,2026-09-01,60,active
+CUST-0587,PT Bumi Mandiri Kimia,Agribisnis,Tangerang,2019-09-01,45,active
+CUST-0588,PT Tunas Lestari Elektrik,Agribisnis,Surabaya,2025-05-01,30,active
+CUST-0589,PT Karya Mandiri Tekstil,Agribisnis,Bandung,2020-04-01,30,active
+CUST-0590,CV Bumi Makmur Distribusi,Bahan Bangunan,Denpasar,2026-11-01,30,active
+CUST-0591,PT Mulia Utama Logam,Suku Cadang Otomotif,Malang,2018-04-01,45,active
+CUST-0592,PT Sinar Indah Niaga,Farmasi,Yogyakarta,2020-08-01,60,active
+CUST-0593,PT Sinar Selaras Tekstil,Bahan Bangunan,Semarang,2019-03-01,45,active
+CUST-0594,PT Graha Perkasa Niaga,Bahan Bangunan,Tangerang,2022-12-01,60,active
+CUST-0595,PT Prima Utama Retailindo,Retail,Bandung,2022-12-01,60,active
+CUST-0596,CV Graha Lestari Baja,E-commerce,Karawang,2020-07-01,45,active
+CUST-0597,PT Graha Kencana Farma,Suku Cadang Otomotif,Denpasar,2020-02-01,45,active
+CUST-0598,CV Citra Raya Logam,Elektronik,Medan,2026-11-01,45,active
+CUST-0599,CV Sinar Gemilang Pangan,Suku Cadang Otomotif,Medan,2024-09-01,30,inactive
+CUST-0600,PT Sumber Sukses Logam,Elektronik,Palembang,2023-04-01,30,active

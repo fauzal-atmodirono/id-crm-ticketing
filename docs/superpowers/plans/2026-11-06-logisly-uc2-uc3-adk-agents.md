@@ -2,14 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Two demo agents built with Google ADK, deployed to Vertex AI Agent Engine and registered in Gemini Enterprise, which is the frontend.
+**Goal:** Two demo agents built with Google ADK, deployed as Cloud Run services (one per agent, exposed over A2A) and registered in Gemini Enterprise, which is the frontend.
 - **UC2 purchasing agent:** the user uploads quotation and tender files in the chat. Gemini reads them and records them through typed tools. Deterministic code compares the quotes against the pricing DB and business rules, and the agent recommends per lane.
 - **UC3 product manager agent:** the user uploads requirement sources. The agent drafts a PRD, checks consistency and capacity, and proposes and applies issue changes on a mock GitHub after the user approves.
 
 **Architecture:**
 - One uv project at `apps/logisly-agents/`, package `logisly_agents`.
 - Every number the agents report comes from deterministic Python tools: baselines, normalisation, flags, scores, capacity. The model reads the uploads, fills tool arguments, explains, and decides which tool to call.
-- All per-conversation state lives in ADK session state (`tool_context.state`), because Agent Engine instances are stateless. This covers recorded quotations, the mock GitHub working copy and saved documents. Each new chat starts clean.
+- All per-conversation state lives in ADK session state (`tool_context.state`), because Cloud Run instances are stateless. This covers recorded quotations, the mock GitHub working copy and saved documents. Each new chat starts clean.
 - Reference data is read-only and bundled with the deployment: pricing DB, business rules, templates, conventions, team, issue snapshot.
 - Uploaded Excel, Word, email and text files are converted to text parts by a `before_model_callback`, because Gemini reads PDF and images natively but not xlsx or docx.
 - Human approval is conversational: the agent shows what it will write and calls a write tool only after the user agrees. ADK's `require_confirmation` stays available behind a setting for `adk web` rehearsals. Gemini Enterprise may not render ADK confirmation events.
@@ -18,7 +18,7 @@
 - Python 3.13 via uv, `google-adk==2.2.0` (the version the backend locks), `google-genai`, `pydantic-settings`.
 - Libraries: `python-docx`, `openpyxl`, `pyyaml`, sqlite3.
 - Dev tools: pytest, ruff.
-- Deployment: Vertex AI Agent Engine, then a Gemini Enterprise registration.
+- Deployment: Cloud Run (one service per agent, ADK `to_a2a` app, in-memory sessions on a single instance), then a Gemini Enterprise registration.
 
 **Spec:** there is no separate spec; the user skipped the design questions. The decisions are in the "Design" section. The data contract is `demo-data/logisly/README.md`, and the answer keys are `demo-data/logisly/uc2/expected/` and `demo-data/logisly/uc3/expected/`.
 
@@ -388,26 +388,34 @@
   - Assert the turn-1 text mentions `"18 Desember"` and `"#131"`.
 - [ ] **Step 3:** Implement; unit tests and ruff pass; the live test passes. Commit `feat(logisly-agents): UC3 product manager agent`.
 
-### Task 10: Deploy to Agent Engine and run guide
+### Task 10: Deploy to Cloud Run and run guide
 
 **Files:**
-- Create: `apps/logisly-agents/deploy.py`
-- Modify: `apps/logisly-agents/README.md`, `justfile`, `demo-data/logisly/README.md` (one line pointing to the agents)
+- Create: `apps/logisly-agents/Dockerfile`, `apps/logisly-agents/serve.py`, `apps/logisly-agents/deploy.sh`
+- Modify: `apps/logisly-agents/README.md`, `justfile`, `pyproject.toml` (add the ADK A2A extra if `to_a2a` needs it), `demo-data/logisly/README.md` (one line pointing to the agents)
 
 **Interfaces:**
-- Produces: `python deploy.py --agent uc2|uc3 [--project lv-playground-genai] [--region us-central1] [--staging-bucket gs://...]`:
-  - It copies the needed demo data into `logisly_agents/data/`: `uc2/pricing/pricing.db`, `uc2/business_rules.yaml`, `uc3/templates/`, `uc3/github/`, `uc3/team/`.
-  - It deploys with the Vertex AI SDK Agent Engines API (`vertexai.agent_engines.create` with `AdkApp`; confirm the current call in the installed SDK). The agent runs with model location `global`.
-  - It prints the reasoning engine resource name.
-  - It never registers in Gemini Enterprise by itself. The README gives the registration command with placeholders for the Gemini Enterprise app ID, which the user supplies.
+- Produces: `serve.py`, which picks the agent from env `LOGISLY_AGENT=uc2|uc3` and builds an A2A ASGI app with ADK's `to_a2a(root_agent, ...)`. Check the import path and arguments in ADK 2.2.0 (`google.adk.a2a.utils.agent_to_a2a`); the agent card URL comes from env `LOGISLY_PUBLIC_URL`. It serves with uvicorn on `$PORT`. A `GET /healthz` returning `{"ok": true}` is added if `to_a2a` allows extra routes; otherwise skip it.
+- Produces: a `Dockerfile` based on `python:3.13-slim` with uv. It copies the project and the needed demo data into `logisly_agents/data/` at build time: `uc2/pricing/pricing.db`, `uc2/business_rules.yaml`, `uc3/templates/`, `uc3/github/` and `uc3/team/`. `Settings` already prefers that folder. Run `uv sync --frozen --no-dev`, and use `CMD` uvicorn via `serve.py`.
+- Produces: `deploy.sh <uc2|uc3>`, which runs `gcloud run deploy logisly-<agent>` with these settings:
+  - `--source .` (build context `apps/logisly-agents`; the script first stages `demo-data/logisly` into the build context, because the Dockerfile cannot reach outside it)
+  - project `lv-playground-genai`, region `asia-southeast2`
+  - env `LOGISLY_AGENT`, the GOOGLE_* defaults and `LOGISLY_PUBLIC_URL` (the service URL, set in a second `gcloud run services update` once the URL is known)
+  - `--min-instances=1 --max-instances=1`: session state is in memory, so one warm instance keeps a demo chat consistent
+  - `--no-allow-unauthenticated`: Gemini Enterprise access is granted in the registration step, never public
+  - the runtime service account needs `roles/aiplatform.user` to call Gemini. Use the default compute service account if it already has it, and print the `gcloud projects add-iam-policy-binding` command instead of running it when it does not.
+- Never registers in Gemini Enterprise by itself. The README gives the registration steps (A2A agent card URL and auth) with placeholders for the Gemini Enterprise app ID, which the user supplies.
 
 - [ ] **Step 1:** Run `uv run adk web adk_apps --port 8077` in the background; `curl -s localhost:8077/list-apps` lists `uc2_purchasing` and `uc3_product`. Stop it.
-- [ ] **Step 2:** Write `deploy.py` and the `just deploy agent=uc2` target. Run `just deploy agent=uc2` once. The deployed engine answers a smoke query ("Halo, apa yang bisa kamu bantu?") through `remote_app.stream_query`. Record the resource name in the README.
-- [ ] **Step 3:** Write the README. It covers:
-  - prerequisites: ADC, and a staging bucket
-  - `just sync` / `just web` / `just deploy`
+- [ ] **Step 2:** Run `LOGISLY_AGENT=uc2 uv run python serve.py` locally on port 8078; `curl -s localhost:8078/.well-known/agent-card.json` (or the path ADK 2.2.0 uses) returns a card naming `logisly_purchasing`. Repeat for uc3. Build the image locally with `docker build` to confirm the Dockerfile works.
+- [ ] **Step 3:** Run `./deploy.sh uc2` and `./deploy.sh uc3`. Each service's agent card is reachable with `curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" <url>/.well-known/agent-card.json`. Send one A2A message ("Halo, apa yang bisa kamu bantu?") and record that it gets a reply. Record both service URLs in the README.
+- [ ] **Step 4:** Write the README. It covers:
+  - prerequisites: ADC, and gcloud for project `lv-playground-genai`
+  - `just sync` / `just web` / `just deploy agent=uc2`
   - the demo script for each agent, in Bahasa Indonesia: which files to upload in which order, and the follow-up prompts
-  - registering in Gemini Enterprise, with placeholders
+  - registering both services in Gemini Enterprise as A2A agents, with placeholders
   - the env vars table
-  - a known risk: whether Gemini Enterprise passes uploaded xlsx and docx files through to the agent must be checked after registration. The fallback is to upload PDFs, or to paste the text.
-- [ ] **Step 4:** Run `uv run pytest -q`, `uv run pytest -q -m live` and `uv run ruff check .`. Paste the summary lines into the commit body. Commit `feat(logisly-agents): Agent Engine deploy and run guide`.
+  - known risks:
+    - whether Gemini Enterprise passes uploaded xlsx and docx files through to the agent must be checked after registration; the fallback is to upload PDFs, or to paste the text
+    - sessions are in memory on one instance, so a redeploy or restart clears demo chats
+- [ ] **Step 5:** Run `uv run pytest -q`, `uv run pytest -q -m live` and `uv run ruff check .`. Paste the summary lines into the commit body. Commit `feat(logisly-agents): Cloud Run A2A deploy and run guide`.

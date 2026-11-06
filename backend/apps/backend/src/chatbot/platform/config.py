@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     vertex_project_id: str | None = None
     vertex_location: str = "us-central1"
     gemini_model: str = "gemini-2.5-flash"
+    # Which conversational persona /chat/turn runs: "proton" (the original
+    # customer-support assistant, default) or "logisly" (truck-driver trip
+    # follow-up demo). Swaps the base prompt, the media instruction and the
+    # tool set together; see prompts.instructions_for_persona.
+    agent_persona: Literal["proton", "logisly"] = "proton"
 
     # Vertex AI Search settings
     vertex_search_project_id: str = ""

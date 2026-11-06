@@ -11,7 +11,9 @@ from google.genai import types
 from chatbot.features.chat.case_taxonomy import build_case_taxonomy
 from chatbot.features.chat.option_lists import build_option_list
 from chatbot.features.chat.product_cleanup import clean_description, clean_title, dedupe_cards
-from chatbot.features.chat.prompts import AGENT_INSTRUCTION, SUMMARIZER_INSTRUCTION
+from chatbot.features.chat.prompts import SUMMARIZER_INSTRUCTION, instructions_for_persona
+from chatbot.features.logisly.trips import TRIPS
+from chatbot.features.logisly.trips import describe as describe_trip
 
 if TYPE_CHECKING:
     from chatbot.features.chat.ports import KnowledgePort, TicketingPort
@@ -25,6 +27,7 @@ def build_ai_agent(  # noqa: PLR0915 — one builder, many tool closures
     _ticketing_port: TicketingPort,
     knowledge_port: KnowledgePort,
     instruction_provider=None,
+    persona: str = "proton",
 ) -> Agent:
     """Builds the main conversational Support Agent with registered tools.
 
@@ -304,21 +307,62 @@ def build_ai_agent(  # noqa: PLR0915 — one builder, many tool closures
         tool_context.state["ticket_reason"] = reason
         return f"[internal] conversation flagged for ticket (Reason: {reason})."
 
-    return Agent(
-        name="support_agent",
-        model=settings.gemini_model,
-        instruction=instruction_provider or AGENT_INSTRUCTION,
-        generate_content_config=types.GenerateContentConfig(
-            temperature=0.3,
-        ),
-        tools=[
+    async def get_trip_tool(order_id: str) -> str:
+        """Look up a Logisly trip by its order number.
+
+        Args:
+            order_id: The order number, e.g. LGS-24017.
+        """
+        trip = TRIPS.get(order_id)
+        if trip is None:
+            return f"NOT_FOUND: no trip with order number {order_id}."
+        return describe_trip(trip)
+
+    async def update_trip_status_tool(
+        tool_context: ToolContext, order_id: str, status: str, note: str
+    ) -> str:
+        """Record what the driver reported on the trip.
+
+        Args:
+            tool_context: Context injected by the ADK runner.
+            order_id: The order number, e.g. LGS-24017.
+            status: One of on_trip, delayed, issue, arrived, delivered.
+            note: One sentence in Bahasa Indonesia describing what happened.
+        """
+        trip = TRIPS.update(order_id, status, note)
+        if trip is None:
+            return f"NOT_FOUND: no trip with order number {order_id}."
+        tool_context.state["order_id"] = trip["order_id"]
+        tool_context.state["trip_status"] = trip["status"]
+        _log.info("logisly_trip_updated", order_id=trip["order_id"], status=status, note=note)
+        return f"[internal] recorded on {trip['order_id']}: {status}."
+
+    if persona == "logisly":
+        tools = [
+            get_trip_tool,
+            update_trip_status_tool,
+            classify_ticket_tool,
+            emit_handoff_tool,
+            flag_for_ticket_tool,
+        ]
+    else:
+        tools = [
             search_kb_tool,
             emit_handoff_tool,
             flag_for_ticket_tool,
             show_models_tool,
             classify_ticket_tool,
             book_test_drive_tool,
-        ],
+        ]
+
+    return Agent(
+        name="support_agent",
+        model=settings.gemini_model,
+        instruction=instruction_provider or instructions_for_persona(persona)[0],
+        generate_content_config=types.GenerateContentConfig(
+            temperature=0.3,
+        ),
+        tools=tools,
     )
 
 

@@ -43,7 +43,12 @@ from chatbot.features.chat.ports import (
     TextToSpeechPort,
     TicketingPort,
 )
-from chatbot.features.chat.prompts import AGENT_INSTRUCTION, build_agent_instruction
+from chatbot.features.chat.prompts import (
+    AGENT_INSTRUCTION,
+    DEFAULT_MEDIA_DIAGNOSIS_INSTRUCTION,
+    build_agent_instruction,
+    instructions_for_persona,
+)
 from chatbot.features.metrics.events import build_turn_event
 from chatbot.features.metrics.mapping import CATEGORY_TO_DIVISION
 from chatbot.platform.metered_genai import (
@@ -189,6 +194,11 @@ def _media_kinds_in_user_content(ctx: Any) -> tuple[bool, bool]:
 class OrchestratorService:
     """Core orchestrator driving conversational turns for both Chatbot and Voicebot."""
 
+    # Proton defaults at class level so an instance built without __init__
+    # (several tests do) still resolves the persona attributes.
+    _base_instruction: str = AGENT_INSTRUCTION
+    _media_instruction: str = DEFAULT_MEDIA_DIAGNOSIS_INSTRUCTION
+
     def __init__(
         self,
         settings: Settings,
@@ -228,6 +238,12 @@ class OrchestratorService:
         # if anything goes wrong, so a failure can only ever cost a tenant the
         # new per-turn sections, never today's wording.
         self._instruction_by_session: dict[str, str] = {}
+        # The persona's base prompt and media wording (Proton unless
+        # AGENT_PERSONA says otherwise). Every former AGENT_INSTRUCTION use in
+        # this class reads these, so the fallbacks stay on the same persona.
+        self._base_instruction, self._media_instruction = instructions_for_persona(
+            settings.agent_persona
+        )
 
         # session_id -> the assistant resolved for the most recent turn (or
         # None). The per-turn instruction composer needs the resolved persona
@@ -243,6 +259,7 @@ class OrchestratorService:
             ticketing_port,
             knowledge_port,
             instruction_provider=self._chat_instruction_provider,
+            persona=settings.agent_persona,
         )
         self._summarizer_agent = build_summarizer_agent(settings)
 
@@ -315,8 +332,8 @@ class OrchestratorService:
         try:
             session_id = ctx.session.id
         except Exception:
-            return AGENT_INSTRUCTION
-        registered = self._instruction_by_session.get(session_id, AGENT_INSTRUCTION)
+            return self._base_instruction
+        registered = self._instruction_by_session.get(session_id, self._base_instruction)
         try:
             return self._compose_turn_instruction(session_id, registered, ctx)
         except Exception as e:
@@ -382,6 +399,8 @@ class OrchestratorService:
             has_image=has_image,
             has_video=has_video,
             assistant=assistant,
+            base=self._base_instruction,
+            default_media_instruction=self._media_instruction,
         )
         return compose_chat_agent_instruction(
             base,
@@ -469,8 +488,8 @@ class OrchestratorService:
                 self._assistant_by_session[session_id] = assistant
             else:
                 self._assistant_by_session.pop(session_id, None)
-            composed = compose_chat_agent_instruction(AGENT_INSTRUCTION, assistant)
-            if composed != AGENT_INSTRUCTION:
+            composed = compose_chat_agent_instruction(self._base_instruction, assistant)
+            if composed != self._base_instruction:
                 self._instruction_by_session[session_id] = composed
             else:
                 self._instruction_by_session.pop(session_id, None)

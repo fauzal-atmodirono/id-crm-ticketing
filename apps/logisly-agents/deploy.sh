@@ -14,12 +14,12 @@ DATA="$HERE/../../demo-data/logisly"
 
 # Stage the demo data into the build context (the Dockerfile cannot reach outside it).
 STAGE="$HERE/.stage/data"
+trap 'rm -rf "$HERE/.stage"' EXIT
 rm -rf "$HERE/.stage"
 mkdir -p "$STAGE/uc2/pricing" "$STAGE/uc3"
 cp "$DATA/uc2/pricing/pricing.db" "$STAGE/uc2/pricing/"
 cp "$DATA/uc2/business_rules.yaml" "$STAGE/uc2/"
 cp -R "$DATA/uc3/templates" "$DATA/uc3/github" "$DATA/uc3/team" "$STAGE/uc3/"
-trap 'rm -rf "$HERE/.stage"' EXIT
 
 cd "$HERE"
 gcloud run deploy "$SERVICE" \

@@ -6,6 +6,7 @@ into the agent card (the Cloud Run service URL); it defaults to localhost.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from urllib.parse import urlparse
 
@@ -28,6 +29,28 @@ def _root_agent(which: str):
     return root_agent
 
 
+INPUT_MODES = [
+    "text/plain",
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "message/rfc822",
+    "image/png",
+    "image/jpeg",
+]
+
+
+def build_card(agent, rpc_url: str):
+    """ADK's builder hard-codes text/plain input; advertise the uploads users actually send."""
+    from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
+
+    card = asyncio.run(AgentCardBuilder(agent=agent, rpc_url=rpc_url).build())
+    card.default_input_modes = list(INPUT_MODES)
+    for skill in card.skills:
+        skill.input_modes = list(INPUT_MODES)
+    return card
+
+
 def build_app():
     from google.adk.a2a.utils.agent_to_a2a import to_a2a
 
@@ -37,7 +60,10 @@ def build_app():
     protocol = public.scheme or "http"
     host = public.hostname or "localhost"
     public_port = public.port or (443 if protocol == "https" else 80)
-    app = to_a2a(_root_agent(which), host=host, port=public_port, protocol=protocol)
+    agent = _root_agent(which)
+    rpc_url = f"{protocol}://{host}:{public_port}/"
+    card = build_card(agent, rpc_url)
+    app = to_a2a(agent, host=host, port=public_port, protocol=protocol, agent_card=card)
 
     async def healthz(_: Request) -> JSONResponse:
         return JSONResponse({"ok": True})

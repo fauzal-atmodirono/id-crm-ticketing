@@ -110,7 +110,7 @@ Files are in `demo-data/logisly/uc3/sources/`.
 
 ## Known risks
 
-- Whether Gemini Enterprise passes uploaded xlsx and docx files through to a custom A2A agent must be checked right after registration. The agent card currently advertises only `text/plain` input modes; if files do not arrive, widen `defaultInputModes` through a custom card in `serve.py`. Fallbacks: upload PDFs, or paste the text.
+- The agent card advertises PDF, xlsx, docx, eml, PNG and JPEG input (see `INPUT_MODES` in `serve.py`). Whether Gemini Enterprise actually passes uploaded files through to a custom A2A agent still has to be checked right after registration. Fallbacks if it does not: upload PDFs, or paste the text.
 - Sessions, tracker state and saved documents are in memory on a single instance (`--max-instances=1`). A redeploy, restart or scale-to-zero clears demo chats.
 - `to_a2a` is marked experimental in ADK 2.2.0 and needs `google-adk[a2a]` plus `a2a-sdk[http-server]`.
 - The services are private. Gemini Enterprise needs `roles/run.invoker` before it can call them.

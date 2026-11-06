@@ -151,6 +151,8 @@ async def start_call(
         "To": f"client:{DRIVER_IDENTITY}",
         "From": "client:logisly-operations",
         "Twiml": stream_twiml(public_wss_url(settings), session_id),
+        # Ring time before Twilio gives up; ladder.watch_call waits a margin past it.
+        "Timeout": "25",
     }
     auth = (settings.twilio_account_sid, settings.twilio_auth_token)
     if client is not None:

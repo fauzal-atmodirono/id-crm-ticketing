@@ -65,6 +65,7 @@ def _settings(**over):
         "logisly_demo_driver_phone": "",
         "logisly_driver_inbox_id": 0,
         "logisly_app_inbox_id": 0,
+        "logisly_no_reply_call_seconds": 0,
         "chatwoot_api_url": "http://cw:3000",
         "chatwoot_account_id": 1,
         "chatwoot_api_token": "t",

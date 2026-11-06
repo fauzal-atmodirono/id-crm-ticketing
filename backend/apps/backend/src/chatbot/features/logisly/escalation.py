@@ -37,6 +37,11 @@ REASONS: dict[str, tuple[str, str, str]] = {
     "cargo_issue": ("cargo-issue", "high", "Muatan rusak / bermasalah"),
     "trip_blocked": ("trip-blocked", "high", "Truk tidak bisa melanjutkan perjalanan"),
     "help_request": ("driver-request", "medium", "Driver minta dihubungi"),
+    "driver_unreachable": (
+        "driver-unreachable",
+        "high",
+        "Driver tidak bisa dihubungi (chat dan telepon)",
+    ),
 }
 ESCALATION_LABEL = "logisly-escalation"
 

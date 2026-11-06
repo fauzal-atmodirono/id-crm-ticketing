@@ -55,6 +55,7 @@ CONSOLE_HTML = """<!doctype html>
      Channel: <select id="channel"><option value="app">Driver app</option><option value="whatsapp">WhatsApp</option></select></p>
 </header>
 <main>
+  <div id="ladder" class="meta"></div>
   <div id="msg"></div>
   <div id="trips"></div>
 </main>
@@ -70,6 +71,9 @@ async function load() {
   if (!r.ok) { msg.textContent = r.status === 401 ? "Open this page with ?key=<backend API key>." : "Could not load trips."; return; }
   const data = await r.json();
   anomalies = data.anomalies;
+  document.getElementById("ladder").textContent = data.no_reply_call_seconds
+    ? `No reply in ${data.no_reply_call_seconds}s → the agent calls the driver app → not answered → ticket for operations.`
+    : "Automatic call is off.";
   box.innerHTML = data.trips.map(t => `
     <div class="trip">
       <div>

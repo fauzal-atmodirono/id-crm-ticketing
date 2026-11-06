@@ -26,6 +26,8 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from chatbot.features.chat.phone.gemini_live import connect_live
+from chatbot.features.logisly import call as call_module
+from chatbot.features.logisly import ladder
 from chatbot.features.logisly.call_router import build_call_router
 from chatbot.features.logisly.channel import ChatwootDriverChannel
 from chatbot.features.logisly.console import CONSOLE_HTML
@@ -71,7 +73,9 @@ def build_logisly_router(
     router = APIRouter()
     driver_channel = channel or ChatwootDriverChannel(settings)
     _authorize = make_authorizer(settings)
-    router.include_router(build_call_router(settings, _authorize, channel, live_session_factory))
+    router.include_router(
+        build_call_router(settings, _authorize, driver_channel, live_session_factory)
+    )
     router.include_router(build_driver_chat_router(settings, _authorize, driver_channel))
 
     @router.get("/logisly/console", response_class=HTMLResponse)
@@ -84,6 +88,7 @@ def build_logisly_router(
         return {
             "trips": list(TRIPS.trips.values()),
             "anomalies": {k: v["label"] for k, v in ANOMALIES.items()},
+            "no_reply_call_seconds": settings.logisly_no_reply_call_seconds,
         }
 
     @router.post("/logisly/anomaly")
@@ -114,7 +119,23 @@ def build_logisly_router(
                 "logisly_anomaly_chatwoot_failed", order_id=trip["order_id"], error=str(exc)
             )
             raise HTTPException(status_code=502, detail="Chatwoot call failed") from exc
-        register_session(f"crm-{conversation_id}", trip["order_id"], body.kind, opening)
+        session_id = f"crm-{conversation_id}"
+        register_session(session_id, trip["order_id"], body.kind, opening)
+        if (
+            which == "app"
+            and settings.logisly_no_reply_call_seconds > 0
+            and settings.twilio_webhook_base_url
+        ):
+            # No reply in time -> the agent calls the driver app (ladder.py).
+            ladder.spawn(
+                ladder.run_ladder(
+                    settings,
+                    driver_channel,
+                    session_id,
+                    call_module.start_call,
+                    settings.logisly_no_reply_call_seconds,
+                )
+            )
         TRIPS.update(trip["order_id"], f"alert:{body.kind}", render(anomaly["event"], trip))
         _log.info(
             "logisly_anomaly_raised",

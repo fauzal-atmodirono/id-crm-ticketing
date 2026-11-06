@@ -37,7 +37,7 @@ These live in the generator rather than in a hand-edited section of the document
 
 The conversational AI backend: Gemini/Vertex, the knowledge base, metrics, RBAC, alerting and every admin surface.
 
-Source: `backend/apps/backend/src/chatbot/platform/config.py` — 241 settings.
+Source: `backend/apps/backend/src/chatbot/platform/config.py` — 242 settings.
 
 ### General
 
@@ -59,6 +59,7 @@ Source: `backend/apps/backend/src/chatbot/platform/config.py` — 241 settings.
 | `LOGISLY_DEMO_DRIVER_PHONE` | `str` | `""` (blank) | Content or identifier used in customer-visible output. | Tenant administrator | `example.env` | Logisly demo tracking simulator (mounted only when agent_persona is "logisly"). One WhatsApp number plays every driver in the demo; the Chatwoot inbox is the Twilio WhatsApp inbox the driver agent answers on. |
 | `LOGISLY_DRIVER_INBOX_ID` | `int` | `0` | Tuning. Moves a threshold, budget or volume; no schema effect, but a value outside its intended range degrades quietly rather than failing. | Tenant administrator | `example.env` | _(no comment in source)_ |
 | `LOGISLY_APP_INBOX_ID` | `int` | `0` | Tuning. Moves a threshold, budget or volume; no schema effect, but a value outside its intended range degrades quietly rather than failing. | Tenant administrator | `example.env` | The mock driver app's Chatwoot API inbox (0 = app channel off, WhatsApp only). |
+| `LOGISLY_NO_REPLY_CALL_SECONDS` | `int` | `60` | Tuning. Moves a threshold, budget or volume; no schema effect, but a value outside its intended range degrades quietly rather than failing. | Tenant administrator | `example.env` | Follow-up ladder: seconds without a driver reply before the agent calls the driver app (0 = never call automatically). |
 | `VERTEX_SEARCH_PROJECT_ID` | `str` | `""` (blank) | Content or identifier used in customer-visible output. | Tenant administrator | `example.env` | Vertex AI Search settings |
 | `VERTEX_SEARCH_LOCATION` | `str` | `'global'` | Content or identifier used in customer-visible output. | Tenant administrator | `example.env` | _(no comment in source)_ |
 | `VERTEX_SEARCH_DATA_STORE_ID` | `str` | `'proton-kb'` | Content or identifier used in customer-visible output. | Tenant administrator | `example.env` | _(no comment in source)_ |
@@ -410,7 +411,7 @@ Every row below is set in **neither** `example.env` nor either compose file. It 
 
 **A row here is not automatically a bug.** Many are internal tunables no tenant should override. A row *is* a bug in two cases: when it is marked `required` (the service will not boot and nothing tells the operator which variable is missing), and when it gates a feature the client has been told they can enable — which is precisely how a feature ends up correct, tested and unreachable, nine times in this programme so far.
 
-11 of 295 settings are set nowhere but in code.
+11 of 296 settings are set nowhere but in code.
 
 | Env var | Service | Boot |
 |---|---|---|
@@ -438,7 +439,7 @@ Exempt from the check above, with the reason:
 
 These are read by Docker Compose, Caddy, Chatwoot or the provisioning scripts rather than by either `Settings` class, so they have no row above. They are listed because an operator editing `example.env` cannot otherwise tell the two kinds apart, and because an entry here that nothing reads is dead configuration.
 
-17 of 179 entries.
+17 of 180 entries.
 
 - `TENANT`
 - `PUBLIC_IP`

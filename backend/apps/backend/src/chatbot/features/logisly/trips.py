@@ -165,7 +165,7 @@ def render(template: str, trip: dict[str, Any]) -> str:
 
 
 # session id ("crm-<chatwoot conversation id>") -> what the agent opened it about.
-ACTIVE_SESSIONS: dict[str, dict[str, str]] = {}
+ACTIVE_SESSIONS: dict[str, dict[str, Any]] = {}
 
 
 def register_session(session_id: str, order_id: str, anomaly: str, opening: str) -> None:

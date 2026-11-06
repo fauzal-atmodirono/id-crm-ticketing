@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     logisly_driver_inbox_id: int = 0
     # The mock driver app's Chatwoot API inbox (0 = app channel off, WhatsApp only).
     logisly_app_inbox_id: int = 0
+    # Follow-up ladder: seconds without a driver reply before the agent calls
+    # the driver app (0 = never call automatically).
+    logisly_no_reply_call_seconds: int = 60
 
     # Vertex AI Search settings
     vertex_search_project_id: str = ""

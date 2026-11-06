@@ -19,6 +19,7 @@ from twilio.jwt.access_token import AccessToken
 from twilio.jwt.access_token.grants import VoiceGrant
 
 from chatbot.features.logisly import call as call_module
+from chatbot.features.logisly import ladder
 from chatbot.features.logisly.call import CALL_TOOLS, DRIVER_IDENTITY, LogislyCallBridge
 from chatbot.features.logisly.driver_page import DRIVER_HTML
 from chatbot.features.logisly.trips import ACTIVE_SESSIONS, TRIPS
@@ -73,6 +74,7 @@ async def run_call_stream(
             _log.warning("logisly_call_unknown_session", session_id=session_id)
             await websocket.close()
             return
+        ladder.mark_connected(session_id)
         async with live_session_factory(
             settings, call_module.call_instruction(session_id), CALL_TOOLS
         ) as live:
@@ -134,11 +136,12 @@ def build_call_router(
         if not settings.twilio_webhook_base_url:
             raise HTTPException(status_code=503, detail="TWILIO_WEBHOOK_BASE_URL not configured")
         try:
-            call_sid = await call_module.start_call(settings, session_id)
+            call_sid = await ladder.place_call(
+                settings, channel, session_id, call_module.start_call
+            )
         except httpx.HTTPError as exc:
             _log.warning("logisly_call_start_failed", order_id=trip["order_id"], error=str(exc))
             raise HTTPException(status_code=502, detail="Twilio call failed") from exc
-        TRIPS.update(trip["order_id"], "alert:call", "Telepon otomatis ke driver")
         _log.info(
             "logisly_call_started",
             order_id=trip["order_id"],

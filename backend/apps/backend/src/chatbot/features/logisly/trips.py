@@ -108,3 +108,82 @@ def describe(trip: dict[str, Any]) -> str:
 
 
 TRIPS = TripStore.seeded()
+
+
+# ---------------------------------------------------------------------------
+# Anomalies the simulated tracking system can raise, and the conversation
+# context the driver agent is given for a conversation it opened.
+# ---------------------------------------------------------------------------
+
+ANOMALIES: dict[str, dict[str, str]] = {
+    "gps_stop": {
+        "label": "Truk berhenti lama",
+        "event": "GPS: truk berhenti lebih dari 40 menit",
+        "opening": (
+            "Halo {driver}, ini Logisly. Truk {plate} untuk order {order_id} terpantau "
+            "berhenti sekitar 40 menit di sekitar {milestone}. Apakah ada kendala, Pak?"
+        ),
+    },
+    "late_milestone": {
+        "label": "Terlambat dari jadwal",
+        "event": "Milestone: belum tiba sesuai ETA {eta}",
+        "opening": (
+            "Halo {driver}, ini Logisly. Order {order_id} ({origin} ke {destination}) "
+            "belum sampai sesuai jadwal ETA {eta}. Boleh info posisi Bapak sekarang dan "
+            "perkiraan tibanya, Pak?"
+        ),
+    },
+    "no_pod": {
+        "label": "Bukti serah terima belum ada",
+        "event": "POD: bukti serah terima belum diterima",
+        "opening": (
+            "Halo {driver}, ini Logisly. Order {order_id} sudah tercatat tiba di "
+            "{destination}, tapi bukti serah terima (POD) belum kami terima. Mohon kirim "
+            "foto surat jalan yang sudah ditandatangani penerima ya, Pak."
+        ),
+    },
+}
+
+
+def render(template: str, trip: dict[str, Any]) -> str:
+    return template.format(
+        driver=trip["driver_name"],
+        plate=trip["plate"],
+        order_id=trip["order_id"],
+        milestone=trip["milestone"],
+        eta=trip["eta"],
+        origin=trip["origin"],
+        destination=trip["destination"],
+    )
+
+
+# session id ("crm-<chatwoot conversation id>") -> what the agent opened it about.
+ACTIVE_SESSIONS: dict[str, dict[str, str]] = {}
+
+
+def register_session(session_id: str, order_id: str, anomaly: str, opening: str) -> None:
+    ACTIVE_SESSIONS[session_id] = {"order_id": order_id, "anomaly": anomaly, "opening": opening}
+
+
+def context_for_session(session_id: str) -> str:
+    """Instruction section for a conversation the agent itself started.
+
+    The opening WhatsApp message is posted through Chatwoot, so it never passes
+    through the model; without this section the agent would not know which
+    trip the driver is answering about and would ask for the order number.
+    Empty for a conversation the driver started.
+    """
+    active = ACTIVE_SESSIONS.get(session_id)
+    if not active:
+        return ""
+    trip = TRIPS.get(active["order_id"])
+    if trip is None:
+        return ""
+    return (
+        "## This conversation\n"
+        "You started this conversation because the tracking system raised an alert "
+        f"({ANOMALIES[active['anomaly']]['label']}). You already sent the driver this "
+        f"WhatsApp message:\n\"{active['opening']}\"\n"
+        "The driver's messages are replies to it. Do not ask for the order number.\n\n"
+        f"Trip:\n{describe(trip)}\n"
+    )

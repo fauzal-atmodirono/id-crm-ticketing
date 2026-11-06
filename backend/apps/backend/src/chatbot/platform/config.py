@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # of the fixed message when present, so the acknowledgement names what was
     # reported ("the damaged cargo has been reported…").
     handoff_return_ai_reply: bool = False
+    # Logisly demo tracking simulator (mounted only when agent_persona is
+    # "logisly"). One WhatsApp number plays every driver in the demo; the
+    # Chatwoot inbox is the Twilio WhatsApp inbox the driver agent answers on.
+    logisly_demo_driver_phone: str = ""
+    logisly_driver_inbox_id: int = 0
 
     # Vertex AI Search settings
     vertex_search_project_id: str = ""

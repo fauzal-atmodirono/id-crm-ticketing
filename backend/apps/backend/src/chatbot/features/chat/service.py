@@ -335,14 +335,29 @@ class OrchestratorService:
             return self._base_instruction
         registered = self._instruction_by_session.get(session_id, self._base_instruction)
         try:
-            return self._compose_turn_instruction(session_id, registered, ctx)
+            composed = self._compose_turn_instruction(session_id, registered, ctx)
         except Exception as e:
             _log.warning(
                 "chat_turn_instruction_composition_failed",
                 session_id=session_id,
                 error=str(e),
             )
-            return registered
+            composed = registered
+        return self._with_trip_context(session_id, composed)
+
+    def _with_trip_context(self, session_id: str, instruction: str) -> str:
+        """Logisly persona only: append the trip a tracking alert opened this
+        conversation about (see features/logisly/trips.context_for_session).
+        Any other persona, or a driver-started conversation, is unchanged."""
+        if getattr(getattr(self, "_settings", None), "agent_persona", "proton") != "logisly":
+            return instruction
+        try:
+            from chatbot.features.logisly.trips import context_for_session
+
+            extra = context_for_session(session_id)
+        except Exception:
+            return instruction
+        return f"{instruction}\n\n{extra}" if extra else instruction
 
     def _compose_turn_instruction(self, session_id: str, registered: str, ctx: Any) -> str:
         """Layer P7's per-request sections onto the persona-only instruction.

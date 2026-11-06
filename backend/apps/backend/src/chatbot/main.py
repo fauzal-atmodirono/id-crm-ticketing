@@ -867,6 +867,12 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # for the Customer 360 router) can check availability without a
     # NameError when RSA is disabled.
     rsa_repo = None
+    # Logisly tracking simulator: only for the Logisly driver persona.
+    if settings.agent_persona == "logisly":
+        from chatbot.features.logisly.router import build_logisly_router
+
+        app.include_router(build_logisly_router(settings))
+
     if settings.rsa_enabled and settings.rsa_database_url:
         from chatbot.features.rsa.rsa_db import build_engine as build_rsa_engine
         from chatbot.features.rsa.rsa_db import build_session_maker as build_rsa_session_maker

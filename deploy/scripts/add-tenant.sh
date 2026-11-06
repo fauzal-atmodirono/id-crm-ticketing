@@ -221,7 +221,7 @@ http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io {
 	# happened to /alerts/* on 2026-08-11 -- patch 0057's preferences page was
 	# unreachable for that reason alone. Rule of thumb: if you add a router in
 	# main.py that the fork calls, add its prefix here in the same change.
-	@proton_backend path /metrics/* /kb/* /assist/* /routing/* /authz/* /admin/* /rsa/* /voice/* /alerts/* /calls/*
+	@proton_backend path /metrics/* /kb/* /assist/* /routing/* /authz/* /admin/* /rsa/* /logisly/* /voice/* /alerts/* /calls/*
 	reverse_proxy @proton_backend ${TENANT}-backend:8080
 	reverse_proxy ${TENANT}-chatwoot-rails:3000
 }

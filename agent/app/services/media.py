@@ -24,6 +24,7 @@ test asserts the two registries stay identical.
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -38,8 +39,31 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MIME_TYPE = "application/octet-stream"
 
 
+_ACTIVE_STORAGE_PREFIX = "/rails/active_storage/"
+
+
+def to_internal_url(data_url: str, internal_base: str | None) -> str:
+    """Point a Chatwoot local-storage attachment URL at the in-stack Chatwoot.
+
+    Chatwoot builds `data_url` from its FRONTEND_URL, which is the browser's
+    origin (`http://crm.localhost` on the local tenant, a public nip.io or real
+    domain elsewhere). From inside the agent container that host either does
+    not resolve at all (`crm.localhost`) or hairpins out through the public
+    internet. Only Active Storage paths are rewritten: they are served by
+    Chatwoot itself, so the internal `CHATWOOT_URL` answers them identically.
+    A cloud-storage pre-signed URL is left alone.
+    """
+    if not internal_base:
+        return data_url
+    parsed = urlsplit(data_url)
+    if not parsed.path.startswith(_ACTIVE_STORAGE_PREFIX):
+        return data_url
+    base = urlsplit(internal_base)
+    return urlunsplit((base.scheme, base.netloc, parsed.path, parsed.query, ""))
+
+
 async def fetch_attachment_bytes(
-    data_url: str, file_type_hint: str | None = None
+    data_url: str, file_type_hint: str | None = None, internal_base: str | None = None
 ) -> tuple[bytes, str] | None:
     """Download an attachment. Returns (bytes, mime_type), or None on any
     failure — a broken URL must never break the turn it's attached to.
@@ -47,7 +71,11 @@ async def fetch_attachment_bytes(
     `file_type_hint` (Chatwoot's own attachment `file_type`, e.g. "audio" or
     "image") is used only as a fallback when the response's Content-Type is
     missing or generic — a real Content-Type header always wins.
+
+    `internal_base` (the agent's `CHATWOOT_URL`) redirects Active Storage URLs
+    to the in-stack Chatwoot; see `to_internal_url`.
     """
+    data_url = to_internal_url(data_url, internal_base)
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             response = await client.get(data_url)

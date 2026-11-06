@@ -142,3 +142,34 @@ async def test_fetch_video_falls_back_to_mp4_when_content_type_generic():
     assert result is not None
     data, mime = result
     assert mime == "video/mp4"
+
+
+def test_to_internal_url_rewrites_active_storage_to_internal_chatwoot():
+    from app.services.media import to_internal_url
+
+    url = "http://crm.localhost/rails/active_storage/blobs/redirect/abc--def/File.ogg?disposition=inline"
+    assert to_internal_url(url, "http://default-chatwoot-rails:3000") == (
+        "http://default-chatwoot-rails:3000/rails/active_storage/blobs/redirect/abc--def/File.ogg?disposition=inline"
+    )
+
+
+def test_to_internal_url_leaves_other_urls_and_unset_base_alone():
+    from app.services.media import to_internal_url
+
+    presigned = "https://storage.googleapis.com/bucket/x.jpg?X-Goog-Signature=1"
+    assert to_internal_url(presigned, "http://default-chatwoot-rails:3000") == presigned
+    local = "http://crm.localhost/rails/active_storage/blobs/redirect/a/File.jpg"
+    assert to_internal_url(local, None) == local
+
+
+@respx.mock
+async def test_fetch_attachment_bytes_uses_internal_base_for_active_storage():
+    respx.get("http://default-chatwoot-rails:3000/rails/active_storage/blobs/redirect/a/File.jpg").mock(
+        return_value=httpx.Response(200, content=b"img", headers={"Content-Type": "image/jpeg"})
+    )
+    result = await fetch_attachment_bytes(
+        "http://crm.localhost/rails/active_storage/blobs/redirect/a/File.jpg",
+        file_type_hint="image",
+        internal_base="http://default-chatwoot-rails:3000",
+    )
+    assert result == (b"img", "image/jpeg")

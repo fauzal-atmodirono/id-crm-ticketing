@@ -862,7 +862,9 @@ async def _process_via_chat_agent(
                 data_url = attachment.get("data_url")
                 if not data_url or file_type not in _MEDIA_KINDS or file_type in media:
                     continue
-                fetched = await fetch_attachment_bytes(data_url, file_type_hint=file_type)
+                fetched = await fetch_attachment_bytes(
+                    data_url, file_type_hint=file_type, internal_base=settings.chatwoot_url
+                )
                 if fetched is not None:
                     media[file_type] = fetched
         _apply_media_budget(conversation_id, media, settings.whatsapp_video_max_bytes)

@@ -57,3 +57,11 @@ def test_ambiguous_problems_get_one_question_before_escalation():
     assert "ask before escalating" in LOGISLY_AGENT_INSTRUCTION
     assert "only after the driver says they cannot continue" in LOGISLY_AGENT_INSTRUCTION
     assert "is not an accident" in LOGISLY_MEDIA_INSTRUCTION
+
+
+def test_driver_eta_replaces_planned_eta_only_when_given():
+    store = TripStore.seeded()
+    store.update("LGS-24017", "delayed", "Telat 1 jam", "2026-11-06 15:45 WIB")
+    assert store.get("LGS-24017")["eta"] == "2026-11-06 15:45 WIB"
+    store.update("LGS-24017", "on_trip", "Jalan lagi")
+    assert store.get("LGS-24017")["eta"] == "2026-11-06 15:45 WIB"

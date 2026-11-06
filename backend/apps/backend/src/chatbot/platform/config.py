@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     # Chatwoot inbox is the Twilio WhatsApp inbox the driver agent answers on.
     logisly_demo_driver_phone: str = ""
     logisly_driver_inbox_id: int = 0
+    # The mock driver app's Chatwoot API inbox (0 = app channel off, WhatsApp only).
+    logisly_app_inbox_id: int = 0
 
     # Vertex AI Search settings
     vertex_search_project_id: str = ""

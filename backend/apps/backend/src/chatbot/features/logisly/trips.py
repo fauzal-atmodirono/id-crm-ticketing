@@ -80,12 +80,15 @@ class TripStore:
     def get(self, order_id: str) -> dict[str, Any] | None:
         return self.trips.get(order_id.strip().upper())
 
-    def update(self, order_id: str, status: str, note: str) -> dict[str, Any] | None:
+    def update(self, order_id: str, status: str, note: str, eta: str = "") -> dict[str, Any] | None:
         trip = self.get(order_id)
         if trip is None:
             return None
         if status in STATUSES:
             trip["status"] = status
+        if eta.strip():
+            # The driver's own estimate replaces the planned ETA on the trip.
+            trip["eta"] = eta.strip()
         trip["events"].append(
             {"at": datetime.now(UTC).isoformat(timespec="seconds"), "status": status, "note": note}
         )

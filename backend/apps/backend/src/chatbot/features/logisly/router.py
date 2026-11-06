@@ -27,8 +27,9 @@ from pydantic import BaseModel
 
 from chatbot.features.chat.phone.gemini_live import connect_live
 from chatbot.features.logisly.call_router import build_call_router
-from chatbot.features.logisly.channel import ChatwootDriverChannel, _e164
+from chatbot.features.logisly.channel import ChatwootDriverChannel
 from chatbot.features.logisly.console import CONSOLE_HTML
+from chatbot.features.logisly.driver_chat import build_driver_chat_router, driver_address
 from chatbot.features.logisly.trips import (
     ANOMALIES,
     TRIPS,
@@ -45,6 +46,8 @@ _log = structlog.get_logger(__name__)
 class AnomalyBody(BaseModel):
     order_id: str
     kind: str
+    # "app" (mock driver app) or "whatsapp"; empty picks the app when configured.
+    channel: str = ""
 
 
 def make_authorizer(settings: Settings) -> Callable[[str | None], None]:
@@ -69,6 +72,7 @@ def build_logisly_router(
     driver_channel = channel or ChatwootDriverChannel(settings)
     _authorize = make_authorizer(settings)
     router.include_router(build_call_router(settings, _authorize, channel, live_session_factory))
+    router.include_router(build_driver_chat_router(settings, _authorize, driver_channel))
 
     @router.get("/logisly/console", response_class=HTMLResponse)
     async def console() -> str:
@@ -93,19 +97,17 @@ def build_logisly_router(
         anomaly = ANOMALIES.get(body.kind)
         if anomaly is None:
             raise HTTPException(status_code=422, detail=f"kind must be one of {sorted(ANOMALIES)}")
-        phone = _e164(settings.logisly_demo_driver_phone)
-        if not phone or not settings.logisly_driver_inbox_id:
-            raise HTTPException(
-                status_code=503,
-                detail="LOGISLY_DEMO_DRIVER_PHONE and LOGISLY_DRIVER_INBOX_ID must be set",
-            )
+        which = body.channel or ("app" if settings.logisly_app_inbox_id else "whatsapp")
+        if which not in ("app", "whatsapp"):
+            raise HTTPException(status_code=422, detail="channel must be app or whatsapp")
         opening = render(anomaly["opening"], trip)
-        inbox_id = settings.logisly_driver_inbox_id
         try:
-            contact_id = await driver_channel.find_or_create_contact(phone, trip["driver_name"])
+            contact_id, inbox_id, source_id = await driver_address(
+                settings, driver_channel, which, trip["driver_name"]
+            )
             await driver_channel.resolve_open_conversations(contact_id, inbox_id)
             conversation_id = await driver_channel.open_conversation(
-                contact_id, inbox_id, phone, opening
+                contact_id, inbox_id, source_id, opening
             )
         except httpx.HTTPError as exc:
             _log.warning(
@@ -124,6 +126,7 @@ def build_logisly_router(
             "conversation_id": conversation_id,
             "order_id": trip["order_id"],
             "message": opening,
+            "channel": which,
         }
 
     return router

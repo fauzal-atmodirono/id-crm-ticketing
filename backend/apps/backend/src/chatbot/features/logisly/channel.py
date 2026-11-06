@@ -16,8 +16,13 @@ def _e164(phone: str) -> str:
     return f"+{digits}" if digits else ""
 
 
+# The demo driver's contact on the driver app's API inbox: its Chatwoot
+# `identifier` and its contact_inbox source_id.
+APP_DRIVER_IDENTIFIER = "logisly-demo-driver"
+
+
 class ChatwootDriverChannel:
-    """The four Chatwoot calls the simulator needs, nothing more."""
+    """The Chatwoot calls the Logisly demo makes, nothing more."""
 
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self._base = f"{settings.chatwoot_api_url.rstrip('/')}/api/v1/accounts/{settings.chatwoot_account_id}"
@@ -57,19 +62,58 @@ class ChatwootDriverChannel:
                     json={"status": "resolved"},
                 )
 
-    async def open_conversation(self, contact_id: int, inbox_id: int, phone: str, text: str) -> int:
-        created = await self._request(
-            "POST",
-            "/conversations",
-            json={
-                "source_id": f"whatsapp:{phone}",
-                "inbox_id": inbox_id,
-                "contact_id": contact_id,
-                "status": "pending",
-                "message": {"content": text},
-            },
-        )
+    async def find_contact_by_identifier(self, identifier: str) -> int | None:
+        found = await self._request("GET", "/contacts/search", params={"q": identifier})
+        for contact in found.get("payload") or []:
+            if contact.get("identifier") == identifier:
+                return int(contact["id"])
+        return None
+
+    async def open_conversation(
+        self, contact_id: int, inbox_id: int, source_id: str, text: str = ""
+    ) -> int:
+        """New conversation, waiting for the bot. `source_id` is the channel's
+        address for the contact: "whatsapp:+62…" on WhatsApp, the contact's
+        identifier on the driver app's API inbox. `text`, when given, is posted
+        as Logisly's opening message."""
+        body: dict[str, Any] = {
+            "source_id": source_id,
+            "inbox_id": inbox_id,
+            "contact_id": contact_id,
+            "status": "pending",
+        }
+        if text:
+            body["message"] = {"content": text}
+        created = await self._request("POST", "/conversations", json=body)
         return int(created["id"])
+
+    async def latest_open_conversation(self, contact_id: int, inbox_id: int) -> int | None:
+        listed = await self._request("GET", f"/contacts/{contact_id}/conversations")
+        open_ids = [
+            int(c["id"])
+            for c in listed.get("payload") or []
+            if c.get("inbox_id") == inbox_id and c.get("status") != "resolved"
+        ]
+        return max(open_ids) if open_ids else None
+
+    async def messages(self, conversation_id: int) -> list[dict[str, Any]]:
+        listed = await self._request("GET", f"/conversations/{conversation_id}/messages")
+        return list(listed.get("payload") or [])
+
+    async def post_driver_message(
+        self, conversation_id: int, text: str, file: tuple[str, bytes, str] | None = None
+    ) -> None:
+        """Post as the driver (an incoming message; only API inboxes allow it)."""
+        data = {"content": text, "message_type": "incoming"}
+        if file is None:
+            await self._request("POST", f"/conversations/{conversation_id}/messages", json=data)
+        else:
+            await self._request(
+                "POST",
+                f"/conversations/{conversation_id}/messages",
+                data=data,
+                files={"attachments[]": file},
+            )
 
     async def add_private_note(self, conversation_id: int, text: str) -> None:
         await self._request(

@@ -43,6 +43,7 @@ CONSOLE_HTML = """<!doctype html>
   button.call:hover { background:var(--ok); color:#fff; }
   ol { margin:8px 0 0; padding-left:18px; font-size:12px; color:var(--muted); }
   ol li { margin:2px 0; }
+  select { font:inherit; font-size:13px; padding:2px 6px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--ink); }
   #msg { font-size:13px; min-height:18px; color:var(--muted); }
   @media (max-width:640px) { .trip { grid-template-columns:1fr; } .actions { flex-direction:row; flex-wrap:wrap; } }
 </style>
@@ -50,7 +51,8 @@ CONSOLE_HTML = """<!doctype html>
 <body>
 <header>
   <h1>Tracking Simulator</h1>
-  <p>Raise an alert on a trip: the driver assistant contacts the driver on WhatsApp.</p>
+  <p>Raise an alert on a trip: the driver assistant contacts the driver.
+     Channel: <select id="channel"><option value="app">Driver app</option><option value="whatsapp">WhatsApp</option></select></p>
 </header>
 <main>
   <div id="msg"></div>
@@ -88,14 +90,15 @@ box.addEventListener("click", async ev => {
   b.disabled = true; msg.textContent = b.dataset.call ? "Calling driver…" : "Sending to driver…";
   try {
     const path = b.dataset.call ? "/logisly/call" : "/logisly/anomaly";
-    const payload = b.dataset.call ? { order_id: b.dataset.order } : { order_id: b.dataset.order, kind: b.dataset.kind };
+    const payload = b.dataset.call ? { order_id: b.dataset.order }
+      : { order_id: b.dataset.order, kind: b.dataset.kind, channel: document.getElementById("channel").value };
     const r = await fetch(path, { method: "POST",
       headers: { "Content-Type": "application/json", "X-API-Key": key },
       body: JSON.stringify(payload) });
     const d = await r.json();
     msg.textContent = !r.ok ? `Failed: ${d.detail || r.status}`
       : b.dataset.call ? "Ringing the driver app…"
-      : `Sent to driver (conversation #${d.conversation_id}): "${d.message}"`;
+      : `Sent to driver via ${d.channel === "app" ? "driver app" : "WhatsApp"} (conversation #${d.conversation_id}): "${d.message}"`;
   } catch (e) { msg.textContent = "Failed: " + e; }
   b.disabled = false; load();
 });

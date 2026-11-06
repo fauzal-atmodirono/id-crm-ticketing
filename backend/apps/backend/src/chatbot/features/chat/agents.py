@@ -319,7 +319,7 @@ def build_ai_agent(  # noqa: PLR0915 — one builder, many tool closures
         return describe_trip(trip)
 
     async def update_trip_status_tool(
-        tool_context: ToolContext, order_id: str, status: str, note: str
+        tool_context: ToolContext, order_id: str, status: str, note: str, eta: str = ""
     ) -> str:
         """Record what the driver reported on the trip.
 
@@ -328,8 +328,10 @@ def build_ai_agent(  # noqa: PLR0915 — one builder, many tool closures
             order_id: The order number, e.g. LGS-24017.
             status: One of on_trip, delayed, issue, arrived, delivered.
             note: One sentence in Bahasa Indonesia describing what happened.
+            eta: The driver's new estimated arrival, e.g. "2026-11-06 15:45 WIB",
+                only when the driver gave one; otherwise leave empty.
         """
-        trip = TRIPS.update(order_id, status, note)
+        trip = TRIPS.update(order_id, status, note, eta)
         if trip is None:
             return f"NOT_FOUND: no trip with order number {order_id}."
         tool_context.state["order_id"] = trip["order_id"]

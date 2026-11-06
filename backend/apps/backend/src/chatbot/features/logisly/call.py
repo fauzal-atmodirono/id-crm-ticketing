@@ -57,7 +57,8 @@ CALL_INSTRUCTION = (
     "order, mention briefly why (the alert below), and ask what is happening.\n\n"
     "Traffic, rest stops, refuelling, a tyre the driver is changing, weather and small "
     "delays are normal: confirm what you understood, ask for the new estimated arrival "
-    "time if it matters, record it with `update_trip_status`, and end the call politely. "
+    "time if it matters, record it with `update_trip_status` (pass the new arrival time as `eta` when the driver "
+    "gives one), and end the call politely. "
     "If the driver is unclear or the line is bad, ask them to repeat; never escalate "
     "because you could not hear them.\n\n"
     "Call `escalate_to_operations` ONLY for an accident or safety risk "
@@ -87,6 +88,13 @@ UPDATE_TRIP_TOOL = types.FunctionDeclaration(
             "note": types.Schema(
                 type=types.Type.STRING,
                 description="One sentence in Bahasa Indonesia describing what happened.",
+            ),
+            "eta": types.Schema(
+                type=types.Type.STRING,
+                description=(
+                    "The driver's new estimated arrival, e.g. '2026-11-06 15:45 WIB', "
+                    "only if the driver gave one."
+                ),
             ),
         },
         required=["status", "note"],
@@ -225,7 +233,10 @@ class LogislyCallBridge:
         if event.name == "update_trip_status" and self.order_id:
             note = str(args.get("note") or "")
             trips_module.TRIPS.update(
-                self.order_id, str(args.get("status") or ""), f"Telepon: {note}"
+                self.order_id,
+                str(args.get("status") or ""),
+                f"Telepon: {note}",
+                str(args.get("eta") or ""),
             )
             self.updates.append(note)
             result: dict[str, object] = {"status": "recorded"}

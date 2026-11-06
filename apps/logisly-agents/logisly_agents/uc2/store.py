@@ -54,16 +54,27 @@ def add_quotation(state: State, q: Quotation) -> dict:
             return {"quote_id": r["quote_id"], "replaced": True, "supersedes": None}
 
     quote_id = _next_id(records)
-    supersedes: str | None = None
-    for r in records:
-        if _tkey(r["transporter"]) != key or r.get("superseded_by"):
-            continue
-        if q.is_revision or dump["document_date"] > r["document_date"]:
-            r["superseded_by"] = quote_id
-            supersedes = r["quote_id"]
+    prior_live = [
+        r["quote_id"]
+        for r in records
+        if _tkey(r["transporter"]) == key and not r.get("superseded_by")
+    ]
     records.append({**dump, "quote_id": quote_id, "superseded_by": None})
+
+    # One live quote per transporter: newest document_date, then a revision
+    # beats a non-revision, then the later-added record wins.
+    group = [(i, r) for i, r in enumerate(records) if _tkey(r["transporter"]) == key]
+    _, winner = max(group, key=lambda ir: (ir[1]["document_date"], ir[1]["is_revision"], ir[0]))
+    for _, r in group:
+        r["superseded_by"] = None if r is winner else winner["quote_id"]
+
     state[QUOTES_KEY] = records
-    return {"quote_id": quote_id, "replaced": False, "supersedes": supersedes}
+    won = winner["quote_id"] == quote_id
+    return {
+        "quote_id": quote_id,
+        "replaced": False,
+        "supersedes": prior_live[-1] if won and prior_live else None,
+    }
 
 
 def list_quotations(state: State, include_superseded: bool = True) -> list[dict]:

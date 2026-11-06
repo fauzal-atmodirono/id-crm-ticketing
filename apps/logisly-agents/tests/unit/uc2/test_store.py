@@ -51,12 +51,60 @@ def test_later_date_supersedes_and_case_insensitive():
     assert r["supersedes"] == "Q1"
 
 
-def test_older_doc_does_not_supersede_newer():
+def test_older_doc_added_later_is_superseded():
     s: dict = {}
     store.add_quotation(s, _q(d=date(2026, 11, 5)))
     r = store.add_quotation(s, _q(d=date(2026, 11, 3), price=2))
     assert r["supersedes"] is None
-    assert len(store.list_quotations(s, include_superseded=False)) == 2
+    live = store.list_quotations(s, include_superseded=False)
+    assert [x["quote_id"] for x in live] == ["Q1"]
+    q2 = [x for x in store.list_quotations(s) if x["quote_id"] == "Q2"][0]
+    assert q2["superseded_by"] == "Q1"
+
+
+def test_earlier_dated_revision_loses():
+    s: dict = {}
+    store.add_quotation(s, _q(d=date(2026, 11, 5)))
+    r = store.add_quotation(s, _q(d=date(2026, 11, 3), rev=True, price=2))
+    assert r["supersedes"] is None
+    assert [x["quote_id"] for x in store.list_quotations(s, include_superseded=False)] == ["Q1"]
+
+
+def test_same_date_revision_wins_either_order():
+    s: dict = {}
+    store.add_quotation(s, _q(rev=True, price=1))
+    r = store.add_quotation(s, _q(price=2))
+    assert r["supersedes"] is None
+    assert [x["quote_id"] for x in store.list_quotations(s, include_superseded=False)] == ["Q1"]
+    s2: dict = {}
+    store.add_quotation(s2, _q(price=1))
+    r = store.add_quotation(s2, _q(rev=True, price=2))
+    assert r["supersedes"] == "Q1"
+
+
+def test_same_date_no_flag_later_added_wins():
+    s: dict = {}
+    store.add_quotation(s, _q(price=1))
+    r = store.add_quotation(s, _q(price=2))
+    assert r["supersedes"] == "Q1"
+    assert [x["quote_id"] for x in store.list_quotations(s, include_superseded=False)] == ["Q2"]
+
+
+def test_writes_reassign_whole_keys():
+    class Stub(dict):
+        def __init__(self):
+            super().__init__()
+            self.sets: list[str] = []
+
+        def __setitem__(self, k, v):
+            self.sets.append(k)
+            super().__setitem__(k, v)
+
+    s = Stub()
+    store.add_quotation(s, _q())
+    store.add_quotation(s, _q(d=date(2026, 11, 5), price=2))
+    store.add_decision(s, "A-B", "Q2", "accept", "")
+    assert s.sets == ["uc2:quotations", "uc2:quotations", "uc2:decisions"]
 
 
 def test_tender_roundtrip():

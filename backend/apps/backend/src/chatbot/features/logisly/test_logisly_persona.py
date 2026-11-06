@@ -42,3 +42,9 @@ def test_unknown_status_is_logged_but_does_not_change_status():
     store = TripStore.seeded()
     trip = store.update("LGS-24017", "teleported", "x")
     assert trip["status"] == "on_trip" and trip["events"][-1]["status"] == "teleported"
+
+
+def test_ambiguous_problems_get_one_question_before_escalation():
+    assert "ask before escalating" in LOGISLY_AGENT_INSTRUCTION
+    assert "only after the driver says they cannot continue" in LOGISLY_AGENT_INSTRUCTION
+    assert "is not an accident" in LOGISLY_MEDIA_INSTRUCTION

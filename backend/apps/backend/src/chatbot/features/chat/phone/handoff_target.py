@@ -61,6 +61,17 @@ def validate_handoff_target_settings(settings: Settings) -> None:
                 f"Setting 'phone_handoff_target_number' is configured with placeholder number {target!r}. "
                 "Configure a valid E.164 phone number."
             )
+    # Task 31: the IVR's RSA line is dialled 24/7 by a stranded motorist; a
+    # placeholder copied from the Studio flow (+60300000001) must stop the
+    # boot, not ring an unallocated number at 2 a.m.
+    if settings.phone_dtmf_menu_enabled:
+        rsa = settings.phone_ivr_rsa_number.strip()
+        if rsa in PLACEHOLDER_NUMBERS:
+            raise ValueError(
+                f"Setting 'phone_ivr_rsa_number' is configured with placeholder number {rsa!r}. "
+                "Configure the real RSA line in E.164, or leave it empty to send RSA calls "
+                "to the AI voice bridge."
+            )
 
 
 @dataclass(frozen=True)

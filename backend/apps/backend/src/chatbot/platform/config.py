@@ -1375,16 +1375,22 @@ class Settings(BaseSettings):
     # in-process registry nothing writes, logs rather than writing an audit-log
     # row, and returns a placeholder rather than a cryptographically signed URL.
     call_recording_retrieval_enabled: bool = False
-    # **DOES NOT CURRENTLY GATE ANYTHING.** `dtmf_menu.py` exists and its prompts
-    # are verbatim from deploy/twilio/ivr-studio-flow.json, but `twiml.py` was
-    # never modified, so no <Gather> is emitted on any call path and nothing reads
-    # this flag -- `build_dtmf_twiml(enabled=...)` takes the switch as an argument
-    # no caller supplies. Turning this on has no effect.
+    # Task 31 (FIX-31): on -> `/voice/phone/incoming` answers with the Proton
+    # SOP's DTMF IVR (features/chat/phone/ivr.py + ivr_router.py) instead of
+    # going straight into the AI voice bridge: bilingual welcome, 1 English /
+    # 2 Bahasa Melayu, then 1 RSA / 2 Inquiry / 3 Complaint / 0 repeat. Needs
+    # twilio_auth_token and twilio_webhook_base_url (every IVR webhook is
+    # signature-checked); without either it logs and serves today's bridge.
+    # Off -> the IVR routes are not registered and the incoming TwiML is
+    # byte-identical to before.
     phone_dtmf_menu_enabled: bool = False
-    # Read by `after_hours.py::evaluate_after_hours_call`, which is itself called
-    # by nothing: the after-hours branch is not wired into the call path. Off is
-    # therefore indistinguishable from on today. The flag has a consumer; the
-    # consumer has no caller.
+    # Task 31: read by `after_hours.py::evaluate_after_hours_call`, which the
+    # IVR menu calls after the category choice. On -> outside the SOP office
+    # hours (phone_ivr_* below) a non-RSA caller hears the bilingual
+    # after-hours message (then voicemail, if phone_voicemail_ingest_enabled).
+    # Only reachable with phone_dtmf_menu_enabled: without the menu the call
+    # cannot be told apart from an RSA call, so the AI bridge keeps taking
+    # every call 24/7 exactly as today.
     phone_after_hours_enabled: bool = False
     # DEFAULT ON -- the only default-on flag in this programme, and deliberately
     # so. §8.1.6 requires roadside assistance 24/7, so when the after-hours path
@@ -1396,10 +1402,12 @@ class Settings(BaseSettings):
     # as one (`after_hours_bypass_disabled_by_config`). Do not "tidy" this to
     # False for consistency with its neighbours.
     phone_rsa_after_hours_bypass: bool = True
-    # Read by `voicemail_ingest.py::process_voicemail_webhook`, which has no
-    # caller: there is no Twilio RecordingUrl webhook route, and the function
-    # creates no Chatwoot conversation even when called. See its docstring --
-    # notably that attend_after is now+12h, not P1's next_working_instant.
+    # Task 31: on -> the IVR records a voicemail (after hours, or when the
+    # agent ring stage ends unanswered) and `/voice/phone/ivr/voicemail` turns
+    # it into a Chatwoot conversation on the phone inbox with the recording
+    # link, tagged `voicemail` (voicemail_ingest.py::ingest_voicemail). The
+    # transcript is added when phone_recording_transcription_enabled is on.
+    # Only reachable with phone_dtmf_menu_enabled.
     phone_voicemail_ingest_enabled: bool = False
     # **DOES NOT CURRENTLY GATE ANYTHING.** Task 6 (per-utterance transcript
     # flush when a human agent is on the call, vs today's fifteen-second cadence
@@ -1418,6 +1426,42 @@ class Settings(BaseSettings):
     # the reporting are real"; **the 90-day policy is still not in force on any
     # tenant**, and turning this on does not change that.
     phone_retention_job_enabled: bool = False
+
+    # --- Task 31: IVR routing, timings, office hours and voices ---
+    # Outside the P11 block on purpose (test_p11_flags pins that block to
+    # exactly seven settings). Read by phone/ivr.py and ivr_router.py.
+    # Where Inquiry/Complaint (and a caller who never chose) go in office
+    # hours: "ai" = the AI voice bridge (today's live path, the default);
+    # "agent" = ring agents (online softphones, else phone_handoff_target_number)
+    # with the SOP's queue-busy prompt. "agent" with no target -> "ai".
+    phone_ivr_non_rsa_route: str = "ai"
+    # E.164 RSA line, dialled 24/7 for menu option 1. Empty -> the AI bridge
+    # takes RSA calls (24/7), as today. A placeholder number refuses boot.
+    phone_ivr_rsa_number: str = ""
+    # SOP B28: queue-busy prompt after this many seconds of ringing (non-RSA).
+    phone_ivr_queue_busy_after_seconds: int = 10
+    # SOP B32: agent must attend within this many seconds (total ring time).
+    phone_ivr_agent_attend_seconds: int = 20
+    phone_ivr_gather_timeout_seconds: int = 5
+    phone_ivr_voicemail_max_seconds: int = 120
+    # SOP office hours. Mon-Fri weekday window; Sat, Sun and the listed public
+    # holidays (comma-separated YYYY-MM-DD, local dates) the weekend window.
+    # Malformed values fail OPEN (treated as in hours), logged.
+    phone_ivr_timezone: str = "Asia/Kuala_Lumpur"
+    phone_ivr_weekday_hours: str = "08:30-17:30"
+    phone_ivr_weekend_hours: str = "09:00-17:00"
+    # Malaysian national public holidays 2026 (same list as the Studio flow).
+    # Keep current every year.
+    phone_ivr_public_holidays: str = (
+        "2026-01-01,2026-02-17,2026-02-18,2026-03-21,2026-03-22,2026-05-01,"
+        "2026-05-27,2026-05-31,2026-06-01,2026-06-17,2026-08-25,2026-08-31,"
+        "2026-09-16,2026-11-08,2026-12-25"
+    )
+    # SOP B12: female voice. Twilio <Say voice=...> ids. Amazon Polly has no
+    # Malay voice, so both default to Google's female Standard voices (the
+    # same ids twiml.py and the Studio flow use).
+    phone_tts_voice_en: str = "Google.en-US-Standard-C"
+    phone_tts_voice_ms: str = "Google.ms-MY-Standard-A"
 
     # --- P13: authorisation/case audit-log retention ------------------------
     # Both of these were previously read by `authz/audit_purge.py` via

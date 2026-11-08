@@ -44,6 +44,7 @@ from chatbot.features.chat.phone.handoff_csat_tools import (
 )
 from chatbot.features.chat.phone.recording_transcriber import process_recording
 from chatbot.features.chat.phone.handoff_target import fanout_twiml
+from chatbot.features.chat.phone.ivr_router import IvrRoutes
 from chatbot.features.chat.phone.kb_tool import KB_SEARCH_TOOL
 from chatbot.features.chat.phone.rate_limit import RateLimiter
 from chatbot.features.chat.phone.token import mint_voice_token
@@ -543,6 +544,21 @@ class ChatRouter:
                 self.phone_dial_status_fanout_webhook,
                 methods=["POST"],
             )
+        # Task 31: the Proton SOP DTMF IVR. Same registration-gating as the
+        # dial-status routes above: flag off -> no /voice/phone/ivr/* route
+        # exists and phone_incoming() answers exactly as before.
+        self._ivr: IvrRoutes | None = None
+        if orchestrator._settings.phone_dtmf_menu_enabled:
+            self._ivr = IvrRoutes(
+                orchestrator._settings,
+                orchestrator._conversation_log_port,
+                bridge_twiml=self._bridge_twiml,
+                fanout_identities=self._fanout_identities,
+                record_dial_outcome=(
+                    self._record_dial_outcome if abandon_store is not None else None
+                ),
+            )
+            self._ivr.register(self.router)
 
     # --- CRM webhooks -------------------------------------------------------
 
@@ -1526,6 +1542,18 @@ class ChatRouter:
         configured but no callback base would have the caller TOLD the
         call is recorded while it is never actually recorded.
         """
+        if self._ivr is not None:
+            # Task 31: PHONE_DTMF_MENU_ENABLED -> the SOP menu first. None
+            # (no base url / auth token) keeps today's bridge, logged.
+            ivr_xml = self._ivr.entry_twiml()
+            if ivr_xml is not None:
+                return Response(content=ivr_xml, media_type="application/xml")
+        return Response(content=self._bridge_twiml(), media_type="application/xml")
+
+    def _bridge_twiml(self) -> str:
+        """Today's inbound TwiML: optional recording notice, then the AI
+        voice bridge. Also the IVR's route to the AI (RSA with no RSA line,
+        and the "ai" non-RSA route)."""
         settings = self.orchestrator._settings
         announcement = None
         if (
@@ -1534,8 +1562,7 @@ class ChatRouter:
             and settings.twilio_webhook_base_url
         ):
             announcement = settings.phone_recording_announcement
-        xml = connect_stream_twiml(self._phone_wss_url(), announcement)
-        return Response(content=xml, media_type="application/xml")
+        return connect_stream_twiml(self._phone_wss_url(), announcement)
 
     async def phone_token(self, request: Request) -> dict[str, str]:
         """Mint a Twilio Voice access token for the browser softphone.

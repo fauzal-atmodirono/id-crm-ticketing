@@ -706,8 +706,8 @@ FLAG_CAVEATS = [
     "an overclaim and has been corrected in all three places. See the "
     "blocked-work register §3j.",
     "**Three `PHONE_*` settings gate nothing today.** "
-    "`PHONE_DTMF_MENU_ENABLED` and `PHONE_LIVE_TRANSCRIPT_ENABLED` have no "
-    "consumer, and the recording-retention job has no scheduler, so "
+    "`PHONE_LIVE_TRANSCRIPT_ENABLED` has no consumer (`PHONE_DTMF_MENU_ENABLED` "
+    "now gates the Task 31 SOP IVR), and the recording-retention job has no scheduler, so "
     "`PHONE_RECORDING_RETENTION_DAYS` and `PHONE_RETENTION_JOB_ENABLED` do not "
     "cause anything to be deleted. Each field's comment now says so. See the "
     "blocked-work register §3k.",

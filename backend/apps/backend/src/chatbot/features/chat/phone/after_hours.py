@@ -7,45 +7,31 @@ directly to RSA targets (PHONE_RSA_AFTER_HOURS_BYPASS defaults to True).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import structlog
+
+from chatbot.features.chat.phone.ivr_prompts import (  # noqa: F401 -- re-exported
+    AFTER_HOURS_EN,
+    AFTER_HOURS_MS,
+    VOICEMAIL_PROMPT,
+)
 
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
 
-# Copied VERBATIM from `deploy/twilio/ivr-studio-flow.json`'s `after_hours_en` /
-# `after_hours_ms` / `vm_prompt` `say` properties -- the actual home of Appendix
-# B's wording. `test_phone_after_hours.py` reads that JSON and compares, so these
-# cannot drift from it silently.
+# Task 31: the wording lives in `ivr_prompts.py` (one module for every IVR
+# prompt) and is re-exported here under the historical names; it is still
+# verbatim the Studio flow's `after_hours_en` / `after_hours_ms` / `vm_prompt`,
+# which `test_phone_after_hours.py` checks. The IVR (`ivr_router.py`) is this
+# evaluator's caller.
 #
-# The previous strings were hand-written and **told the customer the wrong
-# operating hours**: "8 AM to 6 PM Monday through Friday", with no mention of the
-# Saturday/Sunday/Public Holiday window Appendix B has. A weekend caller was
-# being told the business is closed for the day when the published hours say
-# 9:00 AM to 5:00 PM. A test named "matches appendix b verbatim" asserted the
-# wrong text.
-AFTER_HOURS_PROMPT_EN = (
-    "Thank you for calling Proton e.MAS. Our operating hours are Monday to "
-    "Friday, 8:30 AM to 5:30 PM, and Saturday, Sunday and Public Holidays, "
-    "9:00 AM to 5:00 PM. Please leave your message and contact details. Our "
-    "customer support team will reach out on the next business day."
-)
-
-AFTER_HOURS_PROMPT_MS = (
-    "Terima kasih kerana menghubungi Proton e.MAS. Waktu operasi kami adalah "
-    "Isnin hingga Jumaat, 8.30 pagi hingga 5.30 petang, dan Sabtu, Ahad dan "
-    "Cuti Umum, 9.00 pagi hingga 5.00 petang. Sila tinggalkan mesej dan "
-    "maklumat perhubungan anda. Pasukan khidmat pelanggan kami akan menghubungi "
-    "anda pada hari bekerja berikutnya."
-)
-
-VOICEMAIL_PROMPT = (
-    "Please leave your message and contact details after the tone. "
-    "Sila tinggalkan mesej dan maklumat perhubungan anda selepas nada."
-)
+# History worth keeping: the first hand-written version told callers the wrong
+# hours ("8 AM to 6 PM Monday through Friday", no weekend window).
+AFTER_HOURS_PROMPT_EN = AFTER_HOURS_EN
+AFTER_HOURS_PROMPT_MS = AFTER_HOURS_MS
 
 
 def evaluate_after_hours_call(
@@ -67,8 +53,7 @@ def evaluate_after_hours_call(
         if settings.phone_rsa_after_hours_bypass:
             _log.info("after_hours_rsa_bypass_activated", is_rsa=True)
             return {"action": "route_rsa_bypass", "reason": "rsa_24_7_bypass"}
-        else:
-            _log.warning("after_hours_rsa_bypass_disabled_by_config", is_rsa=True)
+        _log.warning("after_hours_rsa_bypass_disabled_by_config", is_rsa=True)
 
     # Standard out-of-hours call -> play prompt and offer voicemail
     return {

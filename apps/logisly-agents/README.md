@@ -52,10 +52,12 @@ gcloud projects add-iam-policy-binding lv-playground-genai \
   --role=roles/aiplatform.user
 ```
 
-Service URLs (fill in after deploying):
+Service URLs (deployed 2026-11-08, project `lv-playground-genai`; agent card, plain chat and an .xlsx file part smoke-tested over A2A):
 
-- UC2: `https://logisly-uc2-<hash>-et.a.run.app`
-- UC3: `https://logisly-uc3-<hash>-et.a.run.app`
+- UC2: `https://logisly-uc2-swgjfxtwwq-et.a.run.app`
+- UC3: `https://logisly-uc3-swgjfxtwwq-et.a.run.app`
+
+`/healthz` answers locally but not on Cloud Run: Google's front end reserves paths ending in `z` and returns its own 404. Use the agent card as the health check.
 
 Check a service (the service is private, so use an identity token):
 

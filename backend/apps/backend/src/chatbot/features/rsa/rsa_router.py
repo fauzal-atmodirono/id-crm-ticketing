@@ -1,22 +1,25 @@
 """HTTP surface for RSA incidents — CRUD + aggregate + CSV export.
 
-Auth mirrors kb_knowledge_router.py's _authorize (x-api-key vs
-faq_admin_api_key / proton_backend_key). Manual staff data entry: no
-background tasks, no dispatch-system integration.
+Every route sits behind `require_permission("sla.manage")`. With RBAC on that
+demands a validated Chatwoot session holding the permission (the shared
+x-api-key alone is refused, since the browser ships that key to every agent);
+with RBAC off it falls back to the shared-secret check, as before. Manual
+staff data entry: no background tasks, no dispatch-system integration.
 """
 
 from __future__ import annotations
 
 import csv
-import hmac
 import io
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
+
+from chatbot.features.authz.deps import require_permission
 
 
 class _IncidentRequest(BaseModel):
@@ -54,57 +57,49 @@ class _IncidentUpdateRequest(BaseModel):
     remarks: str | None = None
 
 
-def build_rsa_router(repo, settings) -> APIRouter:
+def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRouter:
     router = APIRouter()
-
-    def _authorize(x_api_key: str | None) -> None:
-        if x_api_key is None:
-            raise HTTPException(status_code=401, detail="Unauthorized")
-        supplied = x_api_key.encode("utf-8")
-        for key in (settings.faq_admin_api_key, settings.proton_backend_key):
-            if key and hmac.compare_digest(supplied, key.encode("utf-8")):
-                return
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    guard = Depends(
+        require_permission("sla.manage", repo=authz_repo, validator=validator, settings=settings)
+    )
 
     def _incident_dict(row: Any) -> dict[str, Any]:
         return {
-            "id": row.id, "incident_date": row.incident_date, "vehicle_no": row.vehicle_no,
-            "vehicle_model": row.vehicle_model, "cause": row.cause,
-            "purchased_from": row.purchased_from, "breakdown_location": row.breakdown_location,
+            "id": row.id,
+            "incident_date": row.incident_date,
+            "vehicle_no": row.vehicle_no,
+            "vehicle_model": row.vehicle_model,
+            "cause": row.cause,
+            "purchased_from": row.purchased_from,
+            "breakdown_location": row.breakdown_location,
             "arrived_location": row.arrived_location,
             "customer_called_in_time": row.customer_called_in_time,
             "towing_assigned_time": row.towing_assigned_time,
             "time_arrived_breakdown_area": row.time_arrived_breakdown_area,
             "time_arrived_outlet": row.time_arrived_outlet,
-            "total_km": row.total_km, "late_reason": row.late_reason,
-            "remarks": row.remarks, "created_by": row.created_by,
+            "total_km": row.total_km,
+            "late_reason": row.late_reason,
+            "remarks": row.remarks,
+            "created_by": row.created_by,
         }
 
-    @router.post("/rsa/incidents")
-    async def create_incident(
-        payload: _IncidentRequest, x_api_key: str | None = Header(default=None)
-    ) -> dict[str, str]:
-        _authorize(x_api_key)
+    @router.post("/rsa/incidents", dependencies=[guard])
+    async def create_incident(payload: _IncidentRequest) -> dict[str, str]:
         incident_id = await repo.create_incident(**payload.model_dump())
         return {"id": incident_id, "status": "created"}
 
-    @router.get("/rsa/incidents")
-    async def list_incidents(x_api_key: str | None = Header(default=None)) -> dict[str, Any]:
-        _authorize(x_api_key)
+    @router.get("/rsa/incidents", dependencies=[guard])
+    async def list_incidents() -> dict[str, Any]:
         rows = await repo.list_incidents()
         return {"incidents": [_incident_dict(r) for r in rows]}
 
-    @router.get("/rsa/incidents/aggregate")
-    async def aggregate(x_api_key: str | None = Header(default=None)) -> dict[str, Any]:
-        _authorize(x_api_key)
+    @router.get("/rsa/incidents/aggregate", dependencies=[guard])
+    async def aggregate() -> dict[str, Any]:
         agg = await repo.aggregate()
         return asdict(agg)
 
-    @router.get("/rsa/incidents/export")
-    async def export_csv(
-        format: str = "csv", x_api_key: str | None = Header(default=None)
-    ) -> Response:
-        _authorize(x_api_key)
+    @router.get("/rsa/incidents/export", dependencies=[guard])
+    async def export_csv(format: str = "csv") -> Response:
         if format != "csv":
             raise HTTPException(status_code=400, detail="format must be csv")
         rows = await repo.list_incidents()
@@ -123,32 +118,25 @@ def build_rsa_router(repo, settings) -> APIRouter:
             headers={"Content-Disposition": "attachment; filename=rsa-incidents.csv"},
         )
 
-    @router.get("/rsa/incidents/{incident_id}")
-    async def get_incident(
-        incident_id: str, x_api_key: str | None = Header(default=None)
-    ) -> dict[str, Any]:
-        _authorize(x_api_key)
+    @router.get("/rsa/incidents/{incident_id}", dependencies=[guard])
+    async def get_incident(incident_id: str) -> dict[str, Any]:
         row = await repo.get_incident(incident_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Not found")
         return _incident_dict(row)
 
-    @router.patch("/rsa/incidents/{incident_id}")
+    @router.patch("/rsa/incidents/{incident_id}", dependencies=[guard])
     async def update_incident(
-        incident_id: str, payload: _IncidentUpdateRequest,
-        x_api_key: str | None = Header(default=None),
+        incident_id: str,
+        payload: _IncidentUpdateRequest,
     ) -> dict[str, str]:
-        _authorize(x_api_key)
         fields = {k: v for k, v in payload.model_dump().items() if v is not None}
         if not await repo.update_incident(incident_id, **fields):
             raise HTTPException(status_code=404, detail="Not found")
         return {"id": incident_id, "status": "updated"}
 
-    @router.delete("/rsa/incidents/{incident_id}")
-    async def delete_incident(
-        incident_id: str, x_api_key: str | None = Header(default=None)
-    ) -> dict[str, str]:
-        _authorize(x_api_key)
+    @router.delete("/rsa/incidents/{incident_id}", dependencies=[guard])
+    async def delete_incident(incident_id: str) -> dict[str, str]:
         if not await repo.delete_incident(incident_id):
             raise HTTPException(status_code=404, detail="Not found")
         return {"id": incident_id, "status": "deleted"}

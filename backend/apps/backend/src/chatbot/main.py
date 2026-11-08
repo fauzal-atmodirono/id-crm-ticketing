@@ -871,12 +871,10 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         from chatbot.features.rsa.rsa_db import build_engine as build_rsa_engine
         from chatbot.features.rsa.rsa_db import build_session_maker as build_rsa_session_maker
         from chatbot.features.rsa.rsa_repository import PgRsaRepository
-        from chatbot.features.rsa.rsa_router import build_rsa_router
 
         rsa_engine = build_rsa_engine(settings.rsa_database_url)
         rsa_session_maker = build_rsa_session_maker(rsa_engine)
         rsa_repo = PgRsaRepository(rsa_session_maker)
-        app.include_router(build_rsa_router(rsa_repo, settings))
         app.state.rsa_engine = rsa_engine
 
     @app.on_event("startup")
@@ -1117,6 +1115,13 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # off both are None and both routers fall back to the shared-secret check,
     # exactly as they did before this package.
     #
+    # RSA routes need the RBAC pair built just above (sla.manage session), so
+    # they are mounted here rather than in the RSA block.
+    if rsa_repo is not None:
+        from chatbot.features.rsa.rsa_router import build_rsa_router
+
+        app.include_router(build_rsa_router(rsa_repo, settings, authz_repo, authz_validator))
+
     # The routing config router is mounted unconditionally, as it always was --
     # `routing_enabled` gates automatic agent *selection* inside the handler,
     # never the endpoints' existence. `audit`/`authz_repo`/`validator` are new

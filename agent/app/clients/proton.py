@@ -47,12 +47,19 @@ class ProtonConfigClient:
         api_key: str,
         client: httpx.AsyncClient | None = None,
         ttl: float = 60.0,
+        timeout: float = 10.0,
+        slow_timeout: float = 60.0,
+        assist_timeout: float = 30.0,
     ) -> None:
         self._ttl = ttl
+        # Defaults equal the old hardcoded values (10 s config calls, 60 s
+        # /chat/turn); tenants tune them via PROTON_BACKEND_*_TIMEOUT_SECONDS.
+        self._slow_timeout = slow_timeout
+        self._assist_timeout = assist_timeout
         self._client = client or httpx.AsyncClient(
             base_url=base_url,
             headers={"x-api-key": api_key},
-            timeout=10.0,
+            timeout=timeout,
         )
         # Cache entries: path → (data, fetch_monotonic_time)
         self._cache: dict[str, tuple[Any, float]] = {}
@@ -400,7 +407,7 @@ class ProtonConfigClient:
             response = await self._client.post(
                 "/chat/turn",
                 json=payload,
-                timeout=60.0,
+                timeout=self._slow_timeout,
             )
             response.raise_for_status()
             data = response.json()
@@ -484,6 +491,9 @@ class ProtonConfigClient:
             response = await self._client.post(
                 "/assist/suggest",
                 json={"conversation_id": conversation_id, "messages": messages},
+                # KB retrieval + Gemini: 10.5 s under load was dropped by the
+                # default 10 s, losing the escalation-reply AI draft.
+                timeout=self._assist_timeout,
             )
             response.raise_for_status()
             draft = (response.json() or {}).get("draft")

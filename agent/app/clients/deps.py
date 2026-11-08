@@ -43,6 +43,9 @@ def get_proton_config_client() -> ProtonConfigClient | None:
     return ProtonConfigClient(
         base_url=settings.proton_backend_url,
         api_key=settings.proton_backend_key,
+        timeout=settings.proton_backend_timeout_seconds,
+        slow_timeout=settings.proton_backend_slow_timeout_seconds,
+        assist_timeout=settings.proton_assist_timeout_seconds,
     )
 
 

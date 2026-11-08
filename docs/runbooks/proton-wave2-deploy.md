@@ -105,3 +105,24 @@ Proton must accept these limits before the flag is switched on.
   tick "Chatwoot access" on a role whose members are Chatwoot administrators:
   the Chatwoot-access mirror replaces their Chatwoot administrator role with a
   custom role.
+
+## Agent rebuild prerequisites (Task 32)
+
+The agent changes (backend-client timeouts, bounce matching by Message-ID) ship
+only with an agent image rebuild. Do NOT rebuild `proton-agent` until:
+
+1. The `ESCALATION_POLICY_*` vars are restored to `tenants/proton.env` (the
+   running container holds them; the env file lost them).
+2. Bahana changes in `/opt/platform/agent` are reviewed (VM source lags
+   `dev-yuda`; apply each commit's diff with `patch --dry-run`, never copy files).
+
+Optional new env keys (all have safe defaults, so none is required):
+
+| Key | Default | Purpose |
+|---|---|---|
+| `PROTON_BACKEND_TIMEOUT_SECONDS` | 10 | config/short backend calls (incl. `/escalation/contacts`) |
+| `PROTON_BACKEND_SLOW_TIMEOUT_SECONDS` | 60 | `/chat/turn` |
+| `PROTON_ASSIST_TIMEOUT_SECONDS` | 30 | `/assist/suggest` (escalation-reply AI draft; was dropped at 10.5 s) |
+
+Suggested proton values if `/escalation/contacts` still times out: `PROTON_BACKEND_TIMEOUT_SECONDS=20`.
+Bounce matching needs no new env; it still requires `BOUNCE_HANDLING_ENABLED=true`.

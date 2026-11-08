@@ -436,6 +436,12 @@ class Settings(BaseSettings):
     # Proton conversational-AI backend (optional; feature disabled when blank)
     proton_backend_url: str | None = None
     proton_backend_key: str | None = None
+    # Per-request timeouts for the backend client (were hardcoded 10 s / 60 s).
+    # Defaults keep today's behaviour; the assist (draft) call gets its own,
+    # longer budget because KB + Gemini took 10.5 s under load on proton.
+    proton_backend_timeout_seconds: float = 10.0
+    proton_backend_slow_timeout_seconds: float = 60.0
+    proton_assist_timeout_seconds: float = 30.0
 
     @property
     def chatwoot_display_url(self) -> str:

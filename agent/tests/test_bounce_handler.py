@@ -238,3 +238,149 @@ async def test_a_chatwoot_failure_is_swallowed(monkeypatch):
     )
 
     await bounce_handler.maybe_handle_bounce(_payload())
+
+
+# --- Task 32 / CONV-031: match by the quoted Message-ID, not only [CASE-n] ---
+
+ORIG_MID = "conversation/abc-123/messages/77@proton.example"
+
+# A DSN that quotes no [CASE-n] subject tag, only the original Message-ID.
+DSN_NO_TOKEN = f"""** Delivery incomplete **
+Your message to customer@example.com could not be delivered.
+
+----- Original message -----
+Message-ID: <{ORIG_MID}>
+To: customer@example.com
+Subject: Re: my car will not start
+"""
+
+DSN_RFC822 = f"""Content-Type: message/delivery-status
+
+Final-Recipient: rfc822; customer@example.com
+Action: failed
+
+Content-Type: message/rfc822
+
+From: support@proton.example
+To: customer@example.com
+References: <older@x> <{ORIG_MID}>
+Subject: Re: my car will not start
+"""
+
+
+def _stub_search(*, source_id=ORIG_MID, conv=55):
+    """Contact search -> that contact's conversation -> its messages."""
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/contacts/search").mock(
+        return_value=httpx.Response(200, json={"payload": [{"id": 7, "email": "customer@example.com"}]})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/contacts/7/conversations").mock(
+        return_value=httpx.Response(200, json={"payload": [{"id": conv}]})
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/{conv}/messages").mock(
+        return_value=httpx.Response(
+            200,
+            json={"payload": [
+                {"id": 1, "message_type": 0, "source_id": "inbound@x"},
+                {"id": 2, "message_type": 1, "source_id": source_id},
+            ]},
+        )
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations").mock(
+        return_value=httpx.Response(200, json={"data": {"payload": []}})
+    )
+    _stub_conv(conv)
+    return respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/{conv}/messages").mock(
+        return_value=httpx.Response(200, json={"id": 9})
+    )
+
+
+def _stub_conv(cid):
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/{cid}").mock(
+        return_value=httpx.Response(200, json={"id": cid, "custom_attributes": {}})
+    )
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/{cid}/custom_attributes").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    for suffix in ("labels", "toggle_status"):
+        respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/{cid}/{suffix}").mock(
+            return_value=httpx.Response(200, json={})
+        )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/{cid}/labels").mock(
+        return_value=httpx.Response(200, json={"payload": []})
+    )
+
+
+def test_message_ids_extracted_from_headers_and_rfc822_part():
+    assert bounce_handler.extract_message_ids(DSN_NO_TOKEN) == [ORIG_MID]
+    ids = bounce_handler.extract_message_ids(DSN_RFC822)
+    assert ORIG_MID in ids and "older@x" in ids
+
+
+@respx.mock
+async def test_bounce_matched_by_in_reply_to(monkeypatch):
+    """Chatwoot's DSN conversation carries the original Message-ID as the
+    email In-Reply-To; that is enough to find the case."""
+    _enable(monkeypatch)
+    _stub_conv(90)
+    notes = _stub_search()
+    payload = _payload(content="Delivery incomplete to customer@example.com.")
+    payload["content_attributes"]["email"]["in_reply_to"] = f"<{ORIG_MID}>"
+
+    await bounce_handler.maybe_handle_bounce(payload)
+
+    assert notes.called
+    body = json.loads(notes.calls.last.request.read())
+    assert body["private"] is True and "customer@example.com" in body["content"]
+
+
+@respx.mock
+async def test_bounce_without_case_token_posts_note(monkeypatch):
+    _enable(monkeypatch)
+    _stub_conv(90)
+    notes = _stub_search()
+
+    await bounce_handler.maybe_handle_bounce(_payload(content=DSN_NO_TOKEN))
+
+    assert notes.called
+    assert json.loads(notes.calls.last.request.read())["private"] is True
+    stamped = [
+        c for c in respx.calls
+        if c.request.url.path.endswith("/conversations/55/custom_attributes")
+    ]
+    assert stamped
+
+
+@respx.mock
+async def test_bounce_rfc822_part_parsed(monkeypatch):
+    _enable(monkeypatch)
+    _stub_conv(90)
+    notes = _stub_search()
+
+    await bounce_handler.maybe_handle_bounce(_payload(content=DSN_RFC822))
+
+    assert notes.called
+
+
+@respx.mock
+async def test_unrelated_bounce_ignored(monkeypatch):
+    """A Message-ID that no conversation sent: no note anywhere, DSN still
+    tidied."""
+    _enable(monkeypatch)
+    _stub_conv(90)
+    notes = _stub_search(source_id="something-else@x")
+
+    await bounce_handler.maybe_handle_bounce(_payload(content=DSN_NO_TOKEN))
+
+    assert not notes.called
+    assert any(
+        c.request.url.path.endswith("/conversations/90/toggle_status") for c in respx.calls
+    )
+
+
+@respx.mock
+async def test_case_token_still_wins_over_message_id(monkeypatch):
+    _enable(monkeypatch)
+    notes = _stub()  # [CASE-42] path
+    search = respx.get(f"{CHATWOOT}/api/v1/accounts/1/contacts/search")
+    await bounce_handler.maybe_handle_bounce(_payload(content=DSN_BODY + f"\nMessage-ID: <{ORIG_MID}>"))
+    assert notes.called and not search.called

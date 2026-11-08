@@ -44,6 +44,17 @@ _BOUNCE_LABEL = "bounce"
 # quoted original, which is why this reads the body rather than the subject.
 _CASE_TOKEN = re.compile(r"\[CASE-(\d+)\]", re.IGNORECASE)
 
+# RFC 5322 Message-IDs quoted by a DSN in `Message-ID:`, `In-Reply-To:`,
+# `References:` or the attached `message/rfc822` part. Chatwoot stores the
+# Message-ID of each mail it SENDS as that outgoing message's `source_id`
+# (without angle brackets), so a quoted id identifies the originating message
+# even when the subject carries no [CASE-n] tag (a plain agent reply).
+_MESSAGE_ID = re.compile(r"<([^<>\s@]+@[^<>\s]+)>")
+
+# Cap on conversations whose messages are scanned for a source_id, so one
+# unmatched bounce cannot fan out into hundreds of Chatwoot calls.
+_MAX_CANDIDATE_CONVERSATIONS = 15
+
 _ADDRESS = re.compile(r"[\w.+-]+@[\w.-]+\.\w{2,}")
 
 # Senders and subjects that mean "this is a delivery report, not a customer".
@@ -116,6 +127,84 @@ def extract_case_id(text: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def extract_message_ids(text: str) -> list[str]:
+    """Quoted Message-IDs in a DSN body, bracket-stripped, order-preserving."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for mid in _MESSAGE_ID.findall(text or ""):
+        if mid not in seen:
+            seen.add(mid)
+            out.append(mid)
+    return out
+
+
+def _payload_list(raw) -> list:
+    if isinstance(raw, dict):
+        inner = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+        raw = inner.get("payload") or []
+    return [x for x in (raw or []) if isinstance(x, dict)]
+
+
+async def _conversation_sent(chatwoot, conversation_id: int, wanted: set[str]) -> bool:
+    """True when one of this conversation's outgoing messages has a source_id
+    in `wanted`. Looks at the latest page of messages only -- the escalation
+    mail is recent by construction."""
+    for message in _payload_list(await chatwoot.get_messages(conversation_id)):
+        sid = str(message.get("source_id") or "").strip().strip("<>")
+        if sid and sid in wanted:
+            return True
+    return False
+
+
+async def find_case_by_message_id(
+    chatwoot, message_ids: list[str], recipients: list[str], inbox_id, skip_conv
+) -> int | None:
+    """Locate the conversation whose outgoing mail has one of `message_ids`.
+
+    Chatwoot has no query-by-source_id endpoint, so candidates are gathered:
+    first conversations of contacts matching a failed recipient address (the
+    usual case: an agent reply to the customer), then the most recent
+    conversations of the DSN's own inbox. Each is checked for an outgoing
+    message whose source_id is a quoted id. Fail-open: errors skip a candidate.
+    """
+    wanted = {m.strip("<>") for m in message_ids}
+    if not wanted:
+        return None
+    candidates: list[int] = []
+
+    def _add(cid) -> None:
+        if isinstance(cid, int) and cid != skip_conv and cid not in candidates:
+            candidates.append(cid)
+
+    for address in recipients:
+        try:
+            for contact in await chatwoot.search_contacts(address):
+                if str(contact.get("email") or "").lower() != address.lower():
+                    continue
+                for conv in await chatwoot.list_contact_conversations(contact["id"]):
+                    _add(conv.get("id"))
+        except Exception:
+            logger.debug("bounce_handler: contact lookup failed for %s", address, exc_info=True)
+    if inbox_id is not None and len(candidates) < _MAX_CANDIDATE_CONVERSATIONS:
+        try:
+            recent = _payload_list(
+                await chatwoot.list_conversations(status="all", assignee_type="all")
+            )
+            for conv in recent:
+                if conv.get("inbox_id") == inbox_id:
+                    _add(conv.get("id"))
+        except Exception:
+            logger.debug("bounce_handler: recent conversation listing failed", exc_info=True)
+
+    for cid in candidates[:_MAX_CANDIDATE_CONVERSATIONS]:
+        try:
+            if await _conversation_sent(chatwoot, cid, wanted):
+                return cid
+        except Exception:
+            logger.debug("bounce_handler: message scan failed for %s", cid, exc_info=True)
+    return None
+
+
 async def maybe_handle_bounce(payload: dict) -> None:
     """Handle a Chatwoot `message_created` event that is a bounce notice."""
     settings = get_settings()
@@ -130,6 +219,31 @@ async def maybe_handle_bounce(payload: dict) -> None:
     recipients = failed_recipients(body)
 
     chatwoot = get_chatwoot_client()
+
+    if case_id is None:
+        # No [CASE-n] (a plain agent reply, say): fall back to the original
+        # mail's Message-ID, from Chatwoot's parsed In-Reply-To/References on
+        # the DSN itself plus anything quoted in its body.
+        meta = _email_meta(payload)
+        header_blob = " ".join(
+            str(meta.get(k) or "") for k in ("in_reply_to", "references", "message_id")
+        )
+        # Our own DSN's message_id is not the original's, but a stray match
+        # is harmless: it can only equal a source_id of a mail WE sent.
+        ids = extract_message_ids(header_blob + " " + body)
+        bare = str(meta.get("in_reply_to") or "").strip().strip("<>")
+        if bare and bare not in ids:
+            ids.insert(0, bare)  # In-Reply-To may arrive without brackets
+        try:
+            case_id = await find_case_by_message_id(
+                chatwoot,
+                ids,
+                recipients,
+                (payload.get("inbox") or {}).get("id"),
+                bounce_conv_id,
+            )
+        except Exception:
+            logger.exception("bounce_handler: message-id lookup failed")
 
     if case_id is not None:
         try:
@@ -156,7 +270,7 @@ async def maybe_handle_bounce(payload: dict) -> None:
             )
     else:
         logger.info(
-            "bounce_handler: bounce %s carries no case tag; tidying only",
+            "bounce_handler: bounce %s matches no case; tidying only",
             bounce_conv_id,
         )
 

@@ -29,6 +29,7 @@ from chatbot.features.chat.pic_store import DealerRecord, PicRecord
 from chatbot.features.metrics.dashboard_router import build_metrics_query_router
 from chatbot.features.metrics.insights_router import build_metrics_insights_router
 from chatbot.features.metrics.query_adapter import BigQueryMetricsQuery
+from chatbot.features.metrics.test_ai_cost import _FakePrices, _FakeUsagePort
 from chatbot.features.rsa.rsa_repository import InMemoryRsaRepository
 from chatbot.features.rsa.rsa_router import build_rsa_router
 
@@ -341,8 +342,14 @@ def _report_client(repo, port=None, settings=None):
         metrics_api_key=METRICS_KEY, metrics_provider="bigquery", ai_cost_reporting_enabled=True
     )
     port = port or BigQueryMetricsQuery(settings, client=_ScopeHonouringClient({}))
+    # Fakes for the ai-cost readers, so a regression that lets a scoped
+    # caller through can never reach a real BigQuery/Firestore.
     return _client(
-        build_metrics_insights_router(port, settings), repo=repo, validator=FakeValidator(TOKENS)
+        build_metrics_insights_router(
+            port, settings, ai_cost_port=_FakeUsagePort(), price_table=_FakePrices()
+        ),
+        repo=repo,
+        validator=FakeValidator(TOKENS),
     )
 
 
@@ -357,13 +364,21 @@ async def test_ai_cost_and_unfilterable_reports_refuse_a_scoped_caller(tmp_path)
 
 
 def test_only_provably_filtered_report_routes_take_the_scoped_dependency() -> None:
-    """Sweep guard: a route may bind the scope (and so serve a scoped caller)
-    only if every read behind it goes through the adapter's scope-aware
-    blocks on a SCOPABLE_VIEW_COLUMNS view. Adding one means proving it."""
+    """Sweep guard: EVERY insights route declares a scope stance (`scoped`
+    or `unscoped_only`), and a route may bind the scope (so serve a scoped
+    caller) only if every read behind it goes through the adapter's
+    scope-aware blocks on a SCOPABLE_VIEW_COLUMNS view. Adding one means
+    proving it."""
     import re
     from pathlib import Path
 
     src = (Path(__file__).resolve().parents[1] / "metrics" / "insights_router.py").read_text()
+    routes = re.findall(r"@router\.\w+\(([^)]*)\)", src)
+    assert len(routes) >= 11, "guard is not seeing the router's routes"
+    unmarked = [
+        r for r in routes if not re.search(r"dependencies=(scoped|unscoped_only)\s*$", r.strip())
+    ]
+    assert not unmarked, f"routes without a data-scope stance: {unmarked}"
     scoped = set(re.findall(r'@router\.get\("/metrics/([a-z-]+)", dependencies=scoped\)', src))
     assert scoped == {"dealer-escalation", "case-aging"}
 

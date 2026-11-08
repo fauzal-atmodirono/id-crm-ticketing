@@ -72,12 +72,36 @@ Proton must accept these limits before the flag is switched on.
   `/metrics/dealer-escalation` and `/metrics/case-aging`, escalation routing
   (dealer rows for dealer-only scopes, PIC rows for department-only scopes),
   RSA incidents (by their dealer) and the AI activity monitor.
-- **Reports**: every other report returns 403 for a scoped user rather than
-  showing unfiltered figures. No warehouse view has an inbox or team column,
-  and few have a department column, so inbox- and department-scoped users get
-  almost no reports until the views gain those columns.
+- **Reports**: today, **inbox-, team- and department-scoped users get no
+  reports at all.** Every `/metrics/*` report, the dashboard, the export and
+  the anomaly and control-item reports return 403 for them. Only a
+  **dealer-only** scoped user gets reports, and only two:
+  `/metrics/dealer-escalation` and `/metrics/case-aging`, filtered to their
+  dealers. A user scoped on dealers plus anything else also gets none. The
+  reason is that no warehouse view has an inbox or team column, and the views
+  with a department column sit next to views without one in the same report.
+  Every other report is refused rather than shown unfiltered. Adding the
+  columns to the views is a later change.
+- **Admin surfaces not governed by data scope.** These are gated by their RBAC
+  permission only. Anyone holding that permission sees and edits them in full,
+  whatever their scope:
+  - workforce / presence dashboard;
+  - audit log;
+  - SLA policies;
+  - escalation-ladder policy and settings;
+  - case taxonomy admin;
+  - DMS/TSP integration admin;
+  - custom features (superadmin switchboard).
+
+  Grant those permissions only to unrestricted roles.
+- **Dealer region edit point.** A dealer-only scoped user who holds
+  `escalation.manage` can edit their own dealer's routing row, including its
+  `region`. The region decides which PRO-NET regional contacts (Area/Regional
+  Manager, HOD) are CC'd on that dealer's escalations. PRO-NET rows themselves
+  are unrestricted-only. If dealers must not re-point their own region, do not
+  give dealer roles `escalation.manage`.
 - **Administrators**: the RBAC administrator role and platform superadmins are
-  always unrestricted. To confine someone, take them off that role. Do not
+  never restricted. To confine someone, take them off that role. Do not
   tick "Chatwoot access" on a role whose members are Chatwoot administrators:
   the Chatwoot-access mirror replaces their Chatwoot administrator role with a
   custom role.

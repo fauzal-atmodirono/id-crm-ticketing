@@ -89,10 +89,10 @@ index 0000000..630a8c4
 +}
 diff --git a/app/javascript/dashboard/components/widgets/ProtonRoleScopeEditor.vue b/app/javascript/dashboard/components/widgets/ProtonRoleScopeEditor.vue
 new file mode 100644
-index 0000000..89c0a1c
+index 0000000..f5c899a
 --- /dev/null
 +++ b/app/javascript/dashboard/components/widgets/ProtonRoleScopeEditor.vue
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,281 @@
 +<!-- ProtonRoleScopeEditor.vue — OUR file (patch 0084, Wave 2 Task 28 / FIX-48).
 +     The "Data scope" card on Roles & Permissions: which inboxes, teams,
 +     dealers and departments a role's members may see on the Proton
@@ -106,7 +106,8 @@ index 0000000..89c0a1c
 +
 +     Rules the hints repeat (backend: features/authz/data_scope.py): empty
 +     = unrestricted; across a user's scoped roles values add up per
-+     dimension; administrator is always unrestricted and cannot be scoped;
++     dimension; the RBAC administrator role and platform superadmins are
++     never restricted, and administrator cannot be scoped;
 +     Chatwoot's own inbox views follow Chatwoot inbox membership, not this. -->
 +<script>
 +import { useAlert } from 'dashboard/composables';
@@ -241,8 +242,8 @@ index 0000000..89c0a1c
 +        Which records this role’s members see in Customer 360, case fields,
 +        reports, escalation routing, RSA incidents and the AI activity monitor.
 +        Leave everything empty for no restriction. A member of several scoped
-+        roles sees the combined values. Members who also hold the RBAC
-+        administrator role are never restricted.
++        roles sees the combined values. The RBAC administrator role and
++        platform superadmins are never restricted.
 +      </p>
 +      <p class="mt-1 text-xs text-n-slate-11">
 +        To confine someone, give them a scoped role and do not leave them on

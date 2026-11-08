@@ -21,7 +21,8 @@
 # printenv; names only ever printed) into proton.env, sets the agent lifecycle
 # keys, and prints (does not run) `up -d --no-build agent`. Works with --dry-run.
 #
-# Agent-only keys: none in the default (backend) mode. Every key below is a backend Settings field
+# Default (backend) mode applies only backend keys; the agent keys exist only under --agent.
+# Every key in BACKEND_KEYS is a backend Settings field
 # (backend/apps/backend/src/chatbot/platform/config.py); the backend recreate at
 # the end applies them. proton-agent is deliberately NOT recreated.
 set -euo pipefail
@@ -89,13 +90,35 @@ fi
 
 if [ "$agent" = 1 ]; then
   KEYS=()
-  # Values may contain '='; split at the first '=' only. Names are never
-  # echoed with values. Multi-line values are not supported (none expected).
+  # Read the container env first, so a missing container aborts before any write.
+  if ! raw="$(docker exec proton-agent printenv 2>/dev/null)"; then
+    echo "cannot read env from container proton-agent (not running?); nothing written" >&2
+    exit 1
+  fi
+  # Values may contain '='; split at the first '=' only. Only NAMES are ever
+  # printed. The value must survive a compose env-file round trip unchanged,
+  # so anything compose would reinterpret aborts the whole run (key name only).
+  bad=(); last=""
   while IFS= read -r line; do
-    case "$line" in ESCALATION_POLICY_*=*) KEYS+=("$line") ;; esac
-  done < <(docker exec proton-agent printenv)
+    case "$line" in
+      ESCALATION_POLICY_*=*)
+        last="${line%%=*}"; v="${line#*=}"; KEYS+=("$line")
+        case "$v" in
+          *'$'*|*' #'*|*\\*|'"'*|"'"*|' '*|*' '|$'\t'*|*$'\t'|*$'\r') bad+=("$last") ;;
+        esac ;;
+      [A-Za-z_]*=*) last="" ;;
+      *) [ -n "$last" ] && bad+=("$last") ;;  # continuation line = newline in value
+    esac
+  done <<< "$raw"
   if [ "${#KEYS[@]}" -eq 0 ]; then
     echo "no ESCALATION_POLICY_* found in proton-agent; aborting" >&2; exit 1
+  fi
+  if [ "${#bad[@]}" -gt 0 ]; then
+    echo "ABORT: these keys have values that are unsafe to round-trip through an env file" >&2
+    echo "(contain \$, ' #', backslash, leading quote, edge whitespace, or a newline)." >&2
+    printf '  %s\n' $(printf '%s\n' "${bad[@]}" | sort -u) >&2
+    echo "Copy those keys by hand (quote for compose), then re-run. Nothing was written." >&2
+    exit 1
   fi
   KEYS+=("${AGENT_KEYS[@]}")
   RECREATE="$AGENT_RECREATE"

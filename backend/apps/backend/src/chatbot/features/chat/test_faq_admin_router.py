@@ -279,3 +279,32 @@ def test_bulk_store_failure_rolls_back_in_default_mode() -> None:
     body = r.json()
     assert body["created"] == 0 and body["imported"] is False
     assert store.deletes == ["faq-1"]  # the first row that landed was undone
+
+
+def test_bulk_rollback_failure_is_reported_not_swallowed(caplog) -> None:
+    store = FakeLiveFaqStore()
+    real_create = store.create
+
+    async def flaky_create(entry: LiveFaqEntry) -> str:
+        if entry.question == "Second?":
+            raise RuntimeError("store down")
+        return await real_create(entry)
+
+    async def failing_delete(entry_id: str) -> None:
+        raise RuntimeError("delete down")
+
+    store.create = flaky_create  # type: ignore[method-assign]
+    store.delete = failing_delete  # type: ignore[method-assign]
+    client = _client(store)
+    csv_data = b"question,answer,keywords,tags\nFirst?,A,,\nSecond?,B,,\n"
+    with caplog.at_level("ERROR"):
+        r = client.post(
+            "/kb/faq/bulk",
+            files={"file": ("test.csv", csv_data)},
+            headers={"x-api-key": _KEY},
+        )
+    body = r.json()
+    assert body["imported"] is False
+    assert body["rollback_failed_ids"] == ["faq-1"]
+    assert body["created"] == 1  # honest: one entry is still in the store
+    assert "rollback incomplete" in caplog.text

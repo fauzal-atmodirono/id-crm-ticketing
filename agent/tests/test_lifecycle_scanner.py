@@ -308,3 +308,42 @@ async def test_scan_does_not_close_before_grace_elapses(monkeypatch):
     await lifecycle_scanner.scan_once()
     assert await lifecycle_store.get_state(71) == "idle_warned"
     client.create_message.assert_not_awaited()
+
+
+def test_decide_idle_action_does_not_close_a_customer_who_replied():
+    d = lifecycle_scanner.decide_idle_action
+    assert d("idle_warned", 1, 6, 10, 15, 10, grace_after=5, replied_since_warning=True) is None
+
+
+async def test_scan_does_not_close_when_customer_replied_after_warning(monkeypatch):
+    """FIX-52 review: the state was NOT reset to ACTIVE (bot webhook missed) but
+    last_activity_at moved past warned_at -> a reply, so never close."""
+    from datetime import timedelta
+
+    client = AsyncMock()
+    base = datetime.now(timezone.utc)
+    now = base + timedelta(minutes=6)
+    reply_at = base + timedelta(minutes=3)
+    client.list_conversations.side_effect = lambda status=None, assignee_type=None: (
+        {"data": {"payload": [
+            {"id": 72, "inbox_id": 4, "last_activity_at": int(reply_at.timestamp()),
+             "meta": {"assignee": None}},
+        ]}} if status == "pending" else {"data": {"payload": []}}
+    )
+    client.get_inbox.return_value = {
+        "channel_type": "Channel::Whatsapp", "working_hours_enabled": False,
+    }
+    monkeypatch.setattr(lifecycle_scanner, "get_chatwoot_client", lambda: client)
+    monkeypatch.setattr(lifecycle, "get_chatwoot_client", lambda: client)
+    monkeypatch.setattr(lifecycle_scanner, "_now", lambda: now)
+    await lifecycle_store.seed_active(72, channel="Channel::Whatsapp")
+    await lifecycle_store.transition(72, lifecycle.IDLE_WARNED, warned_at=base)
+    await lifecycle_scanner.scan_once()
+    assert await lifecycle_store.get_state(72) == "idle_warned"
+    client.create_message.assert_not_awaited()
+
+
+def test_idle_warning_with_zero_grace_does_not_say_zero_minutes():
+    text = lifecycle.render_idle_warning(lifecycle.IDLE_WARNING_DEFAULT, 0)
+    assert "0 minutes" not in text and "shortly" in text
+    assert lifecycle.render_idle_warning("Closing in {{minutes}} minutes.", 5) == "Closing in 5 minutes."

@@ -38,6 +38,7 @@ def decide_idle_action(
     close_after: float,
     confirm_after: float,
     grace_after: float | None = None,
+    replied_since_warning: bool = False,
 ) -> str | None:
     if state == lifecycle.ACTIVE and idle_minutes >= warn_after:
         return "warn"
@@ -49,7 +50,13 @@ def decide_idle_action(
         # warn+grace minutes AFTER the warning (~16 min live for a promised 5).
         # Measure the promised grace from the warning (state age) instead, so
         # the close lands within one sweep of warn+grace.
-        if grace_after is not None and state_age_minutes >= grace_after:
+        # Only when the customer stayed silent: if the bot webhook reset to
+        # ACTIVE was missed, a customer who did reply must not be closed.
+        if (
+            grace_after is not None
+            and state_age_minutes >= grace_after
+            and not replied_since_warning
+        ):
             return "close"
     if state in (lifecycle.AWAITING_RESOLUTION, lifecycle.AWAITING_SURVEY):
         if state_age_minutes >= confirm_after:
@@ -58,6 +65,26 @@ def decide_idle_action(
             # a survey score, by design (no rating is better than a stale one).
             return "resolve_timeout"
     return None
+
+
+# Posting the warning bumps last_activity_at a moment before the state row is
+# stamped; activity later than warned_at + this is a real customer message.
+_WARN_REPLY_TOLERANCE_SECONDS = 30
+
+
+def _replied_since_warning(row, conv: dict) -> bool:
+    """True when Chatwoot saw activity after the warning we posted (a customer
+    reply). Fail-safe towards NOT closing when the timestamps say so; with no
+    row/timestamps there is nothing to compare, so assume no reply."""
+    if row is None:
+        return False
+    warned_at = row.warned_at or row.state_changed_at
+    last = conv.get("last_activity_at")
+    if warned_at is None or not last:
+        return False
+    if warned_at.tzinfo is None:
+        warned_at = warned_at.replace(tzinfo=timezone.utc)
+    return float(last) > warned_at.timestamp() + _WARN_REPLY_TOLERANCE_SECONDS
 
 
 def _payload_list(raw) -> list:
@@ -183,6 +210,7 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
     action = decide_idle_action(
         state, idle, state_age, warn_after, close_after, confirm_after,
         grace_after=grace,
+        replied_since_warning=_replied_since_warning(row, conv),
     )
     if action is None:
         return

@@ -1,0 +1,128 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] FAQ bulk upload: show "Nothing imported" and offer "Import
+ valid rows only" (Wave 2 Task 30, FIX-53)
+
+The backend /kb/faq/bulk is now all-or-nothing: a CSV with any bad row
+imports nothing and answers { created: 0, imported: false, errors }. This
+patch shows that outcome with the per-row errors and an "Import valid rows
+only" button that re-sends the same file with ?partial=true. A new patch (not
+an edit of 0040/0061) so the earlier patches stay byte-identical.
+
+---
+diff --git a/app/javascript/dashboard/api/protonKnowledge.js b/app/javascript/dashboard/api/protonKnowledge.js
+--- a/app/javascript/dashboard/api/protonKnowledge.js
++++ b/app/javascript/dashboard/api/protonKnowledge.js
+@@ -49,13 +49,15 @@
+ }
+ 
+ // POST /kb/faq/bulk  (multipart CSV upload — cannot use kbRequest which forces
+-// JSON). Returns { created: <int>, errors: [{ row, reason }, ...] }.
+-export async function bulkUploadFaqs(file) {
++// JSON). Returns { created, errors: [{ row, reason }, ...], imported }.
++// All-or-nothing by default: any bad row -> imported:false and nothing is
++// created. { partial: true } sends ?partial=true (import the valid rows only).
++export async function bulkUploadFaqs(file, { partial = false } = {}) {
+   const { backendUrl, backendKey } = useProtonConfig();
+   if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
+   const form = new FormData();
+   form.append('file', file);
+-  const response = await fetch(`${backendUrl}/kb/faq/bulk`, {
++  const response = await fetch(`${backendUrl}/kb/faq/bulk${partial ? '?partial=true' : ''}`, {
+     method: 'POST',
+     headers: { ...(backendKey ? { 'x-api-key': backendKey } : {}) }, // NO Content-Type — browser sets multipart boundary
+     body: form,
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeFaqs.vue b/app/javascript/dashboard/components/proton/KnowledgeFaqs.vue
+--- a/app/javascript/dashboard/components/proton/KnowledgeFaqs.vue
++++ b/app/javascript/dashboard/components/proton/KnowledgeFaqs.vue
+@@ -22,6 +22,9 @@
+ // Bulk CSV upload
+ const bulkFileInputRef = ref(null);
+ const bulkUploading = ref(false);
++// A rejected (all-or-nothing) upload: { file, errors } so the operator can fix
++// the CSV or re-send the valid rows only.
++const bulkRejected = ref(null);
+ 
+ const modalOpen = ref(false);
+ const saving = ref(false);
+@@ -146,11 +149,17 @@
+   // Reset so the same file can be re-uploaded after a fix
+   event.target.value = '';
+   bulkUploading.value = true;
++  bulkRejected.value = null;
+   try {
+     const result = await bulkUploadFaqs(file);
+     const created = result.created || 0;
+     const errors = Array.isArray(result.errors) ? result.errors : [];
+-    if (errors.length) {
++    if (result.imported === false) {
++      bulkRejected.value = { file, errors };
++      useAlert(
++        'Nothing imported — fix the errors or import valid rows only.'
++      );
++    } else if (errors.length) {
+       const preview = errors
+         .slice(0, 5)
+         .map(e => `row ${e.row}: ${e.reason}`)
+@@ -170,6 +179,26 @@
+     } else {
+       useAlert(`Bulk upload failed: ${err.message}`);
+     }
++  } finally {
++    bulkUploading.value = false;
++  }
++};
++
++const importValidRowsOnly = async () => {
++  const pending = bulkRejected.value;
++  if (!pending) return;
++  bulkUploading.value = true;
++  try {
++    const result = await bulkUploadFaqs(pending.file, { partial: true });
++    const created = result.created || 0;
++    const skipped = Array.isArray(result.errors) ? result.errors.length : 0;
++    useAlert(
++      `Bulk upload: ${created} entr${created === 1 ? 'y' : 'ies'} created, ${skipped} row${skipped === 1 ? '' : 's'} skipped.`
++    );
++    bulkRejected.value = null;
++    await load();
++  } catch (err) {
++    useAlert(`Bulk upload failed: ${err.message}`);
+   } finally {
+     bulkUploading.value = false;
+   }
+@@ -221,6 +250,35 @@
+       </span>
+     </div>
+ 
++    <div
++      v-if="bulkRejected"
++      class="flex-shrink-0 px-4 py-3 text-sm border-b border-n-weak text-n-slate-12"
++    >
++      <div class="font-medium">
++        Nothing imported — fix the errors or import valid rows only.
++      </div>
++      <ul class="mt-1 text-xs list-disc list-inside text-n-slate-11">
++        <li v-for="e in bulkRejected.errors.slice(0, 10)" :key="e.row">
++          row {{ e.row }}: {{ e.reason }}
++        </li>
++      </ul>
++      <div class="flex gap-2 mt-2">
++        <button
++          class="px-3 py-1.5 text-sm font-medium text-white rounded-lg bg-n-brand hover:brightness-95 disabled:opacity-50"
++          :disabled="bulkUploading"
++          @click="importValidRowsOnly"
++        >
++          Import valid rows only
++        </button>
++        <button
++          class="px-3 py-1.5 text-sm font-medium rounded-lg text-n-slate-12 border border-n-weak hover:bg-n-alpha-black1"
++          @click="bulkRejected = null"
++        >
++          Dismiss
++        </button>
++      </div>
++    </div>
++
+     <div class="flex-1 p-4 overflow-auto">
+       <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
+         Loading knowledge…

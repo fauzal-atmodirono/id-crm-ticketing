@@ -159,6 +159,14 @@ def _resolve_lifecycle_message(
 def render_idle_warning(text: str, minutes: int) -> str:
     """Replace the {{minutes}} token with the effective close-grace value.
     A message without the token is returned unchanged (backward compatible)."""
+    if minutes <= 0:
+        # Zero grace (out-of-hours default): "in 0 minutes" reads as a bug.
+        return (
+            text.replace("in {{minutes}} minutes", "shortly")
+            .replace("in {{minutes}} minute", "shortly")
+            .replace("{{minutes}} minutes", "shortly")
+            .replace("{{minutes}}", "shortly")
+        )
     return text.replace("{{minutes}}", str(minutes))
 
 

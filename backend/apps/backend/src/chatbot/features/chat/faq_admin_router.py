@@ -1,6 +1,7 @@
 """Admin CRUD for the real-time, CRM-editable FAQ knowledge base.
 
-`POST /kb/faq`, `PUT /kb/faq/{id}`, `DELETE /kb/faq/{id}`, `GET /kb/faq`.
+`POST /kb/faq`, `PUT /kb/faq/{id}`, `DELETE /kb/faq/{id}`, `GET /kb/faq`,
+`POST /kb/faq/bulk` (CSV; all-or-nothing, `?partial=true` imports valid rows only).
 Writes (and the listing) are guarded by an `x-api-key` header compared
 constant-time against `Settings.faq_admin_api_key` (mirrors how the feedback
 router guards `/kb/feedback`). An empty configured key 401s everything.
@@ -13,6 +14,7 @@ from __future__ import annotations
 import csv
 import hmac
 import io
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +22,8 @@ from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from chatbot.features.chat.ports import LiveFaqEntry
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from chatbot.features.chat.adapters.faq_ratings import FaqRatingPort
@@ -182,7 +186,8 @@ def build_faq_admin_router(
         # FIX-53: all-or-nothing by default. Validate every row before touching
         # the store, so a CSV with one bad row imports nothing and the operator
         # fixes the file once instead of hunting for what half-landed.
-        # ?partial=true keeps the old row-by-row behaviour.
+        # ?partial=true keeps the old row-by-row behaviour (the CRM's "Import valid
+        # rows only" button).
         reader = csv.DictReader(io.StringIO(text))
         errors: list[dict[str, Any]] = []
         valid: list[tuple[int, LiveFaqEntry]] = []
@@ -218,14 +223,31 @@ def build_faq_admin_router(
             except Exception as exc:
                 errors.append({"row": i, "reason": str(exc)})
                 if not partial:
-                    # A store failure mid-import: undo what landed (best
-                    # effort) so the all-or-nothing promise still holds.
+                    # A store failure mid-import: undo what landed so the
+                    # all-or-nothing promise holds. Rollback can itself fail,
+                    # so say which ids are still in the store.
+                    rollback_failed: list[str] = []
                     for entry_id in created_ids:
                         try:
                             await _require_store().delete(entry_id)
                         except Exception:
-                            pass
-                    return {"created": 0, "errors": errors, "imported": False}
+                            rollback_failed.append(entry_id)
+                    if rollback_failed:
+                        logger.error(
+                            "faq bulk import rollback incomplete: %d of %d created entries "
+                            "could not be deleted: %s",
+                            len(rollback_failed),
+                            len(created_ids),
+                            rollback_failed,
+                        )
+                    result: dict[str, Any] = {
+                        "created": len(rollback_failed),
+                        "errors": errors,
+                        "imported": False,
+                    }
+                    if rollback_failed:
+                        result["rollback_failed_ids"] = rollback_failed
+                    return result
         return {"created": len(created_ids), "errors": errors, "imported": True}
 
     return router

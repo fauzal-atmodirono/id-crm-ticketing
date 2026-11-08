@@ -72,7 +72,7 @@ new file mode 100644
 index 0000000..65efce0
 --- /dev/null
 +++ b/app/javascript/dashboard/views/ProtonAiActivityPage.vue
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,186 @@
 +<!-- ProtonAiActivityPage.vue — OUR file. Master view of every AI-handled
 +     conversation (RFP 2026_028 3.2.5): one row per conversation with its mode
 +     (AI active / AI paused = human took over / escalated, waiting for a
@@ -105,6 +105,8 @@ index 0000000..65efce0
 +      refreshNote: '',
 +      intervalSeconds: 15,
 +      sources: {},
++      truncated: {},
++      modesInferred: true,
 +      summary: {},
 +      conversations: [],
 +      loading: true,
@@ -113,6 +115,11 @@ index 0000000..65efce0
 +    };
 +  },
 +  computed: {
++    truncatedSources() {
++      return Object.entries(this.truncated)
++        .filter(([, cut]) => cut)
++        .map(([name]) => name);
++    },
 +    unavailableSources() {
 +      return Object.entries(this.sources)
 +        .filter(([, state]) => state !== 'ok')
@@ -135,6 +142,8 @@ index 0000000..65efce0
 +        this.refreshNote = data.refresh?.note || '';
 +        this.intervalSeconds = data.refresh?.recommended_interval_seconds || 15;
 +        this.sources = data.sources || {};
++        this.truncated = data.truncated || {};
++        this.modesInferred = data.modes_inferred !== false;
 +        this.summary = data.summary || {};
 +        this.conversations = Array.isArray(data.conversations)
 +          ? data.conversations
@@ -178,6 +187,14 @@ index 0000000..65efce0
 +    <p v-if="generatedAt" class="mb-3 text-xs text-n-slate-11">
 +      Last updated {{ new Date(generatedAt).toLocaleString() }} —
 +      {{ refreshNote }}
++    </p>
++    <p v-if="modesInferred" class="mb-3 text-xs text-n-slate-11">
++      Modes are inferred from conversation state (pending, paused, escalated),
++      not read from the AI's own decision log.
++    </p>
++    <p v-if="truncatedSources.length" class="mb-3 text-xs text-n-ruby-11">
++      List truncated for: {{ truncatedSources.join(', ') }}. Only the most
++      recent conversations are shown.
 +    </p>
 +    <p v-if="unavailableSources.length" class="mb-3 text-xs text-n-ruby-11">
 +      Could not read: {{ unavailableSources.join(', ') }}. Rows from the other

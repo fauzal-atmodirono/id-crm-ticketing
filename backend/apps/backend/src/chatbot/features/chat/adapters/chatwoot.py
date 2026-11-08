@@ -63,6 +63,14 @@ _ACTIVE_STATUSES = frozenset({"open", "pending", "snoozed"})
 _DIVISION_DISPLAY = {"Aftersales": "After Sales"}
 
 
+class ConversationListing(list):
+    """A list of conversations plus a ``truncated`` flag: True when the page cap
+    was hit or a later page failed, so callers can say "showing the first N"
+    instead of presenting a partial list as complete."""
+
+    truncated: bool = False
+
+
 def _conversations_from(res: Any) -> list[dict[str, Any]]:
     """Normalize a Chatwoot conversation-list response to a list of dicts.
 
@@ -110,6 +118,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         self._pic_registry = pic_registry
         self._escalation_notifier = escalation_notifier
         self._paused_sessions: set[str] = set()
+        self._pause_fs_client: firestore.Client | None = None
         self._conv_by_session: dict[str, str] = {}
         self._routing_service: RoutingService | None = None
         self._channel_cache: str | None = None
@@ -673,27 +682,38 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         return conversations
 
     async def list_conversations_by_status(
-        self, status: str, *, assignee_type: str | None = None, max_pages: int = 2
-    ) -> list[dict[str, Any]]:
+        self,
+        status: str,
+        *,
+        assignee_type: str | None = None,
+        label: str | None = None,
+        max_pages: int = 2,
+    ) -> ConversationListing:
         """Conversations in one status across ALL inboxes (read-only; the AI
         activity monitor). Unlike ``list_conversations`` this does not filter to
         our inbox. Raises on a failed first page so callers can tell an outage
         from an empty list; later-page failures just truncate."""
-        out: list[dict[str, Any]] = []
+        out = ConversationListing()
         for page_num in range(1, max_pages + 1):
             path = f"/conversations?status={quote(status, safe='')}&page={page_num}"
             if assignee_type:
                 path += f"&assignee_type={quote(assignee_type, safe='')}"
+            if label:
+                # Server-side label filter, so a page cap cannot hide them.
+                path += f"&labels[]={quote(label, safe='')}"
             res = await self._request("GET", path)
             if not isinstance(res, dict):
                 if page_num == 1:
                     raise RuntimeError("chatwoot conversation list unavailable")
+                out.truncated = True  # a later page failed
                 break
             data = res.get("data")
             batch = data.get("payload") if isinstance(data, dict) else res.get("payload")
             if not isinstance(batch, list) or not batch:
                 break
             out.extend(c for c in batch if isinstance(c, dict))
+            if page_num == max_pages:
+                out.truncated = True  # cap reached with a non-empty last page
         return out
 
     # --- ChatPort ---
@@ -795,6 +815,17 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             {"content": text, "message_type": "outgoing", "private": True},
         )
 
+    def _pause_client(self) -> firestore.Client:
+        # ONE client reused across pause reads/writes: the AI activity monitor
+        # checks many sessions per refresh, and a client per call is a
+        # connection setup each time.
+        if self._pause_fs_client is None:
+            self._pause_fs_client = firestore.Client(
+                project=self._settings.firestore_project_id,
+                database=self._settings.firestore_database_id,
+            )
+        return self._pause_fs_client
+
     async def pause_ai_for_session(self, session_id: str) -> None:
         _log.info("pausing_ai_for_session", session_id=session_id)
         self._paused_sessions.add(session_id)
@@ -814,10 +845,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         if self._settings.handoff_store != "firestore":
             return False
         try:
-            client = firestore.Client(
-                project=self._settings.firestore_project_id,
-                database=self._settings.firestore_database_id,
-            )
+            client = self._pause_client()
             snap = await asyncio.to_thread(
                 lambda: client.collection("paused_sessions").document(session_id).get()
             )
@@ -832,10 +860,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         if self._settings.handoff_store != "firestore":
             return
         try:
-            client = firestore.Client(
-                project=self._settings.firestore_project_id,
-                database=self._settings.firestore_database_id,
-            )
+            client = self._pause_client()
             doc = client.collection("paused_sessions").document(session_id)
             if paused:
                 await asyncio.to_thread(lambda: doc.set({"paused": True}))

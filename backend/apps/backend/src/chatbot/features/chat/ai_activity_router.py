@@ -21,6 +21,9 @@ conversation a human took over shows as ``ai_paused``.
 "Real time" means a poll: the response is cached for ~12 s and the page polls
 on the ``refresh`` block it is given -- not a pushed stream.
 
+Modes are INFERRED from Chatwoot state (not read from the agent's ai_actions).
+A source that hit its page cap reports ``truncated[...] = true``.
+
 Fail-open per source: Chatwoot being unreadable for one of the two lists
 degrades that list to ``sources[...] == "unavailable"`` and never 500s or
 blanks the other. A pause-lookup failure treats the conversation as active.
@@ -51,6 +54,11 @@ CACHE_SECONDS = 12.0
 _REFRESH_SECONDS = 15
 _ESCALATE_LABEL = "escalate"
 _PREVIEW_CHARS = 160
+# Pause lookups are bounded: at most 8 in flight and 2 s overall. Anything not
+# answered in time reads as ai_active (fail-open), so a slow Firestore can
+# never stall the monitor page.
+_PAUSE_CONCURRENCY = 8
+_PAUSE_BUDGET_SECONDS = 2.0
 
 
 def _last_action(conv: dict[str, Any]) -> dict[str, Any] | None:
@@ -122,18 +130,32 @@ def build_ai_activity_router(
 
     async def _build() -> dict[str, Any]:
         pending, unassigned = await asyncio.gather(
-            _fetch("pending"), _fetch("open", assignee_type="unassigned")
+            _fetch("pending"),
+            # Label filtered server-side so the page cap cannot hide them.
+            _fetch("open", assignee_type="unassigned", label=_ESCALATE_LABEL),
         )
         rows: list[dict[str, Any]] = []
         if pending:
-            paused = await asyncio.gather(*(_paused(c) for c in pending))
+            results: dict[int, bool] = {}
+            gate = asyncio.Semaphore(_PAUSE_CONCURRENCY)
+
+            async def _one(i: int, conv: dict[str, Any]) -> None:
+                async with gate:
+                    results[i] = await _paused(conv)
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*(_one(i, c) for i, c in enumerate(pending))),
+                    timeout=_PAUSE_BUDGET_SECONDS,
+                )
+            except TimeoutError:
+                _log.warning("ai_activity_pause_budget_exceeded", answered=len(results))
             rows += [
-                _row(c, "ai_paused" if p else "ai_active")
-                for c, p in zip(pending, paused, strict=True)
+                _row(c, "ai_paused" if results.get(i) else "ai_active")
+                for i, c in enumerate(pending)
             ]
         for c in unassigned or []:
-            if _ESCALATE_LABEL in (c.get("labels") or []):
-                rows.append(_row(c, "escalated"))
+            rows.append(_row(c, "escalated"))
         rows.sort(key=lambda r: r.get("last_activity_at") or 0, reverse=True)
         summary = {
             m: sum(1 for r in rows if r["mode"] == m)
@@ -144,6 +166,11 @@ def build_ai_activity_router(
             "refresh": {
                 "recommended_interval_seconds": _REFRESH_SECONDS,
                 "note": "Live poll (cached ~12s), not a pushed stream.",
+            },
+            "modes_inferred": True,
+            "truncated": {
+                "pending": bool(getattr(pending, "truncated", False)),
+                "escalated": bool(getattr(unassigned, "truncated", False)),
             },
             "sources": {
                 "pending": "ok" if pending is not None else "unavailable",

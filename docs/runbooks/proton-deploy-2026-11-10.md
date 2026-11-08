@@ -170,3 +170,17 @@ proton's running container keeps the new image. Note a later proton recreate wit
 `proton-20261110` back to `latest`, and re-pin afterwards. The patched source in
 `/opt/platform/backend` is also what any `--build` uses, so the others still must not
 rebuild until reviewed.
+
+## Wave 2 note: AI activity monitor (FIX-43) needs an enable step
+
+The page ships with backend route `GET /admin/ai-activity` and fork patch 0081
+(Chatwoot image rc17+). It stays invisible until both gates agree:
+
+1. A superadmin turns on the custom feature `ai_activity` ("AI activity monitor",
+   group AI) on the Custom Features page for the tenant. An absent key is OFF.
+2. The user's role has permission `ai_activity.view`. `administrator` gets it from
+   the authz seed on boot (`seed_defaults`); confirm it on proton after the backend
+   recreate, and grant it to any custom role that should see the page.
+
+The page labels its modes "inferred": they come from Chatwoot state (pending,
+paused, escalated), not the agent's `ai_actions` log. No agent change is involved.

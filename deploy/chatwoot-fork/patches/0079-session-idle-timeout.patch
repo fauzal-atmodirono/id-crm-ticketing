@@ -1,9 +1,9 @@
 diff --git a/app/javascript/dashboard/composables/idleMonitor.js b/app/javascript/dashboard/composables/idleMonitor.js
 new file mode 100644
-index 0000000..7ee2c0f
+index 0000000..5f1b877
 --- /dev/null
 +++ b/app/javascript/dashboard/composables/idleMonitor.js
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,89 @@
 +// Pure idle-timeout monitor (FIX-18, patch 0079). No imports and no globals,
 +// so it can be unit-tested under plain node: every side effect (clock, timers,
 +// shared storage, the logout itself) is injected.
@@ -19,6 +19,9 @@ index 0000000..7ee2c0f
 +  now = () => Date.now(),
 +  storage = null,
 +  onIdle,
++  // Returns true while something (an active softphone call) must keep the
++  // session alive despite no input. Polled, never cached.
++  hold = () => false,
 +  setIntervalFn = setInterval,
 +  clearIntervalFn = clearInterval,
 +}) {
@@ -46,40 +49,73 @@ index 0000000..7ee2c0f
 +      /* storage blocked: per-tab tracking still works */
 +    }
 +  };
++  const isHeld = () => {
++    try {
++      return !!hold();
++    } catch (e) {
++      return false;
++    }
++  };
++  const fire = () => {
++    fired = true; // fire once; the logout navigates away
++    try {
++      // Clear the shared stamp so the login page (and the next session) does
++      // not see this expired one and sign out again.
++      if (storage && storage.removeItem) storage.removeItem(ACTIVITY_KEY);
++    } catch (e) {
++      /* ignore */
++    }
++    onIdle();
++    return true;
++  };
 +  const check = () => {
 +    if (fired) return false;
++    if (isHeld()) {
++      // Held (in a call): the clock restarts from now, so the full window
++      // runs only after the hold is released.
++      touch();
++      return false;
++    }
 +    const latest = Math.max(last, read());
 +    if (now() - latest >= timeoutMs) {
-+      fired = true; // fire once; the logout navigates away
-+      onIdle();
-+      return true;
++      return fire();
 +    }
 +    return false;
 +  };
-+  touch();
++  // Reload/reopen bypass: judge the stamp left by the previous page load BEFORE
++  // touching, or reopening the app after the timeout would reset the clock.
++  const previous = read();
++  if (previous > 0 && now() - previous >= timeoutMs && !isHeld()) {
++    fire();
++  } else {
++    touch();
++  }
 +  const timer = setIntervalFn(check, CHECK_EVERY_MS);
 +  return { enabled: true, touch, check, stop: () => clearIntervalFn(timer) };
 +}
 diff --git a/app/javascript/dashboard/composables/useProtonConfig.js b/app/javascript/dashboard/composables/useProtonConfig.js
-index d93ec0e..60f6d5e 100644
+index d93ec0e..3dbc447 100644
 --- a/app/javascript/dashboard/composables/useProtonConfig.js
 +++ b/app/javascript/dashboard/composables/useProtonConfig.js
-@@ -6,3 +6,9 @@ export function useProtonConfig() {
+@@ -1,3 +1,4 @@
++import { installProtonIdleTimeout } from './useProtonIdleTimeout';
+ export function useProtonConfig() {
+   const cfg = window.__PROTON_CONFIG__ || { backendUrl: '', backendKey: '', features: [] };
+   return {
+@@ -6,3 +7,7 @@ export function useProtonConfig() {
      hasFeature: (name) => Array.isArray(cfg.features) && cfg.features.includes(name),
    };
  }
 +
-+// Session idle timeout (FIX-18, patch 0079). Importing this module on the
-+// dashboard is what arms the watcher; see useProtonIdleTimeout.js.
-+import { installProtonIdleTimeout } from './useProtonIdleTimeout';
-+
++// Session idle timeout (FIX-18, patch 0079): importing this module on the
++// dashboard arms the watcher; see useProtonIdleTimeout.js.
 +installProtonIdleTimeout();
 diff --git a/app/javascript/dashboard/composables/useProtonIdleTimeout.js b/app/javascript/dashboard/composables/useProtonIdleTimeout.js
 new file mode 100644
-index 0000000..6c304a8
+index 0000000..d138a77
 --- /dev/null
 +++ b/app/javascript/dashboard/composables/useProtonIdleTimeout.js
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,70 @@
 +// Idle-timeout wiring (FIX-18, patch 0079). RFP 2026_028 7.5 asks for
 +// "Idle Time-out Rules"; Chatwoot has none (Devise timeoutable is off and the
 +// session token lasts 2 months). The minutes come from the Rails layout
@@ -92,13 +128,17 @@ index 0000000..6c304a8
 +let installed = false;
 +
 +async function signOut() {
-+  // Best effort: invalidate the token server-side, then always drop the
-+  // browser session so the next navigation lands on the login page.
++  // Best effort: invalidate the token server-side, but never let a hung network
++  // block the local sign-out -- 3 s abort, and cookie removal + redirect always
++  // run in finally.
++  const ctrl = new AbortController();
++  const timer = setTimeout(() => ctrl.abort(), 3000);
 +  try {
 +    if (Auth.hasAuthCookie()) {
 +      const a = Auth.getAuthData();
 +      await fetch('/auth/sign_out', {
 +        method: 'DELETE',
++        signal: ctrl.signal,
 +        headers: {
 +          'access-token': a['access-token'],
 +          client: a.client,
@@ -107,10 +147,12 @@ index 0000000..6c304a8
 +      });
 +    }
 +  } catch (e) {
-+    /* the cookie removal below still ends the session client-side */
++    /* aborted or failed: fall through to the local sign-out */
++  } finally {
++    clearTimeout(timer);
++    Cookies.remove('cw_d_session_info');
++    window.location.href = '/app/login';
 +  }
-+  Cookies.remove('cw_d_session_info');
-+  window.location.href = '/app/login';
 +}
 +
 +export function installProtonIdleTimeout() {
@@ -128,6 +170,9 @@ index 0000000..6c304a8
 +    timeoutMinutes: minutes,
 +    storage,
 +    onIdle: signOut,
++    hold: () =>
++      typeof window.__PROTON_IDLE_HOLD__ === 'function' &&
++      window.__PROTON_IDLE_HOLD__(),
 +  });
 +  // Throttle the storage write: input events fire many times a second.
 +  let lastTouch = 0;

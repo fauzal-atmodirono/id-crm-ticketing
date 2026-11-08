@@ -169,7 +169,7 @@ new file mode 100644
 index 0000000..b2c3d4e
 --- /dev/null
 +++ b/app/javascript/dashboard/composables/useProtonSoftphone.js
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,176 @@
 +// useProtonSoftphone.js — OUR file. Owns the Twilio Device for this tab.
 +//
 +// Installed from Sidebar.vue because the sidebar is mounted on every dashboard
@@ -181,6 +181,7 @@ index 0000000..b2c3d4e
 +// would be worse than one that does not ring.
 +import { ref, onBeforeUnmount } from 'vue';
 +import { Device } from '@twilio/voice-sdk';
++import { watch } from 'vue';
 +import {
 +  fetchAgentVoiceToken,
 +  sendSoftphoneHeartbeat,
@@ -321,6 +322,16 @@ index 0000000..b2c3d4e
 +    stopElapsed();
 +    unregisterSoftphone().catch(() => {});
 +    device?.destroy();
++  });
++
++  // Idle-timeout hold (patch 0079): a call can outlast the idle window with no
++  // mouse/keyboard input, and signing the agent out would drop it. 0079's
++  // monitor polls window.__PROTON_IDLE_HOLD__ and defers logout while true.
++  watch(status, v => {
++    window.__PROTON_IDLE_HOLD__ = () => v === 'in-call' || v === 'ringing';
++  });
++  onBeforeUnmount(() => {
++    window.__PROTON_IDLE_HOLD__ = undefined;
 +  });
 +
 +  return {

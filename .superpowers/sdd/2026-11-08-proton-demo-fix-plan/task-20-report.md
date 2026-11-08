@@ -21,3 +21,18 @@ patches/0079-session-idle-timeout.patch (new files idleMonitor.js, useProtonIdle
 - Image not built; vite/Rails build unverified. Layout hunk verified only against synthetic post-0058 context (real build will confirm).
 - Assumes upstream names: cookie `cw_d_session_info`, `dashboard/api/auth` default export with hasAuthCookie/getAuthData (the latter two used by patch 0030), `js-cookie` dependency, `/app/login` route.
 - Enabling: set SESSION_IDLE_TIMEOUT_MINUTES in tenants/proton.env (user runs the script; stale compose trap: VM compose file must have the new x-chatwoot-env lines) and rebuild image rc17+.
+
+## Fix report (review findings)
+Scope statement for RFP 7.5 sign-off: this is a presentation-level, client-enforced idle timeout (SPA signs the user out); SESSION_TOKEN_LIFESPAN_HOURS is the server-side absolute backstop, not an idle timer. Do not describe it as server-enforced idle expiry.
+
+Changes:
+1. Reload bypass: createIdleMonitor reads the stored stamp before touching; stale (>= timeout) fires onIdle immediately. The stamp is removed on fire so the login page/next session does not re-fire.
+2. Calls: new `hold` option (polled; throwing = not held). While held, check() touches, so the full window restarts after release. useProtonIdleTimeout passes `window.__PROTON_IDLE_HOLD__`; patch 0069 (useProtonSoftphone.js, additive lines, hunk count 165 -> 175) publishes it true during 'in-call'/'ringing'.
+3. signOut: AbortController 3 s abort; clearTimeout, cookie removal and redirect in finally.
+Minor: appended import moved to top of useProtonConfig.js (only 0001 creates it, no later patch touches it; simulate chain ok).
+
+Covering tests (node cases inside test_idle_monitor_logout_behaviour, plus test_signout_has_timeout_and_finally, test_softphone_publishes_idle_hold): stale stamp fires at install; fresh does not; held -> no logout, released -> restart; throwing hold.
+Commands/output:
+- `rtk proxy python3 -m pytest test_session_idle_timeout.py` (in deploy/chatwoot-fork/tests): 8 passed
+- `python3 tests/check_patch_edit_context.py 0fe46fc9`: 0 hit(s)
+- simulate_patch_chain.sh useProtonSoftphone.js / ProtonSoftphonePanel / useProtonConfig.js: ok

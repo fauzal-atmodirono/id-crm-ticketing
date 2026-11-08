@@ -93,7 +93,7 @@ def test_idle_monitor_logout_behaviour(tree, tmp_path):
     (tmp_path / "t.mjs").write_text("""
 import assert from 'node:assert/strict';
 import { createIdleMonitor, ACTIVITY_KEY } from './idleMonitor.mjs';
-const mem = () => { const m = {}; return { getItem: k => (k in m ? m[k] : null), setItem: (k, v) => { m[k] = v; } }; };
+const mem = () => { const m = {}; return { getItem: k => (k in m ? m[k] : null), setItem: (k, v) => { m[k] = v; }, removeItem: k => { delete m[k]; } }; };
 let t = 1000000, idle = 0;
 const clock = () => t;
 const nop = () => 1;
@@ -117,7 +117,40 @@ t += 2 * 60000; s.setItem(ACTIVITY_KEY, String(t - 1000)); assert.equal(m.check(
 const bad = { getItem() { throw new Error('x'); }, setItem() { throw new Error('x'); } };
 m = createIdleMonitor({ timeoutMinutes: 1, now: clock, storage: bad, onIdle: () => idle++, setIntervalFn: nop, clearIntervalFn: nop });
 t += 61000; assert.equal(m.check(), true);
+// FIX reload bypass: stale stamp at install fires immediately, no touch first
+idle = 0; s = mem(); t = 9e6;
+s.setItem(ACTIVITY_KEY, String(t - 11 * 60000));
+m = createIdleMonitor({ timeoutMinutes: 10, now: clock, storage: s, onIdle: () => idle++, setIntervalFn: nop, clearIntervalFn: nop });
+assert.equal(idle, 1);
+// ...and the stamp is cleared so the login page / next session is not re-fired
+assert.equal(s.getItem(ACTIVITY_KEY), null);
+// a fresh stamp at install does not fire
+idle = 0; s = mem(); s.setItem(ACTIVITY_KEY, String(t - 2 * 60000));
+m = createIdleMonitor({ timeoutMinutes: 10, now: clock, storage: s, onIdle: () => idle++, setIntervalFn: nop, clearIntervalFn: nop });
+assert.equal(idle, 0);
+// FIX calls: held -> no logout however long; released -> window restarts
+idle = 0; s = mem(); t = 2e7; let held = true;
+m = createIdleMonitor({ timeoutMinutes: 10, now: clock, storage: s, hold: () => held, onIdle: () => idle++, setIntervalFn: nop, clearIntervalFn: nop });
+t += 60 * 60000; assert.equal(m.check(), false); assert.equal(idle, 0);
+held = false;
+t += 9 * 60000; assert.equal(m.check(), false);   // timer restarted at last held check
+t += 2 * 60000; assert.equal(m.check(), true); assert.equal(idle, 1);
+// throwing hold predicate is treated as not held
+m = createIdleMonitor({ timeoutMinutes: 1, now: clock, storage: mem(), hold: () => { throw new Error('x'); }, onIdle: () => idle++, setIntervalFn: nop, clearIntervalFn: nop });
+t += 61000; assert.equal(m.check(), true);
 console.log('ok');
 """)
     r = subprocess.run(["node", "t.mjs"], cwd=tmp_path, capture_output=True, text=True)
     assert r.returncode == 0 and "ok" in r.stdout, r.stdout + r.stderr
+
+
+def test_signout_has_timeout_and_finally():
+    js = PATCH.read_text()
+    assert "new AbortController()" in js and "setTimeout(() => ctrl.abort(), 3000)" in js
+    assert re.search(r"\+  } finally \{\n\+    clearTimeout\(timer\);\n\+    Cookies\.remove", js)
+
+
+def test_softphone_publishes_idle_hold():
+    p = (FORK / "patches" / "0069-agent-softphone.patch").read_text()
+    assert "window.__PROTON_IDLE_HOLD__" in p and "'in-call'" in p
+    assert "window.__PROTON_IDLE_HOLD__" in PATCH.read_text()

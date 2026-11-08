@@ -385,6 +385,10 @@ async def test_router_dispatches_created_and_updated(monkeypatch):
     monkeypatch.setattr(
         router_module.duplicate_detection, "maybe_detect_duplicates_on_update", updated
     )
+    contact = AsyncMock()
+    monkeypatch.setattr(
+        router_module.duplicate_detection, "maybe_detect_duplicates_on_contact_update", contact
+    )
     for name in ("maybe_escalate", "maybe_stamp_dealer_escalation", "maybe_validate_follow_up_date"):
         monkeypatch.setattr(router_module.sync, name, AsyncMock())
 
@@ -406,6 +410,204 @@ async def test_router_dispatches_created_and_updated(monkeypatch):
         assert (
             await post(client, _created(event="conversation_updated"), "dup-d2")
         ).status_code == 200
+        contact_event = {"event": "contact_updated", "id": 55, "custom_attributes": {}}
+        assert (await post(client, contact_event, "dup-d3")).status_code == 200
 
     assert created.await_count == 1
     assert updated.await_count == 1
+    assert contact.await_count == 1
+
+
+# --- review fixes: marker-first, bounded updates, contact_updated ---------
+
+
+@respx.mock
+async def test_marker_written_before_label_so_label_update_does_not_renote(monkeypatch):
+    """The label write makes Chatwoot emit conversation_updated. Its payload
+    must already carry related_case_ids, so it cannot re-enter and post a
+    second note -- even when it also carries a vehicle field."""
+    _enable(monkeypatch)
+    _mock_contact_conversations(55, [_conv(NEW_ID), _conv(12)])
+    _mock_search("+60123456789", [])
+    existing_note = respx.post(f"{API}/conversations/12/messages").mock(
+        return_value=httpx.Response(200, json={"id": 2})
+    )
+    respx.get(f"{API}/conversations/{NEW_ID}").mock(
+        return_value=httpx.Response(200, json={"id": NEW_ID, "custom_attributes": {}})
+    )
+    respx.get(f"{API}/conversations/{NEW_ID}/labels").mock(
+        return_value=httpx.Response(200, json={"payload": []})
+    )
+    state: dict = {}
+    snapshots: list[dict] = []
+
+    def write_attrs(request):
+        state.update(json.loads(request.content)["custom_attributes"])
+        return httpx.Response(200, json={})
+
+    def write_labels(request):
+        snapshots.append(dict(state))  # what the label's conversation_updated carries
+        return httpx.Response(200, json={})
+
+    respx.post(f"{API}/conversations/{NEW_ID}/custom_attributes").mock(side_effect=write_attrs)
+    respx.post(f"{API}/conversations/{NEW_ID}/labels").mock(side_effect=write_labels)
+    note = respx.post(f"{API}/conversations/{NEW_ID}/messages").mock(
+        return_value=httpx.Response(200, json={"id": 1})
+    )
+    conv_filter = respx.post(f"{API}/conversations/filter").mock(
+        return_value=httpx.Response(200, json={"payload": [_conv(41)]})
+    )
+
+    await duplicate_detection.maybe_detect_duplicates(_created())
+    assert snapshots and snapshots[0].get("related_case_ids") == "12"
+
+    label_update = _created(
+        conv_attrs={**snapshots[0], "vehicle_chassis": "PM2ABC123"}, event="conversation_updated"
+    )
+    await duplicate_detection.maybe_detect_duplicates_on_update(label_update)
+
+    assert note.call_count == 1
+    assert existing_note.call_count == 1
+    assert not conv_filter.called
+
+
+@respx.mock
+async def test_repeated_updates_with_same_signals_search_once(monkeypatch):
+    _enable(monkeypatch)
+    payload = _created(
+        contact={"id": 55, "name": "Jane", "custom_attributes": {}},
+        conv_attrs={"vehicle_chassis": "PM2ABC123"},
+        event="conversation_updated",
+    )
+    contact_convs = respx.get(f"{API}/contacts/55/conversations").mock(
+        return_value=httpx.Response(200, json={"payload": [_conv(NEW_ID)]})
+    )
+    conv_filter = respx.post(f"{API}/conversations/filter").mock(
+        return_value=httpx.Response(200, json={"payload": []})
+    )
+
+    await duplicate_detection.maybe_detect_duplicates_on_update(payload)
+    # a status / assignment / label change: same vehicle signals
+    await duplicate_detection.maybe_detect_duplicates_on_update({**payload, "status": "pending"})
+
+    assert conv_filter.call_count == 1
+    assert contact_convs.call_count == 1
+
+    # a changed chassis is a new signal and is searched once more
+    changed = _created(
+        contact={"id": 55, "name": "Jane", "custom_attributes": {}},
+        conv_attrs={"vehicle_chassis": "PM2XYZ999"},
+        event="conversation_updated",
+    )
+    await duplicate_detection.maybe_detect_duplicates_on_update(changed)
+    assert conv_filter.call_count == 2
+
+
+@respx.mock
+async def test_contact_vehicle_no_added_later_links_open_case(monkeypatch):
+    _enable(monkeypatch)
+    event = {
+        "event": "contact_updated",
+        "id": 55,
+        "name": "Jane",
+        "phone_number": None,
+        "custom_attributes": {"vehicle_no": "BMT 5518"},
+    }
+    _mock_contact_conversations(55, [_conv(NEW_ID), _conv(7, status="resolved")])
+    contacts_filter = respx.post(f"{API}/contacts/filter").mock(
+        return_value=httpx.Response(
+            200, json={"payload": [{"id": 88, "custom_attributes": {"vehicle_no": "BMT5518"}}]}
+        )
+    )
+    respx.post(f"{API}/conversations/filter").mock(
+        return_value=httpx.Response(200, json={"payload": []})
+    )
+    _mock_contact_conversations(88, [_conv(30)])
+    existing_note = respx.post(f"{API}/conversations/30/messages").mock(
+        return_value=httpx.Response(200, json={"id": 2})
+    )
+    note, _, attrs = _mock_new_conversation()
+
+    await duplicate_detection.maybe_detect_duplicates_on_contact_update(event)
+    await duplicate_detection.maybe_detect_duplicates_on_contact_update(event)  # unchanged
+
+    assert note.call_count == 1
+    assert "#30" in _body(note)["content"]
+    assert _body(attrs)["custom_attributes"]["related_case_ids"] == "30"
+    assert existing_note.call_count == 1
+    assert contacts_filter.call_count == 1
+
+
+@respx.mock(assert_all_called=False)
+async def test_contact_update_without_vehicle_fields_does_nothing(monkeypatch):
+    _enable(monkeypatch)
+
+    await duplicate_detection.maybe_detect_duplicates_on_contact_update(
+        {"event": "contact_updated", "id": 55, "custom_attributes": {"city": "KL"}}
+    )
+
+    assert respx.calls.call_count == 0
+
+
+@respx.mock
+async def test_note_failure_releases_the_claim_for_a_retry(monkeypatch):
+    _enable(monkeypatch)
+    _mock_contact_conversations(55, [_conv(NEW_ID), _conv(12)])
+    _mock_search("+60123456789", [])
+    respx.post(f"{API}/conversations/12/messages").mock(
+        return_value=httpx.Response(200, json={"id": 2})
+    )
+    note, labels, attrs = _mock_new_conversation()
+    note.side_effect = [httpx.Response(500), httpx.Response(200, json={"id": 1})]
+
+    await duplicate_detection.maybe_detect_duplicates(_created())
+    assert not labels.called
+    # marker rolled back so the retry is not blocked by it
+    assert _body(attrs)["custom_attributes"]["related_case_ids"] == ""
+
+    await duplicate_detection.maybe_detect_duplicates(_created())
+
+    assert note.call_count == 2
+    assert labels.call_count == 1
+    assert _body(attrs)["custom_attributes"]["related_case_ids"] == "12"
+
+
+@respx.mock
+async def test_bot_assignee_is_not_mentioned_team_is(monkeypatch):
+    _enable(monkeypatch)
+    bot_held = _conv(12, assignee={"id": 3, "name": "Proton Bot"}, team={"id": 2, "name": "Aftersales"})
+    bot_held["meta"]["assignee_type"] = "AgentBot"
+    _mock_contact_conversations(55, [_conv(NEW_ID), bot_held])
+    _mock_search("+60123456789", [])
+    existing_note = respx.post(f"{API}/conversations/12/messages").mock(
+        return_value=httpx.Response(200, json={"id": 2})
+    )
+    _mock_new_conversation()
+
+    await duplicate_detection.maybe_detect_duplicates(_created())
+
+    content = _body(existing_note)["content"]
+    assert "mention://user/" not in content
+    assert "mention://team/2/Aftersales" in content
+
+
+@respx.mock
+async def test_assignee_outside_new_inbox_is_logged(monkeypatch, caplog):
+    _enable(monkeypatch)
+    _mock_contact_conversations(
+        55, [_conv(NEW_ID), _conv(12, inbox_id=5, assignee={"id": 9, "name": "Aina PIC"})]
+    )
+    _mock_search("+60123456789", [])
+    respx.get(f"{API}/inbox_members/3").mock(
+        return_value=httpx.Response(200, json={"payload": [{"id": 4}]})
+    )
+    existing_note = respx.post(f"{API}/conversations/12/messages").mock(
+        return_value=httpx.Response(200, json={"id": 2})
+    )
+    _mock_new_conversation()
+
+    with caplog.at_level("INFO", logger="app.services.duplicate_detection"):
+        await duplicate_detection.maybe_detect_duplicates(_created())
+
+    assert existing_note.call_count == 1  # still notified
+    assert "not a member of inbox 3" in caplog.text

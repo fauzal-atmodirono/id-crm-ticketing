@@ -186,6 +186,15 @@ class ChatwootClient:
         payload = response.json().get("payload")
         return [c for c in (payload or []) if isinstance(c, dict)]
 
+    async def list_inbox_members(self, inbox_id: int) -> list[dict[str, Any]]:
+        """Agents who are members of one inbox (`GET /inbox_members/{id}`)."""
+        response = await self._client.get(
+            f"/api/v1/accounts/{self.account_id}/inbox_members/{inbox_id}"
+        )
+        response.raise_for_status()
+        payload = response.json().get("payload")
+        return [a for a in (payload or []) if isinstance(a, dict)]
+
     async def get_agent_bot(self, agent_bot_id: int) -> Any:
         """Account-scoped agent bot lookup — used only by
         `scripts.register_bot` to read back the bot's `secret`, which the

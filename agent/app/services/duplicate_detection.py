@@ -47,20 +47,34 @@ always kept (same car is related by definition), as is any match when either
 side has no text yet or Gemini fails -- the AI can only remove a suggestion
 on evidence, never add one.
 
-**When it runs.** `conversation_created`, plus `conversation_updated` once the
-case carries a `vehicle_plate`/`vehicle_chassis` field -- an agent fills
-those in after the case exists, so the chassis link would otherwise never
-fire. conversation_updated fires on every label write, so that path does no
-API call unless a vehicle field is present and the case is not yet flagged.
+**When it runs.** `conversation_created` (all signals), plus two late-signal
+paths that keep only vehicle matches (identity matches were already checked
+at creation; re-linking them would re-notify the same owners):
 
-**Idempotency.** Two layers. A claim row in `processed_deliveries`, keyed on
-the conversation and a fingerprint of its signals, makes a redelivered or
-repeated event a no-op atomically (same insert-or-skip as webhook dedupe)
-and stops conversation_updated re-searching on every label change. The
-`related_case_ids` attribute is the durable marker: a conversation that
-already carries it is never noted twice, whichever event or process got
-there first. The claim is taken after the matches are found and before any
-write, so a run that found nothing does not burn the fingerprint.
+  - `conversation_updated` once the case carries a `vehicle_plate`/
+    `vehicle_chassis` field -- an agent fills those in after the case exists;
+  - `contact_updated` once the contact carries `vehicle_no`/`vehicle_chassis`,
+    run for that contact's open, not-yet-flagged cases.
+
+Both fire on unrelated edits (status, assignment, labels, our own attribute
+writes), so each takes a cheap claim on (conversation-or-contact, plate,
+chassis) BEFORE any API call: a negative result is remembered, an unchanged
+signal set costs nothing, a changed plate/chassis is searched once.
+
+**Idempotency.** A claim row in `processed_deliveries`, keyed on the
+conversation and a fingerprint of all its signals, makes a redelivered or
+repeated event a no-op atomically (same insert-or-skip as webhook dedupe).
+The `related_case_ids` attribute is the durable marker: a conversation that
+already carries it is never noted twice, whichever event got there first.
+It is written FIRST, before the note and label, because the label write
+makes Chatwoot emit conversation_updated and that payload must already
+carry the marker or it would re-enter and notify twice. If the marker or
+the new-case note fails, the marker is rolled back and the claim released,
+so a later event retries instead of the fingerprint being burned.
+
+Only a `User` assignee is @mentioned (an AgentBot-held case falls back to its
+team). An assignee who is not a member of the new case's inbox is logged:
+they get the notification but cannot open the new case's link.
 
 Flag-gated (`duplicate_detection_enabled`, default off), inbox allow-listed
 (`duplicate_detection_inbox_ids`, empty = all; a linked case in an inbox
@@ -80,7 +94,7 @@ from urllib.parse import quote
 from app.ai import gemini
 from app.clients.deps import get_chatwoot_client
 from app.config import get_settings
-from app.services.dedupe import claim_delivery
+from app.services.dedupe import claim_delivery, release_claim
 from app.services.lifecycle import _is_escalation_reply
 
 logger = logging.getLogger(__name__)
@@ -386,7 +400,11 @@ def _owner(conv: dict[str, Any]) -> tuple[str, str | None]:
     meta = conv.get("meta") or {}
     assignee = meta.get("assignee") or {}
     team = meta.get("team") or {}
-    if assignee.get("id") is not None:
+    # Chatwoot's assignee is polymorphic on newer versions (an agent bot can
+    # hold a case). Only a User can be @mentioned; absent type = a User, as on
+    # versions that predate the field.
+    assignee_type = meta.get("assignee_type") or conv.get("assignee_type") or "User"
+    if assignee.get("id") is not None and assignee_type == "User":
         name = assignee.get("available_name") or assignee.get("name") or f"agent {assignee['id']}"
         mention = f"[@{name}](mention://user/{assignee['id']}/{quote(name, safe='')})"
         return f"assigned to {name}", mention
@@ -426,10 +444,39 @@ def _existing_case_note(match: _Match, new_id: int, mention: str | None) -> str:
     )
 
 
-async def _detect(payload: dict, signals: _Signals) -> None:
+async def _warn_if_not_inbox_member(
+    match: _Match, inbox_id: Any, members: dict[str, set[int] | None]
+) -> None:
+    """Log (only) when the mentioned assignee can't open the new case: they
+    are not a member of its inbox, so the link in the note won't work for
+    them and someone else has to coordinate. Members are fetched once."""
+    assignee = (match.conversation.get("meta") or {}).get("assignee") or {}
+    if assignee.get("id") is None or inbox_id is None:
+        return
+    if "ids" not in members:
+        try:
+            rows = await get_chatwoot_client().list_inbox_members(int(inbox_id))
+            members["ids"] = {int(a["id"]) for a in rows if a.get("id") is not None}
+        except Exception:  # noqa: BLE001
+            members["ids"] = None
+    ids = members["ids"]
+    if ids is not None and int(assignee["id"]) not in ids:
+        logger.info(
+            "duplicate_detection: assignee %s of case %s is not a member of inbox %s",
+            assignee["id"], match.conversation.get("id"), inbox_id,
+        )
+
+
+async def _detect(payload: dict, signals: _Signals, *, vehicle_only: bool = False) -> None:
+    """Find, then link. `vehicle_only` (the update and contact paths) keeps
+    only plate/chassis matches: identity matches were already checked when
+    the case was created, and re-linking them on every vehicle edit would
+    re-notify the same owners."""
     conversation_id = int(payload["id"])
     allowed = _allowed_inboxes()
     matches = await _find_matches(signals, conversation_id, allowed)
+    if vehicle_only:
+        matches = [m for m in matches if not m.identity_only]
     if not matches:
         return
     matches = await _judge(matches, conversation_id)
@@ -437,33 +484,53 @@ async def _detect(payload: dict, signals: _Signals) -> None:
         return
     matches = sorted(matches, key=lambda m: int(m.conversation["id"]))[:_MAX_LINKED_CASES]
 
-    if not await claim_delivery(
-        f"{_CLAIM_SOURCE}:{conversation_id}:{signals.fingerprint()}", _CLAIM_SOURCE
-    ):
+    claim_key = f"{_CLAIM_SOURCE}:{conversation_id}:{signals.fingerprint()}"
+    if not await claim_delivery(claim_key, _CLAIM_SOURCE):
         return
 
     chatwoot = get_chatwoot_client()
-    # Durable marker check, after the claim: another event (created vs
-    # updated) or an earlier run may already have flagged this case.
-    current = await chatwoot.get_conversation(conversation_id)
-    if ((current or {}).get("custom_attributes") or {}).get(RELATED_ATTR):
+    ids = [str(m.conversation["id"]) for m in matches]
+    marker_written = False
+    try:
+        # Durable marker check, after the claim: another event (created vs
+        # updated vs contact) or an earlier run may already have flagged it.
+        current = await chatwoot.get_conversation(conversation_id)
+        if ((current or {}).get("custom_attributes") or {}).get(RELATED_ATTR):
+            return
+        # Marker FIRST, before the label or any other write that makes
+        # Chatwoot emit conversation_updated: that event's payload must
+        # already carry related_case_ids, or it re-enters this module and
+        # posts a second note and a second round of notifications.
+        await chatwoot.set_custom_attributes(conversation_id, {RELATED_ATTR: ",".join(ids)})
+        marker_written = True
+        await chatwoot.create_message(conversation_id, _new_case_note(matches), private=True)
+    except Exception:  # noqa: BLE001
+        # The new-case note is the point of the feature. If it (or the marker)
+        # failed, undo the marker and release the claim so a later event can
+        # retry, rather than burning the fingerprint on nothing posted.
+        logger.exception(
+            "duplicate_detection: could not flag case %s; releasing claim", conversation_id
+        )
+        if marker_written:
+            try:
+                await chatwoot.set_custom_attributes(conversation_id, {RELATED_ATTR: ""})
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "duplicate_detection: marker rollback failed on %s", conversation_id
+                )
+        await release_claim(claim_key)
         return
 
-    ids = [str(m.conversation["id"]) for m in matches]
-    await chatwoot.create_message(conversation_id, _new_case_note(matches), private=True)
     try:
         await chatwoot.add_labels(conversation_id, [LABEL])
     except Exception:  # noqa: BLE001
         logger.exception("duplicate_detection: label write failed on %s", conversation_id)
-    try:
-        await chatwoot.set_custom_attributes(conversation_id, {RELATED_ATTR: ",".join(ids)})
-    except Exception:  # noqa: BLE001
-        logger.exception(
-            "duplicate_detection: related_case_ids write failed on %s", conversation_id
-        )
 
+    members: dict[str, set[int] | None] = {}
     for match in matches:
         _, mention = _owner(match.conversation)
+        if mention and "mention://user/" in mention:
+            await _warn_if_not_inbox_member(match, payload.get("inbox_id"), members)
         try:
             await chatwoot.create_message(
                 int(match.conversation["id"]),
@@ -518,6 +585,70 @@ async def maybe_detect_duplicates_on_update(payload: dict) -> None:
             return
         if payload.get("status") not in _OPEN_STATUSES:
             return
-        await _detect(payload, _signals(payload))
+        # conversation_updated fires on every status/assign/label change. A
+        # cheap claim on (conversation, plate, chassis) BEFORE any search
+        # remembers a negative result: later updates with unchanged vehicle
+        # signals make no API call; a changed plate/chassis is a new key and
+        # is searched once.
+        signals = _signals(payload)
+        if not await claim_delivery(
+            f"{_CLAIM_SOURCE}:update:{payload['id']}:{signals.plate}:{signals.chassis}",
+            _CLAIM_SOURCE,
+        ):
+            return
+        await _detect(payload, signals, vehicle_only=True)
     except Exception:  # noqa: BLE001
         logger.exception("duplicate_detection: update check failed for %s", payload.get("id"))
+
+
+async def maybe_detect_duplicates_on_contact_update(payload: dict) -> None:
+    """`contact_updated` background task: a `vehicle_no` (or
+    `vehicle_chassis`) typed onto the contact after its case was created is
+    a new signal for that contact's open, not-yet-flagged cases.
+
+    contact_updated fires on any contact edit, including this codebase's own
+    attribute writes, so the same cheap claim as the update path -- keyed on
+    (contact, plate, chassis) -- is taken before any API call. Vehicle
+    matches only (see `_detect`). Never raises."""
+    try:
+        if not get_settings().duplicate_detection_enabled:
+            return
+        contact_id = payload.get("id")
+        attrs = payload.get("custom_attributes") or {}
+        plate, chassis = _key(attrs.get("vehicle_no")), _key(attrs.get("vehicle_chassis"))
+        if contact_id is None or not (plate or chassis):
+            return
+        if not await claim_delivery(
+            f"{_CLAIM_SOURCE}:contact:{contact_id}:{plate}:{chassis}", _CLAIM_SOURCE
+        ):
+            return
+        allowed = _allowed_inboxes()
+        convs = await get_chatwoot_client().list_contact_conversations(int(contact_id))
+        sender = {
+            "id": contact_id,
+            "name": payload.get("name"),
+            "email": payload.get("email"),
+            "phone_number": payload.get("phone_number"),
+            "custom_attributes": attrs,
+        }
+        candidates = [
+            c for c in convs
+            if c.get("id") is not None
+            and c.get("status") in _OPEN_STATUSES
+            and _inbox_allowed(c.get("inbox_id"), allowed)
+            and not (c.get("custom_attributes") or {}).get(RELATED_ATTR)
+        ][:_MAX_LINKED_CASES]
+        for conv in candidates:
+            conv_payload = {
+                "id": conv["id"],
+                "inbox_id": conv.get("inbox_id"),
+                "status": conv.get("status"),
+                "custom_attributes": conv.get("custom_attributes") or {},
+                "additional_attributes": conv.get("additional_attributes") or {},
+                "meta": {"sender": sender},
+            }
+            if _is_escalation_reply(conv_payload):
+                continue
+            await _detect(conv_payload, _signals(conv_payload), vehicle_only=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("duplicate_detection: contact check failed for %s", payload.get("id"))

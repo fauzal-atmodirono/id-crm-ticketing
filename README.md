@@ -215,7 +215,10 @@ Restart the agent service after editing the tenant env:
 
 - URL: `http://<tenant>.agent.<PUBLIC_IP>.nip.io/webhooks/chatwoot`
 - Subscribe to events: `contact_created`, `contact_updated`,
-  `conversation_updated`, `conversation_status_changed`
+  `conversation_created`, `conversation_updated`, `conversation_status_changed`
+  (`conversation_created` drives the lifecycle greeting and duplicate-case
+  detection; `contact_updated` also re-checks duplicates when a vehicle plate
+  is added to a contact)
 
 Chatwoot auto-generates the webhook's signing secret server-side
 (`has_secure_token`) — you cannot set your own. After creating the webhook

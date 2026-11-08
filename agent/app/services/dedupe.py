@@ -27,3 +27,14 @@ async def claim_delivery(delivery_id: str | None, source: str) -> bool:
             await session.rollback()
             return False
     return True
+
+
+async def release_claim(delivery_id: str) -> None:
+    """Delete a claim so the work can be retried later. For callers that
+    claim a logical key (not a webhook delivery) before a write that then
+    failed: keeping the claim would make the failure permanent."""
+    async with async_session_maker() as session:
+        row = await session.get(ProcessedDelivery, delivery_id)
+        if row is not None:
+            await session.delete(row)
+            await session.commit()

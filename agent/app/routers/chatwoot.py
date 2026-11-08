@@ -60,6 +60,12 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks):
     event = payload.get("event")
     if event in _CONTACT_EVENTS:
         background_tasks.add_task(sync.upsert_contact, payload)
+        # FIX-46: a vehicle_no typed onto the contact after its case was
+        # created is a new duplicate signal for that contact's open cases.
+        if event == "contact_updated" and settings_flags.duplicate_detection_enabled:
+            background_tasks.add_task(
+                duplicate_detection.maybe_detect_duplicates_on_contact_update, payload
+            )
     elif event == "conversation_updated":
         background_tasks.add_task(sync.maybe_escalate, payload)
         background_tasks.add_task(sync.maybe_stamp_dealer_escalation, payload)

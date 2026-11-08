@@ -188,7 +188,11 @@ def within_office_hours(settings: Settings, now: datetime) -> bool:
     """
     try:
         local = now.astimezone(ZoneInfo(settings.phone_ivr_timezone))
-        weekend = local.weekday() >= _SATURDAY or local.date() in public_holidays(settings)
+        holidays = public_holidays(settings)
+        if not any(d.year == local.year for d in holidays):
+            # A stale list silently treats every holiday as a working day.
+            _log.warning("phone_ivr_public_holidays_missing_year", year=local.year)
+        weekend = local.weekday() >= _SATURDAY or local.date() in holidays
         window = settings.phone_ivr_weekend_hours if weekend else settings.phone_ivr_weekday_hours
         start, end = _parse_window(window)
     except Exception as e:

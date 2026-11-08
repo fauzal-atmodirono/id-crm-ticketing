@@ -46,6 +46,21 @@ _log = structlog.get_logger(__name__)
 # Processed recording SIDs for deduplication
 _PROCESSED_RECORDINGS: set[str] = set()
 
+_MASK = "\u2022\u2022\u2022"
+_MASK_KEEP_HEAD = 3
+_MASK_KEEP_TAIL = 4
+
+
+def mask_phone(number: str | None) -> str:
+    """Caller numbers are personal data and logs are not access-controlled
+    like Chatwoot is: keep the country prefix and last four digits only
+    (`+60\u2022\u2022\u20221234`), enough to match a complaint to a log line."""
+    if not number:
+        return "unknown"
+    if len(number) <= _MASK_KEEP_HEAD + _MASK_KEEP_TAIL:
+        return _MASK
+    return f"{number[:_MASK_KEEP_HEAD]}{_MASK}{number[-_MASK_KEEP_TAIL:]}"
+
 
 def reset_processed_voicemails() -> None:
     _PROCESSED_RECORDINGS.clear()
@@ -112,7 +127,7 @@ async def process_voicemail_webhook(
         "created_at": now.isoformat(),
     }
 
-    _log.info("voicemail_ingested", conversation_id=conversation["id"], from_number=from_number)
+    _log.info("voicemail_ingested", conversation_id=conversation["id"], from_number=mask_phone(from_number))
     return {"status": "created", "conversation": conversation}
 
 
@@ -175,7 +190,7 @@ async def ingest_voicemail(
             f"Language: {_LANGUAGE_LABEL.get(language, language)}\n"
             f"Caller: {from_number or 'unknown'}\n"
             f"Duration: {payload.get('RecordingDuration') or '?'} s\n"
-            f"Recording: {listen_url}\n"
+            f"Recording: {listen_url} (playing the recording needs a Twilio console login)\n"
             f"Attend after: {conv['attend_after']}"
         )
         await log_port.append_conversation_comment(ticket_id, note, "open")

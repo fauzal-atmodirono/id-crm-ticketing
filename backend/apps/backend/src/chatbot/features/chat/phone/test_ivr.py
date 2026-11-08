@@ -569,3 +569,153 @@ def test_agent_route_rings_online_softphones_without_a_pstn_caller_id() -> None:
     assert "<Client><Identity>agent-7</Identity>" in xml and "callerId" not in xml
     xml = dial_twiml("<Number>+60311110002</Number>", "https://x/ring", 10, _CALLER_ID)
     assert f'callerId="{_CALLER_ID}"' in xml
+
+
+# --- review round 1 -----------------------------------------------------------
+
+
+def _client_with_softphones(log, settings, identities: list[str]):
+    import chatbot.features.chat.router as router_mod
+
+    async def _ids(self, exclude_agent_id=None):  # noqa: ARG001
+        return identities
+
+    orig = router_mod.ChatRouter._fanout_identities
+    router_mod.ChatRouter._fanout_identities = _ids
+    try:
+        return _client(log, settings=settings)
+    finally:
+        router_mod.ChatRouter._fanout_identities = orig
+
+
+def test_voicemail_logs_never_carry_the_raw_caller_number(clock) -> None:
+    from structlog.testing import capture_logs
+
+    from chatbot.features.chat.phone.voicemail_ingest import reset_processed_voicemails
+
+    reset_processed_voicemails()
+    client, _ = _client(_IvrLog(), settings=_agent_settings(phone_voicemail_ingest_enabled=True))
+    with capture_logs() as logs:
+        _post(
+            client, "/voice/phone/ivr/voicemail", {"lang": "en", "cat": "inquiry", "reason": "no_answer"},
+            {"RecordingSid": "RE90", "RecordingUrl": "https://api.twilio.com/RE90", "RecordingDuration": "4"},
+        )
+    text = repr(logs)
+    assert any(e.get("event") == "voicemail_ingested" for e in logs)
+    assert "+60129998888" not in text
+    assert "8888" in text  # masked tail kept for support
+
+
+def test_mask_phone() -> None:
+    from chatbot.features.chat.phone.voicemail_ingest import mask_phone
+
+    assert mask_phone("+60129998888") == "+60•••8888"
+    assert mask_phone(None) == "unknown"
+    assert mask_phone("123") == "•••"
+
+
+def test_voicemail_note_says_playback_needs_a_twilio_login(clock) -> None:
+    from chatbot.features.chat.phone.voicemail_ingest import reset_processed_voicemails
+
+    reset_processed_voicemails()
+    log = _IvrLog()
+    client, _ = _client(log, settings=_agent_settings(phone_voicemail_ingest_enabled=True))
+    _post(
+        client, "/voice/phone/ivr/voicemail", {"lang": "en", "cat": "inquiry", "reason": "no_answer"},
+        {"RecordingSid": "RE91", "RecordingUrl": "https://api.twilio.com/RE91", "RecordingDuration": "4"},
+    )
+    assert "https://api.twilio.com/RE91.mp3 (playing the recording needs a Twilio console login)" in log.comments[0][1]
+
+
+def test_agent_route_opens_the_case_and_passes_conversation_id_to_softphones(clock) -> None:
+    log = _IvrLog()
+    client, _ = _client_with_softphones(log, _agent_settings(), ["agent-3", "agent-5"])
+    xml = _text(_post(client, "/voice/phone/ivr/menu", {"lang": "en", "attempt": 0}, {"Digits": "2"}).text)
+    assert log.ensured and log.ensured[0][0] == "phone-CA1"
+    assert log.ensured[0][2] == "+60129998888"
+    assert "Inquiry" in log.ensured[0][1]
+    assert xml.count('<Parameter name="conversation_id" value="T-9"/>') == 2
+    # The stage-2 redial carries it too.
+    busy = _text(
+        _post(
+            client, "/voice/phone/ivr/ring", {"lang": "en", "cat": "inquiry", "stage": "1"},
+            {"DialCallStatus": "no-answer", "CallStatus": "in-progress"},
+        ).text
+    )
+    assert '<Parameter name="conversation_id" value="T-9"/>' in busy
+
+
+def test_rsa_number_route_opens_the_case(clock) -> None:
+    log = _IvrLog()
+    client, _ = _client(log, settings=_settings(phone_ivr_rsa_number=_RSA))
+    xml = _text(_post(client, "/voice/phone/ivr/menu", {"lang": "en", "attempt": 0}, {"Digits": "1"}).text)
+    assert f"<Number>{_RSA}</Number>" in xml
+    assert log.ensured and log.ensured[0][0] == "phone-CA1"
+    assert "Roadside Assistance" in log.ensured[0][1]
+
+
+class _BrokenLog(_IvrLog):
+    async def ensure_conversation_ticket(self, *a: Any, **k: Any) -> str:
+        raise RuntimeError("chatwoot down")
+
+
+def test_case_creation_failure_still_dials(clock) -> None:
+    client, _ = _client_with_softphones(_BrokenLog(), _agent_settings(), ["agent-3"])
+    xml = _text(_post(client, "/voice/phone/ivr/menu", {"lang": "en", "attempt": 0}, {"Digits": "3"}).text)
+    assert "<Client><Identity>agent-3</Identity>" in xml
+    assert "conversation_id" not in xml
+    client, _ = _client(_BrokenLog(), settings=_settings(phone_ivr_rsa_number=_RSA))
+    xml = _text(_post(client, "/voice/phone/ivr/menu", {"lang": "en", "attempt": 0}, {"Digits": "1"}).text)
+    assert f"<Number>{_RSA}</Number>" in xml
+
+
+def test_ai_route_opens_no_case_at_route_time(clock) -> None:
+    log = _IvrLog()
+    client, _ = _client(log, settings=_settings())
+    _post(client, "/voice/phone/ivr/menu", {"lang": "en", "attempt": 0}, {"Digits": "2"})
+    assert log.ensured == []  # the AI bridge opens its own, as today
+
+
+def test_menu_off_with_after_hours_and_voicemail_on_leaves_incoming_unchanged(clock) -> None:
+    clock["now"] = _SUN_2000_KL
+    settings = Settings(
+        _env_file=None,
+        twilio_webhook_base_url=_BASE,
+        twilio_auth_token=_TOKEN,
+        phone_after_hours_enabled=True,
+        phone_voicemail_ingest_enabled=True,
+    )
+    client, _ = _client(_IvrLog(), settings=settings)
+    res = client.post("/voice/phone/incoming")
+    assert res.text == connect_stream_twiml("wss://example.ngrok.app/voice/phone/stream", None)
+    assert client.post("/voice/phone/ivr/voicemail").status_code == 404
+
+
+@pytest.mark.parametrize("call_status", ["completed", "canceled"])
+def test_ring_stage_1_does_not_redial_a_caller_who_hung_up(clock, call_status: str) -> None:
+    recorded: list[tuple[str, str]] = []
+
+    class _Store:
+        async def record(self, call_sid: str, status: str, at: Any = None) -> None:
+            recorded.append((call_sid, status))
+
+    client, _ = _client(_IvrLog(), settings=_agent_settings(), abandon_store=_Store())
+    xml = _post(
+        client, "/voice/phone/ivr/ring", {"lang": "en", "cat": "inquiry", "stage": "1"},
+        {"DialCallStatus": "no-answer", "CallStatus": call_status},
+    ).text
+    assert "<Dial" not in xml and "<Hangup/>" in xml
+    assert recorded == [("CA1", "canceled")]
+
+
+def test_holiday_list_without_this_year_warns() -> None:
+    from structlog.testing import capture_logs
+
+    from chatbot.features.chat.phone.ivr import within_office_hours
+
+    with capture_logs() as logs:
+        within_office_hours(Settings(_env_file=None), datetime(2027, 3, 2, 2, 0, tzinfo=UTC))
+    assert any(e.get("event") == "phone_ivr_public_holidays_missing_year" for e in logs)
+    with capture_logs() as logs:
+        within_office_hours(Settings(_env_file=None), datetime(2026, 3, 3, 2, 0, tzinfo=UTC))
+    assert not any(e.get("event") == "phone_ivr_public_holidays_missing_year" for e in logs)

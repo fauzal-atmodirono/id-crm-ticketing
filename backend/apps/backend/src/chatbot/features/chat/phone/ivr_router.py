@@ -44,6 +44,14 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(__name__)
 
 _ANSWERED = {"completed", "answered"}
+# Parent-leg CallStatus once the caller has hung up.
+_CALLER_GONE = {"completed", "canceled"}
+_CATEGORY_LABEL = {
+    "rsa": "Roadside Assistance",
+    "inquiry": "Inquiry",
+    "complaint": "Complaint",
+    "unselected": "No menu choice",
+}
 
 
 def _now() -> datetime:
@@ -143,20 +151,58 @@ class IvrRoutes:
         digit = params.get("Digits", "").strip()
         return digit[:1] or None
 
-    async def _agent_nouns(self) -> str:
-        """Online softphone agents first (the existing fan-out set), else
-        the PSTN hunt-group `phone_handoff_target_number`. "" = nobody."""
+    async def _open_case(self, params: dict[str, str], cat: str) -> str | None:
+        """Find-or-create the call's Chatwoot conversation before dialling a
+        person (agent route or RSA line), keyed `phone-<CallSid>` -- the same
+        session id the AI bridge, recording-status and voicemail use, so a
+        later voicemail or recording lands on this case. The AI route opens
+        none here: the bridge opens its own, as today.
+
+        Fail-open: any error -> None, logged, and the call is still dialled.
+        A caller must never be dropped because Chatwoot was slow or down."""
+        call_sid = params.get("CallSid", "").strip()
+        if not call_sid:
+            return None
+        from_number = params.get("From") or None
+        label = _CATEGORY_LABEL.get(cat, "No menu choice")
         try:
-            identities = await self._fanout_identities()
+            ticket_id = await self._log_port.ensure_conversation_ticket(
+                f"phone-{call_sid}",
+                f"[Phone] {label} - {from_number or 'unknown caller'}",
+                None,
+                from_number,
+            )
+        except Exception as e:
+            _log.error("phone_ivr_case_open_failed", call_sid=call_sid, error=str(e))
+            return None
+        return str(ticket_id) if ticket_id else None
+
+    async def _identities(self) -> list[str]:
+        try:
+            return await self._fanout_identities()
         except Exception as e:
             _log.warning("phone_ivr_fanout_lookup_failed", error=str(e))
-            identities = []
+            return []
+
+    async def _agent_nouns(
+        self, conversation_id: str | None = None, identities: list[str] | None = None
+    ) -> str:
+        """Online softphone agents first (the existing fan-out set), else
+        the PSTN hunt-group `phone_handoff_target_number`. "" = nobody.
+        `conversation_id` rides on each `<Client>` leg as a `<Parameter>`, so
+        the ringing browser can show who is calling (same parameter name the
+        AI-bridge handoff uses). `identities` reuses a lookup already made."""
+        if identities is None:
+            identities = await self._identities()
         if identities:
-            return ivr.client_nouns(identities, {"source": "ivr"})
+            parameters = {"source": "ivr"}
+            if conversation_id:
+                parameters["conversation_id"] = conversation_id
+            return ivr.client_nouns(identities, parameters)
         number = self._settings.phone_handoff_target_number.strip()
         return ivr.number_noun(number) if number else ""
 
-    async def _route(self, lang: str, cat: str) -> str:
+    async def _route(self, lang: str, cat: str, params: dict[str, str]) -> str:
         """The SOP's routing after the menu: RSA 24/7, everything else
         through the office-hour check, then the configured non-RSA route."""
         settings = self._settings
@@ -173,6 +219,7 @@ class IvrRoutes:
             rsa = settings.phone_ivr_rsa_number.strip()
             if not rsa:
                 return self._bridge_twiml()
+            await self._open_case(params, cat)
             return ivr.dial_twiml(
                 ivr.number_noun(rsa),
                 ivr.ring_url(base, lang, cat, "final"),
@@ -182,10 +229,11 @@ class IvrRoutes:
 
         if settings.phone_ivr_non_rsa_route.strip().lower() != "agent":
             return self._bridge_twiml()
-        nouns = await self._agent_nouns()
-        if not nouns:
+        identities = await self._identities()
+        if not identities and not settings.phone_handoff_target_number.strip():
             _log.warning("phone_ivr_agent_route_no_target_using_bridge", category=cat)
             return self._bridge_twiml()
+        nouns = await self._agent_nouns(await self._open_case(params, cat), identities)
         return ivr.dial_twiml(
             nouns,
             ivr.ring_url(base, lang, cat, "1"),
@@ -204,7 +252,7 @@ class IvrRoutes:
             return _xml(ivr.category_menu_twiml(settings, base, str(value)))
         if what == "repeat":
             return _xml(ivr.language_menu_twiml(settings, base, int(value)))
-        return _xml(await self._route(str(value), "unselected"))
+        return _xml(await self._route(str(value), "unselected", params))
 
     async def menu(self, request: Request) -> Response:
         params = await self._verified(request)
@@ -212,7 +260,7 @@ class IvrRoutes:
         what, value = ivr.decide_category(self._digit(params), self._attempt(request))
         if what == "repeat":
             return _xml(ivr.category_menu_twiml(self._settings, ivr_base_url(self._settings), lang, int(value)))
-        return _xml(await self._route(lang, str(value)))
+        return _xml(await self._route(lang, str(value), params))
 
     async def ring(self, request: Request, background_tasks: BackgroundTasks) -> Response:
         """`<Dial action>` for the RSA line and both non-RSA ring stages."""
@@ -223,9 +271,13 @@ class IvrRoutes:
         stage = request.query_params.get("stage", "final")
         status = params.get("DialCallStatus", "")
         call_sid = params.get("CallSid", "")
+        if params.get("CallStatus", "") in _CALLER_GONE and status not in _ANSWERED:
+            # The caller hung up while it rang: nothing to redial, and it
+            # counts as abandoned (Task 18) whatever DialCallStatus says.
+            status = "canceled"
         redial: str | None = None
         if status not in _ANSWERED and status != "canceled" and cat != "rsa" and stage == "1":
-            nouns = await self._agent_nouns()
+            nouns = await self._agent_nouns(await self._open_case(params, cat))
             if nouns:
                 busy = ivr.say(settings, lang, ivr_prompts.PROMPTS[lang]["queue_busy"])
                 redial = ivr.dial_twiml(

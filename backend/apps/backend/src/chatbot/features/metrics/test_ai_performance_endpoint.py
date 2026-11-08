@@ -92,7 +92,7 @@ async def test_ai_deflection_rate_view_rows_pass_through_with_definition() -> No
 async def test_ai_root_cause_view_rows_pass_through_ranked_by_cases() -> None:
     rows = [
         {"day": date(2026, 11, 2), "category": "Service", "subcategory": "Brake", "cases": 3,
-         "escalated_cases": 1, "prev_week_cases": 0, "wow_change": 3, "wow_growth_rate": None,
+         "escalated_cases": 1, "week_complete": True, "prev_week_cases": 0, "wow_change": 3, "wow_growth_rate": None,
          "root_cause_basis": "b"},
         {"day": date(2026, 11, 2), "category": "Sales", "subcategory": "Price", "cases": 9,
          "escalated_cases": 2, "prev_week_cases": 6, "wow_change": 3, "wow_growth_rate": 0.5,
@@ -107,7 +107,7 @@ async def test_ai_root_cause_view_rows_pass_through_ranked_by_cases() -> None:
 @pytest.mark.asyncio
 async def test_ai_kb_improvement_view_rows_pass_through() -> None:
     rows = [{"day": date(2026, 11, 3), "topic": "Warranty", "unanswered_cases": 7,
-             "sample_case_detail": "x", "faq_suggestion": "Add", "kb_basis": "b"}]
+             "faq_suggestion": "Add", "kb_basis": "b"}]
     m = await _adapter(_Client({"v_ai_kb_improvement": rows})).fetch_ai_performance()
     assert m.blocks["kb_improvement"][0]["unanswered_cases"] == 7
 
@@ -178,3 +178,23 @@ def test_endpoint_rejects_a_bad_period_with_400() -> None:
         headers={"x-api-key": "secret"},
     )
     assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_period_bound_values_reach_the_query_and_scope_carries_it() -> None:
+    client = _Client({"v_ai_accuracy": [{"day": date(2026, 11, 3), "ai_resolved": 2}]})
+    period = PeriodRange(date(2026, 11, 1), date(2026, 11, 30), "day")
+    m = await _adapter(client).fetch_ai_performance(period)
+    params = {p.name: p.value for p in client.configs[0].query_parameters}
+    assert params == {"start": date(2026, 11, 1), "end": date(2026, 11, 30)}
+    assert m.scopes["accuracy"].period == period
+    assert m.blocks["accuracy"][0]["day"] == "2026-11-03"
+
+
+def test_endpoint_accepts_a_day_granularity_period() -> None:
+    r = _client(MockMetricsQuery()).get(
+        "/metrics/ai-performance",
+        params={"from": "2026-11-01", "to": "2026-11-30", "granularity": "day"},
+        headers={"x-api-key": "secret"},
+    )
+    assert r.status_code == 200

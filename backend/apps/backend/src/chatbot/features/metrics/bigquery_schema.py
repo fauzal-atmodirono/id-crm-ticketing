@@ -202,7 +202,9 @@ AI_HANDOFF_REASON_BASIS = (
 # so on every row.
 AI_ACCURACY_BASIS = (
     "Accuracy is the share of AI-resolved cases that stayed resolved: a "
-    "reopened AI resolution counts as inaccurate. Draft acceptance (AI "
+    "reopened AI resolution counts as inaccurate. A case whose reopen count "
+    "was never synced (NULL) is excluded from the rate rather than counted as "
+    "not reopened, and is reported in ai_resolved_reopen_unknown. Draft acceptance (AI "
     "draft sent as-is vs edited) and categorisation corrections are not "
     "captured in the warehouse, so they are not measured here. FAQ helpful "
     "ratings are reported separately by the FAQ quality report."
@@ -211,7 +213,8 @@ AI_ROOT_CAUSE_BASIS = (
     "Root cause is an issue-volume proxy: cases grouped by the classified "
     "category and subcategory, with week-over-week change. It shows what "
     "recurs and what is growing, not a verified cause. A new issue with no "
-    "prior week has no growth rate rather than an infinite one."
+    "prior week has no growth rate rather than an infinite one. "
+    "week_complete is false for the current, still partial, week."
 )
 AI_KB_IMPROVEMENT_BASIS = (
     "Unanswered means the bot classified the enquiry as Unresolved Query or "
@@ -316,6 +319,7 @@ def view_ddls(
 
     zone = _validate_timezone(reporting_timezone)
     _tz = "" if zone == "UTC" else f", '{zone}'"
+    _today = "CURRENT_DATE()" if zone == "UTC" else f"CURRENT_DATE('{zone}')"
     d_created = f"DATE(created_at{_tz})"
     d_resolved = f"DATE(resolved_at{_tz})"
     d_escalated = f"DATE(dealer_escalated_at{_tz})"
@@ -840,12 +844,14 @@ def view_ddls(
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_ai_accuracy` AS "
             f"SELECT {d_created} AS day, channel, "
             f"COUNTIF{_AI_RESOLVED_SQL} AS ai_resolved, "
-            f"COUNTIF({_AI_RESOLVED_SQL} AND COALESCE(reopen_count, 0) > 0) "
+            f"COUNTIF({_AI_RESOLVED_SQL} AND reopen_count IS NULL) "
+            f"AS ai_resolved_reopen_unknown, "
+            f"COUNTIF({_AI_RESOLVED_SQL} AND reopen_count > 0) "
             f"AS ai_resolved_reopened, "
-            f"COUNTIF({_AI_RESOLVED_SQL} AND COALESCE(reopen_count, 0) = 0) "
+            f"COUNTIF({_AI_RESOLVED_SQL} AND reopen_count = 0) "
             f"AS ai_resolved_not_reopened, "
-            f"SAFE_DIVIDE(COUNTIF({_AI_RESOLVED_SQL} AND COALESCE(reopen_count, 0) = 0), "
-            f"COUNTIF{_AI_RESOLVED_SQL}) AS accuracy_rate, "
+            f"SAFE_DIVIDE(COUNTIF({_AI_RESOLVED_SQL} AND reopen_count = 0), "
+            f"COUNTIF({_AI_RESOLVED_SQL} AND reopen_count IS NOT NULL)) AS accuracy_rate, "
             f"{_sql_string(AI_ACCURACY_BASIS)} AS accuracy_basis "
             f"FROM {fq} GROUP BY day, channel, accuracy_basis"
         ),
@@ -865,6 +871,7 @@ def view_ddls(
             f"SELECT w.day, w.category, w.subcategory, w.cases, w.escalated_cases, "
             f"COALESCE(p.cases, 0) AS prev_week_cases, "
             f"w.cases - COALESCE(p.cases, 0) AS wow_change, "
+            f"w.day < DATE_TRUNC({_today}, WEEK(MONDAY)) AS week_complete, "
             f"SAFE_DIVIDE(w.cases - COALESCE(p.cases, 0), NULLIF(p.cases, 0)) AS wow_growth_rate, "
             f"{_sql_string(AI_ROOT_CAUSE_BASIS)} AS root_cause_basis "
             f"FROM w LEFT JOIN w AS p ON p.category = w.category "
@@ -877,7 +884,6 @@ def view_ddls(
             f"SELECT {d_created} AS day, "
             f"COALESCE(NULLIF(TRIM(category), ''), 'not_classified') AS topic, "
             f"COUNT(*) AS unanswered_cases, "
-            f"ANY_VALUE(case_detail) AS sample_case_detail, "
             f"'Add or extend an FAQ entry covering this topic' AS faq_suggestion, "
             f"{_sql_string(AI_KB_IMPROVEMENT_BASIS)} AS kb_basis "
             f"FROM {fq} "

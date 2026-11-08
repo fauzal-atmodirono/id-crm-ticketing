@@ -12,16 +12,16 @@ ADDED = "\n".join(
 def test_api_client_and_mount_are_added():
     assert "export function getAiPerformance(period)" in ADDED
     assert "/metrics/ai-performance" in ADDED
-    assert "<ProtonAiPerformanceSection />" in ADDED
+    assert "<ProtonAiPerformanceSection" in ADDED
 
 
 def test_all_eight_reports_are_rendered():
     for title in (
-        "AI Case Resolution",
+        "AI Case Resolution (assignment-based)",
         "AI vs Human Handling",
         "AI Response Satisfaction",
         "AI Escalation Reasons",
-        "AI Accuracy",
+        "AI Resolutions Not Reopened (proxy)",
         "AI Deflection Rate",
         "Recurring Issues",
         "Knowledge Base Gaps",
@@ -33,3 +33,25 @@ def test_definitions_are_shown_and_no_raw_html_is_injected():
     for col in ("deflection_definition", "accuracy_basis", "root_cause_basis", "kb_basis"):
         assert col in ADDED
     assert "v-html" not in ADDED
+
+
+def test_bot_page_date_filter_is_passed_to_the_api():
+    assert ':period="aiPeriod"' in ADDED
+    assert "aiPeriod()" in ADDED
+    assert "granularity: 'day'" in ADDED
+    assert "getAiPerformance(props.period)" in ADDED
+    # a changed range reloads, and un-scoped blocks are captioned
+    assert "watch(" in ADDED and "props.period?.from" in ADDED
+    assert "status === 'unfiltered'" in ADDED and "All time" in ADDED
+
+
+def test_root_cause_compares_the_last_complete_week():
+    assert "filter(r => r.week_complete)" in ADDED
+    assert "last complete week" in ADDED
+
+
+def test_labels_are_honest_and_definitions_shown():
+    assert "Case resolution and deflection use the same" in ADDED
+    assert "weighted by" in ADDED  # CSAT definition under the card
+    assert "Not a measure of answer correctness" in ADDED
+    assert "sample_case_detail" not in ADDED

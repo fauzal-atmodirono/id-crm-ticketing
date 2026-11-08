@@ -18,7 +18,7 @@ index 96cf550..e230829 100644
  // format: 'csv' | 'xlsx'
  export function exportUrl(format) {
 diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue
-index c816d09..9e8ad57 100644
+index c816d09..280deea 100644
 --- a/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue
 +++ b/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue
 @@ -7,6 +7,7 @@ import ReportContainer from './ReportContainer.vue';
@@ -37,22 +37,35 @@ index c816d09..9e8ad57 100644
    },
    data() {
      return {
-@@ -106,5 +108,7 @@ export default {
+@@ -30,6 +32,12 @@ export default {
+     };
+   },
+   computed: {
++    // ISO dates for the Proton AI section; null until a range is chosen.
++    aiPeriod() {
++      if (!this.from || !this.to) return null;
++      const iso = sec => new Date(sec * 1000).toISOString().slice(0, 10);
++      return { from: iso(this.from), to: iso(this.to), granularity: 'day' };
++    },
+     requestPayload() {
+       return {
+         from: this.from,
+@@ -106,5 +114,7 @@ export default {
      />
  
      <ProtonBotSection />
 +
-+    <ProtonAiPerformanceSection />
++    <ProtonAiPerformanceSection :period="aiPeriod" />
    </div>
  </template>
 diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonAiPerformanceSection.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonAiPerformanceSection.vue
 new file mode 100644
-index 0000000..8f5d0b8
+index 0000000..bfd9049
 --- /dev/null
 +++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonAiPerformanceSection.vue
-@@ -0,0 +1,356 @@
+@@ -0,0 +1,394 @@
 +<script setup>
-+import { ref, computed, onMounted } from 'vue';
++import { ref, computed, onMounted, watch } from 'vue';
 +import ReportMetricCard from '../ReportMetricCard.vue';
 +import { getAiPerformance } from 'dashboard/api/protonMetrics';
 +
@@ -62,14 +75,23 @@ index 0000000..8f5d0b8
 +// shown under its card so a reader sees what the number does and does not
 +// measure (e.g. AI-resolved is inferred from assignment, not message author).
 +
++// `period` is { from, to, granularity } as ISO dates, or null for all time. It
++// comes from the Bot page's date filter; the backend applies it per block and
++// reports each block's scope, and a block it could not scope is captioned.
++const props = defineProps({
++  period: { type: Object, default: null },
++});
++
 +const blocks = ref({});
 +const scopes = ref({});
 +const error = ref(null);
 +const loading = ref(true);
 +
-+onMounted(async () => {
++const load = async () => {
++  loading.value = true;
++  error.value = null;
 +  try {
-+    const data = await getAiPerformance();
++    const data = await getAiPerformance(props.period);
 +    blocks.value = data.blocks ?? {};
 +    scopes.value = data.scopes ?? {};
 +  } catch (e) {
@@ -77,10 +99,22 @@ index 0000000..8f5d0b8
 +  } finally {
 +    loading.value = false;
 +  }
-+});
++};
++
++onMounted(load);
++watch(
++  () => [props.period?.from, props.period?.to],
++  () => load()
++);
 +
 +const rows = key => blocks.value[key] ?? [];
 +const unavailable = key => scopes.value[key]?.status === 'unavailable';
++// A block the backend could not scope to the selected dates is all-time.
++const allTime = key =>
++  !!props.period && scopes.value[key]?.status === 'unfiltered';
++const anyAllTime = computed(() =>
++  Object.keys(scopes.value).some(key => allTime(key))
++);
 +const sum = (list, field) => list.reduce((s, r) => s + (r[field] ?? 0), 0);
 +const pct = (num, den) => (den ? `${((num / den) * 100).toFixed(1)}%` : '—');
 +const firstOf = (key, field) => rows(key).find(r => r[field])?.[field] ?? '';
@@ -177,9 +211,11 @@ index 0000000..8f5d0b8
 +  };
 +});
 +
-+// 7: the most recent week, largest issues first, with week-over-week change.
++// 7: the latest COMPLETE week (the current week is partial, so comparing it
++// with a full previous week would read as a drop), largest issues first, with
++// the change against the week before it.
 +const rootCause = computed(() => {
-+  const list = rows('root_cause');
++  const list = rows('root_cause').filter(r => r.week_complete);
 +  const latest = list.reduce((m, r) => (r.day > m ? r.day : m), '');
 +  return {
 +    week: latest,
@@ -216,6 +252,9 @@ index 0000000..8f5d0b8
 +        Resolution, deflection, satisfaction, escalation, accuracy, root cause
 +        and knowledge base gaps for AI-handled conversations
 +      </p>
++      <p v-if="anyAllTime" class="text-xs text-n-slate-10 mt-1">
++        All time: the date filter could not be applied to some figures below.
++      </p>
 +    </div>
 +
 +    <woot-loading-state
@@ -243,20 +282,20 @@ index 0000000..8f5d0b8
 +      >
 +        <div class="flex flex-wrap gap-4">
 +          <ReportMetricCard
-+            label="AI Case Resolution"
++            label="AI Case Resolution (assignment-based)"
 +            info-text="Cases resolved with no human assignee, escalate label or dealer escalation, as a share of all cases"
 +            :value="resolution.rate"
 +            class="flex-1"
 +          />
 +          <ReportMetricCard
-+            label="AI Deflection Rate"
++            label="AI Deflection Rate (same basis)"
 +            info-text="Cases handled end to end by the AI with no human involvement"
 +            :value="deflection.rate"
 +            class="flex-1"
 +          />
 +          <ReportMetricCard
-+            label="AI Accuracy"
-+            info-text="AI-resolved cases that were not reopened"
++            label="AI Resolutions Not Reopened (proxy)"
++            info-text="AI-resolved cases that were not reopened. Not a measure of answer correctness"
 +            :value="accuracy.rate"
 +            class="flex-1"
 +          />
@@ -266,6 +305,11 @@ index 0000000..8f5d0b8
 +          resolved; {{ deflection.humanInvolved }} involved a human;
 +          {{ accuracy.reopened }} of {{ accuracy.aiResolved }} AI resolutions
 +          were reopened.
++        </p>
++        <p class="text-xs text-n-slate-10 mt-3">
++          Case resolution and deflection use the same assignment-based
++          definition, so they show the same rate; both are listed because the
++          RFP names them separately.
 +        </p>
 +        <p
 +          v-if="unavailable('resolution') || unavailable('deflection')"
@@ -323,6 +367,11 @@ index 0000000..8f5d0b8
 +            class="flex-1"
 +          />
 +        </div>
++        <p class="text-xs text-n-slate-10 mt-3">
++          Average satisfaction score of the cases resolved by the AI with no
++          human involvement, against cases resolved with a human, weighted by
++          the number of responses. Only cases that returned a rating count.
++        </p>
 +      </div>
 +
 +      <!-- 4: escalation reasons -->
@@ -351,7 +400,8 @@ index 0000000..8f5d0b8
 +        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
 +      >
 +        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
-+          Recurring Issues (week of {{ rootCause.week || '—' }})
++          Recurring Issues (last complete week starting
++          {{ rootCause.week || '—' }})
 +        </h3>
 +        <table v-if="rootCause.items.length" class="w-full text-sm">
 +          <thead>
@@ -359,7 +409,7 @@ index 0000000..8f5d0b8
 +              <th class="py-1">Category</th>
 +              <th class="py-1">Subcategory</th>
 +              <th class="py-1 text-right">Cases</th>
-+              <th class="py-1 text-right">vs last week</th>
++              <th class="py-1 text-right">vs week before</th>
 +            </tr>
 +          </thead>
 +          <tbody>
@@ -377,6 +427,7 @@ index 0000000..8f5d0b8
 +        <div v-else class="text-sm text-n-slate-10">No issue data</div>
 +        <p class="text-xs text-n-slate-10 mt-3">
 +          {{ firstOf('root_cause', 'root_cause_basis') }}
++          <span v-if="allTime('root_cause')">All time.</span>
 +        </p>
 +      </div>
 +

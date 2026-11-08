@@ -246,7 +246,14 @@ def test_ai_accuracy_view_counts_ai_resolved_cases_that_stayed_resolved() -> Non
     assert "`proj.ds.v_ai_accuracy`" in sql
     assert "COUNTIF(status = 'resolved' AND NOT (agent_id IS NOT NULL" in sql
     # a reopened AI resolution is a wrong answer, not an accurate one
-    assert "COALESCE(reopen_count, 0) > 0" in sql
+    assert "reopen_count > 0" in sql
+    # an unsynced (NULL) reopen count is not "not reopened": it is excluded
+    # from the denominator and reported on its own
+    assert "COALESCE(reopen_count" not in sql
+    assert "AS ai_resolved_reopen_unknown" in sql
+    assert "COUNTIF(" + "(status = 'resolved' AND NOT (agent_id IS NOT NULL" in sql
+    assert "reopen_count IS NOT NULL)) AS accuracy_rate" in sql
+    assert "excluded from the rate" in AI_ACCURACY_BASIS
     assert "AS ai_resolved_reopened" in sql
     assert "AS ai_resolved_not_reopened" in sql
     assert "AS accuracy_rate" in sql
@@ -268,6 +275,9 @@ def test_ai_root_cause_view_ranks_categories_with_week_over_week_growth() -> Non
     assert "DATE_SUB(w.day, INTERVAL 7 DAY)" in sql
     assert "COALESCE(p.cases, 0) AS prev_week_cases" in sql
     assert "AS wow_change" in sql
+    # the current week is partial; the report compares the last COMPLETE week
+    assert "w.day < DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY)) AS week_complete" in sql
+    assert "partial" in AI_ROOT_CAUSE_BASIS
     # growth is NULL for a brand-new issue, never infinity or 0
     assert "SAFE_DIVIDE(w.cases - COALESCE(p.cases, 0), NULLIF(p.cases, 0)) AS wow_growth_rate" in sql
     assert "AS root_cause_basis" in sql
@@ -281,7 +291,8 @@ def test_ai_kb_improvement_view_lists_unanswered_topics_for_faq_updates() -> Non
     assert "LOWER(TRIM(COALESCE(subcategory, ''))) = 'unresolved query'" in sql
     assert "'escalate' IN UNNEST(labels)" in sql
     assert "AS unanswered_cases" in sql
-    assert "ANY_VALUE(case_detail) AS sample_case_detail" in sql
+    # case_detail is free text that can hold customer details: not exported
+    assert "case_detail" not in sql
     assert "AS faq_suggestion" in sql
     assert "GROUP BY day, topic, faq_suggestion, kb_basis" in sql
     assert "AS kb_basis" in sql
@@ -297,7 +308,7 @@ def test_w2_views_honour_the_reporting_timezone_and_avoid_resolved_by() -> None:
             AI_ACCURACY_BASIS, ""
         ), view
     schema_names = {f.name for f in CONVERSATIONS_SCHEMA}
-    for column in ("reopen_count", "category", "case_detail", "labels"):
+    for column in ("reopen_count", "category", "labels"):
         assert column in schema_names
 
 
@@ -307,3 +318,8 @@ def test_w2_views_never_claim_capabilities_the_warehouse_cannot_back() -> None:
     assert "not measured" in AI_ACCURACY_BASIS.lower() or "not captured" in AI_ACCURACY_BASIS.lower()
     assert "volume" in AI_ROOT_CAUSE_BASIS.lower()
     assert "not" in AI_ROOT_CAUSE_BASIS.lower()
+
+
+def test_root_cause_week_complete_uses_the_reporting_timezone() -> None:
+    zoned = view_ddls(PROJECT, DATASET, reporting_timezone="Asia/Kuala_Lumpur")
+    assert "CURRENT_DATE('Asia/Kuala_Lumpur')" in zoned["v_ai_root_cause"]

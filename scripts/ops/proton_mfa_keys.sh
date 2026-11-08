@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Proton MFA enablement keys (FIX-25, RFP 2026_028 7.3). Run ON THE VM from
 # /opt/platform/deploy:
-#     bash ../scripts/ops/proton_mfa_keys.sh [--dry-run | --rollback]
+#     sudo bash ../scripts/ops/proton_mfa_keys.sh [--dry-run | --rollback]
 #
 # Chatwoot shows the profile-page "Two-factor authentication" card only when the
 # three ActiveRecord encryption env vars are present. This script GENERATES them
@@ -36,7 +36,7 @@ ENV_FILE="${ENV_FILE:-tenants/proton.env}"
 BACKUP="${ENV_BACKUP:-${ENV_FILE}.bak-mfa-20261110}"
 CONTAINER="${CHATWOOT_CONTAINER:-proton-chatwoot-rails}"
 NAMES=(ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT)
-RECREATE='docker compose -p proton -f docker-compose.tenant.yml --env-file tenants/proton.env up -d --force-recreate chatwoot-rails chatwoot-sidekiq'
+RECREATE='sudo docker compose -p proton -f docker-compose.tenant.yml --env-file tenants/proton.env up -d --force-recreate chatwoot-rails chatwoot-sidekiq'
 
 mode=apply
 for a in "$@"; do

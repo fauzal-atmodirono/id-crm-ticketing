@@ -198,6 +198,40 @@ def require_authenticated(
     return _check
 
 
+def require_session_identity(
+    *,
+    validator: TokenValidator | None = None,
+    settings: Settings,
+):
+    """Resolve the caller's Chatwoot session to a user id (no permission needed).
+
+    RBAC on: the session triplet is mandatory (401 otherwise) and the shared
+    secret is deliberately NOT honoured -- every agent's browser holds it, so
+    it cannot say who is acting. RBAC off: returns None and the caller falls
+    back to its own shared-key check (no person to identify).
+    """
+
+    async def _check(
+        x_chatwoot_access_token: str | None = Header(default=None),
+        x_chatwoot_client: str | None = Header(default=None),
+        x_chatwoot_uid: str | None = Header(default=None),
+    ) -> int | None:
+        if not settings.rbac_enabled:
+            return None
+        user_id, _ = await _resolve_session(
+            x_chatwoot_access_token,
+            x_chatwoot_client,
+            x_chatwoot_uid,
+            validator=validator,
+            repo=None,
+            needs_repo=False,
+            missing_detail="Chatwoot session required",
+        )
+        return user_id
+
+    return _check
+
+
 def require_permission_with_identity(
     permission: str,
     *,

@@ -15,6 +15,7 @@ from chatbot.features.chat.adapters.assistants_store import build_assistants_sto
 from chatbot.features.chat.adapters.audit_log import build_audit_log
 from chatbot.features.chat.adapters.bigquery_metrics import build_metrics_port
 from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
+from chatbot.features.chat.adapters.faq_ratings import build_faq_rating_store
 from chatbot.features.chat.adapters.gcp_voice import GeminiTextToSpeechAdapter
 from chatbot.features.chat.adapters.handoff_store import build_handoff_store
 from chatbot.features.chat.adapters.inbox_assignment_store import build_inbox_assignment_store
@@ -34,7 +35,6 @@ from chatbot.features.chat.dms_config_store import DmsConfigStore
 from chatbot.features.chat.escalation_attachments import ChatwootAttachmentFetcher
 from chatbot.features.chat.escalation_notifier import EscalationNotifier, build_dealer_email_map
 from chatbot.features.chat.escalation_router import build_escalation_router
-from chatbot.features.chat.adapters.faq_ratings import build_faq_rating_store
 from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.kb_assistants_router import build_kb_assistants_router
@@ -321,7 +321,22 @@ def _wire_agent_assist(
     )
 
     faq_port = build_faq_feedback_port(settings)
-    app.include_router(build_faq_router(faq_port, settings, faq_rating_store))
+    # Rater identity needs only the Chatwoot profile lookup (no RBAC database),
+    # so a validator is built here rather than reusing the P6 block's.
+    faq_validator = None
+    if settings.rbac_enabled:
+        from chatbot.features.authz.identity import TokenValidator as _FaqTokenValidator  # noqa: PLC0415
+
+        faq_validator = _FaqTokenValidator(settings)
+    app.include_router(
+        build_faq_router(
+            faq_port,
+            settings,
+            faq_rating_store,
+            faq_store=live_faq_store,
+            validator=faq_validator,
+        )
+    )
 
 
 def _abandon_store_for(app: FastAPI, settings: Settings):

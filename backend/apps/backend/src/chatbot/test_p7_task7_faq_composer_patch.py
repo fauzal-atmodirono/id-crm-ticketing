@@ -420,3 +420,21 @@ def test_rating_additions_only_keep_the_0056_context_other_patches_need(
     # 0074/0078 anchor on these lines; the rating work must not have changed them.
     assert "const { hasFeature, backendUrl } = useProtonConfig();" in applied_file
     assert '<NextButton size="xs" variant="ghost" @click="dismissFaqSuggestion">' in applied_file
+
+
+def test_rating_post_forwards_the_session_triplet_and_resets_the_reason_box(
+    applied_file: str,
+) -> None:
+    assert "import Auth from 'dashboard/api/auth';" in applied_file
+    assert "Auth.hasAuthCookie() ? Auth.getAuthData() : null" in applied_file
+    for header in ("x-chatwoot-access-token", "x-chatwoot-client", "x-chatwoot-uid"):
+        assert f"'{header}'" in applied_file
+    # Selected state is a ternary, not a conflicting static + conditional class.
+    assert ":class=\"faqRating === 'up' ? 'text-n-teal-10' : 'text-n-slate-11'\"" in applied_file
+    assert ":class=\"faqRating === 'down' ? 'text-n-ruby-9' : 'text-n-slate-11'\"" in applied_file
+    reset = re.search(
+        r"\(\) => faqSuggestion\.value\?\.id,\s*\(\) => \{(.*?)\}", applied_file, re.DOTALL
+    )
+    assert reset, "no watcher resets the reason box when the suggestion changes"
+    assert "faqReasonOpen.value = false" in reset.group(1)
+    assert "faqReason.value = ''" in reset.group(1)

@@ -118,7 +118,9 @@ def test_faq_list_shows_average_score() -> None:
     app.include_router(build_faq_admin_router(_Store(), _settings(), rating_store=ratings))  # type: ignore[arg-type]
     rows = {
         e["id"]: e
-        for e in TestClient(app).get("/kb/faq", headers={"x-api-key": "admin-key"}).json()["entries"]
+        for e in TestClient(app)
+        .get("/kb/faq", headers={"x-api-key": "admin-key"})
+        .json()["entries"]
     }
     assert rows["faq-1"]["avg_score"] == 3.0
     assert rows["faq-1"]["rating_count"] == 2
@@ -132,3 +134,86 @@ def test_faq_list_works_without_rating_store() -> None:
     rows = TestClient(app).get("/kb/faq", headers={"x-api-key": "admin-key"}).json()["entries"]
     assert rows[0]["avg_score"] is None
     assert rows[0]["rating_count"] == 0
+
+
+# --- review fixes: session-derived rater (RBAC on) -------------------------
+
+
+class _Validator:
+    async def resolve_identity(self, token: str, client: str, uid: str) -> tuple[int, bool] | None:
+        return (42, False) if token == "good" else None
+
+
+_SESSION = {
+    "X-API-Key": _CRM,
+    "x-chatwoot-access-token": "good",
+    "x-chatwoot-client": "c",
+    "x-chatwoot-uid": "u@x",
+}
+
+
+def _rbac_client(store: InMemoryFaqRatingStore, *, with_faqs: bool = True) -> TestClient:
+    settings = Settings(qa_api_key=_QA, proton_backend_key=_CRM, rbac_enabled=True)
+    app = FastAPI()
+    app.include_router(
+        build_faq_router(
+            AsyncMock(),
+            settings,
+            store,
+            faq_store=_Store() if with_faqs else None,  # type: ignore[arg-type]
+            validator=_Validator(),  # type: ignore[arg-type]
+        )
+    )
+    return TestClient(app)
+
+
+def test_rbac_on_rater_comes_from_session_and_body_agent_is_ignored() -> None:
+    store = InMemoryFaqRatingStore()
+    c = _rbac_client(store)
+    r = c.post("/kb/feedback", json=_body(agent_id="999"), headers=_SESSION)
+    assert r.status_code == 200
+    assert list(store._rows) == [("faq-1", "42", "9")]
+
+
+def test_rbac_on_missing_session_is_401_even_with_shared_key() -> None:
+    store = InMemoryFaqRatingStore()
+    c = _rbac_client(store)
+    assert c.post("/kb/feedback", json=_body(), headers={"X-API-Key": _CRM}).status_code == 401
+    bad = {**_SESSION, "x-chatwoot-access-token": "bad"}
+    assert c.post("/kb/feedback", json=_body(), headers=bad).status_code == 401
+    assert asyncio.run(store.summaries()) == {}
+
+
+def test_rbac_off_empty_agent_on_a_rating_is_400() -> None:
+    store = InMemoryFaqRatingStore()
+    c = _fb_client(store)
+    r = c.post("/kb/feedback", json=_body(agent_id=""), headers={"X-API-Key": _CRM})
+    assert r.status_code == 400
+    assert asyncio.run(store.summaries()) == {}
+
+
+def test_unknown_article_is_404_and_records_nothing() -> None:
+    store = InMemoryFaqRatingStore()
+    c = _rbac_client(store)
+    r = c.post("/kb/feedback", json=_body(article_id="nope"), headers=_SESSION)
+    assert r.status_code == 404
+    assert asyncio.run(store.summaries()) == {}
+
+
+def test_legacy_feedback_without_agent_or_conversation_still_works() -> None:
+    store = InMemoryFaqRatingStore()
+    c = _fb_client(store)
+    body = {"article_id": "kb-9", "session_id": "s", "helpful": True, "score": 4}
+    assert c.post("/kb/feedback", json=body, headers={"X-API-Key": _QA}).status_code == 200
+    assert asyncio.run(store.summaries()) == {}
+
+
+def test_faq_list_scores_are_cached_briefly() -> None:
+    ratings = InMemoryFaqRatingStore()
+    app = FastAPI()
+    app.include_router(build_faq_admin_router(_Store(), _settings(), rating_store=ratings))  # type: ignore[arg-type]
+    c = TestClient(app)
+    h = {"x-api-key": "admin-key"}
+    assert c.get("/kb/faq", headers=h).json()["entries"][0]["rating_count"] == 0
+    asyncio.run(ratings.rate("faq-1", "7", "9", 5))
+    assert c.get("/kb/faq", headers=h).json()["entries"][0]["rating_count"] == 0  # within TTL

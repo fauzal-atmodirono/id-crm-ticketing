@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import hmac
 import io
+import time
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, File, Header, HTTPException, UploadFile
@@ -55,11 +56,32 @@ def _entry_dict(entry: LiveFaqEntry) -> dict[str, Any]:
     }
 
 
-async def _with_scores(
-    entries: list[LiveFaqEntry], rating_store: FaqRatingPort | None
-) -> list[dict[str, Any]]:
+_SCORES_TTL_SECONDS = 45.0
+
+
+class _ScoresCache:
+    """Short TTL cache of the ratings aggregate: `summaries()` scans the whole
+    collection, and the admin page refreshes often. A rating shows up on the
+    list within the TTL, which is fine for a quality metric."""
+
+    def __init__(self, store: FaqRatingPort | None) -> None:
+        self._store = store
+        self._at = 0.0
+        self._value: dict[str, tuple[float, int]] = {}
+
+    async def get(self) -> dict[str, tuple[float, int]]:
+        if self._store is None:
+            return {}
+        now = time.monotonic()
+        if now - self._at >= _SCORES_TTL_SECONDS:
+            self._value = await self._store.summaries()
+            self._at = now
+        return self._value
+
+
+async def _with_scores(entries: list[LiveFaqEntry], cache: _ScoresCache) -> list[dict[str, Any]]:
     """FIX-23: average agent rating + count per FAQ (None / 0 when unrated)."""
-    scores = await rating_store.summaries() if rating_store is not None else {}
+    scores = await cache.get()
     rows: list[dict[str, Any]] = []
     for e in entries:
         avg, count = scores.get(e.id, (None, 0))
@@ -79,6 +101,7 @@ def build_faq_admin_router(
     rating_store: FaqRatingPort | None = None,
 ) -> APIRouter:
     router = APIRouter(tags=["kb"])
+    scores_cache = _ScoresCache(rating_store)
 
     def _authorize(x_api_key: str | None) -> None:
         if x_api_key is None:
@@ -139,7 +162,7 @@ def build_faq_admin_router(
     ) -> dict[str, Any]:
         _authorize(x_api_key)
         entries = await _require_store().list_all()
-        return {"entries": await _with_scores(entries, rating_store)}
+        return {"entries": await _with_scores(entries, scores_cache)}
 
     @router.post("/kb/faq/bulk")
     async def bulk_create_faq(
@@ -169,8 +192,12 @@ def build_faq_admin_router(
             try:
                 await _require_store().create(
                     LiveFaqEntry(
-                        id="", question=question, answer=answer,
-                        keywords=keywords, tags=tags, active=True,
+                        id="",
+                        question=question,
+                        answer=answer,
+                        keywords=keywords,
+                        tags=tags,
+                        active=True,
                     )
                 )
                 created += 1

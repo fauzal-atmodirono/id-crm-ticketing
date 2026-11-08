@@ -99,27 +99,35 @@ once merged; never on the prod VM, never from an arm64 Mac.
 FIX-23 (RFP 3.2.1 / 4.19 / 4.28, "feedback and score the FAQ quality"): the
 strip gains thumbs-up / thumbs-down next to Apply/Dismiss. Up posts score 5,
 down opens an optional reason box and posts score 1, to POST /kb/feedback with
-the CRM backend key (the same x-api-key the FAQs admin page uses). The backend
-keys ratings on (faq id, agent id, conversation id), so one agent rates a FAQ
-once per conversation and a re-click replaces the vote; the FAQs admin page
-(0080) shows the average and count. Requires /kb/suggest to return the live
-FAQ's uid=501(yudaadipratama) gid=20(staff) groups=20(staff),12(everyone),61(localaccounts),79(_appserverusr),80(admin),81(_appserveradm),701(com.apple.sharepoint.group.1),33(_appstore),98(_lpadmin),100(_lpoperator),204(_developer),250(_analyticsusers),395(com.apple.access_ftp),398(com.apple.access_screensharing),399(com.apple.access_ssh),400(com.apple.access_remote_ae), which the backend now does. Additions only: nothing 0074/0078
-rely on is removed.
+the CRM backend key plus the Chatwoot session triplet (same pattern as 0068).
+With RBAC on the backend takes the rater from the session and ignores the
+body's agent_id; with RBAC off the shared-key path is unchanged. Ratings are
+keyed on (faq id, agent id, conversation id), so one agent rates a FAQ once per
+conversation and a re-click replaces the vote; the FAQs admin page (0080) shows
+the average and count. Requires /kb/suggest to return the live FAQ id, which
+the backend now returns. Additions only: nothing 0074/0078 rely on is removed.
 ---
- .../widgets/WootWriter/ReplyTopPanel.vue           | 217 ++++++++++++++++++++-
- 1 file changed, 215 insertions(+), 2 deletions(-)
+ .../widgets/WootWriter/ReplyTopPanel.vue           | 238 ++++++++++++++++++++-
+ 1 file changed, 236 insertions(+), 2 deletions(-)
 diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
-index c8ec523..ca0ea06 100644
+index c8ec523..db9a098 100644
 --- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
 +++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
-@@ -1,5 +1,5 @@
+@@ -1,11 +1,12 @@
  <script>
 -import { ref, computed } from 'vue';
 +import { ref, computed, watch } from 'vue';
  import { useKeyboardEvents } from 'dashboard/composables/useKeyboardEvents';
  import { useCaptain } from 'dashboard/composables/useCaptain';
  import { useTrack, useAlert } from 'dashboard/composables';
-@@ -27,6 +27,12 @@ const PROTON_ACTION_MODE = {
+ import { vOnClickOutside } from '@vueuse/components';
+ import { REPLY_EDITOR_MODES, CHAR_LENGTH_WARNING } from './constants';
+ import { CAPTAIN_EVENTS } from 'dashboard/helper/AnalyticsHelper/events';
++import Auth from 'dashboard/api/auth';
+ import NextButton from 'dashboard/components-next/button/Button.vue';
+ import EditorModeToggle from './EditorModeToggle.vue';
+ import CopilotMenuBar from './CopilotMenuBar.vue';
+@@ -27,6 +28,12 @@ const PROTON_ACTION_MODE = {
    summarize: 'note',
    ask_copilot: 'reply',
  };
@@ -132,7 +140,7 @@ index c8ec523..ca0ea06 100644
  
  export default {
    name: 'ReplyTopPanel',
-@@ -97,13 +103,162 @@ export default {
+@@ -97,13 +104,182 @@ export default {
      };
  
      const { captainTasksEnabled } = useCaptain();
@@ -218,12 +226,23 @@ index c8ec523..ca0ea06 100644
 +      const faq = faqSuggestion.value;
 +      const key = faqRatingKey();
 +      if (!faq?.id || !key) return;
++      const authData = Auth.hasAuthCookie() ? Auth.getAuthData() : null;
 +      try {
 +        const response = await fetch(`${backendUrl}/kb/feedback`, {
 +          method: 'POST',
 +          headers: {
 +            'Content-Type': 'application/json',
 +            ...(backendKey ? { 'x-api-key': backendKey } : {}),
++            // Session triplet (same pattern as protonAssist.js, patch 0068):
++            // with RBAC on the backend takes the rater from the session and
++            // ignores agent_id; with RBAC off it ignores these headers.
++            ...(authData
++              ? {
++                  'x-chatwoot-access-token': authData['access-token'],
++                  'x-chatwoot-client': authData.client,
++                  'x-chatwoot-uid': authData.uid,
++                }
++              : {}),
 +          },
 +          body: JSON.stringify({
 +            article_id: faq.id,
@@ -246,6 +265,15 @@ index c8ec523..ca0ea06 100644
 +        useAlert('Could not save the FAQ rating.');
 +      }
 +    };
++    // A new suggestion (or a cleared one) must not inherit the previous
++    // one's half-typed reason box.
++    watch(
++      () => faqSuggestion.value?.id,
++      () => {
++        faqReasonOpen.value = false;
++        faqReason.value = '';
++      }
++    );
 +    const rateFaqUp = () => submitFaqRating(true);
 +    const openFaqDownReason = () => {
 +      faqReasonOpen.value = !faqReasonOpen.value;
@@ -296,7 +324,7 @@ index c8ec523..ca0ea06 100644
  
      const showCopilotMenu = ref(false);
      const copilotToggleRef = ref(null);
-@@ -258,6 +413,16 @@ export default {
+@@ -258,6 +434,16 @@ export default {
        captainTasksEnabled,
        protonEnabled,
        showAiButton,
@@ -313,7 +341,7 @@ index c8ec523..ca0ea06 100644
        translating,
        handleTranslateLastCustomerMessage,
        handleCopilotAction,
-@@ -321,6 +486,54 @@ export default {
+@@ -321,6 +507,54 @@ export default {
          {{ translating ? 'Translating…' : 'Translate' }}
        </button>
      </div>
@@ -334,8 +362,8 @@ index c8ec523..ca0ea06 100644
 +      <template v-if="faqSuggestion.id">
 +        <button
 +          type="button"
-+          class="faq-rate-up flex items-center text-n-slate-11 hover:text-n-teal-10"
-+          :class="{ 'text-n-teal-10': faqRating === 'up' }"
++          class="faq-rate-up flex items-center hover:text-n-teal-10"
++          :class="faqRating === 'up' ? 'text-n-teal-10' : 'text-n-slate-11'"
 +          title="Helpful"
 +          @click="rateFaqUp"
 +        >
@@ -343,8 +371,8 @@ index c8ec523..ca0ea06 100644
 +        </button>
 +        <button
 +          type="button"
-+          class="faq-rate-down flex items-center text-n-slate-11 hover:text-n-ruby-9"
-+          :class="{ 'text-n-ruby-9': faqRating === 'down' }"
++          class="faq-rate-down flex items-center hover:text-n-ruby-9"
++          :class="faqRating === 'down' ? 'text-n-ruby-9' : 'text-n-slate-11'"
 +          title="Not helpful"
 +          @click="openFaqDownReason"
 +        >

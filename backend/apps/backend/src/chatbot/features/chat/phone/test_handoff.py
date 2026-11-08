@@ -729,7 +729,9 @@ def _sign(token: str, url: str, params: dict[str, str]) -> str:
     return base64.b64encode(mac.digest()).decode()
 
 
-def _client(log: _FakeLog, settings: Settings | None = None) -> tuple[TestClient, Settings]:
+def _client(
+    log: _FakeLog, settings: Settings | None = None, **router_kwargs: Any
+) -> tuple[TestClient, Settings]:
     settings = settings or Settings(
         _env_file=None,
         phone_transcript_live_enabled=True,  # required by PHONE_HANDOFF_ENABLED
@@ -747,7 +749,7 @@ def _client(log: _FakeLog, settings: Settings | None = None) -> tuple[TestClient
         runner_factory=lambda _agent: _FakeRunner(),
     )
     app = create_app(settings)
-    app.include_router(build_chat_router(orchestrator))
+    app.include_router(build_chat_router(orchestrator, **router_kwargs))
     return TestClient(app), settings
 
 

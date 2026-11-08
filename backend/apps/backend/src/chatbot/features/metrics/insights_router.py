@@ -57,6 +57,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 from dataclasses import asdict
+from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Header, HTTPException
@@ -151,6 +152,7 @@ def build_metrics_insights_router(
     *,
     ai_cost_port: AiCostUsagePort | None = None,
     price_table: PriceLookup | None = None,
+    abandon_reader: Any | None = None,
 ) -> APIRouter:
     """The two AI-cost dependencies are keyword-only with `None` defaults so
     `main.py`'s existing call site needs no change and the real deployment
@@ -189,9 +191,22 @@ def build_metrics_insights_router(
     ) -> dict[str, Any]:
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
-        return _stamp_batch_freshness(
+        payload = _stamp_batch_freshness(
             asdict(await port.fetch_callcenter(period, filters)), settings
         )
+        if abandon_reader is not None:
+            # FIX-16: abandoned-call rate per day. Fail-open: a store problem
+            # must not take the rest of the call-centre report down.
+            start = period.start if period else date.today() - timedelta(days=30)
+            end = period.end if period else date.today()
+            try:
+                payload["abandoned_calls"] = {
+                    "daily": await abandon_reader.daily_rates(start, end),
+                    "ok": True,
+                }
+            except Exception:
+                payload["abandoned_calls"] = {"daily": [], "ok": False}
+        return payload
 
     @router.get("/metrics/lifecycle")
     async def lifecycle(

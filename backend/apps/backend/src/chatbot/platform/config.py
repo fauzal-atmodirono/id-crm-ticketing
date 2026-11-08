@@ -183,6 +183,13 @@ class Settings(BaseSettings):
     rsa_enabled: bool = False
     rsa_database_url: str = ""
 
+    # FIX-16 abandoned-call rate (RFP 4.66): record each handoff <Dial>
+    # outcome (DialCallStatus=canceled == caller hung up before an agent
+    # answered) in its own small table and expose abandon rate per day in
+    # /metrics/callcenter. Default off; needs BOTH settings. Fail-open.
+    call_abandon_enabled: bool = False
+    call_abandon_database_url: str = ""
+
     # --- DMS/TSP integration shell (Package F) ---
     # Wires MockDmsClient into Customer 360's optional `dms` block. Phase 1
     # ships no real DMS adapter, so this is the ONLY thing that can put data

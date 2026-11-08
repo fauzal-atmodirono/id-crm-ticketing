@@ -322,6 +322,28 @@ def _wire_agent_assist(
     app.include_router(build_faq_router(faq_port, settings))
 
 
+def _abandon_store_for(app: FastAPI, settings: Settings):
+    """FIX-16: the abandoned-call store, or None when the flag/URL is unset.
+    Built once per app (shared by the chat router that records and the metrics
+    router that reads); table creation is fail-open at startup."""
+    if not (settings.call_abandon_enabled and settings.call_abandon_database_url):
+        return None
+    store = getattr(app.state, "abandon_store", None)
+    if store is None:
+        from chatbot.features.chat.phone.abandon_store import build_abandon_store
+
+        store = build_abandon_store(
+            settings.call_abandon_database_url, settings.reporting_timezone
+        )
+        app.state.abandon_store = store
+
+        @app.on_event("startup")
+        async def _init_abandon_store() -> None:
+            await store.init()
+
+    return store
+
+
 def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
     """Wire QA-labelling router, dashboard read API, and metrics-scheduler shutdown."""
     qa_port = build_qa_label_port(settings)
@@ -335,7 +357,11 @@ def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
     app.include_router(build_metrics_query_router(query_port, settings))
     app.include_router(build_metrics_export_router(query_port, settings))
     app.include_router(build_metrics_anomaly_router(query_port, settings))
-    app.include_router(build_metrics_insights_router(query_port, settings))
+    app.include_router(
+        build_metrics_insights_router(
+            query_port, settings, abandon_reader=_abandon_store_for(app, settings)
+        )
+    )
 
     # P5: the fourteen-row control-item slide. The actuals provider is
     # deliberately not wired yet -- every row then reports `no_data` with its
@@ -784,6 +810,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             softphone_registry=softphone_registry,
             presence_fetcher=_routing_presence,
             call_control=_call_control,
+            abandon_store=_abandon_store_for(app, settings),
         )
     )
 

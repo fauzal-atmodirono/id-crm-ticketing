@@ -412,8 +412,11 @@ class ChatRouter:
         softphone_registry: SoftphoneRegistry | None = None,
         presence_fetcher: PresenceFetcher | None = None,
         call_control: CallControl | None = None,
+        abandon_store: Any | None = None,
     ) -> None:
         self.orchestrator = orchestrator
+        # FIX-16: None-defaulted (flag off) -> dial-status records nothing.
+        self._abandon_store = abandon_store
         self._handoff_bridge = handoff_bridge
         self._human_agent_bridge = human_agent_bridge
         self._twilio_adapter = twilio_adapter
@@ -1916,6 +1919,11 @@ class ChatRouter:
             _log.warning("phone_dial_status_missing_call_sid")
             return Response(content=_DIAL_HANGUP_TWIML, media_type="application/xml")
 
+        # FIX-16: record the handoff outcome (canceled == caller hung up before
+        # any agent answered). Background + fail-open: never delays the TwiML.
+        if self._abandon_store is not None:
+            background_tasks.add_task(self._record_dial_outcome, call_sid, status)
+
         if status == "completed":
             _log.info("phone_dial_status_completed", call_sid=call_sid)
             # P6 task 5 + review-final I1: best-effort ACW entry, QUEUED here
@@ -1991,6 +1999,12 @@ class ChatRouter:
             ),
             media_type="application/xml",
         )
+
+    async def _record_dial_outcome(self, call_sid: str, status: str) -> None:
+        try:
+            await self._abandon_store.record(call_sid, status)
+        except Exception as e:
+            _log.warning("phone_abandon_record_failed", call_sid=call_sid, error=str(e))
 
     async def _enter_acw_best_effort(self, call_sid: str, dial_call_sid: str | None = None) -> None:
         """P6 task 5: resolve the call's conversation and hand it to
@@ -2266,6 +2280,7 @@ def build_chat_router(
     softphone_registry: SoftphoneRegistry | None = None,
     presence_fetcher: PresenceFetcher | None = None,
     call_control: CallControl | None = None,
+    abandon_store: Any | None = None,
 ) -> APIRouter:
     """Builds and returns the configured FastAPI router instance."""
     return ChatRouter(
@@ -2280,4 +2295,5 @@ def build_chat_router(
         call_control=call_control,
         softphone_registry=softphone_registry,
         presence_fetcher=presence_fetcher,
+        abandon_store=abandon_store,
     ).router

@@ -756,7 +756,13 @@ class BigQueryMetricsQuery:
             sql = f"SELECT * FROM `{self._prefix}.{view}`"  # noqa: S608
             config = None
             if period is not None:
-                sql += " WHERE day BETWEEN @start AND @end"
+                if key == "root_cause":
+                    # `day` is the week's Monday: keep every week that
+                    # OVERLAPS the range (week end >= start), so a mid-week
+                    # range still shows its week.
+                    sql += " WHERE DATE_ADD(day, INTERVAL 6 DAY) >= @start AND day <= @end"
+                else:
+                    sql += " WHERE day BETWEEN @start AND @end"
                 config = self._range_job_config(period)
             try:
                 rows = [_jsonable_row(dict(r)) for r in self._client.query(sql, job_config=config).result()]

@@ -128,7 +128,11 @@ async def test_period_filters_on_day_with_bound_parameters() -> None:
     client = _Client({})
     period = PeriodRange(date(2026, 11, 2), date(2026, 11, 8), "week")
     m = await _adapter(client).fetch_ai_performance(period)
-    assert all("WHERE day BETWEEN @start AND @end" in q for q in client.queries)
+    root = [q for q in client.queries if "v_ai_root_cause" in q]
+    others = [q for q in client.queries if "v_ai_root_cause" not in q]
+    assert all("WHERE day BETWEEN @start AND @end" in q for q in others)
+    # a week overlapping the range counts even when its Monday is before `from`
+    assert "DATE_ADD(day, INTERVAL 6 DAY) >= @start AND day <= @end" in root[0]
     assert all(c is not None for c in client.configs)
     assert m.scopes["deflection"].status == "ok"
 

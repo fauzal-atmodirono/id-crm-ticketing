@@ -18,7 +18,7 @@ index 96cf550..e230829 100644
  // format: 'csv' | 'xlsx'
  export function exportUrl(format) {
 diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue
-index c816d09..280deea 100644
+index c816d09..76beaf3 100644
 --- a/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue
 +++ b/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue
 @@ -7,6 +7,7 @@ import ReportContainer from './ReportContainer.vue';
@@ -37,20 +37,27 @@ index c816d09..280deea 100644
    },
    data() {
      return {
-@@ -30,6 +32,12 @@ export default {
+@@ -30,6 +32,19 @@ export default {
      };
    },
    computed: {
 +    // ISO dates for the Proton AI section; null until a range is chosen.
 +    aiPeriod() {
 +      if (!this.from || !this.to) return null;
-+      const iso = sec => new Date(sec * 1000).toISOString().slice(0, 10);
++      // Local calendar date of the picked instant (same as the weekly
++      // report's toISODate): a UTC formatter shifts a local
++      // start-of-day to the previous date east of UTC (Malaysia, UTC+8).
++      const pad = n => String(n).padStart(2, '0');
++      const iso = sec => {
++        const d = new Date(sec * 1000);
++        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
++      };
 +      return { from: iso(this.from), to: iso(this.to), granularity: 'day' };
 +    },
      requestPayload() {
        return {
          from: this.from,
-@@ -106,5 +114,7 @@ export default {
+@@ -106,5 +121,7 @@ export default {
      />
  
      <ProtonBotSection />

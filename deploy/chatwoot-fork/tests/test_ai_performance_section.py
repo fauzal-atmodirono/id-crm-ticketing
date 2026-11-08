@@ -55,3 +55,8 @@ def test_labels_are_honest_and_definitions_shown():
     assert "weighted by" in ADDED  # CSAT definition under the card
     assert "Not a measure of answer correctness" in ADDED
     assert "sample_case_detail" not in ADDED
+
+
+def test_period_dates_use_local_calendar_not_utc():
+    assert "toISOString" not in ADDED
+    assert "d.getFullYear()" in ADDED and "d.getDate()" in ADDED

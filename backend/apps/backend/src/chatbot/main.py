@@ -1278,7 +1278,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     from chatbot.features.taxonomy.router import build_taxonomy_admin_router
 
     app.include_router(build_rules_router(settings, authz_repo, authz_validator))
-    app.include_router(build_taxonomy_admin_router(settings))
+    app.include_router(build_taxonomy_admin_router(settings, authz_repo, authz_validator))
 
     @app.on_event("startup")
     async def _seed_taxonomy_store() -> None:

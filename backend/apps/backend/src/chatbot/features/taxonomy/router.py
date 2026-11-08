@@ -12,7 +12,7 @@ from dataclasses import asdict
 from fastapi import APIRouter, Depends, HTTPException, status
 import structlog
 
-from chatbot.features.authz.deps import require_permission
+from chatbot.features.authz.deps import require_authenticated, require_permission
 from chatbot.features.chat.pic_store import PicStore
 from chatbot.features.taxonomy.chatwoot_sync import sync_taxonomy_to_chatwoot
 from chatbot.features.taxonomy.store import TaxonomyNode, TaxonomyStore, build_taxonomy_store
@@ -92,7 +92,9 @@ async def _unreferenced_departments(
     return unreferenced, source
 
 
-def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
+def build_taxonomy_admin_router(
+    settings: Settings, authz_repo: Any = None, validator: Any = None
+) -> APIRouter:
     router = APIRouter(prefix="/admin/taxonomy", tags=["taxonomy-admin"])
     store = build_taxonomy_store(settings)
     pic_store = PicStore(settings)
@@ -104,7 +106,12 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
                 detail="Taxonomy admin feature is disabled on this tenant (TAXONOMY_ADMIN_ENABLED=false)",
             )
 
-    @router.get("/tree")
+    @router.get(
+        "/tree",
+        dependencies=[
+            Depends(require_authenticated(repo=authz_repo, validator=validator, settings=settings))
+        ],
+    )
     async def get_taxonomy_tree() -> dict[str, Any]:
         _check_enabled()
         tree_data = await store.tree()
@@ -112,7 +119,11 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
 
     @router.post(
         "/node",
-        dependencies=[Depends(require_permission("taxonomy.manage", settings=settings))],
+        dependencies=[Depends(
+                require_permission(
+                    "taxonomy.manage", repo=authz_repo, validator=validator, settings=settings
+                )
+            )],
     )
     async def create_or_update_node(payload: dict[str, Any]) -> dict[str, Any]:
         _check_enabled()
@@ -142,7 +153,11 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
 
     @router.post(
         "/node/{key}/retire",
-        dependencies=[Depends(require_permission("taxonomy.manage", settings=settings))],
+        dependencies=[Depends(
+                require_permission(
+                    "taxonomy.manage", repo=authz_repo, validator=validator, settings=settings
+                )
+            )],
     )
     async def retire_taxonomy_node(key: str) -> dict[str, Any]:
         _check_enabled()

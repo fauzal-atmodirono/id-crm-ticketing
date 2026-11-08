@@ -142,6 +142,47 @@ def require_permission(
     return _check
 
 
+def require_authenticated(
+    *,
+    repo: AuthzRepository | None = None,  # noqa: ARG001 -- kept for signature parity with require_permission
+    validator: TokenValidator | None = None,
+    settings: Settings,
+):
+    """Any valid Chatwoot session passes; no specific permission needed.
+
+    For read endpoints the conversation sidebar needs (e.g. the taxonomy tree):
+    every logged-in agent may read, only `taxonomy.manage` holders may write.
+    Same headers and token resolution as `require_permission`; with RBAC off it
+    falls back to the shared-secret check, like `require_permission` does.
+    """
+
+    async def _check(
+        x_api_key: str | None = Header(default=None),
+        x_chatwoot_access_token: str | None = Header(default=None),
+        x_chatwoot_client: str | None = Header(default=None),
+        x_chatwoot_uid: str | None = Header(default=None),
+    ) -> None:
+        if not settings.rbac_enabled:
+            _shared_secret_check(settings, x_api_key)
+            return
+
+        if (
+            not x_chatwoot_access_token
+            or not x_chatwoot_client
+            or not x_chatwoot_uid
+            or validator is None
+        ):
+            raise HTTPException(status_code=401, detail="Missing Chatwoot access token")
+
+        identity = await validator.resolve_identity(
+            x_chatwoot_access_token, x_chatwoot_client, x_chatwoot_uid
+        )
+        if identity is None:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    return _check
+
+
 def require_permission_with_identity(
     permission: str,
     *,

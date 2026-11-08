@@ -86,12 +86,12 @@ def test_the_permission_appears_in_the_permission_registry() -> None:
 def test_the_flag_off_returns_404_so_the_page_does_not_render(monkeypatch: pytest.MonkeyPatch) -> None:
     from chatbot.platform.config import get_settings
 
-    off_settings = get_settings().model_copy(update={"taxonomy_admin_enabled": False})
+    off_settings = get_settings().model_copy(update={"taxonomy_admin_enabled": False, "proton_backend_key": "test_api_key"})
     app = FastAPI()
     app.include_router(build_taxonomy_admin_router(off_settings))
     client = TestClient(app)
 
-    res = client.get("/admin/taxonomy/tree")
+    res = client.get("/admin/taxonomy/tree", headers={"x-api-key": "test_api_key"})
     assert res.status_code == 404
 
 
@@ -100,7 +100,7 @@ def test_the_tree_endpoint_returns_the_nested_active_taxonomy(settings) -> None:
     app.include_router(build_taxonomy_admin_router(settings))
     client = TestClient(app)
 
-    res = client.get("/admin/taxonomy/tree")
+    res = client.get("/admin/taxonomy/tree", headers={"x-api-key": "test_api_key"})
     assert res.status_code == 200
     assert "tree" in res.json()
 
@@ -268,3 +268,55 @@ async def test_retiring_a_node_with_children_returns_a_confirmation_prompt_not_a
     assert body["status"] == "retired"
     assert len(body["active_children"]) == 1
     assert body["active_children"][0]["key"] == "div_sales"
+
+
+# --- FIX-10: RBAC wiring -------------------------------------------------
+
+
+class _FakeValidator:
+    """Resolves tokens "admin"/"agent" to non-superadmin user ids 7/8."""
+
+    async def resolve_identity(self, token: str, _client: str, _uid: str):
+        return {"admin": (7, False), "agent": (8, False)}.get(token)
+
+
+class _FakeRepo:
+    async def permissions_for_user(self, user_id: int) -> set[str]:
+        return {"taxonomy.manage"} if user_id == 7 else set()
+
+
+def _rbac_client(settings) -> TestClient:
+    s = settings.model_copy(update={"rbac_enabled": True})
+    app = FastAPI()
+    app.include_router(build_taxonomy_admin_router(s, _FakeRepo(), _FakeValidator()))
+    return TestClient(app)
+
+
+def _hdrs(token: str) -> dict[str, str]:
+    return {
+        "x-chatwoot-access-token": token,
+        "x-chatwoot-client": "c",
+        "x-chatwoot-uid": "u@example.com",
+    }
+
+
+_NODE = {"level": 1, "key": "type_a", "label": "A"}
+
+
+def test_write_with_permission_succeeds(settings) -> None:
+    res = _rbac_client(settings).post("/admin/taxonomy/node", headers=_hdrs("admin"), json=_NODE)
+    assert res.status_code == 200
+
+
+def test_write_without_permission_is_403(settings) -> None:
+    res = _rbac_client(settings).post("/admin/taxonomy/node", headers=_hdrs("agent"), json=_NODE)
+    assert res.status_code == 403
+
+
+def test_tree_without_session_is_401_when_rbac_on(settings) -> None:
+    assert _rbac_client(settings).get("/admin/taxonomy/tree").status_code == 401
+
+
+def test_tree_with_any_session_is_200(settings) -> None:
+    res = _rbac_client(settings).get("/admin/taxonomy/tree", headers=_hdrs("agent"))
+    assert res.status_code == 200

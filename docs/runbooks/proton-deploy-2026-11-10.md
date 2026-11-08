@@ -173,6 +173,8 @@ rebuild until reviewed.
 
 ## Wave 2 note: AI activity monitor (FIX-43) needs an enable step
 
+Not part of the 10 Nov Wave 1 window — do not do this now. It applies only after the rc17 image and the Wave 2 backend ship.
+
 The page ships with backend route `GET /admin/ai-activity` and fork patch 0081
 (Chatwoot image rc17+). It stays invisible until both gates agree:
 

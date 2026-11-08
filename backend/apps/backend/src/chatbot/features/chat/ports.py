@@ -397,6 +397,18 @@ class AuditEntry:
     transport: str | None = None
     delivery_status: str | None = None
     sla_status: str | None = None
+    # FIX-17 (RFP 3.2.6 / 4.38): who, what kind of event, on which object and
+    # what changed. All nullable so every row written before FIX-17 still
+    # loads. `actor` stays the display string old readers use; `actor_user_id`
+    # is the real Chatwoot user for admin writes and None for system actors.
+    # `before`/`after` are REDACTED snapshots (see audit_events.redact) -- never
+    # raw secrets or full phone numbers / emails.
+    event_type: str | None = None
+    actor_user_id: int | None = None
+    actor_name: str | None = None
+    target: str | None = None
+    before: dict[str, Any] | None = None
+    after: dict[str, Any] | None = None
 
 
 class AuditLogPort(Protocol):
@@ -413,4 +425,7 @@ class AuditLogPort(Protocol):
         from_ts: str | None = None,
         to_ts: str | None = None,
         limit: int = 200,
+        event_type: str | None = None,
+        actor_user_id: int | None = None,
+        target: str | None = None,
     ) -> list[AuditEntry]: ...

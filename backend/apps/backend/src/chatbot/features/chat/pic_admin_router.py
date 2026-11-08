@@ -6,12 +6,18 @@ Gated behind the `escalation.manage` permission via Phase 1's
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import asdict, is_dataclass
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, model_validator
 
-from chatbot.features.authz.deps import require_permission
+from chatbot.features.authz.deps import Actor, require_permission, resolve_actor
+from chatbot.features.chat.audit_events import (
+    EVENT_ESCALATION_ROUTING_CHANGE,
+    changed_fields,
+    record_event,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -19,7 +25,27 @@ if TYPE_CHECKING:
     from chatbot.features.authz.identity import TokenValidator
     from chatbot.features.authz.repository import AuthzRepository
     from chatbot.features.chat.pic_store import DealerStore, PicStore, ProtonNetStore
+    from chatbot.features.chat.ports import AuditLogPort
     from chatbot.platform.config import Settings
+
+
+def _as_dict(rec: Any) -> dict[str, Any] | None:
+    if rec is None:
+        return None
+    if is_dataclass(rec) and not isinstance(rec, type):
+        return asdict(rec)
+    if isinstance(rec, dict):
+        return dict(rec)
+    return dict(vars(rec))
+
+
+async def _current(store: Any, key: str) -> dict[str, Any] | None:
+    """The row as it is right now, for the audit `before`. A failed read must
+    never block the edit -- it only costs the diff its left-hand side."""
+    try:
+        return _as_dict(await store.get(key))
+    except Exception:
+        return None
 
 
 class PicUpsertBody(BaseModel):
@@ -89,6 +115,7 @@ def build_pic_admin_router(
     settings: Settings,
     pronet_store: ProtonNetStore | None = None,
     on_write: Callable[[], None] | None = None,
+    audit: AuditLogPort | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/admin/escalation", tags=["escalation-admin"])
 
@@ -102,13 +129,33 @@ def build_pic_admin_router(
         "escalation.manage", repo=authz_repo, validator=validator, settings=settings
     )
 
+    caller = resolve_actor(validator=validator, settings=settings)
+
+    async def _audit(
+        actor: Actor, kind: str, key: str, before: Any, after: Any, verb: str
+    ) -> None:
+        b, a = changed_fields(before, after)
+        await record_event(
+            audit,
+            event_type=EVENT_ESCALATION_ROUTING_CHANGE,
+            target=f"{kind}:{key}",
+            actor_user_id=actor.user_id,
+            actor_name=actor.name,
+            before=b if before is not None else None,
+            after=a if after is not None else None,
+            remarks=f"{kind} {verb}",
+        )
+
     @router.get("/pics", dependencies=[Depends(manage_escalation)])
     async def list_pics() -> dict:
         records = await pic_store.list_all()
         return {"pics": [r.__dict__ for r in records]}
 
     @router.put("/pics/{department}", dependencies=[Depends(manage_escalation)])
-    async def upsert_pic(department: str, body: PicUpsertBody) -> dict:
+    async def upsert_pic(
+        department: str, body: PicUpsertBody, actor: Actor = Depends(caller)
+    ) -> dict:
+        before = await _current(pic_store, department)
         await pic_store.set(
             department,
             pic_name=body.pic_name,
@@ -119,12 +166,19 @@ def build_pic_admin_router(
             escalation_manager_whatsapp=body.escalation_manager_whatsapp,
         )
         _changed()
+        await _audit(
+            actor, "pic", department, before, await _current(pic_store, department), "saved"
+        )
         return {"department": department, "status": "ok"}
 
     @router.delete("/pics/{department}", dependencies=[Depends(manage_escalation)])
-    async def delete_pic(department: str) -> dict:
+    async def delete_pic(
+        department: str, actor: Actor = Depends(caller)
+    ) -> dict:
+        before = await _current(pic_store, department)
         await pic_store.delete(department)
         _changed()
+        await _audit(actor, "pic", department, before, {}, "deleted")
         return {"department": department, "status": "ok"}
 
     @router.get("/dealers", dependencies=[Depends(manage_escalation)])
@@ -133,7 +187,10 @@ def build_pic_admin_router(
         return {"dealers": [r.__dict__ for r in records]}
 
     @router.put("/dealers/{dealer}", dependencies=[Depends(manage_escalation)])
-    async def upsert_dealer(dealer: str, body: DealerUpsertBody) -> dict:
+    async def upsert_dealer(
+        dealer: str, body: DealerUpsertBody, actor: Actor = Depends(caller)
+    ) -> dict:
+        before = await _current(dealer_store, dealer)
         await dealer_store.set(
             dealer,
             emails=body.members(),
@@ -142,12 +199,19 @@ def build_pic_admin_router(
             region=body.region,
         )
         _changed()
+        await _audit(
+            actor, "dealer", dealer, before, await _current(dealer_store, dealer), "saved"
+        )
         return {"dealer": dealer, "status": "ok"}
 
     @router.delete("/dealers/{dealer}", dependencies=[Depends(manage_escalation)])
-    async def delete_dealer(dealer: str) -> dict:
+    async def delete_dealer(
+        dealer: str, actor: Actor = Depends(caller)
+    ) -> dict:
+        before = await _current(dealer_store, dealer)
         await dealer_store.delete(dealer)
         _changed()
+        await _audit(actor, "dealer", dealer, before, {}, "deleted")
         return {"dealer": dealer, "status": "ok"}
 
     # --- PRO-NET regional contacts ------------------------------------------
@@ -162,17 +226,27 @@ def build_pic_admin_router(
             return {"regions": [r.__dict__ for r in records]}
 
         @router.put("/pronet/{region}", dependencies=[Depends(manage_escalation)])
-        async def upsert_pronet(region: str, body: ProtonNetUpsertBody) -> dict:
+        async def upsert_pronet(
+            region: str, body: ProtonNetUpsertBody, actor: Actor = Depends(caller)
+        ) -> dict:
+            before = await _current(pronet_store, region)
             await pronet_store.set(
                 region, area_regional_mgr=body.area_regional_mgr, hod=body.hod
             )
             _changed()
+            await _audit(
+                actor, "pronet", region, before, await _current(pronet_store, region), "saved"
+            )
             return {"region": region, "status": "ok"}
 
         @router.delete("/pronet/{region}", dependencies=[Depends(manage_escalation)])
-        async def delete_pronet(region: str) -> dict:
+        async def delete_pronet(
+            region: str, actor: Actor = Depends(caller)
+        ) -> dict:
+            before = await _current(pronet_store, region)
             await pronet_store.delete(region)
             _changed()
+            await _audit(actor, "pronet", region, before, {}, "deleted")
             return {"region": region, "status": "ok"}
 
     return router

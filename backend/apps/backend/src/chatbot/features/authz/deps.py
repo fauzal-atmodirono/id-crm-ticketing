@@ -12,6 +12,7 @@ token, invalid token, network error) is a 401 deny — never a silent allow.
 from __future__ import annotations
 
 import hmac
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from fastapi import Header, HTTPException
@@ -245,3 +246,56 @@ def require_permission_with_identity(
         return user_id
 
     return _check
+
+
+@dataclass(frozen=True)
+class Actor:
+    """Who made an admin write, for the audit trail (FIX-17).
+
+    `user_id` is the real Chatwoot user when RBAC is on. With RBAC off the
+    shared secret identifies a service, not a person, so `user_id` is None and
+    `name` says so -- the row is still written, just honestly attributed.
+    """
+
+    user_id: int | None
+    name: str
+
+
+SERVICE_ACTOR = Actor(user_id=None, name="admin-api-key")
+
+
+def resolve_actor(
+    *,
+    validator: TokenValidator | None = None,
+    settings: Settings,
+):
+    """Dependency that says WHO is calling, for the audit trail (FIX-17).
+
+    Deliberately separate from the permission gate: routers keep their existing
+    `Depends(require_permission(...))` untouched and add this next to it, so the
+    gate and the attribution cannot drift. It never authorises anything -- the
+    gate has already run. With RBAC off the caller is the shared secret
+    (`SERVICE_ACTOR`); with it on, the session resolves to the real user (a
+    cache hit, since the gate just validated the same triplet).
+    """
+
+    async def _actor(
+        x_chatwoot_access_token: str | None = Header(default=None),
+        x_chatwoot_client: str | None = Header(default=None),
+        x_chatwoot_uid: str | None = Header(default=None),
+    ) -> Actor:
+        if not settings.rbac_enabled or validator is None:
+            return SERVICE_ACTOR
+        if not x_chatwoot_access_token or not x_chatwoot_client or not x_chatwoot_uid:
+            return SERVICE_ACTOR
+        identity = await validator.resolve_identity(
+            x_chatwoot_access_token, x_chatwoot_client, x_chatwoot_uid
+        )
+        if identity is None:
+            return SERVICE_ACTOR
+        user_id = identity[0]
+        display = getattr(validator, "display_name", None)
+        name = display(user_id) if callable(display) else None
+        return Actor(user_id=user_id, name=name or f"user:{user_id}")
+
+    return _actor

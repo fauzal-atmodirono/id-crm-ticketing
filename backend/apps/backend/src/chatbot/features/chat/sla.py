@@ -435,6 +435,10 @@ async def scan_conversations(  # noqa: PLR0912, PLR0915
                         to_state=TIER2_ESCALATION,
                         at=clock.isoformat(),
                         remark=remark,
+                        event_type="sla_alert",
+                        actor_name="sla-engine",
+                        target=f"case:{ticket_id}",
+                        sla_status=TIER2_ESCALATION,
                     )
                     await audit.append(tier2_entry)
                     _log.info(
@@ -567,6 +571,10 @@ async def _fire(
         to_state=to_state,
         at=clock.isoformat(),
         remark=remark,
+        event_type="sla_alert",
+        actor_name="sla-engine",
+        target=f"case:{ticket_id}",
+        sla_status=to_state,
     )
     await audit.append(entry)
     event = "sla_reminder_recorded" if to_state == REMINDER_WARNING_STATE else "sla_breach_recorded"

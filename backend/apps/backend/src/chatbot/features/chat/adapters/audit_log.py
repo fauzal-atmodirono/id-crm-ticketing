@@ -1,4 +1,8 @@
-"""Case audit-trail stores: in-memory (tests/dev) + Firestore (persistent)."""
+"""Case audit-trail stores: in-memory (tests/dev) + Firestore (persistent).
+
+Append-only by construction: the port has no update or delete, and no route
+exposes one (RFP 2.2.5 tamper-proof history). Retention purging is a separate,
+report-only job (features/authz/audit_purge.py)."""
 
 from __future__ import annotations
 
@@ -15,6 +19,21 @@ if TYPE_CHECKING:
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
+
+
+def _apply_event_filters(
+    entries: list[AuditEntry],
+    event_type: str | None,
+    actor_user_id: int | None,
+    target: str | None,
+) -> list[AuditEntry]:
+    if event_type is not None:
+        entries = [e for e in entries if e.event_type == event_type]
+    if actor_user_id is not None:
+        entries = [e for e in entries if e.actor_user_id == actor_user_id]
+    if target is not None:
+        entries = [e for e in entries if e.target == target]
+    return entries
 
 
 class InMemoryAuditLog(AuditLogPort):
@@ -36,6 +55,9 @@ class InMemoryAuditLog(AuditLogPort):
         from_ts: str | None = None,
         to_ts: str | None = None,
         limit: int = 200,
+        event_type: str | None = None,
+        actor_user_id: int | None = None,
+        target: str | None = None,
     ) -> list[AuditEntry]:
         all_entries = [e for entries in self._by_ticket.values() for e in entries]
         if actor is not None:
@@ -44,6 +66,7 @@ class InMemoryAuditLog(AuditLogPort):
             all_entries = [e for e in all_entries if e.at >= from_ts]
         if to_ts is not None:
             all_entries = [e for e in all_entries if e.at <= to_ts]
+        all_entries = _apply_event_filters(all_entries, event_type, actor_user_id, target)
         all_entries.sort(key=lambda e: e.at, reverse=True)
         return all_entries[:limit]
 
@@ -96,6 +119,9 @@ class FirestoreAuditLog(AuditLogPort):
         from_ts: str | None = None,
         to_ts: str | None = None,
         limit: int = 200,
+        event_type: str | None = None,
+        actor_user_id: int | None = None,
+        target: str | None = None,
     ) -> list[AuditEntry]:
         def _query() -> list[AuditEntry]:
             query = self._collection()
@@ -107,6 +133,9 @@ class FirestoreAuditLog(AuditLogPort):
                 query = query.where("at", "<=", to_ts)
             docs = query.stream()
             entries = [self._to_entry(doc) for doc in docs]
+            # Applied in memory: a further equality filter next to the existing
+            # range filter on `at` would need a new composite index per combination.
+            entries = _apply_event_filters(entries, event_type, actor_user_id, target)
             entries.sort(key=lambda e: e.at, reverse=True)
             return entries[:limit]
 

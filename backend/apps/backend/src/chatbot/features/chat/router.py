@@ -688,6 +688,9 @@ class ChatRouter:
                 to_state=to_state.value,
                 at=datetime.now(UTC).isoformat(),
                 remark=f"status_changed -> {payload.conversation.status}",
+                event_type="status_change",
+                actor_name=actor,
+                target=f"case:{conv_id}",
             )
         )
         _log.info("chatwoot_status_transition_logged", conv_id=conv_id, to_state=to_state.value)
@@ -733,6 +736,9 @@ class ChatRouter:
                 to_state=FIRST_RESPONSE_STATE,
                 at=datetime.now(UTC).isoformat(),
                 remark="first agent response",
+                event_type="first_response",
+                actor_name="agent",
+                target=f"case:{conv_id}",
             )
         )
         _log.info("chatwoot_first_response_logged", conv_id=conv_id)

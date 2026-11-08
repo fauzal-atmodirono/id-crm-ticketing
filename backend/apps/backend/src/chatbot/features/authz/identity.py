@@ -35,6 +35,9 @@ class TokenValidator:
         self._ttl = cache_ttl_seconds
         # (access_token, client, uid) -> ((user_id, is_super_admin), expires_at)
         self._cache: dict[tuple[str, str, str], tuple[tuple[int, bool], float]] = {}
+        # user_id -> display name from the same /profile payload (audit trail
+        # wants a name next to the id; no extra round-trip).
+        self._names: dict[int, str] = {}
 
     async def resolve_identity(
         self, access_token: str, client: str, uid: str
@@ -63,12 +66,19 @@ class TokenValidator:
                 res.raise_for_status()
                 payload = res.json()
                 identity = (int(payload["id"]), payload.get("type") == "SuperAdmin")
+                display = payload.get("name") or payload.get("available_name")
+                if display:
+                    self._names[identity[0]] = str(display)
         except Exception as exc:
             _log.warning("authz_token_validation_failed", error=str(exc))
             return None
 
         self._cache[cache_key] = (identity, time.monotonic() + self._ttl)
         return identity
+
+    def display_name(self, user_id: int) -> str | None:
+        """Name seen on the last successful profile lookup, or None."""
+        return self._names.get(user_id)
 
     async def resolve_user_id(self, access_token: str, client: str, uid: str) -> int | None:
         identity = await self.resolve_identity(access_token, client, uid)

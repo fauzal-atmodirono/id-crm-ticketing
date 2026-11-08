@@ -34,7 +34,6 @@ import hashlib
 import hmac
 import time
 from collections.abc import Callable, Coroutine
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -42,7 +41,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from chatbot.features.chat.escalation_ack import ack_transport
-from chatbot.features.chat.ports import AuditEntry
+from chatbot.features.chat.audit_events import EVENT_REPLY_LINK, record_event
 from chatbot.features.chat.sla import ACKNOWLEDGED_STATE
 
 if TYPE_CHECKING:
@@ -76,6 +75,12 @@ class _NotifyIn(BaseModel):
     # the message's `source_id`), so the acknowledgement threads onto their
     # mail instead of arriving as a new one. Absent = unthreaded, as before.
     customer_in_reply_to: str | None = None
+    # FIX-17: the human who escalated and the case's SLA status at that moment,
+    # so the audit trail names a person rather than a service. All optional --
+    # an agent service that predates them is unaffected.
+    actor_name: str | None = None
+    actor_user_id: int | None = None
+    sla_status: str | None = None
 
 
 class _AcknowledgeIn(BaseModel):
@@ -229,6 +234,17 @@ def build_escalation_router(
             if transport == "email"
             else None
         )
+        # Only forwarded when present, so a call without them is identical to
+        # the pre-FIX-17 call.
+        audit_ctx = {
+            k: v
+            for k, v in (
+                ("actor_name", payload.actor_name),
+                ("actor_user_id", payload.actor_user_id),
+                ("sla_status", payload.sla_status),
+            )
+            if v is not None
+        }
         await notifier.notify_escalation(
             conv_id=payload.conversation_id,
             title=payload.title,
@@ -239,6 +255,7 @@ def build_escalation_router(
             ack_transport=transport,
             customer_subject=payload.customer_subject,
             customer_in_reply_to=payload.customer_in_reply_to,
+            **audit_ctx,
         )
         return {"status": "ok"}
 
@@ -350,16 +367,15 @@ def build_escalation_router(
         if any(e.to_state == ACKNOWLEDGED_STATE for e in existing):
             return {"status": "duplicate"}
 
-        await audit.append(
-            AuditEntry(
-                ticket_id=ticket_id,
-                session_id=f"chatwoot-conv-{ticket_id}",
-                actor=payload.actor,
-                from_state="OPEN",
-                to_state=ACKNOWLEDGED_STATE,
-                at=datetime.now(UTC).isoformat(),
-                remark=payload.remark,
-            )
+        await record_event(
+            audit,
+            event_type=EVENT_REPLY_LINK,
+            target=f"case:{ticket_id}",
+            ticket_id=ticket_id,
+            actor_name=payload.actor,
+            from_state="OPEN",
+            to_state=ACKNOWLEDGED_STATE,
+            remarks=payload.remark,
         )
         _log.info("escalation_acknowledged", ticket_id=ticket_id, actor=payload.actor)
         return {"status": "ok"}

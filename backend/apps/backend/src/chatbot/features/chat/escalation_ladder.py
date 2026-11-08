@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from chatbot.features.chat.audit_events import EVENT_LADDER_STEP, record_event
 from chatbot.features.chat.escalation_policy import (
     PHONE,
     apply_delay_overrides,
@@ -157,6 +158,7 @@ async def sweep_ladder(
     now: datetime | None = None,
     inbox_cache: InboxCache | None = None,
     policy_repo: Any = None,
+    audit: Any = None,
 ) -> list[dict[str, Any]]:
     """Advance every due case by exactly one rung. Returns what it did.
 
@@ -191,6 +193,7 @@ async def sweep_ladder(
             dealer_store=dealer_store,
             pronet_store=pronet_store,
             set_attributes=set_attributes,
+            audit=audit,
         )
         if outcome is not None:
             acted.append(outcome)
@@ -314,6 +317,7 @@ async def _advance_one(  # noqa: PLR0911 -- each return is one reason a case is 
     dealer_store: DealerStore | None,
     pronet_store: ProtonNetStore | None,
     set_attributes: Any,
+    audit: Any = None,
 ) -> dict[str, Any] | None:
     """One conversation, at most one rung. None when nothing was due."""
     conv_id = conv.get("id")
@@ -391,6 +395,10 @@ async def _advance_one(  # noqa: PLR0911 -- each return is one reason a case is 
             contacts=to,
             deadline=clock + _PHONE_RESPONSE_WINDOW,
         )
+        await _audit_step(
+            audit, ticket_id, step, dealer, to, cc, elapsed_hours,
+            transport="phone_task", delivery_status="task_raised",
+        )
         return {**plan, "action": "phone_task"}
 
     ok, error = notifier.send_ladder_step(
@@ -402,7 +410,52 @@ async def _advance_one(  # noqa: PLR0911 -- each return is one reason a case is 
         body=_body(ticket_id),
         elapsed_working_hours=elapsed_hours,
     )
+    await _audit_step(
+        audit, ticket_id, step, dealer, to, cc, elapsed_hours,
+        transport="email",
+        delivery_status="delivered" if ok else "failed",
+        error=error,
+    )
     return {**plan, "action": "sent" if ok else "failed", "error": error}
+
+
+async def _audit_step(
+    audit: Any,
+    ticket_id: str,
+    step: EscalationStep,
+    dealer: Any,
+    to: list[str],
+    cc: list[str],
+    elapsed_hours: float,
+    *,
+    transport: str,
+    delivery_status: str,
+    error: str = "",
+) -> None:
+    """One audit row per rung actually taken (RFP 3.2.6: escalations).
+
+    Dry runs and the silent step-2 window are not recorded: nothing was
+    delivered, and a trail that lists reminders nobody received is worse than
+    one with a gap. Never raises (record_event swallows store errors).
+    """
+    slug = getattr(dealer, "dealer", None)
+    await record_event(
+        audit,
+        event_type=EVENT_LADDER_STEP,
+        target=f"dealer:{slug}" if slug else f"case:{ticket_id}",
+        ticket_id=ticket_id,
+        actor_name="escalation-ladder",
+        from_state="OPEN",
+        to_state=f"LADDER_STEP_{step.step_no}",
+        remarks=(
+            f"{step.label or 'Escalation'}: unanswered {elapsed_hours:.1f} working hours"
+            + (f", {len(cc)} cc" if cc else "")
+            + (f" ({error})" if error else "")
+        ),
+        recipients=list(to),
+        transport=transport,
+        delivery_status=delivery_status,
+    )
 
 
 async def _resolve_contacts(
@@ -498,6 +551,7 @@ def run_ladder_scan_job(
     conversation_log: Any = None,
     fetch: Any = None,
     policy_repo: Any = None,
+    audit: Any = None,
 ) -> None:
     """Synchronous entry point for the scheduler. Never raises.
 
@@ -522,6 +576,7 @@ def run_ladder_scan_job(
                 set_attributes=set_attributes,
                 inbox_cache=InboxCache(conversation_log),
                 policy_repo=policy_repo,
+                audit=audit,
             )
         )
     except Exception as exc:
@@ -539,6 +594,7 @@ def start_ladder_scheduler(
     scheduler: Any | None = None,
     job: Any | None = None,
     policy_repo: Any = None,
+    audit: Any = None,
 ) -> Any | None:
     """Start the ladder sweep. Returns the scheduler, or None when unwired.
 
@@ -568,6 +624,7 @@ def start_ladder_scheduler(
                 set_attributes=set_attributes,
                 conversation_log=conversation_log,
                 policy_repo=policy_repo,
+                audit=audit,
             )
         ),
         "interval",

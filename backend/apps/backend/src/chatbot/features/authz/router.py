@@ -17,13 +17,15 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from chatbot.features.authz.chatwoot_role_mirror import ChatwootRoleMirrorError
-from chatbot.features.authz.deps import require_permission
+from chatbot.features.authz.deps import Actor, require_permission, resolve_actor
+from chatbot.features.chat.audit_events import EVENT_ROLE_CHANGE, record_event
 from chatbot.features.authz.seed import ALL_NATIVE_KEYS, NATIVE_CONVERSATION_KEYS
 
 if TYPE_CHECKING:
     from chatbot.features.authz.chatwoot_role_mirror import ChatwootRoleMirror
     from chatbot.features.authz.identity import TokenValidator
     from chatbot.features.authz.repository import AuthzRepository
+    from chatbot.features.chat.ports import AuditLogPort
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
@@ -48,6 +50,7 @@ def build_authz_router(
     validator: TokenValidator,
     settings: Settings,
     mirror: ChatwootRoleMirror | None = None,
+    audit: AuditLogPort | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/authz", tags=["authz"])
 
@@ -82,9 +85,32 @@ def build_authz_router(
             "roles": [{"id": r.id, "name": r.name, "description": r.description} for r in roles]
         }
 
+    # The actor-returning variant: same gate, but the write endpoints below
+    # also learn WHO is calling so the audit trail names a real user.
     manage_roles = require_permission(
         "roles.manage", repo=repo, validator=validator, settings=settings
     )
+    caller = resolve_actor(validator=validator, settings=settings)
+
+    async def _audit_role(
+        actor: Actor, role_id: str, before: dict, after: dict, remarks: str
+    ) -> None:
+        await record_event(
+            audit,
+            event_type=EVENT_ROLE_CHANGE,
+            target=f"role:{role_id}",
+            actor_user_id=actor.user_id,
+            actor_name=actor.name,
+            before=before,
+            after=after,
+            remarks=remarks,
+        )
+
+    async def _members(role_id: str) -> dict:
+        return {"members": sorted(await repo.users_for_role(role_id))}
+
+    async def _perms(role_id: str) -> dict:
+        return {"permissions": sorted(await repo.role_permissions(role_id))}
 
     async def _snapshot_users(
         user_ids: set[int],
@@ -176,12 +202,18 @@ def build_authz_router(
             raise
 
     @router.post("/roles", dependencies=[Depends(manage_roles)])
-    async def create_role(body: CreateRoleBody) -> dict:
+    async def create_role(body: CreateRoleBody, actor: Actor = Depends(caller)) -> dict:
         await repo.create_role(body.id, body.name, body.description)
+        await _audit_role(
+            actor, body.id, {}, {"name": body.name, "description": body.description}, "role created"
+        )
         return {"ok": True}
 
     @router.post("/roles/{role_id}/assign", dependencies=[Depends(manage_roles)])
-    async def assign_role(role_id: str, body: AssignRoleBody) -> dict:
+    async def assign_role(
+        role_id: str, body: AssignRoleBody, actor: Actor = Depends(caller)
+    ) -> dict:
+        before = await _members(role_id)
         pre_snapshot: dict[int, tuple[int | None, list[str]]] = {}
         if mirror is not None:
             affected_user_ids = set(await repo.users_for_role(role_id))
@@ -195,6 +227,9 @@ def build_authz_router(
         except ChatwootRoleMirrorError as exc:
             await repo.unassign_role(body.chatwoot_user_id, role_id)
             raise HTTPException(status_code=502, detail=f"Chatwoot sync failed: {exc}") from exc
+        await _audit_role(
+            actor, role_id, before, await _members(role_id), f"user {body.chatwoot_user_id} assigned"
+        )
         return {"ok": True}
 
     @router.get("/permission-registry", dependencies=[Depends(manage_roles)])
@@ -208,10 +243,14 @@ def build_authz_router(
         return {"permissions": sorted(perms)}
 
     @router.post("/roles/{role_id}/permissions", dependencies=[Depends(manage_roles)])
-    async def grant_role_permission(role_id: str, body: GrantPermissionBody) -> dict:
+    async def grant_role_permission(
+        role_id: str, body: GrantPermissionBody, actor: Actor = Depends(caller)
+    ) -> dict:
         key = body.permission_key
+        before = await _perms(role_id)
         if key not in ALL_NATIVE_KEYS or mirror is None:
             await repo.grant_permission(role_id, key)
+            await _audit_role(actor, role_id, before, await _perms(role_id), f"granted {key}")
             return {"ok": True}
         pre_snapshot = await _snapshot_users(set(await repo.users_for_role(role_id)))
         if key in NATIVE_CONVERSATION_KEYS:
@@ -227,24 +266,34 @@ def build_authz_router(
             for old_key in previous:
                 await repo.grant_permission(role_id, old_key)
             raise HTTPException(status_code=502, detail=f"Chatwoot sync failed: {exc}") from exc
+        await _audit_role(actor, role_id, before, await _perms(role_id), f"granted {key}")
         return {"ok": True}
 
     @router.delete(
         "/roles/{role_id}/permissions/{permission_key}", dependencies=[Depends(manage_roles)]
     )
-    async def revoke_role_permission(role_id: str, permission_key: str) -> dict:
+    async def revoke_role_permission(
+        role_id: str, permission_key: str, actor: Actor = Depends(caller)
+    ) -> dict:
+        before = await _perms(role_id)
         was_native = permission_key in ALL_NATIVE_KEYS and mirror is not None
         pre_snapshot = (
             await _snapshot_users(set(await repo.users_for_role(role_id))) if was_native else {}
         )
         await repo.revoke_permission(role_id, permission_key)
         if not was_native:
+            await _audit_role(
+                actor, role_id, before, await _perms(role_id), f"revoked {permission_key}"
+            )
             return {"ok": True}
         try:
             await _resync_role_mirror(pre_snapshot)
         except ChatwootRoleMirrorError as exc:
             await repo.grant_permission(role_id, permission_key)
             raise HTTPException(status_code=502, detail=f"Chatwoot sync failed: {exc}") from exc
+        await _audit_role(
+            actor, role_id, before, await _perms(role_id), f"revoked {permission_key}"
+        )
         return {"ok": True}
 
     @router.get("/roles/{role_id}/users", dependencies=[Depends(manage_roles)])
@@ -253,7 +302,10 @@ def build_authz_router(
         return {"chatwoot_user_ids": user_ids}
 
     @router.delete("/roles/{role_id}/assign", dependencies=[Depends(manage_roles)])
-    async def unassign_role(role_id: str, body: AssignRoleBody) -> dict:
+    async def unassign_role(
+        role_id: str, body: AssignRoleBody, actor: Actor = Depends(caller)
+    ) -> dict:
+        before = await _members(role_id)
         pre_snapshot = (
             await _snapshot_users(set(await repo.users_for_role(role_id)))
             if mirror is not None
@@ -265,6 +317,9 @@ def build_authz_router(
         except ChatwootRoleMirrorError as exc:
             await repo.assign_role(body.chatwoot_user_id, role_id)
             raise HTTPException(status_code=502, detail=f"Chatwoot sync failed: {exc}") from exc
+        await _audit_role(
+            actor, role_id, before, await _members(role_id), f"user {body.chatwoot_user_id} unassigned"
+        )
         return {"ok": True}
 
     return router

@@ -960,7 +960,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         authz_validator = TokenValidator(settings)
         authz_mirror = ChatwootRoleMirror(settings)
         app.include_router(
-            build_authz_router(authz_repo, authz_validator, settings, mirror=authz_mirror)
+            build_authz_router(
+                authz_repo, authz_validator, settings, mirror=authz_mirror, audit=audit_log
+            )
         )
         app.state.authz_engine = authz_engine
         app.state.authz_repo = authz_repo
@@ -972,7 +974,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         sla_policy_engine = build_sla_policy_engine(settings.rbac_database_url)
         sla_policy_repo = SlaPolicyRepository(build_sla_policy_session_maker(sla_policy_engine))
         app.include_router(
-            build_sla_policy_router(sla_policy_repo, authz_repo, authz_validator, settings)
+            build_sla_policy_router(
+                sla_policy_repo, authz_repo, authz_validator, settings, audit=audit_log
+            )
         )
         app.state.sla_policy_engine = sla_policy_engine
 
@@ -999,6 +1003,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
                 authz_validator,
                 settings,
                 dealer_store=dealer_store,
+                audit=audit_log,
             )
         )
         app.state.ladder_policy_engine = ladder_policy_engine
@@ -1017,6 +1022,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
                 # The ladder's regional CC list. Same permission, same page.
                 pronet_store=ProtonNetStore(settings),
                 on_write=escalation_contacts_cache.invalidate,
+                audit=audit_log,
             )
         )
 
@@ -1329,7 +1335,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     from chatbot.features.taxonomy.router import build_taxonomy_admin_router
 
     app.include_router(build_rules_router(settings, authz_repo, authz_validator))
-    app.include_router(build_taxonomy_admin_router(settings, authz_repo, authz_validator))
+    app.include_router(build_taxonomy_admin_router(settings, authz_repo, authz_validator, audit=audit_log))
 
     @app.on_event("startup")
     async def _seed_taxonomy_store() -> None:
@@ -1524,6 +1530,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         # With the store wired the job registers unconditionally, so the
         # admin page's Enabled toggle takes effect without a redeploy.
         policy_repo=ladder_policy_repo,
+        audit=audit_log,
     )
     if ladder_scheduler is not None:
 

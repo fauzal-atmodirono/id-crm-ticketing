@@ -1,0 +1,397 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] Roles & Permissions: per-role data scope editor; reports send
+ the session (Wave 2 Task 28, FIX-48)
+
+RFP 2026_028 4.83 asks for permissions "based on functions and data".
+Functions were RBAC already; this adds the data half's admin surface.
+
+* ProtonRoleScopeEditor.vue (new): a "Data scope" card on the selected role
+  -- inbox ids and team ids (pickable from the store's inbox/team lists when
+  loaded, raw ids otherwise), dealer slugs and departments. Saved with its own
+  button through PUT /authz/roles/:id/scope, not through the page's staged
+  save bar: a scope is one whole-object PUT, independent of the permission
+  and member diffs the bar replays. Shows when DATA_SCOPED_RBAC_ENABLED is
+  off (scopes are kept but not applied) and that administrator cannot be
+  scoped.
+* protonRoleScope.js (new): GET/PUT /authz/roles/:id/scope via adminRequest.
+* ProtonRolesPermissionsPage.vue: additions only -- import, components entry,
+  and the card placed above Members.
+* protonMetrics.js: metricsRequest also forwards the Chatwoot session triplet
+  (same as adminRequest), so with the flag on the backend can narrow /metrics/*
+  to the viewer's scope. With the flag off the backend ignores the headers.
+  Deploy this image BEFORE switching DATA_SCOPED_RBAC_ENABLED on.
+
+Backend: features/authz/data_scope.py (rules + enforcement points).
+---
+diff --git a/app/javascript/dashboard/api/protonMetrics.js b/app/javascript/dashboard/api/protonMetrics.js
+index e230829..3bc342a 100644
+--- a/app/javascript/dashboard/api/protonMetrics.js
++++ b/app/javascript/dashboard/api/protonMetrics.js
+@@ -1,19 +1,34 @@
+ import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
+ import { httpFailure } from 'dashboard/helper/protonError';
++import Auth from './auth';
+ 
+ // Thin client for the Proton backend Metrics endpoints (/metrics/*). Auth is
+ // the shared PROTON_BACKEND_KEY sent as x-api-key; required for gated
+ // endpoints (departments, callcenter, lifecycle) and harmless for the open
+ // ones (dashboard, anomalies). Errors carry a numeric `.status` so callers
+ // can special-case 401/503.
++//
++// Patch 0084 (data scopes): also forwards the Chatwoot session triplet, the
++// same way protonAdmin.js's adminRequest does, so that with
++// DATA_SCOPED_RBAC_ENABLED on the backend can narrow each report to the
++// viewer's scope (a 403 then means "not available within your scope"). With
++// the flag off the backend ignores these headers.
+ async function metricsRequest(path) {
+   const { backendUrl, backendKey } = useProtonConfig();
+   if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
+ 
++  const authData = Auth.hasAuthCookie() ? Auth.getAuthData() : null;
+   const response = await fetch(`${backendUrl}${path}`, {
+     headers: {
+       'Content-Type': 'application/json',
+       ...(backendKey ? { 'x-api-key': backendKey } : {}),
++      ...(authData
++        ? {
++            'x-chatwoot-access-token': authData['access-token'],
++            'x-chatwoot-client': authData.client,
++            'x-chatwoot-uid': authData.uid,
++          }
++        : {}),
+     },
+   });
+ 
+diff --git a/app/javascript/dashboard/api/protonRoleScope.js b/app/javascript/dashboard/api/protonRoleScope.js
+new file mode 100644
+index 0000000..630a8c4
+--- /dev/null
++++ b/app/javascript/dashboard/api/protonRoleScope.js
+@@ -0,0 +1,19 @@
++// protonRoleScope.js — OUR file (patch 0084, Wave 2 Task 28 / FIX-48).
++// Per-role data scope on the Proton backend's /authz router:
++//   GET /authz/roles/:id/scope -> { scope, enabled, scopable }
++//   PUT /authz/roles/:id/scope  { inbox_ids, team_ids, dealer_slugs, departments }
++// Both gated by roles.manage server-side (adminRequest forwards the session).
++// `enabled` mirrors DATA_SCOPED_RBAC_ENABLED: scopes can be saved while it is
++// off, they are simply not applied until it is switched on.
++import { adminRequest } from './protonAdmin';
++
++export function getRoleScope(roleId) {
++  return adminRequest(`/authz/roles/${encodeURIComponent(roleId)}/scope`);
++}
++
++export function setRoleScope(roleId, scope) {
++  return adminRequest(`/authz/roles/${encodeURIComponent(roleId)}/scope`, {
++    method: 'PUT',
++    body: scope,
++  });
++}
+diff --git a/app/javascript/dashboard/components/widgets/ProtonRoleScopeEditor.vue b/app/javascript/dashboard/components/widgets/ProtonRoleScopeEditor.vue
+new file mode 100644
+index 0000000..803a5f2
+--- /dev/null
++++ b/app/javascript/dashboard/components/widgets/ProtonRoleScopeEditor.vue
+@@ -0,0 +1,272 @@
++<!-- ProtonRoleScopeEditor.vue — OUR file (patch 0084, Wave 2 Task 28 / FIX-48).
++     The "Data scope" card on Roles & Permissions: which inboxes, teams,
++     dealers and departments a role's members may see on the Proton
++     backend's surfaces (Customer 360, case fields, reports, escalation
++     routing, RSA incidents, AI activity).
++
++     Saved on its own, NOT through the page's staged-save bar: a scope is one
++     PUT that replaces the whole scope, independent of the permission and
++     member diffs the bar replays, so mixing it into that queue would add a
++     failure mode (partial replay) for no benefit.
++
++     Rules the hints repeat (backend: features/authz/data_scope.py): empty
++     = unrestricted; across a user's scoped roles values add up per
++     dimension; administrator is always unrestricted and cannot be scoped;
++     Chatwoot's own inbox views follow Chatwoot inbox membership, not this. -->
++<script>
++import { useAlert } from 'dashboard/composables';
++import { getRoleScope, setRoleScope } from 'dashboard/api/protonRoleScope';
++
++const DIMENSIONS = ['inbox_ids', 'team_ids', 'dealer_slugs', 'departments'];
++
++const parseList = (text, numeric) =>
++  String(text || '')
++    .split(/[\s,]+/)
++    .map(v => v.trim())
++    .filter(Boolean)
++    .map(v => (numeric ? Number(v) : v.toLowerCase()))
++    .filter(v => (numeric ? Number.isInteger(v) && v > 0 : true));
++
++const sameList = (a, b) =>
++  a.length === b.length && [...a].sort().join('|') === [...b].sort().join('|');
++
++export default {
++  name: 'ProtonRoleScopeEditor',
++  props: {
++    roleId: { type: String, required: true },
++  },
++  data() {
++    return {
++      loading: true,
++      loadError: '',
++      saving: false,
++      enabled: false,
++      scopable: true,
++      saved: { inbox_ids: [], team_ids: [], dealer_slugs: [], departments: [] },
++      draft: { inbox_ids: [], team_ids: [], dealer_slugs: [], departments: [] },
++      dealerText: '',
++      departmentText: '',
++      inboxText: '',
++      teamText: '',
++    };
++  },
++  computed: {
++    // Names for the id pickers. Fail-open: if the store has no list (getter
++    // missing or not loaded), the raw-id text field below still works.
++    knownInboxes() {
++      const list = this.$store?.getters?.['inboxes/getInboxes'];
++      return Array.isArray(list) ? list : [];
++    },
++    knownTeams() {
++      const list = this.$store?.getters?.['teams/getTeams'];
++      return Array.isArray(list) ? list : [];
++    },
++    dirty() {
++      return DIMENSIONS.some(d => !sameList(this.draft[d], this.saved[d]));
++    },
++    unrestricted() {
++      return DIMENSIONS.every(d => this.draft[d].length === 0);
++    },
++  },
++  watch: {
++    roleId() {
++      this.load();
++    },
++  },
++  mounted() {
++    this.load();
++  },
++  methods: {
++    async load() {
++      this.loading = true;
++      this.loadError = '';
++      try {
++        const res = await getRoleScope(this.roleId);
++        this.enabled = Boolean(res.enabled);
++        this.scopable = res.scopable !== false;
++        const scope = res.scope || {};
++        DIMENSIONS.forEach(d => {
++          this.saved[d] = Array.isArray(scope[d]) ? [...scope[d]] : [];
++        });
++        this.reset();
++      } catch (e) {
++        this.loadError = e.message || 'Could not load this role’s data scope.';
++      } finally {
++        this.loading = false;
++      }
++    },
++    reset() {
++      DIMENSIONS.forEach(d => {
++        this.draft[d] = [...this.saved[d]];
++      });
++      this.inboxText = this.saved.inbox_ids.join(', ');
++      this.teamText = this.saved.team_ids.join(', ');
++      this.dealerText = this.saved.dealer_slugs.join(', ');
++      this.departmentText = this.saved.departments.join(', ');
++    },
++    syncText() {
++      this.draft.inbox_ids = parseList(this.inboxText, true);
++      this.draft.team_ids = parseList(this.teamText, true);
++      this.draft.dealer_slugs = parseList(this.dealerText, false);
++      this.draft.departments = parseList(this.departmentText, false);
++    },
++    toggleId(dimension, id) {
++      const list = this.draft[dimension];
++      const next = list.includes(id) ? list.filter(v => v !== id) : [...list, id];
++      this.draft[dimension] = next;
++      if (dimension === 'inbox_ids') this.inboxText = next.join(', ');
++      else this.teamText = next.join(', ');
++    },
++    async save() {
++      this.syncText();
++      this.saving = true;
++      try {
++        const res = await setRoleScope(this.roleId, { ...this.draft });
++        const scope = (res && res.scope) || {};
++        DIMENSIONS.forEach(d => {
++          this.saved[d] = Array.isArray(scope[d]) ? [...scope[d]] : [];
++        });
++        this.reset();
++        useAlert('Data scope saved.');
++      } catch (e) {
++        useAlert(e.message || 'Could not save the data scope.');
++      } finally {
++        this.saving = false;
++      }
++    },
++  },
++};
++</script>
++
++<template>
++  <div class="flex flex-col gap-4 p-5 border rounded-xl border-n-weak">
++    <div>
++      <h3 class="text-sm font-medium text-n-slate-12">Data scope</h3>
++      <p class="mt-1 text-xs text-n-slate-11">
++        Which records this role’s members see in Customer 360, case fields,
++        reports, escalation routing, RSA incidents and the AI activity monitor.
++        Leave everything empty for no restriction. A member of several scoped
++        roles sees the combined values.
++      </p>
++      <p
++        v-if="!loading && !loadError && !enabled"
++        class="mt-2 text-xs text-n-amber-11"
++      >
++        Data scoping is switched off on this workspace — scopes saved here are
++        kept but not applied until it is enabled.
++      </p>
++    </div>
++
++    <p v-if="loading" class="text-sm text-n-slate-11">Loading…</p>
++    <p v-else-if="loadError" class="text-sm text-n-ruby-11">{{ loadError }}</p>
++    <p v-else-if="!scopable" class="text-sm text-n-slate-11">
++      This role always sees everything: administrators cannot be scoped.
++    </p>
++    <template v-else>
++      <label class="flex flex-col gap-1">
++        <span class="text-xs font-medium text-n-slate-12">Inboxes</span>
++        <span v-if="knownInboxes.length" class="flex flex-wrap gap-1">
++          <button
++            v-for="inbox in knownInboxes"
++            :key="inbox.id"
++            type="button"
++            class="px-2 py-1 text-xs rounded-md border"
++            :class="
++              draft.inbox_ids.includes(inbox.id)
++                ? 'border-n-brand bg-n-alpha-black1 text-n-slate-12'
++                : 'border-n-weak text-n-slate-11'
++            "
++            @click="toggleId('inbox_ids', inbox.id)"
++          >
++            {{ inbox.name }} (#{{ inbox.id }})
++          </button>
++        </span>
++        <input
++          v-model="inboxText"
++          type="text"
++          class="text-sm"
++          placeholder="Inbox ids, e.g. 3, 5 — empty = all inboxes"
++          @input="syncText"
++        />
++      </label>
++
++      <label class="flex flex-col gap-1">
++        <span class="text-xs font-medium text-n-slate-12">Teams</span>
++        <span v-if="knownTeams.length" class="flex flex-wrap gap-1">
++          <button
++            v-for="team in knownTeams"
++            :key="team.id"
++            type="button"
++            class="px-2 py-1 text-xs rounded-md border"
++            :class="
++              draft.team_ids.includes(team.id)
++                ? 'border-n-brand bg-n-alpha-black1 text-n-slate-12'
++                : 'border-n-weak text-n-slate-11'
++            "
++            @click="toggleId('team_ids', team.id)"
++          >
++            {{ team.name }} (#{{ team.id }})
++          </button>
++        </span>
++        <input
++          v-model="teamText"
++          type="text"
++          class="text-sm"
++          placeholder="Team ids — empty = all teams"
++          @input="syncText"
++        />
++      </label>
++
++      <label class="flex flex-col gap-1">
++        <span class="text-xs font-medium text-n-slate-12">Dealers</span>
++        <input
++          v-model="dealerText"
++          type="text"
++          class="text-sm"
++          placeholder="Dealer slugs, e.g. kl, penang — empty = all dealers"
++          @input="syncText"
++        />
++      </label>
++
++      <label class="flex flex-col gap-1">
++        <span class="text-xs font-medium text-n-slate-12">Departments</span>
++        <input
++          v-model="departmentText"
++          type="text"
++          class="text-sm"
++          placeholder="Departments, e.g. sales, aftersales — empty = all"
++          @input="syncText"
++        />
++      </label>
++
++      <p class="text-xs text-n-slate-11">
++        <template v-if="unrestricted">No restriction: members see everything.</template>
++        <template v-else>
++          Records must match every restricted line. Records with no dealer or
++          department are hidden from a role restricted on it, and reports that
++          cannot be split that way are not shown. Chatwoot’s own inbox views
++          follow inbox membership — keep it in line with this scope.
++        </template>
++      </p>
++
++      <div class="flex items-center gap-2">
++        <button
++          type="button"
++          class="px-3 py-1.5 text-sm rounded-md bg-n-brand text-white disabled:opacity-50"
++          :disabled="!dirty || saving"
++          @click="save"
++        >
++          {{ saving ? 'Saving…' : 'Save data scope' }}
++        </button>
++        <button
++          v-if="dirty"
++          type="button"
++          class="px-3 py-1.5 text-sm rounded-md text-n-slate-11 hover:bg-n-alpha-black1"
++          @click="reset"
++        >
++          Discard
++        </button>
++      </div>
++    </template>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue b/app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue
+index cdce06c..6e47685 100644
+--- a/app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue
++++ b/app/javascript/dashboard/views/ProtonRolesPermissionsPage.vue
+@@ -47,6 +47,7 @@ import {
+   listAccountAgents,
+   currentUserUid,
+ } from 'dashboard/api/protonChatwootAgents';
++import ProtonRoleScopeEditor from 'dashboard/components/widgets/ProtonRoleScopeEditor.vue';
+ 
+ // The `null` key is not a permission — it means "none of the three granted",
+ // which is how a role opts out of Chatwoot-side restriction entirely (see
+@@ -150,6 +151,7 @@ const slugify = value =>
+ 
+ export default {
+   name: 'ProtonRolesPermissionsPage',
++  components: { ProtonRoleScopeEditor },
+   data() {
+     return {
+       loading: true,
+@@ -986,6 +988,9 @@ export default {
+             </div>
+           </div>
+ 
++          <!-- Data scope (patch 0084): saved on its own, not via the bar. -->
++          <ProtonRoleScopeEditor :key="selectedRoleId" :role-id="selectedRoleId" />
++
+           <!-- Members -->
+           <div class="flex flex-col gap-4 p-5 border rounded-xl border-n-weak">
+             <div class="flex flex-wrap items-center justify-between gap-3">

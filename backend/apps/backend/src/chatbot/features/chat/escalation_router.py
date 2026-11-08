@@ -41,6 +41,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from chatbot.features.chat.escalation_ack import ack_transport
+from chatbot.features.chat.escalation_context import (
+    SOURCE_ACTIVITY,
+    SOURCE_AGENT_SERVICE,
+    derive_escalating_agent,
+    derive_sla_status,
+)
 from chatbot.features.chat.audit_events import EVENT_REPLY_LINK, record_event
 from chatbot.features.chat.sla import ACKNOWLEDGED_STATE
 
@@ -234,14 +240,31 @@ def build_escalation_router(
             if transport == "email"
             else None
         )
-        # Only forwarded when present, so a call without them is identical to
-        # the pre-FIX-17 call.
+        # Only forwarded when known, so a call without them is identical to the
+        # pre-FIX-17 call. The agent service sends none of these today, so with
+        # an audit store wired the backend derives them (escalation_context):
+        # the SLA status from the case's own trail, the actor from the
+        # conversation's "<name> added escalate" activity.
+        actor_name = payload.actor_name
+        actor_user_id = payload.actor_user_id
+        sla_status = payload.sla_status
+        actor_source: str | None = None
+        if audit is not None:
+            if actor_name is None:
+                derived = await derive_escalating_agent(chatwoot_request, payload.conversation_id)
+                if derived:
+                    actor_name, actor_source = derived, SOURCE_ACTIVITY
+                else:
+                    actor_source = SOURCE_AGENT_SERVICE
+            if sla_status is None:
+                sla_status = await derive_sla_status(audit, payload.conversation_id)
         audit_ctx = {
             k: v
             for k, v in (
-                ("actor_name", payload.actor_name),
-                ("actor_user_id", payload.actor_user_id),
-                ("sla_status", payload.sla_status),
+                ("actor_name", actor_name),
+                ("actor_user_id", actor_user_id),
+                ("sla_status", sla_status),
+                ("actor_source", actor_source),
             )
             if v is not None
         }
@@ -367,7 +390,7 @@ def build_escalation_router(
         if any(e.to_state == ACKNOWLEDGED_STATE for e in existing):
             return {"status": "duplicate"}
 
-        await record_event(
+        recorded = await record_event(
             audit,
             event_type=EVENT_REPLY_LINK,
             target=f"case:{ticket_id}",
@@ -377,6 +400,12 @@ def build_escalation_router(
             to_state=ACKNOWLEDGED_STATE,
             remarks=payload.remark,
         )
+        if not recorded:
+            # The row IS the acknowledgement (the SLA engine reads it), so a
+            # failed write must not be reported as success: 503 lets the
+            # reply linker retry instead of believing the case was acknowledged.
+            _log.error("escalation_acknowledge_not_recorded", ticket_id=ticket_id)
+            raise HTTPException(status_code=503, detail="Acknowledgement not recorded")
         _log.info("escalation_acknowledged", ticket_id=ticket_id, actor=payload.actor)
         return {"status": "ok"}
 

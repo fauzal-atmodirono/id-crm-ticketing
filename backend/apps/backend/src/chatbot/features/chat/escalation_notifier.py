@@ -256,6 +256,7 @@ class EscalationNotifier:
         actor_name: str | None = None,
         actor_user_id: int | None = None,
         sla_status: str | None = None,
+        actor_source: str | None = None,
     ) -> None:
         """Write one audit row per escalation leg, and warn the operator when
         a leg failed.
@@ -278,6 +279,7 @@ class EscalationNotifier:
             to_state=f"ESCALATION_{leg.upper()}",
             remarks=error,
             sla_status=sla_status,
+            actor_source=actor_source or "agent-service",
             recipients=list(recipients),
             transport=transport,
             delivery_status=status,
@@ -512,6 +514,7 @@ class EscalationNotifier:
         actor_name: str | None = None,
         actor_user_id: int | None = None,
         sla_status: str | None = None,
+        actor_source: str | None = None,
     ) -> None:
         """Escalation fan-out (EM-7) for a conversation a human labelled
         `escalate` -- reached only via the /escalation/notify endpoint, called
@@ -547,6 +550,7 @@ class EscalationNotifier:
             "actor_name": actor_name,
             "actor_user_id": actor_user_id,
             "sla_status": sla_status,
+            "actor_source": actor_source,
         }
         if self._settings.email_escalation_ack_enabled:
             if ack_transport == "email" and customer_email:

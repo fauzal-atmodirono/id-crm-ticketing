@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from chatbot.features.chat.audit_events import EVENT_LADDER_STEP, record_event
+from chatbot.features.chat.audit_events import EVENT_LADDER_STEP, mask_recipient, record_event
 from chatbot.features.chat.escalation_policy import (
     PHONE,
     apply_delay_overrides,
@@ -452,7 +452,7 @@ async def _audit_step(
             + (f", {len(cc)} cc" if cc else "")
             + (f" ({error})" if error else "")
         ),
-        recipients=list(to),
+        recipients=[mask_recipient(r) for r in to],
         transport=transport,
         delivery_status=delivery_status,
     )

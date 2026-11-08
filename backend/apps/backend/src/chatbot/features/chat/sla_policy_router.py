@@ -64,6 +64,13 @@ def build_sla_policy_router(
 
     caller = resolve_actor(validator=validator, settings=settings)
 
+    async def _safe_read(coro):
+        # Audit-only read: a failure costs the row its `before`, never the write.
+        try:
+            return await coro
+        except Exception:
+            return None
+
     async def _audit(actor: Actor, target: str, before, after) -> None:
         old = _to_dict(before) if before is not None else {}
         b, a = changed_fields(old, _to_dict(after))
@@ -85,7 +92,7 @@ def build_sla_policy_router(
 
     @router.put("/default", dependencies=[Depends(manage_sla)])
     async def put_default(body: SlaPolicyBody, actor: Actor = Depends(caller)) -> dict:
-        before = await repo.get_tenant_default()
+        before = await _safe_read(repo.get_tenant_default())
         values = await repo.upsert_tenant_default(**body.model_dump())
         await _audit(actor, "sla:default", before, values)
         return _to_dict(values)
@@ -99,7 +106,7 @@ def build_sla_policy_router(
     async def put_inbox(
         inbox_id: int, body: SlaPolicyBody, actor: Actor = Depends(caller)
     ) -> dict:
-        before = await repo.get_for_inbox(inbox_id)
+        before = await _safe_read(repo.get_for_inbox(inbox_id))
         values = await repo.upsert_for_inbox(inbox_id, **body.model_dump())
         await _audit(actor, f"sla:inbox:{inbox_id}", before, values)
         return _to_dict(values)

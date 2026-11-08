@@ -42,7 +42,7 @@ def _enable(monkeypatch, *, all_channels: bool):
     get_proton_config_client.cache_clear()
 
 
-def _stub(*, channel_type, conv_attrs=None, inbox_raises=False):
+def _stub(*, channel_type, conv_attrs=None, inbox_raises=False, meta_extra=None):
     respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42").mock(
         return_value=httpx.Response(
             200,
@@ -50,7 +50,7 @@ def _stub(*, channel_type, conv_attrs=None, inbox_raises=False):
                 "id": 42,
                 "inbox_id": 4,
                 "custom_attributes": conv_attrs or {},
-                "meta": {"sender": {"email": "customer@test"}},
+                "meta": {"sender": {"email": "customer@test"}, **(meta_extra or {})},
             },
         )
     )
@@ -207,4 +207,23 @@ async def test_an_inbox_fetch_failure_is_logged_and_skips_without_raising(monkey
     await sync.maybe_escalate(_payload())
 
     assert not notify.called
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_the_assignee_and_sla_status_are_sent_for_the_audit_trail(monkeypatch):
+    """FIX-17: not deployed until the agent image is rebuilt (Plan Task 32)."""
+    _enable(monkeypatch, all_channels=True)
+    notify = _stub(
+        channel_type="Channel::Whatsapp",
+        conv_attrs={"sla_status": "SLA_BREACH_NO_RESPONSE"},
+        meta_extra={"assignee": {"id": 7, "name": "Siti Agent"}},
+    )
+
+    await sync.maybe_escalate(_payload())
+
+    body = json.loads(notify.calls.last.request.read())
+    assert body["actor_name"] == "Siti Agent"
+    assert body["actor_user_id"] == 7
+    assert body["sla_status"] == "SLA_BREACH_NO_RESPONSE"
     get_proton_config_client.cache_clear()

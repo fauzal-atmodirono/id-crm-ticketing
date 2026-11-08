@@ -407,6 +407,9 @@ class AuditEntry:
     actor_user_id: int | None = None
     actor_name: str | None = None
     target: str | None = None
+    # Where actor_name came from: "chatwoot-activity" (derived from the label
+    # event), "agent-service" (the service actor; no person derivable).
+    actor_source: str | None = None
     before: dict[str, Any] | None = None
     after: dict[str, Any] | None = None
 

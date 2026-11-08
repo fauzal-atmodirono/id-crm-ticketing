@@ -45,17 +45,48 @@ SYSTEM_ACTOR_USER_ID = None
 
 _SECRET_KEY = re.compile(r"(password|passwd|secret|token|api[_-]?key|credential|authorization)", re.I)
 _EMAIL = re.compile(r"([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,}|[A-Za-z0-9-]+)")
-# 8+ digits, allowing +, spaces, dashes and parentheses between them.
-_PHONE = re.compile(r"\+?\d[\d\s().-]{6,}\d")
+# Phone-like structure only: a leading "+" (country code) or "0" (national
+# trunk prefix), then digits with optional space/dash/dot/paren separators, 9-15
+# digits in all. Free text is full of other digit runs -- ISO timestamps, case
+# and ticket numbers, ids -- which must survive untouched, so a bare run of
+# digits is NOT treated as a phone. The look-arounds stop a match starting
+# inside a longer token ("2026-11-09", "ab0123456789").
+_PHONE = re.compile(r"(?<![\w:+-])(?:\+\d|0)[\d\s().-]{7,19}\d(?![\w:-])")
+_DATE_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}|\d{2}:\d{2}")
+# Keys whose VALUE is a phone number whatever its shape (stored numbers are not
+# always written with a leading + or 0).
+_PHONE_KEY = re.compile(r"(whatsapp|phone|mobile|msisdn|tel)", re.I)
+_MIN_PHONE_DIGITS, _MAX_PHONE_DIGITS = 9, 15
 _REDACTED = "[redacted]"
+
+
+def _mask_digits(raw: str) -> str:
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) <= 3:  # noqa: PLR2004 -- nothing worth keeping
+        return "*" * len(digits)
+    return f"{'*' * (len(digits) - 3)}{digits[-3:]}"
 
 
 def _mask_phone(match: re.Match[str]) -> str:
     raw = match.group(0)
     digits = re.sub(r"\D", "", raw)
-    if len(digits) < 8:  # noqa: PLR2004 -- shorter runs are ids/versions, not phone numbers
+    if not _MIN_PHONE_DIGITS <= len(digits) <= _MAX_PHONE_DIGITS or _DATE_SHAPE.search(raw):
         return raw
-    return f"{'*' * (len(digits) - 3)}{digits[-3:]}"
+    return _mask_digits(raw)
+
+
+def mask_recipient(value: str) -> str:
+    """Recipient as stored in the trail.
+
+    E-mail addresses are kept in full: RFP 3.2.6 asks the trail to name the
+    recipient, and an address is how a delivery is checked. A phone-shaped
+    recipient (phone-task contacts) is a different matter -- nothing about
+    auditing a call needs the whole number -- so it is masked to the last 3
+    digits. Decision recorded here so it is not rediscovered as a bug.
+    """
+    if "@" in value:
+        return value
+    return _mask_digits(value) if re.search(r"\d{6,}", value) else value
 
 
 def mask_text(value: str) -> str:
@@ -67,10 +98,15 @@ def mask_text(value: str) -> str:
 def redact(value: Any) -> Any:
     """Deep-copy ``value`` with secrets replaced and personal contact data masked."""
     if isinstance(value, dict):
-        return {
-            str(k): (_REDACTED if _SECRET_KEY.search(str(k)) and v else redact(v))
-            for k, v in value.items()
-        }
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            if _SECRET_KEY.search(str(k)) and v:
+                out[str(k)] = _REDACTED
+            elif _PHONE_KEY.search(str(k)) and isinstance(v, str):
+                out[str(k)] = _mask_digits(v)
+            else:
+                out[str(k)] = redact(v)
+        return out
     if isinstance(value, (list, tuple, set)):
         return [redact(v) for v in value]
     if isinstance(value, str):
@@ -111,6 +147,7 @@ async def record_event(
     transport: str | None = None,
     delivery_status: str | None = None,
     at: datetime | None = None,
+    actor_source: str | None = None,
 ) -> bool:
     """Append one event. Returns whether it was stored; never raises."""
     if audit is None:
@@ -134,6 +171,7 @@ async def record_event(
                 actor_user_id=actor_user_id,
                 actor_name=name,
                 target=target,
+                actor_source=actor_source,
                 before=_snapshot(before),
                 after=_snapshot(after),
             )

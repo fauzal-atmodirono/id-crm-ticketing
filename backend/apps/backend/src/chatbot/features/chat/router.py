@@ -689,6 +689,7 @@ class ChatRouter:
                 at=datetime.now(UTC).isoformat(),
                 remark=f"status_changed -> {payload.conversation.status}",
                 event_type="status_change",
+                actor_user_id=payload.sender.id if payload.sender else None,
                 actor_name=actor,
                 target=f"case:{conv_id}",
             )

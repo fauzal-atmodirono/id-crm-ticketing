@@ -530,6 +530,9 @@ class ProtonConfigClient:
         channel_type: str | None = None,
         customer_subject: str | None = None,
         customer_in_reply_to: str | None = None,
+        actor_name: str | None = None,
+        actor_user_id: int | None = None,
+        sla_status: str | None = None,
     ) -> bool:
         """Ask the backend to send the EM-7 two-thread email escalation for a
         natively-escalated Email-channel conversation (POST
@@ -541,11 +544,27 @@ class ProtonConfigClient:
         guard on that answer, so a send that never happened does not leave a
         stamp behind that permanently suppresses the escalation -- which is
         why this reports success rather than being purely fire-and-forget.
+
+        ``actor_name`` / ``actor_user_id`` / ``sla_status`` (FIX-17) name who
+        escalated and where the SLA stood, for the backend's audit trail. All
+        optional and omitted from the request when unknown, so an older backend
+        (or a caller that does not know) is unaffected; the backend derives
+        them itself when absent.
         """
+        audit_fields = {
+            k: v
+            for k, v in (
+                ("actor_name", actor_name),
+                ("actor_user_id", actor_user_id),
+                ("sla_status", sla_status),
+            )
+            if v is not None
+        }
         try:
             response = await self._client.post(
                 "/escalation/notify",
                 json={
+                    **audit_fields,
                     "conversation_id": str(conversation_id),
                     "title": title,
                     "body": body,

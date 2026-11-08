@@ -120,9 +120,16 @@ def build_ladder_policy_router(
     async def put_ladder(
         body: LadderPolicyBody, actor: Actor = Depends(caller)
     ) -> dict[str, Any]:
-        before = _stored_dict(await repo.get())
+        try:  # audit-only reads: never let them 500 an applied write
+            before = _stored_dict(await repo.get())
+        except Exception:
+            before = None
         await repo.upsert(body.to_values())
-        b, a = changed_fields(before, _stored_dict(await repo.get()))
+        try:
+            after = _stored_dict(await repo.get())
+        except Exception:
+            after = None
+        b, a = changed_fields(before, after)
         await record_event(
             audit,
             event_type=EVENT_LADDER_POLICY_CHANGE,

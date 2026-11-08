@@ -29,6 +29,7 @@ from chatbot.features.chat.escalation_notifier import EscalationNotifier
 from chatbot.features.chat.escalation_router import build_escalation_router
 from chatbot.features.chat.pic_admin_router import build_pic_admin_router
 from chatbot.features.chat.pic_registry import PicEntry
+from chatbot.features.chat.ports import AuditEntry
 from chatbot.features.chat.pic_store import DealerRecord, ProtonNetRecord
 from chatbot.platform.config import Settings, get_settings
 
@@ -100,7 +101,7 @@ async def _noop_cw(conv_id, attrs):
     return None
 
 
-async def test_escalation_notify_writes_audit_with_user_and_sla_status():
+async def test_notifier_records_supplied_actor_and_sla_status():
     audit = InMemoryAuditLog()
     notifier = EscalationNotifier(
         _NSettings(), _Registry(), _Sender(), None, _noop_cw,
@@ -418,3 +419,197 @@ async def test_shared_secret_admin_write_is_attributed_to_the_service(tmp_path):
     (row,) = await audit.list_filtered(event_type="escalation_routing_change")
     assert row.actor_user_id is None
     assert row.actor == "admin-api-key"
+
+
+# --- backend-derived actor and SLA status (the agent sends neither) -----------
+
+
+def _derive_app(audit, messages, *, fail_messages=False):
+    async def _cw(method, path, payload=None):
+        if path.endswith("/messages"):
+            if fail_messages:
+                raise RuntimeError("chatwoot down")
+            return {"payload": messages}
+        return {"meta": {"sender": {"email": "customer@test"}}}
+
+    notifier = EscalationNotifier(
+        _NSettings(), _Registry(), _Sender(), None, _noop_cw,
+        dealer_store=_DealerStore(), audit=audit,
+    )
+    app = FastAPI()
+    app.include_router(
+        build_escalation_router(
+            notifier, _cw, Settings(_env_file=None, proton_backend_key="k"), audit=audit
+        )
+    )
+    return TestClient(app)
+
+
+_NOTIFY = {"conversation_id": "42", "title": "t", "body": "b", "department": "sales", "dealer": "kl"}
+
+
+async def test_escalation_notify_writes_audit_with_user_and_sla_status():
+    """The request carries NO actor and NO SLA status (like the live agent);
+    both come from the backend: the SLA engine's latest row for the case and
+    Chatwoot's "<name> added escalate" activity."""
+    audit = InMemoryAuditLog()
+    await audit.append(
+        AuditEntry(
+            ticket_id="42", session_id="s", actor="sla-engine", from_state="OPEN",
+            to_state="SLA_BREACH_NO_RESPONSE", at="2026-11-09T09:00:00+00:00", remark="",
+            event_type="sla_alert", sla_status="SLA_BREACH_NO_RESPONSE",
+        )
+    )
+    messages = [
+        {"message_type": 2, "content": "Old Timer added dept_sales", "created_at": 1},
+        {"message_type": 2, "content": "Siti Agent added escalate, dealer_kl", "created_at": 5},
+        {"message_type": 0, "content": "Siti Agent added escalate", "created_at": 9},
+    ]
+    res = _derive_app(audit, messages).post(
+        "/escalation/notify", headers={"x-api-key": "k"}, json=_NOTIFY
+    )
+    assert res.status_code == 200
+    rows = [r for r in await audit.list_for_ticket("42") if r.event_type == "escalation_notify"]
+    assert len(rows) == 3
+    for r in rows:
+        assert r.actor_name == "Siti Agent"
+        assert r.actor == "Siti Agent"
+        assert r.actor_source == "chatwoot-activity"
+        assert r.sla_status == "SLA_BREACH_NO_RESPONSE"
+
+
+async def test_escalation_notify_sla_status_falls_back_to_within_sla_and_acknowledged():
+    audit = InMemoryAuditLog()
+    res = _derive_app(audit, []).post("/escalation/notify", headers={"x-api-key": "k"}, json=_NOTIFY)
+    assert res.status_code == 200
+    rows = [r for r in await audit.list_for_ticket("42") if r.event_type == "escalation_notify"]
+    assert {r.sla_status for r in rows} == {"WITHIN_SLA"}
+
+    audit2 = InMemoryAuditLog()
+    await audit2.append(
+        AuditEntry(
+            ticket_id="42", session_id="s", actor="x", from_state="OPEN",
+            to_state="ACKNOWLEDGED", at="2026-11-09T09:00:00+00:00", remark="",
+        )
+    )
+    _derive_app(audit2, []).post("/escalation/notify", headers={"x-api-key": "k"}, json=_NOTIFY)
+    rows = [r for r in await audit2.list_for_ticket("42") if r.event_type == "escalation_notify"]
+    assert {r.sla_status for r in rows} == {"ACKNOWLEDGED"}
+
+
+async def test_underivable_actor_keeps_service_name_and_says_so():
+    audit = InMemoryAuditLog()
+    res = _derive_app(audit, [], fail_messages=True).post(
+        "/escalation/notify", headers={"x-api-key": "k"}, json=_NOTIFY
+    )
+    assert res.status_code == 200
+    rows = [r for r in await audit.list_for_ticket("42") if r.event_type == "escalation_notify"]
+    assert rows and all(r.actor == "escalation-notifier" for r in rows)
+    assert all(r.actor_source == "agent-service" for r in rows)
+
+
+# --- masking is structural, not a digit-run grab -----------------------------
+
+
+def test_remarks_keep_timestamps_and_case_numbers_but_mask_phones():
+    from chatbot.features.chat.audit_events import mask_text
+
+    assert mask_text("2026-11-09T10:00:00+00:00") == "2026-11-09T10:00:00+00:00"
+    assert mask_text("case 12345678 at 2026-11-09") == "case 12345678 at 2026-11-09"
+    assert mask_text("+60 12-345 6789").endswith("789")
+    assert "345" not in mask_text("+60 12-345 6789")
+    assert mask_text("012-3456789") == "*******789"
+
+
+def test_phone_valued_keys_are_masked_whatever_their_shape():
+    assert redact({"pic_whatsapp": "123456789"})["pic_whatsapp"] == "******789"
+
+
+async def test_ladder_phone_task_masks_phone_recipients_but_keeps_emails():
+    audit = InMemoryAuditLog()
+    dealer = DealerRecord(
+        dealer="kl", contacts={"principal": "+60123456789", "owner": "owner@kl.my"}, region="central"
+    )
+    conv = {
+        "id": 42, "status": "open", "inbox_id": 4,
+        "labels": ["escalate", "dealer_kl", "dept_aftersales"],
+        "custom_attributes": {
+            "escalation_notified_at": (_NOW - timedelta(hours=60)).isoformat(),
+            LADDER_STEP_ATTR: 4,
+        },
+    }
+
+    async def _set(conv_id, attrs):
+        return None
+
+    await sweep_ladder(
+        [conv],
+        settings=Settings(
+            _env_file=None, escalation_policy_enabled=True,
+            escalation_policy_dry_run=False, sla_working_hours_enabled=False,
+        ),
+        notifier=_LNotifier(), dealer_store=_Store(dealer),
+        pronet_store=_Store(ProtonNetRecord(region="central", area_regional_mgr="", hod="")),
+        set_attributes=_set, now=_NOW, audit=audit,
+    )
+    rows = await audit.list_for_ticket("42")
+    for r in rows:
+        assert not any("+60123456789" in x or "60123456789" in x for x in (r.recipients or []))
+
+
+# --- guarded reads and acknowledge failure -----------------------------------
+
+
+async def test_role_write_survives_a_failing_audit_snapshot(authz):
+    settings, repo, validator = authz
+    app = FastAPI()
+    app.include_router(build_authz_router(repo, validator, settings, audit=InMemoryAuditLog()))
+
+    async def _boom(*a, **k):
+        raise RuntimeError("db hiccup")
+
+    calls = {"n": 0}
+    real = repo.role_permissions
+
+    async def _flaky(role_id):
+        calls["n"] += 1
+        if calls["n"] == 1:  # the audit `before` read
+            raise RuntimeError("db hiccup")
+        return await real(role_id)
+
+    repo.role_permissions = _flaky
+    res = TestClient(app).post(
+        "/authz/roles/ops/permissions", json={"permission_key": "sla.manage"}, headers=_HDR
+    )
+    assert res.status_code == 200
+
+
+def test_acknowledge_returns_503_when_the_row_cannot_be_stored():
+    class _Broken:
+        async def append(self, entry):
+            raise RuntimeError("firestore down")
+
+        async def list_for_ticket(self, ticket_id):
+            return []
+
+    async def _cw(method, path, payload=None):
+        return {}
+
+    app = FastAPI()
+    app.include_router(
+        build_escalation_router(
+            AsyncMock(), _cw, Settings(_env_file=None, proton_backend_key="k"), audit=_Broken()
+        )
+    )
+    res = TestClient(app).post(
+        "/escalation/acknowledge", headers={"x-api-key": "k"}, json={"conversation_id": "9"}
+    )
+    assert res.status_code == 503
+
+
+def test_mask_recipient_keeps_emails_and_masks_phone_numbers():
+    from chatbot.features.chat.audit_events import mask_recipient
+
+    assert mask_recipient("dp@kl.my") == "dp@kl.my"
+    assert mask_recipient("+60123456789") == "********789"
+    assert mask_recipient("the dealer principal") == "the dealer principal"

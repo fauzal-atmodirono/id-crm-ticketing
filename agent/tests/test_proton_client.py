@@ -721,3 +721,20 @@ async def test_notify_email_escalation_swallows_errors():
     await client.notify_email_escalation(
         conversation_id=9, title="t", body="b", department=None, dealer=None,
     )
+
+
+@respx.mock
+async def test_notify_email_escalation_sends_actor_and_sla_status_when_known():
+    route = respx.post(f"{PROTON_BASE}/escalation/notify").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+    client = ProtonConfigClient(base_url=PROTON_BASE, api_key="k")
+    await client.notify_email_escalation(
+        conversation_id=9, title="t", body="b", department=None, dealer=None,
+        actor_name="Siti Agent", actor_user_id=7, sla_status="SLA_BREACH_NO_RESPONSE",
+    )
+    import json as _json
+    body = _json.loads(route.calls[0].request.content)
+    assert body["actor_name"] == "Siti Agent"
+    assert body["actor_user_id"] == 7
+    assert body["sla_status"] == "SLA_BREACH_NO_RESPONSE"

@@ -111,10 +111,10 @@ def build_taxonomy_admin_router(
     async def _node_before(key: str) -> dict[str, Any] | None:
         # Best-effort: a failed read costs the audit its `before`, never the edit.
         try:
-            nodes = await store.list_nodes(active_only=False)
+            node = await store.get_node(key)
         except Exception:
             return None
-        return next((asdict(n) for n in nodes if n.key == key), None)
+        return asdict(node) if node is not None else None
 
     def _check_enabled() -> None:
         if not settings.taxonomy_admin_enabled:

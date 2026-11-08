@@ -93,7 +93,7 @@ def build_authz_router(
     caller = resolve_actor(validator=validator, settings=settings)
 
     async def _audit_role(
-        actor: Actor, role_id: str, before: dict, after: dict, remarks: str
+        actor: Actor, role_id: str, before: dict | None, after: dict | None, remarks: str
     ) -> None:
         await record_event(
             audit,
@@ -106,11 +106,21 @@ def build_authz_router(
             remarks=remarks,
         )
 
-    async def _members(role_id: str) -> dict:
-        return {"members": sorted(await repo.users_for_role(role_id))}
+    # The extra reads exist only to feed the audit row. A failure here must
+    # never turn an already-applied write into a 500 -> None (no snapshot).
+    async def _members(role_id: str) -> dict | None:
+        try:
+            return {"members": sorted(await repo.users_for_role(role_id))}
+        except Exception:
+            _log.warning("audit_role_snapshot_failed", role_id=role_id)
+            return None
 
-    async def _perms(role_id: str) -> dict:
-        return {"permissions": sorted(await repo.role_permissions(role_id))}
+    async def _perms(role_id: str) -> dict | None:
+        try:
+            return {"permissions": sorted(await repo.role_permissions(role_id))}
+        except Exception:
+            _log.warning("audit_role_snapshot_failed", role_id=role_id)
+            return None
 
     async def _snapshot_users(
         user_ids: set[int],

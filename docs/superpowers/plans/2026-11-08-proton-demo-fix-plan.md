@@ -150,6 +150,16 @@ Out of CRM scope (record in sheet Notes only): the SSI Process sheet (dealer sur
 - [ ] **Step 2-4:** Translate opens a menu English / Bahasa Malaysia / 中文 / தமிழ்; default target = English for customer messages; draft translation uses the picked language. Tests green.
 - [ ] **Step 5:** Commit `feat(fork): translate language picker` (ships in Task 13).
 
+### Task 10b: Escalation robustness (FIX-57, FIX-58, FIX-59; found in Task 2)
+
+**Files:** backend escalation notify route and service (`features/chat/`), backend bounce handling (`BOUNCE_HANDLING_ENABLED` path), env script keys; tests next to them.
+
+- [ ] **Step 1 (FIX-58): idempotent notify.** `/escalation/notify` for the same conversation and step within 30 min returns the first result without sending again (key: conversation id + step + recipient set), so an agent timeout and retry never duplicates mails. Tests: `test_notify_twice_same_conv_sends_once`, `test_notify_after_window_sends_again`, `test_different_step_sends`.
+- [ ] **Step 2 (FIX-57): slow assist.** Find why `/assist/suggest` and `/escalation/contacts` exceed the agent's 10 s client timeout under load; fix in the backend (cache contacts lookups, cap suggest latency) and, if the agent timeout is env-configurable, add it to the env script `--agent` keys at 30 s. Agent code is not changed in Wave 1 (agent image is not rebuilt).
+- [ ] **Step 3 (FIX-59): bounce note.** Reproduce CONV-031 (reply to an invalid domain from inbox 5, no note after 15 min); root cause with superpowers:systematic-debugging; fix and test.
+- [ ] **Step 4:** Add `ESCALATION_ATTACHMENT_BUDGET_BYTES=10485760` to the env script backend keys (ESC-010 photos in forwards), after confirming which service reads it.
+- [ ] **Step 5:** Commit `fix(escalation): idempotent notify, faster contacts, bounce note`.
+
 ### Task 11: BigQuery reporting pipeline and Power BI (FIX-11, FIX-12)
 
 - [ ] **Step 1:** Create dataset `lv-playground-genai:proton_crm` in the same location as `demo_proton`; grant the proton-backend service account Data Editor on it and Job User on the project (identify the SA without printing the key).

@@ -87,6 +87,7 @@ CUSTOM_FEATURE_REGISTRY: dict[str, CustomFeature] = {
         _f("alert_preferences", "Alert preferences", "Operations", "alerts.set_own_preferences"),
         _f("agent_status", "Availability status selector", "Operations", "presence.set_own_status"),
         _f("agent_priorities", "Agent channel priorities", "Operations", "workforce.manage"),
+        _f("ai_activity", "AI activity monitor", "AI", "ai_activity.view"),
         _f("customer360", "Customer 360", "Data", "customer360.view"),
         _f("integrations", "Business system integration", "Data", "integration.manage"),
         _f("audit_log", "Audit log", "Admin", "audit.view"),

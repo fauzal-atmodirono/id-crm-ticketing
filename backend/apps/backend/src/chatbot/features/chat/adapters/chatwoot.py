@@ -672,6 +672,30 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             )
         return conversations
 
+    async def list_conversations_by_status(
+        self, status: str, *, assignee_type: str | None = None, max_pages: int = 2
+    ) -> list[dict[str, Any]]:
+        """Conversations in one status across ALL inboxes (read-only; the AI
+        activity monitor). Unlike ``list_conversations`` this does not filter to
+        our inbox. Raises on a failed first page so callers can tell an outage
+        from an empty list; later-page failures just truncate."""
+        out: list[dict[str, Any]] = []
+        for page_num in range(1, max_pages + 1):
+            path = f"/conversations?status={quote(status, safe='')}&page={page_num}"
+            if assignee_type:
+                path += f"&assignee_type={quote(assignee_type, safe='')}"
+            res = await self._request("GET", path)
+            if not isinstance(res, dict):
+                if page_num == 1:
+                    raise RuntimeError("chatwoot conversation list unavailable")
+                break
+            data = res.get("data")
+            batch = data.get("payload") if isinstance(data, dict) else res.get("payload")
+            if not isinstance(batch, list) or not batch:
+                break
+            out.extend(c for c in batch if isinstance(c, dict))
+        return out
+
     # --- ChatPort ---
     async def send_message(self, conversation_id: str, text: str) -> None:
         _log.info("sending_chatwoot_message", conversation_id=conversation_id)

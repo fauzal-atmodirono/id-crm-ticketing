@@ -26,7 +26,7 @@ def test_only_registered_and_true_keys_are_enabled() -> None:
 
 
 def test_registry_covers_every_expected_surface() -> None:
-    assert len(CUSTOM_FEATURE_REGISTRY) == 24
+    assert len(CUSTOM_FEATURE_REGISTRY) == 25
     assert all(f.kind == "surface" for f in CUSTOM_FEATURE_REGISTRY.values())
     for key in ("knowledge", "cases", "workforce", "customer360", "roles_permissions"):
         assert key in CUSTOM_FEATURE_REGISTRY

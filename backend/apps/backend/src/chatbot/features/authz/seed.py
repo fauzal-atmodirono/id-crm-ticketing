@@ -114,6 +114,9 @@ PERMISSION_REGISTRY: dict[str, str] = {
     "alerts.set_own_preferences": "Set your own alert-rule preferences",
     "alerts.manage": "Manage account-level alert-rule defaults",
     "taxonomy.manage": "Manage case taxonomy tree and category mappings",
+    # FIX-43: the AI activity monitor (GET /admin/ai-activity). Admin-only
+    # like workforce.view: a master view of every AI-handled conversation.
+    "ai_activity.view": "View the AI activity monitor",
 }
 
 _AGENT_PERMISSIONS = {

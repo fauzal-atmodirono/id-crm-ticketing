@@ -84,7 +84,7 @@ def test_read_hides_the_registry_from_a_non_superadmin() -> None:
 def test_read_exposes_the_registry_to_a_superadmin() -> None:
     res = _client(_FakeDocStore(), (7, True)).get("/admin/custom-features", headers=_SESSION)
     body = res.json()
-    assert len(body["registry"]) == 24
+    assert len(body["registry"]) == 25
     assert body["registry"][0]["key"]
     assert body["registry"][0]["label"]
     assert "behavior_routing" in body["behavior"]

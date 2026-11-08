@@ -1143,6 +1143,21 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
                 chatwoot_available=chatwoot_client is not None,
                 rsa_available=rsa_repo is not None,
             )
+
+        # FIX-43 AI activity monitor: needs only the Chatwoot client.
+        if chatwoot_client is not None:
+            from chatbot.features.chat.ai_activity_router import build_ai_activity_router
+
+            app.include_router(
+                build_ai_activity_router(chatwoot_client, authz_repo, authz_validator, settings)
+            )
+        else:
+            import structlog as _sl
+
+            _sl.get_logger(__name__).warning(
+                "ai_activity_prerequisites_missing",
+                detail="chatwoot_client not available; /admin/ai-activity not mounted",
+            )
     elif settings.rbac_enabled:
         import structlog as _sl
 

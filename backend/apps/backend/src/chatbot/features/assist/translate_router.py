@@ -102,7 +102,7 @@ class TranslateRequest(BaseModel):
     # Default "en": the task this endpoint exists for is an agent reading an
     # inbound message in English. A caller may pass any other target, subject
     # to the outbound-Tamil gate above.
-    target_language: str = Field(default="en", min_length=2, max_length=8)
+    target_language: str = Field(default="en", max_length=32)
 
 
 def _strip_code_fence(raw: str) -> str:
@@ -174,6 +174,14 @@ def build_translate_router(
             return {"disabled": True, "reason": "translation_enabled is off"}
 
         target_language = req.target_language.strip().lower()
+
+        # The agent-side picker offers exactly these four; anything else is a
+        # caller bug, refused before the Tamil gate or any model call.
+        if target_language not in _LANGUAGE_NAMES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported target_language; use one of {sorted(_LANGUAGE_NAMES)}.",
+            )
 
         # Outbound-Tamil gate: fires on the TARGET alone, before any model
         # call, regardless of what the source language turns out to be. See

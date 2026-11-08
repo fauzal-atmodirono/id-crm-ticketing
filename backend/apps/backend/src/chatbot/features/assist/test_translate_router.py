@@ -257,6 +257,39 @@ def test_inbound_tamil_translation_works_regardless_of_the_outbound_flag() -> No
     assert len(notes.calls) == 1
 
 
+@pytest.mark.parametrize("target", ["en", "ms", "zh", "ta"])
+def test_translate_accepts_target_ms_zh_ta_en(target: str) -> None:
+    genai = _make_genai({"translation": "x", "detected_source_language": "en"})
+    client, _ = _client(_settings(translation_outbound_tamil_enabled=True), genai)
+
+    res = client.post("/assist/translate", json=_payload("hello", target), headers=_AUTH)
+
+    assert res.status_code == 200, res.text
+
+
+@pytest.mark.parametrize("target", ["fr", "xx", "english", ""])
+def test_translate_rejects_any_other_target_with_400(target: str) -> None:
+    genai = _make_genai({"translation": "x", "detected_source_language": "en"})
+    client, notes = _client(_settings(), genai)
+
+    res = client.post("/assist/translate", json=_payload("hello", target), headers=_AUTH)
+
+    assert res.status_code == 400, res.text
+    assert notes.calls == []
+    genai.aio.models.generate_content.assert_not_awaited()
+
+
+def test_outbound_tamil_still_403_when_flag_off() -> None:
+    genai = _make_genai({"translation": "x", "detected_source_language": "en"})
+    client, notes = _client(_settings(translation_outbound_tamil_enabled=False), genai)
+
+    res = client.post("/assist/translate", json=_payload("hello", "ta"), headers=_AUTH)
+
+    assert res.status_code == 403
+    assert notes.calls == []
+    genai.aio.models.generate_content.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # 9: RBAC gating
 # ---------------------------------------------------------------------------

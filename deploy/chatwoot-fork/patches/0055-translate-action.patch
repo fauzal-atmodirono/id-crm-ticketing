@@ -29,12 +29,20 @@ via require_permission (granted to the default "agent" role). A tenant with
 translation_enabled=False sees this button do nothing but show "Translation
 is not enabled on this account."
 
-The outbound-Tamil split (translation_outbound_tamil_enabled) is invisible
-to this button by construction: it never sends a target_language, so the
-backend's default ("en") is always what gets requested here, and the
-outbound-Tamil gate (which only fires when a caller explicitly asks to
-translate INTO Tamil) never applies to this UI surface. There is
-deliberately no "reply in Tamil" action anywhere in this patch.
+The outbound-Tamil split (translation_outbound_tamil_enabled) still holds:
+the backend refuses target "ta" with a 403 while that flag is off, and the
+button surfaces that as "Translating into Tamil is not enabled yet."
+
+FIX-21 (2026-11-09) LANGUAGE PICKER. Clicking Translate now opens a row of
+four choices -- English, Bahasa Malaysia, 中文, தமிழ் (codes en/ms/zh/ta, the
+backend's allow-list; anything else is a 400). Picking one translates the
+composer draft into that language when there is draft text, otherwise the
+customer's last message (English is the first choice, so the usual read-in-
+English flow is one click away). The note header now reads the real target
+("en → ms"), not a hard-coded "en". Edited additions-only where possible:
+the handler signature, the `protonEnabled` guard line and the button/`</div>`
+skeleton that 0056 and 0074 use as context are unchanged; the picker row is
+appended at the end of the template.
 
 REGENERATED 2026-08-11 AGAINST THE REAL FORK TREE, AND VERIFIED. The first
 version of this patch was hand-written and hand-arithmetic'd, because the
@@ -71,9 +79,9 @@ vite build still has to succeed, which only Cloud Build can tell us. Build
 via Cloud Build for amd64; never on the prod VM, never from an arm64 Mac.
 ---
  .../widgets/WootWriter/ReplyTopPanel.vue           | 54 +++++++++++++++++++++-
- 1 file changed, 53 insertions(+), 1 deletion(-)
+ 1 file changed, 96 insertions(+), 1 deletion(-)
 diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
-index 9a327d6..6b4d15c 100644
+index 2da4805..c8ec523 100644
 --- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
 +++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
 @@ -2,7 +2,7 @@
@@ -85,7 +93,7 @@ index 9a327d6..6b4d15c 100644
  import { vOnClickOutside } from '@vueuse/components';
  import { REPLY_EDITOR_MODES, CHAR_LENGTH_WARNING } from './constants';
  import { CAPTAIN_EVENTS } from 'dashboard/helper/AnalyticsHelper/events';
-@@ -145,6 +145,45 @@ export default {
+@@ -158,6 +158,71 @@ export default {
        emit('executeCopilotAction', actionKey, data || props.editorContent);
      };
  
@@ -102,7 +110,12 @@ index 9a327d6..6b4d15c 100644
 +      const lastCustomerMessage = [...(chat?.messages || [])]
 +        .reverse()
 +        .find(m => m.content && m.message_type === 0);
-+      if (!lastCustomerMessage) {
++      // FIX-21: with text in the composer, translate that draft into the
++      // picked language; otherwise translate the customer's last message
++      // (English unless the agent picked another language).
++      const draftText = (props.editorContent || '').trim();
++      const target = translateTarget.value;
++      if (!draftText && !lastCustomerMessage) {
 +        useAlert('No customer message to translate yet.');
 +        return;
 +      }
@@ -110,37 +123,62 @@ index 9a327d6..6b4d15c 100644
 +      try {
 +        const result = await callAssist('translate', {
 +          conversation_id: String(props.conversationId),
-+          text: lastCustomerMessage.content,
++          text: draftText || lastCustomerMessage.content,
++          target_language: target,
 +        });
 +        if (result.disabled) {
 +          useAlert('Translation is not enabled on this account.');
 +        } else {
 +          useAlert(
-+            `Translated (${result.detected_source_language} → en) and posted as a private note.`
++            `Translated (${result.detected_source_language} → ${target}) and posted as a private note.`
 +          );
 +        }
 +      } catch (err) {
 +        // eslint-disable-next-line no-console
 +        console.error('[proton-assist]', 'translate', 'failed', err);
-+        useAlert('Translation failed. Please try again.');
++        // Outbound Tamil is refused (403) until its evaluation is signed off.
++        useAlert(
++          String(err?.message).includes(' 403 ')
++            ? 'Translating into Tamil is not enabled yet.'
++            : 'Translation failed. Please try again.'
++        );
 +      } finally {
 +        translating.value = false;
 +      }
 +    };
 +
++    // FIX-21: language picker. codes match the backend's allow-list.
++    const TRANSLATE_LANGUAGES = [
++      { code: 'en', label: 'English' },
++      { code: 'ms', label: 'Bahasa Malaysia' },
++      { code: 'zh', label: '中文' },
++      { code: 'ta', label: 'தமிழ்' },
++    ];
++    const translateTarget = ref('en');
++    const showTranslateMenu = ref(false);
++    const pickTranslateLanguage = code => {
++      translateTarget.value = code;
++      showTranslateMenu.value = false;
++      handleTranslateLastCustomerMessage();
++    };
++
      const toggleCopilotMenu = () => {
        const isOpening = !showCopilotMenu.value;
        if (isOpening && captainTasksEnabled.value) {
-@@ -180,6 +219,8 @@ export default {
+@@ -193,7 +258,12 @@ export default {
        captainTasksEnabled,
        protonEnabled,
        showAiButton,
 +      translating,
 +      handleTranslateLastCustomerMessage,
        handleCopilotAction,
++      TRANSLATE_LANGUAGES,
++      showTranslateMenu,
++      pickTranslateLanguage,
        showCopilotMenu,
        copilotToggleRef,
-@@ -227,6 +268,17 @@ export default {
+       toggleCopilotMenu,
+@@ -240,6 +310,17 @@ export default {
          </span>
        </div>
      </div>
@@ -148,8 +186,8 @@ index 9a327d6..6b4d15c 100644
 +      <button
 +        class="flex items-center gap-1 px-2 py-1 text-xs border rounded-lg border-n-weak text-n-slate-11"
 +        :disabled="translating"
-+        title="Translate the customer's last message to English"
-+        @click="handleTranslateLastCustomerMessage"
++        title="Translate the draft (or the customer's last message) - pick a language"
++        @click="showTranslateMenu = !showTranslateMenu"
 +      >
 +        <span class="i-lucide-languages" />
 +        {{ translating ? 'Translating…' : 'Translate' }}
@@ -158,3 +196,23 @@ index 9a327d6..6b4d15c 100644
      <div v-if="showAiButton" class="flex items-center gap-2">
        <div class="relative">
          <NextButton
+@@ -275,5 +356,19 @@ export default {
+         @click="$emit('toggleEditorSize')"
+       />
+     </div>
++    <div
++      v-if="protonEnabled && showTranslateMenu"
++      class="flex items-center gap-1 text-xs text-n-slate-11"
++    >
++      <span>Translate to:</span>
++      <button
++        v-for="lang in TRANSLATE_LANGUAGES"
++        :key="lang.code"
++        class="px-2 py-1 border rounded-lg border-n-weak"
++        @click="pickTranslateLanguage(lang.code)"
++      >
++        {{ lang.label }}
++      </button>
++    </div>
+   </div>
+ </template>

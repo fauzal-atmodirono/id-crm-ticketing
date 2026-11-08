@@ -3,16 +3,23 @@ new file mode 100644
 index 0000000..042889a
 --- /dev/null
 +++ b/app/javascript/dashboard/api/protonRsa.js
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,80 @@
 +import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
-+import Auth from './auth';
 +
 +// Thin client for the Proton backend RSA incident-log endpoints
-+// (/rsa/incidents*). The routes are RBAC-gated (`sla.manage`), so besides the
-+// shared PROTON_BACKEND_KEY (x-api-key, used when RBAC is off) every request
-+// forwards the caller's Chatwoot browser session — the same devise_token_auth
-+// access-token/client/uid triplet protonAdmin.js's adminRequest sends. Errors
-+// carry a numeric `.status` so callers can special-case 401/403/503.
++// (/rsa/incidents*). Auth is the shared PROTON_BACKEND_KEY sent as x-api-key —
++// the RSA router authorizes against faq_admin_api_key / proton_backend_key
++// exactly like the /kb/* and /metrics/* endpoints do (NOT the RBAC
++// require_permission session triplet used by protonAdmin.js's /admin + /authz
++// routes). Errors carry a numeric `.status` so callers can special-case
++// 401/503.
++//
++// FIX-24: the paragraph above is superseded. /rsa/incidents* now requires
++// require_permission("sla.manage") once RBAC is on, so rsaRequest ALSO sends
++// the Chatwoot browser session triplet (same as protonAdmin.js's adminRequest).
++// The shared x-api-key is still sent for tenants with RBAC off.
++import Auth from './auth';
++
 +async function rsaRequest(path, { method = 'GET', body } = {}) {
 +  const { backendUrl, backendKey } = useProtonConfig();
 +  if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
@@ -81,14 +88,18 @@ diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/
 index 8c6154c..163281b 100644
 --- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
 +++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
-@@ -617,6 +617,20 @@ const menuItems = computed(() => {
+@@ -617,6 +617,24 @@ const menuItems = computed(() => {
            },
          ]
        : []),
-+    // RSA incident log — the backend /rsa/incidents* endpoints are gated by
-+    // the same RBAC require_permission("sla.manage") as SLA policies (there is
-+    // no dedicated `rsa.manage` permission in the authz seed), so the nav item
-+    // and the API check agree.
++    // RSA incident log — the backend /rsa/incidents* endpoints authorize by the
++    // shared x-api-key (like /kb + /metrics), NOT the RBAC require_permission
++    // used by SLA/Audit/Roles, so there is no dedicated `rsa.manage` permission
++    // in the authz seed. Gate on `sla.manage` — the same operational-admin
++    // cohort that manages SLA policies owns roadside-assistance data entry.
++    // FIX-24: the backend now ALSO enforces require_permission("sla.manage") on
++    // /rsa/incidents*, so this nav gate and the API agree; the page forwards
++    // the Chatwoot session triplet (see protonRsa.js).
 +    ...(protonHasPermission('sla.manage')
 +      ? [
 +          {

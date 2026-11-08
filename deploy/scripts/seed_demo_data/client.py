@@ -138,8 +138,12 @@ class TenantConfig:
     - `backend_base_url` — `PROTON_BACKEND_URL` (internal, docker-network
       only) if the CLI runs from the VM, else `PROTON_BACKEND_PUBLIC_URL`
       if it runs from an operator's machine. Only `/rsa/incidents` is used.
-    - `backend_api_key` — `PROTON_BACKEND_KEY` or `FAQ_ADMIN_API_KEY`;
-      `rsa_router.py::_authorize` accepts either.
+    - `backend_api_key` — `PROTON_BACKEND_KEY` or `FAQ_ADMIN_API_KEY`.
+      `rsa_router.py` guards every route with `require_permission("sla.manage")`:
+      with `RBAC_ENABLED=false` that accepts either key, but with RBAC on it
+      demands a Chatwoot session this seeder does not have, so the shared key
+      alone is refused (401/403). RSA seeding/purging then fails with
+      `RsaAuthRefusedError` -- run it against a tenant with RBAC off.
     """
 
     chatwoot_base_url: str
@@ -793,6 +797,27 @@ async def create_case(case: DemoCase, contact: DemoContact, contact_id: int, bat
     return display_id
 
 
+class RsaAuthRefusedError(RuntimeError):
+    """The backend refused the shared key on /rsa/* (RBAC is on)."""
+
+
+async def _rsa_request(method: str, path: str, **kwargs):
+    """Call a /rsa/* route; turn an RBAC refusal into an actionable error.
+
+    Once RBAC is on, `/rsa/*` needs a `sla.manage` session and the shared
+    x-api-key alone gets 401/403. Without this the seeder would surface a bare
+    `HTTPStatusError` that reads like a bad key.
+    """
+    response = await _backend.request(method, path, **kwargs)
+    if response.status_code in (401, 403):
+        raise RsaAuthRefusedError(
+            "RSA seeding needs RBAC_ENABLED=false or a session: /rsa/* refused the "
+            f"shared API key (HTTP {response.status_code}) -- the backend requires a "
+            "sla.manage Chatwoot session when RBAC is on"
+        )
+    return response
+
+
 async def create_rsa_incident(payload: dict) -> str:
     """POST one RSA incident payload as-is (generator.py builds it to match
     `rsa_router.py::_IncidentRequest` field-for-field, timestamps
@@ -808,7 +833,7 @@ async def create_rsa_incident(payload: dict) -> str:
     downstream purge consumer — it's purely informational for a summary.
     """
     _require_config()
-    response = await _backend.post("/rsa/incidents", json=payload)
+    response = await _rsa_request("POST", "/rsa/incidents", json=payload)
     response.raise_for_status()
     data = response.json()
     incident_id = data.get("id")
@@ -902,7 +927,7 @@ async def purge(batch_id: str) -> PurgeReport:
         else:
             report.contacts_deleted += 1
 
-    rsa_response = await _backend.get("/rsa/incidents")
+    rsa_response = await _rsa_request("GET", "/rsa/incidents")
     rsa_response.raise_for_status()
     rsa_data = rsa_response.json()
     incidents = rsa_data.get("incidents") if isinstance(rsa_data, dict) else None
@@ -915,7 +940,7 @@ async def purge(batch_id: str) -> PurgeReport:
         if incident_id is None:
             report.skipped.append(f"rsa incident matched batch {batch_id!r} but had no id, cannot delete")
             continue
-        delete_response = await _backend.delete(f"/rsa/incidents/{incident_id}")
+        delete_response = await _rsa_request("DELETE", f"/rsa/incidents/{incident_id}")
         await _throttle()
         if delete_response.status_code not in (200, 204):
             report.skipped.append(f"rsa incident {incident_id}: delete failed (HTTP {delete_response.status_code})")

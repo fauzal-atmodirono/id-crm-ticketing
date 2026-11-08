@@ -157,7 +157,7 @@ Out of CRM scope (record in sheet Notes only): the SSI Process sheet (dealer sur
 - [ ] **Step 1 (FIX-58): idempotent notify.** `/escalation/notify` for the same conversation and step within 30 min returns the first result without sending again (key: conversation id + step + recipient set), so an agent timeout and retry never duplicates mails. Tests: `test_notify_twice_same_conv_sends_once`, `test_notify_after_window_sends_again`, `test_different_step_sends`.
 - [ ] **Step 2 (FIX-57): slow assist.** Find why `/assist/suggest` and `/escalation/contacts` exceed the agent's 10 s client timeout under load; fix in the backend (cache contacts lookups, cap suggest latency) and, if the agent timeout is env-configurable, add it to the env script `--agent` keys at 30 s. Agent code is not changed in Wave 1 (agent image is not rebuilt).
 - [ ] **Step 3 (FIX-59): bounce note.** Reproduce CONV-031 (reply to an invalid domain from inbox 5, no note after 15 min); root cause with superpowers:systematic-debugging; fix and test.
-- [ ] **Step 4:** Add `ESCALATION_ATTACHMENT_BUDGET_BYTES=10485760` to the env script backend keys (ESC-010 photos in forwards), after confirming which service reads it.
+- [ ] **Step 4:** Add `ESCALATION_ATTACHMENT_BUDGET_BYTES=10485760` (ESC-010 photos in forwards) and `PHONE_HANDOFF_TIMEOUT_SECONDS=20` (SOP: call answered within 20 s) to the env script, in the section of the service that reads each; extend the script test.
 - [ ] **Step 5:** Commit `fix(escalation): idempotent notify, faster contacts, bounce note`.
 
 ### Task 11: BigQuery reporting pipeline and Power BI (FIX-11, FIX-12)
@@ -263,6 +263,11 @@ Each task below starts with superpowers:brainstorming for the open design choice
 - FIX-52: `LIFECYCLE` sweep interval <= grace period (env script) or reword the warning.
 - FIX-53: FAQ bulk import all-or-nothing; test `test_bulk_with_one_bad_row_imports_nothing`.
 - Then re-test and update the sheet as in Task 16, run date of that wave.
+
+### Task 31: IVR menu and prompts per Proton SOP (FIX-31, FIX-56 step 7) — target 5 Dec
+- **Files:** `backend/.../features/` phone `dtmf_menu.py`, `after_hours.py`, Twilio Studio flow export (if in repo), config flags `PHONE_DTMF_MENU_ENABLED`, `PHONE_AFTER_HOURS_ENABLED`, `PHONE_VOICEMAIL_INGEST_ENABLED` (currently wired to nothing).
+- **Behaviour:** bilingual welcome and language menu (English 1 / Bahasa Melayu 2); RSA 1 / Inquiry 2 / Complaint 3 / repeat 0 per language; queue-busy prompt after 10 s ringing (EN and BM text from IVR Call B29/B30, "pelanggan" spelling); after-hours EN+BM message with voicemail to case; RSA always routed 24/7.
+- **Tests:** `test_dtmf_1_routes_rsa`, `test_dtmf_menu_bm_branch`, `test_queue_busy_prompt_after_10s`, `test_after_hours_plays_message_and_records_voicemail`, `test_rsa_bypasses_after_hours`.
 
 ## Needs Proton: left as is in the sheet, with notes
 

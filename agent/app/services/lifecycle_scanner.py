@@ -37,11 +37,20 @@ def decide_idle_action(
     warn_after: float,
     close_after: float,
     confirm_after: float,
+    grace_after: float | None = None,
 ) -> str | None:
     if state == lifecycle.ACTIVE and idle_minutes >= warn_after:
         return "warn"
-    if state == lifecycle.IDLE_WARNED and idle_minutes >= close_after:
-        return "close"
+    if state == lifecycle.IDLE_WARNED:
+        if idle_minutes >= close_after:
+            return "close"
+        # The warning is itself a message, so Chatwoot's last_activity_at is
+        # reset when it is posted and `idle >= warn+grace` alone only fires
+        # warn+grace minutes AFTER the warning (~16 min live for a promised 5).
+        # Measure the promised grace from the warning (state age) instead, so
+        # the close lands within one sweep of warn+grace.
+        if grace_after is not None and state_age_minutes >= grace_after:
+            return "close"
     if state in (lifecycle.AWAITING_RESOLUTION, lifecycle.AWAITING_SURVEY):
         if state_age_minutes >= confirm_after:
             # Both states time out to a silent close. For AWAITING_SURVEY this
@@ -172,7 +181,8 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
     confirm_after = _pick("confirm_grace_minutes", settings.lifecycle_confirm_grace_minutes)
 
     action = decide_idle_action(
-        state, idle, state_age, warn_after, close_after, confirm_after
+        state, idle, state_age, warn_after, close_after, confirm_after,
+        grace_after=grace,
     )
     if action is None:
         return

@@ -256,3 +256,55 @@ async def test_scan_still_sweeps_pending_by_default(wired):
 
     assert await lifecycle_store.get_state(70) == "idle_warned"
     wired.create_message.assert_awaited()
+
+
+def test_decide_idle_action_closes_grace_after_the_warning_not_after_the_idle_reset():
+    """FIX-52: the warning is itself a message, so Chatwoot's last_activity_at
+    resets when it is posted and the old `idle >= warn+grace` check needed
+    warn+grace MORE minutes (~16 live instead of 5). The close is measured from
+    the warning (state age) against the grace the customer was promised."""
+    d = lifecycle_scanner.decide_idle_action
+    # warned 5.2 min ago, idle clock reset by the warning to 5.2 min (< 15)
+    assert d("idle_warned", 5.2, 5.2, 10, 15, 10, grace_after=5) == "close"
+    assert d("idle_warned", 4.0, 4.0, 10, 15, 10, grace_after=5) is None
+    # no grace given -> legacy behaviour
+    assert d("idle_warned", 5.2, 5.2, 10, 15, 10) is None
+
+
+async def _warned_conv_wired(monkeypatch, minutes_since_warning: float):
+    from datetime import timedelta
+
+    client = AsyncMock()
+    base = datetime.now(timezone.utc)
+    now = base + timedelta(minutes=minutes_since_warning)
+    # last_activity_at == the warning message, so idle == minutes_since_warning
+    client.list_conversations.side_effect = lambda status=None, assignee_type=None: (
+        {"data": {"payload": [
+            {"id": 71, "inbox_id": 4, "last_activity_at": int(base.timestamp()),
+             "meta": {"assignee": None}},
+        ]}} if status == "pending" else {"data": {"payload": []}}
+    )
+    client.get_inbox.return_value = {
+        "channel_type": "Channel::Whatsapp", "working_hours_enabled": False,
+    }
+    monkeypatch.setattr(lifecycle_scanner, "get_chatwoot_client", lambda: client)
+    monkeypatch.setattr(lifecycle, "get_chatwoot_client", lambda: client)
+    monkeypatch.setattr(lifecycle_scanner, "_now", lambda: now)
+    await lifecycle_store.seed_active(71, channel="Channel::Whatsapp")
+    await lifecycle_store.transition(71, lifecycle.IDLE_WARNED, warned_at=base)
+    return client
+
+
+async def test_scan_closes_within_one_sweep_of_warn_plus_grace(monkeypatch):
+    # default grace is 5 min; 5.5 min after the warning (one 60 s sweep later)
+    client = await _warned_conv_wired(monkeypatch, 5.5)
+    await lifecycle_scanner.scan_once()
+    assert await lifecycle_store.get_state(71) == "awaiting_resolution"
+    assert client.create_message.await_count == 2  # close text + resolution prompt
+
+
+async def test_scan_does_not_close_before_grace_elapses(monkeypatch):
+    client = await _warned_conv_wired(monkeypatch, 3.0)
+    await lifecycle_scanner.scan_once()
+    assert await lifecycle_store.get_state(71) == "idle_warned"
+    client.create_message.assert_not_awaited()

@@ -22,6 +22,12 @@
 # KEEP A COPY of the three values in the team secret store (the env file backup
 # is not enough if the VM is lost). Losing them locks enrolled users out.
 #
+# WHY KEYS ARE PERMANENT: existing plaintext credentials stay readable
+# (support_unencrypted_data), and a credential is encrypted only when it is next
+# saved. Once any save has happened, REMOVING or CHANGING the keys breaks email
+# IMAP/SMTP, Telegram, Twilio, social channel tokens, integration hooks AND MFA,
+# not just MFA.
+#
 # Env overrides: ENV_FILE, ENV_BACKUP, CHATWOOT_CONTAINER (default
 # proton-chatwoot-rails).
 set -euo pipefail

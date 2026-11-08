@@ -1,0 +1,39 @@
+From: Claude <noreply@anthropic.com>
+Subject: [PATCH] FIX-23: show agents' average FAQ rating on the FAQs admin page
+
+Adds an "Agent rating" column (average out of 5 and the rating count) to the
+Knowledge > FAQs table. The numbers come from GET /kb/faq, which now returns
+`avg_score` and `rating_count` per entry; the ratings themselves are posted
+from the composer strip (patch 0056). Unrated FAQs show a dash. A separate
+patch (not an edit of 0010/0040) so the earlier KnowledgeFaqs.vue patches keep
+their context untouched.
+---
+diff --git a/app/javascript/dashboard/components/proton/KnowledgeFaqs.vue b/app/javascript/dashboard/components/proton/KnowledgeFaqs.vue
+index 238975c..0f2f0c2 100644
+--- a/app/javascript/dashboard/components/proton/KnowledgeFaqs.vue
++++ b/app/javascript/dashboard/components/proton/KnowledgeFaqs.vue
+@@ -253,6 +253,9 @@ onMounted(load);
+               <th class="px-3 py-2 font-medium text-n-slate-11">Keywords</th>
+               <th class="px-3 py-2 font-medium text-n-slate-11">Tags</th>
+               <th class="px-3 py-2 font-medium text-n-slate-11">Active</th>
++              <th class="px-3 py-2 font-medium text-n-slate-11">
++                Agent rating
++              </th>
+               <th class="px-3 py-2 font-medium text-n-slate-11">Actions</th>
+             </tr>
+           </thead>
+@@ -291,6 +294,14 @@ onMounted(load);
+               <td class="px-3 py-2 text-n-slate-11">
+                 {{ entry.active === false ? 'no' : 'yes' }}
+               </td>
++              <td class="px-3 py-2 text-n-slate-11 whitespace-nowrap">
++                <!-- FIX-23: 1-5 average of agents' thumbs (up = 5, down = 1). -->
++                <span v-if="entry.rating_count">
++                  {{ entry.avg_score }} / 5
++                  <span class="text-n-slate-10">({{ entry.rating_count }})</span>
++                </span>
++                <span v-else class="text-n-slate-10">—</span>
++              </td>
+               <td class="px-3 py-2 whitespace-nowrap">
+                 <button
+                   class="mr-2 text-xs text-n-brand hover:underline"

@@ -34,6 +34,7 @@ from chatbot.features.chat.dms_config_store import DmsConfigStore
 from chatbot.features.chat.escalation_attachments import ChatwootAttachmentFetcher
 from chatbot.features.chat.escalation_notifier import EscalationNotifier, build_dealer_email_map
 from chatbot.features.chat.escalation_router import build_escalation_router
+from chatbot.features.chat.adapters.faq_ratings import build_faq_rating_store
 from chatbot.features.chat.faq_admin_router import build_faq_admin_router
 from chatbot.features.chat.handoff_bridge import HandoffBridge
 from chatbot.features.chat.kb_assistants_router import build_kb_assistants_router
@@ -289,7 +290,8 @@ def _wire_agent_assist(
     )
 
     app.include_router(build_kb_suggest_router(knowledge_port, live_faq_store, embedder))
-    app.include_router(build_faq_admin_router(live_faq_store, settings))
+    faq_rating_store = build_faq_rating_store(settings)
+    app.include_router(build_faq_admin_router(live_faq_store, settings, faq_rating_store))
     app.include_router(build_kb_documents_router(settings))
     app.include_router(
         build_kb_assistants_router(
@@ -319,7 +321,7 @@ def _wire_agent_assist(
     )
 
     faq_port = build_faq_feedback_port(settings)
-    app.include_router(build_faq_router(faq_port, settings))
+    app.include_router(build_faq_router(faq_port, settings, faq_rating_store))
 
 
 def _abandon_store_for(app: FastAPI, settings: Settings):

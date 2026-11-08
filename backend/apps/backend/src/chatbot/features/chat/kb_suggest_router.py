@@ -53,6 +53,7 @@ def build_kb_suggest_router(
             return []
         return [
             {
+                "id": entry.id,
                 "title": entry.question,
                 "snippet": entry.answer[:_SNIPPET],
                 # The full answer, for the fork's 1-click Apply button. `snippet`

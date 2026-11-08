@@ -95,11 +95,21 @@ verified against the real upstream fork -- it now can be, and is. Patches
 applying is necessary but not sufficient: the vite build still has to
 succeed, which only Cloud Build can tell us. Build via Cloud Build for amd64
 once merged; never on the prod VM, never from an arm64 Mac.
+
+FIX-23 (RFP 3.2.1 / 4.19 / 4.28, "feedback and score the FAQ quality"): the
+strip gains thumbs-up / thumbs-down next to Apply/Dismiss. Up posts score 5,
+down opens an optional reason box and posts score 1, to POST /kb/feedback with
+the CRM backend key (the same x-api-key the FAQs admin page uses). The backend
+keys ratings on (faq id, agent id, conversation id), so one agent rates a FAQ
+once per conversation and a re-click replaces the vote; the FAQs admin page
+(0080) shows the average and count. Requires /kb/suggest to return the live
+FAQ's uid=501(yudaadipratama) gid=20(staff) groups=20(staff),12(everyone),61(localaccounts),79(_appserverusr),80(admin),81(_appserveradm),701(com.apple.sharepoint.group.1),33(_appstore),98(_lpadmin),100(_lpoperator),204(_developer),250(_analyticsusers),395(com.apple.access_ftp),398(com.apple.access_screensharing),399(com.apple.access_ssh),400(com.apple.access_remote_ae), which the backend now does. Additions only: nothing 0074/0078
+rely on is removed.
 ---
- .../widgets/WootWriter/ReplyTopPanel.vue           | 125 ++++++++++++++++++++-
- 1 file changed, 123 insertions(+), 2 deletions(-)
+ .../widgets/WootWriter/ReplyTopPanel.vue           | 217 ++++++++++++++++++++-
+ 1 file changed, 215 insertions(+), 2 deletions(-)
 diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
-index 6b4d15c..9a8d960 100644
+index c8ec523..ca0ea06 100644
 --- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
 +++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
 @@ -1,5 +1,5 @@
@@ -122,7 +132,7 @@ index 6b4d15c..9a8d960 100644
  
  export default {
    name: 'ReplyTopPanel',
-@@ -97,13 +103,109 @@ export default {
+@@ -97,13 +103,162 @@ export default {
      };
  
      const { captainTasksEnabled } = useCaptain();
@@ -189,6 +199,59 @@ index 6b4d15c..9a8d960 100644
 +      emit('protonAssistResult', { text, mode: 'reply' });
 +    };
 +
++    // FIX-23 (RFP 3.2.1/4.19/4.28): thumbs up/down on the suggested FAQ, with
++    // an optional reason on a thumbs-down. One rating per agent per FAQ per
++    // conversation: the backend keys on (faq, agent, conversation), so a
++    // re-click replaces the earlier vote, and `faqRatings` (keyed the same way)
++    // only drives which thumb is shown as selected. Best-effort -- a failed
++    // POST alerts and leaves the strip usable.
++    const { backendKey } = useProtonConfig();
++    const faqRatings = ref({});
++    const faqReasonOpen = ref(false);
++    const faqReason = ref('');
++    const faqRatingKey = () => {
++      const chatId = store.getters.getSelectedChat?.id;
++      return faqSuggestion.value?.id ? `${chatId}:${faqSuggestion.value.id}` : '';
++    };
++    const faqRating = computed(() => faqRatings.value[faqRatingKey()] || '');
++    const submitFaqRating = async (isUp, reason = '') => {
++      const faq = faqSuggestion.value;
++      const key = faqRatingKey();
++      if (!faq?.id || !key) return;
++      try {
++        const response = await fetch(`${backendUrl}/kb/feedback`, {
++          method: 'POST',
++          headers: {
++            'Content-Type': 'application/json',
++            ...(backendKey ? { 'x-api-key': backendKey } : {}),
++          },
++          body: JSON.stringify({
++            article_id: faq.id,
++            session_id: String(store.getters.getSelectedChat?.id || ''),
++            conversation_id: String(store.getters.getSelectedChat?.id || ''),
++            agent_id: String(store.getters.getCurrentUserID || ''),
++            helpful: isUp,
++            score: isUp ? 5 : 1,
++            reason,
++          }),
++        });
++        if (!response.ok) throw new Error(`HTTP ${response.status}`);
++        faqRatings.value = { ...faqRatings.value, [key]: isUp ? 'up' : 'down' };
++        faqReasonOpen.value = false;
++        faqReason.value = '';
++        useAlert('Thanks for the feedback.');
++      } catch (err) {
++        // eslint-disable-next-line no-console
++        console.error('[proton-assist]', 'faq-rating', 'failed', err);
++        useAlert('Could not save the FAQ rating.');
++      }
++    };
++    const rateFaqUp = () => submitFaqRating(true);
++    const openFaqDownReason = () => {
++      faqReasonOpen.value = !faqReasonOpen.value;
++    };
++    const submitFaqDown = () => submitFaqRating(false, faqReason.value.trim());
++
 +    const dismissFaqSuggestion = () => {
 +      if (faqSuggestion.value) {
 +        dismissedFaqMessageId.value = faqSuggestion.value.messageId;
@@ -233,7 +296,7 @@ index 6b4d15c..9a8d960 100644
  
      const showCopilotMenu = ref(false);
      const copilotToggleRef = ref(null);
-@@ -219,6 +321,10 @@ export default {
+@@ -258,6 +413,16 @@ export default {
        captainTasksEnabled,
        protonEnabled,
        showAiButton,
@@ -241,10 +304,16 @@ index 6b4d15c..9a8d960 100644
 +      faqSuggestionVisible,
 +      applyFaqSuggestion,
 +      dismissFaqSuggestion,
++      faqRating,
++      faqReasonOpen,
++      faqReason,
++      rateFaqUp,
++      openFaqDownReason,
++      submitFaqDown,
        translating,
        handleTranslateLastCustomerMessage,
        handleCopilotAction,
-@@ -279,6 +385,21 @@ export default {
+@@ -321,6 +486,54 @@ export default {
          {{ translating ? 'Translating…' : 'Translate' }}
        </button>
      </div>
@@ -262,6 +331,39 @@ index 6b4d15c..9a8d960 100644
 +      <NextButton size="xs" variant="ghost" @click="dismissFaqSuggestion">
 +        Dismiss
 +      </NextButton>
++      <template v-if="faqSuggestion.id">
++        <button
++          type="button"
++          class="faq-rate-up flex items-center text-n-slate-11 hover:text-n-teal-10"
++          :class="{ 'text-n-teal-10': faqRating === 'up' }"
++          title="Helpful"
++          @click="rateFaqUp"
++        >
++          <span class="i-lucide-thumbs-up" />
++        </button>
++        <button
++          type="button"
++          class="faq-rate-down flex items-center text-n-slate-11 hover:text-n-ruby-9"
++          :class="{ 'text-n-ruby-9': faqRating === 'down' }"
++          title="Not helpful"
++          @click="openFaqDownReason"
++        >
++          <span class="i-lucide-thumbs-down" />
++        </button>
++        <template v-if="faqReasonOpen">
++          <input
++            v-model="faqReason"
++            type="text"
++            maxlength="500"
++            placeholder="Why? (optional)"
++            class="faq-rate-reason px-2 py-0.5 text-xs border rounded border-n-weak bg-n-alpha-black1 text-n-slate-12"
++            @keydown.enter.prevent="submitFaqDown"
++          />
++          <NextButton size="xs" variant="ghost" @click="submitFaqDown">
++            Send
++          </NextButton>
++        </template>
++      </template>
 +    </div>
      <div v-if="showAiButton" class="flex items-center gap-2">
        <div class="relative">

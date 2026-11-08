@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from chatbot.features.chat.ports import LiveFaqEntry
 
 if TYPE_CHECKING:
+    from chatbot.features.chat.adapters.faq_ratings import FaqRatingPort
     from chatbot.features.chat.ports import LiveFaqPort
     from chatbot.platform.config import Settings
 
@@ -54,7 +55,29 @@ def _entry_dict(entry: LiveFaqEntry) -> dict[str, Any]:
     }
 
 
-def build_faq_admin_router(store: LiveFaqPort | None, settings: Settings) -> APIRouter:
+async def _with_scores(
+    entries: list[LiveFaqEntry], rating_store: FaqRatingPort | None
+) -> list[dict[str, Any]]:
+    """FIX-23: average agent rating + count per FAQ (None / 0 when unrated)."""
+    scores = await rating_store.summaries() if rating_store is not None else {}
+    rows: list[dict[str, Any]] = []
+    for e in entries:
+        avg, count = scores.get(e.id, (None, 0))
+        rows.append(
+            {
+                **_entry_dict(e),
+                "avg_score": round(avg, 2) if avg is not None else None,
+                "rating_count": count,
+            }
+        )
+    return rows
+
+
+def build_faq_admin_router(
+    store: LiveFaqPort | None,
+    settings: Settings,
+    rating_store: FaqRatingPort | None = None,
+) -> APIRouter:
     router = APIRouter(tags=["kb"])
 
     def _authorize(x_api_key: str | None) -> None:
@@ -116,7 +139,7 @@ def build_faq_admin_router(store: LiveFaqPort | None, settings: Settings) -> API
     ) -> dict[str, Any]:
         _authorize(x_api_key)
         entries = await _require_store().list_all()
-        return {"entries": [_entry_dict(e) for e in entries]}
+        return {"entries": await _with_scores(entries, rating_store)}
 
     @router.post("/kb/faq/bulk")
     async def bulk_create_faq(

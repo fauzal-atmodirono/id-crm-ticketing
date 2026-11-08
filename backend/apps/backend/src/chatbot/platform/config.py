@@ -299,6 +299,8 @@ class Settings(BaseSettings):
     routing_sweep_interval_seconds: int = 60
 
     live_faq_collection: str = "live_faq"
+    # FIX-23: per-agent thumbs ratings of live-FAQ entries (see faq_ratings.py).
+    faq_rating_collection: str = "live_faq_ratings"
     embedding_model: str = "text-embedding-004"
 
     # Bot-metrics dashboard (Zendesk -> BigQuery sync)

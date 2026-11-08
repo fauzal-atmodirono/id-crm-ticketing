@@ -378,3 +378,45 @@ def test_the_suggestion_does_not_leak_across_conversations(applied_file: str) ->
     assert "faqSuggestion.value = null" in refresh.group(1), (
         "a conversation with no customer message leaves the old suggestion visible"
     )
+
+
+# --- FIX-23: thumbs rating on the strip ------------------------------------
+
+
+def test_the_strip_has_thumbs_up_and_down_wired_to_handlers(applied_file: str) -> None:
+    assert re.search(r'@click="rateFaqUp"', applied_file)
+    assert re.search(r'@click="openFaqDownReason"', applied_file)
+    assert re.search(r'@click="submitFaqDown"', applied_file)
+    # Only a suggestion with a FAQ id can be rated (Vertex hits have none).
+    assert re.search(r'<template v-if="faqSuggestion\.id">', applied_file)
+    for name in ("rateFaqUp", "openFaqDownReason", "submitFaqDown", "faqRating"):
+        assert re.search(rf"^\s+{name},$", applied_file, re.MULTILINE), f"{name} not returned"
+
+
+def test_a_rating_posts_the_score_agent_and_conversation_to_kb_feedback(
+    applied_file: str,
+) -> None:
+    match = re.search(
+        r"const submitFaqRating = async \(.*?\) => \{(.*?)\n    \};", applied_file, re.DOTALL
+    )
+    assert match, "submitFaqRating not found"
+    body = match.group(1)
+    assert "/kb/feedback" in body
+    assert "method: 'POST'" in body
+    assert "'x-api-key': backendKey" in body
+    assert "article_id: faq.id" in body
+    assert "score: isUp ? 5 : 1" in body
+    assert "helpful: isUp" in body
+    assert "agent_id:" in body and "getCurrentUserID" in body
+    assert "conversation_id:" in body
+    assert "reason," in body
+    # Failure must not break the strip.
+    assert "catch (err)" in body
+
+
+def test_rating_additions_only_keep_the_0056_context_other_patches_need(
+    applied_file: str,
+) -> None:
+    # 0074/0078 anchor on these lines; the rating work must not have changed them.
+    assert "const { hasFeature, backendUrl } = useProtonConfig();" in applied_file
+    assert '<NextButton size="xs" variant="ghost" @click="dismissFaqSuggestion">' in applied_file

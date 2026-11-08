@@ -42,8 +42,9 @@ cd /opt/platform/deploy
 sudo bash /tmp/proton_deploy_2026-11-10.sh --dry-run
 ```
 
-Expect: `ok: containers up`, `ok: /api 200, data_services ok`, `ok: disk free ...`,
-`patching file` lines for 15 files with no `FAILED`/`Hunk` lines, a list of env
+Expect: `ok: containers up`, `ok: CHATWOOT_IMAGE is rc15`, `ok: backend /healthz
+baseline 200`, `ok: /api 200, data_services ok`, `ok: disk free ...`, then GNU patch
+prints `checking file ...` for 15 files with no `FAILED`/`Hunk`/`fuzz` lines, a list of env
 keys as `replace|append KEY=<set>`, the plan, and `dry-run complete`.
 Verified read-only against the VM on 2026-11-09: all 15 files apply cleanly
 (no fuzz, no offsets). If any hunk fails, stop and send the output.
@@ -54,18 +55,30 @@ Verified read-only against the VM on 2026-11-09: all 15 files apply cleanly
 sudo bash /tmp/proton_deploy_2026-11-10.sh --apply
 ```
 
+If the backend `/healthz` is already not 200 before the deploy, the script stops
+and says so; investigate, or re-run with `--accept-baseline` to proceed anyway.
+
 Stops on the first failure and says which step failed. It:
-1. preflight (containers up, `/api` ok, disk > 5 GB) and pulls the rc16 image
-2. backs up the 15 files and `tenants/proton.env` to `/backups/predeploy-20261110/`
+1. preflight (containers up, current `CHATWOOT_IMAGE` is rc15, backend baseline,
+   `/api` ok, disk > 5 GB) and pulls the rc16 image
+2. backs up the 15 files and `tenants/proton.env` to `/backups/predeploy-20261110/`,
+   copies the scripts and patch there (rollback does not depend on `/tmp`), and tags
+   the current backend image `platform-backend:pre-20261110` (see section 7)
 3. `patch -p1 -F0` in `/opt/platform`
 4. writes the backend env keys and `CHATWOOT_IMAGE=...:v4.15.1-custom-rc16`
    (values are never printed; env writes keep the same inode)
 5. `docker compose ... pull chatwoot-rails chatwoot-sidekiq`
-6. `up -d --build backend`, then `up -d --force-recreate chatwoot-rails chatwoot-sidekiq`
-7. health: `/api` data_services ok, backend `/healthz` 200, no `Traceback` in
-   `docker logs proton-backend --since 3m`, rails image tag is rc16
+6. `up -d --build backend`, backend health (`/healthz` 200, no `Traceback` since the
+   container started, `/openapi.json` lists `/rsa`, `/admin/taxonomy`, `/escalation`
+   routes, warning if `rsa_customer_phone_migration_failed` appears), and only then
+   `up -d --force-recreate chatwoot-rails chatwoot-sidekiq`
+7. fork health: `/api` data_services ok, sidekiq running, rails and sidekiq image tag
+   rc16, `/app/login` 200, `features:` on the login page (warning only), and
+   `/app/.git_sha` starts with `db674a88`
 
-Expect the last lines: `ok: rails image tag v4.15.1-custom-rc16` and `APPLY DONE`.
+Expect the last lines: `ok: rails + sidekiq image tag v4.15.1-custom-rc16`, `ok: /app/.git_sha db674a88`
+and `APPLY DONE`. The apply also adds `customer_phone` to the RSA table (additive and
+harmless, but not removed by rollback).
 Rails takes up to about 3 minutes to come up; the script waits.
 
 Then in the browser: `/app/login` returns 200, sidebar renders, translate picker,
@@ -88,20 +101,66 @@ it verbatim would remove the 48 h rung. The script overwrites that one key with
 the 6-step SOP table (roles identical, delays 0/2/4/8/8/48; the stored ladder
 policy still overrides the delays of steps 2-5). Only the key name is printed.
 
+**Do not run a bare `docker compose ... up -d` between `--apply` and `--agent`.**
+Before `--agent` the env file has no agent keys and a plain `up -d` would recreate
+`proton-agent` and lose its running `ESCALATION_POLICY_*` values.
+
 ## 5. Rollback
 
 ```bash
 sudo bash /tmp/proton_deploy_2026-11-10.sh --rollback
 ```
 
-Restores the backed-up files (and deletes files the patch created), restores
-`proton.env` from `/backups/predeploy-20261110/proton.env`, forces
-`CHATWOOT_IMAGE` to rc15, recreates backend, rails, sidekiq (and agent if
-`--agent` ran), then runs the same health checks against rc15. The backup folder
-is kept.
+If `/tmp` is gone, run the copy in the backup: `sudo bash /backups/predeploy-20261110/proton_deploy_2026-11-10.sh --rollback`.
+
+Saves the current env to `/backups/predeploy-20261110/proton.env.pre-rollback`,
+restores the backed-up files (and deletes files the patch created), restores
+`proton.env`, forces `CHATWOOT_IMAGE` to rc15, and, if `--agent` ran, re-applies the
+`ESCALATION_POLICY_*` lines (the restore would otherwise delete the only copy; the
+agent is still recreated so its lifecycle keys roll back). Backend returns to
+`platform-backend:pre-20261110` without a rebuild; then rails, sidekiq (and agent)
+are recreated and health-checked against rc15. The backup folder is kept.
+
+## 7. The backend image is shared by every tenant
+
+`platform-backend:latest` is hard-coded in `docker-compose.tenant.yml` (no per-tenant
+env var), and `/opt/platform` is shared too. The apply builds the new backend into
+`platform-backend:latest`, so **aeon360 and bahana would pick up the new code on their
+next `up -d --build backend` or recreate**. Until reviewed, do not recreate their
+backends. To pin them, after the proton apply is healthy:
+
+```bash
+docker tag platform-backend:latest platform-backend:proton-20261110
+docker tag platform-backend:pre-20261110 platform-backend:latest
+```
+
+proton's running container keeps the new image. Note a later proton recreate without
+`--build` then starts from `latest` (old); use `--build` for proton, or retag
+`proton-20261110` back to `latest`, and re-pin afterwards. The patched source in
+`/opt/platform/backend` is also what any `--build` uses, so the others still must not
+rebuild until reviewed.
 
 ## 6. After
 
 - Record the deployed commits (`085f4f25` and earlier Wave 1 backend commits) in
   the sheet Notes.
-- Ladder `dry_run`: stays ON. Turn it off only for the demo window.
+- Ladder `dry_run`: stays ON. Turn it off only for the demo window. `--agent` also
+  forces `ESCALATION_POLICY_DRY_RUN=true` in the env fallback and prints the
+  ENABLED/DRY_RUN booleans; the DB row stays authoritative.
+
+### Post-deploy AI persona (operator, Knowledge > Settings, inbox 3)
+
+`MEDIA_DIAGNOSIS_PROMPT_ENABLED=true` is set by the env script (built-in photo rule:
+confidence + at most one follow-up). The persona is currently empty; after the deploy
+add this to the persona `instructions`:
+
+> Photo replies: when the customer sends a photo (for example a dashboard warning light), your reply MUST have three parts in this order: (1) one sentence saying what you see, with how confident you are; (2) one practical line on what to do now; (3) exactly one follow-up question as the LAST sentence, ending with a question mark, asking for the car model and whether the light is steady or blinking. Never assume the car model from the photo and never link to a model page for a warning light. Service timing: never state or hint at a duration; say it depends on the service type, then ask which car model and which service centre, ending with a question mark.
+
+And in the assistant **Handoff message** (breakdown case), as the first line:
+
+> If you are on the road: switch on your hazard lights, move to a safe place away from traffic, and stay out of the car if it is on a highway. A teammate is joining you now. Please share your location and plate number.
+
+Then re-run the three replay inputs from the Task 12 report (dashboard-light photo,
+service-timing question, breakdown) against `/chat/turn` and check: photo reply has the
+three parts with the question last; the service reply asks questions instead of handing
+off; the breakdown handoff shows the safety line.

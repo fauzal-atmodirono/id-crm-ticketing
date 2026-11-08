@@ -30,12 +30,13 @@ grep -qx 'ACW_ENABLED=true' tenants/proton.env || fail "ACW appended"
 grep -qx 'NPS_SAMPLE_RATE=0.5' tenants/proton.env || fail "NPS appended"
 grep -qx 'ESCALATION_ATTACHMENT_BUDGET_BYTES=10485760' tenants/proton.env || fail "attachment budget"
 grep -qx 'PHONE_HANDOFF_TIMEOUT_SECONDS=20' tenants/proton.env || fail "phone handoff timeout"
+grep -qx 'MEDIA_DIAGNOSIS_PROMPT_ENABLED=true' tenants/proton.env || fail "media diagnosis flag"
 grep -qx 'SECRET_KEY_BASE=abc=def/+' tenants/proton.env || fail "untouched key changed"
 grep -qx 'TENANT=proton' tenants/proton.env || fail "TENANT changed"
 grep -qx '# comment' tenants/proton.env || fail "comment lost"
 echo "$out" | grep -q 'abc=def\|=true$\|=bigquery' && fail "value printed"
 echo "$out" | grep -q 'up -d --build backend' || fail "recreate cmd missing"
-[ "$(grep -c . tenants/proton.env)" = 27 ] || fail "line count $(grep -c . tenants/proton.env)"
+[ "$(grep -c . tenants/proton.env)" = 28 ] || fail "line count $(grep -c . tenants/proton.env)"
 
 # re-run is idempotent and keeps the original backup
 cp tenants/proton.env after1; bash "$S" >/dev/null

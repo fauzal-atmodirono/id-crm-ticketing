@@ -34,13 +34,21 @@ img(){ sed -n 's/^CHATWOOT_IMAGE=//p' tenants/proton.env; }
 case "$1" in
   inspect) case "$*" in
       *Running*) [ -n "${FAKE_DOWN:-}" ] && { echo false; exit 0; }; echo true ;;
+      *StartedAt*) echo 2026-11-10T01:00:00Z ;;
       *Config.Image*) cat "$D/rails.image" ;; esac ;;
-  exec) case "$2" in
-      proton-chatwoot-rails) [ -n "${FAKE_API_BAD:-}" ] && exit 1; echo '{"version":"4","data_services":"ok"}' ;;
-      proton-backend|proton-agent)
-        if [ "$3" = printenv ]; then printf '%s\n' 'ESCALATION_POLICY_L1=a' 'ESCALATION_POLICY_STEPS_JSON=[{"step_no":1}]' 'OTHER=no'; fi ;;
+  image) [ -e "$D/pre.tag" ] || exit 1 ;;
+  tag) case "$*" in *pre-20261110*) touch "$D/pre.tag" ;; esac ;;
+  exec) case "$2 $*" in
+      "proton-chatwoot-rails "*"/app/login"*) echo 'window.x = { features: [] }' ;;
+      "proton-chatwoot-rails "*".git_sha"*) echo "${FAKE_SHA:-db674a88e1}" ;;
+      "proton-chatwoot-rails "*) [ -n "${FAKE_API_BAD:-}" ] && exit 1; echo '{"version":"4","data_services":"ok"}' ;;
+      "proton-backend "*openapi*) [ -n "${FAKE_NO_OPENAPI:-}" ] && { echo '{"paths":{}}'; exit 0; }
+         echo '{"paths":{"/rsa/incidents":{},"/admin/taxonomy/x":{},"/escalation/notify":{},"/admin/escalation/pic":{}}}' ;;
+      "proton-backend "*healthz*) [ -n "${FAKE_BACKEND_DOWN:-}" ] && exit 1; exit 0 ;;
+      *printenv*) printf '%s\n' 'ESCALATION_POLICY_L1=a' 'ESCALATION_POLICY_ENABLED=true' 'ESCALATION_POLICY_DRY_RUN=false' 'ESCALATION_POLICY_STEPS_JSON=[{"step_no":1}]' 'OTHER=no' ;;
     esac ;;
-  logs) [ -n "${FAKE_TRACE:-}" ] && echo "Traceback (most recent call last)"; exit 0 ;;
+  logs) [ -n "${FAKE_TRACE:-}" ] && echo "Traceback (most recent call last)"
+        [ -n "${FAKE_PHONE_WARN:-}" ] && echo "rsa_customer_phone_migration_failed"; exit 0 ;;
   pull) exit 0 ;;
   compose) case "$*" in
       *"up -d"*chatwoot-rails*) img > "$D/rails.image" ;;
@@ -85,7 +93,15 @@ grep -q 'pull chatwoot-rails chatwoot-sidekiq' "$D/docker.log" || fail "no pull"
 grep -q 'up -d --build backend' "$D/docker.log" || fail "no backend up"
 grep -q 'up -d --force-recreate chatwoot-rails chatwoot-sidekiq' "$D/docker.log" || fail "no rails up"
 grep -q ' agent' "$D/docker.log" && fail "agent touched by apply"
-echo "$out" | grep -q 'rails image tag v4.15.1-custom-rc16' || fail "tag check"
+grep -q 'docker tag platform-backend:latest platform-backend:pre-20261110' "$D/docker.log" || fail "no pre tag"
+for f in proton_deploy_2026-11-10.sh proton_env_2026-11-10.sh test.patch; do [ -f "$D/bk/$f" ] || [ -f "$D/bk/backend-2026-11-10.patch" ] || fail "script copies in BK"; done
+[ -f "$D/bk/proton_deploy_2026-11-10.sh" ] && [ -f "$D/bk/proton_env_2026-11-10.sh" ] || fail "scripts not copied"
+grep -q "rc15" "$D/bk/preflight-chatwoot-image" || fail "preflight image not recorded"
+echo "$out" | grep -q 'openapi.json has' || fail "openapi check"
+echo "$out" | grep -q 'app/login 200' || fail "login check"
+echo "$out" | grep -q 'git_sha db674a88' || fail "sha check"
+echo "$out" | grep -q 'sidekiq image tag\|rails + sidekiq image tag' || fail "sidekiq tag"
+echo "$out" | grep -q 'sidekiq image tag v4.15.1-custom-rc16' || fail "tag check"
 bash "$S" --apply >/dev/null 2>&1 && fail "double apply allowed"
 
 # --- agent
@@ -94,19 +110,29 @@ echo "$out" | grep -q 'a=\|"step_no"' && fail "agent printed value"
 grep -q '^ESCALATION_POLICY_L1=a$' tenants/proton.env || fail "ESCALATION restored"
 grep -q '"step_no":6' tenants/proton.env || fail "step 6 not in STEPS_JSON"
 [ "$(grep -c '^ESCALATION_POLICY_STEPS_JSON=' tenants/proton.env)" = 1 ] || fail "steps dup"
+grep -qx 'ESCALATION_POLICY_DRY_RUN=true' tenants/proton.env || fail "DRY_RUN not forced true"
+echo "$out" | grep -q 'ESCALATION_POLICY_ENABLED=true ESCALATION_POLICY_DRY_RUN=true' || fail "booleans not printed"
+cp tenants/proton.env "$D/env.after-agent"
 grep -q 'up -d --no-build agent' "$D/docker.log" || fail "agent up"
 [ -e "$D/bk/agent-ran" ] || fail "agent marker"
 
 # --- rollback
 : > "$D/docker.log"
 out=$(bash "$S" --rollback)
-cmp -s "$D/env.orig" tenants/proton.env || fail "rollback env"
+[ -f "$D/bk/proton.env.pre-rollback" ] && cmp -s "$D/env.after-agent" "$D/bk/proton.env.pre-rollback" || fail "pre-rollback copy"
+grep -qx 'ESCALATION_POLICY_L1=a' tenants/proton.env || fail "ESCALATION line lost by rollback"
+grep -q '"step_no":6' tenants/proton.env || fail "STEPS_JSON lost by rollback"
+grep -qx 'ESCALATION_POLICY_DRY_RUN=true' tenants/proton.env || fail "rollback DRY_RUN"
+grep -qx "CHATWOOT_IMAGE=${NEW%rc16}rc15" tenants/proton.env || fail "rollback image not rc15"
+grep -q 'SLA_INBOX_IDS' tenants/proton.env && fail "backend keys survived rollback"
+grep -q 'docker tag platform-backend:pre-20261110 platform-backend:latest' "$D/docker.log" || fail "rb retag"
+grep -q 'up -d --no-build --force-recreate backend' "$D/docker.log" || fail "rb backend not no-build"
+grep -v '^ESCALATION_POLICY_' tenants/proton.env | cmp -s - "$D/env.orig" || fail "rollback env (non-escalation lines) differs"
 diff -r "$D/src.orig" "$R/backend" >/dev/null || fail "rollback source"
 [ ! -e "$R/backend/src/c.py" ] || fail "new file not removed"
-grep -q 'up -d --build backend' "$D/docker.log" || fail "rb backend"
 grep -q 'up -d --force-recreate chatwoot-rails chatwoot-sidekiq' "$D/docker.log" || fail "rb rails"
 grep -q 'up -d --no-build agent' "$D/docker.log" || fail "rb agent"
-echo "$out" | grep -q 'rails image tag v4.15.1-custom-rc15' || fail "rb tag"
+echo "$out" | grep -q 'sidekiq image tag v4.15.1-custom-rc15' || fail "rb tag"
 
 # --- traceback fails health, patch mismatch fails before any change
 rm -f "$D/bk/"* ; cp "$D/env.orig" tenants/proton.env
@@ -117,4 +143,23 @@ cp tenants/proton.env "$D/env.before"
 bash "$S" --apply >/dev/null 2>&1 && fail "apply with drift"
 cmp -s "$D/env.before" tenants/proton.env || fail "env changed on drift"
 cmp -s "$D/drift.a" "$R/backend/src/a.py" || fail "source changed on drift"
+
+# --- new health / preflight cases
+reset_all(){ rm -f "$D/bk/"* "$D/pre.tag"; cp "$D/env.orig" tenants/proton.env; cp -r "$D/src.orig/." "$R/backend/"; rm -f "$R/backend/src/c.py"; echo "${NEW%rc16}rc15" > "$D/rails.image"; }
+reset_all
+FAKE_NO_OPENAPI=1 bash "$S" --apply >/dev/null 2>&1 && fail "missing openapi paths not caught"
+reset_all
+FAKE_SHA=zzz bash "$S" --apply >/dev/null 2>&1 && fail "bad git sha not caught"
+reset_all
+out=$(FAKE_PHONE_WARN=1 bash "$S" --apply 2>&1) || fail "phone warn must not fail"
+echo "$out" | grep -q 'WARN: rsa_customer_phone_migration_failed' || fail "phone warn missing"
+reset_all
+FAKE_BACKEND_DOWN=1 bash "$S" --apply >/dev/null 2>&1 && fail "baseline not required"
+[ ! -e "$D/bk/applied" ] || fail "applied despite bad baseline"
+out=$(FAKE_BACKEND_DOWN=1 bash "$S" --apply --accept-baseline 2>&1) && fail "should still fail health" || true
+echo "$out" | grep -q 'accept-baseline' || fail "accept-baseline warn"
+[ -e "$D/bk/applied" ] || fail "flag did not pass preflight"
+reset_all
+sed -i.bak 's/rc15/rc14/' tenants/proton.env; rm -f tenants/proton.env.bak
+bash "$S" --apply >/dev/null 2>&1 && fail "wrong current image accepted"
 echo "PASS"

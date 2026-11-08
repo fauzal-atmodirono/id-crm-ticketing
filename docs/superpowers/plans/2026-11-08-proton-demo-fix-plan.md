@@ -60,12 +60,28 @@
 - [ ] **Step 2:** Confirm each key exists in `backend/apps/backend/src/chatbot/platform/config.py` and is read by the backend. Any key read only by `agent/` goes in the script header as "needs agent recreate, not applied".
 - [ ] **Step 3:** `bash -n` passes; run against a copy of a fake env and diff. Commit `chore(ops): proton env script for 10 Nov fixes`.
 - [ ] **Step 4:** Hand to the user: `! bash scripts/ops/proton_env_2026-11-10.sh` (run from `/opt/platform/deploy` on the VM via ssh).
+- [ ] **Step 5: Agent section** (separate flag `--agent`, run only after the backend part): first copy every `ESCALATION_POLICY_*` variable from the running `proton-agent` container into `tenants/proton.env` (read with `docker exec proton-agent printenv`, never print values), then set the agent keys from Task 4b Step 5, then recreate the agent from its existing image without building (`up -d --no-build agent`). Test the copy step against a fake container env in the shell test.
 
 ### Task 4: SLA policy and inbox 4 clean-up (FIX-06)
 
 - [ ] **Step 1:** After Task 3: SLA Policies page, Scope = Tenant default, first response 15 min, resolution 8 h, warning at 80%, Tier-2 contact `devotech29+tier2@gmail.com`.
 - [ ] **Step 2:** Remove inbox 4 entries from SLA Policies and Knowledge > Inboxes (delete the orphan rows in their stores).
 - [ ] **Step 3: Verify:** a `[TEST]` email in inbox 5 shows an SLA timer; warning, breach note and PIC email fire on a 2-minute test policy scoped to inbox 5 (restore the real thresholds after).
+
+### Task 4b: Proton process-flow wording and timings (FIX-56)
+
+Source of truth: `docs/client-materials/CRM Process Flow (1).xlsx` (sheets WhatsApp Process, Social Media, Email, IVR Call; cell text and flowchart shapes). Copy Proton's wording verbatim, except obvious typos ("Does your case is resolve?" -> "Is your case resolved? YES/NO"; "pelanngan" -> "pelanggan"), and list every correction in the sheet Notes.
+
+- [ ] **Step 1: Business hours.** Inboxes 3 (WhatsApp) and 5 (Email): Mon-Fri 08:30-17:30, Sat-Sun and public holidays 09:00-17:00 (Asia/Kuala_Lumpur).
+- [ ] **Step 2: After-hours auto-reply** (WhatsApp B18, Social B20) as the out-of-office message on inbox 3 (and future Messenger/Instagram inboxes).
+- [ ] **Step 3: Lifecycle messages** in Knowledge > Settings for the WhatsApp assistant: welcome = the AI DISCLAIMER (WhatsApp B7); idle warning = "Your chat will close in 5 minutes if we do not hear from you"; auto-close = "Closed due to inactivity"; resolve check = "Is your case resolved? YES/NO"; AI rating survey prompt.
+- [ ] **Step 4: Email auto-acknowledgement** text (Email A11) into the email ack template; rules: once per new email/thread, never on a reply in the same thread, never on agent replies.
+- [ ] **Step 5: Timings** into the env script (Task 3, agent section): idle warning after 10 min, close 5 min later (15 min total in hours; 10 min total out of hours: `LIFECYCLE_IDLE_CLOSE_OUT_OF_HOURS_GRACE_MINUTES=0`), `LIFECYCLE_DISCLAIMER_ENABLED=true`, `LIFECYCLE_SURVEY_ENABLED=true`, `EMAIL_AUTOACK_ENABLED=true`, `LIFECYCLE_AUTO_CATEGORIZE=true` (bot-resolved cases get a category).
+- [ ] **Step 6: Per-channel response targets** into SLA (Task 4 and `SLA_ACK_MINUTES_BY_CHANNEL_JSON`): call/WhatsApp escalation to live agent acknowledged within 2 min; social within 2 working hours; email status update within 4 working hours; call answered within 20 s.
+- [ ] **Step 7: IVR** (IVR Call sheet): bilingual welcome and language menu (English 1 / Bahasa Melayu 2), then RSA 1 / Inquiry 2 / Complaint 3 / repeat 0 in each language; queue-busy prompt after 10 s of ringing (EN and BM text, B29/B30); after-hours message plus voicemail; female voice. Map onto `PHONE_DTMF_MENU_ENABLED` and the phone prompt settings in `platform/config.py`; anything with no setting becomes a Wave 2 code item in the sheet.
+- [ ] **Step 8: Verify:** a WhatsApp-path replay shows the disclaimer first; an out-of-hours message gets the auto-reply; a new test email gets exactly one acknowledgement; a reply in that thread gets none.
+
+Out of CRM scope (record in sheet Notes only): the SSI Process sheet (dealer survey in the e.MAS app).
 
 ### Task 5: Taxonomy admin auth (FIX-10)
 

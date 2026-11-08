@@ -188,12 +188,12 @@ def test_bulk_create_with_valid_csv() -> None:
     assert store.entries["faq-2"].tags == ["tag3"]
 
 
-def test_bulk_create_skips_invalid_rows() -> None:
+def test_bulk_create_partial_skips_invalid_rows() -> None:
     store = FakeLiveFaqStore()
     client = _client(store)
     csv_data = b"question,answer,keywords,tags\nWhat is X?,X is Y,,\n,Missing question,\n\nY is Z,,\nWhat is Z?,Z is W,,\n"
     r = client.post(
-        "/kb/faq/bulk",
+        "/kb/faq/bulk?partial=true",
         files={"file": ("test.csv", csv_data)},
         headers={"x-api-key": _KEY},
     )
@@ -225,3 +225,57 @@ def test_bulk_create_rejects_oversized_file() -> None:
     )
     assert r.status_code == 413
     assert store.entries == {}
+
+
+def test_bulk_with_one_bad_row_imports_nothing() -> None:
+    """FIX-53: 1 valid + 2 invalid rows -> nothing imported, per-row errors."""
+    store = FakeLiveFaqStore()
+    client = _client(store)
+    csv_data = b"question,answer,keywords,tags\nWhat is X?,X is Y,,\n,Missing question,,\nNo answer,,,\n"
+    r = client.post(
+        "/kb/faq/bulk",
+        files={"file": ("test.csv", csv_data)},
+        headers={"x-api-key": _KEY},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["created"] == 0
+    assert body["imported"] is False
+    assert [e["row"] for e in body["errors"]] == [3, 4]
+    assert store.entries == {}
+
+
+def test_bulk_partial_true_keeps_row_by_row_import() -> None:
+    store = FakeLiveFaqStore()
+    client = _client(store)
+    csv_data = b"question,answer,keywords,tags\nWhat is X?,X is Y,,\n,Missing question,,\n"
+    r = client.post(
+        "/kb/faq/bulk?partial=true",
+        files={"file": ("test.csv", csv_data)},
+        headers={"x-api-key": _KEY},
+    )
+    body = r.json()
+    assert body["created"] == 1 and len(body["errors"]) == 1
+    assert len(store.entries) == 1
+
+
+def test_bulk_store_failure_rolls_back_in_default_mode() -> None:
+    store = FakeLiveFaqStore()
+    real_create = store.create
+
+    async def flaky(entry: LiveFaqEntry) -> str:
+        if entry.question == "Second?":
+            raise RuntimeError("store down")
+        return await real_create(entry)
+
+    store.create = flaky  # type: ignore[method-assign]
+    client = _client(store)
+    csv_data = b"question,answer,keywords,tags\nFirst?,A,,\nSecond?,B,,\n"
+    r = client.post(
+        "/kb/faq/bulk",
+        files={"file": ("test.csv", csv_data)},
+        headers={"x-api-key": _KEY},
+    )
+    body = r.json()
+    assert body["created"] == 0 and body["imported"] is False
+    assert store.deletes == ["faq-1"]  # the first row that landed was undone

@@ -167,6 +167,7 @@ def build_faq_admin_router(
     @router.post("/kb/faq/bulk")
     async def bulk_create_faq(
         file: UploadFile = File(...),
+        partial: bool = False,
         x_api_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _authorize(x_api_key)
@@ -178,9 +179,13 @@ def build_faq_admin_router(
         except UnicodeDecodeError as exc:
             raise HTTPException(status_code=400, detail="File must be UTF-8 encoded CSV") from exc
 
+        # FIX-53: all-or-nothing by default. Validate every row before touching
+        # the store, so a CSV with one bad row imports nothing and the operator
+        # fixes the file once instead of hunting for what half-landed.
+        # ?partial=true keeps the old row-by-row behaviour.
         reader = csv.DictReader(io.StringIO(text))
-        created = 0
         errors: list[dict[str, Any]] = []
+        valid: list[tuple[int, LiveFaqEntry]] = []
         for i, row in enumerate(reader, start=2):  # row 1 is the header
             question = (row.get("question") or "").strip()
             answer = (row.get("answer") or "").strip()
@@ -189,8 +194,9 @@ def build_faq_admin_router(
                 continue
             keywords = [k.strip() for k in (row.get("keywords") or "").split(";") if k.strip()]
             tags = [t.strip() for t in (row.get("tags") or "").split(";") if t.strip()]
-            try:
-                await _require_store().create(
+            valid.append(
+                (
+                    i,
                     LiveFaqEntry(
                         id="",
                         question=question,
@@ -198,11 +204,28 @@ def build_faq_admin_router(
                         keywords=keywords,
                         tags=tags,
                         active=True,
-                    )
+                    ),
                 )
-                created += 1
+            )
+
+        if errors and not partial:
+            return {"created": 0, "errors": errors, "imported": False}
+
+        created_ids: list[str] = []
+        for i, entry in valid:
+            try:
+                created_ids.append(await _require_store().create(entry))
             except Exception as exc:
                 errors.append({"row": i, "reason": str(exc)})
-        return {"created": created, "errors": errors}
+                if not partial:
+                    # A store failure mid-import: undo what landed (best
+                    # effort) so the all-or-nothing promise still holds.
+                    for entry_id in created_ids:
+                        try:
+                            await _require_store().delete(entry_id)
+                        except Exception:
+                            pass
+                    return {"created": 0, "errors": errors, "imported": False}
+        return {"created": len(created_ids), "errors": errors, "imported": True}
 
     return router

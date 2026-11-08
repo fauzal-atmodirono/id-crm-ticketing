@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, Text, func
+from sqlalchemy import DateTime, Integer, Text, func, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     async_sessionmaker,
@@ -32,6 +32,10 @@ class RsaIncident(Base):
     incident_date: Mapped[str] = mapped_column(Text, nullable=False)
     vehicle_no: Mapped[str] = mapped_column(Text, nullable=False)
     vehicle_model: Mapped[str | None] = mapped_column(Text)
+    # Optional customer phone so Customer 360 phone search can surface RSA
+    # incidents (they have no Chatwoot contact). Added after launch: see
+    # init_rsa_db for the idempotent ALTER on existing tables.
+    customer_phone: Mapped[str | None] = mapped_column(Text)
     cause: Mapped[str] = mapped_column(Text, nullable=False)
     purchased_from: Mapped[str | None] = mapped_column(Text)
     breakdown_location: Mapped[str | None] = mapped_column(Text)
@@ -71,3 +75,16 @@ def build_session_maker(engine: AsyncEngine) -> async_sessionmaker:
 async def init_rsa_db(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # create_all never alters an existing table, so a tenant whose
+        # rsa_incidents predates customer_phone needs the column added in
+        # place. Idempotent (IF NOT EXISTS on Postgres; a column probe on
+        # other dialects such as the sqlite used in tests), nullable so
+        # existing rows are untouched.
+        if conn.dialect.name == "postgresql":
+            await conn.execute(
+                text("ALTER TABLE rsa_incidents ADD COLUMN IF NOT EXISTS customer_phone TEXT")
+            )
+        else:
+            cols = (await conn.execute(text("PRAGMA table_info(rsa_incidents)"))).fetchall()
+            if "customer_phone" not in {c[1] for c in cols}:
+                await conn.execute(text("ALTER TABLE rsa_incidents ADD COLUMN customer_phone TEXT"))

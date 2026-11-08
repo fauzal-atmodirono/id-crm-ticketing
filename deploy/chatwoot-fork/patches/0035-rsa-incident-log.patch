@@ -135,7 +135,7 @@ new file mode 100644
 index 0000000..4e10af1
 --- /dev/null
 +++ b/app/javascript/dashboard/views/ProtonRsaPage.vue
-@@ -0,0 +1,602 @@
+@@ -0,0 +1,624 @@
 +<!-- ProtonRsaPage.vue — OUR file. Standalone roadside-assistance (RSA)
 +     incident-log entry/report page. Three stacked sections sharing one page
 +     shell: (a) an aggregate summary (cases by cause, cases by dealer, from
@@ -160,6 +160,7 @@ index 0000000..4e10af1
 +  incident_date: '',
 +  vehicle_no: '',
 +  vehicle_model: '',
++  customer_phone: '',
 +  cause: '',
 +  purchased_from: '',
 +  breakdown_location: '',
@@ -394,6 +395,16 @@ index 0000000..4e10af1
 +          />
 +        </div>
 +        <div>
++          <label class="block mb-1 text-sm text-n-slate-11"
++            >Customer phone</label
++          >
++          <input
++            v-model="form.customer_phone"
++            type="tel"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
 +          <label class="block mb-1 text-sm text-n-slate-11">Cause *</label>
 +          <input
 +            v-model="form.cause"
@@ -522,6 +533,7 @@ index 0000000..4e10af1
 +                Vehicle no.
 +              </th>
 +              <th class="px-3 py-2 font-medium whitespace-nowrap">Model</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Phone</th>
 +              <th class="px-3 py-2 font-medium whitespace-nowrap">Cause</th>
 +              <th class="px-3 py-2 font-medium whitespace-nowrap">
 +                Purchased from
@@ -571,6 +583,13 @@ index 0000000..4e10af1
 +                  <input
 +                    v-model="editForm.vehicle_model"
 +                    type="text"
++                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.customer_phone"
++                    type="tel"
 +                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
 +                  />
 +                </td>
@@ -679,6 +698,9 @@ index 0000000..4e10af1
 +                </td>
 +                <td class="px-3 py-2 whitespace-nowrap">
 +                  {{ incident.vehicle_model }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.customer_phone }}
 +                </td>
 +                <td class="px-3 py-2 whitespace-nowrap">
 +                  {{ incident.cause }}

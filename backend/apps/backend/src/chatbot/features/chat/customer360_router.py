@@ -109,6 +109,43 @@ def _digits(value: str | None) -> str:
     return re.sub(r"\D", "", value or "")
 
 
+def _plate_key(value: str | None) -> str:
+    """Normalised plate for comparison: upper-case alphanumerics only, so
+    ``"bmt 5518"``, ``"BMT-5518"`` and ``"BMT5518"`` are the same plate."""
+    return re.sub(r"[^0-9A-Z]", "", (value or "").upper())
+
+
+def _plate_variants(query: str) -> list[str]:
+    """Spellings of one plate to OR together in Chatwoot's ``contains``
+    filter: compact (``BMT5518``) and letter/digit-spaced (``BMT 5518``),
+    the two ways operators type plates into the contact attribute."""
+    compact = _plate_key(query)
+    spaced = re.sub(r"(?<=[A-Z])(?=\d)|(?<=\d)(?=[A-Z])", " ", compact)
+    return list(dict.fromkeys(v for v in (compact, spaced) if v))
+
+
+_MIN_PHONE_SUFFIX_DIGITS = 8
+
+
+def _phones_match(a: str | None, b: str | None) -> bool:
+    """Digits-only phone equality, tolerant of a country-code/trunk-prefix
+    difference (``0123456789`` vs ``+60123456789``): one must be a suffix of
+    the other, with at least 8 digits shared so short numbers can't collide."""
+    da, db = _digits(a), _digits(b)
+    if not da or not db:
+        return False
+    short, long_ = sorted((da, db), key=len)
+    short = short.lstrip("0")
+    return len(short) >= _MIN_PHONE_SUFFIX_DIGITS and long_.endswith(short)
+
+
+# Fallback conversation scan (vehicle_model substring) is the slow path -- it
+# pages the Chatwoot conversation list. Bounded so a plate that matched no
+# contact can't stall the page.
+_MODEL_SCAN_BUDGET_SECONDS = 2.0
+_MAX_PLATE_CONTACTS = 5
+
+
 def _pick_best_contact(contacts: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
     """Prefer an exact phone-number match (digits-only comparison, so
     formatting differences like spaces/dashes/leading '+' don't matter);
@@ -132,6 +169,7 @@ def _rsa_incident_dict(row: Any) -> dict[str, Any]:
         "incident_date": row.incident_date,
         "vehicle_no": row.vehicle_no,
         "vehicle_model": row.vehicle_model,
+        "customer_phone": getattr(row, "customer_phone", None),
         "cause": row.cause,
         "purchased_from": row.purchased_from,
         "breakdown_location": row.breakdown_location,
@@ -306,28 +344,62 @@ def build_customer360_router(
             contact = _pick_best_contact(contacts, q)
             if contact is not None and contact.get("id") is not None:
                 conversations = await chatwoot.list_contact_conversations(int(contact["id"]))
-        else:
-            # Vehicle-number search path: RSA incidents are matched on their
-            # actual vehicle_no field (case-insensitive substring, since
-            # staff may search a partial plate). Conversations don't carry a
-            # vehicle number at all -- the only vehicle-related field they
-            # expose is the vehicle_model custom attribute -- so the
-            # conversation side of this branch is a best-effort substring
-            # match against vehicle_model, not a true vehicle-number lookup.
-            needle = q_stripped.lower()
             incidents = await rsa_repo.list_incidents()
             rsa_incidents = [
                 _rsa_incident_dict(row)
                 for row in incidents
-                if needle in (row.vehicle_no or "").lower()
+                if _phones_match(q_stripped, getattr(row, "customer_phone", None))
             ]
-            all_conversations = await chatwoot.list_conversations()
-            conversations = [
-                conv
-                for conv in all_conversations
+        else:
+            # Vehicle-number search path. RSA incidents match on the
+            # normalised plate (spaces/case/punctuation ignored, substring so
+            # staff may search a partial plate). Conversations are found the
+            # way the Cases list "Car Plate" column reads them: the contact's
+            # ``vehicle_no`` custom attribute, via ONE Chatwoot contacts/filter
+            # call plus one conversations call per matched contact -- not a
+            # scan of every conversation, which took 4-5 s.
+            needle = _plate_key(q_stripped)
+            incidents = await rsa_repo.list_incidents()
+            rsa_incidents = [
+                _rsa_incident_dict(row)
+                for row in incidents
+                if needle and needle in _plate_key(row.vehicle_no)
+            ]
+            plate_contacts = (
+                await chatwoot.find_contacts_by_vehicle_no(_plate_variants(q_stripped))
                 if needle
-                in ((conv.get("custom_attributes") or {}).get("vehicle_model") or "").lower()
-            ]
+                else []
+            )
+            plate_contacts = [c for c in plate_contacts if c.get("id") is not None]
+            plate_contacts = plate_contacts[:_MAX_PLATE_CONTACTS]
+            if plate_contacts:
+                contact = plate_contacts[0]
+                per_contact = await asyncio.gather(
+                    *(chatwoot.list_contact_conversations(int(c["id"])) for c in plate_contacts)
+                )
+                seen: set[Any] = set()
+                for convs in per_contact:
+                    for conv in convs:
+                        if conv.get("id") not in seen:
+                            seen.add(conv.get("id"))
+                            conversations.append(conv)
+            else:
+                # Legacy best-effort: the free-text vehicle_model attribute
+                # (e.g. "camry"), time-boxed because it pages the inbox.
+                lowered = q_stripped.lower()
+                try:
+                    all_conversations = await asyncio.wait_for(
+                        chatwoot.list_conversations(), timeout=_MODEL_SCAN_BUDGET_SECONDS
+                    )
+                except Exception as exc:
+                    _log.warning("customer360_model_scan_failed", error_type=type(exc).__name__)
+                    all_conversations = []
+                conversations = [
+                    conv
+                    for conv in all_conversations
+                    if lowered
+                    in ((conv.get("custom_attributes") or {}).get("vehicle_model") or "").lower()
+                ]
 
         result: dict[str, Any] = {
             "contact": contact,

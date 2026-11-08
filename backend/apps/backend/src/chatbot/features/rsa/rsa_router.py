@@ -27,6 +27,7 @@ class _IncidentRequest(BaseModel):
     vehicle_no: str
     cause: str
     vehicle_model: str | None = None
+    customer_phone: str | None = None
     purchased_from: str | None = None
     breakdown_location: str | None = None
     arrived_location: str | None = None
@@ -45,6 +46,7 @@ class _IncidentUpdateRequest(BaseModel):
     vehicle_no: str | None = None
     cause: str | None = None
     vehicle_model: str | None = None
+    customer_phone: str | None = None
     purchased_from: str | None = None
     breakdown_location: str | None = None
     arrived_location: str | None = None
@@ -69,6 +71,7 @@ def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRout
             "incident_date": row.incident_date,
             "vehicle_no": row.vehicle_no,
             "vehicle_model": row.vehicle_model,
+            "customer_phone": row.customer_phone,
             "cause": row.cause,
             "purchased_from": row.purchased_from,
             "breakdown_location": row.breakdown_location,

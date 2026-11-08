@@ -617,6 +617,35 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         res = await self._request("GET", f"/contacts/{contact_id}/conversations", None)
         return _conversations_from(res)
 
+    async def find_contacts_by_vehicle_no(self, variants: list[str]) -> list[dict[str, Any]]:
+        """Contacts whose ``vehicle_no`` custom attribute contains any variant.
+
+        One ``POST /contacts/filter`` call (Chatwoot runs it as a single SQL
+        query) instead of paging every conversation. This is the attribute the
+        Cases list "Car Plate" column reads (patch 0043:
+        ``meta.sender.custom_attributes.vehicle_no``). ``variants`` are
+        alternative spellings of one plate (callers pass compact and spaced
+        forms) OR-ed together, since Chatwoot's ``contains`` cannot ignore
+        whitespace itself. First page only: a plate identifies one customer.
+        """
+        wanted = [v for v in dict.fromkeys(variants) if v]
+        if not wanted:
+            return []
+        body = {
+            "payload": [
+                {
+                    "attribute_key": "vehicle_no",
+                    "filter_operator": "contains",
+                    "values": [v],
+                    "query_operator": "OR" if i < len(wanted) - 1 else None,
+                }
+                for i, v in enumerate(wanted)
+            ]
+        }
+        res = await self._request("POST", "/contacts/filter", body)
+        payload = (res or {}).get("payload") if isinstance(res, dict) else None
+        return [c for c in (payload or []) if isinstance(c, dict)]
+
     async def list_conversations(self, *, max_pages: int = 5) -> list[dict[str, Any]]:
         """Page the account conversations endpoint, filtered to our inbox.
 

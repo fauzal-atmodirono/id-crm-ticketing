@@ -48,6 +48,7 @@ class _InMemoryRow:
     incident_date: str
     vehicle_no: str
     vehicle_model: str | None = None
+    customer_phone: str | None = None
     cause: str = ""
     purchased_from: str | None = None
     breakdown_location: str | None = None

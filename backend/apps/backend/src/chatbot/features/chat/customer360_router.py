@@ -121,7 +121,18 @@ def _plate_variants(query: str) -> list[str]:
     the two ways operators type plates into the contact attribute."""
     compact = _plate_key(query)
     spaced = re.sub(r"(?<=[A-Z])(?=\d)|(?<=\d)(?=[A-Z])", " ", compact)
-    return list(dict.fromkeys(v for v in (compact, spaced) if v))
+    dashed = spaced.replace(" ", "-")
+    return list(dict.fromkeys(v for v in (compact, spaced, dashed) if v))
+
+
+# Plate-shaped: 2-3 letters, digits, optional trailing letter (BMT5518,
+# "BMT 5518", BMT-5518, W1234A). One-letter model names like "X50"/"S70" and
+# anything with punctuation ("e.MAS 7") are deliberately NOT plate-like.
+_PLATE_LIKE_RE = re.compile(r"^[A-Za-z]{2,3}[\s-]?\d{1,4}[A-Za-z]?$")
+
+# Total budget for the whole Chatwoot side of a vehicle search (contacts
+# filter + per-contact conversations). Past it we return what we have.
+_VEHICLE_CRM_BUDGET_SECONDS = 2.5
 
 
 _MIN_PHONE_SUFFIX_DIGITS = 8
@@ -299,6 +310,35 @@ async def _build_dms_block(
     }
 
 
+async def _plate_lookup(
+    chatwoot: ChatwootAdapter,
+    query: str,
+    needle: str,
+    plate_contacts: list[dict[str, Any]],
+    conversations: list[dict[str, Any]],
+) -> None:
+    """Fill ``plate_contacts``/``conversations`` in place (so whatever
+    finished survives a wait_for timeout): one contacts/filter call, then the
+    matched contacts' conversations fetched concurrently."""
+    found = await chatwoot.find_contacts_by_vehicle_no(_plate_variants(query))
+    found = [c for c in found if c.get("id") is not None]
+    # exact plate first, so `contact` is the real owner, not a substring
+    # neighbour
+    found.sort(
+        key=lambda c: _plate_key((c.get("custom_attributes") or {}).get("vehicle_no")) != needle
+    )
+    plate_contacts.extend(found[:_MAX_PLATE_CONTACTS])
+    per_contact = await asyncio.gather(
+        *(chatwoot.list_contact_conversations(int(c["id"])) for c in plate_contacts)
+    )
+    seen: set[Any] = set()
+    for convs in per_contact:
+        for conv in convs:
+            if conv.get("id") not in seen:
+                seen.add(conv.get("id"))
+                conversations.append(conv)
+
+
 def build_customer360_router(
     chatwoot: ChatwootAdapter,
     rsa_repo: RsaRepositoryPort,
@@ -365,27 +405,22 @@ def build_customer360_router(
                 for row in incidents
                 if needle and needle in _plate_key(row.vehicle_no)
             ]
-            plate_contacts = (
-                await chatwoot.find_contacts_by_vehicle_no(_plate_variants(q_stripped))
-                if needle
-                else []
-            )
-            plate_contacts = [c for c in plate_contacts if c.get("id") is not None]
-            plate_contacts = plate_contacts[:_MAX_PLATE_CONTACTS]
+            plate_contacts: list[dict[str, Any]] = []
+            if needle:
+                try:
+                    await asyncio.wait_for(
+                        _plate_lookup(chatwoot, q_stripped, needle, plate_contacts, conversations),
+                        timeout=_VEHICLE_CRM_BUDGET_SECONDS,
+                    )
+                except Exception as exc:
+                    _log.warning("customer360_plate_lookup_failed", error_type=type(exc).__name__)
             if plate_contacts:
                 contact = plate_contacts[0]
-                per_contact = await asyncio.gather(
-                    *(chatwoot.list_contact_conversations(int(c["id"])) for c in plate_contacts)
-                )
-                seen: set[Any] = set()
-                for convs in per_contact:
-                    for conv in convs:
-                        if conv.get("id") not in seen:
-                            seen.add(conv.get("id"))
-                            conversations.append(conv)
-            else:
-                # Legacy best-effort: the free-text vehicle_model attribute
-                # (e.g. "camry"), time-boxed because it pages the inbox.
+            elif not _PLATE_LIKE_RE.match(q_stripped):
+                # Legacy best-effort for model-like queries ("camry", "X50"):
+                # the free-text vehicle_model attribute, time-boxed because it
+                # pages the inbox. Skipped for plate-shaped queries -- a plate
+                # that matched no contact has nothing to find there.
                 lowered = q_stripped.lower()
                 try:
                     all_conversations = await asyncio.wait_for(

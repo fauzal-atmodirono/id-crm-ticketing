@@ -87,6 +87,7 @@ def test_csv_export(client):
     response = client.get("/rsa/incidents/export?format=csv", headers=_headers())
     assert response.status_code == 200
     assert response.headers["content-type"] == "text/csv; charset=utf-8"
+    assert response.text.splitlines()[0].split(",")[-1] == "customer_phone"
 
 
 # --- FIX-24: RSA routes behind RBAC ---------------------------------------

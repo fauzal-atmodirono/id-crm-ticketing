@@ -109,7 +109,9 @@ def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRout
         buf = io.StringIO()
         writer = csv.writer(buf)
         if rows:
-            fieldnames = list(_incident_dict(rows[0]).keys())
+            # customer_phone last so existing CSV consumers' column positions hold.
+            fieldnames = [k for k in _incident_dict(rows[0]) if k != "customer_phone"]
+            fieldnames.append("customer_phone")
             writer.writerow(fieldnames)
             for row in rows:
                 writer.writerow([_incident_dict(row).get(f) for f in fieldnames])

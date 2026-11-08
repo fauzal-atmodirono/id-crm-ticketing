@@ -30,6 +30,7 @@ instance as /escalation/contacts.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import time
 from collections.abc import Callable, Coroutine
@@ -134,6 +135,42 @@ NOTIFY_IDEMPOTENCY_WINDOW_SECONDS = 30 * 60
 CONTACTS_CACHE_TTL_SECONDS = 30.0
 
 
+class ContactsCache:
+    """TTL cache for the /escalation/contacts allowlist, with explicit
+    invalidation and a single-flight guard.
+
+    The Escalation Routing admin router calls ``invalidate`` on every write, so
+    an operator's edit is reflected on the very next lookup (a new PIC's reply
+    is linked, a removed PIC is refused) instead of up to a TTL later. The
+    generation counter stops a scan that was already running when the edit
+    landed from storing its stale result afterwards. ``lock`` makes concurrent
+    misses share one Firestore scan instead of each doing their own.
+    """
+
+    def __init__(self, ttl: float = CONTACTS_CACHE_TTL_SECONDS) -> None:
+        self._ttl = ttl
+        self._entry: tuple[float, dict[str, list[dict[str, str]]]] | None = None
+        self._generation = 0
+        self.lock = asyncio.Lock()
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
+    def get(self) -> dict[str, list[dict[str, str]]] | None:
+        if self._entry is None or time.monotonic() - self._entry[0] >= self._ttl:
+            return None
+        return self._entry[1]
+
+    def put(self, value: dict[str, list[dict[str, str]]], generation: int) -> None:
+        if generation == self._generation:
+            self._entry = (time.monotonic(), value)
+
+    def invalidate(self) -> None:
+        self._generation += 1
+        self._entry = None
+
+
 def build_escalation_router(
     notifier: EscalationNotifier,
     chatwoot_request: _CWRequest,
@@ -141,14 +178,15 @@ def build_escalation_router(
     pic_store: PicStore | None = None,
     dealer_store: DealerStore | None = None,
     audit: AuditLogPort | None = None,
+    contacts_cache: ContactsCache | None = None,
 ) -> APIRouter:
     router = APIRouter()
     auth = _require_api_key(settings)
     # key -> (monotonic start time, shared task). The task, not the result, is
     # stored so a retry arriving while the first call is still running joins it
     # instead of starting a second send.
-    inflight: dict[tuple[str, str, str, str], tuple[float, asyncio.Task[dict[str, str]]]] = {}
-    contacts_cache: dict[str, tuple[float, dict[str, list[dict[str, str]]]]] = {}
+    inflight: dict[tuple[str, str, str, str, str], tuple[float, asyncio.Task[dict[str, str]]]] = {}
+    cache = contacts_cache if contacts_cache is not None else ContactsCache()
 
     @router.post("/escalation/notify", dependencies=[Depends(auth)])
     async def notify(payload: _NotifyIn) -> dict[str, str]:
@@ -157,13 +195,25 @@ def build_escalation_router(
             (payload.department or "").strip().lower(),
             (payload.dealer or "").strip().lower(),
             (payload.channel_type or "").strip().lower(),
+            # Content hash: the agent clears escalation_notified_at on
+            # de-escalation, so a genuine re-escalation of the same
+            # department/dealer within the window must send again. Only an
+            # identical payload (a timeout retry) is suppressed.
+            hashlib.sha256(f"{payload.title}\x00{payload.body}".encode()).hexdigest()[:16],
         )
         now = time.monotonic()
         for k in [k for k, (t, _) in inflight.items() if now - t > NOTIFY_IDEMPOTENCY_WINDOW_SECONDS]:
             del inflight[k]
         entry = inflight.get(key)
-        if entry is not None and not (entry[1].done() and entry[1].exception() is not None):
-            _log.info("escalation_notify_duplicate_suppressed", conv_id=payload.conversation_id)
+        if entry is not None and not (
+            entry[1].done() and (entry[1].cancelled() or entry[1].exception() is not None)
+        ):
+            _log.warning(
+                "escalation_notify_duplicate_suppressed",
+                conv_id=payload.conversation_id,
+                department=payload.department,
+                dealer=payload.dealer,
+            )
             # shield: a caller that gives up must not cancel the shared send.
             return await asyncio.shield(entry[1])
         task = asyncio.ensure_future(_do_notify(payload))
@@ -204,9 +254,25 @@ def build_escalation_router(
         "reply not linked" is always safe, where a 5xx here would just make
         the caller retry against the same failing store for no benefit.
         """
-        cached = contacts_cache.get("all")
-        if cached is not None and time.monotonic() - cached[0] < CONTACTS_CACHE_TTL_SECONDS:
-            return cached[1]
+        cached = cache.get()
+        if cached is not None:
+            return cached
+        # Single flight: concurrent misses queue here and the later ones find
+        # the first one's result on the re-check, so one scan serves them all.
+        async with cache.lock:
+            cached = cache.get()
+            if cached is not None:
+                return cached
+            generation = cache.generation
+            result, degraded = await _scan_contacts()
+            # Never cache a degraded or empty answer: a Firestore hiccup would
+            # otherwise pin "no contacts" (every reply refused) for the TTL.
+            if not degraded and result["contacts"]:
+                cache.put(result, generation)
+            return result
+
+    async def _scan_contacts() -> tuple[dict[str, list[dict[str, str]]], bool]:
+        degraded = False
         seen: set[str] = set()
         out: list[dict[str, str]] = []
 
@@ -222,6 +288,7 @@ def build_escalation_router(
                 pics = await pic_store.list_all()
             except Exception:
                 _log.warning("escalation_contacts_pic_store_failed")
+                degraded = True
                 pics = []
             for rec in pics:
                 _add(rec.pic_email, rec.pic_name, "pic")
@@ -233,6 +300,7 @@ def build_escalation_router(
                 dealers = await dealer_store.list_all()
             except Exception:
                 _log.warning("escalation_contacts_dealer_store_failed")
+                degraded = True
                 dealers = []
             for rec in dealers:
                 for member in rec.emails:
@@ -251,9 +319,7 @@ def build_escalation_router(
                 for cc in rec.cc_emails:
                     _add(cc, f"{rec.dealer} (CC)", "dealer")
 
-        result = {"contacts": out}
-        contacts_cache["all"] = (time.monotonic(), result)
-        return result
+        return {"contacts": out}, degraded
 
     @router.post("/escalation/acknowledge", dependencies=[Depends(auth)])
     async def acknowledge(payload: _AcknowledgeIn) -> dict[str, str]:

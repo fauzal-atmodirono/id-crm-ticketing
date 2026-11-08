@@ -385,3 +385,46 @@ def test_slow_media_extraction_is_capped_and_draft_still_returned(monkeypatch) -
     assert r.status_code == 200
     assert r.json()["draft"] == "draft anyway"
     assert time.monotonic() - t0 < 2
+
+
+@respx.mock
+def test_media_extraction_timeout_is_not_cached(monkeypatch) -> None:
+    import asyncio
+
+    from chatbot.features.assist import router as mod
+
+    monkeypatch.setattr(mod, "_MEDIA_TERMS_TIMEOUT_SECONDS", 0.05)
+    _mock_download()
+    mock_genai = MagicMock()
+    slow = [True]
+
+    async def _respond(**kwargs):
+        system = (kwargs.get("config") or {}).get("system_instruction", "")
+        out = MagicMock()
+        if "extract search keywords" in system:
+            if slow[0]:
+                await asyncio.sleep(5)
+            out.text = _TERMS
+        else:
+            out.text = "draft"
+        return out
+
+    mock_genai.aio.models.generate_content = AsyncMock(side_effect=_respond)
+    app = FastAPI()
+    app.include_router(
+        build_assist_router(
+            settings=Settings(
+                proton_backend_key=_KEY,
+                assist_media_understanding_enabled=True,
+                assist_media_max_bytes=1_000_000,
+            ),
+            knowledge_port=_RecordingKnowledge(),
+            genai_client=mock_genai,
+            chatwoot_context=_FakeContext(),
+        )
+    )
+    client = TestClient(app)
+    assert _suggest(client).status_code == 200
+    slow[0] = False
+    assert _suggest(client).status_code == 200
+    assert _extractions(mock_genai) == 2  # second click retried, not served a cached ""

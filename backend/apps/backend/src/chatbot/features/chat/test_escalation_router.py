@@ -201,3 +201,129 @@ def test_contacts_served_from_cache_within_ttl() -> None:
     assert r1.json() == r2.json()
     assert r1.json()["contacts"][0]["email"] == "a@x.example"
     assert pic_store.list_all.await_count == 1
+
+
+# --- review fixes: same key + different content, cache invalidation, degraded ---
+
+
+def test_same_key_same_body_suppressed_different_body_sends() -> None:
+    notifier = AsyncMock()
+    client = _client(notifier, {"meta": {}}, _settings())
+    _notify(client)
+    _notify(client)  # identical retry: suppressed
+    assert notifier.notify_escalation.await_count == 1
+    _notify(client, body="re-escalated with new details")  # de-escalate then re-escalate
+    assert notifier.notify_escalation.await_count == 2
+    _notify(client, title="other title")
+    assert notifier.notify_escalation.await_count == 3
+
+
+def _contacts_app(pic_store: Any, cache: Any = None) -> TestClient:
+    async def _cw(method: str, path: str, payload: Any = None) -> dict | None:
+        return {}
+
+    app = FastAPI()
+    app.include_router(
+        build_escalation_router(
+            AsyncMock(), _cw, _settings(), pic_store=pic_store, contacts_cache=cache
+        )
+    )
+    return TestClient(app)
+
+
+def _pic(email: str):
+    from chatbot.features.chat.pic_store import PicRecord
+
+    return PicRecord(department="sales", pic_name="A", pic_email=email, pic_whatsapp="")
+
+
+def test_invalidate_makes_edit_visible_immediately() -> None:
+    from chatbot.features.chat.escalation_router import ContactsCache
+
+    cache = ContactsCache()
+    pic_store = AsyncMock()
+    pic_store.list_all.return_value = [_pic("old@x.example")]
+    client = _contacts_app(pic_store, cache)
+    assert client.get("/escalation/contacts", headers=_H).json()["contacts"][0]["email"] == "old@x.example"
+    pic_store.list_all.return_value = [_pic("new@x.example")]
+    cache.invalidate()
+    assert client.get("/escalation/contacts", headers=_H).json()["contacts"][0]["email"] == "new@x.example"
+
+
+def test_admin_write_invalidates_contacts_cache() -> None:
+    from chatbot.features.authz.deps import require_permission  # noqa: F401
+    from chatbot.features.chat.escalation_router import ContactsCache
+    from chatbot.features.chat.pic_admin_router import build_pic_admin_router
+
+    cache = ContactsCache()
+    pic_store = AsyncMock()
+    pic_store.list_all.return_value = [_pic("old@x.example")]
+    client = _contacts_app(pic_store, cache)
+    client.get("/escalation/contacts", headers=_H)
+    assert cache.get() is not None
+
+    from unittest.mock import patch
+
+    with patch("chatbot.features.chat.pic_admin_router.require_permission", lambda *a, **k: (lambda: None)):
+        admin = build_pic_admin_router(
+            pic_store, AsyncMock(), AsyncMock(), AsyncMock(), _settings(), on_write=cache.invalidate
+        )
+    app = FastAPI()
+    app.include_router(admin)
+    r = TestClient(app).put(
+        "/admin/escalation/pics/sales",
+        json={"pic_name": "B", "pic_email": "new@x.example"},
+    )
+    assert r.status_code == 200
+    assert cache.get() is None
+    TestClient(app).delete("/admin/escalation/pics/sales")
+    assert cache.get() is None
+
+
+def test_degraded_or_empty_scan_is_not_cached() -> None:
+    from chatbot.features.chat.escalation_router import ContactsCache
+
+    cache = ContactsCache()
+    pic_store = AsyncMock()
+    pic_store.list_all.side_effect = RuntimeError("firestore down")
+    client = _contacts_app(pic_store, cache)
+    assert client.get("/escalation/contacts", headers=_H).json() == {"contacts": []}
+    assert cache.get() is None
+    pic_store.list_all.side_effect = None
+    pic_store.list_all.return_value = []  # empty result is not cached either
+    client.get("/escalation/contacts", headers=_H)
+    assert cache.get() is None
+    pic_store.list_all.return_value = [_pic("a@x.example")]
+    assert client.get("/escalation/contacts", headers=_H).json()["contacts"]
+    assert cache.get() is not None
+
+
+def test_concurrent_contacts_misses_share_one_scan() -> None:
+    import asyncio
+
+    import httpx
+
+    calls = 0
+
+    async def _slow_list() -> list:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.1)
+        return [_pic("a@x.example")]
+
+    pic_store = AsyncMock()
+    pic_store.list_all.side_effect = _slow_list
+
+    async def _cw(method: str, path: str, payload: Any = None) -> dict | None:
+        return {}
+
+    app = FastAPI()
+    app.include_router(build_escalation_router(AsyncMock(), _cw, _settings(), pic_store=pic_store))
+
+    async def _run() -> list[int]:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+            rs = await asyncio.gather(*[c.get("/escalation/contacts", headers=_H) for _ in range(5)])
+            return [len(r.json()["contacts"]) for r in rs]
+
+    assert asyncio.run(_run()) == [1] * 5
+    assert calls == 1

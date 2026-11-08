@@ -14,6 +14,8 @@ from pydantic import BaseModel, Field, model_validator
 from chatbot.features.authz.deps import require_permission
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from chatbot.features.authz.identity import TokenValidator
     from chatbot.features.authz.repository import AuthzRepository
     from chatbot.features.chat.pic_store import DealerStore, PicStore, ProtonNetStore
@@ -86,8 +88,16 @@ def build_pic_admin_router(
     validator: TokenValidator,
     settings: Settings,
     pronet_store: ProtonNetStore | None = None,
+    on_write: Callable[[], None] | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/admin/escalation", tags=["escalation-admin"])
+
+    def _changed() -> None:
+        # Drops the /escalation/contacts allowlist cache so the edit is live on
+        # the next reply lookup. Called on every write attempt (the stores
+        # swallow their own errors, so success is not observable here).
+        if on_write is not None:
+            on_write()
     manage_escalation = require_permission(
         "escalation.manage", repo=authz_repo, validator=validator, settings=settings
     )
@@ -108,11 +118,13 @@ def build_pic_admin_router(
             escalation_manager_email=body.escalation_manager_email,
             escalation_manager_whatsapp=body.escalation_manager_whatsapp,
         )
+        _changed()
         return {"department": department, "status": "ok"}
 
     @router.delete("/pics/{department}", dependencies=[Depends(manage_escalation)])
     async def delete_pic(department: str) -> dict:
         await pic_store.delete(department)
+        _changed()
         return {"department": department, "status": "ok"}
 
     @router.get("/dealers", dependencies=[Depends(manage_escalation)])
@@ -129,11 +141,13 @@ def build_pic_admin_router(
             contacts=body.named_contacts() if body.contacts is not None else None,
             region=body.region,
         )
+        _changed()
         return {"dealer": dealer, "status": "ok"}
 
     @router.delete("/dealers/{dealer}", dependencies=[Depends(manage_escalation)])
     async def delete_dealer(dealer: str) -> dict:
         await dealer_store.delete(dealer)
+        _changed()
         return {"dealer": dealer, "status": "ok"}
 
     # --- PRO-NET regional contacts ------------------------------------------
@@ -152,11 +166,13 @@ def build_pic_admin_router(
             await pronet_store.set(
                 region, area_regional_mgr=body.area_regional_mgr, hod=body.hod
             )
+            _changed()
             return {"region": region, "status": "ok"}
 
         @router.delete("/pronet/{region}", dependencies=[Depends(manage_escalation)])
         async def delete_pronet(region: str) -> dict:
             await pronet_store.delete(region)
+            _changed()
             return {"region": region, "status": "ok"}
 
     return router

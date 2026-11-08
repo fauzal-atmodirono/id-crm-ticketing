@@ -441,6 +441,10 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
 
     pic_store = PicStore(settings)
     dealer_store = DealerStore(settings)
+    # Shared so the admin router's writes invalidate the escalation router's cache.
+    from chatbot.features.chat.escalation_router import ContactsCache  # noqa: PLC0415
+
+    escalation_contacts_cache = ContactsCache()
     custom_feature_store = CustomFeatureStore(settings)
     pic_registry = build_pic_registry(settings, store=pic_store)
     email_sender = SmtpEmailSender(settings)
@@ -596,6 +600,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
                 pic_store=pic_store,
                 dealer_store=dealer_store,
                 audit=audit_log,
+                contacts_cache=escalation_contacts_cache,
             )
         )
 
@@ -971,6 +976,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
                 settings,
                 # The ladder's regional CC list. Same permission, same page.
                 pronet_store=ProtonNetStore(settings),
+                on_write=escalation_contacts_cache.invalidate,
             )
         )
 

@@ -394,12 +394,13 @@ def build_assist_router(
     def _format_messages(messages: list[AssistMessage] | list[str]) -> str:
         return "\n".join(f"[{i + 1}] {m}" for i, m in enumerate(render_transcript(messages)))
 
-    async def _media_search_terms(media_parts: list[types.Part]) -> str:
+    async def _media_search_terms(media_parts: list[types.Part]) -> str | None:
         """Ask Gemini what the attachments actually show, as search keywords.
 
         One extra call, so it is made only where it can pay for itself — see
         `_kb_context`. Returns "" on any failure, which simply leaves retrieval
-        where it already was.
+        where it already was. Returns None on a budget timeout, which the caller
+        must not cache: a slow moment is not evidence the media has no terms.
         """
         if not media_parts:
             return ""
@@ -429,6 +430,9 @@ def build_assist_router(
             # would otherwise become the entire retrieval query and bury the
             # real terms.
             return (response.text or "").strip()[:_MEDIA_TERMS_MAX_CHARS]
+        except TimeoutError:
+            _log.warning("assist_media_terms_timeout")
+            return None
         except Exception:
             _log.warning("assist_media_terms_failed", exc_info=True)
             return ""
@@ -439,6 +443,8 @@ def build_assist_router(
         if cached is not None:
             return cached
         terms = await _media_search_terms(media_parts)
+        if terms is None:
+            return ""
         _terms_cache.put(conversation_id, terms)
         if terms:
             _log.info("assist_media_terms", conv_id=conversation_id, terms=terms)

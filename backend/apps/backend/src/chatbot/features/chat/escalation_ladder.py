@@ -125,18 +125,24 @@ def _current_step(attrs: dict[str, Any]) -> int:
     return max(from_stamps, counter, 1 if attrs.get(NOTIFIED_ATTR) else 0)
 
 
+# Skip reasons that only stop rungs without `fires_after_reply`.
+_REPLY_SKIPS = frozenset({"dealer_replied", "acknowledged_by_agent"})
+
+
 def _should_skip(conv: dict[str, Any], attrs: dict[str, Any]) -> str | None:
     """Why this conversation is not a ladder candidate, or None."""
     if ESCALATE_LABEL not in _labels(conv):
         return "not_escalated"
     if not attrs.get(NOTIFIED_ATTR):
         return "no_step_one"
+    # Checked before the reply reasons: a resolved case must never reach the
+    # 48 h rung, which is the one rung that outlives a reply.
+    if str(conv.get("status") or "") == "resolved":
+        return "resolved"
     if attrs.get(REPLIED_ATTR):
         return "dealer_replied"
     if attrs.get(ACKNOWLEDGED_ATTR):
         return "acknowledged_by_agent"
-    if str(conv.get("status") or "") == "resolved":
-        return "resolved"
     return None
 
 
@@ -194,7 +200,7 @@ async def sweep_ladder(
     return acted
 
 
-async def describe_in_flight(
+async def describe_in_flight(  # noqa: PLR0912, PLR0915 -- one branch per row state
     conversations: list[dict[str, Any]],
     *,
     settings: Settings,
@@ -243,7 +249,12 @@ async def describe_in_flight(
         }
 
         reason = _should_skip(conv, attrs)
-        if reason is not None:
+        row_steps = steps
+        if reason in _REPLY_SKIPS:
+            # Mirrors the sweep: rungs that outlive a reply stay pending.
+            row["state"] = reason
+            row_steps = tuple(s for s in steps if s.fires_after_reply)
+        elif reason is not None:
             row["state"] = reason
             rows.append(row)
             continue
@@ -275,10 +286,12 @@ async def describe_in_flight(
         )
         current = _current_step(attrs)
         upcoming = next(
-            (s for s in sorted(steps, key=lambda s: s.step_no) if s.step_no > current), None
+            (s for s in sorted(row_steps, key=lambda s: s.step_no) if s.step_no > current),
+            None,
         )
         if upcoming is None:
-            row["state"] = "ladder_complete"
+            if reason is None:
+                row["state"] = "ladder_complete"
         else:
             row["next_step_no"] = upcoming.step_no
             row["next_due_in_working_hours"] = round(
@@ -309,7 +322,12 @@ async def _advance_one(  # noqa: PLR0911 -- each return is one reason a case is 
     ticket_id = str(conv_id)
     attrs = _attrs(conv)
 
-    if _should_skip(conv, attrs) is not None:
+    reason = _should_skip(conv, attrs)
+    if reason in _REPLY_SKIPS:
+        # A reply / acknowledgement ends rungs 1-5 but not the 48 h
+        # unresolved rung: consider only rungs that outlive a reply.
+        steps = tuple(s for s in steps if s.fires_after_reply)
+    elif reason is not None:
         return None
 
     started_at = _parse(attrs.get(NOTIFIED_ATTR))

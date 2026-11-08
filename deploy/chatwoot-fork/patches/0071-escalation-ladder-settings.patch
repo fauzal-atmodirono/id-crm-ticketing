@@ -163,7 +163,7 @@ index 6b74abd..64adc16 100644
      // ── PIC (department -> contact) ─────────────────────────────────────
      async createPic() {
        if (
-@@ -298,6 +429,142 @@ export default {
+@@ -298,6 +429,147 @@ export default {
      </div>
  
      <template v-else>
@@ -226,6 +226,11 @@ index 6b74abd..64adc16 100644
 +            </div>
 +            <p class="mt-1 text-xs text-n-slate-10">{{ rung.hint }}</p>
 +          </div>
++        </div>
++
++        <div class="mt-3">
++          <p class="text-sm text-n-slate-11">Step 6 — 48 h unresolved</p>
++          <p class="mt-1 text-xs text-n-slate-10">Emails the Dealer Owner when a case is still open 48 working hours after escalation, even if the dealer replied. Fixed; not editable here.</p>
 +        </div>
 +
 +        <div class="flex items-center gap-4 mt-4">

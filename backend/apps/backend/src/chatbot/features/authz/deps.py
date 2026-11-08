@@ -96,6 +96,31 @@ def require_platform_superadmin(
     return _check
 
 
+async def _resolve_session(
+    token: str | None,
+    client: str | None,
+    uid: str | None,
+    *,
+    validator: TokenValidator | None,
+    repo: AuthzRepository | None,
+    needs_repo: bool,
+    missing_detail: str,
+) -> tuple[int, bool]:
+    """Resolve the Chatwoot triplet to `(user_id, is_super_admin_type)` or 401.
+
+    Single home for the header-presence check, `resolve_identity` call and the
+    two 401s, shared by the session-based dependencies so they cannot drift.
+    Callers differ only in the `missing_detail` text and whether a repo is
+    required.
+    """
+    if not token or not client or not uid or validator is None or (needs_repo and repo is None):
+        raise HTTPException(status_code=401, detail=missing_detail)
+    identity = await validator.resolve_identity(token, client, uid)
+    if identity is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return identity
+
+
 def require_permission(
     permission: str,
     *,
@@ -113,22 +138,15 @@ def require_permission(
             _shared_secret_check(settings, x_api_key)
             return
 
-        if (
-            not x_chatwoot_access_token
-            or not x_chatwoot_client
-            or not x_chatwoot_uid
-            or repo is None
-            or validator is None
-        ):
-            raise HTTPException(status_code=401, detail="Missing Chatwoot access token")
-
-        identity = await validator.resolve_identity(
-            x_chatwoot_access_token, x_chatwoot_client, x_chatwoot_uid
+        user_id, is_super_admin_type = await _resolve_session(
+            x_chatwoot_access_token,
+            x_chatwoot_client,
+            x_chatwoot_uid,
+            validator=validator,
+            repo=repo,
+            needs_repo=True,
+            missing_detail="Missing Chatwoot access token",
         )
-        if identity is None:
-            raise HTTPException(status_code=401, detail="Invalid or expired token")
-
-        user_id, is_super_admin_type = identity
         # A platform superadmin holds every RBAC permission. Without this the
         # platform owner is locked out of a tenant's own Roles & Permissions
         # page on any tenant where they were never assigned a role.
@@ -166,19 +184,15 @@ def require_authenticated(
             _shared_secret_check(settings, x_api_key)
             return
 
-        if (
-            not x_chatwoot_access_token
-            or not x_chatwoot_client
-            or not x_chatwoot_uid
-            or validator is None
-        ):
-            raise HTTPException(status_code=401, detail="Missing Chatwoot access token")
-
-        identity = await validator.resolve_identity(
-            x_chatwoot_access_token, x_chatwoot_client, x_chatwoot_uid
+        await _resolve_session(
+            x_chatwoot_access_token,
+            x_chatwoot_client,
+            x_chatwoot_uid,
+            validator=validator,
+            repo=repo,
+            needs_repo=False,
+            missing_detail="Missing Chatwoot access token",
         )
-        if identity is None:
-            raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     return _check
 
@@ -207,23 +221,18 @@ def require_permission_with_identity(
         x_chatwoot_client: str | None = Header(default=None),
         x_chatwoot_uid: str | None = Header(default=None),
     ) -> int:
-        if (
-            not settings.rbac_enabled
-            or not x_chatwoot_access_token
-            or not x_chatwoot_client
-            or not x_chatwoot_uid
-            or repo is None
-            or validator is None
-        ):
+        if not settings.rbac_enabled:
             raise HTTPException(status_code=401, detail="Chatwoot session required")
 
-        identity = await validator.resolve_identity(
-            x_chatwoot_access_token, x_chatwoot_client, x_chatwoot_uid
+        user_id, is_super_admin_type = await _resolve_session(
+            x_chatwoot_access_token,
+            x_chatwoot_client,
+            x_chatwoot_uid,
+            validator=validator,
+            repo=repo,
+            needs_repo=True,
+            missing_detail="Chatwoot session required",
         )
-        if identity is None:
-            raise HTTPException(status_code=401, detail="Invalid or expired token")
-
-        user_id, is_super_admin_type = identity
         # Same bypass as require_permission: a platform superadmin holds every
         # permission, so they are never locked out of a tenant surface they
         # were never assigned a role on.

@@ -320,3 +320,12 @@ def test_tree_without_session_is_401_when_rbac_on(settings) -> None:
 def test_tree_with_any_session_is_200(settings) -> None:
     res = _rbac_client(settings).get("/admin/taxonomy/tree", headers=_hdrs("agent"))
     assert res.status_code == 200
+
+
+def test_coverage_without_session_is_401_when_rbac_on(settings) -> None:
+    assert _rbac_client(settings).get("/admin/taxonomy/coverage").status_code == 401
+
+
+def test_tree_with_invalid_token_is_401(settings) -> None:
+    res = _rbac_client(settings).get("/admin/taxonomy/tree", headers=_hdrs("bogus"))
+    assert res.status_code == 401

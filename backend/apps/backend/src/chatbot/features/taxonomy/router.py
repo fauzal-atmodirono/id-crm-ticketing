@@ -18,6 +18,8 @@ from chatbot.features.taxonomy.chatwoot_sync import sync_taxonomy_to_chatwoot
 from chatbot.features.taxonomy.store import TaxonomyNode, TaxonomyStore, build_taxonomy_store
 
 if TYPE_CHECKING:
+    from chatbot.features.authz.identity import TokenValidator
+    from chatbot.features.authz.repository import AuthzRepository
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
@@ -93,7 +95,9 @@ async def _unreferenced_departments(
 
 
 def build_taxonomy_admin_router(
-    settings: Settings, authz_repo: Any = None, validator: Any = None
+    settings: Settings,
+    authz_repo: AuthzRepository | None = None,
+    validator: TokenValidator | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/admin/taxonomy", tags=["taxonomy-admin"])
     store = build_taxonomy_store(settings)
@@ -179,7 +183,12 @@ def build_taxonomy_admin_router(
         "(CATEGORY_DEPARTMENT_MAPPING_ENABLED=false)"
     )
 
-    @router.get("/coverage")
+    @router.get(
+        "/coverage",
+        dependencies=[
+            Depends(require_authenticated(repo=authz_repo, validator=validator, settings=settings))
+        ],
+    )
     async def get_taxonomy_coverage() -> dict[str, Any]:
         """Coverage report: active categories with no department, and departments not mapped.
 

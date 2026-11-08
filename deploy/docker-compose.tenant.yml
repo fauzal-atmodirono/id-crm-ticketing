@@ -53,6 +53,9 @@ x-chatwoot-env: &chatwoot-env
   # the devise_token_auth token (hours) for logins made after the change.
   SESSION_IDLE_TIMEOUT_MINUTES: ${SESSION_IDLE_TIMEOUT_MINUTES:-0}
   SESSION_TOKEN_LIFESPAN_HOURS: ${SESSION_TOKEN_LIFESPAN_HOURS:-}
+  # Password expiry (fork patch 0082, FIX-44, RFP 7.6). Days before a browser
+  # user is routed to Profile settings to change their password. 0/unset = off.
+  PASSWORD_MAX_AGE_DAYS: ${PASSWORD_MAX_AGE_DAYS:-0}
   # ONE SWITCH PER FEATURE. These are the SAME variables the `backend` service
   # reads out of tenants/<tenant>.env (it takes that file wholesale via
   # `env_file:`), forwarded here so the Rails layout can turn each one into the

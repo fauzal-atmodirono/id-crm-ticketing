@@ -101,6 +101,13 @@ COPY --from=builder /app/app/views/layouts/vueapp.html.erb /app/app/views/layout
 # copied explicitly or the session cap silently never applies.
 COPY --from=builder /app/config/initializers/zz_proton_session.rb /app/config/initializers/zz_proton_session.rb
 
+# Patch 0082 (password expiry, FIX-44) is also server-side: the initializer
+# that adds User#password_expired?, and the user JSON partial that exposes the
+# flag. Without both COPYs the SPA guard compiled into public/vite never sees
+# password_expired and expiry silently does nothing.
+COPY --from=builder /app/config/initializers/zz_proton_password_expiry.rb /app/config/initializers/zz_proton_password_expiry.rb
+COPY --from=builder /app/app/views/api/v1/models/_user.json.jbuilder /app/app/views/api/v1/models/_user.json.jbuilder
+
 # Overwrite the baked-in upstream .git_sha so the in-app "Build <sha>" display
 # (and GET /api) reflects OUR commit, not upstream's frozen v4.15.1 release
 # commit — see the PROTON_BUILD_SHA comment near the top of this file.

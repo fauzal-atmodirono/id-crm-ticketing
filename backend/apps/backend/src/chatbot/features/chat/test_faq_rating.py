@@ -9,6 +9,7 @@ browser only holds the latter, same as `/kb/faq`).
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -217,3 +218,57 @@ def test_faq_list_scores_are_cached_briefly() -> None:
     assert c.get("/kb/faq", headers=h).json()["entries"][0]["rating_count"] == 0
     asyncio.run(ratings.rate("faq-1", "7", "9", 5))
     assert c.get("/kb/faq", headers=h).json()["entries"][0]["rating_count"] == 0  # within TTL
+
+
+# --- round 2: legacy QA-key callers survive RBAC; one shared validator -----
+
+
+def test_rbac_on_legacy_qa_key_feedback_still_200_and_writes_no_rating() -> None:
+    store = InMemoryFaqRatingStore()
+    c = _rbac_client(store)
+    body = {"article_id": "kb-9", "session_id": "s", "helpful": True, "score": 4}
+    assert c.post("/kb/feedback", json=body, headers={"X-API-Key": _QA}).status_code == 200
+    assert asyncio.run(store.summaries()) == {}
+
+
+def test_rbac_on_shared_key_only_rating_is_401() -> None:
+    store = InMemoryFaqRatingStore()
+    c = _rbac_client(store)
+    assert c.post("/kb/feedback", json=_body(), headers={"X-API-Key": _CRM}).status_code == 401
+    assert asyncio.run(store.summaries()) == {}
+
+
+def test_rbac_on_session_rating_is_200() -> None:
+    store = InMemoryFaqRatingStore()
+    c = _rbac_client(store)
+    assert c.post("/kb/feedback", json=_body(), headers=_SESSION).status_code == 200
+    assert asyncio.run(store.summaries())["faq-1"] == (5.0, 1)
+
+
+def test_article_exists_check_is_cached() -> None:
+    store = InMemoryFaqRatingStore()
+    faqs = _Store()
+    calls = 0
+    orig = faqs.list_all
+
+    async def counting() -> list[LiveFaqEntry]:
+        nonlocal calls
+        calls += 1
+        return await orig()
+
+    faqs.list_all = counting  # type: ignore[method-assign]
+    app = FastAPI()
+    app.include_router(
+        build_faq_router(AsyncMock(), _settings(), store, faq_store=faqs)  # type: ignore[arg-type]
+    )
+    c = TestClient(app)
+    for conv in ("1", "2", "3"):
+        r = c.post("/kb/feedback", json=_body(conversation_id=conv), headers={"X-API-Key": _CRM})
+        assert r.status_code == 200
+    assert calls == 1
+
+
+def test_main_builds_exactly_one_token_validator() -> None:
+    src = (Path(__file__).resolve().parents[2] / "main.py").read_text(encoding="utf-8")
+    assert src.count("TokenValidator(settings)") == 2  # shared one + the no-RBAC fallback
+    assert src.count("_SharedTokenValidator(settings)") == 1

@@ -277,6 +277,7 @@ def _wire_agent_assist(
     scenarios_store: object,
     assignment_store: object,
     timing_store: object,
+    validator: object | None = None,
 ) -> None:
     """Wire the agent-assist FAQ routers: kb-suggest (Vertex Search + live FAQ
     semantic merge), faq-feedback, and the real-time FAQ admin CRUD.
@@ -321,20 +322,13 @@ def _wire_agent_assist(
     )
 
     faq_port = build_faq_feedback_port(settings)
-    # Rater identity needs only the Chatwoot profile lookup (no RBAC database),
-    # so a validator is built here rather than reusing the P6 block's.
-    faq_validator = None
-    if settings.rbac_enabled:
-        from chatbot.features.authz.identity import TokenValidator as _FaqTokenValidator  # noqa: PLC0415
-
-        faq_validator = _FaqTokenValidator(settings)
     app.include_router(
         build_faq_router(
             faq_port,
             settings,
             faq_rating_store,
             faq_store=live_faq_store,
-            validator=faq_validator,
+            validator=validator,
         )
     )
 
@@ -883,6 +877,15 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     if settings.routing_enabled and chatwoot_client is not None:
         chatwoot_client._routing_service = _routing_svc  # type: ignore[assignment]
 
+    # ONE Chatwoot-session validator for the whole app (its profile-lookup cache
+    # is per instance): built here, ahead of the FAQ wiring that needs it, and
+    # reused by the P6 authz block and the custom-features router below.
+    shared_token_validator = None
+    if settings.rbac_enabled:
+        from chatbot.features.authz.identity import TokenValidator as _SharedTokenValidator  # noqa: PLC0415
+
+        shared_token_validator = _SharedTokenValidator(settings)
+
     # --- Agent-assist FAQ ---
     _wire_agent_assist(
         app,
@@ -894,6 +897,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         scenarios_store=_shared_scenarios_store,
         assignment_store=_shared_assignment_store,
         timing_store=_shared_timing_store,
+        validator=shared_token_validator,  # type: ignore[arg-type]
     )
 
     # Merge CRM-authored live-FAQ into the KB that /assist + Copilot ground on,
@@ -990,7 +994,6 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         from chatbot.features.authz.chatwoot_role_mirror import ChatwootRoleMirror
         from chatbot.features.authz.db import build_engine as build_authz_engine
         from chatbot.features.authz.db import build_session_maker as build_authz_session_maker
-        from chatbot.features.authz.identity import TokenValidator
         from chatbot.features.authz.repository import AuthzRepository
         from chatbot.features.authz.router import build_authz_router
         from chatbot.features.chat.sla_policy_db import build_engine as build_sla_policy_engine
@@ -1003,7 +1006,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         authz_engine = build_authz_engine(settings.rbac_database_url)
         authz_session_maker = build_authz_session_maker(authz_engine)
         authz_repo = AuthzRepository(authz_session_maker)
-        authz_validator = TokenValidator(settings)
+        authz_validator = shared_token_validator
         authz_mirror = ChatwootRoleMirror(settings)
         app.include_router(
             build_authz_router(
@@ -1521,7 +1524,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # Mounted unconditionally, unlike the RBAC admin routers: the switchboard
     # is a platform-level authority that exists whether or not a tenant has
     # opted into RBAC, and the SPA reads it on every page load.
-    from chatbot.features.authz.identity import TokenValidator as _TokenValidator
+    from chatbot.features.authz.identity import TokenValidator as _CustomFeaturesTokenValidator
     from chatbot.features.tenant_config.custom_features_router import (
         build_custom_features_router,
     )
@@ -1529,7 +1532,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     app.include_router(
         build_custom_features_router(
             custom_feature_store,
-            _TokenValidator(settings),
+            shared_token_validator or _CustomFeaturesTokenValidator(settings),
             settings,
         )
     )

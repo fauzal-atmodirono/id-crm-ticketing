@@ -53,6 +53,8 @@ BACKEND_KEYS=(
   "FOLLOW_UP_DATE_ENABLED=true"
   "ROUTING_FAIR_SHARE_ENABLED=true"
   "ROUTING_SWEEP_ENABLED=true"
+  "ESCALATION_ATTACHMENT_BUDGET_BYTES=10485760"
+  "PHONE_HANDOFF_TIMEOUT_SECONDS=20"
 )
 
 BACKEND_RECREATE='docker compose -p proton -f docker-compose.tenant.yml --env-file tenants/proton.env up -d --build backend'

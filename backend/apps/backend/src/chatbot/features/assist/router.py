@@ -43,6 +43,7 @@ guardrails list yields an empty prefix → behaviour-preserving.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 from typing import TYPE_CHECKING, Any
 
@@ -227,6 +228,8 @@ _MEDIA_QUERY_SYSTEM = (
 
 # Ceiling on the extracted keyword string before it becomes a search query.
 _MEDIA_TERMS_MAX_CHARS = 200
+# Budget for the optional media-keyword extraction (see _media_search_terms).
+_MEDIA_TERMS_TIMEOUT_SECONDS = 4.0
 
 _SNIPPET = 300
 
@@ -404,16 +407,23 @@ def build_assist_router(
             from google.genai import types as _types  # noqa: PLC0415
 
             model = await _resolve_model()
-            response = await genai_client.aio.models.generate_content(
-                model=model,
-                contents=_types.Content(
-                    role="user",
-                    parts=[
-                        _types.Part.from_text(text="What is in this media?"),
-                        *media_parts,
-                    ],
+            # Hard budget: this call only improves retrieval, and it runs BEFORE
+            # the draft call, so under load it ate the agent's 10 s client
+            # timeout and the draft was dropped (FIX-57). Past the budget we
+            # fall back to the text-only query, exactly as on any failure.
+            response = await asyncio.wait_for(
+                genai_client.aio.models.generate_content(
+                    model=model,
+                    contents=_types.Content(
+                        role="user",
+                        parts=[
+                            _types.Part.from_text(text="What is in this media?"),
+                            *media_parts,
+                        ],
+                    ),
+                    config={"system_instruction": _MEDIA_QUERY_SYSTEM},
                 ),
-                config={"system_instruction": _MEDIA_QUERY_SYSTEM},
+                timeout=_MEDIA_TERMS_TIMEOUT_SECONDS,
             )
             # Capped: a model that ignores "short list" and narrates a paragraph
             # would otherwise become the entire retrieval query and bury the

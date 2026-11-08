@@ -29,7 +29,9 @@ instance as /escalation/contacts.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
+import time
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -112,6 +114,26 @@ async def _resolve_customer_email(chatwoot_request: _CWRequest, conv_id: str) ->
     return str(email) if email else None
 
 
+# FIX-58: a notify call can outlive the agent's HTTP timeout (99-123 s were
+# observed under VM load against a 60 s client timeout), so the agent never
+# learns the first call succeeded, never stamps escalation_notified_at, and
+# the next conversation_updated event re-runs the whole escalation -- duplicate
+# customer ack, PIC forward and dealer forward. The window below makes a retry
+# for the same (conversation, recipient set) share the first call's outcome.
+#
+# In-process on purpose: the notify route has no cheap durable store of its own
+# (the only per-case state it writes is a Chatwoot custom attribute, which the
+# agent reads on its next event, not this route). The cache is therefore lost on
+# a backend restart; a retry landing after a restart inside the window can
+# still double-send. Accepted for the demo window; a Firestore-backed key is the
+# Wave 2 upgrade if restarts mid-escalation prove real.
+NOTIFY_IDEMPOTENCY_WINDOW_SECONDS = 30 * 60
+# /escalation/contacts is hit on every inbound PIC/dealer reply by the agent
+# (10 s client timeout). PIC and dealer lists change by hand a few times a day,
+# so a short TTL turns a full Firestore scan per reply into one per window.
+CONTACTS_CACHE_TTL_SECONDS = 30.0
+
+
 def build_escalation_router(
     notifier: EscalationNotifier,
     chatwoot_request: _CWRequest,
@@ -122,9 +144,33 @@ def build_escalation_router(
 ) -> APIRouter:
     router = APIRouter()
     auth = _require_api_key(settings)
+    # key -> (monotonic start time, shared task). The task, not the result, is
+    # stored so a retry arriving while the first call is still running joins it
+    # instead of starting a second send.
+    inflight: dict[tuple[str, str, str, str], tuple[float, asyncio.Task[dict[str, str]]]] = {}
+    contacts_cache: dict[str, tuple[float, dict[str, list[dict[str, str]]]]] = {}
 
     @router.post("/escalation/notify", dependencies=[Depends(auth)])
     async def notify(payload: _NotifyIn) -> dict[str, str]:
+        key = (
+            payload.conversation_id,
+            (payload.department or "").strip().lower(),
+            (payload.dealer or "").strip().lower(),
+            (payload.channel_type or "").strip().lower(),
+        )
+        now = time.monotonic()
+        for k in [k for k, (t, _) in inflight.items() if now - t > NOTIFY_IDEMPOTENCY_WINDOW_SECONDS]:
+            del inflight[k]
+        entry = inflight.get(key)
+        if entry is not None and not (entry[1].done() and entry[1].exception() is not None):
+            _log.info("escalation_notify_duplicate_suppressed", conv_id=payload.conversation_id)
+            # shield: a caller that gives up must not cancel the shared send.
+            return await asyncio.shield(entry[1])
+        task = asyncio.ensure_future(_do_notify(payload))
+        inflight[key] = (now, task)
+        return await asyncio.shield(task)
+
+    async def _do_notify(payload: _NotifyIn) -> dict[str, str]:
         transport = (
             "email" if payload.channel_type is None else ack_transport(payload.channel_type)
         )
@@ -158,6 +204,9 @@ def build_escalation_router(
         "reply not linked" is always safe, where a 5xx here would just make
         the caller retry against the same failing store for no benefit.
         """
+        cached = contacts_cache.get("all")
+        if cached is not None and time.monotonic() - cached[0] < CONTACTS_CACHE_TTL_SECONDS:
+            return cached[1]
         seen: set[str] = set()
         out: list[dict[str, str]] = []
 
@@ -202,7 +251,9 @@ def build_escalation_router(
                 for cc in rec.cc_emails:
                     _add(cc, f"{rec.dealer} (CC)", "dealer")
 
-        return {"contacts": out}
+        result = {"contacts": out}
+        contacts_cache["all"] = (time.monotonic(), result)
+        return result
 
     @router.post("/escalation/acknowledge", dependencies=[Depends(auth)])
     async def acknowledge(payload: _AcknowledgeIn) -> dict[str, str]:

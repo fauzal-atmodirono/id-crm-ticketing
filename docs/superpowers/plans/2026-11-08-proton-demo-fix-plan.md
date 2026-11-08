@@ -269,6 +269,11 @@ Each task below starts with superpowers:brainstorming for the open design choice
 - **Behaviour:** bilingual welcome and language menu (English 1 / Bahasa Melayu 2); RSA 1 / Inquiry 2 / Complaint 3 / repeat 0 per language; queue-busy prompt after 10 s ringing (EN and BM text from IVR Call B29/B30, "pelanggan" spelling); after-hours EN+BM message with voicemail to case; RSA always routed 24/7.
 - **Tests:** `test_dtmf_1_routes_rsa`, `test_dtmf_menu_bm_branch`, `test_queue_busy_prompt_after_10s`, `test_after_hours_plays_message_and_records_voicemail`, `test_rsa_bypasses_after_hours`.
 
+### Task 32: Agent-side fixes found in Wave 1 (FIX-57 rest, FIX-59) — target 28 Nov
+- **Files:** `agent/app/clients/proton.py` (hardcoded 10 s / 60 s timeouts -> settings `PROTON_BACKEND_TIMEOUT_SECONDS` default 10, `PROTON_BACKEND_SLOW_TIMEOUT_SECONDS` default 60, in `agent/app/config.py` and `deploy/tenants/example.env`), `agent/app/services/bounce_handler.py` (match bounces to a conversation by the quoted Message-ID / In-Reply-To / References of the original outgoing mail, not only the `[CASE-n]` token).
+- **Tests:** `test_backend_timeout_from_settings`, `test_bounce_matched_by_in_reply_to`, `test_bounce_without_case_token_posts_note`, `test_unrelated_bounce_ignored`.
+- **Deploy:** agent image rebuild is needed; only after the restored `ESCALATION_POLICY_*` env and with Bahana changes in `/opt/platform/agent` reviewed (memory: proton-demo-audit-2026-11-05).
+
 ## Needs Proton: left as is in the sheet, with notes
 
 - **FIX-27** agent user 15 role: Proton to confirm who "Jacips Business" is.

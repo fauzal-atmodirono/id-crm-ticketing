@@ -1327,6 +1327,19 @@ class Settings(BaseSettings):
     # genuinely isn't the mapped default. Never wire this to apply the label
     # without a human confirming it.
     category_department_mapping_enabled: bool = False
+    # Wave 2 Task 29 (FIX-49; RFP 2026_028 2.2.5, PDPA 2010): PII masking.
+    # On: backend responses shown to people -- Customer 360, RSA incidents
+    # and their CSV export, case-record fields, AI activity previews -- mask
+    # phone, e-mail, MyKad/IC, VIN/chassis, card (Luhn) and passport numbers
+    # for any caller without `pii.view` (administrator by seed; superadmin
+    # always unmasked). Fail closed: an unidentified caller is masked. Off =
+    # byte-identical responses. Never applied to what is sent to the LLM or
+    # to escalation recipients. Rules: features/privacy/pii.py. Requires
+    # RBAC_ENABLED (refused at boot otherwise). The fork's contact sidebar and
+    # contact list mask on the client from patch 0085 (GET /privacy/me).
+    # (Declared here, not after data_scoped_rbac_enabled: that field anchors
+    # the P11 block in test_p11_flags.py.)
+    pii_masking_enabled: bool = False
     # Wave 2 Task 28 (FIX-48; RFP 2026_028 4.83): data-scoped permissions.
     # On: every backend-owned data surface narrows to the caller's effective
     # scope (union of their roles' scopes over inbox ids / team ids / dealer
@@ -1466,6 +1479,17 @@ class Settings(BaseSettings):
             raise ValueError(
                 "DATA_SCOPED_RBAC_ENABLED requires RBAC_ENABLED=true: data scopes "
                 "are resolved from the caller's Chatwoot session and RBAC roles."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _pii_masking_requires_rbac(self) -> Settings:
+        """Without RBAC there is no person, so nobody could hold `pii.view`
+        and everyone would be masked -- refuse rather than boot into that."""
+        if self.pii_masking_enabled and not self.rbac_enabled:
+            raise ValueError(
+                "PII_MASKING_ENABLED requires RBAC_ENABLED=true: who sees personal "
+                "data unmasked is decided by the pii.view permission."
             )
         return self
 

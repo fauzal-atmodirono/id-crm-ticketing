@@ -46,6 +46,7 @@ from chatbot.features.authz.data_scope import (
     conversation_dimensions,
 )
 from chatbot.features.authz.deps import require_permission
+from chatbot.features.privacy.access import PiiPolicy, build_pii_dependency
 
 if TYPE_CHECKING:
     from chatbot.features.authz.identity import TokenValidator
@@ -204,13 +205,20 @@ def build_ai_activity_router(
         summary = {m: sum(1 for r in rows if r["mode"] == m) for m in body["summary"]}
         return {**body, "summary": summary, "conversations": rows}
 
+    # Wave 2 Task 29: message previews are masked for a caller without
+    # pii.view. Like the scope, applied AFTER the shared cache and to a copy,
+    # so one caller's masking never reaches another caller.
+    pii_policy = build_pii_dependency(settings, repo=authz_repo, validator=validator)
+
     @router.get("/ai-activity", dependencies=[Depends(view)])
-    async def ai_activity(scope: Scope = Depends(data_scope)) -> dict[str, Any]:
+    async def ai_activity(
+        scope: Scope = Depends(data_scope), pii: PiiPolicy = Depends(pii_policy)
+    ) -> dict[str, Any]:
         now = clock()
         if cache["body"] is not None and now - cache["at"] < CACHE_SECONDS:
-            return _scoped(cache["body"], scope)
+            return pii.apply(_scoped(cache["body"], scope))
         body, dims = await _build()
         cache["at"], cache["body"], cache["dims"] = now, body, dims
-        return _scoped(body, scope)
+        return pii.apply(_scoped(body, scope))
 
     return router

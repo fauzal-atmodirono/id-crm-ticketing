@@ -31,6 +31,7 @@ from chatbot.features.chat.case_fields import (
     validate,
     validate_dealer_slug,
 )
+from chatbot.features.privacy.access import PiiPolicy, build_pii_dependency
 
 if TYPE_CHECKING:
     from chatbot.features.authz.identity import TokenValidator
@@ -76,6 +77,11 @@ def build_case_fields_router(
             raise HTTPException(status_code=404, detail="Case fields not enabled")
 
     data_scope = build_scope_dependency(settings, repo=authz_repo, validator=validator)
+    # Wave 2 Task 29: values are masked per field NAME (vehicle_chassis is a
+    # VIN whatever its shape) and free text by pattern, for a caller without
+    # pii.view. A PATCH carrying a masked value is refused (400) so a masked
+    # panel can never overwrite the real one. Flag off: no-ops.
+    pii_policy = build_pii_dependency(settings, repo=authz_repo, validator=validator)
 
     async def _read_in_scope(conv_id: str, scope: Scope) -> dict[str, Any] | None:
         """The conversation, or 404 when it is outside the caller's data
@@ -95,12 +101,16 @@ def build_case_fields_router(
         return conversation
 
     @router.get("/cases/{conv_id}/fields", dependencies=[Depends(may_view)])
-    async def get_fields(conv_id: str, scope: Scope = Depends(data_scope)) -> dict[str, Any]:
+    async def get_fields(
+        conv_id: str,
+        scope: Scope = Depends(data_scope),
+        pii: PiiPolicy = Depends(pii_policy),
+    ) -> dict[str, Any]:
         """Every field in the spec with its current value, so the panel can
         render from one response without knowing the field list itself."""
         _guard()
         conversation = await _read_in_scope(conv_id, scope)
-        attrs = (conversation or {}).get("custom_attributes") or {}
+        attrs = pii.apply((conversation or {}).get("custom_attributes") or {})
         return {
             "fields": [
                 {
@@ -115,9 +125,13 @@ def build_case_fields_router(
 
     @router.patch("/cases/{conv_id}/fields", dependencies=[Depends(may_edit)])
     async def patch_fields(
-        conv_id: str, body: CaseFieldsBody, scope: Scope = Depends(data_scope)
+        conv_id: str,
+        body: CaseFieldsBody,
+        scope: Scope = Depends(data_scope),
+        pii: PiiPolicy = Depends(pii_policy),
     ) -> dict[str, Any]:
         _guard()
+        pii.refuse_masked_write(body.fields)
         if not scope.unrestricted:
             await _read_in_scope(conv_id, scope)
         updates: dict[str, Any] = {}

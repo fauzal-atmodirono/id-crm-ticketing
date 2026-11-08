@@ -67,6 +67,7 @@ from chatbot.features.authz.data_scope import (
 from chatbot.features.authz.deps import require_permission
 from chatbot.features.chat.dms_client import MockDmsClient
 from chatbot.features.chat.dms_config_store import MAX_TIMEOUT_SECONDS
+from chatbot.features.privacy.access import PiiPolicy, build_pii_dependency
 
 if TYPE_CHECKING:
     from chatbot.features.authz.identity import TokenValidator
@@ -360,10 +361,16 @@ def build_customer360_router(
     )
 
     data_scope = build_scope_dependency(settings, repo=authz_repo, validator=validator)
+    # Wave 2 Task 29: the whole result (contact, conversations, RSA incidents,
+    # DMS block) is masked for a caller without pii.view. The search itself
+    # still runs on the raw query -- the caller typed it, so it reveals nothing.
+    pii_policy = build_pii_dependency(settings, repo=authz_repo, validator=validator)
 
     @router.get("/search", dependencies=[Depends(view_360)])
     async def search(
-        q: str = Query(min_length=2), scope: Scope = Depends(data_scope)
+        q: str = Query(min_length=2),
+        scope: Scope = Depends(data_scope),
+        pii: PiiPolicy = Depends(pii_policy),
     ) -> dict[str, Any]:
         if scope.deny_all:
             # Unreadable scope (data_scope.py rule 7): nothing at all -- not
@@ -469,6 +476,6 @@ def build_customer360_router(
         dms_block = await dms_task
         if dms_block is not None:
             result["dms"] = dms_block
-        return result
+        return pii.apply(result)
 
     return router

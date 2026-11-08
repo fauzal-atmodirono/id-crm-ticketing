@@ -11,18 +11,23 @@ One place that turns "someone changed X" into an append-only ``AuditEntry``:
 
 Redaction is applied here, once, so no call site can forget it: secret-looking
 keys are replaced, e-mail addresses keep only the first character and the
-domain, phone-like numbers keep only the last three digits.
+domain, phone-like numbers keep only the last three digits. The rules live
+in ``features/privacy/pii.py`` (shared with the Task 29 PII masking gate).
 """
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from chatbot.features.chat.ports import AuditEntry
+from chatbot.features.privacy.pii import (  # noqa: F401 -- mask_recipient re-exported
+    mask_recipient,
+    mask_text,
+    redact,
+)
 
 if TYPE_CHECKING:
     from chatbot.features.chat.ports import AuditLogPort
@@ -43,75 +48,8 @@ EVENT_TAXONOMY_CHANGE = "taxonomy_change"
 
 SYSTEM_ACTOR_USER_ID = None
 
-_SECRET_KEY = re.compile(r"(password|passwd|secret|token|api[_-]?key|credential|authorization)", re.I)
-_EMAIL = re.compile(r"([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,}|[A-Za-z0-9-]+)")
-# Phone-like structure only: a leading "+" (country code) or "0" (national
-# trunk prefix), then digits with optional space/dash/dot/paren separators, 9-15
-# digits in all. Free text is full of other digit runs -- ISO timestamps, case
-# and ticket numbers, ids -- which must survive untouched, so a bare run of
-# digits is NOT treated as a phone. The look-arounds stop a match starting
-# inside a longer token ("2026-11-09", "ab0123456789").
-_PHONE = re.compile(r"(?<![\w:+-])(?:\+\d|0)[\d\s().-]{7,19}\d(?![\w:-])")
-_DATE_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}|\d{2}:\d{2}")
-# Keys whose VALUE is a phone number whatever its shape (stored numbers are not
-# always written with a leading + or 0).
-_PHONE_KEY = re.compile(r"(whatsapp|phone|mobile|msisdn|tel)", re.I)
-_MIN_PHONE_DIGITS, _MAX_PHONE_DIGITS = 9, 15
-_REDACTED = "[redacted]"
-
-
-def _mask_digits(raw: str) -> str:
-    digits = re.sub(r"\D", "", raw)
-    if len(digits) <= 3:  # noqa: PLR2004 -- nothing worth keeping
-        return "*" * len(digits)
-    return f"{'*' * (len(digits) - 3)}{digits[-3:]}"
-
-
-def _mask_phone(match: re.Match[str]) -> str:
-    raw = match.group(0)
-    digits = re.sub(r"\D", "", raw)
-    if not _MIN_PHONE_DIGITS <= len(digits) <= _MAX_PHONE_DIGITS or _DATE_SHAPE.search(raw):
-        return raw
-    return _mask_digits(raw)
-
-
-def mask_recipient(value: str) -> str:
-    """Recipient as stored in the trail.
-
-    E-mail addresses are kept in full: RFP 3.2.6 asks the trail to name the
-    recipient, and an address is how a delivery is checked. A phone-shaped
-    recipient (phone-task contacts) is a different matter -- nothing about
-    auditing a call needs the whole number -- so it is masked to the last 3
-    digits. Decision recorded here so it is not rediscovered as a bug.
-    """
-    if "@" in value:
-        return value
-    return _mask_digits(value) if re.search(r"\d{6,}", value) else value
-
-
-def mask_text(value: str) -> str:
-    """Mask e-mail addresses and phone-like numbers inside a free-text string."""
-    value = _EMAIL.sub(lambda m: f"{m.group(1)}***@{m.group(2)}", value)
-    return _PHONE.sub(_mask_phone, value)
-
-
-def redact(value: Any) -> Any:
-    """Deep-copy ``value`` with secrets replaced and personal contact data masked."""
-    if isinstance(value, dict):
-        out: dict[str, Any] = {}
-        for k, v in value.items():
-            if _SECRET_KEY.search(str(k)) and v:
-                out[str(k)] = _REDACTED
-            elif _PHONE_KEY.search(str(k)) and isinstance(v, str):
-                out[str(k)] = _mask_digits(v)
-            else:
-                out[str(k)] = redact(v)
-        return out
-    if isinstance(value, (list, tuple, set)):
-        return [redact(v) for v in value]
-    if isinstance(value, str):
-        return mask_text(value)
-    return value
+# The redaction rules live in features/privacy/pii.py (Wave 2 Task 29), shared
+# with the display-masking gate; re-exported here so existing imports hold.
 
 
 def _snapshot(value: Any) -> dict[str, Any] | None:

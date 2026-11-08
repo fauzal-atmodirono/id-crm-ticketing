@@ -26,6 +26,7 @@ from chatbot.features.authz.data_scope import (
     require_unrestricted,
 )
 from chatbot.features.authz.deps import require_permission
+from chatbot.features.privacy.access import PiiPolicy, build_pii_dependency
 
 
 class _IncidentRequest(BaseModel):
@@ -77,6 +78,11 @@ def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRout
     # names no inbox -- data_scope.py rule 5). Out-of-scope ids read as 404.
     data_scope = build_scope_dependency(settings, repo=authz_repo, validator=validator)
 
+    # Wave 2 Task 29: rows (list, get, CSV export) are masked for a caller
+    # without pii.view; a write carrying a masked value is refused so a masked
+    # page can never overwrite the real phone number. Flag off: no-ops.
+    pii_policy = build_pii_dependency(settings, repo=authz_repo, validator=validator)
+
     def _dims(row: Any) -> dict[str, Any]:
         return {"dealer_slugs": getattr(row, "purchased_from", None)}
 
@@ -114,16 +120,21 @@ def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRout
 
     @router.post("/rsa/incidents", dependencies=[guard])
     async def create_incident(
-        payload: _IncidentRequest, scope: Scope = Depends(data_scope)
+        payload: _IncidentRequest,
+        scope: Scope = Depends(data_scope),
+        pii: PiiPolicy = Depends(pii_policy),
     ) -> dict[str, str]:
         _require_dealer_in_scope(payload.purchased_from, scope)
+        pii.refuse_masked_write(payload.model_dump(mode="json"))
         incident_id = await repo.create_incident(**payload.model_dump())
         return {"id": incident_id, "status": "created"}
 
     @router.get("/rsa/incidents", dependencies=[guard])
-    async def list_incidents(scope: Scope = Depends(data_scope)) -> dict[str, Any]:
+    async def list_incidents(
+        scope: Scope = Depends(data_scope), pii: PiiPolicy = Depends(pii_policy)
+    ) -> dict[str, Any]:
         rows = apply_scope(await repo.list_incidents(), scope, _dims)
-        return {"incidents": [_incident_dict(r) for r in rows]}
+        return {"incidents": [pii.apply(_incident_dict(r)) for r in rows]}
 
     @router.get("/rsa/incidents/aggregate", dependencies=[guard])
     async def aggregate(scope: Scope = Depends(data_scope)) -> dict[str, Any]:
@@ -133,7 +144,11 @@ def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRout
         return asdict(agg)
 
     @router.get("/rsa/incidents/export", dependencies=[guard])
-    async def export_csv(format: str = "csv", scope: Scope = Depends(data_scope)) -> Response:
+    async def export_csv(
+        format: str = "csv",
+        scope: Scope = Depends(data_scope),
+        pii: PiiPolicy = Depends(pii_policy),
+    ) -> Response:
         if format != "csv":
             raise HTTPException(status_code=400, detail="format must be csv")
         rows = apply_scope(await repo.list_incidents(), scope, _dims)
@@ -145,7 +160,8 @@ def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRout
             fieldnames.append("customer_phone")
             writer.writerow(fieldnames)
             for row in rows:
-                writer.writerow([_incident_dict(row).get(f) for f in fieldnames])
+                record = pii.apply(_incident_dict(row))
+                writer.writerow([record.get(f) for f in fieldnames])
         else:
             writer.writerow(["(no data)"])
         return Response(
@@ -155,19 +171,25 @@ def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRout
         )
 
     @router.get("/rsa/incidents/{incident_id}", dependencies=[guard])
-    async def get_incident(incident_id: str, scope: Scope = Depends(data_scope)) -> dict[str, Any]:
+    async def get_incident(
+        incident_id: str,
+        scope: Scope = Depends(data_scope),
+        pii: PiiPolicy = Depends(pii_policy),
+    ) -> dict[str, Any]:
         row = await repo.get_incident(incident_id)
         if not _visible(row, scope):
             raise HTTPException(status_code=404, detail="Not found")
-        return _incident_dict(row)
+        return pii.apply(_incident_dict(row))
 
     @router.patch("/rsa/incidents/{incident_id}", dependencies=[guard])
     async def update_incident(
         incident_id: str,
         payload: _IncidentUpdateRequest,
         scope: Scope = Depends(data_scope),
+        pii: PiiPolicy = Depends(pii_policy),
     ) -> dict[str, str]:
         fields = {k: v for k, v in payload.model_dump().items() if v is not None}
+        pii.refuse_masked_write(payload.model_dump(mode="json"))
         if not scope.unrestricted:
             if not _visible(await repo.get_incident(incident_id), scope):
                 raise HTTPException(status_code=404, detail="Not found")

@@ -1169,6 +1169,13 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             detail="RBAC_ENABLED is true but RBAC_DATABASE_URL is empty; /authz not mounted",
         )
 
+    # Wave 2 Task 29 (FIX-49): GET /privacy/me tells the fork's contact views
+    # whether to mask for this caller. Mounted on every tenant so the fork can
+    # call it unconditionally; PII_MASKING_ENABLED off answers "not masking".
+    from chatbot.features.privacy.access import build_privacy_router
+
+    app.include_router(build_privacy_router(settings, repo=authz_repo, validator=authz_validator))
+
     # Task 9: the agent softphone's token-mint + registration endpoints.
     # Mounted here, right after the RBAC block, so `authz_repo`/`authz_
     # validator` reflect whatever that block actually built above -- the real

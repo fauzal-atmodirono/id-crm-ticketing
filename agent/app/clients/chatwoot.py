@@ -143,6 +143,49 @@ class ChatwootClient:
         await self.update_contact(contact_id, {"custom_attributes": merged})
         return True
 
+    async def search_contacts(self, query: str) -> list[dict[str, Any]]:
+        """`GET /contacts/search?q=` -- Chatwoot matches name, email, phone
+        and identifier with ILIKE. First page only; callers re-check the
+        exact field they care about, since the search is fuzzy."""
+        response = await self._client.get(
+            f"/api/v1/accounts/{self.account_id}/contacts/search", params={"q": query}
+        )
+        response.raise_for_status()
+        payload = response.json().get("payload")
+        return [c for c in (payload or []) if isinstance(c, dict)]
+
+    async def filter_contacts(self, filters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """`POST /contacts/filter` with Chatwoot's filter-row payload. First
+        page only."""
+        response = await self._client.post(
+            f"/api/v1/accounts/{self.account_id}/contacts/filter", json={"payload": filters}
+        )
+        response.raise_for_status()
+        payload = response.json().get("payload")
+        return [c for c in (payload or []) if isinstance(c, dict)]
+
+    async def filter_conversations(
+        self, filters: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """`POST /conversations/filter`. A filter on a custom attribute the
+        account has no definition for is a 422 -- callers fail open."""
+        response = await self._client.post(
+            f"/api/v1/accounts/{self.account_id}/conversations/filter",
+            json={"payload": filters},
+        )
+        response.raise_for_status()
+        payload = response.json().get("payload")
+        return [c for c in (payload or []) if isinstance(c, dict)]
+
+    async def list_contact_conversations(self, contact_id: int) -> list[dict[str, Any]]:
+        """Every conversation of one contact, any inbox and any status."""
+        response = await self._client.get(
+            f"/api/v1/accounts/{self.account_id}/contacts/{contact_id}/conversations"
+        )
+        response.raise_for_status()
+        payload = response.json().get("payload")
+        return [c for c in (payload or []) if isinstance(c, dict)]
+
     async def get_agent_bot(self, agent_bot_id: int) -> Any:
         """Account-scoped agent bot lookup — used only by
         `scripts.register_bot` to read back the bot's `secret`, which the

@@ -13,7 +13,15 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from app.config import get_settings
 from app.security import verify_chatwoot_signature
-from app.services import bounce_handler, dept_suggestion, escalation_replies, lifecycle, orchestrator, sync
+from app.services import (
+    bounce_handler,
+    dept_suggestion,
+    duplicate_detection,
+    escalation_replies,
+    lifecycle,
+    orchestrator,
+    sync,
+)
 from app.services.dedupe import claim_delivery
 
 logger = logging.getLogger(__name__)
@@ -58,9 +66,17 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks):
         # P6 task 10: an agent-set follow_up_at custom attribute is validated
         # here, the same event a custom-attribute edit fires on.
         background_tasks.add_task(sync.maybe_validate_follow_up_date, payload)
+        # FIX-46: a vehicle plate/chassis case field filled in after the case
+        # exists is a new duplicate signal.
+        if settings_flags.duplicate_detection_enabled:
+            background_tasks.add_task(
+                duplicate_detection.maybe_detect_duplicates_on_update, payload
+            )
     elif event == "conversation_created":
         if settings_flags.lifecycle_enabled:
             background_tasks.add_task(lifecycle.on_conversation_created, payload)
+        if settings_flags.duplicate_detection_enabled:
+            background_tasks.add_task(duplicate_detection.maybe_detect_duplicates, payload)
     elif event == "message_created":
         background_tasks.add_task(
             escalation_replies.maybe_link_escalation_reply, payload

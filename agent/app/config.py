@@ -181,6 +181,22 @@ class Settings(BaseSettings):
     # add dept_<slug> before escalate. Default off, byte-identical when unset.
     dept_suggestion_enabled: bool = False
 
+    # FIX-46 / RFP 4.25 duplicate-case detection (app/services/duplicate_detection.py):
+    # on conversation_created (and on conversation_updated once a vehicle
+    # plate/chassis case field appears), find the customer's other OPEN cases
+    # by contact, mobile number, email, vehicle registration or chassis number,
+    # then post a private note + `possible_duplicate` label + related_case_ids
+    # on the new case and a private @mention note on each existing one. Never
+    # merges anything, never messages the customer. Default off.
+    duplicate_detection_enabled: bool = False
+    # Comma-separated Chatwoot inbox ids it may act on (both the new case and
+    # any linked case must be in it). Empty = every inbox.
+    duplicate_detection_inbox_ids: str = ""
+    # Optional Gemini "same issue?" check for matches found only through the
+    # customer's identity (contact/phone/email). Vehicle matches are always
+    # kept. An AI error keeps the match. Default off.
+    duplicate_detection_ai_judge_enabled: bool = False
+
     # SOP completion (B: categorization taxonomy; C1: email auto-ack).
     # Comma-separated category slugs the bot may assign on resolution (must
     # match the tenant's deployed taxonomy). Empty → auto-categorize no-ops.

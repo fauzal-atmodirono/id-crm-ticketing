@@ -131,16 +131,23 @@ def build_pic_admin_router(
     )
 
     caller = resolve_actor(validator=validator, settings=settings)
-    # Wave 2 Task 28: routing records are keyed by ONE dimension each, so
-    # they are checked on that dimension only (data_scope.py rule 5) -- a
-    # dealer-scoped manager sees and edits only their dealers' rows, a
-    # department-scoped one only their departments' PIC rows. PRO-NET
-    # regional rows carry neither dimension and are not scoped.
+    # Wave 2 Task 28: routing records are keyed by ONE dimension each
+    # (`Scope.allows`): PIC rows are listed/written only by an unrestricted
+    # caller or one scoped on departments ALONE (filtered to those), dealer
+    # rows only by an unrestricted caller or one scoped on dealers alone.
+    # Anything else -- including DENY_ALL -- lists nothing and 403s writes.
+    # PRO-NET regional rows carry no scope dimension: unrestricted only.
     data_scope = build_scope_dependency(settings, repo=authz_repo, validator=validator)
 
     def _require_in_scope(scope: Scope, dimension: str, key: str) -> None:
         if not scope.allows(dimension, key):
             raise HTTPException(status_code=403, detail=f"{key} is outside your data scope")
+
+    def _require_unscoped(scope: Scope) -> None:
+        if not scope.unrestricted:
+            raise HTTPException(
+                status_code=403, detail="PRO-NET routing is not available to a data-scoped user"
+            )
 
     async def _audit(
         actor: Actor, kind: str, key: str, before: Any, after: Any, verb: str
@@ -246,14 +253,19 @@ def build_pic_admin_router(
     if pronet_store is not None:
 
         @router.get("/pronet", dependencies=[Depends(manage_escalation)])
-        async def list_pronet() -> dict:
+        async def list_pronet(scope: Scope = Depends(data_scope)) -> dict:
+            _require_unscoped(scope)
             records = await pronet_store.list_all()
             return {"regions": [r.__dict__ for r in records]}
 
         @router.put("/pronet/{region}", dependencies=[Depends(manage_escalation)])
         async def upsert_pronet(
-            region: str, body: ProtonNetUpsertBody, actor: Actor = Depends(caller)
+            region: str,
+            body: ProtonNetUpsertBody,
+            actor: Actor = Depends(caller),
+            scope: Scope = Depends(data_scope),
         ) -> dict:
+            _require_unscoped(scope)
             before = await _current(pronet_store, region)
             await pronet_store.set(
                 region, area_regional_mgr=body.area_regional_mgr, hod=body.hod
@@ -266,8 +278,9 @@ def build_pic_admin_router(
 
         @router.delete("/pronet/{region}", dependencies=[Depends(manage_escalation)])
         async def delete_pronet(
-            region: str, actor: Actor = Depends(caller)
+            region: str, actor: Actor = Depends(caller), scope: Scope = Depends(data_scope)
         ) -> dict:
+            _require_unscoped(scope)
             before = await _current(pronet_store, region)
             await pronet_store.delete(region)
             _changed()

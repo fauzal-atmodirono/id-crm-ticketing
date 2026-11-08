@@ -296,12 +296,25 @@ def build_authz_router(
                 status_code=400,
                 detail=f"The {role_id} role is always unrestricted and cannot carry a data scope.",
             )
+        if not await repo.role_exists(role_id):
+            raise HTTPException(status_code=404, detail=f"Unknown role: {role_id}")
         before = (await repo.get_role_scope(role_id)).to_dict()
         scope = Scope.build(**body.model_dump())
         await repo.set_role_scope(role_id, scope)
-        after = (await repo.get_role_scope(role_id)).to_dict()
-        await _audit_role(actor, role_id, {"scope": before}, {"scope": after}, "data scope set")
-        return _scope_payload(await repo.get_role_scope(role_id))
+        # The write is applied; a failed re-read must not turn it into a 500.
+        # The normalised scope we wrote is what is now stored, so answer with
+        # that and audit against it.
+        try:
+            stored = await repo.get_role_scope(role_id)
+        except Exception:
+            _log.warning("role_scope_reread_failed", role_id=role_id)
+            stored = scope
+        after = stored.to_dict()
+        if after != before:
+            await _audit_role(
+                actor, role_id, {"scope": before}, {"scope": after}, "data scope set"
+            )
+        return _scope_payload(stored)
 
     @router.get("/roles/{role_id}/permissions", dependencies=[Depends(manage_roles)])
     async def role_permissions(role_id: str) -> dict:

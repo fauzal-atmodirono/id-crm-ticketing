@@ -43,7 +43,8 @@ owns. A **scope** is attached to a role and names up to four dimensions:
    user does not see a conversation that names no dealer. Data that cannot
    be attributed is not presumed to be theirs. Configuration records keyed
    by one dimension (a dealer's routing row, a department's PIC row) are
-   checked on that one dimension only -- see `Scope.allows`.
+   visible only to an unrestricted caller or one restricted on that one
+   dimension alone, filtered to its values -- see `Scope.allows`.
 6. **Aggregates that cannot be filtered on a restricted dimension are
    refused (403), never served unfiltered.** See `ScopeNotApplicable`.
 7. **Fail closed.** With the flag on, a scope that cannot be read (database
@@ -170,14 +171,23 @@ class Scope:
         return tuple(d for d in DIMENSIONS if getattr(self, d))
 
     def allows(self, dimension: str, value: Any) -> bool:
-        """Is this single key (a dealer slug, a department) inside the scope
-        on its own dimension? For config records keyed by one dimension."""
+        """May the caller see/edit the config record keyed `value` on
+        `dimension` (a dealer's routing row, a department's PIC row)?
+
+        Strict, because these records steer where escalations go: unrestricted
+        -> yes; restricted on THIS dimension alone -> only its own values; any
+        other restriction (another dimension, or this one plus another) or
+        DENY_ALL -> no. A dealer-scoped escalation manager must not be able to
+        re-route every department's PIC, and an inbox-scoped one has no key
+        on these records at all.
+        """
         if self.deny_all:
             return False
-        allowed = getattr(self, dimension)
-        if not allowed:
+        if self.unrestricted:
             return True
-        return _NORMALISERS[dimension](value) in allowed
+        if self.restricted_dimensions != (dimension,):
+            return False
+        return _NORMALISERS[dimension](value) in getattr(self, dimension)
 
     def permits(self, dims: dict[str, Any]) -> bool:
         """Row check. `dims` maps dimension -> the row's value(s) for it; a

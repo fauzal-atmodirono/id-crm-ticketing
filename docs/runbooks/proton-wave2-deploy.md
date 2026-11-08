@@ -38,3 +38,46 @@ bq ls proton_crm | grep -E "v_ai_(accuracy|root_cause|kb_improvement)"
 
 Then open Reports > Bot in the CRM: the "AI Performance" section should show no
 "temporarily unavailable" note.
+
+## Data-scoped permissions (Task 28, FIX-48)
+
+Off by default (`DATA_SCOPED_RBAC_ENABLED=false`). It requires `RBAC_ENABLED=true`
+(the backend refuses to boot without it). Order:
+
+1. Deploy the Chatwoot image carrying patch 0084 (`rc17` or later). The reports
+   client then sends the user's Chatwoot session. Without it, `/metrics/*`
+   returns 401 once the flag is on.
+2. Rebuild and recreate the backend (the `role_scopes` table is created on boot).
+3. Configure scopes per role on Roles & Permissions > Data scope.
+4. Only after Proton signs off (next section), switch the flag on through an
+   ops script under `scripts/ops/`. Agents never edit `tenants/*.env`.
+
+## Data scope limitations for Proton sign-off
+
+Proton must accept these limits before the flag is switched on.
+
+- **The Cases list and Chatwoot's conversation views are not confined by data
+  scopes.** Both read Chatwoot directly with the agent's own session, so they
+  follow **Chatwoot inbox membership only**. An inbox scope there is only as
+  good as the agent's inbox membership. Dealer and department scopes do not
+  confine them at all: a dealer-scoped agent who is a member of an inbox sees
+  every dealer's cases in that inbox in the Cases list and the inbox views.
+  - Recommendation: for each scoped user, set Chatwoot inbox membership to
+    match their inbox scope. Do not rely on dealer or department scopes to
+    hide conversations in Chatwoot's own screens.
+  - Wave 3 option: a backend-proxied Cases list (`GET /cases` on the backend,
+    filtered by the same scope) that the fork's Cases page reads instead of
+    Chatwoot `/conversations`.
+- **What data scopes do confine**: Customer 360 results, the case fields panel,
+  `/metrics/dealer-escalation` and `/metrics/case-aging`, escalation routing
+  (dealer rows for dealer-only scopes, PIC rows for department-only scopes),
+  RSA incidents (by their dealer) and the AI activity monitor.
+- **Reports**: every other report returns 403 for a scoped user rather than
+  showing unfiltered figures. No warehouse view has an inbox or team column,
+  and few have a department column, so inbox- and department-scoped users get
+  almost no reports until the views gain those columns.
+- **Administrators**: the RBAC administrator role and platform superadmins are
+  always unrestricted. To confine someone, take them off that role. Do not
+  tick "Chatwoot access" on a role whose members are Chatwoot administrators:
+  the Chatwoot-access mirror replaces their Chatwoot administrator role with a
+  custom role.

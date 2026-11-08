@@ -89,10 +89,10 @@ index 0000000..630a8c4
 +}
 diff --git a/app/javascript/dashboard/components/widgets/ProtonRoleScopeEditor.vue b/app/javascript/dashboard/components/widgets/ProtonRoleScopeEditor.vue
 new file mode 100644
-index 0000000..803a5f2
+index 0000000..89c0a1c
 --- /dev/null
 +++ b/app/javascript/dashboard/components/widgets/ProtonRoleScopeEditor.vue
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,280 @@
 +<!-- ProtonRoleScopeEditor.vue — OUR file (patch 0084, Wave 2 Task 28 / FIX-48).
 +     The "Data scope" card on Roles & Permissions: which inboxes, teams,
 +     dealers and departments a role's members may see on the Proton
@@ -241,7 +241,14 @@ index 0000000..803a5f2
 +        Which records this role’s members see in Customer 360, case fields,
 +        reports, escalation routing, RSA incidents and the AI activity monitor.
 +        Leave everything empty for no restriction. A member of several scoped
-+        roles sees the combined values.
++        roles sees the combined values. Members who also hold the RBAC
++        administrator role are never restricted.
++      </p>
++      <p class="mt-1 text-xs text-n-slate-11">
++        To confine someone, give them a scoped role and do not leave them on
++        the administrator role — but do not tick “Chatwoot access” on a role
++        whose members are Chatwoot administrators: the Chatwoot-access mirror
++        replaces their Chatwoot administrator role with a custom role.
 +      </p>
 +      <p
 +        v-if="!loading && !loadError && !enabled"
@@ -255,7 +262,8 @@ index 0000000..803a5f2
 +    <p v-if="loading" class="text-sm text-n-slate-11">Loading…</p>
 +    <p v-else-if="loadError" class="text-sm text-n-ruby-11">{{ loadError }}</p>
 +    <p v-else-if="!scopable" class="text-sm text-n-slate-11">
-+      This role always sees everything: administrators cannot be scoped.
++      This is the RBAC administrator role: it always sees everything and
++      cannot carry a data scope.
 +    </p>
 +    <template v-else>
 +      <label class="flex flex-col gap-1">

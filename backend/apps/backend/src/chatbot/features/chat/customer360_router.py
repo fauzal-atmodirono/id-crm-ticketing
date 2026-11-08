@@ -365,6 +365,10 @@ def build_customer360_router(
     async def search(
         q: str = Query(min_length=2), scope: Scope = Depends(data_scope)
     ) -> dict[str, Any]:
+        if scope.deny_all:
+            # Unreadable scope (data_scope.py rule 7): nothing at all -- not
+            # even the contact or the DMS block, and no lookups are made.
+            return {"contact": None, "conversations": [], "rsa_incidents": []}
         contact: dict[str, Any] | None = None
         conversations: list[dict[str, Any]] = []
         rsa_incidents: list[dict[str, Any]] = []

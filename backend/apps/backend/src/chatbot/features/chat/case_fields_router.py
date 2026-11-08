@@ -132,6 +132,19 @@ def build_case_fields_router(
                 # shown to the operator who has to fix it.
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        # Wave 2 Task 28: a dealer-scoped caller may not re-attribute a case
+        # to a dealer outside their scope (nor clear it, which would also
+        # move it out of their scope). Same rule as RSA's purchased_from.
+        # CASE_FIELDS has no department field, so dealer is the only
+        # scope-bearing field writable here.
+        if (
+            "purchased_from_dealer" in updates
+            and "dealer_slugs" in scope.restricted_dimensions
+            and not scope.permits({"dealer_slugs": updates["purchased_from_dealer"]})
+        ):
+            raise HTTPException(
+                status_code=403, detail="purchased_from_dealer is outside your data scope"
+            )
         if updates:
             await chatwoot_merge_attributes(conv_id, updates)
         return {"conversation_id": conv_id, "updated": sorted(updates), "status": "ok"}

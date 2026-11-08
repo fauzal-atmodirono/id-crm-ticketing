@@ -27,6 +27,10 @@ class AuthzRepository:
 
     # --- data scopes (Wave 2 Task 28) -------------------------------------
 
+    async def role_exists(self, role_id: str) -> bool:
+        async with self._sm() as session:
+            return await session.get(Role, role_id) is not None
+
     async def get_role_scope(self, role_id: str) -> Scope:
         async with self._sm() as session:
             row = await session.get(RoleScope, role_id)

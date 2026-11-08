@@ -174,10 +174,16 @@ def build_metrics_insights_router(
     reads."""
     router = APIRouter(tags=["metrics"])
     _cost_cache: dict[str, Any] = {}
-    # Wave 2 Task 28 (data_scope.py): filterable reports bind the caller's
-    # scope for the adapter, which narrows every view it reads or 403s;
-    # reports with no dealer/department dimension refuse a scoped caller.
-    # Flag off, both are no-ops that never read the session.
+    # Wave 2 Task 28 (data_scope.py). `scoped` is ONLY for routes whose every
+    # read goes through the adapter's scope-aware `_query_block` /
+    # `_day_grain_block_for_period` on views listed in SCOPABLE_VIEW_COLUMNS:
+    # /metrics/dealer-escalation (v_dealer_escalation[_slowest_cases]) and
+    # /metrics/case-aging (v_case_aging). Everything else is `unscoped_only`:
+    # departments/callcenter/sla-buckets each read at least one view with no
+    # dealer/department column (and callcenter adds a Firestore abandon-rate
+    # block), and ai-cost reads token-usage tables through its own raw
+    # queries that never see the scope. Flag off, both are no-ops that never
+    # read the session.
     scoped = [Depends(build_report_scope_dependency(settings, port))]
     unscoped_only = [Depends(build_unscoped_only_dependency(settings, "This report"))]
 
@@ -190,7 +196,7 @@ def build_metrics_insights_router(
         ):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
-    @router.get("/metrics/departments", dependencies=scoped)
+    @router.get("/metrics/departments", dependencies=unscoped_only)
     async def departments(
         period_query: PeriodQuery,
         filters: MetricFiltersQuery,
@@ -202,7 +208,7 @@ def build_metrics_insights_router(
             asdict(await port.fetch_departments(period, filters)), settings
         )
 
-    @router.get("/metrics/callcenter", dependencies=scoped)
+    @router.get("/metrics/callcenter", dependencies=unscoped_only)
     async def callcenter(
         period_query: PeriodQuery,
         filters: MetricFiltersQuery,
@@ -255,7 +261,7 @@ def build_metrics_insights_router(
             asdict(await port.fetch_dealer_escalation(period, filters)), settings
         )
 
-    @router.get("/metrics/sla-buckets", dependencies=scoped)
+    @router.get("/metrics/sla-buckets", dependencies=unscoped_only)
     async def sla_buckets(
         period_query: PeriodQuery,
         filters: MetricFiltersQuery,
@@ -334,7 +340,7 @@ def build_metrics_insights_router(
         }
         return _stamp_batch_freshness(payload, settings)
 
-    @router.get("/metrics/ai-cost", dependencies=scoped)
+    @router.get("/metrics/ai-cost", dependencies=unscoped_only)
     async def ai_cost(
         period_query: PeriodQuery,
         filters: MetricFiltersQuery,

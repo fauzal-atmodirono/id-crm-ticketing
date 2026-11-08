@@ -153,3 +153,170 @@ def test_weekly_export_route_pdf_and_xlsx_require_api_key() -> None:
     r = c.get("/metrics/weekly-report/export?format=xlsx", headers={"x-api-key": "secret"})
     assert r.status_code == 200 and r.content[:2] == b"PK"
     assert c.get("/metrics/weekly-report/export?format=csv", headers={"x-api-key": "secret"}).status_code == 400
+
+
+# ---- review fixes -----------------------------------------------------------
+
+from datetime import UTC, datetime  # noqa: E402
+
+import pytest  # noqa: E402
+
+from chatbot.features.metrics import scheduler as sch_mod  # noqa: E402
+from chatbot.features.metrics import weekly_report as wr  # noqa: E402
+from chatbot.features.metrics.query_port import (  # noqa: E402
+    BlockScope,
+    DashboardMetrics,
+    VolumeRow,
+)
+
+
+def _freeze(monkeypatch: pytest.MonkeyPatch, utc: datetime) -> None:
+    monkeypatch.setattr(wr, "_utcnow", lambda: utc)
+
+
+def test_local_today_uses_reporting_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Mon 9 Nov 00:30 in Kuala Lumpur == Sun 8 Nov 16:30 UTC
+    _freeze(monkeypatch, datetime(2026, 11, 8, 16, 30, tzinfo=UTC))
+    assert wr.local_today("Asia/Kuala_Lumpur") == date(2026, 11, 9)
+    assert wr.local_today("UTC") == date(2026, 11, 8)
+    assert wr.local_today("Not/AZone") == date(2026, 11, 8)  # bad tz falls back to UTC
+
+
+@pytest.mark.parametrize(
+    "utc",
+    [
+        datetime(2026, 11, 8, 16, 30, tzinfo=UTC),  # Mon 00:30 KL
+        datetime(2026, 11, 9, 0, 0, tzinfo=UTC),  # Mon 08:00 KL
+        datetime(2026, 11, 8, 15, 59, tzinfo=UTC),  # Sun 23:59 KL -> previous week
+    ],
+)
+def test_job_and_export_route_pick_the_same_week_in_kl(
+    monkeypatch: pytest.MonkeyPatch, utc: datetime
+) -> None:
+    _freeze(monkeypatch, utc)
+    s = Settings(
+        reporting_timezone="Asia/Kuala_Lumpur",
+        weekly_report_email_recipients="a@x.com",
+    )
+    email = MockEmailReport()
+    run_weekly_report_job(s, MockMetricsQuery(), email)
+    subject = email.sent[0]["subject"]
+
+    class S:
+        metrics_api_key = "k"
+        reporting_timezone = "Asia/Kuala_Lumpur"
+
+    app = FastAPI()
+    app.include_router(build_metrics_export_router(MockMetricsQuery(), S()))  # type: ignore[arg-type]
+    r = TestClient(app).get(
+        "/metrics/weekly-report/export?format=pdf", headers={"x-api-key": "k"}
+    )
+    fname = r.headers["content-disposition"]
+    start = subject.split()[2]
+    assert f"weekly-report-{start}_" in fname
+
+
+def test_job_week_after_kl_monday_midnight_differs_from_utc(monkeypatch: pytest.MonkeyPatch) -> None:
+    _freeze(monkeypatch, datetime(2026, 11, 8, 16, 30, tzinfo=UTC))
+    email = MockEmailReport()
+    run_weekly_report_job(
+        Settings(reporting_timezone="Asia/Kuala_Lumpur", weekly_report_email_recipients="a@x.com"),
+        MockMetricsQuery(),
+        email,
+    )
+    assert "2026-11-02 to 2026-11-08" in email.sent[0]["subject"]
+
+
+def test_export_route_accepts_explicit_window() -> None:
+    class S:
+        metrics_api_key = "k"
+
+    app = FastAPI()
+    app.include_router(build_metrics_export_router(MockMetricsQuery(), S()))  # type: ignore[arg-type]
+    c = TestClient(app)
+    r = c.get(
+        "/metrics/weekly-report/export?format=pdf&from=2026-07-17&to=2026-07-23",
+        headers={"x-api-key": "k"},
+    )
+    assert r.status_code == 200
+    assert "weekly-report-2026-07-17_2026-07-23.pdf" in r.headers["content-disposition"]
+    bad = c.get(
+        "/metrics/weekly-report/export?format=pdf&from=2026-07-23&to=2026-07-17",
+        headers={"x-api-key": "k"},
+    )
+    assert bad.status_code == 400
+
+
+def test_invalid_day_and_hour_fall_back_to_defaults() -> None:
+    s = Settings(weekly_report_email_day="funday", weekly_report_email_hour=99)
+    assert (s.weekly_report_email_day, s.weekly_report_email_hour) == ("mon", 8)
+    s = Settings(weekly_report_email_day=" FRI ", weekly_report_email_hour=17)
+    assert (s.weekly_report_email_day, s.weekly_report_email_hour) == ("fri", 17)
+
+
+def test_start_scheduler_survives_add_job_failure() -> None:
+    class Bad:
+        def add_job(self, *a: Any, **k: Any) -> None:
+            raise ValueError("bad cron")
+
+        def start(self) -> None: ...
+
+    s = Settings(weekly_report_email_enabled=True)
+    assert start_weekly_report_scheduler(s, MockMetricsQuery(), MockEmailReport(), scheduler=Bad()) is None
+
+
+def test_sections_are_labelled_with_their_scope() -> None:
+    report = _report()
+    labels = {(s.key, b): lbl for s in report.sections if s.data is not None for b, lbl in wr.block_scope_labels(s.data).items()}
+    assert wr.SCOPE_ALL_TIME in labels.values()
+    text = _pdf_text(render_weekly_pdf(report))
+    assert wr.SCOPE_ALL_TIME in text
+
+
+def test_scope_ok_reads_this_week_and_unfiltered_reads_all_time() -> None:
+    m = DashboardMetrics(
+        volume=[VolumeRow(month="2026-11", channel="web", volume=1)],
+        resolution=[], csat=[], nps=[], speed=[], fallback=[], bounce=[], quality=[],
+    )
+    m.attach_scopes(
+        {
+            "volume": BlockScope(status="ok", period=None, supported_granularity=None),
+            "csat": BlockScope(status="unfiltered", period=None, supported_granularity=None),
+        }
+    )
+    labels = wr.block_scope_labels(m)
+    assert labels["volume"] == wr.SCOPE_THIS_WEEK
+    assert labels["csat"] == wr.SCOPE_ALL_TIME
+    assert labels["nps"] == wr.SCOPE_ALL_TIME  # no scope reported -> never claim weekly
+
+
+def test_xlsx_carries_scope_label() -> None:
+    wb = load_workbook(io.BytesIO(render_weekly_xlsx(_report())))
+    cells = [c.value for row in wb["summary"].iter_rows() for c in row]
+    assert wr.SCOPE_ALL_TIME in cells
+
+
+def test_pdf_escapes_markup_in_values() -> None:
+    m = DashboardMetrics(
+        volume=[VolumeRow(month="2026-11", channel="<b>x</b> & <i", volume=1)],
+        resolution=[], csat=[], nps=[], speed=[], fallback=[], bounce=[], quality=[],
+    )
+    report = wr.WeeklyReport(
+        period=last_full_week(date(2026, 11, 11)),
+        sections=[wr.WeeklySection("dashboard", "Case <Volume>", m)],
+    )
+    text = _pdf_text(render_weekly_pdf(report))
+    assert "<b>x</b> & <i" in text
+    assert "Case <Volume>" in text
+
+
+def test_oversize_attachment_is_skipped_with_a_note(monkeypatch: pytest.MonkeyPatch) -> None:
+
+    monkeypatch.setattr(sch_mod, "render_weekly_xlsx", lambda _r: b"x" * (21 * 1024 * 1024))
+    email = MockEmailReport()
+    run_weekly_report_job(
+        Settings(weekly_report_email_recipients="a@x.com"), MockMetricsQuery(), email, today=date(2026, 11, 9)
+    )
+    msg = email.sent[0]
+    assert [a[0].rsplit(".", 1)[1] for a in msg["attachments"]] == ["pdf"]
+    assert "xlsx" in msg["body"] and "20 MB" in msg["body"]

@@ -17,6 +17,7 @@ from chatbot.features.metrics.sync import ensure_views, run_sync
 from chatbot.features.metrics.weekly_report import (
     fetch_weekly_report,
     last_full_week,
+    local_today,
     render_weekly_pdf,
     render_weekly_xlsx,
 )
@@ -27,6 +28,8 @@ if TYPE_CHECKING:
     from chatbot.platform.config import Settings
 
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+_MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 
 _log = structlog.get_logger(__name__)
 
@@ -161,17 +164,28 @@ def run_weekly_report_job(
         if not recipients:
             _log.info("weekly_report_skipped_no_recipients")
             return
-        period = last_full_week(today or datetime.now(UTC).date())
+        period = last_full_week(today or local_today(settings.reporting_timezone))
         report = asyncio.run(fetch_weekly_report(query_port, period))
         stem = f"weekly-report-{period.start.isoformat()}_{period.end.isoformat()}"
+        candidates = [
+            (f"{stem}.pdf", render_weekly_pdf(report), "application/pdf"),
+            (f"{stem}.xlsx", render_weekly_xlsx(report), _XLSX_MIME),
+        ]
+        attachments = [a for a in candidates if len(a[1]) <= _MAX_ATTACHMENT_BYTES]
+        body = "Attached: the weekly report (PDF and Excel) for the week above."
+        for name, data, _m in candidates:
+            if len(data) > _MAX_ATTACHMENT_BYTES:
+                # Mail servers bounce oversize messages, which would lose the
+                # whole report; send what fits and say what was left out.
+                body += (
+                    f"\n\nNot attached: {name} is {len(data) // (1024 * 1024)} MB, "
+                    "over the 20 MB limit. Download it from the Weekly Report page."
+                )
         email_port.send_report(
             recipients,
             f"Weekly Report {period.start.isoformat()} to {period.end.isoformat()}",
-            "Attached: the weekly report (PDF and Excel) for the week above.",
-            [
-                (f"{stem}.pdf", render_weekly_pdf(report), "application/pdf"),
-                (f"{stem}.xlsx", render_weekly_xlsx(report), _XLSX_MIME),
-            ],
+            body,
+            attachments,
         )
     except Exception as e:  # a scheduled report must never crash the app
         _log.error("weekly_report_job_failed", error=str(e))
@@ -187,17 +201,27 @@ def start_weekly_report_scheduler(
     """Start the weekly cron email when `weekly_report_email_enabled`; else None."""
     if not settings.weekly_report_email_enabled:
         return None
-    sched = scheduler or BackgroundScheduler(timezone=settings.reporting_timezone)
-    sched.add_job(
-        lambda: run_weekly_report_job(settings, query_port, email_port),
-        trigger="cron",
-        day_of_week=settings.weekly_report_email_day,
-        hour=settings.weekly_report_email_hour,
-        minute=0,
-        id="weekly_report_email",
-        replace_existing=True,
-    )
-    sched.start()
+    try:
+        sched = scheduler or BackgroundScheduler(timezone=settings.reporting_timezone)
+        sched.add_job(
+            lambda: run_weekly_report_job(settings, query_port, email_port),
+            trigger="cron",
+            day_of_week=settings.weekly_report_email_day,
+            hour=settings.weekly_report_email_hour,
+            minute=0,
+            id="weekly_report_email",
+            replace_existing=True,
+        )
+        sched.start()
+    except Exception as e:  # a bad schedule must never crash-loop the backend
+        _log.warning(
+            "weekly_report_scheduler_not_started",
+            error=str(e),
+            day=settings.weekly_report_email_day,
+            hour=settings.weekly_report_email_hour,
+            timezone=settings.reporting_timezone,
+        )
+        return None
     _log.info(
         "weekly_report_scheduler_started",
         day=settings.weekly_report_email_day,

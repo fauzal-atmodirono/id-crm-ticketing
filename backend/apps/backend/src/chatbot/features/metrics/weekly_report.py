@@ -23,8 +23,10 @@ from __future__ import annotations
 import io
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
+from xml.sax.saxutils import escape
+from zoneinfo import ZoneInfo
 
 import structlog
 from openpyxl import Workbook  # type: ignore[import-untyped]
@@ -74,6 +76,50 @@ class WeeklyReport:
     sections: list[WeeklySection] = field(default_factory=list)
 
 
+SCOPE_THIS_WEEK = "this week"
+SCOPE_ALL_TIME = "all time (not period-scoped)"
+SCOPE_UNSUPPORTED = "not available for a weekly window"
+SCOPE_UNAVAILABLE = "unavailable"
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def local_today(tz_name: str) -> date:
+    """Today's date in the reporting calendar (REPORTING_TIMEZONE).
+
+    "Last full week" must be computed on the same calendar the scheduler fires
+    on: at Mon 00:30 Kuala Lumpur it is still Sunday in UTC, so a UTC date
+    would send the week before the one management expects. Unknown zone names
+    fall back to UTC rather than raising inside a scheduled job.
+    """
+    try:
+        tz: Any = ZoneInfo(tz_name)
+    except Exception:
+        tz = UTC
+    return _utcnow().astimezone(tz).date()
+
+
+def block_scope_labels(data: Any) -> dict[str, str]:
+    """Per block: is it really this week's figure, or all-time data under a weekly heading?
+
+    Only a block whose BlockScope status is "ok" had the period applied. A block
+    with no scope reported is labelled all-time: claiming "weekly" without
+    evidence is the misreading this label exists to prevent.
+    """
+    scopes = getattr(data, "scopes", None) or {}
+    out: dict[str, str] = {}
+    for name, _rows in _blocks(data):
+        status = getattr(scopes.get(name), "status", None)
+        out[name] = {
+            "ok": SCOPE_THIS_WEEK,
+            "unsupported_granularity": SCOPE_UNSUPPORTED,
+            "unavailable": SCOPE_UNAVAILABLE,
+        }.get(status or "", SCOPE_ALL_TIME)
+    return out
+
+
 def last_full_week(today: date) -> PeriodRange:
     """The most recent complete Monday-Sunday week before `today`'s week."""
     this_monday = today - timedelta(days=today.weekday())
@@ -119,24 +165,30 @@ def render_weekly_pdf(report: WeeklyReport) -> bytes:
     story: list[Any] = [
         Paragraph("Weekly Report", styles["Title"]),
         Paragraph(f"Week {_period_label(report.period)}", styles["Normal"]),
+        Paragraph(
+            "Each block below states whether it covers this week or all time; "
+            "all-time blocks are not weekly figures.",
+            styles["Normal"],
+        ),
         Spacer(1, 12),
     ]
     for sec in report.sections:
-        story.append(Paragraph(sec.title, styles["Heading1"]))
+        story.append(Paragraph(escape(sec.title), styles["Heading1"]))
         if sec.data is None:
             story.append(
-                Paragraph(f"Section unavailable ({sec.error}). Not measured, not zero.", styles["Normal"])
+                Paragraph(f"Section unavailable ({escape(str(sec.error))}). Not measured, not zero.", styles["Normal"])
             )
             continue
+        labels = block_scope_labels(sec.data)
         for name, rows in _blocks(sec.data):
-            story.append(Paragraph(name, styles["Heading3"]))
+            story.append(Paragraph(f"{escape(name)} - {labels[name]}", styles["Heading3"]))
             if not rows:
                 story.append(Paragraph("(no data)", styles["Normal"]))
                 continue
             names = _exportable_field_names(rows)
             cell = styles["BodyText"].clone("cell", fontSize=6, leading=7)
-            data = [[Paragraph(n, cell) for n in names]] + [
-                [Paragraph(str(getattr(cast(Any, r), n)), cell) for n in names] for r in rows
+            data = [[Paragraph(escape(n), cell) for n in names]] + [
+                [Paragraph(escape(str(getattr(cast(Any, r), n))), cell) for n in names] for r in rows
             ]
             table = Table(data, repeatRows=1)
             table.setStyle(
@@ -159,14 +211,19 @@ def render_weekly_xlsx(report: WeeklyReport) -> bytes:
     summary = wb.active
     summary.title = "summary"
     summary.append(["Weekly Report", _period_label(report.period)])
-    summary.append(["section", "status"])
+    summary.append(["section", "block", "scope", "status"])
     for sec in report.sections:
-        summary.append([sec.title, "ok" if sec.data is not None else f"unavailable ({sec.error})"])
+        if sec.data is None:
+            summary.append([sec.title, "", "", f"unavailable ({sec.error})"])
+            continue
+        for name, scope in block_scope_labels(sec.data).items():
+            summary.append([sec.title, name, scope, "ok"])
     for sec in report.sections:
         if sec.data is None:
             continue
         for name, rows in _blocks(sec.data):
             ws = wb.create_sheet(title=f"{sec.key}.{name}"[:31])  # Excel sheet-name limit
+            ws.append(["scope", block_scope_labels(sec.data)[name]])
             if rows:
                 names = _exportable_field_names(rows)
                 ws.append(names)

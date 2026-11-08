@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import cache
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -367,6 +367,23 @@ class Settings(BaseSettings):
 
     def report_recipient_list(self) -> list[str]:
         return [r.strip() for r in self.report_recipients.split(",") if r.strip()]
+
+    @field_validator("weekly_report_email_day", mode="before")
+    @classmethod
+    def _weekly_day_or_default(cls, v: object) -> str:
+        # A typo here must not stop the backend booting (this Settings is built
+        # at import time): fall back to the default (mon / 08:00).
+        day = str(v).strip().lower()
+        return day if day in {"mon", "tue", "wed", "thu", "fri", "sat", "sun"} else "mon"
+
+    @field_validator("weekly_report_email_hour", mode="before")
+    @classmethod
+    def _weekly_hour_or_default(cls, v: object) -> int:
+        try:
+            hour = int(str(v).strip())
+        except ValueError:
+            return 8
+        return hour if 0 <= hour <= 23 else 8
 
     def weekly_report_recipient_list(self) -> list[str]:
         return [r.strip() for r in self.weekly_report_email_recipients.split(",") if r.strip()]

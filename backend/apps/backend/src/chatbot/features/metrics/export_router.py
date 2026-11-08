@@ -1,5 +1,12 @@
 """GET /metrics/export?format=xlsx|pdf — downloadable metrics report.
 
+GET /metrics/weekly-report/export?format=pdf|xlsx is the Weekly Report bundle
+(FIX-14). It IS gated by x-api-key, unlike /metrics/export. The window is an
+explicit `from`/`to` (what the Weekly Report page sends, since its window can
+start on any day), else `week_of` (the Monday-Sunday week containing it), else
+the last full week in REPORTING_TIMEZONE -- the same calendar the emailed
+report uses.
+
 /metrics/export (dashboard xlsx/pdf) is intentionally unauthenticated, matching
 the ungated dashboard it exports. The five per-view CSV routes below expose
 the same PIC/dealer/departments-level aggregates as their x-api-key-gated JSON
@@ -9,16 +16,18 @@ from __future__ import annotations
 
 import hmac
 from collections.abc import Awaitable, Callable
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import Response
 
 from chatbot.features.metrics.export import render_csv, render_pdf, render_xlsx
+from chatbot.features.metrics.period import PeriodRange
 from chatbot.features.metrics.weekly_report import (
     fetch_weekly_report,
     last_full_week,
+    local_today,
     render_weekly_pdf,
     render_weekly_xlsx,
     week_containing,
@@ -28,6 +37,7 @@ if TYPE_CHECKING:
     from chatbot.features.metrics.query_port import MetricsQueryPort
     from chatbot.platform.config import Settings
 
+_MAX_WINDOW_DAYS = 31
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -64,6 +74,8 @@ def build_metrics_export_router(port: MetricsQueryPort, settings: Settings) -> A
     async def export_weekly(
         format: str = "pdf",
         week_of: str | None = None,
+        from_: str | None = Query(default=None, alias="from"),
+        to: str | None = None,
         x_api_key: str | None = Header(default=None),
     ) -> Response:
         # Gated like the per-view exports: the bundle carries PIC/dealer/department data.
@@ -71,13 +83,24 @@ def build_metrics_export_router(port: MetricsQueryPort, settings: Settings) -> A
         if format not in ("pdf", "xlsx"):
             raise HTTPException(status_code=400, detail="format must be pdf or xlsx")
         try:
-            period = (
-                week_containing(date.fromisoformat(week_of))
-                if week_of
-                else last_full_week(datetime.now(UTC).date())
-            )
+            if from_ or to:
+                if not (from_ and to):
+                    raise ValueError("from and to go together")
+                start, end = date.fromisoformat(from_), date.fromisoformat(to)
+                if start > end or (end - start).days > _MAX_WINDOW_DAYS:
+                    raise ValueError("bad window")
+                period = PeriodRange(start, end, "week")
+            elif week_of:
+                period = week_containing(date.fromisoformat(week_of))
+            else:
+                period = last_full_week(
+                    local_today(getattr(settings, "reporting_timezone", "UTC"))
+                )
         except ValueError:
-            raise HTTPException(status_code=400, detail="week_of must be YYYY-MM-DD") from None
+            raise HTTPException(
+                status_code=400,
+                detail="from/to or week_of must be valid YYYY-MM-DD dates (from <= to, max 31 days)",
+            ) from None
         report = await fetch_weekly_report(port, period)
         stem = f"weekly-report-{period.start.isoformat()}_{period.end.isoformat()}"
         if format == "pdf":

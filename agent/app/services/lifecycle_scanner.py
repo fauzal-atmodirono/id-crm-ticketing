@@ -224,8 +224,11 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
         await lifecycle._post(
             conversation_id, lifecycle.render_idle_warning(warning, grace)
         )
+        # Stamp AFTER the post, with a fresh clock: `now` is the sweep start, and
+        # on a slow sweep the post (which bumps last_activity_at) can land well
+        # past it, which _replied_since_warning would misread as a customer reply.
         await lifecycle_store.transition(
-            conversation_id, lifecycle.IDLE_WARNED, warned_at=now
+            conversation_id, lifecycle.IDLE_WARNED, warned_at=_now()
         )
         await lifecycle._mirror_state(conversation_id, lifecycle.IDLE_WARNED)
     elif action == "close":

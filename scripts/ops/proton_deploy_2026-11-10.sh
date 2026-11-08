@@ -17,14 +17,19 @@
 # prod once. backend-2026-11-10.patch is only OUR diff (7d816f9f..HEAD, non-test
 # files under backend/apps/backend/src) and is applied with patch -p1.
 #
-# Secrets: this script never prints a value from proton.env. The only value it
-# prints is the Chatwoot image tag. All env writes are inode-preserving
+# Secrets: this script never prints a value from proton.env. It prints key
+# NAMES, the Chatwoot image tag, and (--agent) the two non-secret booleans
+# ESCALATION_POLICY_ENABLED / ESCALATION_POLICY_DRY_RUN. All env writes are inode-preserving
 # (cat tmp > file), never mv/sed -i (bind-mount trap).
 #
 # Rollback targets: files from the tar backup, proton.env from its backup, and
 # CHATWOOT_IMAGE forced back to the rc15 tag. Files the patch created are deleted.
-# The backend returns to the image tagged platform-backend:pre-20261110 (tagged
-# before the build; no rebuild). If --agent ran, the ESCALATION_POLICY_* lines
+# The backend returns to the image tagged platform-backend:pre-20261110 (the
+# image proton-backend was RUNNING, tagged before the build; rollback never
+# rebuilds, because platform-backend:latest is shared by every tenant). Rollback
+# runs every restore step first, driven by the markers in $BK (started,
+# applied, backend-touched, rails-touched, agent-ran), and only then runs the
+# health checks as warnings. If --agent ran, the ESCALATION_POLICY_* lines
 # are re-applied after the env restore, because the restore would otherwise
 # wipe the only copy of them once proton-agent is recreated. We re-apply rather
 # than skip recreating the agent: the lifecycle keys it also received must be
@@ -116,6 +121,12 @@ rails_api_ok() { docker exec "$RAILS" wget -qO- http://127.0.0.1:3000/api 2>/dev
 backend_ok() { docker exec "$BACKEND" python3 -c \
   "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/healthz', timeout=5).status == 200 else 1)"; }
 login_ok() { docker exec "$RAILS" wget -qO- http://127.0.0.1:3000/app/login 2>/dev/null; }
+OPENAPI_PATHS=('"/rsa/incidents"' '"/admin/taxonomy' '"/escalation/notify"' '"/admin/escalation')
+openapi_missing() {  # prints the missing paths, space-led, or nothing
+  local body pth out=""; body="$(openapi_body || true)"
+  for pth in "${OPENAPI_PATHS[@]}"; do case "$body" in *"$pth"*) ;; *) out="$out $pth" ;; esac; done
+  printf '%s' "$out"
+}
 openapi_body() { docker exec "$BACKEND" python3 -c \
   "import urllib.request; print(urllib.request.urlopen('http://localhost:8080/openapi.json', timeout=10).read().decode())" 2>/dev/null; }
 agent_ok() { docker exec "$AGENT" python3 -c \
@@ -138,6 +149,10 @@ preflight() {
     if backend_ok; then echo "ok: backend /healthz baseline 200"
     elif [ "$accept_baseline" = 1 ]; then echo "WARN: backend /healthz is NOT 200 before deploy; continuing (--accept-baseline)"
     else die "backend /healthz is not 200 BEFORE the deploy (baseline). Fix it, or re-run with --accept-baseline"; fi
+    local missing; missing="$(openapi_missing)"
+    if [ -z "$missing" ]; then echo "ok: /openapi.json baseline has all 4 route groups"
+    elif [ "$accept_baseline" = 1 ]; then echo "WARN: /openapi.json lacks before deploy:$missing (continuing, --accept-baseline; the post-apply check still requires them)"
+    else die "/openapi.json lacks BEFORE the deploy:$missing. If the patch adds them this is expected: re-run with --accept-baseline"; fi
   fi
   rails_api_ok || die "rails /api not 200 with data_services ok"
   echo "ok: /api 200, data_services ok"
@@ -159,15 +174,15 @@ do_dry_run() {
   say "env keys that --apply would write (names only):"
   ENV_FILE="$ENV_FILE" bash "$ENV_SCRIPT" --dry-run
   echo "[dry-run] would set CHATWOOT_IMAGE=${NEW_IMAGE}"
-  say "plan for --apply:"
-  echo "  1 backup $(patched_files | wc -l) patched files + $ENV_FILE -> $BK/"
-  echo "  1b tag platform-backend:latest as $BACKEND_PRE_TAG (rollback image), copy scripts+patch into $BK"
-  echo "  2 patch -p1 in $ROOT"
-  echo "  3 env script (backend keys) + CHATWOOT_IMAGE=${NEW_IMAGE##*:}"
-  echo "  4 ${DC[*]} pull chatwoot-rails chatwoot-sidekiq"
-  echo "  5 ${DC[*]} up -d --build backend"
-  echo "  6 ${DC[*]} up -d --force-recreate chatwoot-rails chatwoot-sidekiq"
-  echo "  7 health: /api, /healthz, no Traceback (3m), rails image tag"
+  say "plan for --apply (stops on first failure):"
+  echo "  1 backup $(patched_files | wc -l) patched files + $ENV_FILE -> $BK/, copy scripts+patch there"
+  echo "  2 tag the image proton-backend is running as $BACKEND_PRE_TAG (rollback image)"
+  echo "  3 patch -p1 -F0 in $ROOT"
+  echo "  4 env script (backend keys) + CHATWOOT_IMAGE=${NEW_IMAGE##*:}"
+  echo "  5 ${DC[*]} pull chatwoot-rails chatwoot-sidekiq"
+  echo "  6 ${DC[*]} up -d --build backend, then backend health (/healthz, no Traceback, /openapi.json routes)"
+  echo "  7 ${DC[*]} up -d --force-recreate chatwoot-rails chatwoot-sidekiq"
+  echo "  8 fork health: /api, sidekiq, image tags, /app/login, /app/.git_sha"
   say "plan for --agent (later): env script --agent, STEPS_JSON with step 6, ${DC[*]} up -d --no-build agent"
   say "dry-run complete"
 }
@@ -197,7 +212,7 @@ do_apply() {
   if docker image inspect "$BACKEND_PRE_TAG" >/dev/null 2>&1; then
     echo "ok: $BACKEND_PRE_TAG already exists (kept)"
   else
-    run docker tag platform-backend:latest "$BACKEND_PRE_TAG" || die "cannot tag current backend image"
+    run docker tag "$(docker inspect -f '{{.Image}}' "$BACKEND")" "$BACKEND_PRE_TAG" || die "cannot tag the running backend image"
   fi
   touch "$BK/started"
 
@@ -216,9 +231,11 @@ do_apply() {
   step="compose pull"
   run "${DC[@]}" pull chatwoot-rails chatwoot-sidekiq || die "pull failed; run --rollback"
   step="recreate backend"
+  touch "$BK/backend-touched"
   run "${DC[@]}" up -d --build backend || die "backend build/up failed; run --rollback"
   backend_health
   step="recreate rails+sidekiq"
+  touch "$BK/rails-touched"
   run "${DC[@]}" up -d --force-recreate chatwoot-rails chatwoot-sidekiq || die "rails recreate failed; run --rollback"
 
   fork_health "$NEW_IMAGE" full
@@ -227,6 +244,7 @@ do_apply() {
 
 backend_health() {
   step="backend health"
+  local kind="${1:-full}"
   wait_for "backend /healthz 200" backend_ok
   local since logs body
   since="$(docker inspect -f '{{.State.StartedAt}}' "$BACKEND")"
@@ -237,12 +255,11 @@ backend_health() {
   echo "ok: no Traceback in backend logs since container start"
   case "$logs" in *rsa_customer_phone_migration_failed*)
     echo "WARN: rsa_customer_phone_migration_failed in backend logs (RSA phone lookup degrades; fail-open)" ;; esac
-  body="$(openapi_body || true)"
-  local pth
-  for pth in '"/rsa/incidents"' '"/admin/taxonomy' '"/escalation/notify"' '"/admin/escalation'; do
-    case "$body" in *"$pth"*) ;; *) die "/openapi.json lacks $pth (new backend code not live?)" ;; esac
-  done
-  echo "ok: /openapi.json has /rsa, /admin/taxonomy, /escalation routes"
+  if [ "$kind" = full ]; then
+    body="$(openapi_missing)"
+    [ -z "$body" ] || die "/openapi.json lacks$body (new backend code not live?)"
+    echo "ok: /openapi.json has /rsa, /admin/taxonomy, /escalation routes"
+  fi
 }
 
 fork_health() {
@@ -282,9 +299,9 @@ do_agent() {
   [ "$(get_kv ESCALATION_POLICY_DRY_RUN)" = true ] || die "ESCALATION_POLICY_DRY_RUN is not true; refusing to recreate agent"
   echo "ESCALATION_POLICY_ENABLED=$(get_kv ESCALATION_POLICY_ENABLED) ESCALATION_POLICY_DRY_RUN=$(get_kv ESCALATION_POLICY_DRY_RUN)"
   step="recreate agent"
+  touch "$BK/agent-ran"
   run "${DC[@]}" up -d --no-build agent || die "agent up failed; run --rollback"
   wait_for "agent /healthz 200" agent_ok
-  touch "$BK/agent-ran"
   say "AGENT DONE"
 }
 
@@ -292,6 +309,7 @@ do_rollback() {
   step="rollback"
   [ -d "$BK" ] || die "no backup dir $BK"
   [ -f "$BK/proton.env" ] || die "no env backup in $BK"
+  local problems=()
   # Keep the env as it is now: after --agent it holds the only copy of the
   # ESCALATION_POLICY_* values.
   cp -p "$ENV_FILE" "$BK/proton.env.pre-rollback"
@@ -311,19 +329,46 @@ do_rollback() {
     set_kv ESCALATION_POLICY_DRY_RUN true
     echo "re-applied $n ESCALATION_POLICY_* lines (names only; copy in $BK/proton.env.pre-rollback)"
   fi
-  if docker image inspect "$BACKEND_PRE_TAG" >/dev/null 2>&1; then
-    run docker tag "$BACKEND_PRE_TAG" platform-backend:latest
-    run "${DC[@]}" up -d --no-build --force-recreate backend
+  # Every restore step runs before any health check; one failure never
+  # stops the rest. Steps the apply never reached are skipped.
+  if [ -e "$BK/backend-touched" ]; then
+    if docker image inspect "$BACKEND_PRE_TAG" >/dev/null 2>&1; then
+      run docker tag "$BACKEND_PRE_TAG" platform-backend:latest || problems+=("retag backend")
+      run "${DC[@]}" up -d --no-build --force-recreate backend || problems+=("recreate backend")
+    else
+      problems+=("backend NOT restored: $BACKEND_PRE_TAG is missing. Do not rebuild (platform-backend:latest is shared). Re-create the tag from a known-good image id, then: docker tag <id> platform-backend:latest && ${DC[*]} up -d --no-build --force-recreate backend")
+    fi
   else
-    echo "WARN: $BACKEND_PRE_TAG missing; rebuilding backend from restored source"
-    run "${DC[@]}" up -d --build backend
+    echo "skip: backend was never rebuilt"
   fi
-  backend_health
-  run "${DC[@]}" up -d --force-recreate chatwoot-rails chatwoot-sidekiq
-  if [ -e "$BK/agent-ran" ]; then run "${DC[@]}" up -d --no-build agent; fi
-  fork_health "$OLD_IMAGE" basic
-  rm -f "$BK/applied" "$BK/agent-ran" "$BK/started"
-  say "ROLLBACK DONE (backup kept in $BK)"
+  if [ -e "$BK/rails-touched" ]; then
+    run "${DC[@]}" up -d --force-recreate chatwoot-rails chatwoot-sidekiq || problems+=("recreate rails/sidekiq")
+  else
+    echo "skip: rails/sidekiq were never recreated"
+  fi
+  if [ -e "$BK/agent-ran" ]; then
+    run "${DC[@]}" up -d --no-build agent || problems+=("recreate agent")
+  fi
+  if [ "${#problems[@]}" -eq 0 ]; then
+    rm -f "$BK/applied" "$BK/started" "$BK/backend-touched" "$BK/rails-touched" "$BK/agent-ran"
+  fi
+
+  say "health checks (warnings only; restores are already done)"
+  local warns=0
+  if [ -e "$BK/backend-touched" ] || [ -e "$BK/applied" ] || [ "${#problems[@]}" -eq 0 ]; then
+    if ( backend_health basic ); then :; else warns=$((warns+1)); echo "WARN: backend health failed after rollback"; fi
+    if ( fork_health "$OLD_IMAGE" basic ); then :; else warns=$((warns+1)); echo "WARN: rails/sidekiq health failed after rollback"; fi
+  fi
+  echo
+  if [ "${#problems[@]}" -gt 0 ]; then
+    say "ROLLBACK INCOMPLETE (markers kept). Do by hand:"
+    printf '  - %s\n' "${problems[@]}"; exit 1
+  fi
+  if [ "$warns" -gt 0 ]; then
+    say "ROLLBACK RESTORED everything, but $warns health check(s) failed. Next: docker ps; docker logs proton-backend --tail 100; give containers a minute and re-check /api and /healthz"
+  else
+    say "ROLLBACK DONE, all health checks ok (backup kept in $BK)"
+  fi
 }
 
 if [ "${NO_ROOT_CHECK:-}" != 1 ] && [ "$(id -u)" -ne 0 ] && [ "$mode" != "--dry-run" ]; then

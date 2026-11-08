@@ -33,6 +33,7 @@ D="$FAKE_D"; echo "docker $*" >> "$D/docker.log"
 img(){ sed -n 's/^CHATWOOT_IMAGE=//p' tenants/proton.env; }
 case "$1" in
   inspect) case "$*" in
+      *'{{.Image}}'*) echo sha256:abc123 ;;
       *Running*) [ -n "${FAKE_DOWN:-}" ] && { echo false; exit 0; }; echo true ;;
       *StartedAt*) echo 2026-11-10T01:00:00Z ;;
       *Config.Image*) cat "$D/rails.image" ;; esac ;;
@@ -42,7 +43,7 @@ case "$1" in
       "proton-chatwoot-rails "*"/app/login"*) echo 'window.x = { features: [] }' ;;
       "proton-chatwoot-rails "*".git_sha"*) echo "${FAKE_SHA:-db674a88e1}" ;;
       "proton-chatwoot-rails "*) [ -n "${FAKE_API_BAD:-}" ] && exit 1; echo '{"version":"4","data_services":"ok"}' ;;
-      "proton-backend "*openapi*) [ -n "${FAKE_NO_OPENAPI:-}" ] && { echo '{"paths":{}}'; exit 0; }
+      "proton-backend "*openapi*) { [ -n "${FAKE_NO_OPENAPI:-}" ] || { [ -n "${FAKE_NO_OPENAPI_POST:-}" ] && [ -e "$D/backend.up" ]; }; } && { echo '{"paths":{}}'; exit 0; }
          echo '{"paths":{"/rsa/incidents":{},"/admin/taxonomy/x":{},"/escalation/notify":{},"/admin/escalation/pic":{}}}' ;;
       "proton-backend "*healthz*) [ -n "${FAKE_BACKEND_DOWN:-}" ] && exit 1; exit 0 ;;
       *printenv*) printf '%s\n' 'ESCALATION_POLICY_L1=a' 'ESCALATION_POLICY_ENABLED=true' 'ESCALATION_POLICY_DRY_RUN=false' 'ESCALATION_POLICY_STEPS_JSON=[{"step_no":1}]' 'OTHER=no' ;;
@@ -51,6 +52,8 @@ case "$1" in
         [ -n "${FAKE_PHONE_WARN:-}" ] && echo "rsa_customer_phone_migration_failed"; exit 0 ;;
   pull) exit 0 ;;
   compose) case "$*" in
+      *" pull "*) [ -n "${FAKE_PULL_FAIL:-}" ] && exit 1 ;;
+      *"up -d"*backend*) touch "$D/backend.up" ;;
       *"up -d"*chatwoot-rails*) img > "$D/rails.image" ;;
     esac ;;
 esac
@@ -93,7 +96,7 @@ grep -q 'pull chatwoot-rails chatwoot-sidekiq' "$D/docker.log" || fail "no pull"
 grep -q 'up -d --build backend' "$D/docker.log" || fail "no backend up"
 grep -q 'up -d --force-recreate chatwoot-rails chatwoot-sidekiq' "$D/docker.log" || fail "no rails up"
 grep -q ' agent' "$D/docker.log" && fail "agent touched by apply"
-grep -q 'docker tag platform-backend:latest platform-backend:pre-20261110' "$D/docker.log" || fail "no pre tag"
+grep -q 'docker tag sha256:abc123 platform-backend:pre-20261110' "$D/docker.log" || fail "pre tag not from running image"
 for f in proton_deploy_2026-11-10.sh proton_env_2026-11-10.sh test.patch; do [ -f "$D/bk/$f" ] || [ -f "$D/bk/backend-2026-11-10.patch" ] || fail "script copies in BK"; done
 [ -f "$D/bk/proton_deploy_2026-11-10.sh" ] && [ -f "$D/bk/proton_env_2026-11-10.sh" ] || fail "scripts not copied"
 grep -q "rc15" "$D/bk/preflight-chatwoot-image" || fail "preflight image not recorded"
@@ -145,9 +148,13 @@ cmp -s "$D/env.before" tenants/proton.env || fail "env changed on drift"
 cmp -s "$D/drift.a" "$R/backend/src/a.py" || fail "source changed on drift"
 
 # --- new health / preflight cases
-reset_all(){ rm -f "$D/bk/"* "$D/pre.tag"; cp "$D/env.orig" tenants/proton.env; cp -r "$D/src.orig/." "$R/backend/"; rm -f "$R/backend/src/c.py"; echo "${NEW%rc16}rc15" > "$D/rails.image"; }
+reset_all(){ rm -f "$D/bk/"* "$D/pre.tag" "$D/backend.up" "$D/docker.log"; cp "$D/env.orig" tenants/proton.env; cp -r "$D/src.orig/." "$R/backend/"; rm -f "$R/backend/src/c.py"; echo "${NEW%rc16}rc15" > "$D/rails.image"; }
 reset_all
-FAKE_NO_OPENAPI=1 bash "$S" --apply >/dev/null 2>&1 && fail "missing openapi paths not caught"
+FAKE_NO_OPENAPI=1 bash "$S" --apply >/dev/null 2>&1 && fail "baseline openapi gap not caught"
+[ ! -e "$D/bk/started" ] || fail "backup started despite baseline openapi gap"
+reset_all
+FAKE_NO_OPENAPI_POST=1 bash "$S" --apply >/dev/null 2>&1 && fail "post-apply openapi gap not caught"
+[ -e "$D/bk/started" ] || fail "post-apply case should have started"
 reset_all
 FAKE_SHA=zzz bash "$S" --apply >/dev/null 2>&1 && fail "bad git sha not caught"
 reset_all
@@ -162,4 +169,33 @@ echo "$out" | grep -q 'accept-baseline' || fail "accept-baseline warn"
 reset_all
 sed -i.bak 's/rc15/rc14/' tenants/proton.env; rm -f tenants/proton.env.bak
 bash "$S" --apply >/dev/null 2>&1 && fail "wrong current image accepted"
+
+# --- rollback completes every step even if backend health fails
+reset_all
+bash "$S" --apply >/dev/null 2>&1 || fail "apply for rollback test"
+: > "$D/docker.log"
+out=$(FAKE_BACKEND_DOWN=1 bash "$S" --rollback 2>&1) || fail "rollback should exit 0 with health warnings: $out"
+grep -q 'up -d --force-recreate chatwoot-rails chatwoot-sidekiq' "$D/docker.log" || fail "rails not restored after backend health failure"
+[ ! -e "$D/bk/applied" ] && [ ! -e "$D/bk/started" ] && [ ! -e "$D/bk/backend-touched" ] || fail "markers not cleared"
+echo "$out" | grep -q 'WARN: backend health failed' || fail "health warn missing"
+echo "$out" | grep -q 'ROLLBACK RESTORED' || fail "summary missing"
+
+# --- rollback skips steps the apply never reached; never builds the backend
+reset_all
+FAKE_PULL_FAIL=1 bash "$S" --apply >/dev/null 2>&1 && fail "pull failure not caught"
+: > "$D/docker.log"
+out=$(bash "$S" --rollback 2>&1) || fail "partial rollback failed: $out"
+grep -q 'up -d' "$D/docker.log" && fail "rollback recreated containers for steps never reached"
+echo "$out" | grep -q 'skip: rails/sidekiq were never recreated' || fail "skip text"
+cmp -s "$D/env.orig" tenants/proton.env || fail "partial rollback env"
+
+# --- missing pre tag: stop with instructions, never rebuild, still restore rails
+reset_all
+bash "$S" --apply >/dev/null 2>&1 || fail "apply for tag test"
+rm -f "$D/pre.tag"; : > "$D/docker.log"
+out=$(bash "$S" --rollback 2>&1) && fail "missing tag should end non-zero"
+grep -q -- '--build' "$D/docker.log" && fail "rollback built the backend"
+grep -q 'up -d --force-recreate chatwoot-rails chatwoot-sidekiq' "$D/docker.log" || fail "rails skipped after tag problem"
+echo "$out" | grep -q 'Do not rebuild' || fail "instructions missing"
+[ -e "$D/bk/started" ] || fail "markers should be kept when incomplete"
 echo "PASS"

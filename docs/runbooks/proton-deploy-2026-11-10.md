@@ -55,15 +55,18 @@ Verified read-only against the VM on 2026-11-09: all 15 files apply cleanly
 sudo bash /tmp/proton_deploy_2026-11-10.sh --apply
 ```
 
-If the backend `/healthz` is already not 200 before the deploy, the script stops
-and says so; investigate, or re-run with `--accept-baseline` to proceed anyway.
+If the backend `/healthz` is already not 200 before the deploy, or `/openapi.json`
+already lacks one of the four route groups (the patch may legitimately add some),
+the script stops and says so; investigate, or re-run with `--accept-baseline`. The
+post-apply check still requires all four routes.
 
 Stops on the first failure and says which step failed. It:
 1. preflight (containers up, current `CHATWOOT_IMAGE` is rc15, backend baseline,
    `/api` ok, disk > 5 GB) and pulls the rc16 image
 2. backs up the 15 files and `tenants/proton.env` to `/backups/predeploy-20261110/`,
    copies the scripts and patch there (rollback does not depend on `/tmp`), and tags
-   the current backend image `platform-backend:pre-20261110` (see section 7)
+   the image `proton-backend` is actually running as `platform-backend:pre-20261110`
+   (see section 7)
 3. `patch -p1 -F0` in `/opt/platform`
 4. writes the backend env keys and `CHATWOOT_IMAGE=...:v4.15.1-custom-rc16`
    (values are never printed; env writes keep the same inode)
@@ -118,27 +121,11 @@ restores the backed-up files (and deletes files the patch created), restores
 `proton.env`, forces `CHATWOOT_IMAGE` to rc15, and, if `--agent` ran, re-applies the
 `ESCALATION_POLICY_*` lines (the restore would otherwise delete the only copy; the
 agent is still recreated so its lifecycle keys roll back). Backend returns to
-`platform-backend:pre-20261110` without a rebuild; then rails, sidekiq (and agent)
-are recreated and health-checked against rc15. The backup folder is kept.
-
-## 7. The backend image is shared by every tenant
-
-`platform-backend:latest` is hard-coded in `docker-compose.tenant.yml` (no per-tenant
-env var), and `/opt/platform` is shared too. The apply builds the new backend into
-`platform-backend:latest`, so **aeon360 and bahana would pick up the new code on their
-next `up -d --build backend` or recreate**. Until reviewed, do not recreate their
-backends. To pin them, after the proton apply is healthy:
-
-```bash
-docker tag platform-backend:latest platform-backend:proton-20261110
-docker tag platform-backend:pre-20261110 platform-backend:latest
-```
-
-proton's running container keeps the new image. Note a later proton recreate without
-`--build` then starts from `latest` (old); use `--build` for proton, or retag
-`proton-20261110` back to `latest`, and re-pin afterwards. The patched source in
-`/opt/platform/backend` is also what any `--build` uses, so the others still must not
-rebuild until reviewed.
+`platform-backend:pre-20261110` without a rebuild (rollback never builds; if that tag
+is missing it stops with instructions). Rollback does every restore first and skips
+steps the apply never reached (it uses the markers in the backup folder); health
+checks run last and only warn, with next steps in the summary. The backup folder is
+kept; markers are cleared only when everything was restored.
 
 ## 6. After
 
@@ -164,3 +151,22 @@ Then re-run the three replay inputs from the Task 12 report (dashboard-light pho
 service-timing question, breakdown) against `/chat/turn` and check: photo reply has the
 three parts with the question last; the service reply asks questions instead of handing
 off; the breakdown handoff shows the safety line.
+
+## 7. The backend image is shared by every tenant
+
+`platform-backend:latest` is hard-coded in `docker-compose.tenant.yml` (no per-tenant
+env var), and `/opt/platform` is shared too. The apply builds the new backend into
+`platform-backend:latest`, so **aeon360 and bahana would pick up the new code on their
+next `up -d --build backend` or recreate**. Until reviewed, do not recreate their
+backends. To pin them, after the proton apply is healthy:
+
+```bash
+docker tag platform-backend:latest platform-backend:proton-20261110
+docker tag platform-backend:pre-20261110 platform-backend:latest
+```
+
+proton's running container keeps the new image. Note a later proton recreate without
+`--build` then starts from `latest` (old); use `--build` for proton, or retag
+`proton-20261110` back to `latest`, and re-pin afterwards. The patched source in
+`/opt/platform/backend` is also what any `--build` uses, so the others still must not
+rebuild until reviewed.

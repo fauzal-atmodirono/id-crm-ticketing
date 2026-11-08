@@ -79,6 +79,8 @@ from chatbot.features.metrics.query_port import (
     AfterHoursFirstResponseRow,
     AfterHoursMetrics,
     AfterHoursVolumeRow,
+    AI_PERFORMANCE_VIEWS,
+    AiPerformanceMetrics,
     AnomalyRow,
     BlockScope,
     BounceRow,
@@ -159,6 +161,12 @@ def _in_period(day: Any, period: PeriodRange) -> bool:
 
 
 _UNFILTERED_SCOPE = BlockScope(status="unfiltered", period=None, supported_granularity=None)
+
+
+def _jsonable_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Dates to ISO strings so the row survives `json.dumps` without a custom
+    encoder (BigQuery returns `datetime.date` for DATE columns)."""
+    return {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in row.items()}
 
 
 class BigQueryMetricsQuery:
@@ -729,6 +737,51 @@ class BigQueryMetricsQuery:
         self, period: PeriodRange | None = None, tag: str | None = None
     ) -> TagVolumeMetrics:
         return await asyncio.to_thread(self._fetch_by_tag_sync, period, tag)
+
+    def _fetch_ai_performance_sync(self, period: PeriodRange | None = None) -> AiPerformanceMetrics:
+        """Wave 2 task 27: the eight AI performance reports, one block per view.
+
+        Plain dict rows, `SELECT *`, filtered by `day BETWEEN @start AND @end`
+        when a period is given (every AI view exposes a `day` column; the root
+        cause view's `day` is the Monday of the week, so a week bucket is
+        included when its Monday is in range). Not bucketed or summed here:
+        unlike the volume blocks, each view carries its own rates and
+        denominators, and re-summing a rate would be wrong. A failed view is
+        `unavailable` -- distinct from an empty `ok` block -- so a drifted view
+        never reads as "no AI activity".
+        """
+        blocks: dict[str, list[dict]] = {}
+        scopes: dict[str, BlockScope] = {}
+        for key, view in AI_PERFORMANCE_VIEWS.items():
+            sql = f"SELECT * FROM `{self._prefix}.{view}`"  # noqa: S608
+            config = None
+            if period is not None:
+                sql += " WHERE day BETWEEN @start AND @end"
+                config = self._range_job_config(period)
+            try:
+                rows = [_jsonable_row(dict(r)) for r in self._client.query(sql, job_config=config).result()]
+                scopes[key] = (
+                    _UNFILTERED_SCOPE
+                    if period is None
+                    else BlockScope(status="ok", period=period, supported_granularity=None)
+                )
+            except Exception as e:  # one drifted view degrades to unavailable, never 500s
+                _log.error("metrics_view_query_failed", view=view, error=str(e))
+                rows = []
+                scopes[key] = BlockScope(
+                    status="unavailable", period=period, supported_granularity=None
+                )
+            if key == "root_cause":
+                rows.sort(key=lambda r: r.get("cases") or 0, reverse=True)
+            blocks[key] = rows
+        metrics = AiPerformanceMetrics(blocks=blocks)
+        metrics.attach_scopes(scopes)
+        return metrics
+
+    async def fetch_ai_performance(
+        self, period: PeriodRange | None = None
+    ) -> AiPerformanceMetrics:
+        return await asyncio.to_thread(self._fetch_ai_performance_sync, period)
 
 
 def build_metrics_query_port(settings: Settings) -> MetricsQueryPort:

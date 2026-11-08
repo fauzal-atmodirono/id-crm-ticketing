@@ -506,6 +506,31 @@ class AfterHoursMetrics:
         object.__setattr__(self, "_scopes", scopes)
 
 
+# Wave 2 task 27 (FIX-47): the eight AI performance reports (RFP 2026_028
+# 4.56) in the order the RFP lists them. key -> BigQuery view. Served as plain
+# dict rows: the views are wide, each has its own columns, and every one carries
+# its own definition/basis column, so a per-view dataclass would add a copy to
+# keep in sync with no consumer that needs the type.
+AI_PERFORMANCE_VIEWS: dict[str, str] = {
+    "resolution": "v_ai_resolution",
+    "ai_vs_human": "v_ai_vs_human",
+    "csat": "v_csat_by_resolution",
+    "escalation_reasons": "v_ai_escalation_reasons",
+    "accuracy": "v_ai_accuracy",
+    "deflection": "v_ai_deflection",
+    "root_cause": "v_ai_root_cause",
+    "kb_improvement": "v_ai_kb_improvement",
+}
+
+
+@dataclass(frozen=True)
+class AiPerformanceMetrics(_ScopedMetrics):
+    blocks: dict[str, list[dict]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_scopes", {})
+
+
 @dataclass(frozen=True)
 class TagVolumeRow:
     month: str
@@ -624,6 +649,9 @@ class MetricsQueryPort(Protocol):
     async def fetch_by_tag(
         self, period: PeriodRange | None = None, tag: str | None = None
     ) -> TagVolumeMetrics: ...
+    async def fetch_ai_performance(
+        self, period: PeriodRange | None = None
+    ) -> AiPerformanceMetrics: ...
 
 
 _UNFILTERED_SCOPE = BlockScope(status="unfiltered", period=None, supported_granularity=None)
@@ -919,6 +947,27 @@ class MockMetricsQuery:
         metrics.attach_scopes({"by_tag": self._scope})
         return metrics
 
+    async def fetch_ai_performance(
+        self, period: PeriodRange | None = None
+    ) -> AiPerformanceMetrics:
+        del period
+        blocks: dict[str, list[dict]] = {key: [] for key in AI_PERFORMANCE_VIEWS}
+        if not self._degraded:
+            blocks["deflection"] = [
+                {
+                    "day": "2026-06-01",
+                    "channel": "WhatsApp",
+                    "cases": 100,
+                    "deflected": 42,
+                    "human_involved": 58,
+                    "deflection_rate": 0.42,
+                    "deflection_definition": "canned dev fixture",
+                }
+            ]
+        metrics = AiPerformanceMetrics(blocks=blocks)
+        metrics.attach_scopes({key: self._scope for key in AI_PERFORMANCE_VIEWS})
+        return metrics
+
     async def fetch_after_hours(self, period: PeriodRange | None = None) -> AfterHoursMetrics:
         del period  # mock always returns the same canned payload
         metrics = AfterHoursMetrics(
@@ -1059,6 +1108,14 @@ class EmptyMetricsQuery:
         del period, tag
         metrics = TagVolumeMetrics(by_tag=[])
         metrics.attach_scopes({"by_tag": self._scope})
+        return metrics
+
+    async def fetch_ai_performance(
+        self, period: PeriodRange | None = None
+    ) -> AiPerformanceMetrics:
+        del period
+        metrics = AiPerformanceMetrics(blocks={key: [] for key in AI_PERFORMANCE_VIEWS})
+        metrics.attach_scopes({key: self._scope for key in AI_PERFORMANCE_VIEWS})
         return metrics
 
     async def fetch_after_hours(self, period: PeriodRange | None = None) -> AfterHoursMetrics:

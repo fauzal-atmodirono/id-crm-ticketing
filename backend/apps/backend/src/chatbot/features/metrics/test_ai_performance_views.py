@@ -12,9 +12,9 @@ The load-bearing negative test here is
 would count every resolved case as AI-resolved, which is the exact shape of
 overstatement this package exists to prevent.
 
-Scope: this covers §4.56 ①-④ plus the satisfaction split only. AI Root Cause
-Analysis and KB Improvement recommendations are NOT built, here or anywhere,
-and nothing in these views claims them.
+Scope: §4.56 ①-④ plus the satisfaction split (P8), and (Wave 2 task 27)
+⑤ accuracy, ⑦ root cause and ⑧ KB improvement -- each deliberately built on a
+PROXY the warehouse can measure, with the proxy named on the report row.
 
 No BigQuery here (controller decision D2), so the SQL is asserted
 structurally, as P4 and P5 did.
@@ -203,17 +203,6 @@ def test_the_resolution_basis_is_returned_on_every_report_that_uses_it() -> None
     assert "NOT derived from resolved_by" in AI_RESOLUTION_BASIS
 
 
-def test_no_report_claims_root_cause_analysis_or_kb_recommendations() -> None:
-    """§4.56 ⑦ and ⑧ are not built. The vendor response has already once
-    claimed capabilities that were not built; do not add to that list."""
-    ddls = _ddls()
-    for view, sql in ddls.items():
-        lowered = sql.lower()
-        assert "root_cause" not in lowered, view
-        assert "root cause" not in lowered, view
-        assert "recommend" not in lowered, view
-
-
 def test_the_ai_reports_honour_the_reporting_timezone() -> None:
     zoned = view_ddls(PROJECT, DATASET, reporting_timezone="Asia/Kuala_Lumpur")
     for view in AI_VIEWS:
@@ -237,3 +226,84 @@ def test_every_column_the_ai_reports_reference_exists_in_the_schema() -> None:
         ):
             if column in ddls[view]:
                 assert column in names, f"{view} references unknown column {column}"
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 task 27 (FIX-47): accuracy, root cause, KB improvement
+# ---------------------------------------------------------------------------
+
+from chatbot.features.metrics.bigquery_schema import (  # noqa: E402
+    AI_ACCURACY_BASIS,
+    AI_KB_IMPROVEMENT_BASIS,
+    AI_ROOT_CAUSE_BASIS,
+)
+
+W2_VIEWS = ("v_ai_accuracy", "v_ai_root_cause", "v_ai_kb_improvement")
+
+
+def test_ai_accuracy_view_counts_ai_resolved_cases_that_stayed_resolved() -> None:
+    sql = _ddls()["v_ai_accuracy"]
+    assert "`proj.ds.v_ai_accuracy`" in sql
+    assert "COUNTIF(status = 'resolved' AND NOT (agent_id IS NOT NULL" in sql
+    # a reopened AI resolution is a wrong answer, not an accurate one
+    assert "COALESCE(reopen_count, 0) > 0" in sql
+    assert "AS ai_resolved_reopened" in sql
+    assert "AS ai_resolved_not_reopened" in sql
+    assert "AS accuracy_rate" in sql
+    assert "SAFE_DIVIDE" in sql
+    # denominator travels with the rate
+    assert "AS ai_resolved" in sql
+    assert "AS accuracy_basis" in sql
+    assert AI_ACCURACY_BASIS.replace("'", "''") in sql
+    assert "draft" in AI_ACCURACY_BASIS.lower(), "must say draft acceptance is not measured"
+
+
+def test_ai_root_cause_view_ranks_categories_with_week_over_week_growth() -> None:
+    sql = _ddls()["v_ai_root_cause"]
+    assert "`proj.ds.v_ai_root_cause`" in sql
+    assert "DATE_TRUNC(DATE(created_at), WEEK(MONDAY)) AS day" in sql
+    assert "COALESCE(NULLIF(TRIM(category), ''), 'not_classified') AS category" in sql
+    assert "COALESCE(NULLIF(TRIM(subcategory), ''), 'not_classified') AS subcategory" in sql
+    # the previous week is an exact join, not LAG: a gap week must read as 0
+    assert "DATE_SUB(w.day, INTERVAL 7 DAY)" in sql
+    assert "COALESCE(p.cases, 0) AS prev_week_cases" in sql
+    assert "AS wow_change" in sql
+    # growth is NULL for a brand-new issue, never infinity or 0
+    assert "SAFE_DIVIDE(w.cases - COALESCE(p.cases, 0), NULLIF(p.cases, 0)) AS wow_growth_rate" in sql
+    assert "AS root_cause_basis" in sql
+    assert AI_ROOT_CAUSE_BASIS.replace("'", "''") in sql
+
+
+def test_ai_kb_improvement_view_lists_unanswered_topics_for_faq_updates() -> None:
+    sql = _ddls()["v_ai_kb_improvement"]
+    assert "`proj.ds.v_ai_kb_improvement`" in sql
+    # unanswered == classified Unresolved Query OR handed off with the escalate label
+    assert "LOWER(TRIM(COALESCE(subcategory, ''))) = 'unresolved query'" in sql
+    assert "'escalate' IN UNNEST(labels)" in sql
+    assert "AS unanswered_cases" in sql
+    assert "ANY_VALUE(case_detail) AS sample_case_detail" in sql
+    assert "AS faq_suggestion" in sql
+    assert "GROUP BY day, topic, faq_suggestion, kb_basis" in sql
+    assert "AS kb_basis" in sql
+    assert AI_KB_IMPROVEMENT_BASIS.replace("'", "''") in sql
+    assert "agent search" in AI_KB_IMPROVEMENT_BASIS.lower(), "must name the missing search signal"
+
+
+def test_w2_views_honour_the_reporting_timezone_and_avoid_resolved_by() -> None:
+    zoned = view_ddls(PROJECT, DATASET, reporting_timezone="Asia/Kuala_Lumpur")
+    for view in W2_VIEWS:
+        assert "DATE(created_at, 'Asia/Kuala_Lumpur')" in zoned[view], view
+        assert "resolved_by" not in zoned[view].replace(
+            AI_ACCURACY_BASIS, ""
+        ), view
+    schema_names = {f.name for f in CONVERSATIONS_SCHEMA}
+    for column in ("reopen_count", "category", "case_detail", "labels"):
+        assert column in schema_names
+
+
+def test_w2_views_never_claim_capabilities_the_warehouse_cannot_back() -> None:
+    """The vendor response has once claimed unbuilt capabilities. Every basis
+    string must state its proxy and its blind spot."""
+    assert "not measured" in AI_ACCURACY_BASIS.lower() or "not captured" in AI_ACCURACY_BASIS.lower()
+    assert "volume" in AI_ROOT_CAUSE_BASIS.lower()
+    assert "not" in AI_ROOT_CAUSE_BASIS.lower()

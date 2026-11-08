@@ -104,6 +104,9 @@ def test_view_ddls_keys_and_targets() -> None:
         "v_ai_escalation_reasons",
         "v_ai_deflection",
         "v_csat_by_resolution",
+        "v_ai_accuracy",
+        "v_ai_root_cause",
+        "v_ai_kb_improvement",
         # P8 task 9: KB coverage (staleness lives in faq_schema.py -- different
         # base table).
         "v_kb_coverage",

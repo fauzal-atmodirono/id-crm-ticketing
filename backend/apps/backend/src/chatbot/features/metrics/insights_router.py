@@ -302,6 +302,28 @@ def build_metrics_insights_router(
         metrics = await port.fetch_by_tag(period, tag)
         return _stamp_batch_freshness({**asdict(metrics), "note": metrics.note}, settings)
 
+    @router.get("/metrics/ai-performance")
+    async def ai_performance(
+        period_query: PeriodQuery,
+        x_api_key: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Wave 2 task 27 (FIX-47): the eight AI performance reports of RFP
+        2026_028 4.56 -- resolution, AI vs human, CSAT on AI, escalation
+        reasons, accuracy, deflection, root cause, KB improvement.
+
+        Each block keeps the definition/basis column of its view, which says
+        what the figure does and does not measure. `scopes` is per block, so a
+        failed view reads `unavailable` rather than as zero AI activity.
+        """
+        _require_key(x_api_key)
+        period = parse_period_or_400(period_query)
+        metrics = await port.fetch_ai_performance(period)
+        payload = {
+            "blocks": metrics.blocks,
+            "scopes": {k: asdict(v) for k, v in metrics.scopes.items()},
+        }
+        return _stamp_batch_freshness(payload, settings)
+
     @router.get("/metrics/ai-cost")
     async def ai_cost(
         period_query: PeriodQuery,

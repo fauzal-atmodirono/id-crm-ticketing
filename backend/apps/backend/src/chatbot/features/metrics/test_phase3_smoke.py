@@ -99,6 +99,9 @@ _EXPECTED_VIEW_KEYS = {
     "v_ai_escalation_reasons",
     "v_ai_deflection",
     "v_csat_by_resolution",
+    "v_ai_accuracy",
+    "v_ai_root_cause",
+    "v_ai_kb_improvement",
     # P8 task 9: KB coverage. Staleness is in faq_schema.py, over a different
     # base table.
     "v_kb_coverage",
@@ -114,11 +117,11 @@ _TABLE = "conversations"
 # ---------------------------------------------------------------------------
 
 
-def test_view_ddls_returns_exactly_39_views() -> None:
-    """view_ddls() must return exactly 39 view keys (13 original + 6 Phase-3
+def test_view_ddls_returns_exactly_42_views() -> None:
+    """view_ddls() must return exactly 42 view keys (13 original + 6 Phase-3
     + 1 Task-11 + 3 Task-12 + 2 Task-13 + 2 Task-2/Package-E-reopened
     day-grain siblings + 2 P1 after-hours + 2 P3 case-record + 2 P4 reporting
-    + 5 P8-task-8 AI performance + 1 P8-task-9 KB coverage).
+    + 5 P8-task-8 AI performance + 3 W2-task-27 AI reports + 1 P8-task-9 KB coverage).
 
     `v_csat_by_agent` (P8 task 6) is deliberately NOT here: it is flag-gated
     off `csat_by_agent_enabled`, so the DEFAULTED call this test makes returns
@@ -127,7 +130,7 @@ def test_view_ddls_returns_exactly_39_views() -> None:
     assert set(ddls) == _EXPECTED_VIEW_KEYS, (
         f"Missing: {_EXPECTED_VIEW_KEYS - set(ddls)}  Extra: {set(ddls) - _EXPECTED_VIEW_KEYS}"
     )
-    assert len(ddls) == 39
+    assert len(ddls) == 42
 
 
 @pytest.mark.parametrize("key", sorted(_EXPECTED_VIEW_KEYS))

@@ -30,8 +30,13 @@ WHAT IT FETCHES. `GET /kb/suggest?q=<latest customer message>&limit=1`
 `hasFeature` it already read. Confidence gating relies on a fact already
 true of that endpoint's response shape: only `live_faq` hits carry a numeric
 `score` (Vertex hits never do), so `FAQ_SUGGESTION_CONFIDENCE_THRESHOLD`
-(0.75) rejects anything without a `score` by construction -- there is no
+(0.65) rejects anything without a `score` by construction -- there is no
 separate "is this a Vertex hit" branch to keep in sync.
+
+THRESHOLD CALIBRATION (FIX-09, 2026-11-09). 0.75 was a guess and hid every
+real suggestion: on live proton, paraphrased customer questions that hit the
+right FAQ scored 0.67-0.74 (exact wording 0.95), and the backend already drops
+anything under 0.55. The gate is now 0.65.
 
 THREE GATES, in the order they run:
 1. `faqSuggestionPopupEnabled` reads `hasFeature('faq_suggestion_popup')` --
@@ -113,7 +118,7 @@ index 6b4d15c..9a8d960 100644
 +// Only live_faq entries carry a `score` (kb_suggest_router.py's Vertex
 +// items never do), so an undefined score always fails this check --
 +// Vertex-only results are never shown as a popup, by construction.
-+const FAQ_SUGGESTION_CONFIDENCE_THRESHOLD = 0.75;
++const FAQ_SUGGESTION_CONFIDENCE_THRESHOLD = 0.65;
  
  export default {
    name: 'ReplyTopPanel',

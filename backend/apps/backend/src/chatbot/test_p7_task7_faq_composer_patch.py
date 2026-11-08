@@ -144,7 +144,7 @@ def test_the_patch_applies_cleanly_onto_the_real_post_0054_fork_file(
     # actually landed in the file (not just that *some* patch applied).
     for marker in (
         "import { ref, computed, watch } from 'vue';",
-        "const FAQ_SUGGESTION_CONFIDENCE_THRESHOLD = 0.75;",
+        "const FAQ_SUGGESTION_CONFIDENCE_THRESHOLD = 0.65;",
         "const { hasFeature, backendUrl } = useProtonConfig();",
         "const fetchFaqSuggestion = async message =>",
         "const applyFaqSuggestion = () =>",
@@ -276,7 +276,7 @@ def test_a_suggestion_below_the_confidence_threshold_is_not_shown_as_a_popup(
     a missing score by construction, not via a second "is this Vertex"
     branch that could fall out of sync.
     """
-    assert "const FAQ_SUGGESTION_CONFIDENCE_THRESHOLD = 0.75;" in applied_file
+    assert "const FAQ_SUGGESTION_CONFIDENCE_THRESHOLD = 0.65;" in applied_file
 
     fetch_block = _extract(
         r"const fetchFaqSuggestion = async message => \{(.*?)\n    \};",
@@ -288,7 +288,7 @@ def test_a_suggestion_below_the_confidence_threshold_is_not_shown_as_a_popup(
 
     # Re-implementation of the extracted condition, exercised against
     # representative /kb/suggest response shapes.
-    threshold = 0.75
+    threshold = 0.65
 
     def accepts(top: dict[str, object] | None) -> bool:
         if not top:
@@ -300,6 +300,10 @@ def test_a_suggestion_below_the_confidence_threshold_is_not_shown_as_a_popup(
 
     assert accepts({"title": "x", "score": 0.9}) is True
     assert accepts({"title": "x", "score": 0.5}) is False  # below threshold
+    # Observed live on proton (2026-11-09): real paraphrased customer questions
+    # that hit the right FAQ scored 0.67-0.74. A 0.75 gate hid every one.
+    assert accepts({"title": "x", "score": 0.673}) is True
+    assert accepts({"title": "x", "score": 0.738}) is True
     assert accepts({"title": "x"}) is False  # Vertex hit, no score at all
     assert accepts(None) is False
 

@@ -1,0 +1,178 @@
+diff --git a/app/javascript/dashboard/composables/idleMonitor.js b/app/javascript/dashboard/composables/idleMonitor.js
+new file mode 100644
+index 0000000..7ee2c0f
+--- /dev/null
++++ b/app/javascript/dashboard/composables/idleMonitor.js
+@@ -0,0 +1,56 @@
++// Pure idle-timeout monitor (FIX-18, patch 0079). No imports and no globals,
++// so it can be unit-tested under plain node: every side effect (clock, timers,
++// shared storage, the logout itself) is injected.
++//
++// Activity is shared across tabs through `storage` (localStorage in the SPA):
++// a user active in tab B must not be logged out because tab A saw no input.
++// Reading the shared stamp on every check is the whole cross-tab mechanism.
++export const ACTIVITY_KEY = 'proton_last_activity_ms';
++const CHECK_EVERY_MS = 15000;
++
++export function createIdleMonitor({
++  timeoutMinutes,
++  now = () => Date.now(),
++  storage = null,
++  onIdle,
++  setIntervalFn = setInterval,
++  clearIntervalFn = clearInterval,
++}) {
++  const timeoutMs = Number(timeoutMinutes) * 60 * 1000;
++  // Off unless a positive number of minutes was configured.
++  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
++    return { enabled: false, touch() {}, check: () => false, stop() {} };
++  }
++
++  let last = now();
++  let fired = false;
++  const read = () => {
++    try {
++      const v = Number(storage && storage.getItem(ACTIVITY_KEY));
++      return Number.isFinite(v) && v > 0 ? v : 0;
++    } catch (e) {
++      return 0;
++    }
++  };
++  const touch = () => {
++    last = now();
++    try {
++      if (storage) storage.setItem(ACTIVITY_KEY, String(last));
++    } catch (e) {
++      /* storage blocked: per-tab tracking still works */
++    }
++  };
++  const check = () => {
++    if (fired) return false;
++    const latest = Math.max(last, read());
++    if (now() - latest >= timeoutMs) {
++      fired = true; // fire once; the logout navigates away
++      onIdle();
++      return true;
++    }
++    return false;
++  };
++  touch();
++  const timer = setIntervalFn(check, CHECK_EVERY_MS);
++  return { enabled: true, touch, check, stop: () => clearIntervalFn(timer) };
++}
+diff --git a/app/javascript/dashboard/composables/useProtonConfig.js b/app/javascript/dashboard/composables/useProtonConfig.js
+index d93ec0e..60f6d5e 100644
+--- a/app/javascript/dashboard/composables/useProtonConfig.js
++++ b/app/javascript/dashboard/composables/useProtonConfig.js
+@@ -6,3 +6,9 @@ export function useProtonConfig() {
+     hasFeature: (name) => Array.isArray(cfg.features) && cfg.features.includes(name),
+   };
+ }
++
++// Session idle timeout (FIX-18, patch 0079). Importing this module on the
++// dashboard is what arms the watcher; see useProtonIdleTimeout.js.
++import { installProtonIdleTimeout } from './useProtonIdleTimeout';
++
++installProtonIdleTimeout();
+diff --git a/app/javascript/dashboard/composables/useProtonIdleTimeout.js b/app/javascript/dashboard/composables/useProtonIdleTimeout.js
+new file mode 100644
+index 0000000..6c304a8
+--- /dev/null
++++ b/app/javascript/dashboard/composables/useProtonIdleTimeout.js
+@@ -0,0 +1,61 @@
++// Idle-timeout wiring (FIX-18, patch 0079). RFP 2026_028 7.5 asks for
++// "Idle Time-out Rules"; Chatwoot has none (Devise timeoutable is off and the
++// session token lasts 2 months). The minutes come from the Rails layout
++// (window.__PROTON_IDLE_TIMEOUT_MINUTES__, env SESSION_IDLE_TIMEOUT_MINUTES);
++// 0 / absent leaves behaviour exactly as upstream.
++import Cookies from 'js-cookie';
++import Auth from 'dashboard/api/auth';
++import { createIdleMonitor } from './idleMonitor';
++
++let installed = false;
++
++async function signOut() {
++  // Best effort: invalidate the token server-side, then always drop the
++  // browser session so the next navigation lands on the login page.
++  try {
++    if (Auth.hasAuthCookie()) {
++      const a = Auth.getAuthData();
++      await fetch('/auth/sign_out', {
++        method: 'DELETE',
++        headers: {
++          'access-token': a['access-token'],
++          client: a.client,
++          uid: a.uid,
++        },
++      });
++    }
++  } catch (e) {
++    /* the cookie removal below still ends the session client-side */
++  }
++  Cookies.remove('cw_d_session_info');
++  window.location.href = '/app/login';
++}
++
++export function installProtonIdleTimeout() {
++  if (installed || typeof window === 'undefined') return;
++  const minutes = Number(window.__PROTON_IDLE_TIMEOUT_MINUTES__ || 0);
++  if (!(minutes > 0)) return;
++  installed = true;
++  let storage = null;
++  try {
++    storage = window.localStorage;
++  } catch (e) {
++    storage = null;
++  }
++  const monitor = createIdleMonitor({
++    timeoutMinutes: minutes,
++    storage,
++    onIdle: signOut,
++  });
++  // Throttle the storage write: input events fire many times a second.
++  let lastTouch = 0;
++  const onInput = () => {
++    const t = Date.now();
++    if (t - lastTouch < 1000) return;
++    lastTouch = t;
++    monitor.touch();
++  };
++  ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'click'].forEach(
++    ev => window.addEventListener(ev, onInput, { passive: true, capture: true })
++  );
++}
+diff --git a/app/views/layouts/vueapp.html.erb b/app/views/layouts/vueapp.html.erb
+index bc38a0b..d0820d0 100644
+--- a/app/views/layouts/vueapp.html.erb
++++ b/app/views/layouts/vueapp.html.erb
+@@ -5,6 +5,11 @@
+         features: "<%= proton_features.join(',') %>".split(',').filter(Boolean)
+       };
+     </script>
++    <script>
++      // FIX-18: minutes of no input before the SPA signs the user out.
++      // 0 / unset = off (SESSION_IDLE_TIMEOUT_MINUTES, default off).
++      window.__PROTON_IDLE_TIMEOUT_MINUTES__ = <%= [ENV.fetch('SESSION_IDLE_TIMEOUT_MINUTES', '0').to_i, 0].max %>;
++    </script>
+     <% if @global_config['CLOUD_ANALYTICS_TOKEN'].present? %>
+     <script>
+       window.analyticsConfig = {
+diff --git a/config/initializers/zz_proton_session.rb b/config/initializers/zz_proton_session.rb
+new file mode 100644
+index 0000000..0354a24
+--- /dev/null
++++ b/config/initializers/zz_proton_session.rb
+@@ -0,0 +1,13 @@
++# FIX-18 (patch 0079): optional cap on the devise_token_auth session lifetime.
++#
++# Upstream Chatwoot sets DeviseTokenAuth.token_lifespan to 2 months in
++# config/initializers/devise_token_auth.rb. This file is named zz_ so it loads
++# AFTER that one and can override it. SESSION_TOKEN_LIFESPAN_HOURS unset (or
++# not a positive integer) changes nothing.
++#
++# Note the semantics: with change_headers_on_each_request off, the token expiry
++# is fixed when it is issued, so this is an ABSOLUTE session cap, not an idle
++# timer (the idle timer is client side, SESSION_IDLE_TIMEOUT_MINUTES). Tokens
++# already issued keep their old expiry; the cap applies from the next login.
++hours = ENV.fetch('SESSION_TOKEN_LIFESPAN_HOURS', '').to_i
++DeviseTokenAuth.token_lifespan = hours.hours if hours.positive?

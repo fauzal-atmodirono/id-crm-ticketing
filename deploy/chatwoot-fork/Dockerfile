@@ -96,6 +96,11 @@ COPY --from=builder /app/public/vite /app/public/vite
 # stays off.
 COPY --from=builder /app/app/views/layouts/vueapp.html.erb /app/app/views/layouts/vueapp.html.erb
 
+# Patch 0079 adds a Rails initializer (SESSION_TOKEN_LIFESPAN_HOURS). Like the
+# layout above it is server-side, so it is not in public/vite and must be
+# copied explicitly or the session cap silently never applies.
+COPY --from=builder /app/config/initializers/zz_proton_session.rb /app/config/initializers/zz_proton_session.rb
+
 # Overwrite the baked-in upstream .git_sha so the in-app "Build <sha>" display
 # (and GET /api) reflects OUR commit, not upstream's frozen v4.15.1 release
 # commit — see the PROTON_BUILD_SHA comment near the top of this file.

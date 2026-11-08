@@ -48,6 +48,11 @@ x-chatwoot-env: &chatwoot-env
   PROTON_BACKEND_URL: ${PROTON_BACKEND_PUBLIC_URL:-http://crm.localhost}
   PROTON_BACKEND_KEY: ${PROTON_BACKEND_KEY:-}
   PROTON_FEATURES: ${PROTON_FEATURES:-ai_assist,nav_menu,copilot,knowledge}
+  # Session limits (fork patch 0079, FIX-18). Both unset/0 = upstream behaviour.
+  # IDLE: SPA signs the user out after N minutes without input. LIFESPAN: caps
+  # the devise_token_auth token (hours) for logins made after the change.
+  SESSION_IDLE_TIMEOUT_MINUTES: ${SESSION_IDLE_TIMEOUT_MINUTES:-0}
+  SESSION_TOKEN_LIFESPAN_HOURS: ${SESSION_TOKEN_LIFESPAN_HOURS:-}
   # ONE SWITCH PER FEATURE. These are the SAME variables the `backend` service
   # reads out of tenants/<tenant>.env (it takes that file wholesale via
   # `env_file:`), forwarded here so the Rails layout can turn each one into the

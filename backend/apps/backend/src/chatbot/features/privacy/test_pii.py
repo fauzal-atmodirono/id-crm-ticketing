@@ -39,6 +39,13 @@ def test_phone_email_vin_card_patterns() -> None:
     # Two numbers side by side must not merge into one "too long" non-match.
     assert mask_pii_text("0123456789 0198765432") == f"01{MASK * 4}6789 01{MASK * 4}5432"
     assert mask_pii_text("tel:+60123456789") == f"tel:+60{MASK * 5}6789"
+    # Review fix 4: bare international form, as WhatsApp delivers it.
+    assert mask_pii_text("wa from 60123456789 today") == f"wa from 60{MASK * 5}6789 today"
+    assert mask_pii_text("60198765432.") == f"60{MASK * 5}5432."
+    assert mask_pii_text("ref 601234567890123") == "ref 601234567890123"  # too long: an id
+    assert mask_pii_text("CASE-60123456789") == "CASE-60123456789"  # inside an id
+    # Lower-case chassis is still a chassis.
+    assert mask_pii_text("pl1bt3lnrgb012345") == f"{MASK * 13}2345"
     # E-mail: first character and the domain.
     assert mask_pii_text("ahmad.ali@gmail.com") == f"a{MASK * 3}@gmail.com"
     # VIN / chassis: 17 chars, last 4 kept.
@@ -122,8 +129,38 @@ def test_none_and_empty_pass_through() -> None:
     assert mask_pii({"phone_number": None, "email": ""}) == {"phone_number": None, "email": ""}
 
 
-def test_contains_mask() -> None:
-    assert contains_mask(f"+60{MASK}{MASK}1234")
+def test_key_rules_are_anchored() -> None:
+    out = mask_pii(
+        {
+            "bank_name": "Maybank",
+            "bank_account": "1234567890",
+            "account_type": "savings",
+            "telegram": "@siti",
+            "hotel": "Hilton 0123",
+            "passport_country": "MY",
+            "chassis_no": "PL1BT3LNRGB012345",
+            "mobile_no": "0123456789",
+        }
+    )
+    assert out["bank_name"] == "Maybank"
+    assert out["bank_account"] == f"{MASK * 6}7890"
+    assert out["account_type"] == "savings"
+    assert out["telegram"] == "@siti"
+    assert out["hotel"] == "Hilton 0123"
+    assert out["passport_country"] == "MY"
+    assert out["chassis_no"] == f"{MASK * 13}2345"
+    assert out["mobile_no"] == f"01{MASK * 4}6789"
+
+
+def test_contains_mask_matches_real_mask_shapes_only() -> None:
+    assert contains_mask(f"+60{MASK * 5}1234")
+    assert contains_mask(f"s{MASK * 3}@gmail.com")
+    assert contains_mask("IC ******-**-5678")
+    assert contains_mask({"x": [f"{MASK * 13}2345"]})
+    # bullets as ordinary punctuation
+    assert not contains_mask("• towed\n• battery replaced")
+    assert not contains_mask(f"done {MASK * 3} next")
+    assert not contains_mask(f"+60{MASK}{MASK}1234")
     assert not contains_mask("+60123451234")
     assert not contains_mask(None)
 

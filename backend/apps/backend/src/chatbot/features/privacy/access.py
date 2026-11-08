@@ -13,6 +13,14 @@ response must be masked for the caller:
   dependency never raises -- whether the caller may use the endpoint at all is
   the endpoint's own permission gate; this only decides how the data looks.
 
+Writes from a masked caller (``PiiPolicy.reconcile_write``): the SPA edit
+forms re-send every field of the row they loaded, masked fields included
+(the RSA page's ``buildPayload`` does). A field re-sent EXACTLY as it was
+shown (equal to the masked rendering of the stored value) is unchanged and is
+dropped from the write; any other value still carrying a mask shape is
+refused (400), so a masked value can never overwrite the real one. Callers
+who are not masked are never checked: their text may contain bullets freely.
+
 The flag requires ``RBAC_ENABLED`` (``Settings`` refuses to boot otherwise):
 without RBAC there is no person, so nobody could ever be shown the real value.
 
@@ -26,11 +34,13 @@ API responses (the fork's contact views mask on the client, patch 0085).
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 
 from chatbot.features.authz.deps import is_platform_superadmin
 from chatbot.features.privacy.pii import contains_mask, mask_pii
@@ -43,6 +53,11 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(__name__)
 
 PII_VIEW = "pii.view"
+# GET /authz/me/pii answers per session triplet from a short cache: the fork
+# asks it from every contact view mount. Short, so a granted/revoked pii.view
+# takes effect within the TTL; bounded, so it cannot grow without limit.
+ME_CACHE_SECONDS = 30.0
+_ME_CACHE_MAX = 1000
 
 
 @dataclass(frozen=True)
@@ -55,16 +70,66 @@ class PiiPolicy:
         return mask_pii(value) if self.masked else value
 
     def refuse_masked_write(self, value: Any) -> None:
-        """400 when a write carries a masked value (copied back from a masked
-        page), so it can never overwrite the real one. Flag off: no-op."""
-        if self.enabled and contains_mask(value):
+        """400 when a masked caller's write carries a mask shape. Callers who
+        are not masked (and flag off) are never checked."""
+        if self.masked and contains_mask(value):
             raise HTTPException(
                 status_code=400,
                 detail="A masked value cannot be saved. Enter the full value, or leave the field unchanged.",
             )
 
+    def reconcile_write(
+        self, incoming: dict[str, Any], current: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """For a masked caller: drop fields re-sent unchanged in their masked
+        form, then refuse any remaining mask shape. Otherwise ``incoming``
+        itself, untouched."""
+        if not self.masked:
+            return incoming
+        out = dict(incoming)
+        if current:
+            shown = mask_pii(current)
+            for key, value in incoming.items():
+                if (
+                    isinstance(value, str)
+                    and key in current
+                    and value == shown.get(key)
+                    and value != current.get(key)
+                ):
+                    del out[key]
+        self.refuse_masked_write(out)
+        return out
+
 
 UNMASKED = PiiPolicy(enabled=False, masked=False)
+_MASKED = PiiPolicy(enabled=True, masked=True)
+
+
+async def resolve_pii_policy(
+    settings: Settings,
+    repo: AuthzRepository | None,
+    validator: TokenValidator | None,
+    token: str | None,
+    client: str | None,
+    uid: str | None,
+) -> PiiPolicy:
+    """The caller's policy. Never raises; every doubt resolves to masked."""
+    if not getattr(settings, "pii_masking_enabled", False):
+        return UNMASKED
+    if not (token and client and uid) or validator is None or repo is None:
+        return _MASKED
+    try:
+        identity = await validator.resolve_identity(token, client, uid)
+        if identity is None:
+            return _MASKED
+        user_id, is_super_admin_type = identity
+        if is_platform_superadmin(user_id, is_super_admin_type):
+            return PiiPolicy(enabled=True, masked=False)
+        perms = await repo.permissions_for_user(user_id)
+    except Exception as exc:
+        _log.warning("pii_policy_lookup_failed", error_type=type(exc).__name__)
+        return _MASKED
+    return PiiPolicy(enabled=True, masked=PII_VIEW not in perms)
 
 
 def build_pii_dependency(
@@ -73,32 +138,14 @@ def build_pii_dependency(
     repo: AuthzRepository | None = None,
     validator: TokenValidator | None = None,
 ):
-    async def _policy(  # noqa: PLR0911 -- one early return per fail-closed case
+    async def _policy(
         x_chatwoot_access_token: str | None = Header(default=None),
         x_chatwoot_client: str | None = Header(default=None),
         x_chatwoot_uid: str | None = Header(default=None),
     ) -> PiiPolicy:
-        if not getattr(settings, "pii_masking_enabled", False):
-            return UNMASKED
-        masked = PiiPolicy(enabled=True, masked=True)
-        if not (x_chatwoot_access_token and x_chatwoot_client and x_chatwoot_uid):
-            return masked
-        if validator is None or repo is None:
-            return masked
-        try:
-            identity = await validator.resolve_identity(
-                x_chatwoot_access_token, x_chatwoot_client, x_chatwoot_uid
-            )
-            if identity is None:
-                return masked
-            user_id, is_super_admin_type = identity
-            if is_platform_superadmin(user_id, is_super_admin_type):
-                return PiiPolicy(enabled=True, masked=False)
-            perms = await repo.permissions_for_user(user_id)
-        except Exception as exc:
-            _log.warning("pii_policy_lookup_failed", error_type=type(exc).__name__)
-            return masked
-        return PiiPolicy(enabled=True, masked=PII_VIEW not in perms)
+        return await resolve_pii_policy(
+            settings, repo, validator, x_chatwoot_access_token, x_chatwoot_client, x_chatwoot_uid
+        )
 
     return _policy
 
@@ -108,18 +155,46 @@ def build_privacy_router(
     *,
     repo: AuthzRepository | None = None,
     validator: TokenValidator | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> APIRouter:
-    """``GET /privacy/me`` -- the fork's contact views ask this whether to mask.
+    """``GET /authz/me/pii`` -- the fork's contact views ask this whether to mask.
 
-    Mounted on every tenant so the fork can call it unconditionally: flag off
-    answers ``masking_enabled: false`` and the fork shows everything, exactly
-    as before. Not gated (it reveals only the caller's own masking state).
+    Under ``/authz/`` because every tenant's Caddy vhost already routes that
+    prefix to the backend (a new prefix would fall through to Chatwoot's 404,
+    which the fork reads as "older backend, do not mask"). Mounted on every
+    tenant, separately from the RBAC-only /authz router, so the fork can call
+    it unconditionally: flag off answers ``masking_enabled: false``. Not gated
+    (it reveals only the caller's own masking state).
     """
-    router = APIRouter(prefix="/privacy", tags=["privacy"])
-    policy = build_pii_dependency(settings, repo=repo, validator=validator)
+    router = APIRouter(prefix="/authz", tags=["privacy"])
+    cache: dict[tuple[str, str, str], tuple[float, PiiPolicy]] = {}
 
-    @router.get("/me")
-    async def me(pii: PiiPolicy = Depends(policy)) -> dict[str, bool]:
+    @router.get("/me/pii")
+    async def me(
+        x_chatwoot_access_token: str | None = Header(default=None),
+        x_chatwoot_client: str | None = Header(default=None),
+        x_chatwoot_uid: str | None = Header(default=None),
+    ) -> dict[str, bool]:
+        triplet = (x_chatwoot_access_token or "", x_chatwoot_client or "", x_chatwoot_uid or "")
+        now = clock()
+        hit = cache.get(triplet)
+        if hit is not None and now - hit[0] < ME_CACHE_SECONDS:
+            pii = hit[1]
+        else:
+            pii = await resolve_pii_policy(settings, repo, validator, *triplet)
+            if len(cache) >= _ME_CACHE_MAX:
+                cache.clear()
+            cache[triplet] = (now, pii)
         return {"masking_enabled": pii.enabled, "masked": pii.masked}
 
     return router
+
+
+__all__ = [
+    "PII_VIEW",
+    "UNMASKED",
+    "PiiPolicy",
+    "build_pii_dependency",
+    "build_privacy_router",
+    "resolve_pii_policy",
+]

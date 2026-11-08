@@ -189,12 +189,20 @@ def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRout
         pii: PiiPolicy = Depends(pii_policy),
     ) -> dict[str, str]:
         fields = {k: v for k, v in payload.model_dump().items() if v is not None}
-        pii.refuse_masked_write(payload.model_dump(mode="json"))
+        current = None
+        if not scope.unrestricted or pii.masked:
+            current = await repo.get_incident(incident_id)
         if not scope.unrestricted:
-            if not _visible(await repo.get_incident(incident_id), scope):
+            if not _visible(current, scope):
                 raise HTTPException(status_code=404, detail="Not found")
             if "purchased_from" in fields:
                 _require_dealer_in_scope(fields["purchased_from"], scope)
+        # The RSA page re-sends every field of the row it loaded; a masked
+        # caller's untouched phone/remarks come back in masked form and are
+        # dropped here as unchanged (Task 29 review fix 1).
+        fields = pii.reconcile_write(
+            fields, _incident_dict(current) if current is not None else None
+        )
         if not await repo.update_incident(incident_id, **fields):
             raise HTTPException(status_code=404, detail="Not found")
         return {"id": incident_id, "status": "updated"}

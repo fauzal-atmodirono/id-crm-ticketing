@@ -1336,7 +1336,7 @@ class Settings(BaseSettings):
     # byte-identical responses. Never applied to what is sent to the LLM or
     # to escalation recipients. Rules: features/privacy/pii.py. Requires
     # RBAC_ENABLED (refused at boot otherwise). The fork's contact sidebar and
-    # contact list mask on the client from patch 0085 (GET /privacy/me).
+    # contact list mask on the client from patch 0085 (GET /authz/me/pii).
     # (Declared here, not after data_scoped_rbac_enabled: that field anchors
     # the P11 block in test_p11_flags.py.)
     pii_masking_enabled: bool = False

@@ -29,8 +29,10 @@ mykad_ic       ``YYMMDD-PB-####`` or 12 digits; valid month/day,      ``******-*
                place-of-birth code not ``00``
 card_luhn      13-19 digits (spaces/dashes allowed), first digit      ``••••••••••••1234``
                2-6, Luhn-valid
-phone          ``+<cc>`` or ``0`` prefix, 9-15 digits, not date-shaped  ``+60•••••1234``/``01••••1234``
-vin_chassis    17 chars ``[A-HJ-NPR-Z0-9]`` with >=2 letters, >=2 digits  ``•••••••••••••1234``
+phone          ``+<cc>`` or ``0`` prefix, 9-15 digits, not date-shaped;  ``+60•••••1234``/``01••••1234``
+               bare ``60`` + 8-10 digits; inside tel:/wa.me links
+vin_chassis    17 chars ``[A-HJ-NPR-Z0-9]`` (any case), >=2 letters,    ``•••••••••••••1234``
+               >=2 digits
 passport_my    Malaysian ``A``/``H``/``K`` + 8 digits                  ``•••••5678``
 =============  =====================================================  ==========================
 
@@ -210,7 +212,13 @@ _IC_RE = re.compile(r"(?<![\d#/+=.-])(\d{6})(-?)(\d{2})\2(\d{4})(?![\d-])")
 _URI_PHONE_RE = re.compile(r"(?i)(tel:|whatsapp:|wa\.me/)(\+?\d{9,15})(?!\d)")
 _CARD_RE = re.compile(r"(?<![\w#/+=.-])[2-6](?:[ -]?\d){12,18}(?![\w-])")
 _DISPLAY_PHONE_RE = re.compile(r"(?<![\w:+/=.#&?-])(?:\+\d|0)[\d\s().-]{7,19}\d(?![\w:/-])")
-_VIN_RE = re.compile(r"(?<![A-Za-z0-9])[A-HJ-NPR-Z0-9]{17}(?![A-Za-z0-9])")
+# A Malaysian number written bare in international form ("60123456789", as
+# WhatsApp delivers it). Same anti-date/anti-id look-arounds as the main rule;
+# runs after the IC and card rules, so a 12-digit IC-shaped run is an IC.
+_BARE_MY_PHONE_RE = re.compile(r"(?<![\w:+/=.#&?-])60\d{8,10}(?![\w:/-])")
+# Case-insensitive (a chassis typed in lower case is still a chassis), but
+# I, O and Q are never VIN characters in either case.
+_VIN_RE = re.compile(r"(?<![A-Za-z0-9])[A-HJ-NPR-Za-hj-npr-z0-9]{17}(?![A-Za-z0-9])")
 _PASSPORT_RE = re.compile(r"(?<![A-Za-z0-9])[AHK]\d{8}(?![A-Za-z0-9])")
 
 
@@ -284,25 +292,38 @@ def mask_pii_text(value: str) -> str:
         value = rule.pattern.sub(_SUBSTITUTIONS[rule.name], value)
         if rule.name == "phone":
             value = _URI_PHONE_RE.sub(lambda m: m.group(1) + mask_phone_value(m.group(2)), value)
+            value = _BARE_MY_PHONE_RE.sub(lambda m: mask_phone_value(m.group(0)), value)
     return value
 
 
-# Key-based rules: the field NAME says what the value is. Token-anchored so
-# "pic" is not an IC field and "province" is not a VIN field.
+# Key-based rules: the field NAME says what the value is. Every rule starts
+# at a name-part boundary and ENDS the name (an optional _no/_number suffix
+# allowed), so "pic" is not an IC field, "province" is not a VIN field,
+# "bank_name" ("Maybank") is not an account number and "passport_country" or
+# "ic_expiry" is not the identifier itself.
+_NUM = r"(?:_?(?:no|number|num))?"
 _KEY_RULES: tuple[tuple[re.Pattern[str], Any], ...] = (
-    (re.compile(r"e-?mail", re.I), mask_email_value),
+    (re.compile(r"(?:^|_)e-?mail(?:_?address)?$", re.I), mask_email_value),
     (
         re.compile(
-            r"(?:^|[_\s-])(?:ic|nric|mykad|new_ic|old_ic|ic_no|ic_number|national_id|"
-            r"identity_(?:no|number|card))(?:$|[_\s-])",
+            rf"(?:^|[_\s-])(?:ic|nric|mykad|new_ic|old_ic|national_id|identity(?:_card)?){_NUM}$",
             re.I,
         ),
         mask_ic_value,
     ),
-    (re.compile(r"passport", re.I), _tail),
-    (re.compile(r"(?:^|_)vin(?:$|_)|chassis", re.I), _tail),
-    (re.compile(r"bank|account_(?:no|number)|acct_?no|card_(?:no|number)", re.I), _tail),
-    (re.compile(r"phone|mobile|whatsapp|msisdn|(?:^|_)tel(?:$|_)", re.I), mask_phone_value),
+    (re.compile(rf"(?:^|_)passport{_NUM}$", re.I), _tail),
+    (re.compile(rf"(?:^|_)(?:vin|chassis){_NUM}$", re.I), _tail),
+    (
+        re.compile(
+            rf"(?:^|_)(?:bank_account{_NUM}|(?:bank_)?(?:account|acct|card)_?(?:no|number|num))$",
+            re.I,
+        ),
+        _tail,
+    ),
+    (
+        re.compile(rf"(?:^|_)(?:phone|mobile|whatsapp|msisdn|tel){_NUM}$", re.I),
+        mask_phone_value,
+    ),
 )
 # Chatwoot's contact_inboxes.source_id is the bare phone number on a WhatsApp
 # or SMS inbox (and an opaque id elsewhere): masked only when digit-only.
@@ -331,11 +352,17 @@ def mask_pii(value: Any, _key: str = "") -> Any:
     return value
 
 
+# What the display masks actually look like: a run of 3+ bullets touching the
+# kept tail or the "@" (+60•••••6789, s•••@x.com, •••••5678), or the IC form.
+# A single bullet ("• flat tyre") or a decorative "•••" is ordinary text.
+_MASK_SHAPE = re.compile(rf"{MASK}{{3,}}[0-9A-Za-z@]|\*{{6}}-\*{{2}}-\d{{4}}")
+
+
 def contains_mask(value: Any) -> bool:
-    """True when a value carries the display mask, i.e. it came from a masked
-    response and must not be written back over the real value."""
+    """True when a value carries a display-mask shape, i.e. it came from a
+    masked response and must not be written back over the real value."""
     if isinstance(value, str):
-        return MASK in value or "******-**-" in value
+        return bool(_MASK_SHAPE.search(value))
     if isinstance(value, dict):
         return any(contains_mask(v) for v in value.values())
     if isinstance(value, (list, tuple)):

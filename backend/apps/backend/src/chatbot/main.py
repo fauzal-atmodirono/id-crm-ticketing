@@ -1169,7 +1169,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             detail="RBAC_ENABLED is true but RBAC_DATABASE_URL is empty; /authz not mounted",
         )
 
-    # Wave 2 Task 29 (FIX-49): GET /privacy/me tells the fork's contact views
+    # Wave 2 Task 29 (FIX-49): GET /authz/me/pii tells the fork's contact views
     # whether to mask for this caller. Mounted on every tenant so the fork can
     # call it unconditionally; PII_MASKING_ENABLED off answers "not masking".
     from chatbot.features.privacy.access import build_privacy_router

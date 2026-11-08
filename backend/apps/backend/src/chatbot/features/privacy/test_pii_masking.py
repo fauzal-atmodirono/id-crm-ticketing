@@ -166,7 +166,7 @@ async def test_flag_off_unchanged(tmp_path) -> None:
         )
 
     privacy = _client(build_privacy_router(off, repo=repo, validator=FakeValidator(TOKENS)))
-    assert privacy.get("/privacy/me", headers=session("agent")).json() == {
+    assert privacy.get("/authz/me/pii", headers=session("agent")).json() == {
         "masking_enabled": False,
         "masked": False,
     }
@@ -176,10 +176,10 @@ async def test_missing_or_bad_session_is_masked(tmp_path) -> None:
     """Fail closed: a caller the policy cannot identify sees masked data."""
     repo = await _repo(tmp_path)
     privacy = _client(build_privacy_router(_settings(), repo=repo, validator=FakeValidator(TOKENS)))
-    assert privacy.get("/privacy/me").json() == {"masking_enabled": True, "masked": True}
-    assert privacy.get("/privacy/me", headers=session("nobody")).json()["masked"] is True
-    assert privacy.get("/privacy/me", headers=session("agent")).json()["masked"] is True
-    assert privacy.get("/privacy/me", headers=session("viewer")).json()["masked"] is False
+    assert privacy.get("/authz/me/pii").json() == {"masking_enabled": True, "masked": True}
+    assert privacy.get("/authz/me/pii", headers=session("nobody")).json()["masked"] is True
+    assert privacy.get("/authz/me/pii", headers=session("agent")).json()["masked"] is True
+    assert privacy.get("/authz/me/pii", headers=session("viewer")).json()["masked"] is False
 
     class _Broken:
         async def permissions_for_user(self, _uid):
@@ -188,7 +188,7 @@ async def test_missing_or_bad_session_is_masked(tmp_path) -> None:
     broken = _client(
         build_privacy_router(_settings(), repo=_Broken(), validator=FakeValidator(TOKENS))
     )
-    assert broken.get("/privacy/me", headers=session("viewer")).json()["masked"] is True
+    assert broken.get("/authz/me/pii", headers=session("viewer")).json()["masked"] is True
 
 
 # --- RSA incident log and CSV export -------------------------------------------
@@ -225,9 +225,74 @@ async def test_csv_export_masked(tmp_path) -> None:
     assert list(csv.DictReader(io.StringIO(full.text)))[0]["customer_phone"] == PHONE
 
 
-async def test_masked_value_cannot_be_written_back(tmp_path) -> None:
-    """A masked value round-tripped from a masked page must never overwrite
-    the real one."""
+# The RSA page (fork patch 0035) keys, in EMPTY_FORM order.
+_EMPTY_FORM_KEYS = (
+    "incident_date",
+    "vehicle_no",
+    "vehicle_model",
+    "customer_phone",
+    "cause",
+    "purchased_from",
+    "breakdown_location",
+    "arrived_location",
+    "customer_called_in_time",
+    "towing_assigned_time",
+    "time_arrived_breakdown_area",
+    "time_arrived_outlet",
+    "total_km",
+    "late_reason",
+    "remarks",
+)
+
+
+def _build_payload(row: dict) -> dict:
+    """Mirror of 0035's startEdit + buildPayload: every EMPTY_FORM key from
+    the loaded (masked) row, datetimes sliced to datetime-local, '' -> null."""
+    form = {k: row.get(k) if row.get(k) is not None else "" for k in _EMPTY_FORM_KEYS}
+    for k in (
+        "customer_called_in_time",
+        "towing_assigned_time",
+        "time_arrived_breakdown_area",
+        "time_arrived_outlet",
+    ):
+        form[k] = str(row[k])[:16] if row.get(k) else ""
+    form["total_km"] = row.get("total_km")
+    return {k: (None if v == "" else v) for k, v in form.items()}
+
+
+async def test_spa_edit_of_masked_row_saves_and_keeps_the_real_phone(tmp_path) -> None:
+    """Review fix 1: the RSA page re-sends every field of the masked row. Only
+    `cause` changed -> 200, the stored phone and remarks are untouched."""
+    repo = await _repo(tmp_path)
+    rsa = InMemoryRsaRepository()
+    incident_id = await rsa.create_incident(
+        incident_date="2026-11-01",
+        vehicle_no="BMT5518",
+        vehicle_model="X50",
+        cause="flat tyre",
+        customer_phone=PHONE,
+        purchased_from="kl",
+        breakdown_location="KM 12 PLUS",
+        customer_called_in_time="2026-11-01T09:15:00",
+        total_km=12,
+        remarks=f"owner IC {IC}, alt contact {EMAIL}",
+    )
+    client = _client(build_rsa_router(rsa, _settings(), repo, FakeValidator(TOKENS)))
+    row = client.get("/rsa/incidents", headers=session("agent")).json()["incidents"][0]
+    assert row["customer_phone"] != PHONE  # the page really holds the masked form
+
+    body = _build_payload(row)
+    assert set(body) == set(_EMPTY_FORM_KEYS)
+    body["cause"] = "battery"
+    res = client.patch(f"/rsa/incidents/{incident_id}", json=body, headers=session("agent"))
+    assert res.status_code == 200, res.text
+    stored = await rsa.get_incident(incident_id)
+    assert stored.cause == "battery"
+    assert stored.customer_phone == PHONE
+    assert stored.remarks == f"owner IC {IC}, alt contact {EMAIL}"
+
+
+async def test_changed_masked_value_is_refused(tmp_path) -> None:
     repo = await _repo(tmp_path)
     rsa = await _rsa_with_incident()
     client = _client(build_rsa_router(rsa, _settings(), repo, FakeValidator(TOKENS)))
@@ -235,15 +300,65 @@ async def test_masked_value_cannot_be_written_back(tmp_path) -> None:
 
     res = client.patch(
         f"/rsa/incidents/{row['id']}",
-        json={"customer_phone": row["customer_phone"]},
+        json={"customer_phone": f"+60{MASK * 5}0000"},
         headers=session("agent"),
     )
     assert res.status_code == 400
     assert (await rsa.get_incident(row["id"])).customer_phone == PHONE
-    ok = client.patch(
-        f"/rsa/incidents/{row['id']}", json={"cause": "battery"}, headers=session("agent")
+
+
+async def test_bulleted_text_is_not_a_mask(tmp_path) -> None:
+    """Review fix 2: bullets are ordinary text. A pii.view admin is never
+    checked; a masked caller is refused only for a real mask shape."""
+    repo = await _repo(tmp_path)
+    rsa = await _rsa_with_incident()
+    client = _client(build_rsa_router(rsa, _settings(), repo, FakeValidator(TOKENS)))
+    iid = client.get("/rsa/incidents", headers=session("admin")).json()["incidents"][0]["id"]
+
+    for who in ("admin", "agent"):
+        res = client.patch(
+            f"/rsa/incidents/{iid}",
+            json={"remarks": "• towed\n• battery replaced ••• done"},
+            headers=session(who),
+        )
+        assert res.status_code == 200, (who, res.text)
+    created = client.post(
+        "/rsa/incidents",
+        json={"incident_date": "2026-11-02", "vehicle_no": "W1", "cause": "• flat"},
+        headers=session("agent"),
     )
-    assert ok.status_code == 200
+    assert created.status_code == 200
+    # An unmasked caller may even type something mask-shaped; only masked
+    # callers are checked.
+    res = client.patch(
+        f"/rsa/incidents/{iid}", json={"late_reason": f"x{MASK * 3}1"}, headers=session("admin")
+    )
+    assert res.status_code == 200
+
+
+async def test_privacy_me_is_cached_per_session(tmp_path) -> None:
+    repo = await _repo(tmp_path)
+    now = [100.0]
+    validator = FakeValidator(TOKENS)
+    calls = []
+    original = validator.resolve_identity
+
+    async def counting(*a):
+        calls.append(a)
+        return await original(*a)
+
+    validator.resolve_identity = counting
+    client = _client(
+        build_privacy_router(_settings(), repo=repo, validator=validator, clock=lambda: now[0])
+    )
+    for _ in range(3):
+        assert client.get("/authz/me/pii", headers=session("agent")).json()["masked"] is True
+    assert len(calls) == 1
+    assert client.get("/authz/me/pii", headers=session("viewer")).json()["masked"] is False
+    assert len(calls) == 2  # a different triplet is its own entry
+    now[0] += 31
+    client.get("/authz/me/pii", headers=session("agent"))
+    assert len(calls) == 3
 
 
 # --- AI activity previews ---------------------------------------------------------
@@ -323,9 +438,27 @@ async def test_case_fields_masked_and_masked_write_refused(tmp_path) -> None:
     }
     assert raw["vehicle_chassis"] == VIN
 
+    # Re-sent exactly as shown: unchanged, dropped, the real VIN is kept.
     res = client.patch(
         "/cases/1/fields",
-        json={"fields": {"vehicle_chassis": fields["vehicle_chassis"]}},
+        json={
+            "fields": {
+                "vehicle_chassis": fields["vehicle_chassis"],
+                "case_detail": fields["case_detail"],
+                "wip_issue": "brake noise",
+            }
+        },
+        headers=session("agent"),
+    )
+    assert res.status_code == 200
+    assert res.json()["updated"] == ["wip_issue"]
+    merge.assert_awaited_once_with("1", {"wip_issue": "brake noise"})
+
+    # A mask shape that is NOT the current rendering: refused.
+    merge.reset_mock()
+    res = client.patch(
+        "/cases/1/fields",
+        json={"fields": {"vehicle_chassis": f"{MASK * 13}9999"}},
         headers=session("agent"),
     )
     assert res.status_code == 400

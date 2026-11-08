@@ -13,12 +13,29 @@ def _section(name: str) -> str:
     return TEXT.split(f"diff --git a/{name}", 1)[1].split("diff --git", 1)[0]
 
 
-def test_asks_the_backend_privacy_route_and_masks_only_on_explicit_yes():
-    # backend: features/privacy/access.py GET /privacy/me
-    assert "adminRequest('/privacy/me')" in ADDED
+def test_asks_the_backend_route_under_the_routed_authz_prefix():
+    # backend: features/privacy/access.py GET /authz/me/pii
+    assert "adminRequest('/authz/me/pii')" in ADDED
+    assert "/privacy/me" not in ADDED
     assert "data.masking_enabled && data.masked" in ADDED
-    # a failure never masks (flag off / older backend = unchanged views)
-    assert ".catch(() => {\n      masked.value = false;" in ADDED
+
+
+def test_fails_closed_while_pending_and_on_error_except_404():
+    # Review ruling: pending = masked; error = masked (retried); 404 or no
+    # backend configured = unmasked (older backend cannot have masking on).
+    assert "const masked = ref(true); // pending = masked" in ADDED
+    assert "err?.status === 404 ||" in ADDED
+    assert "/PROTON_BACKEND_URL not configured/.test(err?.message || '')" in ADDED
+    catch_block = ADDED.split(".catch(err => {", 1)[1].split(".finally(", 1)[0]
+    no_backend, rest = catch_block.split("return;", 1)
+    assert "masked.value = false;" in no_backend
+    assert "masked.value = true;" in rest
+    assert "setTimeout(" in rest
+
+
+def test_key_rules_are_anchored_like_the_backend():
+    assert "(^|_)(bank_account${NUM}|(bank_)?(account|acct|card)_?(no|number|num))$" in ADDED
+    assert "(^|_)passport${NUM}$" in ADDED
 
 
 def test_sidebar_rows_are_masked_and_not_copyable_or_editable():

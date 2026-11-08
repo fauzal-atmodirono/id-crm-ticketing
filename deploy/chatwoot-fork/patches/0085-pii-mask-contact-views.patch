@@ -7,12 +7,15 @@ RFP 2026_028 2.2.5 asks to "validate data masking (PII protection)"; PDPA
 AI activity) when PII_MASKING_ENABLED is on. Chatwoot's own contact views are
 not backend responses, so this patch masks them on the client:
 
-* useProtonPiiMask.js (new): asks GET /privacy/me once per page session and
-  masks only on an explicit { masking_enabled: true, masked: true }. Any
-  failure (flag off, older backend, network) shows everything, as before.
-  Same display format as the backend (+60•••••6789, s•••@gmail.com,
-  ******-**-5678) and the same key rules (ic/nric/mykad, passport,
-  vin/chassis, bank/account/card, phone, e-mail).
+* useProtonPiiMask.js (new): asks GET /authz/me/pii once per page session
+  (under /authz/*, already routed to the backend by every tenant vhost).
+  Fail closed: masked while the answer is pending and on an error (retried
+  after 5 s); unmasked on a 404 (older backend / route absent) or when no
+  Proton backend is configured, and on any answer other than
+  { masking_enabled: true, masked: true }. Same display format as the
+  backend (+60•••••6789, s•••@gmail.com, ******-**-5678) and the same
+  anchored key rules (ic/nric/mykad, passport, vin/chassis, bank account /
+  account / card number, phone, e-mail; bank_name is not masked).
 * ContactInfo.vue (conversation contact sidebar): e-mail, phone and
   identifier rows masked; masked rows are not copyable, not editable and
   carry no mailto:/tel: link; the edit-contact modal button is hidden.
@@ -82,22 +85,32 @@ index 8dd9d63..dec3fae 100644
          color="slate"
 diff --git a/app/javascript/dashboard/composables/useProtonPiiMask.js b/app/javascript/dashboard/composables/useProtonPiiMask.js
 new file mode 100644
-index 0000000..ac0f5f9
+index 0000000..79b1f2f
 --- /dev/null
 +++ b/app/javascript/dashboard/composables/useProtonPiiMask.js
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,143 @@
 +// useProtonPiiMask.js — OUR file (patch 0085, Wave 2 Task 29 / FIX-49).
 +// Masks personal identifiers (phone, e-mail, IC, passport, VIN, bank/card)
 +// in Chatwoot's own contact views for a user without the `pii.view`
 +// permission, when the backend's PII_MASKING_ENABLED is on.
 +//
-+// Asks the Proton backend once per page session: GET /privacy/me ->
-+// { masking_enabled, masked }. Masks ONLY on an explicit `masked: true`
-+// answer. Any failure (flag off, an older backend without the route, a
-+// network hiccup) shows everything, exactly as before this patch, and a later
-+// call retries. This is UX only: Chatwoot's own API still returns the raw
-+// value to the browser. The backend-owned surfaces (Customer 360, RSA, case
-+// fields, AI activity) are masked server-side.
++// Asks the Proton backend once per page session: GET /authz/me/pii ->
++// { masking_enabled, masked } (under /authz/*, which every tenant's Caddy
++// vhost already routes to the backend).
++//
++// FAIL CLOSED (Task 29 review ruling):
++//   * while the answer is pending -> masked (no flash of raw data);
++//   * an error -> masked, retried after a few seconds;
++//   * EXCEPT a 404 (an older backend without the route, or nothing routed)
++//     and a tenant with no Proton backend configured at all -> unmasked,
++//     exactly as before this patch: neither can have masking switched on.
++//   * an answer -> masked only when { masking_enabled: true, masked: true }.
++// So a flag-off tenant shows masked values for the length of one request on
++// first load, then everything.
++//
++// This is UX only: Chatwoot's own API still returns the raw value to the
++// browser. The backend-owned surfaces (Customer 360, RSA, case fields, AI
++// activity) are masked server-side.
 +//
 +// Formats match the backend's features/privacy/pii.py display format:
 +//   +60•••••6789   s•••@gmail.com   ******-**-5678   •••••••••••••2345
@@ -105,19 +118,35 @@ index 0000000..ac0f5f9
 +import { adminRequest } from 'dashboard/api/protonAdmin';
 +
 +const MASK = '•';
-+const masked = ref(false);
++const RETRY_MS = 5000;
++const masked = ref(true); // pending = masked
 +let loaded = false;
 +let loadPromise = null;
++let retryTimer = null;
 +
 +function ensureLoaded() {
 +  if (loaded || loadPromise) return;
-+  loadPromise = adminRequest('/privacy/me')
++  loadPromise = adminRequest('/authz/me/pii')
 +    .then(data => {
 +      masked.value = !!(data && data.masking_enabled && data.masked);
 +      loaded = true;
 +    })
-+    .catch(() => {
-+      masked.value = false;
++    .catch(err => {
++      const noBackend =
++        err?.status === 404 ||
++        /PROTON_BACKEND_URL not configured/.test(err?.message || '');
++      if (noBackend) {
++        masked.value = false;
++        loaded = true;
++        return;
++      }
++      masked.value = true;
++      if (retryTimer === null) {
++        retryTimer = setTimeout(() => {
++          retryTimer = null;
++          ensureLoaded();
++        }, RETRY_MS);
++      }
 +    })
 +    .finally(() => {
 +      loadPromise = null;
@@ -151,21 +180,34 @@ index 0000000..ac0f5f9
 +  return `******-**-${digits.slice(-4)}`;
 +}
 +
-+// Which rule a field NAME calls for (same token rules as the backend's
-+// key-based masking), or null for a field that is not personal data.
++// Which rule a field NAME calls for, or null for a field that is not
++// personal data. Same anchored rules as the backend's _KEY_RULES: start at a
++// name-part boundary and END the name (optional _no/_number), so bank_name
++// ("Maybank"), passport_country and ic_expiry are not masked.
++const NUM = '(_?(no|number|num))?';
++const KEY_RULES = [
++  [new RegExp('(^|_)e-?mail(_?address)?$'), 'email'],
++  [
++    new RegExp(
++      `(^|[_\\s-])(ic|nric|mykad|new_ic|old_ic|national_id|identity(_card)?)${NUM}$`
++    ),
++    'ic',
++  ],
++  [new RegExp(`(^|_)passport${NUM}$`), 'tail'],
++  [new RegExp(`(^|_)(vin|chassis)${NUM}$`), 'tail'],
++  [
++    new RegExp(
++      `(^|_)(bank_account${NUM}|(bank_)?(account|acct|card)_?(no|number|num))$`
++    ),
++    'tail',
++  ],
++  [new RegExp(`(^|_)(phone|mobile|whatsapp|msisdn|tel)${NUM}$`), 'phone'],
++];
++
 +export function piiKindForKey(key) {
 +  const k = String(key || '').toLowerCase();
-+  if (/e-?mail/.test(k)) return 'email';
-+  if (
-+    /(^|[_\s-])(ic|nric|mykad|new_ic|old_ic|ic_no|ic_number|national_id|identity_(no|number|card))($|[_\s-])/.test(
-+      k
-+    )
-+  )
-+    return 'ic';
-+  if (/passport|(^|_)vin($|_)|chassis|bank|account_(no|number)|acct_?no|card_(no|number)/.test(k))
-+    return 'tail';
-+  if (/phone|mobile|whatsapp|msisdn|(^|_)tel($|_)/.test(k)) return 'phone';
-+  return null;
++  const hit = KEY_RULES.find(([pattern]) => pattern.test(k));
++  return hit ? hit[1] : null;
 +}
 +
 +export function maskPiiValue(value, kind) {

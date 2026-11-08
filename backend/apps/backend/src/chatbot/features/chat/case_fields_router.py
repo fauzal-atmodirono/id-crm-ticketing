@@ -131,11 +131,21 @@ def build_case_fields_router(
         pii: PiiPolicy = Depends(pii_policy),
     ) -> dict[str, Any]:
         _guard()
-        pii.refuse_masked_write(body.fields)
+        current = None
         if not scope.unrestricted:
-            await _read_in_scope(conv_id, scope)
+            current = await _read_in_scope(conv_id, scope)
+        elif pii.masked:
+            try:
+                current = await chatwoot_read(conv_id)
+            except Exception:
+                _log.warning("case_fields_read_failed", conv_id=conv_id)
+        # A masked caller's untouched field comes back in its masked form:
+        # dropped as unchanged; any other mask shape is refused (400).
+        incoming = pii.reconcile_write(
+            body.fields, (current or {}).get("custom_attributes") or None
+        )
         updates: dict[str, Any] = {}
-        for name, raw in body.fields.items():
+        for name, raw in incoming.items():
             try:
                 if name == "purchased_from_dealer":
                     updates[name] = await validate_dealer_slug(raw, dealer_store)

@@ -18,6 +18,7 @@ service actor with ``actor_source="agent-service"``.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -50,6 +51,53 @@ _LABEL_ACTIVITY = re.compile(r"^(?P<name>.+?) added (?P<labels>.+)$")
 _ACTIVITY_MESSAGE_TYPE = 2
 SOURCE_ACTIVITY = "chatwoot-activity"
 SOURCE_AGENT_SERVICE = "agent-service"
+SOURCE_AUTOMATION = "chatwoot-automation"
+# Chatwoot labels automation-rule actions with this author name.
+_AUTOMATION_AUTHOR = "Automation System"
+# Hard ceiling on the whole derivation. The agent's HTTP timeout is 10 s and the
+# notify route must not push the send past it; module-level so tests can shrink it.
+DERIVE_TIMEOUT_SECONDS = 2.0
+
+
+async def derive_context(
+    audit: AuditLogPort | None,
+    chatwoot_request: Callable[..., Awaitable[Any]],
+    conv_id: str,
+    *,
+    need_actor: bool,
+    need_sla: bool,
+) -> tuple[str | None, str | None, str]:
+    """(actor_name, sla_status, actor_source), bounded by DERIVE_TIMEOUT_SECONDS.
+
+    The two lookups run concurrently; whichever finished inside the budget is
+    kept and the other is cancelled, so a slow Chatwoot cannot cost the SLA
+    status (or the send) more than the budget.
+    """
+    actor_task = (
+        asyncio.ensure_future(derive_escalating_agent(chatwoot_request, conv_id))
+        if need_actor
+        else None
+    )
+    sla_task = asyncio.ensure_future(derive_sla_status(audit, conv_id)) if need_sla else None
+    tasks = [t for t in (actor_task, sla_task) if t is not None]
+    if tasks:
+        _done, pending = await asyncio.wait(tasks, timeout=DERIVE_TIMEOUT_SECONDS)
+        for t in pending:
+            t.cancel()
+        if pending:
+            _log.warning("escalation_context_derivation_timed_out", conv_id=conv_id)
+
+    def _result(task: asyncio.Future | None) -> str | None:
+        if task is None or not task.done() or task.cancelled() or task.exception() is not None:
+            return None
+        return task.result()
+
+    actor, sla = _result(actor_task), _result(sla_task)
+    if actor:
+        source = SOURCE_AUTOMATION if actor == _AUTOMATION_AUTHOR else SOURCE_ACTIVITY
+    else:
+        source = SOURCE_AGENT_SERVICE
+    return actor, sla, source
 
 
 async def derive_sla_status(audit: AuditLogPort | None, conv_id: str) -> str | None:

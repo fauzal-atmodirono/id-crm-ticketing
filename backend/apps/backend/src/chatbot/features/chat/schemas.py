@@ -13,6 +13,9 @@ class ChatwootSender(BaseModel):
     # Email-inbox conversations carry the customer's real address on the sender.
     # Used for the email flow's no-reply loop guard and (optionally) naming.
     email: str | None = None
+    # Chatwoot's webhook sender discriminator: "user" for an agent, "contact"
+    # for a customer ("agent_bot" for a bot). Absent on older payloads.
+    type: str | None = None
 
 
 class ChatwootConversation(BaseModel):

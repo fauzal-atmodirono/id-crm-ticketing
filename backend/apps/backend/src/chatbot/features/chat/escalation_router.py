@@ -40,14 +40,9 @@ import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
-from chatbot.features.chat.escalation_ack import ack_transport
-from chatbot.features.chat.escalation_context import (
-    SOURCE_ACTIVITY,
-    SOURCE_AGENT_SERVICE,
-    derive_escalating_agent,
-    derive_sla_status,
-)
 from chatbot.features.chat.audit_events import EVENT_REPLY_LINK, record_event
+from chatbot.features.chat.escalation_ack import ack_transport
+from chatbot.features.chat.escalation_context import derive_context
 from chatbot.features.chat.sla import ACKNOWLEDGED_STATE
 
 if TYPE_CHECKING:
@@ -250,14 +245,19 @@ def build_escalation_router(
         sla_status = payload.sla_status
         actor_source: str | None = None
         if audit is not None:
+            derived_actor, derived_sla, actor_source = await derive_context(
+                audit,
+                chatwoot_request,
+                payload.conversation_id,
+                need_actor=actor_name is None,
+                need_sla=sla_status is None,
+            )
             if actor_name is None:
-                derived = await derive_escalating_agent(chatwoot_request, payload.conversation_id)
-                if derived:
-                    actor_name, actor_source = derived, SOURCE_ACTIVITY
-                else:
-                    actor_source = SOURCE_AGENT_SERVICE
+                actor_name = derived_actor
+            else:
+                actor_source = None
             if sla_status is None:
-                sla_status = await derive_sla_status(audit, payload.conversation_id)
+                sla_status = derived_sla
         audit_ctx = {
             k: v
             for k, v in (

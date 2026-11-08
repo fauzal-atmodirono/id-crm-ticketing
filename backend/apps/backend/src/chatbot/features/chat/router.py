@@ -678,7 +678,20 @@ class ChatRouter:
         to_state = _chatwoot_state(payload.conversation.status)
         entries = await self._audit_log.list_for_ticket(conv_id)
         from_state = entries[-1].to_state if entries else ""
-        actor = (payload.sender.name if payload.sender and payload.sender.name else None) or "agent"
+        sender = payload.sender
+        actor_user_id: int | None = None
+        if sender is not None and sender.type == "contact":
+            # A customer's action is not an agent's: never record their contact
+            # id as a Chatwoot user id, and never name them as the agent.
+            actor = "customer"
+        elif sender is not None and sender.type == "agent_bot":
+            actor = "agent-bot"
+        else:
+            actor = (sender.name if sender and sender.name else None) or "agent"
+            # Only a confirmed agent ("user") gets an id. Older payloads with no
+            # `type` keep the name (as before) but no id.
+            if sender is not None and sender.type == "user":
+                actor_user_id = sender.id
         await self._audit_log.append(
             AuditEntry(
                 ticket_id=conv_id,
@@ -689,7 +702,7 @@ class ChatRouter:
                 at=datetime.now(UTC).isoformat(),
                 remark=f"status_changed -> {payload.conversation.status}",
                 event_type="status_change",
-                actor_user_id=payload.sender.id if payload.sender else None,
+                actor_user_id=actor_user_id,
                 actor_name=actor,
                 target=f"case:{conv_id}",
             )

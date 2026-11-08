@@ -553,8 +553,9 @@ async def test_ladder_phone_task_masks_phone_recipients_but_keeps_emails():
         set_attributes=_set, now=_NOW, audit=audit,
     )
     rows = await audit.list_for_ticket("42")
-    for r in rows:
-        assert not any("+60123456789" in x or "60123456789" in x for x in (r.recipients or []))
+    recipients = [x for r in rows for x in (r.recipients or [])]
+    assert "********789" in recipients or not recipients
+    assert not any("60123456789" in x for x in recipients)
 
 
 # --- guarded reads and acknowledge failure -----------------------------------
@@ -613,3 +614,93 @@ def test_mask_recipient_keeps_emails_and_masks_phone_numbers():
     assert mask_recipient("dp@kl.my") == "dp@kl.my"
     assert mask_recipient("+60123456789") == "********789"
     assert mask_recipient("the dealer principal") == "the dealer principal"
+
+
+def test_automation_system_activity_is_marked_as_automation():
+    import asyncio
+
+    from chatbot.features.chat.escalation_context import derive_context
+
+    async def _cw(method, path, payload=None):
+        return {"payload": [
+            {"message_type": 2, "content": "Automation System added escalate", "created_at": 5}
+        ]}
+
+    actor, sla, source = asyncio.run(
+        derive_context(None, _cw, "42", need_actor=True, need_sla=False)
+    )
+    assert (actor, sla, source) == ("Automation System", None, "chatwoot-automation")
+
+
+async def test_slow_chatwoot_lookup_does_not_hold_up_the_send(monkeypatch):
+    import time
+
+    from chatbot.features.chat import escalation_context
+
+    monkeypatch.setattr(escalation_context, "DERIVE_TIMEOUT_SECONDS", 0.2)
+    audit = InMemoryAuditLog()
+    sent: list[float] = []
+
+    class _TimedSender:
+        def send(self, to, cc, subject, body, attachments, *, reply_to=None, in_reply_to=None):
+            sent.append(time.monotonic())
+
+    async def _cw(method, path, payload=None):
+        if path.endswith("/messages"):
+            await asyncio.sleep(30)  # a hung Chatwoot
+        return {"meta": {"sender": {"email": "customer@test"}}}
+
+    notifier = EscalationNotifier(
+        _NSettings(), _Registry(), _TimedSender(), None, _noop_cw,
+        dealer_store=_DealerStore(), audit=audit,
+    )
+    app = FastAPI()
+    app.include_router(
+        build_escalation_router(
+            notifier, _cw, Settings(_env_file=None, proton_backend_key="k"), audit=audit
+        )
+    )
+    start = time.monotonic()
+    res = await asyncio.to_thread(
+        TestClient(app).post, "/escalation/notify", headers={"x-api-key": "k"}, json=_NOTIFY
+    )
+    elapsed = time.monotonic() - start
+    assert res.status_code == 200
+    assert elapsed < 3
+    assert sent and sent[0] - start < 3
+    rows = [r for r in await audit.list_for_ticket("42") if r.event_type == "escalation_notify"]
+    assert rows
+    assert all(r.actor_source == "agent-service" for r in rows)
+    assert all(r.actor == "escalation-notifier" for r in rows)
+    assert all(r.sla_status == "WITHIN_SLA" for r in rows)  # the SLA half finished in budget
+
+
+def _status_payload(sender):
+    from chatbot.features.chat.schemas import ChatwootWebhookPayload
+
+    return ChatwootWebhookPayload.model_validate(
+        {"event": "conversation_status_changed", "id": 42,
+         "conversation": {"id": 42, "status": "resolved"}, "sender": sender}
+    )
+
+
+async def _status_row(sender):
+    from chatbot.features.chat.router import ChatRouter
+
+    audit = InMemoryAuditLog()
+    stub = type("S", (), {"_audit_log": audit, "orchestrator": type("O", (), {"_ticketing_port": None})()})()
+    await ChatRouter._log_status_transition(stub, "42", _status_payload(sender))
+    (row,) = await audit.list_for_ticket("42")
+    return row
+
+
+async def test_status_change_by_an_agent_records_their_user_id():
+    row = await _status_row({"id": 7, "name": "Agent Sam", "type": "user"})
+    assert (row.actor, row.actor_user_id) == ("Agent Sam", 7)
+
+
+async def test_status_change_by_a_contact_is_not_recorded_as_an_agent():
+    row = await _status_row({"id": 7, "name": "Real Customer", "type": "contact"})
+    assert row.actor == "customer"
+    assert row.actor_user_id is None
+    assert row.actor_name == "customer"

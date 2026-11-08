@@ -112,7 +112,7 @@ async def test_same_phone_open_case_suggests_merge(monkeypatch):
     assert "mobile number" in body["content"]
     assert "possible_duplicate" in _body(labels)["labels"]
     assert "sales" in _body(labels)["labels"]  # existing labels kept
-    assert _body(attrs)["custom_attributes"]["related_case_ids"] == "12"
+    assert _body(attrs, 0)["custom_attributes"]["related_case_ids"] == "12"
     assert existing_note.call_count == 1
     assert _body(existing_note)["private"] is True
 
@@ -196,7 +196,7 @@ async def test_same_plate_different_contact_matches(monkeypatch):
     assert "#30" in content
     assert "#29" not in content
     assert "vehicle registration" in content
-    assert _body(attrs)["custom_attributes"]["related_case_ids"] == "30"
+    assert _body(attrs, 0)["custom_attributes"]["related_case_ids"] == "30"
 
 
 @respx.mock
@@ -224,7 +224,7 @@ async def test_already_flagged_conversation_is_left_alone(monkeypatch):
     _enable(monkeypatch)
     _mock_contact_conversations(55, [_conv(NEW_ID), _conv(12)])
     _mock_search("+60123456789", [])
-    note, labels, _ = _mock_new_conversation(conv_attrs={"related_case_ids": "12"})
+    note, labels, _ = _mock_new_conversation(conv_attrs={"related_case_ids": "12", "duplicate_note_posted": "true"})
 
     await duplicate_detection.maybe_detect_duplicates(_created())
 
@@ -533,7 +533,7 @@ async def test_contact_vehicle_no_added_later_links_open_case(monkeypatch):
 
     assert note.call_count == 1
     assert "#30" in _body(note)["content"]
-    assert _body(attrs)["custom_attributes"]["related_case_ids"] == "30"
+    assert _body(attrs, 0)["custom_attributes"]["related_case_ids"] == "30"
     assert existing_note.call_count == 1
     assert contacts_filter.call_count == 1
 
@@ -569,7 +569,8 @@ async def test_note_failure_releases_the_claim_for_a_retry(monkeypatch):
 
     assert note.call_count == 2
     assert labels.call_count == 1
-    assert _body(attrs)["custom_attributes"]["related_case_ids"] == "12"
+    assert _body(attrs, 2)["custom_attributes"]["related_case_ids"] == "12"
+    assert _body(attrs)["custom_attributes"]["duplicate_note_posted"] == "true"
 
 
 @respx.mock
@@ -611,3 +612,205 @@ async def test_assignee_outside_new_inbox_is_logged(monkeypatch, caplog):
 
     assert existing_note.call_count == 1  # still notified
     assert "not a member of inbox 3" in caplog.text
+
+
+# --- review round 2: outer claims released on failure; marker half state ---
+
+
+@respx.mock
+async def test_update_path_failed_lookup_releases_claim_and_retries(monkeypatch):
+    _enable(monkeypatch)
+    payload = _created(
+        contact={"id": 55, "name": "Jane", "custom_attributes": {}},
+        conv_attrs={"vehicle_chassis": "PM2ABC123"},
+        event="conversation_updated",
+    )
+    _mock_contact_conversations(55, [_conv(NEW_ID)])
+    conv_filter = respx.post(f"{API}/conversations/filter").mock(
+        side_effect=[
+            httpx.Response(500),
+            httpx.Response(
+                200, json={"payload": [_conv(41, attrs={"vehicle_chassis": "PM2ABC123"})]}
+            ),
+        ]
+    )
+    respx.post(f"{API}/conversations/41/messages").mock(
+        return_value=httpx.Response(200, json={"id": 2})
+    )
+    note, _, _ = _mock_new_conversation()
+
+    await duplicate_detection.maybe_detect_duplicates_on_update(payload)
+    assert not note.called
+    await duplicate_detection.maybe_detect_duplicates_on_update(payload)  # same signals
+
+    assert conv_filter.call_count == 2
+    assert note.call_count == 1
+
+
+@respx.mock
+async def test_update_path_note_failure_releases_outer_claim(monkeypatch):
+    _enable(monkeypatch)
+    payload = _created(
+        contact={"id": 55, "name": "Jane", "custom_attributes": {}},
+        conv_attrs={"vehicle_chassis": "PM2ABC123"},
+        event="conversation_updated",
+    )
+    _mock_contact_conversations(55, [_conv(NEW_ID)])
+    respx.post(f"{API}/conversations/filter").mock(
+        return_value=httpx.Response(
+            200, json={"payload": [_conv(41, attrs={"vehicle_chassis": "PM2ABC123"})]}
+        )
+    )
+    respx.post(f"{API}/conversations/41/messages").mock(
+        return_value=httpx.Response(200, json={"id": 2})
+    )
+    note, _, _ = _mock_new_conversation()
+    note.side_effect = [httpx.Response(500), httpx.Response(200, json={"id": 1})]
+
+    await duplicate_detection.maybe_detect_duplicates_on_update(payload)
+    await duplicate_detection.maybe_detect_duplicates_on_update(payload)
+
+    assert note.call_count == 2  # failed once, retried once
+
+
+@respx.mock
+async def test_contact_path_lookup_exception_releases_claim_and_retries(monkeypatch):
+    _enable(monkeypatch)
+    event = {"event": "contact_updated", "id": 55, "custom_attributes": {"vehicle_no": "BMT5518"}}
+    contact_convs = respx.get(f"{API}/contacts/55/conversations").mock(
+        side_effect=[
+            httpx.Response(500),  # the contact path's own lookup raises
+            httpx.Response(200, json={"payload": [_conv(NEW_ID)]}),
+            httpx.Response(200, json={"payload": [_conv(NEW_ID)]}),
+        ]
+    )
+    respx.post(f"{API}/contacts/filter").mock(
+        return_value=httpx.Response(
+            200, json={"payload": [{"id": 88, "custom_attributes": {"vehicle_no": "BMT5518"}}]}
+        )
+    )
+    respx.post(f"{API}/conversations/filter").mock(
+        return_value=httpx.Response(200, json={"payload": []})
+    )
+    _mock_contact_conversations(88, [_conv(30)])
+    respx.post(f"{API}/conversations/30/messages").mock(
+        return_value=httpx.Response(200, json={"id": 2})
+    )
+    note, _, _ = _mock_new_conversation()
+
+    await duplicate_detection.maybe_detect_duplicates_on_contact_update(event)
+    assert not note.called
+    await duplicate_detection.maybe_detect_duplicates_on_contact_update(event)
+
+    assert contact_convs.call_count == 3
+    assert note.call_count == 1
+
+
+async def test_contact_path_failed_case_releases_claim(monkeypatch):
+    _enable(monkeypatch)
+    event = {"event": "contact_updated", "id": 55, "custom_attributes": {"vehicle_no": "BMT5518"}}
+    detect = AsyncMock(side_effect=[duplicate_detection.FAILED, duplicate_detection.NO_MATCH])
+    monkeypatch.setattr(duplicate_detection, "_detect", detect)
+
+    class _Client:
+        async def list_contact_conversations(self, contact_id):
+            return [_conv(NEW_ID)]
+
+    monkeypatch.setattr(duplicate_detection, "get_chatwoot_client", lambda: _Client())
+
+    await duplicate_detection.maybe_detect_duplicates_on_contact_update(event)  # FAILED
+    await duplicate_detection.maybe_detect_duplicates_on_contact_update(event)  # retried
+    await duplicate_detection.maybe_detect_duplicates_on_contact_update(event)  # NO_MATCH kept
+
+    assert detect.await_count == 2
+
+
+async def test_contact_path_orders_by_recent_activity_and_logs_cap(monkeypatch, caplog):
+    _enable(monkeypatch)
+    event = {"event": "contact_updated", "id": 55, "custom_attributes": {"vehicle_no": "BMT5518"}}
+    detect = AsyncMock(return_value=duplicate_detection.NO_MATCH)
+    monkeypatch.setattr(duplicate_detection, "_detect", detect)
+    convs = [{**_conv(i), "last_activity_at": 1_700_000_000 + i * 10} for i in range(1, 8)]
+    convs.append({**_conv(99, attrs={"related_case_ids": "1", "duplicate_note_posted": "true"}),
+                  "last_activity_at": 1_800_000_000})  # fully flagged: excluded
+
+    class _Client:
+        async def list_contact_conversations(self, contact_id):
+            return convs
+
+    monkeypatch.setattr(duplicate_detection, "get_chatwoot_client", lambda: _Client())
+
+    with caplog.at_level("INFO", logger="app.services.duplicate_detection"):
+        await duplicate_detection.maybe_detect_duplicates_on_contact_update(event)
+
+    assert [c.args[0]["id"] for c in detect.await_args_list] == [7, 6, 5, 4, 3]
+    assert "has 7 open cases" in caplog.text
+
+
+@respx.mock
+async def test_marker_write_timeout_after_commit_is_rolled_back(monkeypatch):
+    _enable(monkeypatch)
+    _mock_contact_conversations(55, [_conv(NEW_ID), _conv(12)])
+    _mock_search("+60123456789", [])
+    note, labels, attrs = _mock_new_conversation()
+    committed: list[dict] = []
+
+    def write(request):
+        committed.append(json.loads(request.content)["custom_attributes"])
+        if len(committed) == 1:
+            raise httpx.ReadTimeout("chatwoot committed, then the response was lost")
+        return httpx.Response(200, json={})
+
+    attrs.side_effect = write
+
+    await duplicate_detection.maybe_detect_duplicates(_created())
+
+    assert committed[0]["related_case_ids"] == "12"
+    assert committed[1]["related_case_ids"] == ""  # rollback attempted
+    assert not note.called
+    assert not labels.called
+
+
+@respx.mock
+async def test_stranded_marker_without_note_is_retried(monkeypatch):
+    """A marker with no note flag (and no note in the thread) is a half state
+    from an earlier failed run. It must not block the case forever."""
+    _enable(monkeypatch)
+    _mock_contact_conversations(55, [_conv(NEW_ID), _conv(12)])
+    _mock_search("+60123456789", [])
+    respx.post(f"{API}/conversations/12/messages").mock(
+        return_value=httpx.Response(200, json={"id": 2})
+    )
+    respx.get(f"{API}/conversations/{NEW_ID}/messages").mock(
+        return_value=httpx.Response(200, json={"payload": [{"content": "hi", "private": False}]})
+    )
+    note, labels, attrs = _mock_new_conversation(conv_attrs={"related_case_ids": "12"})
+
+    await duplicate_detection.maybe_detect_duplicates(_created())
+
+    assert note.call_count == 1
+    assert labels.call_count == 1
+    assert _body(attrs)["custom_attributes"]["duplicate_note_posted"] == "true"
+
+
+@respx.mock
+async def test_marker_with_landed_note_but_lost_flag_is_completed_not_renoted(monkeypatch):
+    _enable(monkeypatch)
+    _mock_contact_conversations(55, [_conv(NEW_ID), _conv(12)])
+    _mock_search("+60123456789", [])
+    respx.get(f"{API}/conversations/{NEW_ID}/messages").mock(
+        return_value=httpx.Response(
+            200,
+            json={"payload": [{"content": "**Possible duplicate case.** ...", "private": True}]},
+        )
+    )
+    note, labels, attrs = _mock_new_conversation(conv_attrs={"related_case_ids": "12"})
+
+    await duplicate_detection.maybe_detect_duplicates(_created())
+
+    assert not note.called
+    assert attrs.call_count == 1
+    assert _body(attrs)["custom_attributes"] == {
+        "related_case_ids": "12",
+        "duplicate_note_posted": "true",
+    }

@@ -70,7 +70,12 @@ It is written FIRST, before the note and label, because the label write
 makes Chatwoot emit conversation_updated and that payload must already
 carry the marker or it would re-enter and notify twice. If the marker or
 the new-case note fails, the marker is rolled back and the claim released,
-so a later event retries instead of the fingerprint being burned.
+so a later event retries instead of the fingerprint being burned. Only the
+marker plus `duplicate_note_posted` (written after the note) counts as
+flagged: a stranded marker from a lost note is retried, and a marker whose
+note did land (only the flag write lost) is completed without a second note.
+The late-signal paths' outer claims are likewise released when `_detect`
+returns FAILED (including a failed lookup that found nothing) or raises.
 
 Only a `User` assignee is @mentioned (an AgentBot-held case falls back to its
 team). An assignee who is not a member of the new case's inbox is logged:
@@ -101,6 +106,13 @@ logger = logging.getLogger(__name__)
 
 LABEL = "possible_duplicate"
 RELATED_ATTR = "related_case_ids"
+# Written AFTER the new-case note: marker + this = fully flagged. A marker
+# without it is a half state (the note never landed) that must not block a
+# retry.
+NOTE_ATTR = "duplicate_note_posted"
+# Opening words of the new-case note, to recognise a note that did land when
+# only its NOTE_ATTR write was lost.
+_NOTE_PREFIX = "**Possible duplicate case.**"
 _OPEN_STATUSES = {"open", "pending", "snoozed"}
 _CLAIM_SOURCE = "duplicate_detection"
 
@@ -222,10 +234,13 @@ def _signals(payload: dict) -> _Signals:
     )
 
 
-async def _safe(coro, what: str, conversation_id: Any) -> list[dict[str, Any]]:
+async def _safe(
+    coro, what: str, conversation_id: Any, errors: list[str]
+) -> list[dict[str, Any]]:
     try:
         return await coro
     except Exception as exc:  # noqa: BLE001 -- fail-open per lookup
+        errors.append(what)
         logger.warning(
             "duplicate_detection: %s failed for conversation %s: %s", what, conversation_id, exc
         )
@@ -234,9 +249,12 @@ async def _safe(coro, what: str, conversation_id: Any) -> list[dict[str, Any]]:
 
 async def _find_matches(
     signals: _Signals, conversation_id: int, allowed: set[int] | None
-) -> list[_Match]:
+) -> tuple[list[_Match], bool]:
+    """(matches, whether any lookup failed). A failed lookup with no match is
+    not a reliable negative -- the caller must not remember it as one."""
     chatwoot = get_chatwoot_client()
     matches: dict[int, _Match] = {}
+    errors: list[str] = []
 
     def consider(conv: dict[str, Any], reason: str) -> None:
         conv_id = conv.get("id")
@@ -262,7 +280,9 @@ async def _find_matches(
         add_contact(signals.contact_id, _REASON_CONTACT)
 
     if signals.phone:
-        found = await _safe(chatwoot.search_contacts(signals.phone), "phone search", conversation_id)
+        found = await _safe(
+            chatwoot.search_contacts(signals.phone), "phone search", conversation_id, errors
+        )
         hits = [
             c for c in found
             if c.get("id") != signals.contact_id
@@ -272,7 +292,9 @@ async def _find_matches(
             add_contact(c.get("id"), _REASON_PHONE)
 
     if signals.email:
-        found = await _safe(chatwoot.search_contacts(signals.email), "email search", conversation_id)
+        found = await _safe(
+            chatwoot.search_contacts(signals.email), "email search", conversation_id, errors
+        )
         wanted = signals.email.lower()
         hits = [
             c for c in found
@@ -293,7 +315,9 @@ async def _find_matches(
             }
             for i, v in enumerate(variants)
         ]
-        found = await _safe(chatwoot.filter_contacts(rows), "plate contact filter", conversation_id)
+        found = await _safe(
+            chatwoot.filter_contacts(rows), "plate contact filter", conversation_id, errors
+        )
         # exact plate only: `contains` also returns BMT55189 for BMT5518
         hits = [
             c for c in found
@@ -305,7 +329,10 @@ async def _find_matches(
 
     for contact_id, reasons in contacts.items():
         convs = await _safe(
-            chatwoot.list_contact_conversations(contact_id), "contact conversations", conversation_id
+            chatwoot.list_contact_conversations(contact_id),
+            "contact conversations",
+            conversation_id,
+            errors,
         )
         for conv in convs:
             for reason in reasons:
@@ -321,12 +348,14 @@ async def _find_matches(
             {"attribute_key": attr, "filter_operator": "equal_to", "values": [value],
              "query_operator": None}
         ]
-        found = await _safe(chatwoot.filter_conversations(rows), f"{attr} filter", conversation_id)
+        found = await _safe(
+            chatwoot.filter_conversations(rows), f"{attr} filter", conversation_id, errors
+        )
         for conv in found:
             if _key((conv.get("custom_attributes") or {}).get(attr)) == value:
                 consider(conv, reason)
 
-    return list(matches.values())
+    return list(matches.values()), bool(errors)
 
 
 def _transcript(raw: Any, limit: int = 10) -> str:
@@ -467,47 +496,98 @@ async def _warn_if_not_inbox_member(
         )
 
 
-async def _detect(payload: dict, signals: _Signals, *, vehicle_only: bool = False) -> None:
-    """Find, then link. `vehicle_only` (the update and contact paths) keeps
-    only plate/chassis matches: identity matches were already checked when
-    the case was created, and re-linking them on every vehicle edit would
-    re-notify the same owners."""
+# `_detect` outcomes. The late-signal paths' outer claims keep a real answer
+# (POSTED, NO_MATCH, SKIPPED) and are released on FAILED, so a later event
+# with the same signals retries instead of being remembered as a negative.
+POSTED, NO_MATCH, SKIPPED, FAILED = "posted", "no_match", "skipped", "failed"
+
+
+def _fully_flagged(attrs: dict[str, Any]) -> bool:
+    """Marker AND note flag. A marker alone is the half state left when the
+    note never landed; treating it as flagged would block that case forever."""
+    return bool(attrs.get(RELATED_ATTR)) and bool(attrs.get(NOTE_ATTR))
+
+
+def _activity(conv: dict[str, Any]) -> float:
+    for key in ("last_activity_at", "timestamp", "created_at"):
+        try:
+            if conv.get(key) is not None:
+                return float(conv[key])
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+async def _note_already_posted(conversation_id: int) -> bool:
+    """For a marker without NOTE_ATTR: did the note land anyway, with only
+    the NOTE_ATTR write lost? Unknown counts as no, so the case is retried: a
+    second note is visible and harmless; a note that never landed is the
+    silent failure this guards against."""
+    try:
+        raw = await get_chatwoot_client().get_messages(conversation_id)
+    except Exception:  # noqa: BLE001
+        return False
+    messages = raw.get("payload") if isinstance(raw, dict) else raw
+    return any(
+        isinstance(m, dict)
+        and m.get("private")
+        and str(m.get("content") or "").startswith(_NOTE_PREFIX)
+        for m in (messages or [])
+    )
+
+
+async def _detect(payload: dict, signals: _Signals, *, vehicle_only: bool = False) -> str:
+    """Find, then link. Returns POSTED, NO_MATCH, SKIPPED or FAILED.
+
+    `vehicle_only` (the update and contact paths) keeps only plate/chassis
+    matches. Identity matches were already checked when the case was created,
+    and linking them again on every vehicle edit would re-notify the same
+    owners. A lookup that failed and found nothing is FAILED, not NO_MATCH:
+    it is not a reliable negative to remember."""
     conversation_id = int(payload["id"])
     allowed = _allowed_inboxes()
-    matches = await _find_matches(signals, conversation_id, allowed)
+    matches, lookup_failed = await _find_matches(signals, conversation_id, allowed)
     if vehicle_only:
         matches = [m for m in matches if not m.identity_only]
     if not matches:
-        return
+        return FAILED if lookup_failed else NO_MATCH
     matches = await _judge(matches, conversation_id)
     if not matches:
-        return
+        return NO_MATCH
     matches = sorted(matches, key=lambda m: int(m.conversation["id"]))[:_MAX_LINKED_CASES]
 
     claim_key = f"{_CLAIM_SOURCE}:{conversation_id}:{signals.fingerprint()}"
     if not await claim_delivery(claim_key, _CLAIM_SOURCE):
-        return
+        return SKIPPED
 
     chatwoot = get_chatwoot_client()
     ids = [str(m.conversation["id"]) for m in matches]
     marker_written = False
     try:
-        # Durable marker check, after the claim: another event (created vs
-        # updated vs contact) or an earlier run may already have flagged it.
+        # Durable marker check, after the claim: another event (created,
+        # updated or contact) or an earlier run may already have flagged it.
         current = await chatwoot.get_conversation(conversation_id)
-        if ((current or {}).get("custom_attributes") or {}).get(RELATED_ATTR):
-            return
-        # Marker FIRST, before the label or any other write that makes
-        # Chatwoot emit conversation_updated: that event's payload must
-        # already carry related_case_ids, or it re-enters this module and
-        # posts a second note and a second round of notifications.
-        await chatwoot.set_custom_attributes(conversation_id, {RELATED_ATTR: ",".join(ids)})
+        attrs = (current or {}).get("custom_attributes") or {}
+        if _fully_flagged(attrs):
+            return SKIPPED
+        if attrs.get(RELATED_ATTR) and await _note_already_posted(conversation_id):
+            # Only the NOTE_ATTR write was lost: finish the flag and post no
+            # second note.
+            await chatwoot.set_custom_attributes(conversation_id, {NOTE_ATTR: "true"})
+            return SKIPPED
+        # The marker goes FIRST, before the note, the label or any other write
+        # that makes Chatwoot emit conversation_updated. That event's payload
+        # must already carry related_case_ids, or it re-enters this module.
+        # marker_written is set BEFORE the call: if the request times out
+        # after Chatwoot has committed the write, the marker still exists and
+        # still has to be rolled back.
         marker_written = True
+        await chatwoot.set_custom_attributes(conversation_id, {RELATED_ATTR: ",".join(ids)})
         await chatwoot.create_message(conversation_id, _new_case_note(matches), private=True)
     except Exception:  # noqa: BLE001
-        # The new-case note is the point of the feature. If it (or the marker)
-        # failed, undo the marker and release the claim so a later event can
-        # retry, rather than burning the fingerprint on nothing posted.
+        # The new-case note is the point of this feature. If it or the marker
+        # failed, undo the marker and release the claim so that a later event
+        # can retry, instead of burning the fingerprint with nothing posted.
         logger.exception(
             "duplicate_detection: could not flag case %s; releasing claim", conversation_id
         )
@@ -519,7 +599,14 @@ async def _detect(payload: dict, signals: _Signals, *, vehicle_only: bool = Fals
                     "duplicate_detection: marker rollback failed on %s", conversation_id
                 )
         await release_claim(claim_key)
-        return
+        return FAILED
+
+    try:
+        await chatwoot.set_custom_attributes(conversation_id, {NOTE_ATTR: "true"})
+    except Exception:  # noqa: BLE001
+        # The note did land. A later event sees the marker without the flag,
+        # finds the note through _note_already_posted, and finishes the flag.
+        logger.exception("duplicate_detection: note flag write failed on %s", conversation_id)
 
     try:
         await chatwoot.add_labels(conversation_id, [LABEL])
@@ -542,6 +629,7 @@ async def _detect(payload: dict, signals: _Signals, *, vehicle_only: bool = Fals
                 "duplicate_detection: notify failed on case %s", match.conversation.get("id")
             )
     logger.info("duplicate_detection: case %s linked to %s", conversation_id, ",".join(ids))
+    return POSTED
 
 
 def _eligible(payload: dict) -> bool:
@@ -551,8 +639,8 @@ def _eligible(payload: dict) -> bool:
         return False
     if not _inbox_allowed(payload.get("inbox_id"), _allowed_inboxes()):
         return False
-    # A dealer/PIC emailing back about an escalation is filed as a new
-    # conversation; it belongs to the existing case, not a duplicate of it.
+    # A dealer or PIC emailing back about an escalation is filed as a new
+    # conversation. It belongs to the existing case and is not a duplicate.
     if _is_escalation_reply(payload):
         return False
     return True
@@ -572,12 +660,19 @@ async def maybe_detect_duplicates(payload: dict) -> None:
 
 
 async def maybe_detect_duplicates_on_update(payload: dict) -> None:
-    """`conversation_updated` background task: re-check only once a vehicle
-    plate/chassis case field is present and the case is not yet flagged.
-    Never raises."""
+    """`conversation_updated` background task. Re-checks only once a vehicle
+    plate or chassis case field is present and the case is not yet fully
+    flagged.
+
+    conversation_updated fires on every status, assignment and label change.
+    A cheap claim on (conversation, plate, chassis) is taken BEFORE any
+    search, so an answer is remembered: further updates with unchanged
+    vehicle signals make no API call. A changed plate or chassis is a new
+    key and is searched once. The claim is released when the run FAILED or
+    raised, so a later update retries. Never raises."""
     try:
         attrs = payload.get("custom_attributes") or {}
-        if attrs.get(RELATED_ATTR):
+        if _fully_flagged(attrs):
             return
         if not (_key(attrs.get("vehicle_plate")) or _key(attrs.get("vehicle_chassis"))):
             return
@@ -585,31 +680,31 @@ async def maybe_detect_duplicates_on_update(payload: dict) -> None:
             return
         if payload.get("status") not in _OPEN_STATUSES:
             return
-        # conversation_updated fires on every status/assign/label change. A
-        # cheap claim on (conversation, plate, chassis) BEFORE any search
-        # remembers a negative result: later updates with unchanged vehicle
-        # signals make no API call; a changed plate/chassis is a new key and
-        # is searched once.
         signals = _signals(payload)
-        if not await claim_delivery(
-            f"{_CLAIM_SOURCE}:update:{payload['id']}:{signals.plate}:{signals.chassis}",
-            _CLAIM_SOURCE,
-        ):
+        update_key = f"{_CLAIM_SOURCE}:update:{payload['id']}:{signals.plate}:{signals.chassis}"
+        if not await claim_delivery(update_key, _CLAIM_SOURCE):
             return
-        await _detect(payload, signals, vehicle_only=True)
+        status = FAILED
+        try:
+            status = await _detect(payload, signals, vehicle_only=True)
+        finally:
+            if status == FAILED:
+                await release_claim(update_key)
     except Exception:  # noqa: BLE001
         logger.exception("duplicate_detection: update check failed for %s", payload.get("id"))
 
 
 async def maybe_detect_duplicates_on_contact_update(payload: dict) -> None:
-    """`contact_updated` background task: a `vehicle_no` (or
+    """`contact_updated` background task. A `vehicle_no` (or
     `vehicle_chassis`) typed onto the contact after its case was created is
-    a new signal for that contact's open, not-yet-flagged cases.
+    a new signal for that contact's open cases that are not yet flagged.
 
     contact_updated fires on any contact edit, including this codebase's own
-    attribute writes, so the same cheap claim as the update path -- keyed on
-    (contact, plate, chassis) -- is taken before any API call. Vehicle
-    matches only (see `_detect`). Never raises."""
+    attribute writes. So the same cheap claim as the update path, keyed on
+    (contact, plate, chassis), is taken before any API call, and it is
+    released if any case's run FAILED or the lookup raised. Cases are taken
+    most recently active first and capped. Vehicle matches only (see
+    `_detect`). Never raises."""
     try:
         if not get_settings().duplicate_detection_enabled:
             return
@@ -618,37 +713,52 @@ async def maybe_detect_duplicates_on_contact_update(payload: dict) -> None:
         plate, chassis = _key(attrs.get("vehicle_no")), _key(attrs.get("vehicle_chassis"))
         if contact_id is None or not (plate or chassis):
             return
-        if not await claim_delivery(
-            f"{_CLAIM_SOURCE}:contact:{contact_id}:{plate}:{chassis}", _CLAIM_SOURCE
-        ):
+        contact_key = f"{_CLAIM_SOURCE}:contact:{contact_id}:{plate}:{chassis}"
+        if not await claim_delivery(contact_key, _CLAIM_SOURCE):
             return
-        allowed = _allowed_inboxes()
-        convs = await get_chatwoot_client().list_contact_conversations(int(contact_id))
-        sender = {
-            "id": contact_id,
-            "name": payload.get("name"),
-            "email": payload.get("email"),
-            "phone_number": payload.get("phone_number"),
-            "custom_attributes": attrs,
-        }
-        candidates = [
-            c for c in convs
-            if c.get("id") is not None
-            and c.get("status") in _OPEN_STATUSES
-            and _inbox_allowed(c.get("inbox_id"), allowed)
-            and not (c.get("custom_attributes") or {}).get(RELATED_ATTR)
-        ][:_MAX_LINKED_CASES]
-        for conv in candidates:
-            conv_payload = {
-                "id": conv["id"],
-                "inbox_id": conv.get("inbox_id"),
-                "status": conv.get("status"),
-                "custom_attributes": conv.get("custom_attributes") or {},
-                "additional_attributes": conv.get("additional_attributes") or {},
-                "meta": {"sender": sender},
+        failed = True
+        try:
+            allowed = _allowed_inboxes()
+            convs = await get_chatwoot_client().list_contact_conversations(int(contact_id))
+            sender = {
+                "id": contact_id,
+                "name": payload.get("name"),
+                "email": payload.get("email"),
+                "phone_number": payload.get("phone_number"),
+                "custom_attributes": attrs,
             }
-            if _is_escalation_reply(conv_payload):
-                continue
-            await _detect(conv_payload, _signals(conv_payload), vehicle_only=True)
+            candidates = [
+                c for c in convs
+                if c.get("id") is not None
+                and c.get("status") in _OPEN_STATUSES
+                and _inbox_allowed(c.get("inbox_id"), allowed)
+                and not _fully_flagged(c.get("custom_attributes") or {})
+            ]
+            candidates.sort(key=_activity, reverse=True)
+            if len(candidates) > _MAX_LINKED_CASES:
+                logger.info(
+                    "duplicate_detection: contact %s has %s open cases; checking the %s most "
+                    "recently active",
+                    contact_id, len(candidates), _MAX_LINKED_CASES,
+                )
+            any_failed = False
+            for conv in candidates[:_MAX_LINKED_CASES]:
+                conv_payload = {
+                    "id": conv["id"],
+                    "inbox_id": conv.get("inbox_id"),
+                    "status": conv.get("status"),
+                    "custom_attributes": conv.get("custom_attributes") or {},
+                    "additional_attributes": conv.get("additional_attributes") or {},
+                    "meta": {"sender": sender},
+                }
+                if _is_escalation_reply(conv_payload):
+                    continue
+                result = await _detect(conv_payload, _signals(conv_payload), vehicle_only=True)
+                if result == FAILED:
+                    any_failed = True
+            failed = any_failed
+        finally:
+            if failed:
+                await release_claim(contact_key)
     except Exception:  # noqa: BLE001
         logger.exception("duplicate_detection: contact check failed for %s", payload.get("id"))

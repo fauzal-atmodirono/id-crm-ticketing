@@ -345,6 +345,20 @@ class Settings(BaseSettings):
     report_enabled: bool = False
     report_interval_hours: int = 24
 
+    # FIX-14 (RFP 4.74/4.78/4.82): weekly management report, PDF + XLSX by email.
+    # Default OFF: no tenant changes behaviour until enabled. Needs smtp_host
+    # (+ smtp_user/smtp_password) like every other backend-sent mail.
+    weekly_report_email_enabled: bool = False
+    # Comma-separated. Separate from report_recipients (which also gets anomaly alerts).
+    weekly_report_email_recipients: str = ""
+    # APScheduler day_of_week ("mon".."sun") and hour 0-23, in reporting_timezone.
+    # Sends the previous full Monday-Sunday week.
+    weekly_report_email_day: str = "mon"
+    weekly_report_email_hour: int = 8
+    # Optional From override for this mail only (e.g. the inbox-5 Gmail sender);
+    # empty = smtp_from. Gmail requires it to match the authenticated mailbox.
+    weekly_report_smtp_from: str = ""
+
     # Bot-metrics anomaly detection thresholds
     # Z-score multiplier for channel-volume anomaly detection
     anomaly_zscore_k: float = 3.0
@@ -353,6 +367,9 @@ class Settings(BaseSettings):
 
     def report_recipient_list(self) -> list[str]:
         return [r.strip() for r in self.report_recipients.split(",") if r.strip()]
+
+    def weekly_report_recipient_list(self) -> list[str]:
+        return [r.strip() for r in self.weekly_report_email_recipients.split(",") if r.strip()]
 
     # Chatwoot settings
     chatwoot_api_url: str = "http://localhost:3000"

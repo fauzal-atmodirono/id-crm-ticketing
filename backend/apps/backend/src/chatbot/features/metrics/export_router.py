@@ -8,12 +8,21 @@ equivalents in insights_router.py, so they're gated the same way here."""
 from __future__ import annotations
 
 import hmac
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from datetime import UTC, date, datetime
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import Response
 
 from chatbot.features.metrics.export import render_csv, render_pdf, render_xlsx
+from chatbot.features.metrics.weekly_report import (
+    fetch_weekly_report,
+    last_full_week,
+    render_weekly_pdf,
+    render_weekly_xlsx,
+    week_containing,
+)
 
 if TYPE_CHECKING:
     from chatbot.features.metrics.query_port import MetricsQueryPort
@@ -50,6 +59,38 @@ def build_metrics_export_router(port: MetricsQueryPort, settings: Settings) -> A
                 headers={"Content-Disposition": "attachment; filename=bot-metrics.pdf"},
             )
         raise HTTPException(status_code=400, detail="format must be xlsx or pdf")
+
+    @router.get("/metrics/weekly-report/export")
+    async def export_weekly(
+        format: str = "pdf",
+        week_of: str | None = None,
+        x_api_key: str | None = Header(default=None),
+    ) -> Response:
+        # Gated like the per-view exports: the bundle carries PIC/dealer/department data.
+        _require_key(x_api_key)
+        if format not in ("pdf", "xlsx"):
+            raise HTTPException(status_code=400, detail="format must be pdf or xlsx")
+        try:
+            period = (
+                week_containing(date.fromisoformat(week_of))
+                if week_of
+                else last_full_week(datetime.now(UTC).date())
+            )
+        except ValueError:
+            raise HTTPException(status_code=400, detail="week_of must be YYYY-MM-DD") from None
+        report = await fetch_weekly_report(port, period)
+        stem = f"weekly-report-{period.start.isoformat()}_{period.end.isoformat()}"
+        if format == "pdf":
+            return Response(
+                content=render_weekly_pdf(report),
+                media_type="application/pdf",
+                headers={"Content-Disposition": f"attachment; filename={stem}.pdf"},
+            )
+        return Response(
+            content=render_weekly_xlsx(report),
+            media_type=_XLSX,
+            headers={"Content-Disposition": f"attachment; filename={stem}.xlsx"},
+        )
 
     def _csv_route(path: str, filename: str, fetch: Callable[[], Awaitable[Any]]) -> None:
         @router.get(path, name=f"export_csv_{filename}")

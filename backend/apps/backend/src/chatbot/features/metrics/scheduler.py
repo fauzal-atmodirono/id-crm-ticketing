@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -14,6 +14,12 @@ from chatbot.features.metrics.anomaly import flag_anomalies
 from chatbot.features.metrics.export import render_pdf, render_xlsx
 from chatbot.features.metrics.freshness import record_sync_completed
 from chatbot.features.metrics.sync import ensure_views, run_sync
+from chatbot.features.metrics.weekly_report import (
+    fetch_weekly_report,
+    last_full_week,
+    render_weekly_pdf,
+    render_weekly_xlsx,
+)
 
 if TYPE_CHECKING:
     from chatbot.features.metrics.email_port import EmailReportPort
@@ -133,4 +139,68 @@ def start_report_scheduler(
     )
     sched.start()
     _log.info("metrics_report_scheduler_started", interval_hours=settings.report_interval_hours)
+    return sched
+
+
+def run_weekly_report_job(
+    settings: Settings,
+    query_port: MetricsQueryPort,
+    email_port: EmailReportPort,
+    *,
+    today: date | None = None,
+) -> None:
+    """Email last week's full report (PDF + XLSX) to the configured list. Never raises.
+
+    Recipients come from `weekly_report_email_recipients`, deliberately NOT the
+    older `report_recipients`: that list also receives anomaly alerts, and the
+    two audiences (management vs. on-call) differ. No recipients -> no mail,
+    and the queries are not even run.
+    """
+    try:
+        recipients = settings.weekly_report_recipient_list()
+        if not recipients:
+            _log.info("weekly_report_skipped_no_recipients")
+            return
+        period = last_full_week(today or datetime.now(UTC).date())
+        report = asyncio.run(fetch_weekly_report(query_port, period))
+        stem = f"weekly-report-{period.start.isoformat()}_{period.end.isoformat()}"
+        email_port.send_report(
+            recipients,
+            f"Weekly Report {period.start.isoformat()} to {period.end.isoformat()}",
+            "Attached: the weekly report (PDF and Excel) for the week above.",
+            [
+                (f"{stem}.pdf", render_weekly_pdf(report), "application/pdf"),
+                (f"{stem}.xlsx", render_weekly_xlsx(report), _XLSX_MIME),
+            ],
+        )
+    except Exception as e:  # a scheduled report must never crash the app
+        _log.error("weekly_report_job_failed", error=str(e))
+
+
+def start_weekly_report_scheduler(
+    settings: Settings,
+    query_port: MetricsQueryPort,
+    email_port: EmailReportPort,
+    *,
+    scheduler: Any | None = None,
+) -> Any | None:
+    """Start the weekly cron email when `weekly_report_email_enabled`; else None."""
+    if not settings.weekly_report_email_enabled:
+        return None
+    sched = scheduler or BackgroundScheduler(timezone=settings.reporting_timezone)
+    sched.add_job(
+        lambda: run_weekly_report_job(settings, query_port, email_port),
+        trigger="cron",
+        day_of_week=settings.weekly_report_email_day,
+        hour=settings.weekly_report_email_hour,
+        minute=0,
+        id="weekly_report_email",
+        replace_existing=True,
+    )
+    sched.start()
+    _log.info(
+        "weekly_report_scheduler_started",
+        day=settings.weekly_report_email_day,
+        hour=settings.weekly_report_email_hour,
+    )
     return sched

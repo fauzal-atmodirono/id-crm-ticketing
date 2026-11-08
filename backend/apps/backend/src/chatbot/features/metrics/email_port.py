@@ -51,3 +51,12 @@ def build_email_report_port(settings: Settings) -> EmailReportPort:
     if settings.report_enabled and settings.smtp_host:
         return SmtpEmailReport(settings)
     return MockEmailReport()
+
+
+def build_weekly_email_port(settings: Settings) -> EmailReportPort:
+    """Port for the weekly report: same SMTP host/credentials, optional From override."""
+    if settings.weekly_report_email_enabled and settings.smtp_host:
+        if settings.weekly_report_smtp_from:
+            settings = settings.model_copy(update={"smtp_from": settings.weekly_report_smtp_from})
+        return SmtpEmailReport(settings)
+    return MockEmailReport()

@@ -74,7 +74,7 @@ from chatbot.features.chat.sla import start_sla_scheduler
 from chatbot.features.health_enrichment import build_health_router
 from chatbot.features.metrics.anomaly_router import build_metrics_anomaly_router
 from chatbot.features.metrics.dashboard_router import build_metrics_query_router
-from chatbot.features.metrics.email_port import build_email_report_port
+from chatbot.features.metrics.email_port import build_email_report_port, build_weekly_email_port
 from chatbot.features.metrics.email_sender import SmtpEmailSender
 from chatbot.features.metrics.export_router import build_metrics_export_router
 from chatbot.features.metrics.faq_feedback_adapter import build_faq_feedback_port
@@ -83,7 +83,11 @@ from chatbot.features.metrics.insights_router import build_metrics_insights_rout
 from chatbot.features.metrics.qa_adapter import build_qa_label_port
 from chatbot.features.metrics.qa_router import build_qa_router
 from chatbot.features.metrics.query_adapter import build_metrics_query_port
-from chatbot.features.metrics.scheduler import start_metrics_scheduler, start_report_scheduler
+from chatbot.features.metrics.scheduler import (
+    start_metrics_scheduler,
+    start_report_scheduler,
+    start_weekly_report_scheduler,
+)
 from chatbot.features.routing.acw import build_acw_controller, start_acw_sweeper
 from chatbot.features.routing.assigner import RoutingAssigner
 from chatbot.features.routing.custom_status import build_custom_status_store
@@ -350,6 +354,15 @@ def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
         @app.on_event("shutdown")
         def _stop_report_scheduler() -> None:
             report_scheduler.shutdown(wait=False)
+
+    weekly_scheduler = start_weekly_report_scheduler(
+        settings, query_port, build_weekly_email_port(settings)
+    )
+    if weekly_scheduler is not None:
+
+        @app.on_event("shutdown")
+        def _stop_weekly_scheduler() -> None:
+            weekly_scheduler.shutdown(wait=False)
 
     metrics_scheduler = start_metrics_scheduler(settings)
     if metrics_scheduler is not None:

@@ -216,32 +216,26 @@ def test_startup_does_not_seed_when_the_admin_flag_is_off(
     assert _FakeFirestore.collections.get("taxonomy_nodes", {}) == {}
 
 
-def test_data_scoped_rbac_refuses_to_boot_because_nothing_enforces_it() -> None:
-    """The flag restricts no data, so it must not be quietly settable.
-
-    `features/authz/data_scope.py` is built and unwired: no caller for
-    `apply_scope_to_filters`, an untouched query adapter, and `_ROLE_DATA_SCOPES`
-    with no persistence or admin surface. A data-access flag that silently
-    restricts nothing is the worst shape available -- an operator configures a
-    dealer-scoped role and that user still reads every dealer's volumes.
-
-    This test is the tripwire for the fix: when enforcement lands, the validator
-    goes and this test fails, which is the point. Replace it then with one that
-    proves scoping actually filters.
+def test_data_scoped_rbac_boots_with_rbac_and_refuses_without_it() -> None:
+    """Wave 2 Task 28 replaced the "not implemented" tripwire: enforcement is
+    wired (features/authz/test_scope_enforcement.py proves each surface
+    filters), so the flag now boots -- but only alongside RBAC, because a
+    scope is resolved from the caller's RBAC roles and without RBAC it would
+    restrict nothing while appearing to.
     """
     import pytest  # noqa: PLC0415
 
     from chatbot.platform.config import Settings  # noqa: PLC0415
 
-    with pytest.raises(ValueError, match="DATA_SCOPED_RBAC_ENABLED is not implemented"):
-        Settings(data_scoped_rbac_enabled=True)
+    assert Settings(data_scoped_rbac_enabled=True, rbac_enabled=True).data_scoped_rbac_enabled
+    with pytest.raises(ValueError, match="DATA_SCOPED_RBAC_ENABLED requires RBAC_ENABLED"):
+        Settings(data_scoped_rbac_enabled=True, rbac_enabled=False)
 
 
 def test_the_flag_is_absent_from_the_flags_on_gate() -> None:
-    """Belt to the braces above: the gate must not try to enable it.
-
-    If someone adds it back to FLAGS_ON, every bootstrap test in the flags-ON half
-    fails to boot -- correct, but confusing. This says why in one place.
+    """The gate must not enable it on its own: FLAGS_ON does not set
+    RBAC_ENABLED, so the flags-ON half would refuse to boot -- correct, but
+    confusing. This says why in one place.
     """
     from pathlib import Path  # noqa: PLC0415
 
@@ -256,6 +250,6 @@ def test_the_flag_is_absent_from_the_flags_on_gate() -> None:
         ln.strip() for ln in gate.splitlines() if ln.strip().startswith("DATA_SCOPED_RBAC_ENABLED=")
     ]
     assert not enabled_lines, (
-        "DATA_SCOPED_RBAC_ENABLED is in FLAGS_ON but refuses to boot; "
-        f"remove it until enforcement is wired. Found: {enabled_lines}"
+        "DATA_SCOPED_RBAC_ENABLED is in FLAGS_ON without RBAC_ENABLED and refuses "
+        f"to boot; add RBAC_ENABLED=true alongside it. Found: {enabled_lines}"
     )

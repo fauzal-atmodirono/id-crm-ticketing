@@ -58,6 +58,12 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from fastapi import APIRouter, Depends, Query
 
+from chatbot.features.authz.data_scope import (
+    Scope,
+    apply_scope,
+    build_scope_dependency,
+    conversation_dimensions,
+)
 from chatbot.features.authz.deps import require_permission
 from chatbot.features.chat.dms_client import MockDmsClient
 from chatbot.features.chat.dms_config_store import MAX_TIMEOUT_SECONDS
@@ -353,8 +359,12 @@ def build_customer360_router(
         "customer360.view", repo=authz_repo, validator=validator, settings=settings
     )
 
+    data_scope = build_scope_dependency(settings, repo=authz_repo, validator=validator)
+
     @router.get("/search", dependencies=[Depends(view_360)])
-    async def search(q: str = Query(min_length=2)) -> dict[str, Any]:
+    async def search(
+        q: str = Query(min_length=2), scope: Scope = Depends(data_scope)
+    ) -> dict[str, Any]:
         contact: dict[str, Any] | None = None
         conversations: list[dict[str, Any]] = []
         rsa_incidents: list[dict[str, Any]] = []
@@ -436,6 +446,17 @@ def build_customer360_router(
                     in ((conv.get("custom_attributes") or {}).get("vehicle_model") or "").lower()
                 ]
 
+        # Wave 2 Task 28: this backend reads Chatwoot with its own admin
+        # token, so Chatwoot inbox membership does NOT confine what it
+        # returns -- the data scope has to. The contact itself stays visible
+        # (Chatwoot contacts are account-wide for every agent anyway); its
+        # conversations and RSA incidents are narrowed. An RSA incident only
+        # carries a dealer (`purchased_from`), so under an inbox/team/
+        # department scope it is hidden (data_scope.py rule 5).
+        conversations = apply_scope(conversations, scope, conversation_dimensions)
+        rsa_incidents = apply_scope(
+            rsa_incidents, scope, lambda i: {"dealer_slugs": i.get("purchased_from")}
+        )
         result: dict[str, Any] = {
             "contact": contact,
             "conversations": conversations,

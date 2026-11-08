@@ -17,9 +17,14 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from chatbot.features.authz.chatwoot_role_mirror import ChatwootRoleMirrorError
+from chatbot.features.authz.data_scope import (
+    UNSCOPABLE_ROLE_IDS,
+    Scope,
+    build_scope_dependency,
+)
 from chatbot.features.authz.deps import Actor, require_permission, resolve_actor
-from chatbot.features.chat.audit_events import EVENT_ROLE_CHANGE, record_event
 from chatbot.features.authz.seed import ALL_NATIVE_KEYS, NATIVE_CONVERSATION_KEYS
+from chatbot.features.chat.audit_events import EVENT_ROLE_CHANGE, record_event
 
 if TYPE_CHECKING:
     from chatbot.features.authz.chatwoot_role_mirror import ChatwootRoleMirror
@@ -43,6 +48,16 @@ class AssignRoleBody(BaseModel):
 
 class GrantPermissionBody(BaseModel):
     permission_key: str
+
+
+class RoleScopeBody(BaseModel):
+    """A role's whole data scope (PUT replaces it). Omitted/empty dimension =
+    not restricted on it; all empty = the role restricts nothing."""
+
+    inbox_ids: list[int] = []
+    team_ids: list[int] = []
+    dealer_slugs: list[str] = []
+    departments: list[str] = []
 
 
 def build_authz_router(
@@ -246,6 +261,47 @@ def build_authz_router(
     async def permission_registry() -> dict:
         perms = await repo.list_permissions()
         return {"permissions": [{"key": p.key, "description": p.description} for p in perms]}
+
+    # --- data scopes (Wave 2 Task 28; rules in data_scope.py) -------------
+    # Edited and readable whether or not DATA_SCOPED_RBAC_ENABLED is on, so an
+    # operator can configure scopes before switching enforcement on;
+    # `enabled` tells the page which state it is in.
+    my_scope = build_scope_dependency(settings, repo=repo, validator=validator)
+
+    def _scope_payload(scope: Scope) -> dict:
+        return {
+            "scope": scope.to_dict(),
+            "enabled": bool(getattr(settings, "data_scoped_rbac_enabled", False)),
+        }
+
+    @router.get("/me/scope")
+    async def get_my_scope(
+        user_id: int = Depends(_caller_user_id),  # noqa: ARG001 -- auth-gating dependency
+        scope: Scope = Depends(my_scope),
+    ) -> dict:
+        return _scope_payload(scope)
+
+    @router.get("/roles/{role_id}/scope", dependencies=[Depends(manage_roles)])
+    async def get_role_scope(role_id: str) -> dict:
+        payload = _scope_payload(await repo.get_role_scope(role_id))
+        payload["scopable"] = role_id not in UNSCOPABLE_ROLE_IDS
+        return payload
+
+    @router.put("/roles/{role_id}/scope", dependencies=[Depends(manage_roles)])
+    async def put_role_scope(
+        role_id: str, body: RoleScopeBody, actor: Actor = Depends(caller)
+    ) -> dict:
+        if role_id in UNSCOPABLE_ROLE_IDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"The {role_id} role is always unrestricted and cannot carry a data scope.",
+            )
+        before = (await repo.get_role_scope(role_id)).to_dict()
+        scope = Scope.build(**body.model_dump())
+        await repo.set_role_scope(role_id, scope)
+        after = (await repo.get_role_scope(role_id)).to_dict()
+        await _audit_role(actor, role_id, {"scope": before}, {"scope": after}, "data scope set")
+        return _scope_payload(await repo.get_role_scope(role_id))
 
     @router.get("/roles/{role_id}/permissions", dependencies=[Depends(manage_roles)])
     async def role_permissions(role_id: str) -> dict:

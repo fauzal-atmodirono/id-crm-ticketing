@@ -12,8 +12,9 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
+from chatbot.features.authz.data_scope import build_unscoped_only_dependency
 from chatbot.features.metrics.attainment import evaluate
 from chatbot.features.metrics.control_items import CONTROL_ITEMS
 from chatbot.features.metrics.period_query import PeriodQuery, parse_period_or_400
@@ -33,7 +34,13 @@ def build_control_items_router(
     """`actuals_provider(period) -> dict[str, float | None]` supplies measured
     values keyed by control-item number. Absent, or returning None for a key,
     means "not measured" -- which is a legitimate answer here, not an error."""
-    router = APIRouter(tags=["metrics"])
+    # Wave 2 Task 28: no view behind this router carries a scope dimension
+    # on every block, so a data-scoped caller is refused (data_scope.py rule
+    # 6). Flag off: a no-op that never reads the session.
+    router = APIRouter(
+        tags=["metrics"],
+        dependencies=[Depends(build_unscoped_only_dependency(settings, "The control-item report"))],
+    )
 
     def _require_key(x_api_key: str | None) -> None:
         key = settings.metrics_api_key

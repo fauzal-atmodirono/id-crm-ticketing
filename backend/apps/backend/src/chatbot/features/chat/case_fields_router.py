@@ -19,6 +19,11 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from chatbot.features.authz.data_scope import (
+    Scope,
+    build_scope_dependency,
+    conversation_dimensions,
+)
 from chatbot.features.authz.deps import require_permission
 from chatbot.features.chat.case_fields import (
     CASE_FIELDS,
@@ -70,16 +75,31 @@ def build_case_fields_router(
         if not getattr(settings, "case_fields_enabled", False):
             raise HTTPException(status_code=404, detail="Case fields not enabled")
 
-    @router.get("/cases/{conv_id}/fields", dependencies=[Depends(may_view)])
-    async def get_fields(conv_id: str) -> dict[str, Any]:
-        """Every field in the spec with its current value, so the panel can
-        render from one response without knowing the field list itself."""
-        _guard()
+    data_scope = build_scope_dependency(settings, repo=authz_repo, validator=validator)
+
+    async def _read_in_scope(conv_id: str, scope: Scope) -> dict[str, Any] | None:
+        """The conversation, or 404 when it is outside the caller's data
+        scope (Wave 2 Task 28). 404 rather than 403 so an out-of-scope
+        caller cannot probe which case ids exist. Unrestricted callers keep
+        today's fail-open read; a scoped caller whose read fails gets 404 --
+        an unreadable conversation cannot be shown to be theirs."""
         try:
             conversation = await chatwoot_read(conv_id)
         except Exception:
             _log.warning("case_fields_read_failed", conv_id=conv_id)
             conversation = None
+        if not scope.unrestricted and not (
+            conversation and scope.permits(conversation_dimensions(conversation))
+        ):
+            raise HTTPException(status_code=404, detail="Case not found")
+        return conversation
+
+    @router.get("/cases/{conv_id}/fields", dependencies=[Depends(may_view)])
+    async def get_fields(conv_id: str, scope: Scope = Depends(data_scope)) -> dict[str, Any]:
+        """Every field in the spec with its current value, so the panel can
+        render from one response without knowing the field list itself."""
+        _guard()
+        conversation = await _read_in_scope(conv_id, scope)
         attrs = (conversation or {}).get("custom_attributes") or {}
         return {
             "fields": [
@@ -94,8 +114,12 @@ def build_case_fields_router(
         }
 
     @router.patch("/cases/{conv_id}/fields", dependencies=[Depends(may_edit)])
-    async def patch_fields(conv_id: str, body: CaseFieldsBody) -> dict[str, Any]:
+    async def patch_fields(
+        conv_id: str, body: CaseFieldsBody, scope: Scope = Depends(data_scope)
+    ) -> dict[str, Any]:
         _guard()
+        if not scope.unrestricted:
+            await _read_in_scope(conv_id, scope)
         updates: dict[str, Any] = {}
         for name, raw in body.fields.items():
             try:

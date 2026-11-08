@@ -19,9 +19,10 @@ from collections.abc import Awaitable, Callable
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import Response
 
+from chatbot.features.authz.data_scope import build_unscoped_only_dependency
 from chatbot.features.metrics.export import render_csv, render_pdf, render_xlsx
 from chatbot.features.metrics.period import PeriodRange
 from chatbot.features.metrics.weekly_report import (
@@ -42,7 +43,13 @@ _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def build_metrics_export_router(port: MetricsQueryPort, settings: Settings) -> APIRouter:
-    router = APIRouter(tags=["metrics"])
+    # Wave 2 Task 28: no view behind this router carries a scope dimension
+    # on every block, so a data-scoped caller is refused (data_scope.py rule
+    # 6). Flag off: a no-op that never reads the session.
+    router = APIRouter(
+        tags=["metrics"],
+        dependencies=[Depends(build_unscoped_only_dependency(settings, "The report export"))],
+    )
 
     def _require_key(x_api_key: str | None) -> None:
         key = settings.metrics_api_key

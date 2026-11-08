@@ -1327,41 +1327,25 @@ class Settings(BaseSettings):
     # genuinely isn't the mapped default. Never wire this to apply the label
     # without a human confirming it.
     category_department_mapping_enabled: bool = False
-    # Task 6/7. **THIS SETTING DOES NOT CURRENTLY GATE ANYTHING.** No code
-    # reads it -- not `features/authz/data_scope.py`, which never takes a
-    # `Settings` at all -- so flipping it on has no effect whatsoever.
+    # Wave 2 Task 28 (FIX-48; RFP 2026_028 4.83): data-scoped permissions.
+    # On: every backend-owned data surface narrows to the caller's effective
+    # scope (union of their roles' scopes over inbox ids / team ids / dealer
+    # slugs / departments; administrator and superadmin unrestricted) --
+    # Customer 360, case fields, reports (/metrics/*), the escalation-routing
+    # admin, RSA incidents and the AI activity monitor. See
+    # `features/authz/data_scope.py` for the rules and enforcement points.
     #
-    # The intent was: resolve each caller's roles to a DataScope (inboxes /
-    # teams / dealers / own_only) and enforce it in the metrics and admin query
-    # layers (composing with P4's MetricFilters) plus Chatwoot-native inbox
-    # membership via chatwoot_role_mirror.py. Task 6's intersection logic
-    # shipped and is genuinely proven by test_data_scope.py; task 7's
-    # enforcement did not. `apply_scope_to_filters` and
-    # `resolve_user_data_scope` have no callers, there is no FastAPI dependency,
-    # role scopes live in a module-level dict with no admin surface, and
-    # query_adapter.py / chatwoot_role_mirror.py were never modified. Kept
-    # rather than deleted because wiring the enforcement is the recorded fix and
-    # this is the only backend-side record that the scope model exists; see
-    # data_scope.py's docstring and the blocked-work register.
+    # DEFAULT-PRESERVING: a role with no scope restricts nothing, so turning
+    # this on changes nothing until an operator saves a scope on a role (Roles
+    # & Permissions page, fork patch 0084). With it on, the scoped surfaces
+    # need a Chatwoot session (the shared x-api-key carries no person); the
+    # fork's reports client sends one from patch 0084 on, so deploy that image
+    # before flipping this. FAIL CLOSED: an unreadable scope is "nothing",
+    # never "everything". Requires RBAC_ENABLED (refused at boot otherwise).
     #
-    # Everything below is the contract enforcement must honour when it lands,
-    # not a description of current behaviour.
-    #
-    # `None` ON EVERY SCOPE FIELD MEANS ACCOUNT-WIDE, so every role that
-    # exists before this package keeps behaving exactly as it does today even
-    # once this is flipped on -- turning this on never narrows or widens an
-    # existing role that was never given a scope.
-    #
-    # SCOPES ARE INTERSECTIVE, NEVER ADDITIVE. Two scopes on one caller
-    # (e.g. two roles) narrow to their intersection, never their union, and
-    # an EMPTY intersection means access to NOTHING, not to everything --
-    # this is the security-relevant half of this package: a bug here is data
-    # exposure (a caller sees rows they should not), not a reporting
-    # inconvenience. Enforced in the query layer, never by hiding UI, so a
-    # caller hitting the API directly (bypassing any front end) is scoped
-    # exactly the same as one going through it. Do not "simplify" an empty
-    # intersection into "no filter" -- that grants everything to precisely
-    # the most restricted caller.
+    # Not governed: Chatwoot's own conversation lists (inbox views and the
+    # fork's Cases list read Chatwoot directly) -- those follow Chatwoot inbox
+    # membership; keep membership in line with each user's inbox scope.
     data_scoped_rbac_enabled: bool = False
 
     # --- P11: voice partials (DTMF menu, after-hours, voicemail, retention) ---
@@ -1470,35 +1454,18 @@ class Settings(BaseSettings):
     )
 
     @model_validator(mode="after")
-    def _refuse_unimplemented_data_scoping(self) -> Settings:
-        """`DATA_SCOPED_RBAC_ENABLED` restricts nothing, so refuse to boot with it on.
+    def _data_scoping_requires_rbac(self) -> Settings:
+        """`DATA_SCOPED_RBAC_ENABLED` without `RBAC_ENABLED` would restrict
+        nothing (no session -> no person -> no scope), so refuse to boot.
 
-        P10 built the scope model (`features/authz/data_scope.py`) and never wired
-        it: `apply_scope_to_filters` and `resolve_user_data_scope` have no callers,
-        the query adapter is untouched, and `_ROLE_DATA_SCOPES` is a module dict
-        with no persistence and no admin surface. Wiring it means first deciding
-        where a role's scope is stored and who edits it, which is a design decision
-        rather than a missing line.
-
-        A silent no-op is the dangerous shape here, and this is a data-access flag:
-        an operator switches it on, configures a dealer-scoped franchise role,
-        reasonably believes that user is now confined to their own dealer, and that
-        user's `/metrics/*` keeps returning every dealer's volumes and every agent's
-        CSAT. Nothing in the product would say otherwise. Refusing to boot converts
-        a false assurance about data confinement into an obvious failure at deploy
-        time, which is the trade this codebase already makes in
-        `_phone_flag_dependencies` below.
-
-        Delete this validator in the same commit that wires enforcement -- its
-        existence is the record that the flag is not yet real.
+        A data-access flag that silently does nothing is the dangerous shape:
+        an operator configures a dealer-scoped role, reasonably believes that
+        user is confined, and nothing in the product says otherwise.
         """
-        if self.data_scoped_rbac_enabled:
+        if self.data_scoped_rbac_enabled and not self.rbac_enabled:
             raise ValueError(
-                "DATA_SCOPED_RBAC_ENABLED is not implemented and must stay false. "
-                "The scope model exists but nothing enforces it, so enabling this "
-                "would restrict no data while appearing to. See "
-                "docs/analysis/2026-08-09-blocked-work-register.md (data-scoped "
-                "RBAC) for what wiring it requires."
+                "DATA_SCOPED_RBAC_ENABLED requires RBAC_ENABLED=true: data scopes "
+                "are resolved from the caller's Chatwoot session and RBAC roles."
             )
         return self
 

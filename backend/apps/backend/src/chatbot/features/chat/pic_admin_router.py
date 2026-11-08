@@ -9,9 +9,10 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
+from chatbot.features.authz.data_scope import Scope, build_scope_dependency
 from chatbot.features.authz.deps import Actor, require_permission, resolve_actor
 from chatbot.features.chat.audit_events import (
     EVENT_ESCALATION_ROUTING_CHANGE,
@@ -130,6 +131,16 @@ def build_pic_admin_router(
     )
 
     caller = resolve_actor(validator=validator, settings=settings)
+    # Wave 2 Task 28: routing records are keyed by ONE dimension each, so
+    # they are checked on that dimension only (data_scope.py rule 5) -- a
+    # dealer-scoped manager sees and edits only their dealers' rows, a
+    # department-scoped one only their departments' PIC rows. PRO-NET
+    # regional rows carry neither dimension and are not scoped.
+    data_scope = build_scope_dependency(settings, repo=authz_repo, validator=validator)
+
+    def _require_in_scope(scope: Scope, dimension: str, key: str) -> None:
+        if not scope.allows(dimension, key):
+            raise HTTPException(status_code=403, detail=f"{key} is outside your data scope")
 
     async def _audit(
         actor: Actor, kind: str, key: str, before: Any, after: Any, verb: str
@@ -147,14 +158,20 @@ def build_pic_admin_router(
         )
 
     @router.get("/pics", dependencies=[Depends(manage_escalation)])
-    async def list_pics() -> dict:
+    async def list_pics(scope: Scope = Depends(data_scope)) -> dict:
         records = await pic_store.list_all()
-        return {"pics": [r.__dict__ for r in records]}
+        return {
+            "pics": [r.__dict__ for r in records if scope.allows("departments", r.department)]
+        }
 
     @router.put("/pics/{department}", dependencies=[Depends(manage_escalation)])
     async def upsert_pic(
-        department: str, body: PicUpsertBody, actor: Actor = Depends(caller)
+        department: str,
+        body: PicUpsertBody,
+        actor: Actor = Depends(caller),
+        scope: Scope = Depends(data_scope),
     ) -> dict:
+        _require_in_scope(scope, "departments", department)
         before = await _current(pic_store, department)
         await pic_store.set(
             department,
@@ -173,8 +190,9 @@ def build_pic_admin_router(
 
     @router.delete("/pics/{department}", dependencies=[Depends(manage_escalation)])
     async def delete_pic(
-        department: str, actor: Actor = Depends(caller)
+        department: str, actor: Actor = Depends(caller), scope: Scope = Depends(data_scope)
     ) -> dict:
+        _require_in_scope(scope, "departments", department)
         before = await _current(pic_store, department)
         await pic_store.delete(department)
         _changed()
@@ -182,14 +200,20 @@ def build_pic_admin_router(
         return {"department": department, "status": "ok"}
 
     @router.get("/dealers", dependencies=[Depends(manage_escalation)])
-    async def list_dealers() -> dict:
+    async def list_dealers(scope: Scope = Depends(data_scope)) -> dict:
         records = await dealer_store.list_all()
-        return {"dealers": [r.__dict__ for r in records]}
+        return {
+            "dealers": [r.__dict__ for r in records if scope.allows("dealer_slugs", r.dealer)]
+        }
 
     @router.put("/dealers/{dealer}", dependencies=[Depends(manage_escalation)])
     async def upsert_dealer(
-        dealer: str, body: DealerUpsertBody, actor: Actor = Depends(caller)
+        dealer: str,
+        body: DealerUpsertBody,
+        actor: Actor = Depends(caller),
+        scope: Scope = Depends(data_scope),
     ) -> dict:
+        _require_in_scope(scope, "dealer_slugs", dealer)
         before = await _current(dealer_store, dealer)
         await dealer_store.set(
             dealer,
@@ -206,8 +230,9 @@ def build_pic_admin_router(
 
     @router.delete("/dealers/{dealer}", dependencies=[Depends(manage_escalation)])
     async def delete_dealer(
-        dealer: str, actor: Actor = Depends(caller)
+        dealer: str, actor: Actor = Depends(caller), scope: Scope = Depends(data_scope)
     ) -> dict:
+        _require_in_scope(scope, "dealer_slugs", dealer)
         before = await _current(dealer_store, dealer)
         await dealer_store.delete(dealer)
         _changed()

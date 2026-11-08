@@ -1012,6 +1012,11 @@ class EmptyMetricsQuery:
     documents: nothing was examined, which is not the same as "no anomalies".
     """
 
+    # Wave 2 Task 28: every block is empty, so any data scope is trivially
+    # honoured. (MockMetricsQuery deliberately lacks this: its canned rows
+    # are unfiltered, so a scoped caller is refused rather than shown them.)
+    supports_data_scope = True
+
     def __init__(self) -> None:
         self._scope = _UNFILTERED_SCOPE
 

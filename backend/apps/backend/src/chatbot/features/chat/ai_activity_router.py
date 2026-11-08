@@ -40,6 +40,11 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from fastapi import APIRouter, Depends
 
+from chatbot.features.authz.data_scope import (
+    Scope,
+    build_scope_dependency,
+    conversation_dimensions,
+)
 from chatbot.features.authz.deps import require_permission
 
 if TYPE_CHECKING:
@@ -107,7 +112,8 @@ def build_ai_activity_router(
     view = require_permission(
         "ai_activity.view", repo=authz_repo, validator=validator, settings=settings
     )
-    cache: dict[str, Any] = {"at": None, "body": None}
+    cache: dict[str, Any] = {"at": None, "body": None, "dims": {}}
+    data_scope = build_scope_dependency(settings, repo=authz_repo, validator=validator)
 
     async def _fetch(status: str, **kw: Any) -> list[dict[str, Any]] | None:
         try:
@@ -128,13 +134,19 @@ def build_ai_activity_router(
             _log.warning("ai_activity_pause_lookup_failed", error_type=type(exc).__name__)
         return False
 
-    async def _build() -> dict[str, Any]:
+    async def _build() -> tuple[dict[str, Any], dict[Any, dict[str, Any]]]:
         pending, unassigned = await asyncio.gather(
             _fetch("pending"),
             # Label filtered server-side so the page cap cannot hide them.
             _fetch("open", assignee_type="unassigned", label=_ESCALATE_LABEL),
         )
         rows: list[dict[str, Any]] = []
+        # Wave 2 Task 28: dimension values per conversation, kept beside the
+        # cached body (never in it) so one cache serves every caller and a
+        # scoped caller is filtered per request.
+        dims = {
+            c.get("id"): conversation_dimensions(c) for c in (pending or []) + (unassigned or [])
+        }
         if pending:
             results: dict[int, bool] = {}
             gate = asyncio.Semaphore(_PAUSE_CONCURRENCY)
@@ -178,15 +190,27 @@ def build_ai_activity_router(
             },
             "summary": summary,
             "conversations": rows,
-        }
+        }, dims
+
+    def _scoped(body: dict[str, Any], scope: Scope) -> dict[str, Any]:
+        if scope.unrestricted:
+            return body
+        dims = cache["dims"]
+        rows = [
+            r
+            for r in body["conversations"]
+            if scope.permits(dims.get(r["conversation_id"]) or {})
+        ]
+        summary = {m: sum(1 for r in rows if r["mode"] == m) for m in body["summary"]}
+        return {**body, "summary": summary, "conversations": rows}
 
     @router.get("/ai-activity", dependencies=[Depends(view)])
-    async def ai_activity() -> dict[str, Any]:
+    async def ai_activity(scope: Scope = Depends(data_scope)) -> dict[str, Any]:
         now = clock()
         if cache["body"] is not None and now - cache["at"] < CACHE_SECONDS:
-            return cache["body"]
-        body = await _build()
-        cache["at"], cache["body"] = now, body
-        return body
+            return _scoped(cache["body"], scope)
+        body, dims = await _build()
+        cache["at"], cache["body"], cache["dims"] = now, body, dims
+        return _scoped(body, scope)
 
     return router

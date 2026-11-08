@@ -3,12 +3,19 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from chatbot.features.authz.data_scope import (
+    UNRESTRICTED,
+    UNSCOPABLE_ROLE_IDS,
+    Scope,
+    combine_role_scopes,
+)
 from chatbot.features.authz.db import (
     NATIVE_BOOLEAN_KEYS,
     NATIVE_CONVERSATION_KEYS,
     Permission,
     Role,
     RolePermission,
+    RoleScope,
     UserNativeRoleMirror,
     UserRole,
 )
@@ -17,6 +24,52 @@ from chatbot.features.authz.db import (
 class AuthzRepository:
     def __init__(self, session_maker: async_sessionmaker) -> None:
         self._sm = session_maker
+
+    # --- data scopes (Wave 2 Task 28) -------------------------------------
+
+    async def get_role_scope(self, role_id: str) -> Scope:
+        async with self._sm() as session:
+            row = await session.get(RoleScope, role_id)
+            return Scope.from_json_columns(row) if row is not None else UNRESTRICTED
+
+    async def set_role_scope(self, role_id: str, scope: Scope) -> None:
+        """Upsert; an unrestricted scope deletes the row (no row = no scope)."""
+        async with self._sm() as session:
+            row = await session.get(RoleScope, role_id)
+            if scope.unrestricted:
+                if row is not None:
+                    await session.delete(row)
+                    await session.commit()
+                return
+            columns = scope.to_json_columns()
+            if row is None:
+                session.add(RoleScope(role_id=role_id, **columns))
+            else:
+                for name, value in columns.items():
+                    setattr(row, name, value)
+            await session.commit()
+
+    async def effective_scope(self, chatwoot_user_id: int) -> Scope:
+        """Union of the user's scoped roles (see data_scope.py rules 1-4);
+        administrator -> unrestricted. Storage errors propagate: the caller
+        (build_scope_dependency) fails closed on them."""
+        async with self._sm() as session:
+            role_ids = {
+                r[0]
+                for r in (
+                    await session.execute(
+                        select(UserRole.role_id).where(
+                            UserRole.chatwoot_user_id == chatwoot_user_id
+                        )
+                    )
+                ).all()
+            }
+            if not role_ids or role_ids & UNSCOPABLE_ROLE_IDS:
+                return UNRESTRICTED
+            rows = (
+                await session.execute(select(RoleScope).where(RoleScope.role_id.in_(role_ids)))
+            ).scalars().all()
+            return combine_role_scopes(Scope.from_json_columns(r) for r in rows)
 
     async def create_role(self, role_id: str, name: str, description: str = "") -> None:
         async with self._sm() as session:

@@ -1015,6 +1015,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         )
         app.state.authz_engine = authz_engine
         app.state.authz_repo = authz_repo
+        # Wave 2 Task 28: the data-scope dependency on routers mounted before
+        # this block (the /metrics/* routers) resolves repo + validator here.
+        app.state.authz_validator = authz_validator
 
         from chatbot.features.chat.audit_router import build_audit_router
 

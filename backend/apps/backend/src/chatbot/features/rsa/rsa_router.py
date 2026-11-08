@@ -19,6 +19,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from chatbot.features.authz.data_scope import (
+    Scope,
+    apply_scope,
+    build_scope_dependency,
+    require_unrestricted,
+)
 from chatbot.features.authz.deps import require_permission
 
 
@@ -65,6 +71,26 @@ def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRout
         require_permission("sla.manage", repo=authz_repo, validator=validator, settings=settings)
     )
 
+    # Wave 2 Task 28: an incident carries one scope dimension, the dealer it
+    # was purchased from. Under a dealer scope only that dealer's incidents
+    # are visible; under an inbox/team/department scope none are (an incident
+    # names no inbox -- data_scope.py rule 5). Out-of-scope ids read as 404.
+    data_scope = build_scope_dependency(settings, repo=authz_repo, validator=validator)
+
+    def _dims(row: Any) -> dict[str, Any]:
+        return {"dealer_slugs": getattr(row, "purchased_from", None)}
+
+    def _visible(row: Any, scope: Scope) -> bool:
+        return row is not None and (scope.unrestricted or scope.permits(_dims(row)))
+
+    def _require_dealer_in_scope(purchased_from: str | None, scope: Scope) -> None:
+        if scope.unrestricted:
+            return
+        if not scope.permits({"dealer_slugs": purchased_from}):
+            raise HTTPException(
+                status_code=403, detail="purchased_from is outside your data scope"
+            )
+
     def _incident_dict(row: Any) -> dict[str, Any]:
         return {
             "id": row.id,
@@ -87,25 +113,30 @@ def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRout
         }
 
     @router.post("/rsa/incidents", dependencies=[guard])
-    async def create_incident(payload: _IncidentRequest) -> dict[str, str]:
+    async def create_incident(
+        payload: _IncidentRequest, scope: Scope = Depends(data_scope)
+    ) -> dict[str, str]:
+        _require_dealer_in_scope(payload.purchased_from, scope)
         incident_id = await repo.create_incident(**payload.model_dump())
         return {"id": incident_id, "status": "created"}
 
     @router.get("/rsa/incidents", dependencies=[guard])
-    async def list_incidents() -> dict[str, Any]:
-        rows = await repo.list_incidents()
+    async def list_incidents(scope: Scope = Depends(data_scope)) -> dict[str, Any]:
+        rows = apply_scope(await repo.list_incidents(), scope, _dims)
         return {"incidents": [_incident_dict(r) for r in rows]}
 
     @router.get("/rsa/incidents/aggregate", dependencies=[guard])
-    async def aggregate() -> dict[str, Any]:
+    async def aggregate(scope: Scope = Depends(data_scope)) -> dict[str, Any]:
+        # Computed over every incident in the store: no way to narrow it.
+        require_unrestricted(scope, "The RSA aggregate")
         agg = await repo.aggregate()
         return asdict(agg)
 
     @router.get("/rsa/incidents/export", dependencies=[guard])
-    async def export_csv(format: str = "csv") -> Response:
+    async def export_csv(format: str = "csv", scope: Scope = Depends(data_scope)) -> Response:
         if format != "csv":
             raise HTTPException(status_code=400, detail="format must be csv")
-        rows = await repo.list_incidents()
+        rows = apply_scope(await repo.list_incidents(), scope, _dims)
         buf = io.StringIO()
         writer = csv.writer(buf)
         if rows:
@@ -124,9 +155,9 @@ def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRout
         )
 
     @router.get("/rsa/incidents/{incident_id}", dependencies=[guard])
-    async def get_incident(incident_id: str) -> dict[str, Any]:
+    async def get_incident(incident_id: str, scope: Scope = Depends(data_scope)) -> dict[str, Any]:
         row = await repo.get_incident(incident_id)
-        if row is None:
+        if not _visible(row, scope):
             raise HTTPException(status_code=404, detail="Not found")
         return _incident_dict(row)
 
@@ -134,14 +165,24 @@ def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRout
     async def update_incident(
         incident_id: str,
         payload: _IncidentUpdateRequest,
+        scope: Scope = Depends(data_scope),
     ) -> dict[str, str]:
         fields = {k: v for k, v in payload.model_dump().items() if v is not None}
+        if not scope.unrestricted:
+            if not _visible(await repo.get_incident(incident_id), scope):
+                raise HTTPException(status_code=404, detail="Not found")
+            if "purchased_from" in fields:
+                _require_dealer_in_scope(fields["purchased_from"], scope)
         if not await repo.update_incident(incident_id, **fields):
             raise HTTPException(status_code=404, detail="Not found")
         return {"id": incident_id, "status": "updated"}
 
     @router.delete("/rsa/incidents/{incident_id}", dependencies=[guard])
-    async def delete_incident(incident_id: str) -> dict[str, str]:
+    async def delete_incident(
+        incident_id: str, scope: Scope = Depends(data_scope)
+    ) -> dict[str, str]:
+        if not scope.unrestricted and not _visible(await repo.get_incident(incident_id), scope):
+            raise HTTPException(status_code=404, detail="Not found")
         if not await repo.delete_incident(incident_id):
             raise HTTPException(status_code=404, detail="Not found")
         return {"id": incident_id, "status": "deleted"}

@@ -75,11 +75,16 @@ import structlog
 from fastapi import HTTPException
 from google.cloud import bigquery
 
+from chatbot.features.authz.data_scope import (
+    current_scope,
+    require_unrestricted,
+    scope_predicates,
+)
 from chatbot.features.metrics.query_port import (
+    AI_PERFORMANCE_VIEWS,
     AfterHoursFirstResponseRow,
     AfterHoursMetrics,
     AfterHoursVolumeRow,
-    AI_PERFORMANCE_VIEWS,
     AiPerformanceMetrics,
     AnomalyRow,
     BlockScope,
@@ -113,10 +118,10 @@ from chatbot.features.metrics.query_port import (
     SlaAchievementRow,
     SlaBucketMetrics,
     SlaBucketRow,
-    TagVolumeMetrics,
-    TagVolumeRow,
     SpeedRow,
     StateTrendRow,
+    TagVolumeMetrics,
+    TagVolumeRow,
     TasksPerAgentRow,
     VolumeByTypeDivisionMetrics,
     VolumeByTypeDivisionRow,
@@ -172,7 +177,17 @@ def _jsonable_row(row: dict[str, Any]) -> dict[str, Any]:
 class BigQueryMetricsQuery:
     """Reads the 8 dashboard views. Each SELECT is wrapped in asyncio.to_thread
     so it never blocks the event loop. A missing/empty view yields an empty
-    block rather than raising — the dashboard degrades gracefully."""
+    block rather than raising — the dashboard degrades gracefully.
+
+    Data scope (Wave 2 Task 28): every view read goes through `_query_block`
+    or `_day_grain_block_for_period`, which AND the request's scope
+    (`current_scope()`, set by the router) onto the WHERE clause as bound
+    parameters. A view that cannot be narrowed to the scope raises
+    `ScopeNotApplicable` (403) -- it is never served unfiltered. The one raw
+    path (`_fetch_ai_performance_sync`) refuses any restricted scope.
+    """
+
+    supports_data_scope = True
 
     def __init__(self, settings: Settings, *, client: Any | None = None) -> None:
         self._prefix = f"{settings.bigquery_project_id}.{settings.bigquery_dataset}"
@@ -222,20 +237,31 @@ class BigQueryMetricsQuery:
         try:
             sql = f"SELECT * FROM `{self._prefix}.{view}`"  # noqa: S608
             job_config = None
+            fragments: list[str] = []
+            params: dict[str, str] = {}
             if filters is not None:
                 # `fragment` contains placeholders only; the values are bound.
                 # An UnsupportedFilter raised here is a 400 and propagates --
                 # a filter the view cannot honour must not degrade to an
                 # unfiltered answer under a filtered header.
-                fragment, params = filters.predicates_for(view)
+                fragment, filter_params = filters.predicates_for(view)
                 if fragment:
-                    sql = f"{sql} WHERE {fragment}"
-                    job_config = bigquery.QueryJobConfig(
-                        query_parameters=[
-                            bigquery.ScalarQueryParameter(name, "STRING", value)
-                            for name, value in params.items()
-                        ]
-                    )
+                    fragments.append(fragment)
+                    params.update(filter_params)
+            # Data scope: ANDed on, regardless of whether the caller passed
+            # filters -- a block read without filters is still scoped.
+            scope_fragment, scope_params = scope_predicates(view, current_scope())
+            if scope_fragment:
+                fragments.append(scope_fragment)
+                params.update(scope_params)
+            if fragments:
+                sql = f"{sql} WHERE {' AND '.join(fragments)}"
+                job_config = bigquery.QueryJobConfig(
+                    query_parameters=[
+                        bigquery.ScalarQueryParameter(name, "STRING", value)
+                        for name, value in params.items()
+                    ]
+                )
             job = self._client.query(sql, job_config=job_config)
             return [row_type(**dict(r)) for r in job.result()], True
         except HTTPException:
@@ -303,6 +329,14 @@ class BigQueryMetricsQuery:
                     bigquery.ScalarQueryParameter(name, "STRING", value)
                     for name, value in params.items()
                 ]
+        # Data scope, as in `_query_block`. Raises (403) before any query runs.
+        scope_fragment, scope_params = scope_predicates(view, current_scope())
+        if scope_fragment:
+            filter_sql = f"{filter_sql} AND {scope_fragment}"
+            job_config.query_parameters = list(job_config.query_parameters) + [
+                bigquery.ScalarQueryParameter(name, "STRING", value)
+                for name, value in scope_params.items()
+            ]
 
         sql = (
             f"SELECT FORMAT_DATE('{bucket_format}', day) AS month, "  # noqa: S608
@@ -750,6 +784,9 @@ class BigQueryMetricsQuery:
         `unavailable` -- distinct from an empty `ok` block -- so a drifted view
         never reads as "no AI activity".
         """
+        # Raw SELECTs below bypass `_query_block`, and no AI view carries a
+        # dealer/department column: refuse rather than serve unscoped.
+        require_unrestricted(current_scope(), "The AI performance report")
         blocks: dict[str, list[dict]] = {}
         scopes: dict[str, BlockScope] = {}
         for key, view in AI_PERFORMANCE_VIEWS.items():

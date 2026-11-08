@@ -85,6 +85,16 @@ x-chatwoot-env: &chatwoot-env
   # operator who sets PHONE_AGENT_SOFTPHONE_ENABLED gets a backend that dials
   # <Client> and a CRM panel that never renders (the two-switch trap again).
   PHONE_AGENT_SOFTPHONE_ENABLED: ${PHONE_AGENT_SOFTPHONE_ENABLED:-false}
+  # MFA / two-factor login (FIX-25, RFP 2026_028 7.3). Upstream Chatwoot turns the
+  # profile-page "Two-factor authentication" card on ONLY when all three
+  # ActiveRecord encryption keys are present (Chatwoot.mfa_enabled?). Empty =
+  # upstream behaviour (no MFA card). Generate once per tenant with
+  # scripts/ops/proton_mfa_keys.sh; never rotate or drop them afterwards (they
+  # protect users' OTP secrets and any channel credentials saved while set).
+  # Sidekiq shares this block, so it sees the same keys.
+  ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY: ${ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY:-}
+  ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY: ${ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY:-}
+  ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT: ${ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT:-}
 
 networks:
   platform:

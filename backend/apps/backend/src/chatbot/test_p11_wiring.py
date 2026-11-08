@@ -247,3 +247,47 @@ def test_call_control_is_wired_into_the_chat_router(monkeypatch: pytest.MonkeyPa
     assert len(chat_router_instances) == 1, "expected exactly one ChatRouter instance in the app"
     (chat_router,) = chat_router_instances
     assert chat_router._call_control is not None
+
+
+# --- FIX-15: softphone hold / transfer wired from main.py --------------------
+
+
+def _chat_router(app: Any) -> Any:
+    from chatbot.features.chat.router import ChatRouter
+
+    (inst,) = {
+        route.endpoint.__self__
+        for route in _effective_routes(app)
+        if isinstance(getattr(getattr(route, "endpoint", None), "__self__", None), ChatRouter)
+    }
+    return inst
+
+
+def test_hold_transfer_wired_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _boot(
+        monkeypatch,
+        PHONE_HOLD_TRANSFER_ENABLED="true",
+        PHONE_AGENT_SOFTPHONE_ENABLED="true",
+        PHONE_HANDOFF_ENABLED="true",
+        PHONE_TRANSCRIPT_LIVE_ENABLED="true",
+    )
+    paths = {r.path for r in _effective_routes(app) if hasattr(r, "path")}
+    for p in (
+        "/voice/agent/call/hold",
+        "/voice/agent/call/resume",
+        "/voice/agent/call/transfer",
+        "/webhooks/phone/conference-status",
+        "/webhooks/phone/transfer/answer",
+        "/webhooks/phone/transfer/status",
+    ):
+        assert p in paths, p
+    assert _chat_router(app)._hold_transfer is not None
+
+
+def test_hold_transfer_off_by_default_leaves_dial_status_unhooked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _boot(monkeypatch)
+    paths = {r.path for r in _effective_routes(app) if hasattr(r, "path")}
+    assert "/webhooks/phone/transfer/answer" not in paths
+    assert _chat_router(app)._hold_transfer is None

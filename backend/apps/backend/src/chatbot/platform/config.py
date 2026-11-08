@@ -634,6 +634,16 @@ class Settings(BaseSettings):
     # TwiML error that drops a live call, so this is a hard cap, not a
     # preference.
     phone_fanout_max_agents: int = 10
+    # FIX-15 (RFP 4.6): Hold / Resume / Transfer buttons on the softphone.
+    # Default off -> no hook in dial-status, /voice/agent/call/* 404, nothing
+    # changes. DEPENDS ON phone_agent_softphone_enabled (validator below).
+    # The call moves into a Twilio Conference only when an agent first presses
+    # Hold or Transfer -- see features/chat/phone/hold_transfer.py.
+    phone_hold_transfer_enabled: bool = False
+    # What the caller hears on hold, looped. Placeholder: a Twilio-hosted
+    # public hold track until Proton supplies its own recording (an https
+    # mp3/wav Twilio can fetch). Blank = silence.
+    phone_hold_media_url: str = "https://com.twilio.music.classical.s3.amazonaws.com/BusyStrings.mp3"
 
     # Frontend CORS — origins of the Vue dev/prod app (comma-separated in env).
     # Defaults cover Vite's first few fallback ports (5173-5180) so a stale dev
@@ -1528,6 +1538,11 @@ class Settings(BaseSettings):
                 "start they can fire before it exists and their write (recording "
                 "attachment, unanswered_handoff tag) is silently lost -- Twilio does "
                 "not retry a 200. Enable PHONE_TRANSCRIPT_LIVE_ENABLED first."
+            )
+        if self.phone_hold_transfer_enabled and not self.phone_agent_softphone_enabled:
+            raise ValueError(
+                "PHONE_HOLD_TRANSFER_ENABLED requires PHONE_AGENT_SOFTPHONE_ENABLED=true: "
+                "hold and transfer act on a call an agent answered in the softphone."
             )
         if self.phone_agent_softphone_enabled and not self.phone_handoff_enabled:
             raise ValueError(

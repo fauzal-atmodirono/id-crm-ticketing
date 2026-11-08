@@ -69,6 +69,7 @@ from chatbot.features.chat.twilio_signature import verify_twilio_signature
 if TYPE_CHECKING:
     from chatbot.features.chat.phone.abandon_store import AbandonRecorder
     from chatbot.features.chat.phone.call_control import CallControl
+    from chatbot.features.chat.phone.hold_transfer import HoldTransferHook
     from chatbot.features.chat.phone.softphone_registry import SoftphoneRegistry
     from chatbot.features.chat.resolved_case_index import ResolvedCaseIndexer
     from chatbot.features.routing.acw import ACWController
@@ -414,8 +415,11 @@ class ChatRouter:
         presence_fetcher: PresenceFetcher | None = None,
         call_control: CallControl | None = None,
         abandon_store: AbandonRecorder | None = None,
+        hold_transfer: HoldTransferHook | None = None,
     ) -> None:
         self.orchestrator = orchestrator
+        # FIX-15: None-defaulted (flag off) -> dial-status behaves as before.
+        self._hold_transfer = hold_transfer
         # FIX-16: None-defaulted (flag off) -> dial-status records nothing.
         self._abandon_store = abandon_store
         self._handoff_bridge = handoff_bridge
@@ -1942,8 +1946,14 @@ class ChatRouter:
 
         # FIX-16: record the handoff outcome (canceled == caller hung up before
         # any agent answered). Background + fail-open: never delays the TwiML.
-        if self._abandon_store is not None:
-            background_tasks.add_task(self._record_dial_outcome, call_sid, status)
+        # FIX-15: the agent pressed Hold/Transfer, which moved their leg into a
+        # conference and ended this <Dial>. The caller goes to hold media (or
+        # the room) instead of hanging up. Checked after the abandon record
+        # (the call WAS answered) and before ACW (the agent is still on it;
+        # ACW happens at the conference leave event instead).
+        held = await self._record_outcome_then_hold_check(call_sid, status, background_tasks)
+        if held is not None:
+            return held
 
         if status == "completed":
             _log.info("phone_dial_status_completed", call_sid=call_sid)
@@ -2020,6 +2030,27 @@ class ChatRouter:
             ),
             media_type="application/xml",
         )
+
+    async def _record_outcome_then_hold_check(
+        self, call_sid: str, status: str, background_tasks: BackgroundTasks
+    ) -> Response | None:
+        """Stage-1 dial-status preamble: queue the FIX-16 abandon record, then
+        return the FIX-15 hold/conference TwiML if this call has a session."""
+        if self._abandon_store is not None:
+            background_tasks.add_task(self._record_dial_outcome, call_sid, status)
+        held = await self._hold_transfer_twiml(call_sid)
+        return None if held is None else Response(content=held, media_type="application/xml")
+
+    async def _hold_transfer_twiml(self, call_sid: str) -> str | None:
+        """FIX-15 hook. None (flag off, no session, or any failure) = carry on
+        exactly as before."""
+        if self._hold_transfer is None or not call_sid:
+            return None
+        try:
+            return await self._hold_transfer.caller_twiml_after_dial(call_sid)
+        except Exception as e:
+            _log.error("phone_hold_transfer_dial_hook_failed", call_sid=call_sid, error=str(e))
+            return None
 
     async def _record_dial_outcome(self, call_sid: str, status: str) -> None:
         try:
@@ -2263,6 +2294,9 @@ class ChatRouter:
             and params.get("DialCallStatus", "") == "canceled"
         ):
             background_tasks.add_task(self._record_dial_outcome, call_sid, "canceled")
+        held = await self._hold_transfer_twiml(call_sid)  # FIX-15, see stage 1
+        if held is not None:
+            return Response(content=held, media_type="application/xml")
         ticket_id, assignee_agent_id = await self._fanout_context(call_sid)
         identities = await self._fanout_identities(exclude_agent_id=assignee_agent_id)
         if not identities:
@@ -2313,6 +2347,7 @@ def build_chat_router(
     presence_fetcher: PresenceFetcher | None = None,
     call_control: CallControl | None = None,
     abandon_store: AbandonRecorder | None = None,
+    hold_transfer: HoldTransferHook | None = None,
 ) -> APIRouter:
     """Builds and returns the configured FastAPI router instance."""
     return ChatRouter(
@@ -2328,4 +2363,5 @@ def build_chat_router(
         softphone_registry=softphone_registry,
         presence_fetcher=presence_fetcher,
         abandon_store=abandon_store,
+        hold_transfer=hold_transfer,
     ).router

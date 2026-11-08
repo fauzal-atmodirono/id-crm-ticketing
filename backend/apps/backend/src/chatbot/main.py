@@ -798,6 +798,34 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     _call_control = CallControl(settings)
     _routing_presence = PresenceFetcher(settings)
 
+    # FIX-15: softphone hold/transfer. Built only with the flag on, so with it
+    # off ChatRouter's dial-status hook is None and nothing changes. ACW for a
+    # call that went through the conference is entered at the agent's
+    # conference leave event (the dial-status "completed" that normally does it
+    # fires when the call ENTERS the conference, not when the agent leaves).
+    _hold_transfer = None
+    if settings.phone_hold_transfer_enabled:
+        from chatbot.features.chat.phone.hold_transfer import (  # noqa: PLC0415
+            CallSessionStore,
+            HoldTransferController,
+            build_hold_transfer_webhooks_router,
+        )
+
+        async def _hold_transfer_acw(agent_id: int) -> None:
+            if settings.acw_enabled:
+                await _acw_controller.enter(agent_id)
+
+        _hold_transfer = HoldTransferController(
+            settings,
+            call_control=_call_control,
+            store=CallSessionStore(settings),
+            registry=softphone_registry,
+            presence=_routing_presence,
+            find_ticket=orchestrator._conversation_log_port.find_conversation_ticket,
+            on_agent_leave=_hold_transfer_acw,
+        )
+        app.include_router(build_hold_transfer_webhooks_router(settings, _hold_transfer))
+
     app.include_router(
         build_chat_router(
             orchestrator=orchestrator,
@@ -811,6 +839,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             presence_fetcher=_routing_presence,
             call_control=_call_control,
             abandon_store=_abandon_store_for(app, settings),
+            hold_transfer=_hold_transfer,
         )
     )
 
@@ -1130,6 +1159,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             softphone_registry,
             repo=authz_repo,
             validator=authz_validator,
+            hold_transfer=_hold_transfer,
         )
     )
 

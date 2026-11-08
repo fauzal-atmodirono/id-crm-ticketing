@@ -130,3 +130,63 @@ class CallControl:
         except Exception as e:
             _log.error("call_recording_start_failed", call_sid=call_sid, error=str(e))
             return None
+
+    # --- FIX-15: hold and transfer (see hold_transfer.py) -------------------
+    # Same fail-open shape as above. None of these sit in the audio pump: they
+    # run from an agent's button press or a Twilio webhook.
+
+    async def fetch_call(self, call_sid: str) -> dict[str, Any] | None:
+        """`to`, `from`, `parent_call_sid` and `status` of one call leg, or
+        None. Used to prove an agent owns the leg they are acting on."""
+        client = self._twilio()
+        if client is None:
+            return None
+        try:
+            call = await asyncio.to_thread(lambda: client.calls(call_sid).fetch())
+        except Exception as e:
+            _log.warning("call_fetch_failed", call_sid=call_sid, error=str(e))
+            return None
+        return {
+            "to": str(getattr(call, "to", "") or ""),
+            "from": str(getattr(call, "from_", "") or ""),
+            "parent_call_sid": str(getattr(call, "parent_call_sid", "") or "") or None,
+            "status": str(getattr(call, "status", "") or ""),
+        }
+
+    async def end_call(self, call_sid: str, *, ringing: bool = False) -> bool:
+        """Hang up a leg. Twilio wants `canceled` for a leg still ringing and
+        `completed` for one in progress."""
+        client = self._twilio()
+        if client is None:
+            return False
+        status = "canceled" if ringing else "completed"
+        try:
+            await asyncio.to_thread(lambda: client.calls(call_sid).update(status=status))
+            return True
+        except Exception as e:
+            _log.warning("call_end_failed", call_sid=call_sid, error=str(e))
+            return False
+
+    async def create_client_call(
+        self, *, to: str, from_: str, url: str, status_callback: str, ring_timeout: int
+    ) -> str | None:
+        """Ring a softphone identity (`client:agent_N?k=v`). Twilio fetches
+        `url` for TwiML only once the agent answers, and posts the final
+        status (no-answer/busy/...) to `status_callback`. Returns the new SID."""
+        client = self._twilio()
+        if client is None:
+            return None
+        try:
+            call = await asyncio.to_thread(
+                lambda: client.calls.create(
+                    to=to,
+                    from_=from_,
+                    url=url,
+                    status_callback=status_callback,
+                    timeout=int(ring_timeout),
+                )
+            )
+            return str(call.sid)
+        except Exception as e:
+            _log.error("call_create_client_failed", error=str(e))
+            return None

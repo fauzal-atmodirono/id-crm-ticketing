@@ -57,7 +57,8 @@ from __future__ import annotations
 import asyncio
 import hmac
 from dataclasses import asdict
-from datetime import date, timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Header, HTTPException
@@ -81,6 +82,7 @@ from chatbot.features.metrics.period_query import (
 from chatbot.features.metrics.price_table import build_price_table
 
 if TYPE_CHECKING:
+    from chatbot.features.chat.phone.abandon_store import AbandonReader
     from chatbot.features.metrics.query_port import MetricsQueryPort
     from chatbot.platform.config import Settings
 
@@ -146,13 +148,20 @@ def _stamp_batch_freshness(payload: dict[str, Any], settings: Settings) -> dict[
     )
 
 
+def _report_tz(settings: Any) -> ZoneInfo:
+    try:
+        return ZoneInfo(settings.reporting_timezone or "UTC")
+    except Exception:
+        return ZoneInfo("UTC")
+
+
 def build_metrics_insights_router(
     port: MetricsQueryPort,
     settings: Settings,
     *,
     ai_cost_port: AiCostUsagePort | None = None,
     price_table: PriceLookup | None = None,
-    abandon_reader: Any | None = None,
+    abandon_reader: AbandonReader | None = None,
 ) -> APIRouter:
     """The two AI-cost dependencies are keyword-only with `None` defaults so
     `main.py`'s existing call site needs no change and the real deployment
@@ -197,8 +206,9 @@ def build_metrics_insights_router(
         if abandon_reader is not None:
             # FIX-16: abandoned-call rate per day. Fail-open: a store problem
             # must not take the rest of the call-centre report down.
-            start = period.start if period else date.today() - timedelta(days=30)
-            end = period.end if period else date.today()
+            today = datetime.now(_report_tz(settings)).date()
+            start = period.start if period else today - timedelta(days=30)
+            end = period.end if period else today
             try:
                 payload["abandoned_calls"] = {
                     "daily": await abandon_reader.daily_rates(start, end),

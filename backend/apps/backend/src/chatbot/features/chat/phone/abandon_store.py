@@ -8,6 +8,10 @@ answered call; `no-answer`/`busy`/`failed` are "unanswered" (the caller stayed
 on the line and heard the apology) -- counted in the denominator and shown
 separately, NOT as abandoned.
 
+Known gap: only abandons while the handoff target was ringing are counted
+(no Twilio call status callback route exists, so a hang-up during the AI
+bridge / IVR / hold prompt before the <Dial> is not seen).
+
 Own small table, one row per call, keyed on CallSid so Twilio's redelivered
 callbacks are idempotent. Not routed through BigQuery: call legs are not
 Chatwoot conversations, so the conversation sync cannot see them.
@@ -21,7 +25,7 @@ lands on the KL day the report reader expects.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -35,6 +39,16 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 _log = structlog.get_logger(__name__)
+
+
+class AbandonRecorder(Protocol):
+    async def record(
+        self, call_sid: str, dial_status: str, at: datetime | None = None
+    ) -> None: ...
+
+
+class AbandonReader(Protocol):
+    async def daily_rates(self, start: date, end: date) -> list[dict[str, Any]]: ...
 
 
 class Base(DeclarativeBase):

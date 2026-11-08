@@ -67,6 +67,7 @@ from chatbot.features.chat.sla import FIRST_RESPONSE_STATE
 from chatbot.features.chat.twilio_signature import verify_twilio_signature
 
 if TYPE_CHECKING:
+    from chatbot.features.chat.phone.abandon_store import AbandonRecorder
     from chatbot.features.chat.phone.call_control import CallControl
     from chatbot.features.chat.phone.softphone_registry import SoftphoneRegistry
     from chatbot.features.chat.resolved_case_index import ResolvedCaseIndexer
@@ -412,7 +413,7 @@ class ChatRouter:
         softphone_registry: SoftphoneRegistry | None = None,
         presence_fetcher: PresenceFetcher | None = None,
         call_control: CallControl | None = None,
-        abandon_store: Any | None = None,
+        abandon_store: AbandonRecorder | None = None,
     ) -> None:
         self.orchestrator = orchestrator
         # FIX-16: None-defaulted (flag off) -> dial-status records nothing.
@@ -2231,6 +2232,17 @@ class ChatRouter:
             return await self.phone_dial_status_webhook(request, background_tasks)
 
         call_sid = params.get("CallSid", "")
+        # FIX-16: stage-1 `canceled` == caller hung up while the assigned agent
+        # was ringing. Without this the fan-out branch below would dial stage 2
+        # and never record the abandon (a stage-1 no-answer is NOT recorded
+        # here: stage 2's own outcome is). First write per call_sid wins, so
+        # the delegated paths recording again is harmless.
+        if (
+            self._abandon_store is not None
+            and call_sid
+            and params.get("DialCallStatus", "") == "canceled"
+        ):
+            background_tasks.add_task(self._record_dial_outcome, call_sid, "canceled")
         ticket_id, assignee_agent_id = await self._fanout_context(call_sid)
         identities = await self._fanout_identities(exclude_agent_id=assignee_agent_id)
         if not identities:
@@ -2280,7 +2292,7 @@ def build_chat_router(
     softphone_registry: SoftphoneRegistry | None = None,
     presence_fetcher: PresenceFetcher | None = None,
     call_control: CallControl | None = None,
-    abandon_store: Any | None = None,
+    abandon_store: AbandonRecorder | None = None,
 ) -> APIRouter:
     """Builds and returns the configured FastAPI router instance."""
     return ChatRouter(

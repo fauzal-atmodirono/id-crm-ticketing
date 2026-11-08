@@ -200,3 +200,57 @@ def test_callcenter_survives_reader_failure() -> None:
     )
     assert res.status_code == 200
     assert res.json()["abandoned_calls"] == {"daily": [], "ok": False}
+
+
+# --- stage-1 (fan-out route) recording --------------------------------------
+
+
+def _fanout_settings() -> Settings:
+    return Settings(
+        _env_file=None,
+        phone_transcript_live_enabled=True,
+        phone_handoff_enabled=True,
+        phone_agent_softphone_enabled=True,
+        twilio_auth_token="test_token",
+        twilio_account_sid="AC1",
+        twilio_webhook_base_url="http://testserver",
+    )
+
+
+def _post_fanout(client: TestClient, settings: Settings, status: str, sid: str = "CA7") -> Any:
+    params = {"CallSid": sid, "DialCallStatus": status}
+    sig = _sign(
+        settings.twilio_auth_token, "http://testserver/webhooks/phone/dial-status/fanout", params
+    )
+    return client.post(
+        "/webhooks/phone/dial-status/fanout", data=params, headers={"X-Twilio-Signature": sig}
+    )
+
+
+def test_stage1_canceled_with_fanout_identities_records_abandon(monkeypatch) -> None:
+    from chatbot.features.chat.router import ChatRouter
+
+    async def _ids(self, exclude_agent_id=None):
+        return ["agent-2"]
+
+    monkeypatch.setattr(ChatRouter, "_fanout_identities", _ids)
+    spy = _Spy()
+    client, settings = _handoff_client(_DialLog(), _fanout_settings(), abandon_store=spy)
+    res = _post_fanout(client, settings, "canceled")
+    assert res.status_code == 200 and "<Client>" in res.text  # fan-out TwiML built
+    assert spy.calls == [("CA7", "canceled")]
+
+
+def test_stage1_no_answer_not_recorded_then_stage2_answered_once(monkeypatch) -> None:
+    from chatbot.features.chat.router import ChatRouter
+
+    async def _ids(self, exclude_agent_id=None):
+        return ["agent-2"]
+
+    monkeypatch.setattr(ChatRouter, "_fanout_identities", _ids)
+    spy = _Spy()
+    client, settings = _handoff_client(_DialLog(), _fanout_settings(), abandon_store=spy)
+    _post_fanout(client, settings, "no-answer")
+    assert spy.calls == []
+    _post(client, settings, "completed", sid="CA7")
+    assert spy.calls == [("CA7", "completed")]

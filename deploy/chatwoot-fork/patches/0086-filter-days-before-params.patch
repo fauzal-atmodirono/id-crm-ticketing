@@ -1,0 +1,27 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] Filters: days_before no longer 500s on conversations/filter
+ (Wave 2 Task 30, FIX-51)
+
+POST /conversations/filter with created_at + filter_operator days_before
+returned HTTP 500: FilterService#days_before_filter_query called
+with_indifferent_access on an ActionController::Parameters (NoMethodError).
+is_greater_than / is_less_than never hit that line. Convert Parameters with
+to_unsafe_h first (plain hashes still work). Upstream bug at v4.15.1.
+
+---
+diff --git a/app/services/filter_service.rb b/app/services/filter_service.rb
+index 25f118d..1b07515 100644
+--- a/app/services/filter_service.rb
++++ b/app/services/filter_service.rb
+@@ -99,7 +99,10 @@ class FilterService
+ 
+   def days_before_filter_query(query_hash, current_index)
+     date = Time.zone.today - query_hash['values'][0].to_i.days
+-    updated_query_hash = query_hash.with_indifferent_access.merge(
++    # The controller hands us ActionController::Parameters, which has no
++    # with_indifferent_access (NoMethodError -> HTTP 500); plain hashes do.
++    base_hash = query_hash.respond_to?(:to_unsafe_h) ? query_hash.to_unsafe_h : query_hash
++    updated_query_hash = base_hash.with_indifferent_access.merge(
+       values: [date.strftime],
+       filter_operator: 'is_less_than'
+     )

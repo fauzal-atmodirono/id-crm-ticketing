@@ -1,0 +1,1447 @@
+diff --git a/backend/apps/backend/src/chatbot/features/assist/router.py b/backend/apps/backend/src/chatbot/features/assist/router.py
+index 1af50c0d..258d72ce 100644
+--- a/backend/apps/backend/src/chatbot/features/assist/router.py
++++ b/backend/apps/backend/src/chatbot/features/assist/router.py
+@@ -43,6 +43,7 @@ guardrails list yields an empty prefix → behaviour-preserving.
+ 
+ from __future__ import annotations
+ 
++import asyncio
+ import hmac
+ from typing import TYPE_CHECKING, Any
+ 
+@@ -227,6 +228,8 @@ _MEDIA_QUERY_SYSTEM = (
+ 
+ # Ceiling on the extracted keyword string before it becomes a search query.
+ _MEDIA_TERMS_MAX_CHARS = 200
++# Budget for the optional media-keyword extraction (see _media_search_terms).
++_MEDIA_TERMS_TIMEOUT_SECONDS = 4.0
+ 
+ _SNIPPET = 300
+ 
+@@ -391,12 +394,13 @@ def build_assist_router(
+     def _format_messages(messages: list[AssistMessage] | list[str]) -> str:
+         return "\n".join(f"[{i + 1}] {m}" for i, m in enumerate(render_transcript(messages)))
+ 
+-    async def _media_search_terms(media_parts: list[types.Part]) -> str:
++    async def _media_search_terms(media_parts: list[types.Part]) -> str | None:
+         """Ask Gemini what the attachments actually show, as search keywords.
+ 
+         One extra call, so it is made only where it can pay for itself — see
+         `_kb_context`. Returns "" on any failure, which simply leaves retrieval
+-        where it already was.
++        where it already was. Returns None on a budget timeout, which the caller
++        must not cache: a slow moment is not evidence the media has no terms.
+         """
+         if not media_parts:
+             return ""
+@@ -404,21 +408,31 @@ def build_assist_router(
+             from google.genai import types as _types  # noqa: PLC0415
+ 
+             model = await _resolve_model()
+-            response = await genai_client.aio.models.generate_content(
+-                model=model,
+-                contents=_types.Content(
+-                    role="user",
+-                    parts=[
+-                        _types.Part.from_text(text="What is in this media?"),
+-                        *media_parts,
+-                    ],
++            # Hard budget: this call only improves retrieval, and it runs BEFORE
++            # the draft call, so under load it ate the agent's 10 s client
++            # timeout and the draft was dropped (FIX-57). Past the budget we
++            # fall back to the text-only query, exactly as on any failure.
++            response = await asyncio.wait_for(
++                genai_client.aio.models.generate_content(
++                    model=model,
++                    contents=_types.Content(
++                        role="user",
++                        parts=[
++                            _types.Part.from_text(text="What is in this media?"),
++                            *media_parts,
++                        ],
++                    ),
++                    config={"system_instruction": _MEDIA_QUERY_SYSTEM},
+                 ),
+-                config={"system_instruction": _MEDIA_QUERY_SYSTEM},
++                timeout=_MEDIA_TERMS_TIMEOUT_SECONDS,
+             )
+             # Capped: a model that ignores "short list" and narrates a paragraph
+             # would otherwise become the entire retrieval query and bury the
+             # real terms.
+             return (response.text or "").strip()[:_MEDIA_TERMS_MAX_CHARS]
++        except TimeoutError:
++            _log.warning("assist_media_terms_timeout")
++            return None
+         except Exception:
+             _log.warning("assist_media_terms_failed", exc_info=True)
+             return ""
+@@ -429,6 +443,8 @@ def build_assist_router(
+         if cached is not None:
+             return cached
+         terms = await _media_search_terms(media_parts)
++        if terms is None:
++            return ""
+         _terms_cache.put(conversation_id, terms)
+         if terms:
+             _log.info("assist_media_terms", conv_id=conversation_id, terms=terms)
+diff --git a/backend/apps/backend/src/chatbot/features/assist/translate_router.py b/backend/apps/backend/src/chatbot/features/assist/translate_router.py
+index 5e3f8209..be249025 100644
+--- a/backend/apps/backend/src/chatbot/features/assist/translate_router.py
++++ b/backend/apps/backend/src/chatbot/features/assist/translate_router.py
+@@ -102,7 +102,7 @@ class TranslateRequest(BaseModel):
+     # Default "en": the task this endpoint exists for is an agent reading an
+     # inbound message in English. A caller may pass any other target, subject
+     # to the outbound-Tamil gate above.
+-    target_language: str = Field(default="en", min_length=2, max_length=8)
++    target_language: str = Field(default="en", max_length=32)
+ 
+ 
+ def _strip_code_fence(raw: str) -> str:
+@@ -175,6 +175,14 @@ def build_translate_router(
+ 
+         target_language = req.target_language.strip().lower()
+ 
++        # The agent-side picker offers exactly these four; anything else is a
++        # caller bug, refused before the Tamil gate or any model call.
++        if target_language not in _LANGUAGE_NAMES:
++            raise HTTPException(
++                status_code=400,
++                detail=f"Unsupported target_language; use one of {sorted(_LANGUAGE_NAMES)}.",
++            )
++
+         # Outbound-Tamil gate: fires on the TARGET alone, before any model
+         # call, regardless of what the source language turns out to be. See
+         # the module docstring's "THE TAMIL SPLIT" section.
+diff --git a/backend/apps/backend/src/chatbot/features/authz/deps.py b/backend/apps/backend/src/chatbot/features/authz/deps.py
+index d3e4b674..d9a4553c 100644
+--- a/backend/apps/backend/src/chatbot/features/authz/deps.py
++++ b/backend/apps/backend/src/chatbot/features/authz/deps.py
+@@ -96,6 +96,31 @@ def require_platform_superadmin(
+     return _check
+ 
+ 
++async def _resolve_session(
++    token: str | None,
++    client: str | None,
++    uid: str | None,
++    *,
++    validator: TokenValidator | None,
++    repo: AuthzRepository | None,
++    needs_repo: bool,
++    missing_detail: str,
++) -> tuple[int, bool]:
++    """Resolve the Chatwoot triplet to `(user_id, is_super_admin_type)` or 401.
++
++    Single home for the header-presence check, `resolve_identity` call and the
++    two 401s, shared by the session-based dependencies so they cannot drift.
++    Callers differ only in the `missing_detail` text and whether a repo is
++    required.
++    """
++    if not token or not client or not uid or validator is None or (needs_repo and repo is None):
++        raise HTTPException(status_code=401, detail=missing_detail)
++    identity = await validator.resolve_identity(token, client, uid)
++    if identity is None:
++        raise HTTPException(status_code=401, detail="Invalid or expired token")
++    return identity
++
++
+ def require_permission(
+     permission: str,
+     *,
+@@ -113,22 +138,15 @@ def require_permission(
+             _shared_secret_check(settings, x_api_key)
+             return
+ 
+-        if (
+-            not x_chatwoot_access_token
+-            or not x_chatwoot_client
+-            or not x_chatwoot_uid
+-            or repo is None
+-            or validator is None
+-        ):
+-            raise HTTPException(status_code=401, detail="Missing Chatwoot access token")
+-
+-        identity = await validator.resolve_identity(
+-            x_chatwoot_access_token, x_chatwoot_client, x_chatwoot_uid
++        user_id, is_super_admin_type = await _resolve_session(
++            x_chatwoot_access_token,
++            x_chatwoot_client,
++            x_chatwoot_uid,
++            validator=validator,
++            repo=repo,
++            needs_repo=True,
++            missing_detail="Missing Chatwoot access token",
+         )
+-        if identity is None:
+-            raise HTTPException(status_code=401, detail="Invalid or expired token")
+-
+-        user_id, is_super_admin_type = identity
+         # A platform superadmin holds every RBAC permission. Without this the
+         # platform owner is locked out of a tenant's own Roles & Permissions
+         # page on any tenant where they were never assigned a role.
+@@ -142,6 +160,43 @@ def require_permission(
+     return _check
+ 
+ 
++def require_authenticated(
++    *,
++    repo: AuthzRepository | None = None,  # noqa: ARG001 -- kept for signature parity with require_permission
++    validator: TokenValidator | None = None,
++    settings: Settings,
++):
++    """Any valid Chatwoot session passes; no specific permission needed.
++
++    For read endpoints the conversation sidebar needs (e.g. the taxonomy tree):
++    every logged-in agent may read, only `taxonomy.manage` holders may write.
++    Same headers and token resolution as `require_permission`; with RBAC off it
++    falls back to the shared-secret check, like `require_permission` does.
++    """
++
++    async def _check(
++        x_api_key: str | None = Header(default=None),
++        x_chatwoot_access_token: str | None = Header(default=None),
++        x_chatwoot_client: str | None = Header(default=None),
++        x_chatwoot_uid: str | None = Header(default=None),
++    ) -> None:
++        if not settings.rbac_enabled:
++            _shared_secret_check(settings, x_api_key)
++            return
++
++        await _resolve_session(
++            x_chatwoot_access_token,
++            x_chatwoot_client,
++            x_chatwoot_uid,
++            validator=validator,
++            repo=repo,
++            needs_repo=False,
++            missing_detail="Missing Chatwoot access token",
++        )
++
++    return _check
++
++
+ def require_permission_with_identity(
+     permission: str,
+     *,
+@@ -166,23 +221,18 @@ def require_permission_with_identity(
+         x_chatwoot_client: str | None = Header(default=None),
+         x_chatwoot_uid: str | None = Header(default=None),
+     ) -> int:
+-        if (
+-            not settings.rbac_enabled
+-            or not x_chatwoot_access_token
+-            or not x_chatwoot_client
+-            or not x_chatwoot_uid
+-            or repo is None
+-            or validator is None
+-        ):
++        if not settings.rbac_enabled:
+             raise HTTPException(status_code=401, detail="Chatwoot session required")
+ 
+-        identity = await validator.resolve_identity(
+-            x_chatwoot_access_token, x_chatwoot_client, x_chatwoot_uid
++        user_id, is_super_admin_type = await _resolve_session(
++            x_chatwoot_access_token,
++            x_chatwoot_client,
++            x_chatwoot_uid,
++            validator=validator,
++            repo=repo,
++            needs_repo=True,
++            missing_detail="Chatwoot session required",
+         )
+-        if identity is None:
+-            raise HTTPException(status_code=401, detail="Invalid or expired token")
+-
+-        user_id, is_super_admin_type = identity
+         # Same bypass as require_permission: a platform superadmin holds every
+         # permission, so they are never locked out of a tenant surface they
+         # were never assigned a role on.
+diff --git a/backend/apps/backend/src/chatbot/features/chat/adapters/chatwoot.py b/backend/apps/backend/src/chatbot/features/chat/adapters/chatwoot.py
+index 828c1142..fc2a8c07 100644
+--- a/backend/apps/backend/src/chatbot/features/chat/adapters/chatwoot.py
++++ b/backend/apps/backend/src/chatbot/features/chat/adapters/chatwoot.py
+@@ -617,6 +617,35 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
+         res = await self._request("GET", f"/contacts/{contact_id}/conversations", None)
+         return _conversations_from(res)
+ 
++    async def find_contacts_by_vehicle_no(self, variants: list[str]) -> list[dict[str, Any]]:
++        """Contacts whose ``vehicle_no`` custom attribute contains any variant.
++
++        One ``POST /contacts/filter`` call (Chatwoot runs it as a single SQL
++        query) instead of paging every conversation. This is the attribute the
++        Cases list "Car Plate" column reads (patch 0043:
++        ``meta.sender.custom_attributes.vehicle_no``). ``variants`` are
++        alternative spellings of one plate (callers pass compact and spaced
++        forms) OR-ed together, since Chatwoot's ``contains`` cannot ignore
++        whitespace itself. First page only: a plate identifies one customer.
++        """
++        wanted = [v for v in dict.fromkeys(variants) if v]
++        if not wanted:
++            return []
++        body = {
++            "payload": [
++                {
++                    "attribute_key": "vehicle_no",
++                    "filter_operator": "contains",
++                    "values": [v],
++                    "query_operator": "OR" if i < len(wanted) - 1 else None,
++                }
++                for i, v in enumerate(wanted)
++            ]
++        }
++        res = await self._request("POST", "/contacts/filter", body)
++        payload = (res or {}).get("payload") if isinstance(res, dict) else None
++        return [c for c in (payload or []) if isinstance(c, dict)]
++
+     async def list_conversations(self, *, max_pages: int = 5) -> list[dict[str, Any]]:
+         """Page the account conversations endpoint, filtered to our inbox.
+ 
+diff --git a/backend/apps/backend/src/chatbot/features/chat/customer360_router.py b/backend/apps/backend/src/chatbot/features/chat/customer360_router.py
+index d9417cb4..f19f0801 100644
+--- a/backend/apps/backend/src/chatbot/features/chat/customer360_router.py
++++ b/backend/apps/backend/src/chatbot/features/chat/customer360_router.py
+@@ -109,6 +109,54 @@ def _digits(value: str | None) -> str:
+     return re.sub(r"\D", "", value or "")
+ 
+ 
++def _plate_key(value: str | None) -> str:
++    """Normalised plate for comparison: upper-case alphanumerics only, so
++    ``"bmt 5518"``, ``"BMT-5518"`` and ``"BMT5518"`` are the same plate."""
++    return re.sub(r"[^0-9A-Z]", "", (value or "").upper())
++
++
++def _plate_variants(query: str) -> list[str]:
++    """Spellings of one plate to OR together in Chatwoot's ``contains``
++    filter: compact (``BMT5518``) and letter/digit-spaced (``BMT 5518``),
++    the two ways operators type plates into the contact attribute."""
++    compact = _plate_key(query)
++    spaced = re.sub(r"(?<=[A-Z])(?=\d)|(?<=\d)(?=[A-Z])", " ", compact)
++    dashed = spaced.replace(" ", "-")
++    return list(dict.fromkeys(v for v in (compact, spaced, dashed) if v))
++
++
++# Plate-shaped: 2-3 letters, digits, optional trailing letter (BMT5518,
++# "BMT 5518", BMT-5518, W1234A). One-letter model names like "X50"/"S70" and
++# anything with punctuation ("e.MAS 7") are deliberately NOT plate-like.
++_PLATE_LIKE_RE = re.compile(r"^[A-Za-z]{2,3}[\s-]?\d{1,4}[A-Za-z]?$")
++
++# Total budget for the whole Chatwoot side of a vehicle search (contacts
++# filter + per-contact conversations). Past it we return what we have.
++_VEHICLE_CRM_BUDGET_SECONDS = 2.5
++
++
++_MIN_PHONE_SUFFIX_DIGITS = 8
++
++
++def _phones_match(a: str | None, b: str | None) -> bool:
++    """Digits-only phone equality, tolerant of a country-code/trunk-prefix
++    difference (``0123456789`` vs ``+60123456789``): one must be a suffix of
++    the other, with at least 8 digits shared so short numbers can't collide."""
++    da, db = _digits(a), _digits(b)
++    if not da or not db:
++        return False
++    short, long_ = sorted((da, db), key=len)
++    short = short.lstrip("0")
++    return len(short) >= _MIN_PHONE_SUFFIX_DIGITS and long_.endswith(short)
++
++
++# Fallback conversation scan (vehicle_model substring) is the slow path -- it
++# pages the Chatwoot conversation list. Bounded so a plate that matched no
++# contact can't stall the page.
++_MODEL_SCAN_BUDGET_SECONDS = 2.0
++_MAX_PLATE_CONTACTS = 5
++
++
+ def _pick_best_contact(contacts: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
+     """Prefer an exact phone-number match (digits-only comparison, so
+     formatting differences like spaces/dashes/leading '+' don't matter);
+@@ -132,6 +180,7 @@ def _rsa_incident_dict(row: Any) -> dict[str, Any]:
+         "incident_date": row.incident_date,
+         "vehicle_no": row.vehicle_no,
+         "vehicle_model": row.vehicle_model,
++        "customer_phone": getattr(row, "customer_phone", None),
+         "cause": row.cause,
+         "purchased_from": row.purchased_from,
+         "breakdown_location": row.breakdown_location,
+@@ -261,6 +310,35 @@ async def _build_dms_block(
+     }
+ 
+ 
++async def _plate_lookup(
++    chatwoot: ChatwootAdapter,
++    query: str,
++    needle: str,
++    plate_contacts: list[dict[str, Any]],
++    conversations: list[dict[str, Any]],
++) -> None:
++    """Fill ``plate_contacts``/``conversations`` in place (so whatever
++    finished survives a wait_for timeout): one contacts/filter call, then the
++    matched contacts' conversations fetched concurrently."""
++    found = await chatwoot.find_contacts_by_vehicle_no(_plate_variants(query))
++    found = [c for c in found if c.get("id") is not None]
++    # exact plate first, so `contact` is the real owner, not a substring
++    # neighbour
++    found.sort(
++        key=lambda c: _plate_key((c.get("custom_attributes") or {}).get("vehicle_no")) != needle
++    )
++    plate_contacts.extend(found[:_MAX_PLATE_CONTACTS])
++    per_contact = await asyncio.gather(
++        *(chatwoot.list_contact_conversations(int(c["id"])) for c in plate_contacts)
++    )
++    seen: set[Any] = set()
++    for convs in per_contact:
++        for conv in convs:
++            if conv.get("id") not in seen:
++                seen.add(conv.get("id"))
++                conversations.append(conv)
++
++
+ def build_customer360_router(
+     chatwoot: ChatwootAdapter,
+     rsa_repo: RsaRepositoryPort,
+@@ -306,28 +384,57 @@ def build_customer360_router(
+             contact = _pick_best_contact(contacts, q)
+             if contact is not None and contact.get("id") is not None:
+                 conversations = await chatwoot.list_contact_conversations(int(contact["id"]))
+-        else:
+-            # Vehicle-number search path: RSA incidents are matched on their
+-            # actual vehicle_no field (case-insensitive substring, since
+-            # staff may search a partial plate). Conversations don't carry a
+-            # vehicle number at all -- the only vehicle-related field they
+-            # expose is the vehicle_model custom attribute -- so the
+-            # conversation side of this branch is a best-effort substring
+-            # match against vehicle_model, not a true vehicle-number lookup.
+-            needle = q_stripped.lower()
+             incidents = await rsa_repo.list_incidents()
+             rsa_incidents = [
+                 _rsa_incident_dict(row)
+                 for row in incidents
+-                if needle in (row.vehicle_no or "").lower()
++                if _phones_match(q_stripped, getattr(row, "customer_phone", None))
+             ]
+-            all_conversations = await chatwoot.list_conversations()
+-            conversations = [
+-                conv
+-                for conv in all_conversations
+-                if needle
+-                in ((conv.get("custom_attributes") or {}).get("vehicle_model") or "").lower()
++        else:
++            # Vehicle-number search path. RSA incidents match on the
++            # normalised plate (spaces/case/punctuation ignored, substring so
++            # staff may search a partial plate). Conversations are found the
++            # way the Cases list "Car Plate" column reads them: the contact's
++            # ``vehicle_no`` custom attribute, via ONE Chatwoot contacts/filter
++            # call plus one conversations call per matched contact -- not a
++            # scan of every conversation, which took 4-5 s.
++            needle = _plate_key(q_stripped)
++            incidents = await rsa_repo.list_incidents()
++            rsa_incidents = [
++                _rsa_incident_dict(row)
++                for row in incidents
++                if needle and needle in _plate_key(row.vehicle_no)
+             ]
++            plate_contacts: list[dict[str, Any]] = []
++            if needle:
++                try:
++                    await asyncio.wait_for(
++                        _plate_lookup(chatwoot, q_stripped, needle, plate_contacts, conversations),
++                        timeout=_VEHICLE_CRM_BUDGET_SECONDS,
++                    )
++                except Exception as exc:
++                    _log.warning("customer360_plate_lookup_failed", error_type=type(exc).__name__)
++            if plate_contacts:
++                contact = plate_contacts[0]
++            elif not _PLATE_LIKE_RE.match(q_stripped):
++                # Legacy best-effort for model-like queries ("camry", "X50"):
++                # the free-text vehicle_model attribute, time-boxed because it
++                # pages the inbox. Skipped for plate-shaped queries -- a plate
++                # that matched no contact has nothing to find there.
++                lowered = q_stripped.lower()
++                try:
++                    all_conversations = await asyncio.wait_for(
++                        chatwoot.list_conversations(), timeout=_MODEL_SCAN_BUDGET_SECONDS
++                    )
++                except Exception as exc:
++                    _log.warning("customer360_model_scan_failed", error_type=type(exc).__name__)
++                    all_conversations = []
++                conversations = [
++                    conv
++                    for conv in all_conversations
++                    if lowered
++                    in ((conv.get("custom_attributes") or {}).get("vehicle_model") or "").lower()
++                ]
+ 
+         result: dict[str, Any] = {
+             "contact": contact,
+diff --git a/backend/apps/backend/src/chatbot/features/chat/escalation_ladder.py b/backend/apps/backend/src/chatbot/features/chat/escalation_ladder.py
+index 9a589ecf..90b10b6e 100644
+--- a/backend/apps/backend/src/chatbot/features/chat/escalation_ladder.py
++++ b/backend/apps/backend/src/chatbot/features/chat/escalation_ladder.py
+@@ -125,18 +125,24 @@ def _current_step(attrs: dict[str, Any]) -> int:
+     return max(from_stamps, counter, 1 if attrs.get(NOTIFIED_ATTR) else 0)
+ 
+ 
++# Skip reasons that only stop rungs without `fires_after_reply`.
++_REPLY_SKIPS = frozenset({"dealer_replied", "acknowledged_by_agent"})
++
++
+ def _should_skip(conv: dict[str, Any], attrs: dict[str, Any]) -> str | None:
+     """Why this conversation is not a ladder candidate, or None."""
+     if ESCALATE_LABEL not in _labels(conv):
+         return "not_escalated"
+     if not attrs.get(NOTIFIED_ATTR):
+         return "no_step_one"
++    # Checked before the reply reasons: a resolved case must never reach the
++    # 48 h rung, which is the one rung that outlives a reply.
++    if str(conv.get("status") or "") == "resolved":
++        return "resolved"
+     if attrs.get(REPLIED_ATTR):
+         return "dealer_replied"
+     if attrs.get(ACKNOWLEDGED_ATTR):
+         return "acknowledged_by_agent"
+-    if str(conv.get("status") or "") == "resolved":
+-        return "resolved"
+     return None
+ 
+ 
+@@ -194,7 +200,7 @@ async def sweep_ladder(
+     return acted
+ 
+ 
+-async def describe_in_flight(
++async def describe_in_flight(  # noqa: PLR0912, PLR0915 -- one branch per row state
+     conversations: list[dict[str, Any]],
+     *,
+     settings: Settings,
+@@ -243,7 +249,12 @@ async def describe_in_flight(
+         }
+ 
+         reason = _should_skip(conv, attrs)
+-        if reason is not None:
++        row_steps = steps
++        if reason in _REPLY_SKIPS:
++            # Mirrors the sweep: rungs that outlive a reply stay pending.
++            row["state"] = reason
++            row_steps = tuple(s for s in steps if s.fires_after_reply)
++        elif reason is not None:
+             row["state"] = reason
+             rows.append(row)
+             continue
+@@ -275,10 +286,12 @@ async def describe_in_flight(
+         )
+         current = _current_step(attrs)
+         upcoming = next(
+-            (s for s in sorted(steps, key=lambda s: s.step_no) if s.step_no > current), None
++            (s for s in sorted(row_steps, key=lambda s: s.step_no) if s.step_no > current),
++            None,
+         )
+         if upcoming is None:
+-            row["state"] = "ladder_complete"
++            if reason is None:
++                row["state"] = "ladder_complete"
+         else:
+             row["next_step_no"] = upcoming.step_no
+             row["next_due_in_working_hours"] = round(
+@@ -309,7 +322,12 @@ async def _advance_one(  # noqa: PLR0911 -- each return is one reason a case is
+     ticket_id = str(conv_id)
+     attrs = _attrs(conv)
+ 
+-    if _should_skip(conv, attrs) is not None:
++    reason = _should_skip(conv, attrs)
++    if reason in _REPLY_SKIPS:
++        # A reply / acknowledgement ends rungs 1-5 but not the 48 h
++        # unresolved rung: consider only rungs that outlive a reply.
++        steps = tuple(s for s in steps if s.fires_after_reply)
++    elif reason is not None:
+         return None
+ 
+     started_at = _parse(attrs.get(NOTIFIED_ATTR))
+diff --git a/backend/apps/backend/src/chatbot/features/chat/escalation_policy.py b/backend/apps/backend/src/chatbot/features/chat/escalation_policy.py
+index bca70e03..700663e2 100644
+--- a/backend/apps/backend/src/chatbot/features/chat/escalation_policy.py
++++ b/backend/apps/backend/src/chatbot/features/chat/escalation_policy.py
+@@ -52,6 +52,11 @@ class EscalationStep:
+     # label is empty: it is the escalation itself, not a reminder about one.
+     label: str
+     channel: str = EMAIL
++    # True for a rung that still fires after the dealer replied or an agent
++    # acknowledged the case (only a resolved case stops it). Rungs 1-5 chase
++    # a dealer who has gone quiet, so a reply ends them; the 48-hour rung
++    # reports a case that is STILL unresolved, replied-to or not.
++    fires_after_reply: bool = False
+ 
+ 
+ # The SOP's matrix verbatim. Step 2 is the dealer's own acknowledgement
+@@ -96,6 +101,17 @@ DEFAULT_STEPS: tuple[EscalationStep, ...] = (
+         label="FINAL ESCALATION - TELEPHONE",
+         channel=PHONE,
+     ),
++    # RFP 3.2.4: a case still unresolved 48 working hours after step 1 is
++    # escalated to the Owner whether or not anyone replied. Only a resolved
++    # case suppresses it.
++    EscalationStep(
++        step_no=6,
++        delay_working_hours=48.0,
++        to_roles=("owner",),
++        cc_roles=("principal", "area_regional_mgr", "hod"),
++        label="48H UNRESOLVED",
++        fires_after_reply=True,
++    ),
+ )
+ 
+ _ALL_ROLES = set(DEALER_ROLES) | set(PRONET_ROLES)
+@@ -136,6 +152,7 @@ def load_steps(raw_json: str) -> tuple[EscalationStep, ...]:
+                     cc_roles=cc_roles,
+                     label=str(row.get("label", "")),
+                     channel=channel,
++                    fires_after_reply=bool(row.get("fires_after_reply", False)),
+                 )
+             )
+         return tuple(sorted(steps, key=lambda s: s.step_no))
+diff --git a/backend/apps/backend/src/chatbot/features/chat/escalation_router.py b/backend/apps/backend/src/chatbot/features/chat/escalation_router.py
+index 68459555..8a030567 100644
+--- a/backend/apps/backend/src/chatbot/features/chat/escalation_router.py
++++ b/backend/apps/backend/src/chatbot/features/chat/escalation_router.py
+@@ -29,7 +29,10 @@ instance as /escalation/contacts.
+ 
+ from __future__ import annotations
+ 
++import asyncio
++import hashlib
+ import hmac
++import time
+ from collections.abc import Callable, Coroutine
+ from datetime import UTC, datetime
+ from typing import TYPE_CHECKING, Any
+@@ -112,6 +115,62 @@ async def _resolve_customer_email(chatwoot_request: _CWRequest, conv_id: str) ->
+     return str(email) if email else None
+ 
+ 
++# FIX-58: a notify call can outlive the agent's HTTP timeout (99-123 s were
++# observed under VM load against a 60 s client timeout), so the agent never
++# learns the first call succeeded, never stamps escalation_notified_at, and
++# the next conversation_updated event re-runs the whole escalation -- duplicate
++# customer ack, PIC forward and dealer forward. The window below makes a retry
++# for the same (conversation, recipient set) share the first call's outcome.
++#
++# In-process on purpose: the notify route has no cheap durable store of its own
++# (the only per-case state it writes is a Chatwoot custom attribute, which the
++# agent reads on its next event, not this route). The cache is therefore lost on
++# a backend restart; a retry landing after a restart inside the window can
++# still double-send. Accepted for the demo window; a Firestore-backed key is the
++# Wave 2 upgrade if restarts mid-escalation prove real.
++NOTIFY_IDEMPOTENCY_WINDOW_SECONDS = 30 * 60
++# /escalation/contacts is hit on every inbound PIC/dealer reply by the agent
++# (10 s client timeout). PIC and dealer lists change by hand a few times a day,
++# so a short TTL turns a full Firestore scan per reply into one per window.
++CONTACTS_CACHE_TTL_SECONDS = 30.0
++
++
++class ContactsCache:
++    """TTL cache for the /escalation/contacts allowlist, with explicit
++    invalidation and a single-flight guard.
++
++    The Escalation Routing admin router calls ``invalidate`` on every write, so
++    an operator's edit is reflected on the very next lookup (a new PIC's reply
++    is linked, a removed PIC is refused) instead of up to a TTL later. The
++    generation counter stops a scan that was already running when the edit
++    landed from storing its stale result afterwards. ``lock`` makes concurrent
++    misses share one Firestore scan instead of each doing their own.
++    """
++
++    def __init__(self, ttl: float = CONTACTS_CACHE_TTL_SECONDS) -> None:
++        self._ttl = ttl
++        self._entry: tuple[float, dict[str, list[dict[str, str]]]] | None = None
++        self._generation = 0
++        self.lock = asyncio.Lock()
++
++    @property
++    def generation(self) -> int:
++        return self._generation
++
++    def get(self) -> dict[str, list[dict[str, str]]] | None:
++        if self._entry is None or time.monotonic() - self._entry[0] >= self._ttl:
++            return None
++        return self._entry[1]
++
++    def put(self, value: dict[str, list[dict[str, str]]], generation: int) -> None:
++        if generation == self._generation:
++            self._entry = (time.monotonic(), value)
++
++    def invalidate(self) -> None:
++        self._generation += 1
++        self._entry = None
++
++
+ def build_escalation_router(
+     notifier: EscalationNotifier,
+     chatwoot_request: _CWRequest,
+@@ -119,12 +178,49 @@ def build_escalation_router(
+     pic_store: PicStore | None = None,
+     dealer_store: DealerStore | None = None,
+     audit: AuditLogPort | None = None,
++    contacts_cache: ContactsCache | None = None,
+ ) -> APIRouter:
+     router = APIRouter()
+     auth = _require_api_key(settings)
++    # key -> (monotonic start time, shared task). The task, not the result, is
++    # stored so a retry arriving while the first call is still running joins it
++    # instead of starting a second send.
++    inflight: dict[tuple[str, str, str, str, str], tuple[float, asyncio.Task[dict[str, str]]]] = {}
++    cache = contacts_cache if contacts_cache is not None else ContactsCache()
+ 
+     @router.post("/escalation/notify", dependencies=[Depends(auth)])
+     async def notify(payload: _NotifyIn) -> dict[str, str]:
++        key = (
++            payload.conversation_id,
++            (payload.department or "").strip().lower(),
++            (payload.dealer or "").strip().lower(),
++            (payload.channel_type or "").strip().lower(),
++            # Content hash: the agent clears escalation_notified_at on
++            # de-escalation, so a genuine re-escalation of the same
++            # department/dealer within the window must send again. Only an
++            # identical payload (a timeout retry) is suppressed.
++            hashlib.sha256(f"{payload.title}\x00{payload.body}".encode()).hexdigest()[:16],
++        )
++        now = time.monotonic()
++        for k in [k for k, (t, _) in inflight.items() if now - t > NOTIFY_IDEMPOTENCY_WINDOW_SECONDS]:
++            del inflight[k]
++        entry = inflight.get(key)
++        if entry is not None and not (
++            entry[1].done() and (entry[1].cancelled() or entry[1].exception() is not None)
++        ):
++            _log.warning(
++                "escalation_notify_duplicate_suppressed",
++                conv_id=payload.conversation_id,
++                department=payload.department,
++                dealer=payload.dealer,
++            )
++            # shield: a caller that gives up must not cancel the shared send.
++            return await asyncio.shield(entry[1])
++        task = asyncio.ensure_future(_do_notify(payload))
++        inflight[key] = (now, task)
++        return await asyncio.shield(task)
++
++    async def _do_notify(payload: _NotifyIn) -> dict[str, str]:
+         transport = (
+             "email" if payload.channel_type is None else ack_transport(payload.channel_type)
+         )
+@@ -158,6 +254,25 @@ def build_escalation_router(
+         "reply not linked" is always safe, where a 5xx here would just make
+         the caller retry against the same failing store for no benefit.
+         """
++        cached = cache.get()
++        if cached is not None:
++            return cached
++        # Single flight: concurrent misses queue here and the later ones find
++        # the first one's result on the re-check, so one scan serves them all.
++        async with cache.lock:
++            cached = cache.get()
++            if cached is not None:
++                return cached
++            generation = cache.generation
++            result, degraded = await _scan_contacts()
++            # Never cache a degraded or empty answer: a Firestore hiccup would
++            # otherwise pin "no contacts" (every reply refused) for the TTL.
++            if not degraded and result["contacts"]:
++                cache.put(result, generation)
++            return result
++
++    async def _scan_contacts() -> tuple[dict[str, list[dict[str, str]]], bool]:
++        degraded = False
+         seen: set[str] = set()
+         out: list[dict[str, str]] = []
+ 
+@@ -173,6 +288,7 @@ def build_escalation_router(
+                 pics = await pic_store.list_all()
+             except Exception:
+                 _log.warning("escalation_contacts_pic_store_failed")
++                degraded = True
+                 pics = []
+             for rec in pics:
+                 _add(rec.pic_email, rec.pic_name, "pic")
+@@ -184,6 +300,7 @@ def build_escalation_router(
+                 dealers = await dealer_store.list_all()
+             except Exception:
+                 _log.warning("escalation_contacts_dealer_store_failed")
++                degraded = True
+                 dealers = []
+             for rec in dealers:
+                 for member in rec.emails:
+@@ -202,7 +319,7 @@ def build_escalation_router(
+                 for cc in rec.cc_emails:
+                     _add(cc, f"{rec.dealer} (CC)", "dealer")
+ 
+-        return {"contacts": out}
++        return {"contacts": out}, degraded
+ 
+     @router.post("/escalation/acknowledge", dependencies=[Depends(auth)])
+     async def acknowledge(payload: _AcknowledgeIn) -> dict[str, str]:
+diff --git a/backend/apps/backend/src/chatbot/features/chat/pic_admin_router.py b/backend/apps/backend/src/chatbot/features/chat/pic_admin_router.py
+index 7f96b50f..ed64bd87 100644
+--- a/backend/apps/backend/src/chatbot/features/chat/pic_admin_router.py
++++ b/backend/apps/backend/src/chatbot/features/chat/pic_admin_router.py
+@@ -14,6 +14,8 @@ from pydantic import BaseModel, Field, model_validator
+ from chatbot.features.authz.deps import require_permission
+ 
+ if TYPE_CHECKING:
++    from collections.abc import Callable
++
+     from chatbot.features.authz.identity import TokenValidator
+     from chatbot.features.authz.repository import AuthzRepository
+     from chatbot.features.chat.pic_store import DealerStore, PicStore, ProtonNetStore
+@@ -86,8 +88,16 @@ def build_pic_admin_router(
+     validator: TokenValidator,
+     settings: Settings,
+     pronet_store: ProtonNetStore | None = None,
++    on_write: Callable[[], None] | None = None,
+ ) -> APIRouter:
+     router = APIRouter(prefix="/admin/escalation", tags=["escalation-admin"])
++
++    def _changed() -> None:
++        # Drops the /escalation/contacts allowlist cache so the edit is live on
++        # the next reply lookup. Called on every write attempt (the stores
++        # swallow their own errors, so success is not observable here).
++        if on_write is not None:
++            on_write()
+     manage_escalation = require_permission(
+         "escalation.manage", repo=authz_repo, validator=validator, settings=settings
+     )
+@@ -108,11 +118,13 @@ def build_pic_admin_router(
+             escalation_manager_email=body.escalation_manager_email,
+             escalation_manager_whatsapp=body.escalation_manager_whatsapp,
+         )
++        _changed()
+         return {"department": department, "status": "ok"}
+ 
+     @router.delete("/pics/{department}", dependencies=[Depends(manage_escalation)])
+     async def delete_pic(department: str) -> dict:
+         await pic_store.delete(department)
++        _changed()
+         return {"department": department, "status": "ok"}
+ 
+     @router.get("/dealers", dependencies=[Depends(manage_escalation)])
+@@ -129,11 +141,13 @@ def build_pic_admin_router(
+             contacts=body.named_contacts() if body.contacts is not None else None,
+             region=body.region,
+         )
++        _changed()
+         return {"dealer": dealer, "status": "ok"}
+ 
+     @router.delete("/dealers/{dealer}", dependencies=[Depends(manage_escalation)])
+     async def delete_dealer(dealer: str) -> dict:
+         await dealer_store.delete(dealer)
++        _changed()
+         return {"dealer": dealer, "status": "ok"}
+ 
+     # --- PRO-NET regional contacts ------------------------------------------
+@@ -152,11 +166,13 @@ def build_pic_admin_router(
+             await pronet_store.set(
+                 region, area_regional_mgr=body.area_regional_mgr, hod=body.hod
+             )
++            _changed()
+             return {"region": region, "status": "ok"}
+ 
+         @router.delete("/pronet/{region}", dependencies=[Depends(manage_escalation)])
+         async def delete_pronet(region: str) -> dict:
+             await pronet_store.delete(region)
++            _changed()
+             return {"region": region, "status": "ok"}
+ 
+     return router
+diff --git a/backend/apps/backend/src/chatbot/features/chat/pic_store.py b/backend/apps/backend/src/chatbot/features/chat/pic_store.py
+index ac74c717..d237d899 100644
+--- a/backend/apps/backend/src/chatbot/features/chat/pic_store.py
++++ b/backend/apps/backend/src/chatbot/features/chat/pic_store.py
+@@ -174,6 +174,16 @@ class PicStore:
+         self._settings = settings
+ 
+     def _client(self) -> firestore.Client:
++        # Cached per store: building a Client per call re-does credential
++        # discovery and opens a new gRPC channel (seconds under VM load; the
++        # cause of /escalation/contacts exceeding the agent's 10 s timeout).
++        client = getattr(self, "_cached_client", None)
++        if client is None:
++            client = self._new_client()
++            self._cached_client = client
++        return client
++
++    def _new_client(self) -> firestore.Client:
+         return firestore.Client(
+             project=self._settings.firestore_project_id,
+             database=self._settings.firestore_database_id,
+@@ -271,6 +281,16 @@ class DealerStore:
+         self._settings = settings
+ 
+     def _client(self) -> firestore.Client:
++        # Cached per store: building a Client per call re-does credential
++        # discovery and opens a new gRPC channel (seconds under VM load; the
++        # cause of /escalation/contacts exceeding the agent's 10 s timeout).
++        client = getattr(self, "_cached_client", None)
++        if client is None:
++            client = self._new_client()
++            self._cached_client = client
++        return client
++
++    def _new_client(self) -> firestore.Client:
+         return firestore.Client(
+             project=self._settings.firestore_project_id,
+             database=self._settings.firestore_database_id,
+@@ -361,6 +381,16 @@ class ProtonNetStore:
+         self._settings = settings
+ 
+     def _client(self) -> firestore.Client:
++        # Cached per store: building a Client per call re-does credential
++        # discovery and opens a new gRPC channel (seconds under VM load; the
++        # cause of /escalation/contacts exceeding the agent's 10 s timeout).
++        client = getattr(self, "_cached_client", None)
++        if client is None:
++            client = self._new_client()
++            self._cached_client = client
++        return client
++
++    def _new_client(self) -> firestore.Client:
+         return firestore.Client(
+             project=self._settings.firestore_project_id,
+             database=self._settings.firestore_database_id,
+diff --git a/backend/apps/backend/src/chatbot/features/rsa/rsa_db.py b/backend/apps/backend/src/chatbot/features/rsa/rsa_db.py
+index b5146756..87a80df3 100644
+--- a/backend/apps/backend/src/chatbot/features/rsa/rsa_db.py
++++ b/backend/apps/backend/src/chatbot/features/rsa/rsa_db.py
+@@ -12,7 +12,8 @@ from __future__ import annotations
+ 
+ from datetime import datetime
+ 
+-from sqlalchemy import DateTime, Integer, Text, func
++import structlog
++from sqlalchemy import DateTime, Integer, Text, func, text
+ from sqlalchemy.ext.asyncio import (
+     AsyncEngine,
+     async_sessionmaker,
+@@ -20,6 +21,8 @@ from sqlalchemy.ext.asyncio import (
+ )
+ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+ 
++_log = structlog.get_logger(__name__)
++
+ 
+ class Base(DeclarativeBase):
+     pass
+@@ -32,6 +35,10 @@ class RsaIncident(Base):
+     incident_date: Mapped[str] = mapped_column(Text, nullable=False)
+     vehicle_no: Mapped[str] = mapped_column(Text, nullable=False)
+     vehicle_model: Mapped[str | None] = mapped_column(Text)
++    # Optional customer phone so Customer 360 phone search can surface RSA
++    # incidents (they have no Chatwoot contact). Added after launch: see
++    # init_rsa_db for the idempotent ALTER on existing tables.
++    customer_phone: Mapped[str | None] = mapped_column(Text)
+     cause: Mapped[str] = mapped_column(Text, nullable=False)
+     purchased_from: Mapped[str | None] = mapped_column(Text)
+     breakdown_location: Mapped[str | None] = mapped_column(Text)
+@@ -68,6 +75,48 @@ def build_session_maker(engine: AsyncEngine) -> async_sessionmaker:
+     return async_sessionmaker(engine, expire_on_commit=False)
+ 
+ 
++_ALTER_PG = "ALTER TABLE rsa_incidents ADD COLUMN IF NOT EXISTS customer_phone TEXT"
++_ALTER_SQLITE = "ALTER TABLE rsa_incidents ADD COLUMN customer_phone TEXT"
++PHONE_COLUMN_INFO_KEY = "_rsa_phone_column"  # attribute set on the sync engine
++
++
++def phone_column_available(bind) -> bool:
++    """False only when init_rsa_db could not add/see ``customer_phone``; the
++    repository then omits the column instead of erroring on every query."""
++    engine = getattr(bind, "sync_engine", bind)
++    return bool(getattr(engine, PHONE_COLUMN_INFO_KEY, True))
++
++
+ async def init_rsa_db(engine: AsyncEngine) -> None:
+     async with engine.begin() as conn:
+         await conn.run_sync(Base.metadata.create_all)
++    # create_all never alters an existing table, so a tenant whose
++    # rsa_incidents predates customer_phone needs the column added in place.
++    # Idempotent and nullable. FAIL-OPEN: it runs in its own transaction (a
++    # failed statement aborts a Postgres transaction) and any error is logged
++    # and swallowed -- a migration hiccup (permissions, lock timeout) must not
++    # crash backend startup; RSA then works without the phone column.
++    setattr(engine.sync_engine, PHONE_COLUMN_INFO_KEY, True)
++    try:
++        async with engine.begin() as conn:
++            if conn.dialect.name == "postgresql":
++                await conn.execute(text(_ALTER_PG))
++            else:
++                cols = (await conn.execute(text("PRAGMA table_info(rsa_incidents)"))).fetchall()
++                if "customer_phone" not in {c[1] for c in cols}:
++                    await conn.execute(text(_ALTER_SQLITE))
++    except Exception as exc:
++        try:
++            async with engine.connect() as conn:
++                await conn.execute(text("SELECT customer_phone FROM rsa_incidents LIMIT 0"))
++            present = True
++        except Exception:
++            present = False
++        setattr(engine.sync_engine, PHONE_COLUMN_INFO_KEY, present)
++        _log.warning(
++            "rsa_customer_phone_migration_failed",
++            table="rsa_incidents",
++            column="customer_phone",
++            column_present=present,
++            error_type=type(exc).__name__,
++        )
+diff --git a/backend/apps/backend/src/chatbot/features/rsa/rsa_repository.py b/backend/apps/backend/src/chatbot/features/rsa/rsa_repository.py
+index 8a00cb0b..e224ff93 100644
+--- a/backend/apps/backend/src/chatbot/features/rsa/rsa_repository.py
++++ b/backend/apps/backend/src/chatbot/features/rsa/rsa_repository.py
+@@ -10,9 +10,10 @@ from dataclasses import dataclass
+ from datetime import datetime
+ from typing import Protocol
+ 
+-from sqlalchemy import select
++from sqlalchemy import insert, select
++from sqlalchemy.orm import defer
+ 
+-from chatbot.features.rsa.rsa_db import RsaIncident
++from chatbot.features.rsa.rsa_db import RsaIncident, phone_column_available
+ 
+ 
+ @dataclass(frozen=True)
+@@ -48,6 +49,7 @@ class _InMemoryRow:
+     incident_date: str
+     vehicle_no: str
+     vehicle_model: str | None = None
++    customer_phone: str | None = None
+     cause: str = ""
+     purchased_from: str | None = None
+     breakdown_location: str | None = None
+@@ -102,36 +104,69 @@ class InMemoryRsaRepository:
+ 
+ 
+ class PgRsaRepository:
+-    """Postgres-backed repository, using the SQLAlchemy model from rsa_db.py."""
++    """Postgres-backed repository, using the SQLAlchemy model from rsa_db.py.
++
++    If init_rsa_db could not add ``customer_phone`` (see its fail-open note),
++    every query below leaves that column out so RSA keeps working; the phone
++    simply reads as None and is not stored.
++    """
+ 
+     def __init__(self, session_maker) -> None:
+         self._session_maker = session_maker
+ 
++    def _has_phone(self) -> bool:
++        return phone_column_available(self._session_maker.kw.get("bind"))
++
++    def _select(self):
++        stmt = select(RsaIncident)
++        if not self._has_phone():
++            stmt = stmt.options(defer(RsaIncident.customer_phone))
++        return stmt
++
++    def _plain(self, row: RsaIncident):
++        """Detach a row loaded without customer_phone into a plain object, so
++        callers reading ``.customer_phone`` never trigger a lazy load."""
++        if self._has_phone():
++            return row
++        data = {
++            c.key: getattr(row, c.key)
++            for c in RsaIncident.__table__.columns
++            if c.key not in ("customer_phone", "created_at", "updated_at")
++        }
++        return _InMemoryRow(**data)
++
+     async def create_incident(self, **fields) -> str:
+         incident_id = str(uuid.uuid4())
+         async with self._session_maker() as session:
+-            session.add(RsaIncident(id=incident_id, **fields))
++            if self._has_phone():
++                session.add(RsaIncident(id=incident_id, **fields))
++            else:
++                fields.pop("customer_phone", None)
++                await session.execute(insert(RsaIncident).values(id=incident_id, **fields))
+             await session.commit()
+         return incident_id
+ 
+     async def list_incidents(self) -> list[RsaIncident]:
+         async with self._session_maker() as session:
+             result = await session.execute(
+-                select(RsaIncident).order_by(RsaIncident.created_at.desc())
++                self._select().order_by(RsaIncident.created_at.desc())
+             )
+-            return list(result.scalars().all())
++            return [self._plain(r) for r in result.scalars().all()]
+ 
+     async def get_incident(self, incident_id: str) -> RsaIncident | None:
+         async with self._session_maker() as session:
+             result = await session.execute(
+-                select(RsaIncident).where(RsaIncident.id == incident_id)
++                self._select().where(RsaIncident.id == incident_id)
+             )
+-            return result.scalar_one_or_none()
++            row = result.scalar_one_or_none()
++            return None if row is None else self._plain(row)
+ 
+     async def update_incident(self, incident_id: str, **fields) -> bool:
++        if not self._has_phone():
++            fields.pop("customer_phone", None)
+         async with self._session_maker() as session:
+             result = await session.execute(
+-                select(RsaIncident).where(RsaIncident.id == incident_id)
++                self._select().where(RsaIncident.id == incident_id)
+             )
+             row = result.scalar_one_or_none()
+             if row is None:
+@@ -144,7 +179,7 @@ class PgRsaRepository:
+     async def delete_incident(self, incident_id: str) -> bool:
+         async with self._session_maker() as session:
+             result = await session.execute(
+-                select(RsaIncident).where(RsaIncident.id == incident_id)
++                self._select().where(RsaIncident.id == incident_id)
+             )
+             row = result.scalar_one_or_none()
+             if row is None:
+@@ -155,7 +190,7 @@ class PgRsaRepository:
+ 
+     async def aggregate(self) -> RsaAggregate:
+         async with self._session_maker() as session:
+-            result = await session.execute(select(RsaIncident))
++            result = await session.execute(self._select())
+             rows = list(result.scalars().all())
+         cause_counter = Counter(r.cause for r in rows)
+         dealer_counter = Counter(r.purchased_from for r in rows if r.purchased_from)
+diff --git a/backend/apps/backend/src/chatbot/features/rsa/rsa_router.py b/backend/apps/backend/src/chatbot/features/rsa/rsa_router.py
+index 135b044a..af57fde1 100644
+--- a/backend/apps/backend/src/chatbot/features/rsa/rsa_router.py
++++ b/backend/apps/backend/src/chatbot/features/rsa/rsa_router.py
+@@ -1,29 +1,33 @@
+ """HTTP surface for RSA incidents — CRUD + aggregate + CSV export.
+ 
+-Auth mirrors kb_knowledge_router.py's _authorize (x-api-key vs
+-faq_admin_api_key / proton_backend_key). Manual staff data entry: no
+-background tasks, no dispatch-system integration.
++Every route sits behind `require_permission("sla.manage")`. With RBAC on that
++demands a validated Chatwoot session holding the permission (the shared
++x-api-key alone is refused, since the browser ships that key to every agent);
++with RBAC off it falls back to the shared-secret check, as before. Manual
++staff data entry: no background tasks, no dispatch-system integration.
+ """
+ 
+ from __future__ import annotations
+ 
+ import csv
+-import hmac
+ import io
+ from dataclasses import asdict
+ from datetime import datetime
+ from typing import Any
+ 
+-from fastapi import APIRouter, Header, HTTPException
++from fastapi import APIRouter, Depends, HTTPException
+ from fastapi.responses import Response
+ from pydantic import BaseModel
+ 
++from chatbot.features.authz.deps import require_permission
++
+ 
+ class _IncidentRequest(BaseModel):
+     incident_date: str
+     vehicle_no: str
+     cause: str
+     vehicle_model: str | None = None
++    customer_phone: str | None = None
+     purchased_from: str | None = None
+     breakdown_location: str | None = None
+     arrived_location: str | None = None
+@@ -42,6 +46,7 @@ class _IncidentUpdateRequest(BaseModel):
+     vehicle_no: str | None = None
+     cause: str | None = None
+     vehicle_model: str | None = None
++    customer_phone: str | None = None
+     purchased_from: str | None = None
+     breakdown_location: str | None = None
+     arrived_location: str | None = None
+@@ -54,64 +59,59 @@ class _IncidentUpdateRequest(BaseModel):
+     remarks: str | None = None
+ 
+ 
+-def build_rsa_router(repo, settings) -> APIRouter:
++def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRouter:
+     router = APIRouter()
+-
+-    def _authorize(x_api_key: str | None) -> None:
+-        if x_api_key is None:
+-            raise HTTPException(status_code=401, detail="Unauthorized")
+-        supplied = x_api_key.encode("utf-8")
+-        for key in (settings.faq_admin_api_key, settings.proton_backend_key):
+-            if key and hmac.compare_digest(supplied, key.encode("utf-8")):
+-                return
+-        raise HTTPException(status_code=401, detail="Unauthorized")
++    guard = Depends(
++        require_permission("sla.manage", repo=authz_repo, validator=validator, settings=settings)
++    )
+ 
+     def _incident_dict(row: Any) -> dict[str, Any]:
+         return {
+-            "id": row.id, "incident_date": row.incident_date, "vehicle_no": row.vehicle_no,
+-            "vehicle_model": row.vehicle_model, "cause": row.cause,
+-            "purchased_from": row.purchased_from, "breakdown_location": row.breakdown_location,
++            "id": row.id,
++            "incident_date": row.incident_date,
++            "vehicle_no": row.vehicle_no,
++            "vehicle_model": row.vehicle_model,
++            "customer_phone": row.customer_phone,
++            "cause": row.cause,
++            "purchased_from": row.purchased_from,
++            "breakdown_location": row.breakdown_location,
+             "arrived_location": row.arrived_location,
+             "customer_called_in_time": row.customer_called_in_time,
+             "towing_assigned_time": row.towing_assigned_time,
+             "time_arrived_breakdown_area": row.time_arrived_breakdown_area,
+             "time_arrived_outlet": row.time_arrived_outlet,
+-            "total_km": row.total_km, "late_reason": row.late_reason,
+-            "remarks": row.remarks, "created_by": row.created_by,
++            "total_km": row.total_km,
++            "late_reason": row.late_reason,
++            "remarks": row.remarks,
++            "created_by": row.created_by,
+         }
+ 
+-    @router.post("/rsa/incidents")
+-    async def create_incident(
+-        payload: _IncidentRequest, x_api_key: str | None = Header(default=None)
+-    ) -> dict[str, str]:
+-        _authorize(x_api_key)
++    @router.post("/rsa/incidents", dependencies=[guard])
++    async def create_incident(payload: _IncidentRequest) -> dict[str, str]:
+         incident_id = await repo.create_incident(**payload.model_dump())
+         return {"id": incident_id, "status": "created"}
+ 
+-    @router.get("/rsa/incidents")
+-    async def list_incidents(x_api_key: str | None = Header(default=None)) -> dict[str, Any]:
+-        _authorize(x_api_key)
++    @router.get("/rsa/incidents", dependencies=[guard])
++    async def list_incidents() -> dict[str, Any]:
+         rows = await repo.list_incidents()
+         return {"incidents": [_incident_dict(r) for r in rows]}
+ 
+-    @router.get("/rsa/incidents/aggregate")
+-    async def aggregate(x_api_key: str | None = Header(default=None)) -> dict[str, Any]:
+-        _authorize(x_api_key)
++    @router.get("/rsa/incidents/aggregate", dependencies=[guard])
++    async def aggregate() -> dict[str, Any]:
+         agg = await repo.aggregate()
+         return asdict(agg)
+ 
+-    @router.get("/rsa/incidents/export")
+-    async def export_csv(
+-        format: str = "csv", x_api_key: str | None = Header(default=None)
+-    ) -> Response:
+-        _authorize(x_api_key)
++    @router.get("/rsa/incidents/export", dependencies=[guard])
++    async def export_csv(format: str = "csv") -> Response:
+         if format != "csv":
+             raise HTTPException(status_code=400, detail="format must be csv")
+         rows = await repo.list_incidents()
+         buf = io.StringIO()
+         writer = csv.writer(buf)
+         if rows:
+-            fieldnames = list(_incident_dict(rows[0]).keys())
++            # customer_phone last so existing CSV consumers' column positions hold.
++            fieldnames = [k for k in _incident_dict(rows[0]) if k != "customer_phone"]
++            fieldnames.append("customer_phone")
+             writer.writerow(fieldnames)
+             for row in rows:
+                 writer.writerow([_incident_dict(row).get(f) for f in fieldnames])
+@@ -123,32 +123,25 @@ def build_rsa_router(repo, settings) -> APIRouter:
+             headers={"Content-Disposition": "attachment; filename=rsa-incidents.csv"},
+         )
+ 
+-    @router.get("/rsa/incidents/{incident_id}")
+-    async def get_incident(
+-        incident_id: str, x_api_key: str | None = Header(default=None)
+-    ) -> dict[str, Any]:
+-        _authorize(x_api_key)
++    @router.get("/rsa/incidents/{incident_id}", dependencies=[guard])
++    async def get_incident(incident_id: str) -> dict[str, Any]:
+         row = await repo.get_incident(incident_id)
+         if row is None:
+             raise HTTPException(status_code=404, detail="Not found")
+         return _incident_dict(row)
+ 
+-    @router.patch("/rsa/incidents/{incident_id}")
++    @router.patch("/rsa/incidents/{incident_id}", dependencies=[guard])
+     async def update_incident(
+-        incident_id: str, payload: _IncidentUpdateRequest,
+-        x_api_key: str | None = Header(default=None),
++        incident_id: str,
++        payload: _IncidentUpdateRequest,
+     ) -> dict[str, str]:
+-        _authorize(x_api_key)
+         fields = {k: v for k, v in payload.model_dump().items() if v is not None}
+         if not await repo.update_incident(incident_id, **fields):
+             raise HTTPException(status_code=404, detail="Not found")
+         return {"id": incident_id, "status": "updated"}
+ 
+-    @router.delete("/rsa/incidents/{incident_id}")
+-    async def delete_incident(
+-        incident_id: str, x_api_key: str | None = Header(default=None)
+-    ) -> dict[str, str]:
+-        _authorize(x_api_key)
++    @router.delete("/rsa/incidents/{incident_id}", dependencies=[guard])
++    async def delete_incident(incident_id: str) -> dict[str, str]:
+         if not await repo.delete_incident(incident_id):
+             raise HTTPException(status_code=404, detail="Not found")
+         return {"id": incident_id, "status": "deleted"}
+diff --git a/backend/apps/backend/src/chatbot/features/taxonomy/router.py b/backend/apps/backend/src/chatbot/features/taxonomy/router.py
+index 068fb014..1d4d2341 100644
+--- a/backend/apps/backend/src/chatbot/features/taxonomy/router.py
++++ b/backend/apps/backend/src/chatbot/features/taxonomy/router.py
+@@ -12,12 +12,14 @@ from dataclasses import asdict
+ from fastapi import APIRouter, Depends, HTTPException, status
+ import structlog
+ 
+-from chatbot.features.authz.deps import require_permission
++from chatbot.features.authz.deps import require_authenticated, require_permission
+ from chatbot.features.chat.pic_store import PicStore
+ from chatbot.features.taxonomy.chatwoot_sync import sync_taxonomy_to_chatwoot
+ from chatbot.features.taxonomy.store import TaxonomyNode, TaxonomyStore, build_taxonomy_store
+ 
+ if TYPE_CHECKING:
++    from chatbot.features.authz.identity import TokenValidator
++    from chatbot.features.authz.repository import AuthzRepository
+     from chatbot.platform.config import Settings
+ 
+ _log = structlog.get_logger(__name__)
+@@ -92,7 +94,11 @@ async def _unreferenced_departments(
+     return unreferenced, source
+ 
+ 
+-def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
++def build_taxonomy_admin_router(
++    settings: Settings,
++    authz_repo: AuthzRepository | None = None,
++    validator: TokenValidator | None = None,
++) -> APIRouter:
+     router = APIRouter(prefix="/admin/taxonomy", tags=["taxonomy-admin"])
+     store = build_taxonomy_store(settings)
+     pic_store = PicStore(settings)
+@@ -104,7 +110,12 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
+                 detail="Taxonomy admin feature is disabled on this tenant (TAXONOMY_ADMIN_ENABLED=false)",
+             )
+ 
+-    @router.get("/tree")
++    @router.get(
++        "/tree",
++        dependencies=[
++            Depends(require_authenticated(repo=authz_repo, validator=validator, settings=settings))
++        ],
++    )
+     async def get_taxonomy_tree() -> dict[str, Any]:
+         _check_enabled()
+         tree_data = await store.tree()
+@@ -112,7 +123,11 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
+ 
+     @router.post(
+         "/node",
+-        dependencies=[Depends(require_permission("taxonomy.manage", settings=settings))],
++        dependencies=[Depends(
++                require_permission(
++                    "taxonomy.manage", repo=authz_repo, validator=validator, settings=settings
++                )
++            )],
+     )
+     async def create_or_update_node(payload: dict[str, Any]) -> dict[str, Any]:
+         _check_enabled()
+@@ -142,7 +157,11 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
+ 
+     @router.post(
+         "/node/{key}/retire",
+-        dependencies=[Depends(require_permission("taxonomy.manage", settings=settings))],
++        dependencies=[Depends(
++                require_permission(
++                    "taxonomy.manage", repo=authz_repo, validator=validator, settings=settings
++                )
++            )],
+     )
+     async def retire_taxonomy_node(key: str) -> dict[str, Any]:
+         _check_enabled()
+@@ -164,7 +183,12 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
+         "(CATEGORY_DEPARTMENT_MAPPING_ENABLED=false)"
+     )
+ 
+-    @router.get("/coverage")
++    @router.get(
++        "/coverage",
++        dependencies=[
++            Depends(require_authenticated(repo=authz_repo, validator=validator, settings=settings))
++        ],
++    )
+     async def get_taxonomy_coverage() -> dict[str, Any]:
+         """Coverage report: active categories with no department, and departments not mapped.
+ 
+diff --git a/backend/apps/backend/src/chatbot/main.py b/backend/apps/backend/src/chatbot/main.py
+index 890284f5..1e40bf6b 100644
+--- a/backend/apps/backend/src/chatbot/main.py
++++ b/backend/apps/backend/src/chatbot/main.py
+@@ -441,6 +441,10 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
+ 
+     pic_store = PicStore(settings)
+     dealer_store = DealerStore(settings)
++    # Shared so the admin router's writes invalidate the escalation router's cache.
++    from chatbot.features.chat.escalation_router import ContactsCache  # noqa: PLC0415
++
++    escalation_contacts_cache = ContactsCache()
+     custom_feature_store = CustomFeatureStore(settings)
+     pic_registry = build_pic_registry(settings, store=pic_store)
+     email_sender = SmtpEmailSender(settings)
+@@ -596,6 +600,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
+                 pic_store=pic_store,
+                 dealer_store=dealer_store,
+                 audit=audit_log,
++                contacts_cache=escalation_contacts_cache,
+             )
+         )
+ 
+@@ -871,12 +876,10 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
+         from chatbot.features.rsa.rsa_db import build_engine as build_rsa_engine
+         from chatbot.features.rsa.rsa_db import build_session_maker as build_rsa_session_maker
+         from chatbot.features.rsa.rsa_repository import PgRsaRepository
+-        from chatbot.features.rsa.rsa_router import build_rsa_router
+ 
+         rsa_engine = build_rsa_engine(settings.rsa_database_url)
+         rsa_session_maker = build_rsa_session_maker(rsa_engine)
+         rsa_repo = PgRsaRepository(rsa_session_maker)
+-        app.include_router(build_rsa_router(rsa_repo, settings))
+         app.state.rsa_engine = rsa_engine
+ 
+     @app.on_event("startup")
+@@ -973,6 +976,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
+                 settings,
+                 # The ladder's regional CC list. Same permission, same page.
+                 pronet_store=ProtonNetStore(settings),
++                on_write=escalation_contacts_cache.invalidate,
+             )
+         )
+ 
+@@ -1117,6 +1121,13 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
+     # off both are None and both routers fall back to the shared-secret check,
+     # exactly as they did before this package.
+     #
++    # RSA routes need the RBAC pair built just above (sla.manage session), so
++    # they are mounted here rather than in the RSA block.
++    if rsa_repo is not None:
++        from chatbot.features.rsa.rsa_router import build_rsa_router
++
++        app.include_router(build_rsa_router(rsa_repo, settings, authz_repo, authz_validator))
++
+     # The routing config router is mounted unconditionally, as it always was --
+     # `routing_enabled` gates automatic agent *selection* inside the handler,
+     # never the endpoints' existence. `audit`/`authz_repo`/`validator` are new
+@@ -1278,7 +1289,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
+     from chatbot.features.taxonomy.router import build_taxonomy_admin_router
+ 
+     app.include_router(build_rules_router(settings, authz_repo, authz_validator))
+-    app.include_router(build_taxonomy_admin_router(settings))
++    app.include_router(build_taxonomy_admin_router(settings, authz_repo, authz_validator))
+ 
+     @app.on_event("startup")
+     async def _seed_taxonomy_store() -> None:

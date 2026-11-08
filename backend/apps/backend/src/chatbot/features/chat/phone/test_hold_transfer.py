@@ -34,6 +34,9 @@ from chatbot.features.routing.presence import AgentRecord
 from chatbot.platform.config import Settings
 
 HOLD_URL = "https://media.example/hold.mp3"
+AGENT = "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+CALLER = "CAcccccccccccccccccccccccccccccccc"
+TARGET = "CA77777777777777777777777777777777"
 BASE = "https://crm.example"
 _AUTH = {
     "x-chatwoot-access-token": "tok",
@@ -83,19 +86,19 @@ class _FakeCalls:
 
     def create(self, **kwargs: Any) -> Any:
         self._t.created.append(kwargs)
-        return SimpleNamespace(sid="CA_TARGET")
+        return SimpleNamespace(sid="CA77777777777777777777777777777777")
 
 
 class _FakeTwilio:
     def __init__(self) -> None:
         self.legs: dict[str, dict[str, Any]] = {
-            "CA_AGENT": {
+            "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
                 "to": "client:agent_17",
                 "from_": "+60123456700",
-                "parent_call_sid": "CA_CALLER",
+                "parent_call_sid": "CAcccccccccccccccccccccccccccccccc",
                 "status": "in-progress",
             },
-            "CA_CALLER": {
+            "CAcccccccccccccccccccccccccccccccc": {
                 "to": "+60300000099",
                 "from_": "+60123456700",
                 "parent_call_sid": None,
@@ -126,6 +129,13 @@ class _DictColl:
 
     def delete(self, doc_id: str) -> None:
         self.docs.pop(doc_id, None)
+
+    def cas(self, doc_id: str, expected_version: int, data: dict[str, Any]) -> bool:
+        current = (self.docs.get(doc_id) or {}).get("version", 0)
+        if current != expected_version:
+            return False
+        self.docs[doc_id] = dict(data)
+        return True
 
 
 def _settings(**over: Any) -> Settings:
@@ -167,6 +177,7 @@ class _World:
             AgentRecord(id=31, name="Chong", availability_status="offline"),
         ]
         self.left: list[int] = []
+        self.now = 1_800_000_000.0
 
         async def _on_leave(agent_id: int) -> None:
             self.left.append(agent_id)
@@ -181,6 +192,7 @@ class _World:
             presence=self.presence,
             find_ticket=self.log.find_conversation_ticket,
             on_agent_leave=_on_leave,
+            clock=lambda: self.now,
         )
         self.abandon = _AbandonSpy()
         self.acw = AsyncMock()
@@ -217,8 +229,14 @@ class _World:
         sig = _sign(self.settings.twilio_auth_token, f"{BASE}{path_and_query}", params)
         return self.http.post(path_and_query, data=params, headers={"X-Twilio-Signature": sig})
 
-    def dial_status(self, status: str = "completed", sid: str = "CA_CALLER"):
-        params = {"CallSid": sid, "DialCallStatus": status, "DialCallSid": "CA_AGENT"}
+    def dial_status(
+        self, status: str = "completed", sid: str = "CAcccccccccccccccccccccccccccccccc"
+    ):
+        params = {
+            "CallSid": sid,
+            "DialCallStatus": status,
+            "DialCallSid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        }
         return self.twilio_post("/webhooks/phone/dial-status", params)
 
 
@@ -235,27 +253,41 @@ class _AbandonSpy:
 
 def test_hold_moves_caller_to_hold_media() -> None:
     w = _World()
-    res = w.agent("hold", {"call_sid": "CA_AGENT"})
+    res = w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
     assert res.status_code == 200, res.text
     assert res.json()["state"] == "held"
 
     # The agent leg (not the caller's) is redirected into the conference room:
     # redirecting the caller's leg would hang the agent up.
-    (agent_twiml,) = w.twilio.twiml_for("CA_AGENT")
-    assert "<Conference" in agent_twiml and "proton-CA_CALLER" in agent_twiml
+    (agent_twiml,) = w.twilio.twiml_for("CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    assert (
+        "<Conference" in agent_twiml and "proton-CAcccccccccccccccccccccccccccccccc" in agent_twiml
+    )
     assert 'endConferenceOnExit="false"' in agent_twiml
-    assert "/webhooks/phone/conference-status?caller_sid=CA_CALLER" in agent_twiml
-    assert w.twilio.twiml_for("CA_CALLER") == []
+    assert (
+        "/webhooks/phone/conference-status?caller_sid=CAcccccccccccccccccccccccccccccccc"
+        in agent_twiml
+    )
+    assert w.twilio.twiml_for("CAcccccccccccccccccccccccccccccccc") == []
 
     # That ends the caller's <Dial>; Twilio asks dial-status what next, and
     # the caller gets the hold media instead of the usual hang-up.
     res = w.dial_status("completed")
     assert res.status_code == 200
-    assert f'<Play loop="0">{HOLD_URL}</Play>' in res.text
+    assert f'<Play loop="1">{HOLD_URL}</Play>' in res.text
+    assert f"/webhooks/phone/hold/next?caller_sid={CALLER}</Redirect>" in res.text
     assert "<Hangup" not in res.text
+    # The caller leg is watched so a hang-up while held releases the agent.
+    assert (
+        CALLER,
+        {
+            "status_callback": f"{BASE}/webhooks/phone/caller-status?caller_sid={CALLER}",
+            "status_callback_method": "POST",
+        },
+    ) in w.twilio.updates
 
     # Task 18: the dial outcome is still recorded exactly once, as answered.
-    assert w.abandon.calls == [("CA_CALLER", "completed")]
+    assert w.abandon.calls == [("CAcccccccccccccccccccccccccccccccc", "completed")]
     # ACW is deferred to the conference leave event, not entered now.
     w.acw.enter.assert_not_awaited()
     w.acw.start_after_call.assert_not_awaited()
@@ -264,7 +296,7 @@ def test_hold_moves_caller_to_hold_media() -> None:
 def test_hold_media_url_is_configurable_and_has_a_placeholder_default() -> None:
     assert Settings(_env_file=None).phone_hold_media_url.startswith("https://")
     w = _World(_settings(phone_hold_media_url="https://proton.example/our-hold.wav"))
-    w.agent("hold", {"call_sid": "CA_AGENT"})
+    w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
     assert "https://proton.example/our-hold.wav" in w.dial_status().text
 
 
@@ -276,15 +308,15 @@ def test_dial_status_unchanged_when_call_was_never_held() -> None:
 
 def test_hold_twice_is_a_conflict() -> None:
     w = _World()
-    w.agent("hold", {"call_sid": "CA_AGENT"})
+    w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
     w.dial_status()
-    assert w.agent("hold", {"call_sid": "CA_AGENT"}).status_code == 409
+    assert w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}).status_code == 409
 
 
 def test_hold_twilio_failure_leaves_call_untouched() -> None:
     w = _World()
     w.twilio.fail_updates = True
-    res = w.agent("hold", {"call_sid": "CA_AGENT"})
+    res = w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
     assert res.status_code == 502
     # No session left behind, so the eventual dial-status hangs up normally.
     assert "<Hangup/>" in w.dial_status().text
@@ -295,37 +327,43 @@ def test_hold_twilio_failure_leaves_call_untouched() -> None:
 
 def test_resume_from_hold() -> None:
     w = _World()
-    w.agent("hold", {"call_sid": "CA_AGENT"})
+    w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
     w.dial_status()
-    res = w.agent("resume", {"call_sid": "CA_AGENT"})
+    res = w.agent("resume", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
     assert res.status_code == 200, res.text
     assert res.json()["state"] == "connected"
-    (caller_twiml,) = w.twilio.twiml_for("CA_CALLER")
-    assert "<Conference" in caller_twiml and "proton-CA_CALLER" in caller_twiml
+    (caller_twiml,) = w.twilio.twiml_for("CAcccccccccccccccccccccccccccccccc")
+    assert (
+        "<Conference" in caller_twiml
+        and "proton-CAcccccccccccccccccccccccccccccccc" in caller_twiml
+    )
     assert "<Play" not in caller_twiml
     # Resuming twice is a conflict, not a second redirect.
-    assert w.agent("resume", {"call_sid": "CA_AGENT"}).status_code == 409
-    assert len(w.twilio.twiml_for("CA_CALLER")) == 1
+    assert w.agent("resume", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}).status_code == 409
+    assert len(w.twilio.twiml_for("CAcccccccccccccccccccccccccccccccc")) == 1
 
 
 def test_hold_again_after_resume_redirects_caller_to_hold_media() -> None:
     w = _World()
-    w.agent("hold", {"call_sid": "CA_AGENT"})
+    w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
     w.dial_status()
-    w.agent("resume", {"call_sid": "CA_AGENT"})
-    assert w.agent("hold", {"call_sid": "CA_AGENT"}).status_code == 200
-    assert w.twilio.twiml_for("CA_CALLER")[-1].count(HOLD_URL) == 1
+    w.agent("resume", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
+    assert w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}).status_code == 200
+    assert w.twilio.twiml_for("CAcccccccccccccccccccccccccccccccc")[-1].count(HOLD_URL) == 1
     # Our own redirect out of the room fires a leave event: not a hang-up.
     w.twilio_post(
-        "/webhooks/phone/conference-status?caller_sid=CA_CALLER",
-        {"CallSid": "CA_CALLER", "StatusCallbackEvent": "participant-leave"},
+        "/webhooks/phone/conference-status?caller_sid=CAcccccccccccccccccccccccccccccccc",
+        {
+            "CallSid": "CAcccccccccccccccccccccccccccccccc",
+            "StatusCallbackEvent": "participant-leave",
+        },
     )
-    assert w.twilio.statuses_for("CA_AGENT") == []
+    assert w.twilio.statuses_for("CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == []
 
 
 def test_resume_without_hold_is_a_conflict() -> None:
     w = _World()
-    assert w.agent("resume", {"call_sid": "CA_AGENT"}).status_code == 409
+    assert w.agent("resume", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}).status_code == 409
 
 
 # --- transfer ---------------------------------------------------------------
@@ -333,12 +371,14 @@ def test_resume_without_hold_is_a_conflict() -> None:
 
 def test_transfer_to_agent_rings_target_and_keeps_case() -> None:
     w = _World()
-    res = w.agent("transfer", {"call_sid": "CA_AGENT", "target_agent_id": 23})
+    res = w.agent(
+        "transfer", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "target_agent_id": 23}
+    )
     assert res.status_code == 200, res.text
     assert res.json()["state"] == "transferring"
 
     # Caller goes on hold while the target rings.
-    assert "<Conference" in w.twilio.twiml_for("CA_AGENT")[0]
+    assert "<Conference" in w.twilio.twiml_for("CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")[0]
     assert HOLD_URL in w.dial_status().text
 
     (create,) = w.twilio.created
@@ -350,9 +390,13 @@ def test_transfer_to_agent_rings_target_and_keeps_case() -> None:
     assert q["transcript_path"] == ["/app/accounts/1/conversations/42"]
     assert q["caller"] == ["+60123456700"]
     assert q["transferred_by"] == ["17"]
-    assert create["url"] == f"{BASE}/webhooks/phone/transfer/answer?caller_sid=CA_CALLER"
     assert (
-        create["status_callback"] == f"{BASE}/webhooks/phone/transfer/status?caller_sid=CA_CALLER"
+        create["url"]
+        == f"{BASE}/webhooks/phone/transfer/answer?caller_sid=CAcccccccccccccccccccccccccccccccc"
+    )
+    assert (
+        create["status_callback"]
+        == f"{BASE}/webhooks/phone/transfer/status?caller_sid=CAcccccccccccccccccccccccccccccccc"
     )
     assert create["from_"] == "+60300000099"
     assert create["timeout"] == w.settings.phone_agent_ring_timeout_seconds
@@ -360,30 +404,48 @@ def test_transfer_to_agent_rings_target_and_keeps_case() -> None:
     # Target answers: they join the room, the caller is brought back in, and
     # (cold, the default) the transferring agent's leg is hung up.
     res = w.twilio_post(
-        "/webhooks/phone/transfer/answer?caller_sid=CA_CALLER", {"CallSid": "CA_TARGET"}
+        "/webhooks/phone/transfer/answer?caller_sid=CAcccccccccccccccccccccccccccccccc",
+        {"CallSid": "CA77777777777777777777777777777777"},
     )
     assert res.status_code == 200
-    assert "<Conference" in res.text and "proton-CA_CALLER" in res.text
-    assert "<Conference" in w.twilio.twiml_for("CA_CALLER")[-1]
-    assert w.twilio.statuses_for("CA_AGENT") == ["completed"]
+    assert "<Conference" in res.text and "proton-CAcccccccccccccccccccccccccccccccc" in res.text
+    assert "<Conference" in w.twilio.twiml_for("CAcccccccccccccccccccccccccccccccc")[-1]
+    assert w.twilio.statuses_for("CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == ["completed"]
     assert w.left == [17]  # the transferring agent goes to ACW
 
     # The target now owns the call; the old owner does not.
-    assert w.agent("hold", {"call_sid": "CA_TARGET"}, user_id=23).status_code == 200
+    assert (
+        w.agent("hold", {"call_sid": "CA77777777777777777777777777777777"}, user_id=23).status_code
+        == 200
+    )
     # Old owner's leg was hung up (cold): nothing left for them to act on.
-    assert w.agent("resume", {"call_sid": "CA_AGENT"}, user_id=17).status_code in (403, 409)
+    assert w.agent(
+        "resume", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, user_id=17
+    ).status_code in (403, 409)
 
 
 def test_warm_transfer_keeps_the_first_agent_on_the_line() -> None:
     w = _World()
-    w.agent("transfer", {"call_sid": "CA_AGENT", "target_agent_id": 23, "mode": "warm"})
+    w.agent(
+        "transfer",
+        {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "target_agent_id": 23, "mode": "warm"},
+    )
     w.dial_status()
-    w.twilio_post("/webhooks/phone/transfer/answer?caller_sid=CA_CALLER", {"CallSid": "CA_TARGET"})
-    assert w.twilio.statuses_for("CA_AGENT") == []
+    w.twilio_post(
+        "/webhooks/phone/transfer/answer?caller_sid=CAcccccccccccccccccccccccccccccccc",
+        {"CallSid": "CA77777777777777777777777777777777"},
+    )
+    assert w.twilio.statuses_for("CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == []
     assert w.left == []
     # Still on the line, but the call is the target's now.
-    assert w.agent("hold", {"call_sid": "CA_AGENT"}, user_id=17).status_code == 403
-    assert w.agent("hold", {"call_sid": "CA_TARGET"}, user_id=23).status_code == 200
+    assert (
+        w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, user_id=17).status_code
+        == 403
+    )
+    assert (
+        w.agent("hold", {"call_sid": "CA77777777777777777777777777777777"}, user_id=23).status_code
+        == 200
+    )
 
 
 def test_transfer_targets_lists_online_registered_agents_except_me() -> None:
@@ -396,57 +458,70 @@ def test_transfer_targets_lists_online_registered_agents_except_me() -> None:
 
 def test_transfer_to_offline_agent_is_refused() -> None:
     w = _World(online=())
-    res = w.agent("transfer", {"call_sid": "CA_AGENT", "target_agent_id": 23})
+    res = w.agent(
+        "transfer", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "target_agent_id": 23}
+    )
     assert res.status_code == 409
     assert w.twilio.created == [] and w.twilio.updates == []
 
 
 def test_transfer_to_self_is_refused() -> None:
     w = _World()
-    assert w.agent("transfer", {"call_sid": "CA_AGENT", "target_agent_id": 17}).status_code == 422
+    assert (
+        w.agent(
+            "transfer", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "target_agent_id": 17}
+        ).status_code
+        == 422
+    )
 
 
 def test_unanswered_transfer_leaves_caller_on_hold_with_owner() -> None:
     w = _World()
-    w.agent("transfer", {"call_sid": "CA_AGENT", "target_agent_id": 23})
+    w.agent("transfer", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "target_agent_id": 23})
     w.dial_status()
     w.twilio_post(
-        "/webhooks/phone/transfer/status?caller_sid=CA_CALLER",
-        {"CallSid": "CA_TARGET", "CallStatus": "no-answer"},
+        "/webhooks/phone/transfer/status?caller_sid=CAcccccccccccccccccccccccccccccccc",
+        {"CallSid": "CA77777777777777777777777777777777", "CallStatus": "no-answer"},
     )
-    assert w.twilio.twiml_for("CA_CALLER") == []
+    assert w.twilio.twiml_for("CAcccccccccccccccccccccccccccccccc") == []
     # The owner can still resume.
-    assert w.agent("resume", {"call_sid": "CA_AGENT"}).status_code == 200
+    assert w.agent("resume", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}).status_code == 200
 
 
 def test_unanswered_blind_transfer_apologises_to_caller() -> None:
     """Owner transferred then hung up; nobody answered: the caller must not be
     left on hold music forever."""
     w = _World()
-    w.agent("transfer", {"call_sid": "CA_AGENT", "target_agent_id": 23})
+    w.agent("transfer", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "target_agent_id": 23})
     w.dial_status()
     w.twilio_post(
-        "/webhooks/phone/conference-status?caller_sid=CA_CALLER",
-        {"CallSid": "CA_AGENT", "StatusCallbackEvent": "participant-leave"},
+        "/webhooks/phone/conference-status?caller_sid=CAcccccccccccccccccccccccccccccccc",
+        {
+            "CallSid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "StatusCallbackEvent": "participant-leave",
+        },
     )
-    assert w.twilio.twiml_for("CA_CALLER") == []  # still waiting for the target
+    assert (
+        w.twilio.twiml_for("CAcccccccccccccccccccccccccccccccc") == []
+    )  # still waiting for the target
     w.twilio_post(
-        "/webhooks/phone/transfer/status?caller_sid=CA_CALLER",
-        {"CallSid": "CA_TARGET", "CallStatus": "busy"},
+        "/webhooks/phone/transfer/status?caller_sid=CAcccccccccccccccccccccccccccccccc",
+        {"CallSid": "CA77777777777777777777777777777777", "CallStatus": "busy"},
     )
-    (twiml,) = w.twilio.twiml_for("CA_CALLER")
+    (twiml,) = w.twilio.twiml_for("CAcccccccccccccccccccccccccccccccc")
     assert "<Say" in twiml and "<Hangup/>" in twiml
 
 
 def test_resume_cancels_a_ringing_transfer() -> None:
     w = _World()
-    w.agent("transfer", {"call_sid": "CA_AGENT", "target_agent_id": 23})
+    w.agent("transfer", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "target_agent_id": 23})
     w.dial_status()
-    assert w.agent("resume", {"call_sid": "CA_AGENT"}).status_code == 200
-    assert w.twilio.statuses_for("CA_TARGET") == ["canceled"]
+    assert w.agent("resume", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}).status_code == 200
+    assert w.twilio.statuses_for("CA77777777777777777777777777777777") == ["canceled"]
     # A late answer from the cancelled target joins nothing.
     res = w.twilio_post(
-        "/webhooks/phone/transfer/answer?caller_sid=CA_CALLER", {"CallSid": "CA_TARGET"}
+        "/webhooks/phone/transfer/answer?caller_sid=CAcccccccccccccccccccccccccccccccc",
+        {"CallSid": "CA77777777777777777777777777777777"},
     )
     assert "<Hangup/>" in res.text and "<Conference" not in res.text
 
@@ -456,26 +531,37 @@ def test_resume_cancels_a_ringing_transfer() -> None:
 
 def test_caller_hangup_in_conference_ends_agent_legs() -> None:
     w = _World()
-    w.agent("hold", {"call_sid": "CA_AGENT"})
+    w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
     w.dial_status()
-    w.agent("resume", {"call_sid": "CA_AGENT"})
+    w.agent("resume", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
+    w.twilio.legs[CALLER]["status"] = "completed"  # Twilio confirms the hang-up
     w.twilio_post(
-        "/webhooks/phone/conference-status?caller_sid=CA_CALLER",
-        {"CallSid": "CA_CALLER", "StatusCallbackEvent": "participant-leave"},
+        "/webhooks/phone/conference-status?caller_sid=CAcccccccccccccccccccccccccccccccc",
+        {
+            "CallSid": "CAcccccccccccccccccccccccccccccccc",
+            "StatusCallbackEvent": "participant-leave",
+        },
     )
-    assert w.twilio.statuses_for("CA_AGENT") == ["completed"]
-    assert w.agent("hold", {"call_sid": "CA_AGENT"}).status_code in (403, 409)
+    assert w.twilio.statuses_for("CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == ["completed"]
+    assert w.left == [17]  # ACW for the released agent
+    assert w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}).status_code in (
+        403,
+        409,
+    )
 
 
 def test_last_agent_leaving_hangs_up_held_caller_and_enters_acw() -> None:
     w = _World()
-    w.agent("hold", {"call_sid": "CA_AGENT"})
+    w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
     w.dial_status()
     w.twilio_post(
-        "/webhooks/phone/conference-status?caller_sid=CA_CALLER",
-        {"CallSid": "CA_AGENT", "StatusCallbackEvent": "participant-leave"},
+        "/webhooks/phone/conference-status?caller_sid=CAcccccccccccccccccccccccccccccccc",
+        {
+            "CallSid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "StatusCallbackEvent": "participant-leave",
+        },
     )
-    assert w.twilio.statuses_for("CA_CALLER") == ["completed"]
+    assert w.twilio.statuses_for("CAcccccccccccccccccccccccccccccccc") == ["completed"]
     assert w.left == [17]
 
 
@@ -484,46 +570,53 @@ def test_last_agent_leaving_hangs_up_held_caller_and_enters_acw() -> None:
 
 def test_hold_requires_a_session() -> None:
     w = _World()
-    assert w.agent("hold", {"call_sid": "CA_AGENT"}, auth=False).status_code == 401
+    assert (
+        w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, auth=False).status_code
+        == 401
+    )
 
 
 def test_hold_requires_the_permission() -> None:
     w = _World()
     w.perms = set()
-    assert w.agent("hold", {"call_sid": "CA_AGENT"}).status_code == 403
+    assert w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}).status_code == 403
     assert w.twilio.updates == []
 
 
 def test_agent_cannot_hold_a_colleagues_call() -> None:
     w = _World()
-    res = w.agent("hold", {"call_sid": "CA_AGENT"}, user_id=99)
+    res = w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, user_id=99)
     assert res.status_code == 403
     assert w.twilio.updates == []
 
 
 def test_agent_cannot_act_on_the_caller_leg_or_unknown_call() -> None:
     w = _World()
-    assert w.agent("hold", {"call_sid": "CA_CALLER"}).status_code == 403
-    assert w.agent("hold", {"call_sid": "CA_NOPE"}).status_code == 403
+    assert w.agent("hold", {"call_sid": "CAcccccccccccccccccccccccccccccccc"}).status_code == 403
+    assert w.agent("hold", {"call_sid": "CA00000000000000000000000000000000"}).status_code == 403
     assert w.twilio.updates == []
 
 
 def test_agent_cannot_transfer_a_colleagues_call() -> None:
     w = _World()
-    res = w.agent("transfer", {"call_sid": "CA_AGENT", "target_agent_id": 23}, user_id=99)
+    res = w.agent(
+        "transfer",
+        {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "target_agent_id": 23},
+        user_id=99,
+    )
     assert res.status_code == 403
     assert w.twilio.created == []
 
 
 def test_ended_leg_cannot_be_held() -> None:
     w = _World()
-    w.twilio.legs["CA_AGENT"]["status"] = "completed"
-    assert w.agent("hold", {"call_sid": "CA_AGENT"}).status_code == 409
+    w.twilio.legs["CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]["status"] = "completed"
+    assert w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}).status_code == 409
 
 
 def test_routes_404_when_hold_transfer_is_off() -> None:
     w = _World(_settings(phone_hold_transfer_enabled=False))
-    assert w.agent("hold", {"call_sid": "CA_AGENT"}).status_code == 404
+    assert w.agent("hold", {"call_sid": "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}).status_code == 404
     res = w.http.post("/voice/agent/call/capabilities", json={}, headers=_AUTH)
     assert res.status_code == 200 and res.json() == {"hold_transfer": False}
 
@@ -538,8 +631,8 @@ def test_twilio_webhooks_reject_bad_signature() -> None:
     w = _World()
     for path in ("conference-status", "transfer/answer", "transfer/status"):
         res = w.http.post(
-            f"/webhooks/phone/{path}?caller_sid=CA_CALLER",
-            data={"CallSid": "CA_TARGET"},
+            f"/webhooks/phone/{path}?caller_sid=CAcccccccccccccccccccccccccccccccc",
+            data={"CallSid": "CA77777777777777777777777777777777"},
             headers={"X-Twilio-Signature": "bad"},
         )
         assert res.status_code == 401, path
@@ -555,3 +648,163 @@ def test_flag_defaults_off() -> None:
 def test_hold_transfer_requires_softphone() -> None:
     with pytest.raises(ValueError, match="PHONE_HOLD_TRANSFER_ENABLED"):
         Settings(_env_file=None, phone_hold_transfer_enabled=True)
+
+
+# --- review fixes: stale leave events, hold cap, caller hang-up while held -
+
+
+def _leave(w: _World, sid: str, timestamp: str | None = None):
+    params = {"CallSid": sid, "StatusCallbackEvent": "participant-leave"}
+    if timestamp is not None:
+        params["Timestamp"] = timestamp
+    return w.twilio_post(f"/webhooks/phone/conference-status?caller_sid={CALLER}", params)
+
+
+def _rfc2822(epoch: float) -> str:
+    from email.utils import formatdate  # noqa: PLC0415
+
+    return formatdate(epoch, usegmt=True)
+
+
+def _in_room_then_hold_then_resume(w: _World) -> float:
+    w.agent("hold", {"call_sid": AGENT})
+    w.dial_status()
+    w.now += 30
+    w.agent("resume", {"call_sid": AGENT})
+    w.now += 10
+    hold_move = w.now
+    w.agent("hold", {"call_sid": AGENT})  # caller redirected out of the room
+    w.now += 2
+    w.agent("resume", {"call_sid": AGENT})  # ...and straight back in
+    return hold_move
+
+
+def test_late_leave_after_fast_resume_keeps_the_call() -> None:
+    w = _World()
+    hold_move = _in_room_then_hold_then_resume(w)
+    before = list(w.twilio.updates)
+    # The leave from the Hold move arrives only now, after the Resume.
+    _leave(w, CALLER, _rfc2822(hold_move))
+    assert w.twilio.updates == before  # agents untouched
+    assert w.left == []
+    assert w.agent("hold", {"call_sid": AGENT}).status_code == 200  # session intact
+
+
+def test_late_leave_without_timestamp_is_checked_against_twilio() -> None:
+    w = _World()
+    _in_room_then_hold_then_resume(w)
+    before = list(w.twilio.updates)
+    _leave(w, CALLER)  # caller leg still in-progress per Twilio
+    assert w.twilio.updates == before
+    assert w.agent("hold", {"call_sid": AGENT}).status_code == 200
+
+
+def test_real_caller_hangup_after_resume_tears_down_and_enters_acw() -> None:
+    w = _World()
+    _in_room_then_hold_then_resume(w)
+    w.now += 5
+    w.twilio.legs[CALLER]["status"] = "completed"
+    _leave(w, CALLER, _rfc2822(w.now))
+    assert w.twilio.statuses_for(AGENT) == ["completed"]
+    assert w.left == [17]
+
+
+def _hold_next(w: _World):
+    return w.twilio_post(f"/webhooks/phone/hold/next?caller_sid={CALLER}", {"CallSid": CALLER})
+
+
+def test_hold_is_capped_then_apology_and_hangup() -> None:
+    w = _World(_settings(phone_hold_max_seconds=1200))
+    w.agent("hold", {"call_sid": AGENT})
+    w.dial_status()
+    w.now += 1199
+    res = _hold_next(w)  # still inside the window: next segment
+    assert f'<Play loop="1">{HOLD_URL}</Play>' in res.text and "<Hangup" not in res.text
+    w.now += 2
+    res = _hold_next(w)
+    assert "<Play" not in res.text
+    assert 'language="en-US"' in res.text and 'language="ms-MY"' in res.text
+    assert res.text.endswith("<Hangup/></Response>")
+    assert w.twilio.statuses_for(AGENT) == ["completed"]  # agent released
+    assert w.left == [17]
+
+
+def test_hold_cap_default_is_twenty_minutes() -> None:
+    assert Settings(_env_file=None).phone_hold_max_seconds == 1200
+
+
+def test_blank_hold_url_pauses_within_the_cap() -> None:
+    w = _World(_settings(phone_hold_media_url="", phone_hold_max_seconds=90))
+    w.agent("hold", {"call_sid": AGENT})
+    first = w.dial_status().text
+    assert '<Pause length="60"/>' in first and "/webhooks/phone/hold/next" in first
+    w.now += 70
+    assert '<Pause length="20"/>' in _hold_next(w).text
+    w.now += 21
+    assert _hold_next(w).text.endswith("<Hangup/></Response>")
+
+
+def test_hold_next_without_session_ends_the_call() -> None:
+    w = _World()
+    assert _hold_next(w).text.endswith("<Hangup/></Response>")
+
+
+def test_caller_hangup_while_held_releases_agents() -> None:
+    w = _World()
+    w.agent("hold", {"call_sid": AGENT})
+    w.dial_status()
+    res = w.twilio_post(
+        f"/webhooks/phone/caller-status?caller_sid={CALLER}",
+        {"CallSid": CALLER, "CallStatus": "completed"},
+    )
+    assert res.status_code == 200
+    assert w.twilio.statuses_for(AGENT) == ["completed"]
+    assert w.left == [17]
+    # A redelivery finds nothing to do.
+    w.twilio_post(
+        f"/webhooks/phone/caller-status?caller_sid={CALLER}",
+        {"CallSid": CALLER, "CallStatus": "completed"},
+    )
+    assert w.twilio.statuses_for(AGENT) == ["completed"]
+
+
+def test_call_sid_must_look_like_a_twilio_call_sid() -> None:
+    w = _World()
+    for bad in ("CA_AGENT", "client:agent_17", "CA" + "z" * 32, ""):
+        assert w.agent("hold", {"call_sid": bad}).status_code == 422, bad
+    assert w.twilio.updates == []
+
+
+def test_resume_and_transfer_answer_race_has_one_winner() -> None:
+    """CAS: the target's answer writes first, so a Resume carrying the older
+    version is refused instead of also redirecting the caller."""
+    w = _World()
+    w.agent("transfer", {"call_sid": AGENT, "target_agent_id": 23, "mode": "warm"})
+    w.dial_status()
+    stale = w.store._sessions.docs[CALLER]["version"]
+    w.twilio_post(f"/webhooks/phone/transfer/answer?caller_sid={CALLER}", {"CallSid": TARGET})
+    assert w.store._sessions.docs[CALLER]["version"] == stale + 1
+    import asyncio  # noqa: PLC0415
+
+    from chatbot.features.chat.phone.hold_transfer import CallSession  # noqa: PLC0415
+
+    old = CallSession.from_dict({**w.store._sessions.docs[CALLER], "version": stale})
+    assert old is not None
+    assert asyncio.run(w.store.save(old)) is False
+
+
+def test_dial_status_hook_times_out_and_fails_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio  # noqa: PLC0415
+
+    from chatbot.features.chat import router as router_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(router_mod, "_HOLD_HOOK_TIMEOUT_SECONDS", 0.05)
+    w = _World()
+
+    async def _slow(_sid: str) -> str:
+        await asyncio.sleep(1)
+        return "<never/>"
+
+    monkeypatch.setattr(w.controller, "caller_twiml_after_dial", _slow)
+    res = w.dial_status()
+    assert "<Hangup/>" in res.text and "<never/>" not in res.text

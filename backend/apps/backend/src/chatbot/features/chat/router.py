@@ -77,6 +77,9 @@ if TYPE_CHECKING:
 
 _log = structlog.get_logger(__name__)
 
+# FIX-15: cap on the dial-status hold/transfer session lookup (fail open).
+_HOLD_HOOK_TIMEOUT_SECONDS = 3.0
+
 
 class ChatTurnRequest(BaseModel):
     session_id: str
@@ -2047,7 +2050,12 @@ class ChatRouter:
         if self._hold_transfer is None or not call_sid:
             return None
         try:
-            return await self._hold_transfer.caller_twiml_after_dial(call_sid)
+            # Bounded: this sits in front of TwiML for a live caller, so a slow
+            # Firestore read must fail open, not eat Twilio's webhook budget.
+            return await asyncio.wait_for(
+                self._hold_transfer.caller_twiml_after_dial(call_sid),
+                timeout=_HOLD_HOOK_TIMEOUT_SECONDS,
+            )
         except Exception as e:
             _log.error("phone_hold_transfer_dial_hook_failed", call_sid=call_sid, error=str(e))
             return None

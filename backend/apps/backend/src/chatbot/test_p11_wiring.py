@@ -279,6 +279,8 @@ def test_hold_transfer_wired_when_enabled(monkeypatch: pytest.MonkeyPatch) -> No
         "/webhooks/phone/conference-status",
         "/webhooks/phone/transfer/answer",
         "/webhooks/phone/transfer/status",
+        "/webhooks/phone/caller-status",
+        "/webhooks/phone/hold/next",
     ):
         assert p in paths, p
     assert _chat_router(app)._hold_transfer is not None

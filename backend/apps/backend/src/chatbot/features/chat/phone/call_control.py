@@ -190,3 +190,20 @@ class CallControl:
         except Exception as e:
             _log.error("call_create_client_failed", error=str(e))
             return None
+
+    async def set_status_callback(self, call_sid: str, url: str) -> bool:
+        """Have Twilio POST this leg's final status to `url` (FIX-15: catch a
+        caller hanging up while held, outside the conference)."""
+        client = self._twilio()
+        if client is None:
+            return False
+        try:
+            await asyncio.to_thread(
+                lambda: client.calls(call_sid).update(
+                    status_callback=url, status_callback_method="POST"
+                )
+            )
+            return True
+        except Exception as e:
+            _log.warning("call_status_callback_set_failed", call_sid=call_sid, error=str(e))
+            return False

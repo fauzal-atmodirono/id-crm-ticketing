@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from chatbot.features.authz.deps import require_permission_with_identity
 from chatbot.features.chat.phone.agent_token import agent_identity, mint_agent_voice_token
@@ -32,7 +32,7 @@ class CallActionRequest(BaseModel):
     CallSid`). Ownership is checked server-side; see HoldTransferController.
     _authorise."""
 
-    call_sid: str
+    call_sid: str = Field(pattern=r"^CA[0-9a-fA-F]{32}$")
 
 
 class TransferRequest(CallActionRequest):

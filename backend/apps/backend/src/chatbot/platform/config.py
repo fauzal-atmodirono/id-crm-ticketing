@@ -644,6 +644,9 @@ class Settings(BaseSettings):
     # public hold track until Proton supplies its own recording (an https
     # mp3/wav Twilio can fetch). Blank = silence.
     phone_hold_media_url: str = "https://com.twilio.music.classical.s3.amazonaws.com/BusyStrings.mp3"
+    # Longest a caller stays on hold before the agents are released and the
+    # caller hears the bilingual apology and is hung up (20 min default).
+    phone_hold_max_seconds: int = 1200
 
     # Frontend CORS — origins of the Vue dev/prod app (comma-separated in env).
     # Defaults cover Vite's first few fallback ports (5173-5180) so a stale dev

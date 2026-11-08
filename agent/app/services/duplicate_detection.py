@@ -93,13 +93,14 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
 from app.ai import gemini
 from app.clients.deps import get_chatwoot_client
 from app.config import get_settings
-from app.services.dedupe import claim_delivery, release_claim
+from app.services.dedupe import claim_delivery, count_attempts, record_attempt, release_claim
 from app.services.lifecycle import _is_escalation_reply
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,19 @@ NOTE_ATTR = "duplicate_note_posted"
 # Opening words of the new-case note, to recognise a note that did land when
 # only its NOTE_ATTR write was lost.
 _NOTE_PREFIX = "**Possible duplicate case.**"
+# When the marker was written. Its own conversation_updated arrives within
+# seconds; inside this window the update path skips without searching.
+MARKED_AT_ATTR = "related_case_marked_at"
+_MARKER_FRESH_SECONDS = 120
+# Write-phase failures (marker or new-case note) per conversation. Each failed
+# attempt's marker write + rollback emits conversation_updated, and the
+# released claim lets that event retry -- with a persistent failure, forever
+# (a search, and a Gemini call if the judge is on, every cycle). After this
+# many failures in the window the claims are kept and the case is left.
+_MAX_FAILED_ATTEMPTS = 3
+_ATTEMPT_WINDOW_SECONDS = 24 * 3600
+# Pages of 20 messages to look back through for an already-posted note.
+_NOTE_SCAN_PAGES = 5
 _OPEN_STATUSES = {"open", "pending", "snoozed"}
 _CLAIM_SOURCE = "duplicate_detection"
 
@@ -500,6 +514,26 @@ async def _warn_if_not_inbox_member(
 # (POSTED, NO_MATCH, SKIPPED) and are released on FAILED, so a later event
 # with the same signals retries instead of being remembered as a negative.
 POSTED, NO_MATCH, SKIPPED, FAILED = "posted", "no_match", "skipped", "failed"
+# Write-phase failure cap reached: claims are KEPT (not a retryable FAILED).
+GAVE_UP = "gave_up"
+
+
+def _attempt_prefix(conversation_id: int) -> str:
+    return f"{_CLAIM_SOURCE}:failed:{conversation_id}"
+
+
+def _marker_is_fresh(attrs: dict[str, Any]) -> bool:
+    """Marker present and written within the last `_MARKER_FRESH_SECONDS`."""
+    if not attrs.get(RELATED_ATTR):
+        return False
+    try:
+        marked = datetime.fromisoformat(str(attrs.get(MARKED_AT_ATTR)))
+    except (TypeError, ValueError):
+        return False
+    if marked.tzinfo is None:
+        marked = marked.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - marked).total_seconds()
+    return 0 <= age <= _MARKER_FRESH_SECONDS
 
 
 def _fully_flagged(attrs: dict[str, Any]) -> bool:
@@ -523,21 +557,36 @@ async def _note_already_posted(conversation_id: int) -> bool:
     the NOTE_ATTR write lost? Unknown counts as no, so the case is retried: a
     second note is visible and harmless; a note that never landed is the
     silent failure this guards against."""
-    try:
-        raw = await get_chatwoot_client().get_messages(conversation_id)
-    except Exception:  # noqa: BLE001
-        return False
-    messages = raw.get("payload") if isinstance(raw, dict) else raw
-    return any(
-        isinstance(m, dict)
-        and m.get("private")
-        and str(m.get("content") or "").startswith(_NOTE_PREFIX)
-        for m in (messages or [])
-    )
+    chatwoot = get_chatwoot_client()
+    before: int | None = None
+    # Page back (Chatwoot returns 20 per page): on a busy case the note can
+    # be older than the latest page. Bounded at _NOTE_SCAN_PAGES pages.
+    for _ in range(_NOTE_SCAN_PAGES):
+        try:
+            raw = await chatwoot.get_messages(conversation_id, before=before)
+        except Exception:  # noqa: BLE001
+            return False
+        messages = raw.get("payload") if isinstance(raw, dict) else raw
+        messages = [m for m in (messages or []) if isinstance(m, dict)]
+        if any(
+            m.get("private") and str(m.get("content") or "").startswith(_NOTE_PREFIX)
+            for m in messages
+        ):
+            return True
+        ids = [int(m["id"]) for m in messages if isinstance(m.get("id"), int)]
+        if not ids or (before is not None and min(ids) >= before):
+            return False
+        before = min(ids)
+    return False
 
 
 async def _detect(payload: dict, signals: _Signals, *, vehicle_only: bool = False) -> str:
-    """Find, then link. Returns POSTED, NO_MATCH, SKIPPED or FAILED.
+    """Find, then link. Returns POSTED, NO_MATCH, SKIPPED, FAILED or GAVE_UP.
+
+    GAVE_UP: the conversation already failed `_MAX_FAILED_ATTEMPTS` write
+    phases inside the window (checked first, so a given-up case costs no
+    search or Gemini call), or this failure reached the cap. Callers keep
+    their claims on it.
 
     `vehicle_only` (the update and contact paths) keeps only plate/chassis
     matches. Identity matches were already checked when the case was created,
@@ -545,6 +594,15 @@ async def _detect(payload: dict, signals: _Signals, *, vehicle_only: bool = Fals
     owners. A lookup that failed and found nothing is FAILED, not NO_MATCH:
     it is not a reliable negative to remember."""
     conversation_id = int(payload["id"])
+    if (
+        await count_attempts(_attempt_prefix(conversation_id), _ATTEMPT_WINDOW_SECONDS)
+        >= _MAX_FAILED_ATTEMPTS
+    ):
+        logger.info(
+            "duplicate_detection: case %s is past its failure cap; not searching",
+            conversation_id,
+        )
+        return GAVE_UP
     allowed = _allowed_inboxes()
     matches, lookup_failed = await _find_matches(signals, conversation_id, allowed)
     if vehicle_only:
@@ -582,7 +640,13 @@ async def _detect(payload: dict, signals: _Signals, *, vehicle_only: bool = Fals
         # after Chatwoot has committed the write, the marker still exists and
         # still has to be rolled back.
         marker_written = True
-        await chatwoot.set_custom_attributes(conversation_id, {RELATED_ATTR: ",".join(ids)})
+        await chatwoot.set_custom_attributes(
+            conversation_id,
+            {
+                RELATED_ATTR: ",".join(ids),
+                MARKED_AT_ATTR: datetime.now(timezone.utc).isoformat(),
+            },
+        )
         await chatwoot.create_message(conversation_id, _new_case_note(matches), private=True)
     except Exception:  # noqa: BLE001
         # The new-case note is the point of this feature. If it or the marker
@@ -598,6 +662,17 @@ async def _detect(payload: dict, signals: _Signals, *, vehicle_only: bool = Fals
                 logger.exception(
                     "duplicate_detection: marker rollback failed on %s", conversation_id
                 )
+        failures = await record_attempt(
+            _attempt_prefix(conversation_id), _CLAIM_SOURCE, _ATTEMPT_WINDOW_SECONDS
+        )
+        if failures >= _MAX_FAILED_ATTEMPTS:
+            # Keep the claim: releasing it is what lets the rollback's own
+            # conversation_updated start the next cycle.
+            logger.warning(
+                "duplicate_detection_gave_up: case %s failed %s times in %sh; leaving it",
+                conversation_id, failures, _ATTEMPT_WINDOW_SECONDS // 3600,
+            )
+            return GAVE_UP
         await release_claim(claim_key)
         return FAILED
 
@@ -673,6 +748,10 @@ async def maybe_detect_duplicates_on_update(payload: dict) -> None:
     try:
         attrs = payload.get("custom_attributes") or {}
         if _fully_flagged(attrs):
+            return
+        # The marker's own event (or the note's, label's...) arriving seconds
+        # after it was written: the run that wrote it is still finishing.
+        if _marker_is_fresh(attrs):
             return
         if not (_key(attrs.get("vehicle_plate")) or _key(attrs.get("vehicle_chassis"))):
             return

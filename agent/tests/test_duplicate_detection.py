@@ -87,6 +87,15 @@ def _mock_search(q, contacts):
     )
 
 
+def _catch_all(router):
+    """Catch-all on the router respx injects into this test (the
+    `@respx.mock(...)` form with arguments makes its own router, which
+    module-level `respx.get`/`respx.calls` do NOT see). A zero-call test
+    asserts it was never hit; an unmatched request is recorded nowhere, so
+    an empty call list alone proves nothing."""
+    return router.route().mock(return_value=httpx.Response(200, json={"payload": []}))
+
+
 def _body(route, index=-1):
     return json.loads(route.calls[index].request.content)
 
@@ -233,7 +242,8 @@ async def test_already_flagged_conversation_is_left_alone(monkeypatch):
 
 
 @respx.mock(assert_all_called=False)
-async def test_flag_off_noop(monkeypatch):
+async def test_flag_off_noop(monkeypatch, respx_mock):
+    catch_all = _catch_all(respx_mock)
     monkeypatch.setattr(get_settings(), "duplicate_detection_enabled", False)
 
     await duplicate_detection.maybe_detect_duplicates(_created())
@@ -241,16 +251,17 @@ async def test_flag_off_noop(monkeypatch):
         _created(conv_attrs={"vehicle_chassis": "PM2ABC123"}, event="conversation_updated")
     )
 
-    assert respx.calls.call_count == 0
+    assert not catch_all.called
 
 
 @respx.mock(assert_all_called=False)
-async def test_inbox_not_in_allow_list_noop(monkeypatch):
+async def test_inbox_not_in_allow_list_noop(monkeypatch, respx_mock):
+    catch_all = _catch_all(respx_mock)
     _enable(monkeypatch, duplicate_detection_inbox_ids="5, 7")
 
     await duplicate_detection.maybe_detect_duplicates(_created(inbox_id=3))
 
-    assert respx.calls.call_count == 0
+    assert not catch_all.called
 
 
 @respx.mock
@@ -313,14 +324,15 @@ async def test_chassis_set_later_on_update_matches(monkeypatch):
 
 
 @respx.mock(assert_all_called=False)
-async def test_update_without_vehicle_fields_does_nothing(monkeypatch):
+async def test_update_without_vehicle_fields_does_nothing(monkeypatch, respx_mock):
+    catch_all = _catch_all(respx_mock)
     _enable(monkeypatch)
 
     await duplicate_detection.maybe_detect_duplicates_on_update(
         _created(event="conversation_updated")
     )
 
-    assert respx.calls.call_count == 0
+    assert not catch_all.called
 
 
 @respx.mock
@@ -539,14 +551,15 @@ async def test_contact_vehicle_no_added_later_links_open_case(monkeypatch):
 
 
 @respx.mock(assert_all_called=False)
-async def test_contact_update_without_vehicle_fields_does_nothing(monkeypatch):
+async def test_contact_update_without_vehicle_fields_does_nothing(monkeypatch, respx_mock):
+    catch_all = _catch_all(respx_mock)
     _enable(monkeypatch)
 
     await duplicate_detection.maybe_detect_duplicates_on_contact_update(
         {"event": "contact_updated", "id": 55, "custom_attributes": {"city": "KL"}}
     )
 
-    assert respx.calls.call_count == 0
+    assert not catch_all.called
 
 
 @respx.mock
@@ -814,3 +827,112 @@ async def test_marker_with_landed_note_but_lost_flag_is_completed_not_renoted(mo
         "related_case_ids": "12",
         "duplicate_note_posted": "true",
     }
+
+
+# --- review round 3: retry cap, paged note lookup, fresh-marker skip -------
+
+
+def _chassis_update(chassis="PM2ABC123", extra_attrs=None):
+    return _created(
+        contact={"id": 55, "name": "Jane", "custom_attributes": {}},
+        conv_attrs={"vehicle_chassis": chassis, **(extra_attrs or {})},
+        event="conversation_updated",
+    )
+
+
+@respx.mock
+async def test_persistent_note_failure_gives_up_after_three_attempts(monkeypatch, caplog):
+    _enable(monkeypatch)
+    _mock_contact_conversations(55, [_conv(NEW_ID)])
+    conv_filter = respx.post(f"{API}/conversations/filter").mock(
+        return_value=httpx.Response(
+            200, json={"payload": [_conv(41, attrs={"vehicle_chassis": "PM2ABC123"})]}
+        )
+    )
+    note, _, _ = _mock_new_conversation()
+    note.mock(return_value=httpx.Response(500))
+
+    with caplog.at_level("WARNING", logger="app.services.duplicate_detection"):
+        # each failed attempt's marker write + rollback emits another update
+        for _ in range(6):
+            await duplicate_detection.maybe_detect_duplicates_on_update(_chassis_update())
+
+    assert note.call_count == 3
+    assert conv_filter.call_count == 3
+    assert "duplicate_detection_gave_up" in caplog.text
+
+    # Past the cap even a new signal costs no search.
+    await duplicate_detection.maybe_detect_duplicates_on_update(_chassis_update("PM2XYZ999"))
+    assert conv_filter.call_count == 3
+    assert note.call_count == 3
+
+
+@respx.mock
+async def test_note_on_an_older_message_page_is_found(monkeypatch):
+    _enable(monkeypatch)
+    _mock_contact_conversations(55, [_conv(NEW_ID), _conv(12)])
+    _mock_search("+60123456789", [])
+    pages_seen: list = []
+
+    def messages(request):
+        before = request.url.params.get("before")
+        pages_seen.append(before)
+        if before is None:  # latest page: 20 public messages, no note
+            return httpx.Response(
+                200,
+                json={"payload": [
+                    {"id": i, "content": f"msg {i}", "private": False} for i in range(30, 50)
+                ]},
+            )
+        assert before == "30"
+        return httpx.Response(
+            200,
+            json={"payload": [
+                {"id": 5, "content": "**Possible duplicate case.** ...", "private": True},
+                {"id": 6, "content": "older", "private": False},
+            ]},
+        )
+
+    respx.get(f"{API}/conversations/{NEW_ID}/messages").mock(side_effect=messages)
+    note, _, attrs = _mock_new_conversation(conv_attrs={"related_case_ids": "12"})
+
+    await duplicate_detection.maybe_detect_duplicates(_created())
+
+    assert pages_seen == [None, "30"]
+    assert not note.called
+    assert _body(attrs)["custom_attributes"]["duplicate_note_posted"] == "true"
+
+
+@respx.mock(assert_all_called=False)
+async def test_update_with_fresh_marker_skips_without_search(monkeypatch, respx_mock):
+    catch_all = _catch_all(respx_mock)
+    from datetime import datetime, timezone
+
+    _enable(monkeypatch)
+    fresh = {
+        "related_case_ids": "41",
+        "related_case_marked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    await duplicate_detection.maybe_detect_duplicates_on_update(_chassis_update(extra_attrs=fresh))
+
+    assert not catch_all.called
+
+
+@respx.mock
+async def test_update_with_stale_marker_and_no_note_flag_still_checks(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    _enable(monkeypatch)
+    stale = {
+        "related_case_ids": "41",
+        "related_case_marked_at": (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(),
+    }
+    _mock_contact_conversations(55, [_conv(NEW_ID)])
+    conv_filter = respx.post(f"{API}/conversations/filter").mock(
+        return_value=httpx.Response(200, json={"payload": []})
+    )
+
+    await duplicate_detection.maybe_detect_duplicates_on_update(_chassis_update(extra_attrs=stale))
+
+    assert conv_filter.call_count == 1

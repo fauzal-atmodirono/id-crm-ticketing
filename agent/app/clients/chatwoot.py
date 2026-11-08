@@ -48,9 +48,12 @@ class ChatwootClient:
         response.raise_for_status()
         return response.json()
 
-    async def get_messages(self, conversation_id: int) -> Any:
+    async def get_messages(self, conversation_id: int, before: int | None = None) -> Any:
+        """Latest page of messages (Chatwoot pages by 20), or the page before
+        message id `before` when paging back."""
         response = await self._client.get(
-            f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}/messages"
+            f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}/messages",
+            params={"before": before} if before is not None else None,
         )
         response.raise_for_status()
         return response.json()

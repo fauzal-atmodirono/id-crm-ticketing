@@ -67,3 +67,14 @@ def test_rspec_names_and_docker_env_plumbing(tree):
     assert "zz_proton_password_expiry.rb" in df and "models/_user.json.jbuilder" in df
     for f in ("docker-compose.tenant.yml", "tenants/example.env"):
         assert "PASSWORD_MAX_AGE_DAYS" in (ROOT / f).read_text(), f
+
+
+def test_password_age_stripped_from_colleague_payloads():
+    p = PATCH.read_text()
+    for f in ("api/v1/models/_agent.json.jbuilder", "platform/api/v1/models/_user.json.jbuilder"):
+        assert f"diff --git a/app/views/{f}" in p, f
+    assert p.count(".except('password_changed_at')") == 2
+    assert "json.custom_attributes resource.custom_attributes" not in "\n".join(
+        l for l in p.splitlines() if l.startswith("+"))
+    df = (FORK / "Dockerfile").read_text()
+    assert "models/_agent.json.jbuilder" in df and "platform/api/v1/models/_user.json.jbuilder" in df

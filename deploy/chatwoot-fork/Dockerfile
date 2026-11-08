@@ -107,6 +107,10 @@ COPY --from=builder /app/config/initializers/zz_proton_session.rb /app/config/in
 # password_expired and expiry silently does nothing.
 COPY --from=builder /app/config/initializers/zz_proton_password_expiry.rb /app/config/initializers/zz_proton_password_expiry.rb
 COPY --from=builder /app/app/views/api/v1/models/_user.json.jbuilder /app/app/views/api/v1/models/_user.json.jbuilder
+# Same patch strips password_changed_at from the colleague-facing agent partial
+# and the platform user partial (copied from the builder so upstream fields stay).
+COPY --from=builder /app/app/views/api/v1/models/_agent.json.jbuilder /app/app/views/api/v1/models/_agent.json.jbuilder
+COPY --from=builder /app/app/views/platform/api/v1/models/_user.json.jbuilder /app/app/views/platform/api/v1/models/_user.json.jbuilder
 
 # Overwrite the baked-in upstream .git_sha so the in-app "Build <sha>" display
 # (and GET /api) reflects OUR commit, not upstream's frozen v4.15.1 release

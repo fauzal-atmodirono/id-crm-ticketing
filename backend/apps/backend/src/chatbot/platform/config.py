@@ -1444,6 +1444,10 @@ class Settings(BaseSettings):
     phone_ivr_agent_attend_seconds: int = 20
     phone_ivr_gather_timeout_seconds: int = 5
     phone_ivr_voicemail_max_seconds: int = 120
+    # Upper bound on opening the Chatwoot case before dialling a person
+    # (agent route / RSA line). On timeout the call is dialled without a
+    # conversation_id; keep well under Twilio's 15 s webhook timeout.
+    phone_ivr_case_open_timeout_seconds: float = 3.0
     # SOP office hours. Mon-Fri weekday window; Sat, Sun and the listed public
     # holidays (comma-separated YYYY-MM-DD, local dates) the weekend window.
     # Malformed values fail OPEN (treated as in hours), logged.

@@ -55,7 +55,7 @@ class _IvrLog(_FakeLog):
         self, session_id: str, subject: str, customer_name: str | None, customer_phone: str | None
     ) -> str:
         self.ensured.append((session_id, subject, customer_phone))
-        return "T-9"
+        return "9"
 
     async def append_conversation_comment(
         self, ticket_id: str, text: str, status: str | None = None
@@ -354,7 +354,7 @@ def test_after_hours_plays_message_and_records_voicemail(clock) -> None:
     assert "https://api.twilio.com/2010-04-01/Accounts/AC1/Recordings/RE77.mp3" in note
     assert "Complaint" in note and "after hours" in note.lower()
     assert log.recordings[0][1]["recording_sid"] == "RE77"
-    assert ("T-9", "voicemail") in log.tags
+    assert ("9", "voicemail") in log.tags
 
 
 @pytest.mark.usefixtures("clock")
@@ -634,7 +634,7 @@ def test_agent_route_opens_the_case_and_passes_conversation_id_to_softphones(clo
     assert log.ensured and log.ensured[0][0] == "phone-CA1"
     assert log.ensured[0][2] == "+60129998888"
     assert "Inquiry" in log.ensured[0][1]
-    assert xml.count('<Parameter name="conversation_id" value="T-9"/>') == 2
+    assert xml.count('<Parameter name="conversation_id" value="9"/>') == 2
     # The stage-2 redial carries it too.
     busy = _text(
         _post(
@@ -642,7 +642,7 @@ def test_agent_route_opens_the_case_and_passes_conversation_id_to_softphones(clo
             {"DialCallStatus": "no-answer", "CallStatus": "in-progress"},
         ).text
     )
-    assert '<Parameter name="conversation_id" value="T-9"/>' in busy
+    assert '<Parameter name="conversation_id" value="9"/>' in busy
 
 
 def test_rsa_number_route_opens_the_case(clock) -> None:
@@ -719,3 +719,60 @@ def test_holiday_list_without_this_year_warns() -> None:
     with capture_logs() as logs:
         within_office_hours(Settings(_env_file=None), datetime(2026, 3, 3, 2, 0, tzinfo=UTC))
     assert not any(e.get("event") == "phone_ivr_public_holidays_missing_year" for e in logs)
+
+
+# --- review round 2 -----------------------------------------------------------
+
+
+class _SoftFailLog(_IvrLog):
+    """ChatwootConversationLog's soft failure: a failed create returns the
+    session id itself instead of a conversation id."""
+
+    def __init__(self, returned: Any) -> None:
+        super().__init__()
+        self.returned = returned
+
+    async def ensure_conversation_ticket(
+        self, session_id: str, subject: str, customer_name: str | None, customer_phone: str | None
+    ) -> Any:
+        self.ensured.append((session_id, subject, customer_phone))
+        return session_id if self.returned == "SESSION" else self.returned
+
+
+@pytest.mark.parametrize("returned", ["SESSION", None, "", "not-a-number"])
+def test_soft_failed_case_open_dials_without_a_conversation_id(clock, returned) -> None:
+    log = _SoftFailLog(returned)
+    client, _ = _client_with_softphones(log, _agent_settings(), ["agent-3"])
+    xml = _text(_post(client, "/voice/phone/ivr/menu", {"lang": "en", "attempt": 0}, {"Digits": "2"}).text)
+    assert log.ensured  # it was attempted
+    assert "<Client><Identity>agent-3</Identity>" in xml
+    assert "conversation_id" not in xml
+
+
+class _SlowLog(_IvrLog):
+    async def ensure_conversation_ticket(self, *a: Any, **k: Any) -> str:
+        import asyncio
+
+        await asyncio.sleep(5)
+        return "9"
+
+
+def test_slow_case_open_is_bounded_and_still_dials(clock) -> None:
+    import time
+
+    client, _ = _client_with_softphones(
+        _SlowLog(), _agent_settings(phone_ivr_case_open_timeout_seconds=0.2), ["agent-3"]
+    )
+    started = time.monotonic()
+    xml = _text(_post(client, "/voice/phone/ivr/menu", {"lang": "en", "attempt": 0}, {"Digits": "3"}).text)
+    assert time.monotonic() - started < 2
+    assert "<Client><Identity>agent-3</Identity>" in xml and "conversation_id" not in xml
+    client, _ = _client(_SlowLog(), settings=_settings(phone_ivr_rsa_number=_RSA, phone_ivr_case_open_timeout_seconds=0.2))
+    started = time.monotonic()
+    xml = _text(_post(client, "/voice/phone/ivr/menu", {"lang": "en", "attempt": 0}, {"Digits": "1"}).text)
+    assert time.monotonic() - started < 2
+    assert f"<Number>{_RSA}</Number>" in xml
+
+
+def test_case_open_timeout_defaults_to_3s() -> None:
+    assert Settings(_env_file=None).phone_ivr_case_open_timeout_seconds == 3.0

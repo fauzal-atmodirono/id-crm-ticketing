@@ -25,6 +25,7 @@ the caller.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -165,17 +166,37 @@ class IvrRoutes:
             return None
         from_number = params.get("From") or None
         label = _CATEGORY_LABEL.get(cat, "No menu choice")
+        session_id = f"phone-{call_sid}"
+        timeout = float(self._settings.phone_ivr_case_open_timeout_seconds)
         try:
-            ticket_id = await self._log_port.ensure_conversation_ticket(
-                f"phone-{call_sid}",
-                f"[Phone] {label} - {from_number or 'unknown caller'}",
-                None,
-                from_number,
+            # Bounded: a cold create is several sequential Chatwoot calls
+            # (contact search/create, conversation create, attributes), each
+            # with its own 10 s client timeout -- far past Twilio's 15 s
+            # webhook budget. The caller is waiting on this <Dial>, so on
+            # timeout we dial without an id rather than drop the call.
+            ticket_id = await asyncio.wait_for(
+                self._log_port.ensure_conversation_ticket(
+                    session_id,
+                    f"[Phone] {label} - {from_number or 'unknown caller'}",
+                    None,
+                    from_number,
+                ),
+                timeout=timeout,
             )
+        except TimeoutError:
+            _log.warning("phone_ivr_case_open_timed_out", call_sid=call_sid, timeout_s=timeout)
+            return None
         except Exception as e:
             _log.error("phone_ivr_case_open_failed", call_sid=call_sid, error=str(e))
             return None
-        return str(ticket_id) if ticket_id else None
+        # ChatwootConversationLog soft-fails: a failed create returns the
+        # session id itself (or nothing). Chatwoot conversation ids are
+        # numeric; anything else would hand the softphone a bogus id.
+        value = str(ticket_id).strip() if ticket_id is not None else ""
+        if not value or value == session_id or not value.isdigit():
+            _log.warning("phone_ivr_case_open_no_conversation_id", call_sid=call_sid)
+            return None
+        return value
 
     async def _identities(self) -> list[str]:
         try:

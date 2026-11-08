@@ -90,6 +90,16 @@ def adjacency(
             pairs = [p for sq in seqs for p in zip(sq, sq[1:])]
             for a, b in pairs:
                 ra, rb = pos.get(a), pos.get(b)
+                # Lines INSERTED between two lines a later hunk needs adjacent.
+                if ra and rb and ra[0] is rb[0] and rb[1] > ra[1] + 1:
+                    gap = ra[0][ra[1] + 1 : rb[1]]
+                    if any(g not in old_adds for g in gap):
+                        hits += 1
+                        print(
+                            f"INSERT {name} -> {later.name} [{f}]: {len(gap)} line(s) between "
+                            f"'{a.strip()[:50]}' and '{b.strip()[:50]}'"
+                        )
+                        continue
                 # only boundaries this edit created are interesting
                 if (not ra or a in old_adds) and (not rb or b in old_adds):
                     continue

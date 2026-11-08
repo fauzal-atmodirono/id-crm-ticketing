@@ -88,7 +88,7 @@ diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/
 index 8c6154c..163281b 100644
 --- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
 +++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
-@@ -617,6 +617,24 @@ const menuItems = computed(() => {
+@@ -617,6 +617,21 @@ const menuItems = computed(() => {
            },
          ]
        : []),
@@ -97,9 +97,6 @@ index 8c6154c..163281b 100644
 +    // used by SLA/Audit/Roles, so there is no dedicated `rsa.manage` permission
 +    // in the authz seed. Gate on `sla.manage` — the same operational-admin
 +    // cohort that manages SLA policies owns roadside-assistance data entry.
-+    // FIX-24: the backend now ALSO enforces require_permission("sla.manage") on
-+    // /rsa/incidents*, so this nav gate and the API agree; the page forwards
-+    // the Chatwoot session triplet (see protonRsa.js).
 +    ...(protonHasPermission('sla.manage')
 +      ? [
 +          {
@@ -533,7 +530,6 @@ index 0000000..4e10af1
 +                Vehicle no.
 +              </th>
 +              <th class="px-3 py-2 font-medium whitespace-nowrap">Model</th>
-+              <th class="px-3 py-2 font-medium whitespace-nowrap">Phone</th>
 +              <th class="px-3 py-2 font-medium whitespace-nowrap">Cause</th>
 +              <th class="px-3 py-2 font-medium whitespace-nowrap">
 +                Purchased from
@@ -555,6 +551,7 @@ index 0000000..4e10af1
 +                Late reason
 +              </th>
 +              <th class="px-3 py-2 font-medium whitespace-nowrap">Remarks</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Phone</th>
 +              <th class="px-3 py-2 font-medium whitespace-nowrap">Actions</th>
 +            </tr>
 +          </thead>
@@ -583,13 +580,6 @@ index 0000000..4e10af1
 +                  <input
 +                    v-model="editForm.vehicle_model"
 +                    type="text"
-+                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
-+                  />
-+                </td>
-+                <td class="px-2 py-1">
-+                  <input
-+                    v-model="editForm.customer_phone"
-+                    type="tel"
 +                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
 +                  />
 +                </td>
@@ -671,6 +661,13 @@ index 0000000..4e10af1
 +                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
 +                  />
 +                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.customer_phone"
++                    type="tel"
++                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
 +                <td class="px-3 py-2 whitespace-nowrap">
 +                  <button
 +                    type="button"
@@ -698,9 +695,6 @@ index 0000000..4e10af1
 +                </td>
 +                <td class="px-3 py-2 whitespace-nowrap">
 +                  {{ incident.vehicle_model }}
-+                </td>
-+                <td class="px-3 py-2 whitespace-nowrap">
-+                  {{ incident.customer_phone }}
 +                </td>
 +                <td class="px-3 py-2 whitespace-nowrap">
 +                  {{ incident.cause }}
@@ -734,6 +728,9 @@ index 0000000..4e10af1
 +                </td>
 +                <td class="px-3 py-2 whitespace-nowrap">
 +                  {{ incident.remarks }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.customer_phone }}
 +                </td>
 +                <td class="px-3 py-2 whitespace-nowrap">
 +                  <button

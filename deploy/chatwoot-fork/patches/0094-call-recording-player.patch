@@ -1,35 +1,28 @@
 From: Proton CRM <build@proton.local>
-Subject: [PATCH 0094] conversation sidebar: in-CRM call recording player (signed backend link, transcript, re-transcribe)
+Subject: [PATCH 0094] conversation sidebar: in-CRM call recording player (signed backend link, transcript, re-transcribe; shared useProtonCallRecording composable)
 
 diff --git a/app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue b/app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue
 new file mode 100644
-index 0000000..4e53511
+index 0000000..b34438a
 --- /dev/null
 +++ b/app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue
-@@ -0,0 +1,252 @@
+@@ -0,0 +1,122 @@
 +<script setup>
 +// ProtonCallRecordingPanel.vue — OUR file (patch 0094). Plays a call's
-+// archived recording inside the conversation sidebar.
++// archived recording inside the conversation sidebar: the conversation's
++// LATEST call (patch 0095 puts a player for every call inside its own
++// archive note in the timeline).
 +//
-+// The backend (features/chat/phone/recording_router.py) finds the archived
-+// GCS object, checks `call_recording.listen` + the caller's data scope, and
-+// answers with a short-lived signed BACKEND link. An <audio> element cannot
-+// send the Chatwoot session headers adminRequest adds, which is why the link
-+// carries its own (<= 5 minute) credential and why this panel re-mints it when
-+// it has expired instead of letting the player fail.
++// The fetch / signed link / refresh-on-expiry / transcript / re-transcribe
++// logic is the shared useProtonCallRecording composable (see its header).
 +//
 +// Hidden unless the backend says a recording is available (or was deleted by
 +// retention): no permission (403), feature off (404), not configured (503) or
 +// any other failure all render nothing. Only asks for conversations the
 +// backend marked as recorded calls, so ordinary chats cost no request.
-+//
-+// Each minted link is one audit row on first play; re-minting after expiry
-+// starts a new link (and a new row). The transcript is fetched with its token
-+// in a header and shown inline, so that token never sits in a URL or history.
-+import { ref, computed, watch, nextTick } from 'vue';
++import { computed, watch } from 'vue';
 +import { useMapGetter } from 'dashboard/composables/store';
-+import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
-+import { adminRequest } from 'dashboard/api/protonAdmin';
++import { useProtonCallRecording } from 'dashboard/components/proton/useProtonCallRecording.js';
 +
 +const props = defineProps({
 +  conversationId: {
@@ -37,9 +30,6 @@ index 0000000..4e53511
 +    required: true,
 +  },
 +});
-+
-+// Re-mint this long before the link's real expiry, so a click never races it.
-+const EXPIRY_MARGIN_MS = 30000;
 +
 +const currentChat = useMapGetter('getSelectedChat');
 +const attrs = computed(() => currentChat.value?.custom_attributes || {});
@@ -54,142 +44,23 @@ index 0000000..4e53511
 +    )
 +);
 +
-+const state = ref('hidden'); // hidden | available | deleted
-+const playUrl = ref('');
-+const transcriptUrl = ref('');
-+const transcriptToken = ref('');
-+const transcriptText = ref('');
-+const transcriptOpen = ref(false);
-+const canRetranscribe = ref(false);
-+const expiresAtMs = ref(0);
-+const message = ref('');
-+const busy = ref(false);
-+const audioEl = ref(null);
-+let requestSeq = 0;
-+let retriedAfterError = false;
-+
-+function absolute(path) {
-+  if (!path) return '';
-+  if (!path.startsWith('/')) return path;
-+  const { backendUrl } = useProtonConfig();
-+  return `${backendUrl || ''}${path}`;
-+}
-+
-+function recordingPath() {
-+  return `/calls/${encodeURIComponent(props.conversationId)}/recording`;
-+}
-+
-+async function load() {
-+  const mine = ++requestSeq;
-+  message.value = '';
-+  if (!isRecordedCall.value) {
-+    state.value = 'hidden';
-+    return;
-+  }
-+  try {
-+    const res = await adminRequest(recordingPath());
-+    if (mine !== requestSeq) return;
-+    if (res?.status === 'available' && res.play_url) {
-+      playUrl.value = absolute(res.play_url);
-+      transcriptUrl.value = absolute(res.transcript_url || '');
-+      transcriptToken.value = res.transcript_token || '';
-+      canRetranscribe.value = !!res.can_retranscribe;
-+      expiresAtMs.value = Date.parse(res.expires_at) || 0;
-+      retriedAfterError = false;
-+      state.value = 'available';
-+    } else if (res?.status === 'deleted') {
-+      state.value = 'deleted';
-+    } else {
-+      state.value = 'hidden';
-+    }
-+  } catch (e) {
-+    // 403 / 404 / 503 / network: no panel, never an error banner.
-+    if (mine === requestSeq) state.value = 'hidden';
-+  }
-+}
-+
-+function isStale() {
-+  return Date.now() > expiresAtMs.value - EXPIRY_MARGIN_MS;
-+}
-+
-+// Swap in a fresh link without losing the listener's position.
-+async function remintAndResume(play) {
-+  const audio = audioEl.value;
-+  const at = audio ? audio.currentTime : 0;
-+  await load();
-+  await nextTick();
-+  const fresh = audioEl.value;
-+  if (!fresh || state.value !== 'available') return;
-+  fresh.currentTime = at;
-+  if (play) fresh.play().catch(() => {});
-+}
-+
-+async function onPlay() {
-+  if (!isStale()) return;
-+  audioEl.value?.pause();
-+  await remintAndResume(true);
-+}
-+
-+async function onError() {
-+  // An expired link mid-listen (a seek after five minutes) — re-mint once.
-+  if (retriedAfterError || state.value !== 'available') return;
-+  retriedAfterError = true;
-+  await remintAndResume(false);
-+}
-+
-+async function toggleTranscript() {
-+  if (transcriptOpen.value) {
-+    transcriptOpen.value = false;
-+    return;
-+  }
-+  if (!transcriptText.value) {
-+    if (isStale()) await load();
-+    if (!transcriptUrl.value || !transcriptToken.value) return;
-+    try {
-+      const response = await fetch(transcriptUrl.value, {
-+        headers: { 'x-recording-token': transcriptToken.value },
-+      });
-+      if (!response.ok) throw new Error(String(response.status));
-+      transcriptText.value = await response.text();
-+    } catch (e) {
-+      message.value = 'Could not load the transcript.';
-+      return;
-+    }
-+  }
-+  transcriptOpen.value = true;
-+}
-+
-+// The backend puts the 429's wait (also its Retry-After header) in the body,
-+// which is what adminRequest keeps on the error as `detail`.
-+function retryMinutes(error) {
-+  try {
-+    const seconds = Number(JSON.parse(error?.detail || '{}')?.detail?.retry_after_seconds);
-+    return seconds > 0 ? Math.ceil(seconds / 60) : null;
-+  } catch (e) {
-+    return null;
-+  }
-+}
-+
-+async function retranscribe() {
-+  busy.value = true;
-+  message.value = '';
-+  try {
-+    await adminRequest(`${recordingPath()}/retranscribe`, { method: 'POST' });
-+    message.value =
-+      'Re-transcription queued. The new transcript will appear as a private note shortly.';
-+  } catch (e) {
-+    if (e?.status === 429) {
-+      const minutes = retryMinutes(e);
-+      message.value = minutes
-+        ? `Re-transcribe limit reached — try again in ${minutes} min`
-+        : 'Re-transcribe limit reached — try again later';
-+    } else {
-+      message.value = 'Could not start re-transcription.';
-+    }
-+  } finally {
-+    busy.value = false;
-+  }
-+}
++const {
++  state,
++  playUrl,
++  transcriptUrl,
++  transcriptText,
++  transcriptOpen,
++  canRetranscribe,
++  message,
++  busy,
++  audioEl,
++  reset,
++  load,
++  onPlay,
++  onError,
++  toggleTranscript,
++  retranscribe,
++} = useProtonCallRecording({ conversationId: () => props.conversationId });
 +
 +watch(
 +  () => [
@@ -198,9 +69,8 @@ index 0000000..4e53511
 +    attrs.value.call_recording_object,
 +  ],
 +  () => {
-+    transcriptText.value = '';
-+    transcriptOpen.value = false;
-+    load();
++    reset();
++    if (isRecordedCall.value) load();
 +  },
 +  { immediate: true }
 +);
@@ -259,6 +129,233 @@ index 0000000..4e53511
 +    </div>
 +  </div>
 +</template>
+diff --git a/app/javascript/dashboard/components/proton/useProtonCallRecording.js b/app/javascript/dashboard/components/proton/useProtonCallRecording.js
+new file mode 100644
+index 0000000..2b52b84
+--- /dev/null
++++ b/app/javascript/dashboard/components/proton/useProtonCallRecording.js
+@@ -0,0 +1,221 @@
++// useProtonCallRecording.js — OUR file (patch 0094, shared with 0095).
++//
++// Everything a call-recording player needs from the backend
++// (features/chat/phone/recording_router.py), used by the sidebar panel
++// (ProtonCallRecordingPanel.vue: the conversation's latest call) and by the
++// in-note player (ProtonCallNoteBubble.vue, patch 0095: one archive note's
++// call, `?message_id=`).
++//
++// The backend checks `call_recording.listen` + the caller's data scope and
++// answers with a short-lived signed BACKEND link. An <audio> element cannot
++// send the Chatwoot session headers adminRequest adds, which is why the link
++// carries its own (<= 5 minute) credential and why this re-mints it when it
++// has expired instead of letting the player fail -- keeping the listener's
++// position.
++//
++// Each minted link is one audit row on first play; re-minting after expiry
++// starts a new link (and a new row). The transcript is fetched with its token
++// in a header and shown inline, so that token never sits in a URL or history.
++//
++// Nothing here runs on its own: callers decide when to `load()` (the panel on
++// open, the note bubble only when the agent presses a control).
++import { ref, nextTick } from 'vue';
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
++import { adminRequest } from 'dashboard/api/protonAdmin';
++
++// Must match recording_access.ARCHIVE_NOTE_HEADER in the backend.
++const ARCHIVE_NOTE_HEADER = '[Call archived to Cloud Storage]';
++
++// Re-mint this long before the link's real expiry, so a click never races it.
++const EXPIRY_MARGIN_MS = 30000;
++
++export function isProtonCallArchiveNote(content) {
++  return (
++    typeof content === 'string' &&
++    content.trimStart().startsWith(ARCHIVE_NOTE_HEADER)
++  );
++}
++
++function absolute(path) {
++  if (!path) return '';
++  if (!path.startsWith('/')) return path;
++  const { backendUrl } = useProtonConfig();
++  return `${backendUrl || ''}${path}`;
++}
++
++// The backend puts the 429's wait (also its Retry-After header) in the body,
++// which is what adminRequest keeps on the error as `detail`.
++function retryMinutes(error) {
++  try {
++    const seconds = Number(
++      JSON.parse(error?.detail || '{}')?.detail?.retry_after_seconds
++    );
++    return seconds > 0 ? Math.ceil(seconds / 60) : null;
++  } catch (e) {
++    return null;
++  }
++}
++
++/**
++ * @param {{ conversationId: () => (number|string), messageId?: () => (number|string|null) }} opts
++ */
++export function useProtonCallRecording({ conversationId, messageId = () => null }) {
++  // idle (not asked yet) | available | deleted | unavailable (403/404/503/...)
++  const state = ref('idle');
++  const playUrl = ref('');
++  const transcriptUrl = ref('');
++  const transcriptToken = ref('');
++  const transcriptText = ref('');
++  const transcriptOpen = ref(false);
++  const canRetranscribe = ref(false);
++  const expiresAtMs = ref(0);
++  const message = ref('');
++  const busy = ref(false);
++  const audioEl = ref(null);
++  let requestSeq = 0;
++  let retriedAfterError = false;
++
++  function recordingPath() {
++    return `/calls/${encodeURIComponent(conversationId())}/recording`;
++  }
++
++  function noteQuery() {
++    const m = messageId();
++    return m ? `?message_id=${encodeURIComponent(m)}` : '';
++  }
++
++  function reset() {
++    requestSeq += 1;
++    state.value = 'idle';
++    playUrl.value = '';
++    transcriptUrl.value = '';
++    transcriptToken.value = '';
++    transcriptText.value = '';
++    transcriptOpen.value = false;
++    canRetranscribe.value = false;
++    expiresAtMs.value = 0;
++    message.value = '';
++  }
++
++  async function load() {
++    const mine = ++requestSeq;
++    message.value = '';
++    busy.value = true;
++    try {
++      const res = await adminRequest(`${recordingPath()}${noteQuery()}`);
++      if (mine !== requestSeq) return;
++      if (res?.status === 'available' && res.play_url) {
++        playUrl.value = absolute(res.play_url);
++        transcriptUrl.value = absolute(res.transcript_url || '');
++        transcriptToken.value = res.transcript_token || '';
++        canRetranscribe.value = !!res.can_retranscribe;
++        expiresAtMs.value = Date.parse(res.expires_at) || 0;
++        retriedAfterError = false;
++        state.value = 'available';
++      } else if (res?.status === 'deleted') {
++        state.value = 'deleted';
++      } else {
++        state.value = 'unavailable';
++      }
++    } catch (e) {
++      // 403 / 404 / 503 / network: no player, never an error banner.
++      if (mine === requestSeq) state.value = 'unavailable';
++    } finally {
++      if (mine === requestSeq) busy.value = false;
++    }
++  }
++
++  function isStale() {
++    return Date.now() > expiresAtMs.value - EXPIRY_MARGIN_MS;
++  }
++
++  // Swap in a fresh link without losing the listener's position.
++  async function remintAndResume(play) {
++    const audio = audioEl.value;
++    const at = audio ? audio.currentTime : 0;
++    await load();
++    await nextTick();
++    const fresh = audioEl.value;
++    if (!fresh || state.value !== 'available') return;
++    fresh.currentTime = at;
++    if (play) fresh.play().catch(() => {});
++  }
++
++  async function onPlay() {
++    if (!isStale()) return;
++    audioEl.value?.pause();
++    await remintAndResume(true);
++  }
++
++  async function onError() {
++    // An expired link mid-listen (a seek after five minutes) — re-mint once.
++    if (retriedAfterError || state.value !== 'available') return;
++    retriedAfterError = true;
++    await remintAndResume(false);
++  }
++
++  async function toggleTranscript() {
++    if (transcriptOpen.value) {
++      transcriptOpen.value = false;
++      return;
++    }
++    if (!transcriptText.value) {
++      if (isStale()) await load();
++      if (!transcriptUrl.value || !transcriptToken.value) return;
++      try {
++        const response = await fetch(transcriptUrl.value, {
++          headers: { 'x-recording-token': transcriptToken.value },
++        });
++        if (!response.ok) throw new Error(String(response.status));
++        transcriptText.value = await response.text();
++      } catch (e) {
++        message.value = 'Could not load the transcript.';
++        return;
++      }
++    }
++    transcriptOpen.value = true;
++  }
++
++  async function retranscribe() {
++    busy.value = true;
++    message.value = '';
++    try {
++      await adminRequest(`${recordingPath()}/retranscribe${noteQuery()}`, {
++        method: 'POST',
++      });
++      message.value =
++        'Re-transcription queued. The new transcript will appear as a private note shortly.';
++    } catch (e) {
++      if (e?.status === 429) {
++        const minutes = retryMinutes(e);
++        message.value = minutes
++          ? `Re-transcribe limit reached — try again in ${minutes} min`
++          : 'Re-transcribe limit reached — try again later';
++      } else if ([403, 404, 503].includes(e?.status)) {
++        state.value = 'unavailable';
++      } else {
++        message.value = 'Could not start re-transcription.';
++      }
++    } finally {
++      busy.value = false;
++    }
++  }
++
++  return {
++    state,
++    playUrl,
++    transcriptUrl,
++    transcriptText,
++    transcriptOpen,
++    canRetranscribe,
++    message,
++    busy,
++    audioEl,
++    reset,
++    load,
++    onPlay,
++    onError,
++    toggleTranscript,
++    retranscribe,
++  };
++}
 diff --git a/app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue b/app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue
 index 05bb9ac..e63f6d7 100644
 --- a/app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue

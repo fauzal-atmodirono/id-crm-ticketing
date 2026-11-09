@@ -1,0 +1,225 @@
+From: Proton CRM <build@proton.local>
+Subject: [PATCH 0095] conversation timeline: call-archive private notes render as an in-note call player (per-note link, lazy, no gs:// lines)
+
+diff --git a/app/javascript/dashboard/components-next/message/Message.vue b/app/javascript/dashboard/components-next/message/Message.vue
+index 0ef64ee..fecb2cb 100644
+--- a/app/javascript/dashboard/components-next/message/Message.vue
++++ b/app/javascript/dashboard/components-next/message/Message.vue
+@@ -41,6 +41,9 @@ import LocationBubble from './bubbles/Location.vue';
+ import CSATBubble from './bubbles/CSAT.vue';
+ import FormBubble from './bubbles/Form.vue';
+ import VoiceCallBubble from './bubbles/VoiceCall.vue';
++// 0095 call note player: a backend call-archive note renders as a player.
++import ProtonCallNoteBubble from 'dashboard/components/proton/ProtonCallNoteBubble.vue';
++import { isProtonCallArchiveNote } from 'dashboard/components/proton/useProtonCallRecording.js';
+ 
+ import MessageError from './MessageError.vue';
+ import ContextMenu from 'dashboard/modules/conversations/components/MessageContextMenu.vue';
+@@ -285,6 +288,12 @@ const shouldShowAvatar = computed(() => {
+ });
+ 
+ const componentToRender = computed(() => {
++  // 0095: the backend's "[Call archived to Cloud Storage]" private note shows
++  // a player for that call instead of its raw gs:// lines (stored text unchanged).
++  if (props.private && isProtonCallArchiveNote(props.content)) {
++    return ProtonCallNoteBubble;
++  }
++
+   if (props.isEmailInbox && !props.private) {
+     const emailInboxTypes = [MESSAGE_TYPES.INCOMING, MESSAGE_TYPES.OUTGOING];
+     if (emailInboxTypes.includes(props.messageType)) return EmailBubble;
+diff --git a/app/javascript/dashboard/components/proton/ProtonCallNoteBubble.vue b/app/javascript/dashboard/components/proton/ProtonCallNoteBubble.vue
+new file mode 100644
+index 0000000..52d1fff
+--- /dev/null
++++ b/app/javascript/dashboard/components/proton/ProtonCallNoteBubble.vue
+@@ -0,0 +1,189 @@
++<script setup>
++// ProtonCallNoteBubble.vue — OUR file (patch 0095). How a backend
++// "[Call archived to Cloud Storage]" private note renders in the timeline:
++// a player for THAT note's call, instead of its raw gs:// lines.
++//
++// Why per note: a conversation can hold more than one call (a callback, a
++// retried call on the same case). The sidebar panel (0094) only plays the
++// latest; each archive note here mints its own link with
++// `GET /calls/{id}/recording?message_id=<this note>`, which the backend only
++// honours for a private archive note it authored itself in this very
++// conversation, bound to it in GCS metadata (recording_access.
++// resolve_note_recording).
++//
++// Lazy: nothing is asked of the backend until the agent presses Play / View
++// transcript / Re-transcribe, so a long timeline with many call notes fires
++// no request on load; the audio never autoplays on render.
++//
++// The stored note text is unchanged in Chatwoot (the backend parses it); only
++// its rendering changes. The header and the "- audio|transcript: gs://..."
++// lines are never shown -- they mean nothing to an agent -- and any other line
++// in the note stays visible. Without `call_recording.listen` (403), with
++// retrieval off (404) or unconfigured (503) the bubble collapses to
++// "Call recording archived" with no paths and no controls.
++import { computed, nextTick } from 'vue';
++import BaseBubble from 'next/message/bubbles/Base.vue';
++import FormattedContent from 'next/message/bubbles/Text/FormattedContent.vue';
++import { useMessageContext } from 'dashboard/components-next/message/provider.js';
++import { useMapGetter } from 'dashboard/composables/store';
++import { useProtonCallRecording } from 'dashboard/components/proton/useProtonCallRecording.js';
++
++const GS_LINE = /^\s*-\s*(audio|transcript)\s*:\s*gs:\/\//i;
++const AUDIO_LINE = /^\s*-\s*audio\s*:\s*gs:\/\/[^/\s]+\/(\S+)\s*$/i;
++const TRANSCRIPT_LINE = /^\s*-\s*transcript\s*:\s*gs:\/\//i;
++
++const { content, id, conversationId, createdAt } = useMessageContext();
++
++const lines = computed(() => String(content.value || '').split('\n'));
++
++// Everything an agent can read: the note minus its header and gs:// lines.
++const visibleText = computed(() =>
++  lines.value
++    .slice(1)
++    .filter(line => !GS_LINE.test(line))
++    .join('\n')
++    .trim()
++);
++
++const audioObject = computed(() => {
++  const match = lines.value.map(l => l.match(AUDIO_LINE)).find(Boolean);
++  return match ? match[1] : '';
++});
++const hasTranscript = computed(() =>
++  lines.value.some(line => TRANSCRIPT_LINE.test(line))
++);
++
++const callTime = computed(() => {
++  const seconds = Number(createdAt.value);
++  if (!seconds) return '';
++  return new Date(seconds * 1000).toLocaleString(undefined, {
++    dateStyle: 'medium',
++    timeStyle: 'short',
++  });
++});
++
++// recording_duration is per conversation (the latest call's), so it is shown
++// only on the note whose audio the conversation attribute names.
++const currentChat = useMapGetter('getSelectedChat');
++const duration = computed(() => {
++  const attrs = currentChat.value?.custom_attributes || {};
++  if (!audioObject.value || attrs.call_recording_object !== audioObject.value) {
++    return '';
++  }
++  const total = Math.round(Number(attrs.recording_duration));
++  if (!(total > 0)) return '';
++  const secs = String(total % 60).padStart(2, '0');
++  return `${Math.floor(total / 60)}:${secs}`;
++});
++
++const heading = computed(() =>
++  ['📞 Call recording', callTime.value, duration.value]
++    .filter(Boolean)
++    .join(' · ')
++);
++
++const {
++  state,
++  playUrl,
++  transcriptUrl,
++  transcriptText,
++  transcriptOpen,
++  canRetranscribe,
++  message,
++  busy,
++  audioEl,
++  load,
++  onPlay,
++  onError,
++  toggleTranscript,
++  retranscribe,
++} = useProtonCallRecording({
++  conversationId: () => conversationId.value,
++  messageId: () => id.value,
++});
++
++const showControls = computed(
++  () => state.value === 'idle' || state.value === 'available'
++);
++const showRetranscribe = computed(
++  () => state.value === 'idle' || canRetranscribe.value
++);
++
++// First press mints this note's link, then starts playback (a user gesture,
++// so no autoplay is involved). Later plays go through the <audio> controls.
++async function playRecording() {
++  if (state.value === 'idle') await load();
++  if (state.value !== 'available') return;
++  await nextTick();
++  audioEl.value?.play().catch(() => {});
++}
++
++async function viewTranscript() {
++  if (state.value === 'idle') await load();
++  if (state.value !== 'available') return;
++  await toggleTranscript();
++}
++</script>
++
++<template>
++  <BaseBubble class="px-4 py-3" data-bubble-name="proton-call-note">
++    <div class="flex flex-col gap-2" data-proton-call-note>
++      <div v-if="state === 'unavailable'" class="text-sm font-medium">
++        📞 Call recording archived
++      </div>
++      <div v-else-if="state === 'deleted'" class="text-sm font-medium">
++        📞 Call recording deleted under the retention policy
++      </div>
++      <template v-else>
++        <div class="text-sm font-medium">{{ heading }}</div>
++        <audio
++          v-if="state === 'available'"
++          ref="audioEl"
++          controls
++          preload="none"
++          controlslist="nodownload"
++          class="w-full min-w-[16rem]"
++          :src="playUrl"
++          @play="onPlay"
++          @error="onError"
++        />
++        <div v-if="showControls" class="flex flex-wrap items-center gap-3 text-sm">
++          <button
++            v-if="state === 'idle'"
++            type="button"
++            class="font-medium hover:underline disabled:opacity-50"
++            :disabled="busy"
++            @click="playRecording"
++          >
++            ▶ Play recording
++          </button>
++          <button
++            v-if="hasTranscript && (state === 'idle' || transcriptUrl)"
++            type="button"
++            class="font-medium hover:underline disabled:opacity-50"
++            :disabled="busy"
++            @click="viewTranscript"
++          >
++            {{ transcriptOpen ? '📄 Hide transcript' : '📄 View transcript' }}
++          </button>
++          <button
++            v-if="showRetranscribe"
++            type="button"
++            class="hover:underline disabled:opacity-50"
++            :disabled="busy"
++            @click="retranscribe"
++          >
++            Re-transcribe
++          </button>
++        </div>
++        <pre
++          v-if="transcriptOpen"
++          class="max-h-64 overflow-y-auto whitespace-pre-wrap text-xs bg-n-background text-n-slate-12 rounded-lg p-2 border border-n-weak"
++          >{{ transcriptText }}</pre
++        >
++        <p v-if="message" class="text-xs">{{ message }}</p>
++      </template>
++      <FormattedContent v-if="visibleText" :content="visibleText" />
++    </div>
++  </BaseBubble>
++</template>

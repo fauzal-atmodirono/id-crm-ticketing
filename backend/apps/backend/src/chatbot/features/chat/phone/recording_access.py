@@ -241,7 +241,8 @@ class ObjectInfo:
 
 @dataclass(frozen=True)
 class Resolution:
-    """`status`: available | empty | deleted | mismatch | unverifiable."""
+    """`status`: available | empty | deleted | mismatch | unverifiable, plus
+    `missing` from `resolve_note_recording` (no such backend archive note)."""
 
     status: str
     recording: ArchivedRecording | None = None
@@ -320,7 +321,7 @@ async def _backend_note(
     return None
 
 
-async def resolve_recording(  # noqa: PLR0911, PLR0912, PLR0915 -- each return is one documented outcome
+async def resolve_recording(  # noqa: PLR0912 -- each return is one documented outcome
     conversation_id: str,
     conversation: dict[str, Any] | None,
     read_messages: MessagesReader | None,
@@ -390,7 +391,29 @@ async def resolve_recording(  # noqa: PLR0911, PLR0912, PLR0915 -- each return i
     if rec is None:
         return Resolution("deleted" if saw_deleted else "empty")
 
-    info = await stat(rec.audio_object)
+    return await _prove_note_recording(cid, conversation, rec, storage, bucket)
+
+
+async def _prove_note_recording(
+    cid: str,
+    conversation: dict[str, Any] | None,
+    rec: ArchivedRecording,
+    storage: RecordingStorage,
+    bucket: str,
+) -> Resolution:
+    """A backend archive note names `rec`; prove its objects belong to `cid`.
+
+    Bound objects must name `cid` in their metadata (else `mismatch`). An
+    unbound (legacy) audio object is accepted only when its CallSid is one of
+    this conversation's phone sessions, and is then backfilled -- or refused as
+    `unverifiable` when the backfill is not permitted. The transcript follows
+    the same rule but is dropped, never fatal."""
+    import asyncio  # noqa: PLC0415
+
+    def bound(info: ObjectInfo) -> str | None:
+        return (info.metadata or {}).get("conversation_id")
+
+    info = await asyncio.to_thread(storage.stat, bucket, rec.audio_object)
     if info is None:
         return Resolution("deleted")
     owner = bound(info)
@@ -409,7 +432,7 @@ async def resolve_recording(  # noqa: PLR0911, PLR0912, PLR0915 -- each return i
         _log.info("call_recording_legacy_backfilled", conversation_id=cid)
     transcript = rec.transcript_object
     if transcript:
-        t_info = await stat(transcript)
+        t_info = await asyncio.to_thread(storage.stat, bucket, transcript)
         t_owner = bound(t_info) if t_info else None
         if t_info is None or (t_owner is not None and t_owner != cid) or (t_owner is None and not await asyncio.to_thread(
             storage.set_metadata,
@@ -421,6 +444,55 @@ async def resolve_recording(  # noqa: PLR0911, PLR0912, PLR0915 -- each return i
     return Resolution(
         "available", ArchivedRecording(rec.audio_object, transcript, "note"), info.size
     )
+
+
+async def resolve_note_recording(
+    conversation_id: str,
+    message_id: int,
+    conversation: dict[str, Any] | None,
+    read_messages: MessagesReader | None,
+    storage: RecordingStorage,
+    backend_sender: SenderIdentity | None,
+    *,
+    bucket: str,
+    prefix: str,
+) -> Resolution:
+    """The recording named by ONE archive note (`message_id`) -- the in-note
+    player, for conversations that hold more than one call.
+
+    The message is read from this conversation's own message list (Chatwoot's
+    `before=<id+1>` page ends at it), so a message id belonging to another
+    conversation is simply not found. It must be a private note authored by the
+    backend's own identity (`ApiTokenIdentity`; unknown identity -> refused)
+    that parses as an archive note in this bucket/prefix. Its objects are then
+    proven exactly as the newest-note path proves them
+    (`_prove_note_recording`). Status `missing` (no such backend archive note
+    here), else as `resolve_recording`. The attribute hint is never consulted:
+    the caller asked for this note's call, not the latest one."""
+    cid = str(conversation_id)
+    if not bucket or read_messages is None or backend_sender is None:
+        return Resolution("missing")
+    try:
+        backend = await backend_sender()
+        if backend is None:
+            _log.warning("call_recording_backend_identity_unknown", conversation_id=cid)
+            return Resolution("missing")
+        page = _message_list(await read_messages(cid, int(message_id) + 1))
+    except Exception as exc:
+        _log.warning("call_recording_note_read_failed", conversation_id=cid, error=str(exc))
+        return Resolution("missing")
+    msg = next((m for m in page if str(m.get("id")) == str(message_id)), None)
+    if (
+        msg is None
+        or not msg.get("private")
+        or message_sender(msg) != backend
+        or (msg.get("conversation_id") is not None and str(msg.get("conversation_id")) != cid)
+    ):
+        return Resolution("missing")
+    rec = parse_archive_note(str(msg.get("content") or ""), bucket, prefix)
+    if rec is None:
+        return Resolution("missing")
+    return await _prove_note_recording(cid, conversation, rec, storage, bucket)
 
 
 async def object_bound_to(

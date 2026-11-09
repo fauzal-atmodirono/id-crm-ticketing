@@ -84,6 +84,7 @@ class World:
             }
         }
         self.messages: dict[str, list[dict[str, Any]]] = {}
+        self.message_reads: list[tuple[str, Any]] = []
         self.notes: list[tuple[str, str]] = []
         self.storage = FakeStorage()
         self.audit = InMemoryAuditLog()
@@ -94,7 +95,12 @@ class World:
         return self.conversations.get(cid)
 
     async def read_messages(self, cid: str, before=None):
-        return {"payload": self.messages.get(cid, [])} if before is None else {"payload": []}
+        # Chatwoot's MessageFinder: `before` = the 20 newest with id < before.
+        msgs = self.messages.get(cid, [])
+        if before is not None:
+            msgs = sorted((m for m in msgs if (m.get("id") or 0) < int(before)), key=lambda m: m["id"])[-20:]
+        self.message_reads.append((cid, before))
+        return {"payload": msgs}
 
     async def post_note(self, cid: str, text: str):
         self.notes.append((cid, text))
@@ -759,3 +765,215 @@ async def test_concurrent_requests_all_fail_when_the_audit_row_fails(settings, w
     assert (a.status_code, b.status_code) == (503, 503)
     assert world.storage.reads == []
     assert audit.calls == 1
+
+
+# --- a specific archive note: ?message_id= (brief 7, the in-note player) ------------
+
+AUDIO_2 = f"{PREFIX}/2026-11-10/CA2.mp3"
+TEXT_2 = f"{PREFIX}/2026-11-10/CA2.txt"
+NOTE_2 = (
+    "[Call archived to Cloud Storage]\n"
+    f"- audio: gs://{BUCKET}/{AUDIO_2}\n- transcript: gs://{BUCKET}/{TEXT_2}"
+)
+
+
+def _backend_note(mid: int, content: str = NOTE, **over) -> dict[str, Any]:
+    return {
+        "id": mid,
+        "private": True,
+        "content": content,
+        "sender": {"type": "user", "id": 900},
+        **over,
+    }
+
+
+def _two_calls(world: World) -> None:
+    """Conversation 42 holds two calls; the attribute hint names neither so
+    only the per-note path can find the first."""
+    world.conversations["42"]["custom_attributes"] = {}
+    world.storage.objects[AUDIO_2] = b"second-call-audio"
+    world.storage.objects[TEXT_2] = b"CUSTOMER: callback"
+    world.storage.meta[AUDIO_2] = {"conversation_id": "42", "call_sid": "CA2"}
+    world.storage.meta[TEXT_2] = {"conversation_id": "42", "call_sid": "CA2"}
+    world.messages["42"] = [
+        _backend_note(9),
+        {"id": 10, "private": False, "content": "hi", "sender": {"type": "contact", "id": 3}},
+        _backend_note(11, NOTE_2),
+    ]
+
+
+def _note_meta(client: TestClient, mid: int | str, cid: str = "42"):
+    return client.get(f"/calls/{cid}/recording?message_id={mid}", headers=SESSION)
+
+
+def test_a_backend_archive_note_mints_its_own_link(settings, world) -> None:
+    _two_calls(world)
+    client = _client(settings, world)
+    res = _note_meta(client, 9)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "available" and body["message_id"] == 9
+    assert client.get(body["play_url"]).content == AUDIO_BYTES
+    transcript = client.get(
+        body["transcript_url"], headers={"X-Recording-Token": body["transcript_token"]}
+    )
+    assert transcript.text == "CUSTOMER: hello"
+
+
+def test_two_archive_notes_in_one_conversation_each_mint_their_own_object(
+    settings, world
+) -> None:
+    _two_calls(world)
+    client = _client(settings, world)
+    first = _note_meta(client, 9).json()
+    second = _note_meta(client, 11).json()
+    assert client.get(first["play_url"]).content == AUDIO_BYTES
+    assert client.get(second["play_url"]).content == b"second-call-audio"
+    t2 = client.get(
+        second["transcript_url"], headers={"X-Recording-Token": second["transcript_token"]}
+    )
+    assert t2.text == "CUSTOMER: callback"
+
+
+def test_the_note_is_read_from_the_page_ending_at_it(settings, world) -> None:
+    _two_calls(world)
+    _note_meta(_client(settings, world), 9)
+    assert world.message_reads == [("42", 10)]
+
+
+async def test_each_minted_note_link_audits_its_own_object(settings, world) -> None:
+    _two_calls(world)
+    client = _client(settings, world)
+    client.get(_note_meta(client, 9).json()["play_url"])
+    client.get(_note_meta(client, 11).json()["play_url"])
+    rows = await _rows(world.audit, "call_recording_play")
+    assert sorted(r.after["object"] for r in rows) == sorted([AUDIO, AUDIO_2])
+
+
+def test_a_note_written_by_an_agent_is_404(settings, world) -> None:
+    _two_calls(world)
+    world.messages["42"][0] = _backend_note(9, sender={"type": "user", "id": 5})
+    assert _note_meta(_client(settings, world), 9).status_code == 404
+
+
+def test_a_message_id_from_another_conversation_is_404(settings, world) -> None:
+    _two_calls(world)
+    world.conversations["43"] = {"id": 43, "inbox_id": 5, "custom_attributes": {}}
+    world.messages["43"] = [{"id": 2, "private": False, "content": "x", "sender": {"type": "contact", "id": 1}}]
+    # message 9 lives in conversation 42; asking conversation 43 for it finds nothing
+    assert _note_meta(_client(settings, world), 9, cid="43").status_code == 404
+
+
+def test_a_message_claiming_another_conversation_is_404(settings, world) -> None:
+    _two_calls(world)
+    world.messages["42"][0] = _backend_note(9, conversation_id=43)
+    assert _note_meta(_client(settings, world), 9).status_code == 404
+
+
+def test_a_note_whose_object_is_bound_to_another_conversation_is_404(settings, world) -> None:
+    _two_calls(world)
+    world.storage.meta[AUDIO] = {"conversation_id": "43", "call_sid": "CA1"}
+    assert _note_meta(_client(settings, world), 9).status_code == 404
+
+
+def test_a_public_message_is_404(settings, world) -> None:
+    _two_calls(world)
+    world.messages["42"][0] = _backend_note(9, private=False)
+    assert _note_meta(_client(settings, world), 10).status_code == 404
+    assert _note_meta(_client(settings, world), 9).status_code == 404
+
+
+def test_a_private_note_that_is_not_an_archive_note_is_404(settings, world) -> None:
+    _two_calls(world)
+    world.messages["42"][0] = _backend_note(9, "Customer asked about the X70 price")
+    assert _note_meta(_client(settings, world), 9).status_code == 404
+
+
+def test_an_unknown_message_id_is_404(settings, world) -> None:
+    _two_calls(world)
+    assert _note_meta(_client(settings, world), 999).status_code == 404
+
+
+def test_an_unknown_backend_identity_refuses_the_note_path(settings, world) -> None:
+    _two_calls(world)
+
+    async def _nobody():
+        return None
+
+    world.backend = _nobody  # type: ignore[method-assign]
+    assert _note_meta(_client(settings, world), 9).status_code == 404
+
+
+def test_a_legacy_unbound_note_object_with_a_matching_sid_is_bound_and_plays(
+    settings, world
+) -> None:
+    _two_calls(world)
+    world.storage.meta.pop(AUDIO)
+    world.storage.meta.pop(TEXT)
+    client = _client(settings, world)
+    body = _note_meta(client, 9).json()
+    assert body["status"] == "available"
+    assert world.storage.meta[AUDIO]["conversation_id"] == "42"
+    assert client.get(body["play_url"]).content == AUDIO_BYTES
+
+
+def test_a_legacy_unbound_note_object_for_another_call_is_404(settings, world) -> None:
+    _two_calls(world)
+    world.storage.meta.pop(AUDIO_2)  # CA2 is not this conversation's session (phone-CA1)
+    assert _note_meta(_client(settings, world), 11).status_code == 404
+    assert AUDIO_2 not in world.storage.meta
+
+
+def test_a_note_transcript_bound_elsewhere_is_dropped(settings, world) -> None:
+    _two_calls(world)
+    world.storage.meta[TEXT] = {"conversation_id": "43"}
+    body = _note_meta(_client(settings, world), 9).json()
+    assert body["status"] == "available" and "transcript_url" not in body
+
+
+def test_a_note_whose_audio_was_deleted_reports_deleted(settings, world) -> None:
+    _two_calls(world)
+    del world.storage.objects[AUDIO]
+    body = _note_meta(_client(settings, world), 9).json()
+    assert body["status"] == "deleted" and "play_url" not in body
+
+
+@pytest.mark.parametrize("mid", ["abc", "-1", "9.0", "1" * 13])
+def test_a_non_numeric_message_id_is_refused(settings, world, mid) -> None:
+    _two_calls(world)
+    assert _note_meta(_client(settings, world), mid).status_code == 422
+
+
+def test_the_note_path_keeps_permission_and_scope(settings, world) -> None:
+    _two_calls(world)
+    assert _note_meta(_client(settings, world, perms={"cases.view"}), 9).status_code == 403
+    assert _client(settings, world).get("/calls/42/recording?message_id=9").status_code == 401
+
+
+def test_without_message_id_the_newest_note_still_wins(settings, world) -> None:
+    _two_calls(world)
+    body = _meta(_client(settings, world))
+    assert "message_id" not in body
+    assert _client(settings, world).get(body["play_url"]).content == b"second-call-audio"
+
+
+async def test_retranscribe_a_specific_note(settings, world) -> None:
+    _two_calls(world)
+    res = _client(settings, world).post(
+        "/calls/42/recording/retranscribe?message_id=9", headers=SESSION
+    )
+    assert res.status_code == 202, res.text
+    assert world.transcribed == [(AUDIO_BYTES, "audio/mp3")]
+    _cid, text = world.notes[0]
+    assert text.startswith("[Re-transcribed]") and "note #9" in text
+    rows = await _rows(world.audit, "call_recording_retranscribe")
+    assert rows[0].after == {"object": AUDIO}
+
+
+def test_retranscribe_of_a_foreign_note_is_404(settings, world) -> None:
+    _two_calls(world)
+    world.messages["42"][0] = _backend_note(9, sender={"type": "user", "id": 5})
+    res = _client(settings, world).post(
+        "/calls/42/recording/retranscribe?message_id=9", headers=SESSION
+    )
+    assert res.status_code == 404 and world.transcribed == []

@@ -210,8 +210,13 @@ class PhoneBridge:
         self._caller_confirmed = (
             caller_context is not None and caller_context.source != SOURCE_SPOKEN
         )
-        # The last told-number lookup, waiting for a matching name.
+        # The number contact writes are pinned to (fix round 2): the one that
+        # was confirmed, never a number told later in the call.
+        self._confirmed_phone: str | None = self._caller_phone if self._caller_confirmed else None
+        # The last told-number lookup and whether its one name check (R38)
+        # has been used.
         self._spoken_pending: CallerContext | None = None
+        self._spoken_try_used = False
         # Set once the caller is confirmed (or no longer worth waiting for); a
         # call with no confirmed number defers its conversation create until
         # then, so the conversation lands on the right contact.
@@ -391,10 +396,16 @@ class PhoneBridge:
             params["caller_name"] = who[:80]
             params["vehicle"] = vehicle[:80]
             params["dealer"] = dealer[:80]
-            if self._caller_phone and self._caller_source != SOURCE_CALLER_ID:
+            if self._caller_phone and (
+                self._caller_source != SOURCE_CALLER_ID or not self._caller_confirmed
+            ):
                 # Told by the caller / chosen in the demo console, not proven
                 # by the network: the card says so (fork 0091).
                 params["caller_unverified"] = "1"
+            if self._caller_phone and self._caller_confirmed:
+                # Only a confirmed number may auto-open its Customer 360 on
+                # Accept (fork 0091); an unconfirmed one is a stranger's.
+                params["caller_confirmed"] = "1"
         return {k: v for k, v in params.items() if v}
 
     # --- caller context (2026-11-09) ---------------------------------------
@@ -531,30 +542,49 @@ class PhoneBridge:
         single = self._single_candidate()
         return (single.name or None) if single is not None else None, self._caller_phone
 
+    def _attach_kw(self, customer_phone: str | None) -> dict[str, bool]:
+        """`attach_by_phone=True` (the adapter may attach to the contact that
+        owns the number) only for a confirmed number. Passed as a keyword
+        only when true, so log ports without the parameter are untouched."""
+        if customer_phone and self._caller_confirmed and customer_phone == self._confirmed_phone:
+            return {"attach_by_phone": True}
+        return {}
+
     def _confirm_spoken(self, said_name: str) -> bool:
         """Confirm the pending told number if exactly one of its contacts has
         a first name matching what the caller said (server-side, never the
         model's judgement)."""
         ctx = self._spoken_pending
-        if ctx is None or not said_name:
+        if ctx is None or not said_name or self._spoken_try_used:
             return False
-        hits = [c for c in ctx.candidates if names_match(said_name, c.first_name)]
+        # R38: one name check per looked-up number, whatever its outcome.
+        self._spoken_try_used = True
+        hits = [c for c in ctx.candidates if names_match(said_name, c.name)]
         if len(hits) != 1:
+            if self._caller_service is not None:
+                self._caller_service.record_spoken_failure(ctx.phone)
             return False
         self._caller_ctx = CallerContext(phone=ctx.phone, source=SOURCE_SPOKEN, candidates=hits)
         self._caller_phone = ctx.phone
         self._caller_confirmed = True
+        self._confirmed_phone = ctx.phone
         self._caller_known.set()
         return True
 
     def _unconfirm_spoken(self) -> None:
-        """Drop a told-number confirmation that has not been used yet (the
-        conversation is not created). Once it is, the contact is fixed."""
-        if self._caller_source != SOURCE_SPOKEN or self.ticket_id is not None:
+        """Drop a told-number confirmation (a new number was told, or the
+        caller's name contradicts it). From here on nothing is written to any
+        contact and no record name is shown next to the number. If the
+        conversation already exists it stays on the contact it was created
+        on -- Chatwoot cannot move it -- but it gets no further contact
+        writes."""
+        if self._caller_source != SOURCE_SPOKEN:
             return
         self._caller_ctx = None
         self._caller_confirmed = False
-        self._caller_known.clear()
+        self._confirmed_phone = None
+        if self.ticket_id is None:
+            self._caller_known.clear()
 
     async def _deferred_ticket_create(self, call_sid: str) -> None:
         """No caller ID: give the caller a chance to say their number
@@ -595,10 +625,11 @@ class PhoneBridge:
         self._caller_lookups += 1
         # A new number replaces whatever was told before; an unused
         # confirmation of an earlier number is dropped.
+        self._caller_source = SOURCE_SPOKEN
         self._unconfirm_spoken()
         self._spoken_pending = None
+        self._spoken_try_used = False
         self._caller_phone = phone
-        self._caller_source = SOURCE_SPOKEN
         matched = False
         if self._caller_service.allow_spoken_lookup(phone):
             ctx = await self._caller_service.lookup(phone, SOURCE_SPOKEN)
@@ -627,12 +658,11 @@ class PhoneBridge:
             return {"error": "unknown tool: save_caller_details"}
         details = parse_caller_details(dict(args))
         if details.name and self._caller_source == SOURCE_SPOKEN and self._spoken_pending:
-            # A told number: the name the caller gives confirms it, or (if it
-            # contradicts a not-yet-used confirmation) undoes it.
+            # A told number: a name that contradicts its confirmation undoes
+            # it. It never CONFIRMS one -- the lookup's caller_name was the
+            # one try (R38).
             single = self._single_candidate() if self._caller_confirmed else None
-            if single is None:
-                self._confirm_spoken(details.name)
-            elif not names_match(details.name, single.first_name):
+            if single is not None and not names_match(details.name, single.name):
                 self._unconfirm_spoken()
         self.caller_details = self.caller_details.merged(details)
         if details.dealer_text:
@@ -681,7 +711,12 @@ class PhoneBridge:
             source=self._caller_source,
             details=self.caller_details,
             dealer_slug=self._caller_dealer_slug,
-            contact_writes=self._caller_confirmed,
+            # Pinned: only the number that was confirmed, never a later one.
+            contact_writes=(
+                self._caller_confirmed
+                and self._caller_phone is not None
+                and self._caller_phone == self._confirmed_phone
+            ),
         )
         # No dealer_<slug> label here, not even on a handoff (controller
         # ruling 9 Nov 2026): reports count that label as "escalated to
@@ -824,6 +859,7 @@ class PhoneBridge:
                 subject=f"[phone] Conversation {session_id}",
                 customer_name=customer_name,
                 customer_phone=customer_phone,
+                **self._attach_kw(customer_phone),
             )
         except Exception as e:
             _log.error("phone_ticket_create_failed", session_id=session_id, error=str(e))
@@ -1317,6 +1353,7 @@ class PhoneBridge:
             subject=f"[phone] Conversation {session_id}",
             customer_name=customer_name,
             customer_phone=customer_phone,
+            **self._attach_kw(customer_phone),
         )
         if ticket_id == session_id:
             _log.error(

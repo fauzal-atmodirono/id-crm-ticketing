@@ -71,6 +71,13 @@ def test_accept_opens_conversation_and_customer360_in_the_click(tree):
     assert '@click="accept"' in panel
 
 
+def test_customer360_auto_opens_only_for_a_confirmed_caller(tree):
+    sp = (tree / SP).read_text()
+    assert "params.get('caller_confirmed') === '1'" in sp
+    panel = (tree / PANEL).read_text()
+    assert "if (incoming.value?.callerConfirmed) openCustomer360();" in panel
+
+
 def test_customer360_searches_its_query_on_load(tree):
     src = (tree / C360).read_text()
     assert "mounted() {" in src

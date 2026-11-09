@@ -497,6 +497,8 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         session_id: str,
         customer_name: str | None = None,
         customer_phone: str | None = None,
+        *,
+        attach_by_phone: bool = False,
     ) -> int | None:
         """Return a Chatwoot contact id for the session, creating one if needed.
 
@@ -528,27 +530,28 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         for contact in (search or {}).get("payload") or []:
             if contact.get("identifier") == session_id and contact.get("id") is not None:
                 return int(contact["id"])
-        if customer_phone and self._settings.phone_caller_context_enabled:
+        if customer_phone and attach_by_phone and session_id.startswith("phone-"):
             # 2026-11-09 caller context: Chatwoot keeps phone_number unique per
             # account, so a create carrying a number that already belongs to a
-            # customer 422s. That customer is who is calling -- attach to
-            # them (exact digits-only, country-code tolerant match, the same
-            # rule Customer 360 uses), rather than leaving the conversation
-            # without a contact. Gated on the flag because OTHER callers pass a
-            # phone too (the WhatsApp/web escalation paths): with the flag
-            # off, their 422 still ends in "no contact", exactly as before;
-            # with it on they attach to the number's contact as well (the
-            # same customer), and _existing_conversation_id keeps them out of
-            # that contact's open phone cases.
-            from chatbot.features.chat.customer360_router import (  # noqa: PLC0415 -- avoid an import cycle
-                _phones_match,
-            )
+            # customer 422s. When -- and ONLY when -- the phone bridge vouches
+            # that this is the caller's own number (network caller ID, an
+            # allowlisted demo number, or a told number whose name matched),
+            # attach to that customer: exact digits-only, country-code
+            # tolerant match, the rule Customer 360 uses. Every other caller
+            # passing a phone (web/WhatsApp leads, book_test_drive: a number
+            # the visitor TYPED) never sets attach_by_phone, so its 422 still
+            # ends in "no contact", exactly as before.
+            return await self._contact_id_by_phone(customer_phone)
+        return None
 
-            for contact in await self.search_contacts(customer_phone):
-                if contact.get("id") is not None and _phones_match(
-                    customer_phone, contact.get("phone_number")
-                ):
-                    return int(contact["id"])
+    async def _contact_id_by_phone(self, phone: str) -> int | None:
+        from chatbot.features.chat.customer360_router import (  # noqa: PLC0415 -- avoid an import cycle
+            _phones_match,
+        )
+
+        for contact in await self.search_contacts(phone):
+            if contact.get("id") is not None and _phones_match(phone, contact.get("phone_number")):
+                return int(contact["id"])
         return None
 
     async def update_contact(self, contact_id: int, payload: dict[str, Any]) -> bool:
@@ -638,6 +641,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         *,
         search_existing: bool = True,
         additional_attributes: dict[str, Any] | None = None,
+        attach_by_phone: bool = False,
     ) -> str:
         """Return the conversation id for a session, creating it in the API-channel
         inbox if it does not exist yet.
@@ -653,7 +657,9 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         """
         if session_id in self._conv_by_session:
             return self._conv_by_session[session_id]
-        contact_id = await self._find_or_create_contact(session_id, customer_name, customer_phone)
+        contact_id = await self._find_or_create_contact(
+            session_id, customer_name, customer_phone, attach_by_phone=attach_by_phone
+        )
         own_session_only = session_id.startswith("phone-") and bool(customer_phone)
         if own_session_only:
             additional_attributes = {**(additional_attributes or {}), "session_id": session_id}
@@ -958,8 +964,14 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         subject: str,  # noqa: ARG002
         customer_name: str | None,
         customer_phone: str | None,
+        *,
+        attach_by_phone: bool = False,
     ) -> str:
-        return await self._find_or_create_conversation(session_id, customer_name, customer_phone)
+        """``attach_by_phone`` (phone bridge only): the number is the caller's
+        own, so a phone-number conflict attaches to that contact."""
+        return await self._find_or_create_conversation(
+            session_id, customer_name, customer_phone, attach_by_phone=attach_by_phone
+        )
 
     async def rotate_conversation_ticket(
         self,
@@ -975,7 +987,9 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             session_id, customer_name, customer_phone, search_existing=False
         )
 
-    async def find_conversation_ticket(self, session_id: str) -> str | None:
+    async def find_conversation_ticket(  # noqa: PLR0911 -- one return per lookup outcome
+        self, session_id: str, *, phone: str | None = None
+    ) -> str | None:
         """Resolve an EXISTING conversation for this session WITHOUT ever
         creating one (Package C Task 5 review fix, Critical 2). Used by the
         recording-status callback, which can fire well after the call ends
@@ -1018,6 +1032,20 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             if contact.get("identifier") == session_id and contact.get("id") is not None:
                 contact_id = int(contact["id"])
                 break
+        if contact_id is None and phone and session_id.startswith("phone-"):
+            # A call attached to an existing customer's contact has no
+            # phone-<CallSid> contact: the caller's number finds the contact,
+            # and only the session stamp (never "latest conversation") picks
+            # the conversation.
+            contact_id = await self._contact_id_by_phone(phone)
+            if contact_id is None:
+                return None
+            res = await self._request("GET", f"/contacts/{contact_id}/conversations", None)
+            for conv in _conversations_from(res):
+                if (conv.get("additional_attributes") or {}).get("session_id") == session_id:
+                    cid = conv.get("id")
+                    return str(cid) if cid is not None else None
+            return None
         if contact_id is None:
             return None
         res = await self._request("GET", f"/contacts/{contact_id}/conversations", None)

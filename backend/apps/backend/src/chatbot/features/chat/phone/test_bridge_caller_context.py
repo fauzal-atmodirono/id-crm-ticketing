@@ -29,11 +29,19 @@ class _Log(_FakeLog):
     def __init__(self) -> None:
         super().__init__()
         self.customers: list[tuple[str | None, str | None]] = []
+        self.attach: list[bool] = []
 
     async def ensure_conversation_ticket(
-        self, session_id: str, subject: str, customer_name: str | None, customer_phone: str | None
+        self,
+        session_id: str,
+        subject: str,
+        customer_name: str | None,
+        customer_phone: str | None,
+        *,
+        attach_by_phone: bool = False,
     ) -> str:
         self.customers.append((customer_name, customer_phone))
+        self.attach.append(attach_by_phone)
         return await super().ensure_conversation_ticket(
             session_id, subject, customer_name, customer_phone
         )
@@ -45,9 +53,13 @@ class _Service:
         self.lookups: list[tuple[str, str]] = []
         self.saves: list[dict[str, Any]] = []
         self.allow = True
+        self.failures: list[str] = []
 
     def allow_spoken_lookup(self, phone: str) -> bool:
         return self.allow
+
+    def record_spoken_failure(self, phone: str) -> None:
+        self.failures.append(phone)
 
     async def lookup(self, phone: str, source: str) -> CallerContext:
         self.lookups.append((phone, source))
@@ -278,7 +290,9 @@ async def test_unknown_number_and_wrong_name_look_the_same() -> None:
     await bridge.finalize()
 
 
-async def test_a_later_matching_name_confirms_the_told_number() -> None:
+async def test_one_confirmation_try_per_lookup() -> None:
+    """R38: the lookup's own caller_name is the one try; a later name (from
+    save_caller_details) cannot keep guessing against the same number."""
     known = CallerContext.from_candidates(PHONE, "spoken", [AHMAD])
     svc = _Service(known)
     calls = [
@@ -289,7 +303,65 @@ async def test_a_later_matching_name_confirms_the_told_number() -> None:
     await bridge.handle_twilio(_start())
     await bridge.pump()
     await bridge.finalize()
-    assert log.customers == [("Ahmad bin Ali", PHONE)]
+    assert log.customers == [(None, None)]
+    assert svc.failures == [PHONE]  # the failed try counts against the number
+
+
+async def test_a_successful_lookup_is_not_counted_as_a_failure() -> None:
+    svc = _Service(CallerContext.from_candidates(PHONE, "spoken", [AHMAD]))
+    bridge, _, _ = _bridge([_lookup(1, "0000000101", "Ahmad")], service=svc, ctx=None)
+    await bridge.pump()
+    assert svc.failures == []
+    await bridge.finalize()
+
+
+async def test_confirmation_is_pinned_to_the_number_that_was_confirmed() -> None:
+    """Item 1: lookup A matched -> conversation on A -> lookup B with a wrong
+    name. B must get no contact writes, and nothing may pair A's name with
+    B's number."""
+    other = "+60000000102"
+
+    class _Two(_Service):
+        async def lookup(self, phone: str, source: str) -> CallerContext:
+            self.lookups.append((phone, source))
+            if phone == PHONE:
+                return CallerContext.from_candidates(PHONE, "spoken", [AHMAD])
+            return CallerContext.from_candidates(
+                other, "spoken", [{**AHMAD, "contact_id": 12, "name": "Siti Aminah"}]
+            )
+
+    svc = _Two()
+    bridge, live, log = _bridge([_lookup(1, "0000000101", "Ahmad")], service=svc, ctx=None)
+    await bridge.handle_twilio(_start())
+    await bridge.pump()
+    await asyncio.sleep(0.05)
+    assert log.customers == [("Ahmad bin Ali", PHONE)] and bridge.ticket_id == "T-1"
+    # second lookup, after the conversation exists
+    live._scripted = [_lookup(2, "0000000102", "Ahmad")]
+    await bridge.pump()
+    assert live.tool_responses[-1][2]["status"] == "no_match"
+    bridge.handoff = {"reason": "r", "summary": "s"}
+    params = bridge._handoff_parameters()
+    assert params.get("caller_name", "") != "Ahmad bin Ali" or params.get("caller") == PHONE
+    assert "caller_confirmed" not in params
+    await bridge.finalize()
+    for save in svc.saves:
+        if save["contact_writes"]:
+            assert save["phone"] == PHONE  # contact writes only ever for A
+
+
+async def test_attach_by_phone_only_for_a_confirmed_number() -> None:
+    ctx = CallerContext.from_candidates(PHONE, "caller_id", [AHMAD])
+    bridge, _, log = _bridge([], service=_Service(ctx), ctx=ctx)
+    await bridge.handle_twilio(_start())
+    await bridge.finalize()
+    assert log.attach == [True]
+    svc = _Service(CallerContext.from_candidates(PHONE, "spoken", [AHMAD]))
+    bridge2, _, log2 = _bridge([_lookup(1, "0000000101", "Siti")], service=svc, ctx=None)
+    await bridge2.handle_twilio(_start())
+    await bridge2.pump()
+    await bridge2.finalize()
+    assert log2.attach == [False]
 
 
 async def test_a_later_lookup_drops_an_unattached_confirmation() -> None:
@@ -352,10 +424,14 @@ async def test_rate_limited_number_answers_no_match_without_a_lookup() -> None:
 def test_ring_marks_a_spoken_number_unverified() -> None:
     bridge, _, _ = _bridge([], service=_Service(), ctx=CallerContext(PHONE, "spoken"))
     bridge.handoff = {"reason": "r", "summary": "s"}
-    assert bridge._handoff_parameters()["caller_unverified"] == "1"
+    params = bridge._handoff_parameters()
+    assert params["caller_unverified"] == "1"
+    assert "caller_confirmed" not in params  # the card must not auto-open Customer 360
     verified, _, _ = _bridge([], service=_Service(), ctx=CallerContext(PHONE, "caller_id"))
     verified.handoff = {"reason": "r", "summary": "s"}
-    assert "caller_unverified" not in verified._handoff_parameters()
+    vparams = verified._handoff_parameters()
+    assert "caller_unverified" not in vparams
+    assert vparams["caller_confirmed"] == "1"
 
 
 async def test_no_caller_id_creates_anonymously_after_the_wait() -> None:
@@ -522,7 +598,10 @@ async def test_a_failed_phone_note_is_retried_at_finalize() -> None:
     call = ToolCall(id="t1", name="request_human_handoff", args={"reason": "r", "summary": "s"})
     log = _FailFirstNoteLog()
     bridge, _, _ = _bridge(
-        [call], service=_Service(ctx), ctx=ctx, log=log,
+        [call],
+        service=_Service(ctx),
+        ctx=ctx,
+        log=log,
         settings=_settings(handoff_note_enabled=True),
     )
     await bridge.handle_twilio(_start())
@@ -537,12 +616,13 @@ async def test_a_failed_phone_note_is_retried_at_finalize() -> None:
 async def test_an_unverified_number_is_marked_in_the_note() -> None:
     for source in ("spoken", "web_call_as"):
         ctx = CallerContext.from_candidates(PHONE, source, [AHMAD])
-        call = ToolCall(
-            id="t1", name="request_human_handoff", args={"reason": "r", "summary": "s"}
-        )
+        call = ToolCall(id="t1", name="request_human_handoff", args={"reason": "r", "summary": "s"})
         log = _NoteLog()
         bridge, _, _ = _bridge(
-            [call], service=_Service(ctx), ctx=ctx, log=log,
+            [call],
+            service=_Service(ctx),
+            ctx=ctx,
+            log=log,
             settings=_settings(handoff_note_enabled=True),
         )
         await bridge.handle_twilio(_start())
@@ -556,7 +636,10 @@ async def test_a_caller_id_number_is_not_marked_unverified() -> None:
     call = ToolCall(id="t1", name="request_human_handoff", args={"reason": "r", "summary": "s"})
     log = _NoteLog()
     bridge, _, _ = _bridge(
-        [call], service=_Service(ctx), ctx=ctx, log=log,
+        [call],
+        service=_Service(ctx),
+        ctx=ctx,
+        log=log,
         settings=_settings(handoff_note_enabled=True),
     )
     await bridge.handle_twilio(_start())

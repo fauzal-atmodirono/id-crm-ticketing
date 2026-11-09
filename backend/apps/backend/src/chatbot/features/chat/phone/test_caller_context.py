@@ -213,23 +213,43 @@ def test_model_view_has_no_open_case_count() -> None:
 
 
 @pytest.mark.parametrize(
-    ("said", "first", "want"),
+    ("said", "record", "want"),
     [
-        ("Ahmad", "Ahmad", True),
+        ("Ahmad", "Ahmad bin Ali", True),
         ("ahmad bin ali", "Ahmad", True),
         ("Mad", "Ahmad", False),
         ("Ahmed", "Ahmad", False),
-        ("Nurul Huda", "Nurul", True),
-        ("Nur", "Nurul", True),  # prefix-tolerant (a short form of the same name)
         ("Siti", "Ahmad", False),
         ("", "Ahmad", False),
         ("Ahmad", "", False),
-        ("Lim", "Lim", True),
-        ("Li", "Lim", False),  # too short to be a prefix match
+        ("Lim", "Lim Wei", True),
+        ("Li", "Lim", False),  # prefix needs 3 letters
+        ("Far", "Farid", True),  # spoken is a prefix of the record's word
+        ("Faridah", "Farid", False),  # no reverse prefix
+        # R37: common given-name parts never match on their own
+        ("Nurul", "Nurul Huda", False),
+        ("Nurul Huda", "Nurul Huda", True),
+        ("Nur", "Nurul Huda", False),
+        ("Muhammad", "Muhammad Hafiz", False),
+        ("Muhammad Hafiz", "Muhammad Hafiz", True),
+        ("Mohd Hafiz", "Muhammad Hafiz", True),
+        ("Siti", "Siti Aminah", False),
+        ("Abdul Rahman", "Abdul Rahman", True),
+        ("Kumar a/l Rajan", "Kumar a/l Rajan", True),
+        # only the first two spoken words count
+        ("Encik Tuan Ahmad", "Ahmad", False),
     ],
 )
-def test_names_match(said: str, first: str, want: bool) -> None:
-    assert names_match(said, first) is want
+def test_names_match(said: str, record: str, want: bool) -> None:
+    assert names_match(said, record) is want
+
+
+@pytest.mark.parametrize(
+    "record",
+    ["Ahmad bin Ali", "Siti Aminah", "Nurul Huda", "Muhammad Hafiz", "Ali", "Abdul Rahman"],
+)
+def test_a_string_of_common_name_parts_matches_nobody(record: str) -> None:
+    assert not names_match("Muhammad Mohd Nur Siti Ahmad Abd Ali", record)
 
 
 def test_demo_tag_is_not_a_first_name() -> None:
@@ -239,7 +259,9 @@ def test_demo_tag_is_not_a_first_name() -> None:
     assert caller_view(ctx)["customers"][0]["first_name"] == "Ahmad"
     assert "[DEMO]" not in build_caller_instruction(ctx, lookup_tool=False)
     assert names_match("Ahmad", "[DEMO] Ahmad")
-    assert _ctx([{**AHMAD, "name": "[demo]  "}]).candidates[0].first_name == ""
+    assert _ctx([{**AHMAD, "name": "[DEMO] "}]).candidates[0].first_name == ""
+    # strict: the same "[DEMO] " startswith the call-as contact guard uses
+    assert _ctx([{**AHMAD, "name": "[demo] Ahmad"}]).candidates[0].first_name == "[demo]"
 
 
 def test_lookup_guidance_for_a_spoken_match_has_no_name() -> None:
@@ -555,14 +577,28 @@ async def test_web_call_as_only_writes_to_a_demo_contact() -> None:
     assert demo.contact_updates == [(22, {"custom_attributes": {"vehicle_no": "DMO1101"}})]
 
 
-def test_spoken_lookups_are_rate_limited_per_number_across_calls() -> None:
+def test_spoken_lookups_are_limited_by_failures_per_number_across_calls() -> None:
     now = [0.0]
     svc = CallerContextService(_FakeChatwoot(), _settings(), clock=lambda: now[0])
-    assert all(svc.allow_spoken_lookup(PHONE) for _ in range(5))
+    # successful lookups never count (R39): the real customer is not locked out
+    for _ in range(20):
+        assert svc.allow_spoken_lookup(PHONE)
+    for _ in range(5):
+        svc.record_spoken_failure(PHONE)
     assert not svc.allow_spoken_lookup(PHONE)
     assert svc.allow_spoken_lookup("+60000000102")  # per number
     now[0] += 3601
     assert svc.allow_spoken_lookup(PHONE)  # the window slides
+
+
+def test_spoken_lookups_have_a_global_failure_budget() -> None:
+    now = [0.0]
+    svc = CallerContextService(_FakeChatwoot(), _settings(), clock=lambda: now[0])
+    for i in range(100):
+        svc.record_spoken_failure(f"+600000{i:05d}")
+    assert not svc.allow_spoken_lookup("+60123456789")  # budget spent: nobody
+    now[0] += 3601
+    assert svc.allow_spoken_lookup("+60123456789")
 
 
 async def test_save_records_unverified_number_on_the_conversation() -> None:

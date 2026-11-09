@@ -227,3 +227,29 @@ def test_stream_flag_off_offers_no_caller_tools_and_no_flow_paragraph() -> None:
     cap = _stream(_settings(phone_caller_context_enabled=False), None, None)
     assert "save_caller_details" not in cap["tools"] and "lookup_caller" not in cap["tools"]
     assert "CALL FLOW" not in cap["instruction"]
+
+
+# --- dial-status: find the call's conversation by the caller's number --------
+
+
+async def test_dial_status_lookup_passes_the_callers_number_only_with_the_flag() -> None:
+    from unittest.mock import AsyncMock
+
+    from chatbot.features.chat.router import ChatRouter
+
+    for enabled, want in ((True, {"phone": PHONE}), (False, {})):
+        orch = MagicMock()
+        orch._settings = _settings(phone_caller_context_enabled=enabled)
+        orch._conversation_log_port = MagicMock()
+        orch._conversation_log_port.find_conversation_ticket = AsyncMock(return_value="9")
+        router = ChatRouter(orch)
+        got = await router._find_call_ticket("phone-CA1", {"From": PHONE})
+        assert got == "9"
+        orch._conversation_log_port.find_conversation_ticket.assert_awaited_once_with(
+            "phone-CA1", **want
+        )
+    # a browser identity is not a number
+    orch._conversation_log_port.find_conversation_ticket.reset_mock()
+    orch._settings = _settings()
+    await ChatRouter(orch)._find_call_ticket("phone-CA1", {"From": "client:x"})
+    orch._conversation_log_port.find_conversation_ticket.assert_awaited_once_with("phone-CA1")

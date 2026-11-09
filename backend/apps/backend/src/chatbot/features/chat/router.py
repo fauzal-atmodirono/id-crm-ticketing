@@ -2154,7 +2154,7 @@ class ChatRouter:
         session_id = f"phone-{call_sid}"
         port = self.orchestrator._conversation_log_port
         try:
-            ticket_id = await port.find_conversation_ticket(session_id)
+            ticket_id = await self._find_call_ticket(session_id, params)
         except Exception as e:
             _log.error("phone_dial_status_ticket_resolve_failed", call_sid=call_sid, error=str(e))
             ticket_id = None
@@ -2394,7 +2394,24 @@ class ChatRouter:
             eligible = eligible[:cap]
         return [agent_identity(i) for i in eligible]
 
-    async def _fanout_context(self, call_sid: str) -> tuple[str | None, int | None]:
+    async def _find_call_ticket(self, session_id: str, params: dict[str, str]) -> str | None:
+        """find_conversation_ticket, plus (caller context on) the caller's
+        number from Twilio's `From`, so a call attached to an EXISTING
+        customer's contact is still found after a restart. Flag off or no
+        usable number -> the exact previous call."""
+        port = self.orchestrator._conversation_log_port
+        phone = (
+            usable_caller_id(params.get("From"))
+            if self.orchestrator._settings.phone_caller_context_enabled
+            else None
+        )
+        if phone:
+            return await port.find_conversation_ticket(session_id, phone=phone)
+        return await port.find_conversation_ticket(session_id)
+
+    async def _fanout_context(
+        self, call_sid: str, params: dict[str, str] | None = None
+    ) -> tuple[str | None, int | None]:
         """Resolve the two pieces of state the fan-out handler needs but
         does not have -- the bridge that handled this call is long gone by
         the time Twilio posts here, so this is a fresh lookup, not a read of
@@ -2416,7 +2433,7 @@ class ChatRouter:
         session_id = f"phone-{call_sid}"
         port = self.orchestrator._conversation_log_port
         try:
-            ticket_id = await port.find_conversation_ticket(session_id)
+            ticket_id = await self._find_call_ticket(session_id, params or {})
             if ticket_id is None:
                 return None, None
             assignee = await port.get_conversation_assignee(ticket_id)
@@ -2475,7 +2492,7 @@ class ChatRouter:
         held = await self._hold_transfer_twiml(call_sid)  # FIX-15, see stage 1
         if held is not None:
             return Response(content=held, media_type="application/xml")
-        ticket_id, assignee_agent_id = await self._fanout_context(call_sid)
+        ticket_id, assignee_agent_id = await self._fanout_context(call_sid, params)
         identities = await self._fanout_identities(exclude_agent_id=assignee_agent_id)
         if not identities:
             _log.info("phone_fanout_nobody_available", call_sid=call_sid)

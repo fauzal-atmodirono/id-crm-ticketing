@@ -90,7 +90,8 @@ _DEALER_LABEL = re.compile(r"^dealer_(.+)$")
 _DEALER_CACHE_SECONDS = 300.0
 
 # Told-number lookups allowed per number per window, across all calls.
-_SPOKEN_LOOKUPS_PER_NUMBER = 5
+_SPOKEN_FAILURES_PER_NUMBER = 5
+_SPOKEN_FAILURES_GLOBAL = 100
 _SPOKEN_LOOKUP_WINDOW_SECONDS = 3600.0
 _SPOKEN_LOOKUP_MAP_CAP = 2048
 _DEALER_FETCH_TIMEOUT_SECONDS = 1.5
@@ -256,7 +257,10 @@ class CallerCandidate:
     contact_model: str = ""
 
 
-_DEMO_TAG = re.compile(r"^\s*\[demo\]\s*", re.IGNORECASE)
+# Exactly the seeding convention ("[DEMO] " prefix, case-sensitive), the same
+# test the web call-as contact guard uses (str.startswith(DEMO_PREFIX)).
+DEMO_PREFIX = "[DEMO] "
+_DEMO_TAG = re.compile(r"^\[DEMO\] ")
 _NAME_TOKEN = re.compile(r"[^\W\d_]+")
 _MIN_NAME_PREFIX = 3
 
@@ -270,29 +274,65 @@ def _first_name(name: str | None) -> str:
     return text.split(" ")[0][:_MAX_NAME]
 
 
+# Given-name parts so common in Malaysia (or not names at all: bin/binti,
+# a/l, a/p) that on their own they identify nobody (R37). They never match
+# by themselves; the next word has to.
+_COMMON_NAME_PARTS = frozenset(
+    {
+        "muhammad",
+        "mohammad",
+        "mohammed",
+        "muhamad",
+        "mohamad",
+        "mohamed",
+        "mohd",
+        "muhd",
+        "mhd",
+        "md",
+        "nur",
+        "nurul",
+        "noor",
+        "nor",
+        "siti",
+        "abdul",
+        "abd",
+        "bin",
+        "binti",
+        "bte",
+        "bt",
+        "al",
+        "ap",
+    }
+)
+_SPOKEN_NAME_WORDS = 2
+
+
 def _name_tokens(text: str | None) -> list[str]:
-    return [t.casefold() for t in _NAME_TOKEN.findall(_DEMO_TAG.sub("", text or ""))]
+    raw = _DEMO_TAG.sub("", text or "").casefold()
+    raw = re.sub(r"\ba\s*/\s*([lp])\b", r"a\1", raw)  # a/l, a/p -> al, ap
+    return _NAME_TOKEN.findall(raw)
 
 
-def names_match(said: str | None, first_name: str | None) -> bool:
-    """Does the name the caller gave fit the record's first name?
+def _distinctive(tokens: list[str]) -> str:
+    return next((t for t in tokens if t not in _COMMON_NAME_PARTS), "")
 
-    Server-side, so a spoken number is only confirmed by what the CALLER
-    said, never by the model echoing the record. Case/punctuation-blind;
-    any word of what was said may equal the first name, or be a prefix of
-    it (or it of the word) of at least three letters ("Nur" for "Nurul").
+
+def names_match(said: str | None, record_name: str | None) -> bool:
+    """Does the name the caller gave fit the record? (R37)
+
+    Server-side, so a told number is only confirmed by what the CALLER said,
+    never by the model echoing the record. Only the first two spoken words
+    count (a string of every common name part must not match everybody);
+    common parts (Muhammad, Nur, Siti, bin, ...) never match on their own.
+    The first distinctive spoken word must equal the record's first
+    distinctive word, or be a prefix of it of at least three letters
+    ("Far" for "Farid") -- never the other way round.
     """
-    first = _name_tokens(first_name)
-    if not first:
+    want = _distinctive(_name_tokens(record_name))
+    got = _distinctive(_name_tokens(said)[:_SPOKEN_NAME_WORDS])
+    if not want or not got:
         return False
-    want = first[0]
-    for tok in _name_tokens(said):
-        if tok == want:
-            return True
-        short, long_ = sorted((tok, want), key=len)
-        if len(short) >= _MIN_NAME_PREFIX and long_.startswith(short):
-            return True
-    return False
+    return got == want or (len(got) >= _MIN_NAME_PREFIX and want.startswith(got))
 
 
 def parse_number_list(raw: str | None) -> frozenset[str]:
@@ -668,37 +708,43 @@ class CallerContextService:
         self._dealer_source = dealer_source
         self._clock = clock
         self._dealer_cache: tuple[float, list[str]] | None = None
-        self._spoken_lookups: dict[str, list[float]] = {}
+        self._spoken_failures: dict[str, list[float]] = {}
+        self._global_failures: list[float] = []
 
     @property
     def settings(self) -> Settings:
         return self._settings
 
+    def _recent(self, times: list[float], now: float) -> list[float]:
+        return [t for t in times if now - t < _SPOKEN_LOOKUP_WINDOW_SECONDS]
+
     def allow_spoken_lookup(self, phone: str) -> bool:
-        """Per-number limit on lookups by a TOLD number, across calls
-        (``_SPOKEN_LOOKUPS_PER_NUMBER`` per ``_SPOKEN_LOOKUP_WINDOW_SECONDS``):
-        someone ringing repeatedly to probe one number gets "no match" without
-        a lookup. In-process only -- one backend container per tenant; a
-        restart resets it, a second replica would double it."""
+        """May a TOLD number be looked up now? (R39)
+
+        Only FAILED confirmations count: ``_SPOKEN_FAILURES_PER_NUMBER`` per
+        number and ``_SPOKEN_FAILURES_GLOBAL`` across all numbers per
+        ``_SPOKEN_LOOKUP_WINDOW_SECONDS``. A successful lookup costs nothing,
+        so a real customer is only ever refused when someone else has burnt
+        the budget for their number (or the global one) with wrong names.
+        In-process only -- one backend container per tenant; a restart resets
+        it, a second replica would double it.
+        """
         now = self._clock()
-        recent = [
-            t
-            for t in self._spoken_lookups.get(phone, [])
-            if now - t < _SPOKEN_LOOKUP_WINDOW_SECONDS
-        ]
-        if len(recent) >= _SPOKEN_LOOKUPS_PER_NUMBER:
-            self._spoken_lookups[phone] = recent
+        self._global_failures = self._recent(self._global_failures, now)
+        if len(self._global_failures) >= _SPOKEN_FAILURES_GLOBAL:
             return False
-        recent.append(now)
-        self._spoken_lookups[phone] = recent
-        if len(self._spoken_lookups) > _SPOKEN_LOOKUP_MAP_CAP:
-            for key in [
-                k
-                for k, v in self._spoken_lookups.items()
-                if not v or now - v[-1] >= _SPOKEN_LOOKUP_WINDOW_SECONDS
-            ]:
-                del self._spoken_lookups[key]
-        return True
+        recent = self._recent(self._spoken_failures.get(phone, []), now)
+        self._spoken_failures[phone] = recent
+        return len(recent) < _SPOKEN_FAILURES_PER_NUMBER
+
+    def record_spoken_failure(self, phone: str) -> None:
+        """A told number whose name did not confirm (or had no record)."""
+        now = self._clock()
+        self._spoken_failures.setdefault(phone, []).append(now)
+        self._global_failures.append(now)
+        if len(self._spoken_failures) > _SPOKEN_LOOKUP_MAP_CAP:
+            for key in [k for k, v in self._spoken_failures.items() if not self._recent(v, now)]:
+                del self._spoken_failures[key]
 
     async def dealer_slugs(self) -> list[str]:
         """Configured dealer slugs (DealerStore + DEALER_EMAIL_MAP_JSON),
@@ -846,7 +892,7 @@ class CallerContextService:
         if contact is None:
             return
         if source == SOURCE_WEB_CALL_AS and not str(contact.get("name") or "").startswith(
-            "[DEMO] "
+            DEMO_PREFIX
         ):
             # Ruling R34: a test-console persona call may only fill a seeded
             # [DEMO] contact, never a real customer who happens to own the

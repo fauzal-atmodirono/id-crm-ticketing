@@ -609,9 +609,74 @@ async def test_contact_create_conflict_on_phone_reuses_the_contact_with_that_num
 
     fake = _Fake({})
     on = _caller_ctx_adapter(fake)
-    assert await on._find_or_create_contact("phone-CA1", None, "+60000000101") == 11
-    # Flag off: the fallback does not exist (pre-caller-context behaviour).
-    assert await _adapter(fake)._find_or_create_contact("phone-CA1", None, "+60000000101") is None
+    got = await on._find_or_create_contact("phone-CA1", None, "+60000000101", attach_by_phone=True)
+    assert got == 11
+    # Only when the bridge says the number is the caller's (caller ID or a
+    # confirmed told number) -- never by default, even with the flag on.
+    assert await on._find_or_create_contact("phone-CA1", None, "+60000000101") is None
+    assert (
+        await on.ensure_conversation_ticket(
+            "phone-CA1", "[phone]", None, "+60000000101", attach_by_phone=True
+        )
+        is not None
+    )
+    assert any(
+        pl and pl.get("contact_id") == 11
+        for m, p, pl in fake.calls
+        if m == "POST" and p.endswith("/conversations")
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_web_lead_phone_never_attaches_to_another_contact() -> None:
+    """book_test_drive and friends pass a phone the visitor TYPED: a 422 on it
+    must not hang the lead off whoever owns that number."""
+
+    class _Fake(_FakeClient):
+        async def _request(self, method, path, payload=None):  # type: ignore[override]
+            self.calls.append((method, path, payload))
+            if method == "POST" and path == "/contacts":
+                return None
+            if method == "GET" and "contacts/search" in path and "web-abc" in path:
+                return {"payload": []}
+            if method == "GET" and "contacts/search" in path:
+                return {"payload": [{"id": 11, "phone_number": "+60000000101"}]}
+            if method == "POST" and path == "/conversations":
+                return {"id": 99}
+            return {}
+
+    fake = _Fake({})
+    await _caller_ctx_adapter(fake).create_ticket(
+        session_id="web-abc",
+        title="Test drive",
+        body="b",
+        urgency="medium",
+        customer_phone="+60000000101",
+    )
+    create = next(pl for m, p, pl in fake.calls if m == "POST" and p.endswith("/conversations"))
+    assert "contact_id" not in create
+
+
+@pytest.mark.asyncio
+async def test_find_conversation_ticket_by_the_callers_phone_after_a_restart() -> None:
+    """A call attached to an existing customer's contact has no phone-<CallSid>
+    contact to find; the caller's number finds the contact, the stamp finds
+    the conversation."""
+    fake = _FakeClient(
+        {
+            ("GET", "/contacts/search?q=phone-CA1"): {"payload": []},
+            ("GET", "/contacts/search"): {"payload": [{"id": 11, "phone_number": "+60000000101"}]},
+            ("GET", "/contacts/11/conversations"): {
+                "payload": [
+                    {"id": 80, "additional_attributes": {"session_id": "phone-OTHER"}},
+                    {"id": 81, "additional_attributes": {"session_id": "phone-CA1"}},
+                ]
+            },
+        }
+    )
+    adapter = _adapter(fake)
+    assert await adapter.find_conversation_ticket("phone-CA1") is None
+    assert await adapter.find_conversation_ticket("phone-CA1", phone="+60000000101") == "81"
 
 
 def _caller_ctx_adapter(fake: _FakeClient) -> ChatwootAdapter:

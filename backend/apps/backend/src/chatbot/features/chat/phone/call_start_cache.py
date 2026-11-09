@@ -137,10 +137,13 @@ class CallerPrefetch:
     def __len__(self) -> int:
         return len(self._entries)
 
-    def _prune(self) -> None:
+    def _prune_expired(self) -> None:
         now = self._clock()
         for sid in [s for s, e in self._entries.items() if now - e.incoming_at > self._ttl]:
             self._entries.pop(sid).cancel()
+
+    def _prune(self) -> None:
+        self._prune_expired()
         while len(self._entries) >= self._max:
             _sid, oldest = self._entries.popitem(last=False)
             oldest.cancel()
@@ -175,6 +178,7 @@ class CallerPrefetch:
         """The call's entry, removed (one use); None when missing/expired."""
         if not call_sid:
             return None
+        self._prune_expired()  # calls that never streamed do not linger
         entry = self._entries.pop(call_sid, None)
         if entry is None:
             return None

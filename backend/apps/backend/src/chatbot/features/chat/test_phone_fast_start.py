@@ -9,6 +9,7 @@ and the assistant waited for the caller to speak first.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -76,11 +77,20 @@ class _Service:
 
 
 class _Live:
+    """Stays open, like a real session, until the first caller audio reaches
+    it -- so the marks and media a test sends before that are processed in
+    order, and the call then ends cleanly from the server side."""
+
     def __init__(self) -> None:
         self.greetings: list[str] = []
         self.text_hints: list[str] = []
+        self.audio_sent: list[bytes] = []
+        self._done = asyncio.Event()
 
-    async def send_audio(self, pcm16k: bytes) -> None: ...
+    async def send_audio(self, pcm16k: bytes) -> None:
+        self.audio_sent.append(pcm16k)
+        self._done.set()
+
     async def send_tool_response(self, *a: Any) -> None: ...
     async def send_text_hint(self, text: str) -> None:
         self.text_hints.append(text)
@@ -89,8 +99,9 @@ class _Live:
         self.greetings.append(text)
 
     async def events(self) -> AsyncIterator[Any]:
-        if False:
-            yield None
+        await self._done.wait()
+        return
+        yield  # pragma: no cover -- makes this an async generator
 
 
 class _Tts:
@@ -191,6 +202,8 @@ def test_stream_plays_the_notice_first_uses_the_prefetch_and_greets_once() -> No
         with client.websocket_connect("/voice/phone/stream") as ws:
             ws.send_json(_start(params))
             frames = [ws.receive_json() for _ in range(4)]
+            ws.send_json({"event": "mark", "streamSid": "S1", "mark": {"name": "pdpa_notice"}})
+            ws.send_json(MEDIA)
     # 1 s of notice = 3 frames of <= 0.4 s, then the mark Twilio echoes
     assert [f["event"] for f in frames] == ["media", "media", "media", "mark"]
     assert frames[3]["mark"] == {"name": "pdpa_notice"}
@@ -247,3 +260,47 @@ def test_instruction_language_and_rating_rules() -> None:
     assert "Switch ONLY when the caller themselves clearly says a full sentence" in text
     assert "greet in English" in text
     assert "in the caller's language, never switching to English for it" in text
+
+
+MEDIA = {"event": "media", "media": {"payload": base64.b64encode(b"\xff" * 160).decode()}}
+
+
+def _caller_talks_over_the_notice(settings: Settings) -> dict[str, Any]:
+    cap: dict[str, Any] = {}
+    with TestClient(_app(settings, _Service(), _Tts(b"\xff" * 8000), cap)) as client:
+        _incoming(client, {**FORM, "CallSid": "CA0"})  # warms the notice
+        params = _params(_incoming(client, FORM))
+        with client.websocket_connect("/voice/phone/stream") as ws:
+            ws.send_json(_start(params))
+            for _ in range(4):
+                ws.receive_json()  # the notice + its mark
+            # the caller says "hello?" over the notice
+            ws.send_json(MEDIA)
+            ws.send_json(MEDIA)
+            assert cap["live"].greetings == []  # nobody greets over the notice
+            ws.send_json({"event": "mark", "streamSid": "S1", "mark": {"name": "pdpa_notice"}})
+            ws.send_json(MEDIA)  # after the notice: forwarded
+    return cap
+
+
+def test_caller_audio_over_the_notice_never_reaches_gemini_and_greeting_is_once() -> None:
+    """R40: audio during the notice is dropped (never answered, transcribed or
+    written to the live transcript); the greeting goes out once, at the mark."""
+    cap = _caller_talks_over_the_notice(_settings())
+    assert len(cap["live"].audio_sent) == 1
+    assert len(cap["live"].greetings) == 1
+
+
+def test_same_with_barge_in_disabled() -> None:
+    cap = _caller_talks_over_the_notice(_settings(gemini_live_barge_in_enabled=False))
+    assert len(cap["live"].audio_sent) == 1
+    assert len(cap["live"].greetings) == 1
+
+
+def test_unsigned_incoming_starts_no_prefetch() -> None:
+    """R6: no lookup (and no prefetch entry) for a request Twilio did not sign."""
+    svc = _Service()
+    with TestClient(_app(_settings(), svc, _Tts(None), {})) as client:
+        res = client.post("/voice/phone/incoming", data=FORM, headers={"X-Twilio-Signature": "x"})
+        assert res.status_code == 200
+    assert svc.lookups == [] and svc.dealer_calls == 0

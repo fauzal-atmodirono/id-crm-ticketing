@@ -12,12 +12,15 @@ Reproduces the live evidence with a fake Live session:
 
 from __future__ import annotations
 
+import asyncio
+import base64
 from collections.abc import AsyncIterator
 from typing import Any
 
 from structlog.testing import capture_logs
 
 from chatbot.features.chat.phone.bridge import PhoneBridge, is_unclear_transcript
+from chatbot.features.chat.phone.handoff_target import HandoffTarget
 from chatbot.features.chat.phone.live_events import (
     AudioOut,
     InputTranscript,
@@ -323,3 +326,167 @@ async def test_timing_logged_at_hangup_when_the_model_never_spoke() -> None:
         await b.finalize()
     timing = [e for e in logs if e["event"] == "phone_call_timing"]
     assert len(timing) == 1 and timing[0]["first_model_audio_ms"] is None
+
+
+# --- fix round 1 (R40/R41) ------------------------------------------------------
+
+
+async def test_caller_audio_during_the_notice_is_dropped() -> None:
+    """R40: nothing the caller says over the PDPA notice reaches Gemini (so
+    it is never transcribed or answered)."""
+    live = _Live([])
+    b = _bridge(live, [], announcement_mark="pdpa_notice", announcement_seconds=3.0)
+    payload = base64.b64encode(b"\xff" * 160).decode()
+    await b.handle_twilio({"event": "media", "media": {"payload": payload}})
+    assert live.audio_sent == []
+    await b.handle_twilio({"event": "mark", "mark": {"name": "pdpa_notice"}})
+    await b.handle_twilio({"event": "media", "media": {"payload": payload}})
+    assert len(live.audio_sent) == 1
+
+
+async def test_greeting_waits_for_the_mark_and_is_sent_once() -> None:
+    live = _Live([])
+    b = _bridge(
+        live,
+        [],
+        announcement_mark="pdpa_notice",
+        announcement_seconds=3.0,
+        greeting_prompt="Greet now.",
+    )
+    await b.greet_when_ready()
+    assert live.greetings == []  # not over the notice
+    await b.handle_twilio({"event": "mark", "mark": {"name": "pdpa_notice"}})
+    assert live.greetings == ["Greet now."]
+    await b.announcement_watchdog_expired()
+    await b.greet_when_ready()
+    assert live.greetings == ["Greet now."]
+
+
+async def test_greeting_at_watchdog_expiry_when_the_mark_never_comes() -> None:
+    live = _Live([])
+    b = _bridge(
+        live,
+        [],
+        announcement_mark="pdpa_notice",
+        announcement_seconds=0.0,
+        greeting_prompt="Greet now.",
+    )
+    await b.greet_when_ready()
+    await b.announcement_watchdog_expired()
+    assert live.greetings == ["Greet now."]
+
+
+async def test_greeting_without_a_notice_is_immediate() -> None:
+    live = _Live([])
+    b = _bridge(live, [], greeting_prompt="Greet now.")
+    await b.greet_when_ready()
+    assert live.greetings == ["Greet now."]
+
+
+def test_tamil_digits_and_numbers_are_speech() -> None:
+    """R41: "(unclear)" must never hide real speech."""
+    assert not is_unclear_transcript("வணக்கம், எனக்கு உதவி வேண்டும்")
+    assert not is_unclear_transcript("0 1 2 3 4 5 6 7 8 9")
+    assert not is_unclear_transcript("12 ribu ringgit")
+    assert not is_unclear_transcript("012-345 6789")
+
+
+async def test_unclear_is_decided_per_row_not_per_first_fragment() -> None:
+    """A row that starts with a stray fragment but continues with real
+    speech is speech; a row that is noise throughout is marked."""
+    live = _Live(
+        [
+            InputTranscript("..."),
+            InputTranscript(" saya nak tanya harga X50"),
+            OutputTranscript("Baik."),
+            InputTranscript("जय माता दी।"),
+            OutputTranscript("Maaf?"),
+        ]
+    )
+    b = _bridge(live, [])
+    await b.pump()
+    users = [t for r, t in b.transcript if r == "USER"]
+    assert users == ["... saya nak tanya harga X50", "(unclear) जय माता दी।"]
+
+
+async def test_unclear_row_still_open_at_hangup_is_marked() -> None:
+    live = _Live([InputTranscript("जय माता दी।")])
+    b = _bridge(live, [])
+    b.call_sid = "CA1"
+    await b.pump()
+    await b.finalize()
+    assert b.transcript[-1] == ("USER", "(unclear) जय माता दी।")
+
+
+async def test_live_transcript_block_carries_the_row_decision() -> None:
+    log = _FakeLog()
+    live = _Live([InputTranscript("जय माता दी।"), OutputTranscript("Maaf?")])
+    s = Settings(_env_file=None, phone_transcript_live_enabled=True)
+    b = _bridge(live, [], settings=s, log=log)
+    await b.handle_twilio({"event": "start", "start": {"streamSid": "S1", "callSid": "CA1"}})
+    await b.pump()
+    await b.finalize()
+    posted = "\n".join(text for _t, text, _s in log.comments)
+    assert "USER: (unclear) जय माता दी।" in posted
+
+
+async def test_drop_window_follows_the_vad_silence_and_any_transcript_ends_it() -> None:
+    clock = _Clock()
+    s = Settings(_env_file=None, gemini_live_vad_silence_duration_ms=500)
+    live = _Live(
+        [
+            Interrupted(),
+            lambda: setattr(clock, "t", clock.t + 0.45),  # past 0.8 x 500 ms
+            AUDIO,
+            Interrupted(),
+            InputTranscript("..."),  # even an unclear transcript ends it
+            AUDIO,
+        ]
+    )
+    sent: list[dict[str, Any]] = []
+    await _bridge(live, sent, settings=s, clock=clock).pump()
+    assert len(_media(sent)) == 2
+
+
+async def test_handoff_during_the_notice_waits_for_it_to_finish() -> None:
+    """R5: the caller hears the whole notice and the AI's handoff line
+    before the call is redirected."""
+    order: list[str] = []
+
+    class _CC:
+        async def start_recording(self, call_sid: str, callback: str) -> str:
+            return "RE1"
+
+        async def redirect(self, call_sid: str, twiml: str) -> bool:
+            order.append("redirect")
+            return True
+
+    class _Resolver:
+        async def prefetch(self) -> None: ...
+
+        async def resolve(self) -> Any:
+            return HandoffTarget(kind="pstn", value="+60000000000")
+
+    s = Settings(
+        _env_file=None,
+        twilio_webhook_base_url="https://example.test",
+        phone_transcript_live_enabled=True,
+        phone_handoff_enabled=True,
+    )
+    b = _bridge(
+        _Live([]),
+        [],
+        settings=s,
+        call_control=_CC(),  # type: ignore[arg-type]
+        handoff_resolver=_Resolver(),
+        announcement_mark="pdpa_notice",
+        announcement_seconds=3.0,
+    )
+    b.call_sid = "CA1"
+    task = asyncio.create_task(b._attempt_transfer())
+    await asyncio.sleep(0.05)
+    assert order == []
+    order.append("mark")
+    await b.handle_twilio({"event": "mark", "mark": {"name": "pdpa_notice"}})
+    assert await task == "transferring"
+    assert order == ["mark", "redirect"]

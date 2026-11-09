@@ -133,3 +133,16 @@ def test_warm_without_a_running_loop_stays_cold() -> None:
     audio = AnnouncementAudio(synth)
     audio.warm("n")  # no event loop here: must not raise
     assert audio.get("n") is None
+
+
+async def test_take_prunes_other_expired_entries() -> None:
+    clock = _Clock()
+    cache = CallerPrefetch(clock=clock, ttl_seconds=60.0)
+    cache.start("CA1", None, None, None, None)
+    clock.t += 61
+    cache.start("CA2", None, None, None, None)  # prunes CA1 already
+    clock.t += 30
+    cache.start("CA3", None, None, None, None)
+    clock.t += 31  # CA2 now expired, CA3 not
+    assert cache.take("CA3") is not None
+    assert len(cache) == 0

@@ -1620,22 +1620,14 @@ class ChatRouter:
             if ivr_xml is not None:
                 return Response(content=ivr_xml, media_type="application/xml")
         caller = await self._verified_caller(request)
-        self._start_call_prefetch(await self._form_call_sid(request), caller)
         caller_params = self._caller_params(caller)
         return Response(content=self._bridge_twiml(caller_params), media_type="application/xml")
-
-    @staticmethod
-    async def _form_call_sid(request: Request) -> str:
-        try:
-            form = await request.form()
-        except Exception:
-            return ""
-        return str(form.get("CallSid") or "").strip()
 
     def _start_call_prefetch(self, call_sid: str, caller: tuple[str, str, str] | None) -> None:
         """2026-11-09: start the caller lookup + dealer list NOW, seconds
         before Twilio opens the stream, and note the arrival time for the
-        call's timing log. A lookup only ever runs for a verified caller."""
+        call's timing log. Only ever called for a request whose Twilio
+        signature verified (R6); a lookup only for a usable caller number."""
         service = self._caller_context_service
         on = self.orchestrator._settings.phone_caller_context_enabled and service is not None
         self._caller_prefetch.start(
@@ -1657,10 +1649,6 @@ class ChatRouter:
                 self.orchestrator._settings.twilio_auth_token, call_sid, source, phone
             ),
         }
-
-    async def _caller_stream_parameters(self, request: Request) -> dict[str, str] | None:
-        """The signed `<Stream>` caller parameters (see `_verified_caller`)."""
-        return self._caller_params(await self._verified_caller(request))
 
     async def _verified_caller(self, request: Request) -> tuple[str, str, str] | None:
         """2026-11-09 caller context: (CallSid, number, source) for a caller
@@ -1696,6 +1684,16 @@ class ChatRouter:
         call_sid = params.get("CallSid", "").strip()
         if not call_sid:
             return None
+        caller = self._caller_from_form(call_sid, params)
+        # Signed by Twilio: start the call's prefetch (arrival time always,
+        # the lookup only for a usable number).
+        self._start_call_prefetch(call_sid, caller)
+        return caller
+
+    def _caller_from_form(
+        self, call_sid: str, params: dict[str, str]
+    ) -> tuple[str, str, str] | None:
+        settings = self.orchestrator._settings
         raw_from = params.get("From", "")
         phone = usable_caller_id(raw_from)
         source = SOURCE_CALLER_ID
@@ -2035,6 +2033,7 @@ class ChatRouter:
                     announcement_seconds=notice_seconds or 0.0,
                     timing=timing,
                     stream_started_at=stream_started_at,
+                    greeting_prompt=_GREETING_PROMPT if settings.phone_fast_start_enabled else None,
                 )
                 if notice_requested and notice_seconds is None:
                     # Asked to play the notice over the stream but had no
@@ -2045,10 +2044,10 @@ class ChatRouter:
                 # before pump_task begins forwarding audio frames — avoiding a
                 # race between the two concurrent tasks.
                 await bridge.handle_twilio(start_msg)
-                if settings.phone_fast_start_enabled:
-                    # The assistant greets first -- once, and only if the
-                    # caller has not spoken (nothing is read from Twilio yet).
-                    await bridge.greet_if_caller_silent(_GREETING_PROMPT)
+                # Fast start: the assistant greets first -- once, only if the
+                # caller has not spoken, and (R40) not over the notice: with
+                # one playing it greets at Twilio's mark echo (or watchdog).
+                await bridge.greet_when_ready()
 
                 async def from_twilio() -> None:
                     while True:

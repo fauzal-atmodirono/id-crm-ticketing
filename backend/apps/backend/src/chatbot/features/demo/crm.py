@@ -70,6 +70,10 @@ CONTACT_CONVERSATIONS_CAP = 20
 class ChatwootError(RuntimeError):
     """Chatwoot answered with an error (or could not be reached)."""
 
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
 
 def _payload_list(data: Any) -> list[dict[str, Any]]:
     payload = data.get("payload") if isinstance(data, dict) else data
@@ -99,6 +103,11 @@ class DemoCrmClient:
         token = settings.chatwoot_api_token
         self.inbox_id = int(settings.demo_inbox_id or settings.chatwoot_inbox_id or 0)
         self.numbers = tuple(numbers) if numbers is not None else seeded_numbers()
+        # Conversations this client deleted. Chatwoot deletes them in a
+        # background job, so they can still be LISTED for a while; every
+        # listing here leaves them out (so a reseed right after a reset does
+        # not mistake the just-deleted history for existing history).
+        self.deleted_conversation_ids: set[int] = set()
         self._client = httpx.AsyncClient(
             base_url=(
                 f"{settings.chatwoot_api_url.rstrip('/')}/api/v1/accounts/{settings.chatwoot_account_id}"
@@ -118,7 +127,7 @@ class DemoCrmClient:
         except httpx.HTTPError as exc:
             raise ChatwootError(f"{method} {where}: {type(exc).__name__}") from exc
         if res.status_code >= 400:  # noqa: PLR2004
-            raise ChatwootError(f"{method} {where} -> HTTP {res.status_code}")
+            raise ChatwootError(f"{method} {where} -> HTTP {res.status_code}", res.status_code)
         return res.json() if res.content else {}
 
     # --- ownership (pure, on records already in hand) ---------------------------
@@ -157,8 +166,13 @@ class DemoCrmClient:
     async def get_contact(self, contact_id: int) -> dict[str, Any] | None:
         return _unwrap_contact(await self._call("GET", f"/contacts/{contact_id}"))
 
+    def _not_deleted(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [r for r in rows if r.get("id") not in self.deleted_conversation_ids]
+
     async def contact_conversations(self, contact_id: int) -> list[dict[str, Any]]:
-        return _payload_list(await self._call("GET", f"/contacts/{contact_id}/conversations"))
+        return self._not_deleted(
+            _payload_list(await self._call("GET", f"/contacts/{contact_id}/conversations"))
+        )
 
     async def get_conversation(self, conversation_id: int) -> dict[str, Any] | None:
         data = await self._call("GET", f"/conversations/{conversation_id}")
@@ -186,7 +200,7 @@ class DemoCrmClient:
                 break
             seen.update(r.get("id") for r in fresh)
             out.extend(fresh)
-        return out
+        return self._not_deleted(out)
 
     # --- guarded fresh reads ------------------------------------------------------
 
@@ -270,6 +284,7 @@ class DemoCrmClient:
         is ours too (the delete takes them all, on every inbox)."""
         await self._owned_contact(contact_id)
         convs = await self.contact_conversations(contact_id)
+        # The cap counts what Chatwoot listed, async-deleted ones included.
         if len(convs) >= CONTACT_CONVERSATIONS_CAP:
             raise DemoSafetyError(
                 f"contact {contact_id} has {len(convs)}+ conversations, more than can be "
@@ -280,6 +295,10 @@ class DemoCrmClient:
                 raise DemoSafetyError(f"contact {contact_id} has an unreadable conversation")
             try:
                 await self._owned_conversation(int(conv["id"]))
+            except ChatwootError as exc:
+                if exc.status == 404:  # noqa: PLR2004 -- deleted (async job), already gone
+                    continue
+                raise
             except DemoSafetyError as exc:
                 raise DemoSafetyError(
                     f"contact {contact_id} has conversation {conv['id']} this seeder does not "
@@ -349,6 +368,7 @@ class DemoCrmClient:
     async def delete_conversation(self, conversation_id: int) -> None:
         await self._owned_conversation(conversation_id)
         await self._call("DELETE", f"/conversations/{conversation_id}")
+        self.deleted_conversation_ids.add(conversation_id)
 
 
 __all__ = ["CONTACT_CONVERSATIONS_CAP", "ChatwootError", "DemoCrmClient"]

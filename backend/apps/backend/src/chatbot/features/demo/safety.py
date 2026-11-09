@@ -22,6 +22,13 @@ delete Chatwoot can hand that id to someone else):
   its remarks start with ``"[DEMO]"`` (the seeder additionally requires the
   persona's phone, or its plate when the row has no phone).
 
+The demo inbox is ``DEMO_INBOX_ID`` (0 = ``CHATWOOT_INBOX_ID``). Phone
+rehearsal calls are created on ``CHATWOOT_INBOX_ID``, so it must be 0 or
+equal to that for Reset to clean them up (decision: the rule stays tied to
+ONE inbox rather than also accepting unmarked conversations elsewhere).
+Never merge a real contact into a [DEMO] persona contact: its conversations
+on the demo inbox would then pass the rule, and Reset would delete them.
+
 Matching is exact and case-sensitive. Every mutating call in
 ``crm.DemoCrmClient`` re-reads the target first and applies these rules to
 the fresh copy, so a stale search result can never steer a write.

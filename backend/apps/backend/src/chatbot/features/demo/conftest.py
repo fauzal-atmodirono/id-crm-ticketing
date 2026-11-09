@@ -45,6 +45,11 @@ class FakeChatwoot:
     labels: set[str] = field(default_factory=lambda: {"audit_test", "dealer_petaling_jaya"})
     calls: list[Call] = field(default_factory=list)
     fail_conversation_delete: bool = False
+    # Chatwoot's DELETE /conversations/:id only enqueues a job: with this on,
+    # a deleted conversation 404s on GET but is still LISTED (contact
+    # conversations / filter) for this many more list responses.
+    async_delete_listings: int = 0
+    ghosts: dict[int, list[Any]] = field(default_factory=dict)  # vid -> [conv, listings_left]
     _next_id: int = 1000
 
     # --- helpers for tests ---------------------------------------------------
@@ -87,6 +92,18 @@ class FakeChatwoot:
     def add_persona_contact(self, name: str, phone: str, **attrs: Any) -> int:
         """A contact exactly as the seeder makes one (strict demo rule)."""
         return self.add_contact(name, phone, demo_seed="demo_persona", **attrs)
+
+    def _ghosts_listed(self, keep: Any) -> list[dict[str, Any]]:
+        out = []
+        for vid, entry in list(self.ghosts.items()):
+            conv, left = entry
+            if left <= 0:
+                del self.ghosts[vid]
+                continue
+            if keep(conv) and conv["contact_id"] in self.contacts:
+                out.append(self._conv_json(conv))
+                entry[1] -= 1
+        return out
 
     def mutations(self) -> list[Call]:
         return [c for c in self.calls if c.method != "GET" and not c.path.endswith("/filter")]
@@ -168,7 +185,7 @@ class FakeChatwoot:
             cid = int(m.group(1))
             convs = [
                 self._conv_json(c) for c in self.conversations.values() if c["contact_id"] == cid
-            ]
+            ] + self._ghosts_listed(lambda c: c["contact_id"] == cid)
             # Chatwoot's contact conversations endpoint returns at most 20.
             return ok({"payload": convs[:CONTACT_CONVERSATIONS_CAP]})
         if method == "POST" and path == "/conversations/filter":
@@ -180,6 +197,8 @@ class FakeChatwoot:
                 for c in self.conversations.values()
                 if set(rule["values"]) & set(c["labels"])
             ]
+            if page == 1:
+                hits += self._ghosts_listed(lambda c: set(rule["values"]) & set(c["labels"]))
             return ok({"payload": hits if page == 1 else [], "meta": {"all_count": len(hits)}})
         if method == "POST" and path == "/conversations":
             vid = self.add_conversation(
@@ -204,7 +223,9 @@ class FakeChatwoot:
             if sub is None and method == "DELETE":
                 if self.fail_conversation_delete:
                     return ok({"error": "forbidden"}, 401)
-                del self.conversations[vid]
+                gone = self.conversations.pop(vid)
+                if self.async_delete_listings:
+                    self.ghosts[vid] = [gone, self.async_delete_listings]
                 return ok({})
             if sub == "/labels" and method == "POST":
                 conv["labels"] = list(body["labels"])

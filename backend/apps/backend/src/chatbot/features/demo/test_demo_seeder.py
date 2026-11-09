@@ -293,8 +293,10 @@ async def test_reset_resolves_then_deletes_each_demo_conversation(
 async def test_reset_continues_when_conversation_delete_is_not_allowed(
     settings: Settings, crm: DemoCrmClient, fake: FakeChatwoot
 ) -> None:
-    """A non-admin token cannot delete conversations; the contact delete
-    then removes them (Chatwoot destroys a contact's conversations)."""
+    """If a conversation DELETE is refused (e.g. 401), it is reported and
+    the run carries on: the contact delete then removes those conversations
+    (Chatwoot destroys a contact's conversations with it). Both deletes need
+    an administrator token -- ContactPolicy#destroy? is admin-only too."""
     seeder = _seeder(settings, crm)
     await seeder.seed()
     fake.fail_conversation_delete = True
@@ -411,3 +413,48 @@ async def test_rsa_without_phone_matches_on_plate_and_markers(
     assert await rsa.get_incident(ours) is None
     assert await rsa.get_incident(staff) is not None
     assert await rsa.get_incident(other_plate) is not None
+
+
+async def test_reset_then_reseed_with_async_conversation_deletes(
+    settings: Settings, crm: DemoCrmClient, fake: FakeChatwoot
+) -> None:
+    """Chatwoot's DELETE /conversations/:id only enqueues a job: a deleted
+    conversation 404s on GET but is still listed for a while. Reset must
+    treat that 404 as "already gone" (not an error, not a reason to keep the
+    contact), and the reseed must not count the just-deleted history as
+    existing -- every persona gets its history back."""
+    seeder = _seeder(settings, crm)
+    await seeder.seed()
+    ahmad = _by_name(fake, "[DEMO] Ahmad")
+    fake.add_conversation(ahmad["id"], labels=[], inbox=WHATSAPP_INBOX)  # keeps Ahmad
+    fake.async_delete_listings = 5  # still listed through delete_contact AND the reseed
+    report = await seeder.reset()
+
+    assert not [e for e in report["errors"] if "conversation" in e and "404" in e]
+    assert report["removed"]["conversations"] == 5
+    assert report["removed"]["contacts"] == 3  # Ahmad kept: a WhatsApp conversation
+    assert report["seed"]["skipped_history"] == []
+    assert report["seed"]["created_conversations"] == 5
+    for name, count in (
+        ("[DEMO] Ahmad", 1),
+        ("[DEMO] Nurul", 1),
+        ("[DEMO] Lim", 2),
+        ("[DEMO] Farid", 1),
+    ):
+        contact = _by_name(fake, name)
+        live = [c for c in _convs_of(fake, contact["id"]) if "demo_persona" in c["labels"]]
+        assert len(live) == count, name
+
+
+async def test_delete_contact_treats_a_404_conversation_as_gone(
+    settings: Settings, crm: DemoCrmClient, fake: FakeChatwoot
+) -> None:
+    seeder = _seeder(settings, crm)
+    await seeder.seed()
+    farid = _by_name(fake, "[DEMO] Farid")
+    [vid] = [c["id"] for c in _convs_of(fake, farid["id"])]
+    # Deleted by an earlier run / another process: this client never saw the
+    # DELETE, the listing is stale, and the re-read 404s.
+    fake.ghosts[vid] = [fake.conversations.pop(vid), 3]
+    await crm.delete_contact(farid["id"])  # stale listing + 404 on re-read: no error
+    assert farid["id"] not in fake.contacts

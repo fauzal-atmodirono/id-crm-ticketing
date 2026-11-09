@@ -687,7 +687,9 @@ class Settings(BaseSettings):
     # them from the BigQuery sync only).
     demo_console_enabled: bool = False
     # API inbox the demo conversations go to; 0 = CHATWOOT_INBOX_ID. Must be
-    # a Channel::Api inbox (checked before every seed/reset).
+    # a Channel::Api inbox (checked before every seed/reset). Keep it 0 or
+    # equal to CHATWOOT_INBOX_ID: phone rehearsal calls land on
+    # CHATWOOT_INBOX_ID and Reset only cleans unmarked calls on this inbox.
     demo_inbox_id: int = 0
     # Prefix for the Demo tab's CRM links; "" = relative (the test console is
     # served from the CRM's own host).

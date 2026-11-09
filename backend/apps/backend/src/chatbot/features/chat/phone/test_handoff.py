@@ -1553,3 +1553,38 @@ def _agent(agent_id: int, status: str) -> Any:
     from chatbot.features.routing.presence import AgentRecord  # noqa: PLC0415
 
     return AgentRecord(id=agent_id, name=f"Agent {agent_id}", availability_status=status)
+
+
+class _StubResolver:
+    def __init__(self, target: HandoffTarget) -> None:
+        self._target = target
+
+    async def resolve(self) -> HandoffTarget:
+        return self._target
+
+
+async def _dial_xml_for(target: HandoffTarget, **settings_overrides: Any) -> str:
+    settings = _enabled_settings(**settings_overrides)
+    bridge, _live, _log, twilio_client = _bridge(settings)
+    bridge._handoff_resolver = _StubResolver(target)
+    bridge.call_sid = "CA1"
+    await bridge.pump()
+    return twilio_client.calls.updated[0][1]
+
+
+async def test_immediate_fanout_action_is_final_not_stage_two() -> None:
+    """Stage 1 skipped (assignee busy/offline) -> the immediate fan-out IS stage 2,
+    so its dial-status must NOT go to /fanout (which would ring everyone again)."""
+    xml = await _dial_xml_for(
+        HandoffTarget(kind="clients", value="agent_1,agent_2"),
+        phone_agent_softphone_enabled=True,
+    )
+    assert f"{_BASE_URL}/webhooks/phone/dial-status" in xml
+    assert "/dial-status/fanout" not in xml
+
+
+async def test_single_agent_stage_one_action_still_goes_to_fanout() -> None:
+    xml = await _dial_xml_for(
+        HandoffTarget(kind="client", value="agent_1"), phone_agent_softphone_enabled=True
+    )
+    assert f"{_BASE_URL}/webhooks/phone/dial-status/fanout" in xml

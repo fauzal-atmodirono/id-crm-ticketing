@@ -269,3 +269,57 @@ async def test_assignee_still_wins_over_fanout(settings, log_port, registry):
 
     assert target.kind == "client"
     assert target.value == "agent_7"
+
+
+# --- stage 1 presence (brief 9) ---------------------------------------------
+
+
+def _with_presence(settings, log_port, registry, presence):
+    return AgentClientResolver(settings, log_port, registry, lambda: "42", presence)
+
+
+async def test_online_registered_assignee_is_rung_alone(settings, log_port, registry):
+    log_port.get_conversation_assignee.return_value = "7"
+    registry.registered_ids.return_value = {1, 7}
+    r = _with_presence(settings, log_port, registry, _presence(_Agent(1), _Agent(7)))
+    assert await r.resolve() == HandoffTarget(kind="client", value="agent_7")
+
+
+@pytest.mark.parametrize("status", ["busy", "offline"])
+async def test_busy_or_offline_assignee_skipped_for_online_others(
+    settings, log_port, registry, status
+):
+    log_port.get_conversation_assignee.return_value = "7"
+    registry.registered_ids.return_value = {1, 7}
+    r = _with_presence(settings, log_port, registry, _presence(_Agent(1), _Agent(7, status)))
+    target = await r.resolve()
+    assert target == HandoffTarget(kind="clients", value="agent_1")
+
+
+async def test_presence_failure_rings_the_assignee(settings, log_port, registry):
+    log_port.get_conversation_assignee.return_value = "7"
+    registry.registered_ids.return_value = {1, 7}
+    p = AsyncMock()
+    p.fetch_agents.side_effect = RuntimeError("chatwoot down")
+    r = _with_presence(settings, log_port, registry, p)
+    assert await r.resolve() == HandoffTarget(kind="client", value="agent_7")
+
+
+async def test_busy_assignee_and_nobody_else_online_resolves_none(settings, log_port, registry):
+    log_port.get_conversation_assignee.return_value = "7"
+    registry.registered_ids.return_value = {7}
+    r = _with_presence(settings, log_port, registry, _presence(_Agent(7, "busy")))
+    assert await r.resolve() is None
+
+
+async def test_prefetched_answer_is_rechecked_against_presence_at_resolve(
+    settings, log_port, registry
+):
+    log_port.get_conversation_assignee.return_value = "7"
+    registry.registered_ids.return_value = {1, 7}
+    presence = _presence(_Agent(1), _Agent(7))
+    r = _with_presence(settings, log_port, registry, presence)
+    await r.prefetch()
+    assert (await r.resolve()).kind == "client"
+    presence.fetch_agents.return_value = [_Agent(1), _Agent(7, "busy")]
+    assert await r.resolve() == HandoffTarget(kind="clients", value="agent_1")

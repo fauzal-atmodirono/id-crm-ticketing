@@ -117,7 +117,10 @@ class AgentClientResolver:
     async def resolve(self) -> HandoffTarget | None:
         if not self._settings.phone_agent_softphone_enabled:
             return None
-        if self._warm:
+        # With a presence source the cached answer is not trusted: who is
+        # Busy/Offline changes between call start (prefetch) and the handoff
+        # minutes later. The live lookup is bounded by the caller's wait_for.
+        if self._warm and self._presence_fetcher is None:
             return self._target
         try:
             return await self._lookup()
@@ -167,7 +170,33 @@ class AgentClientResolver:
         if agent_id not in registered:
             _log.info("agent_client_assignee_not_registered", agent_id=agent_id)
             return await self._fanout_target()
+        if not await self._assignee_is_online(agent_id):
+            # Busy/Offline/not in Chatwoot's agent list: ringing them for the
+            # whole stage-1 timeout interrupts them (or nobody) while the
+            # caller waits. Skip straight to the fan-out, which already
+            # filters to `online` and so excludes the assignee.
+            _log.info("agent_client_assignee_not_online_fanning_out", agent_id=agent_id)
+            return await self._fanout_target()
         return HandoffTarget(kind="client", value=agent_identity(agent_id))
+
+    async def _assignee_is_online(self, agent_id: int) -> bool:
+        """Is the registered assignee `online` in Chatwoot right now?
+
+        Fail-open: no presence source, or a failed fetch, keeps the old
+        behaviour (ring the registered assignee) rather than turning a
+        Chatwoot blip into a skipped ring.
+        """
+        if self._presence_fetcher is None:
+            return True
+        try:
+            agents = await self._presence_fetcher.fetch_agents()
+        except Exception as e:
+            _log.warning("agent_client_presence_failed_ringing_assignee", error=str(e))
+            return True
+        for a in agents:
+            if a.id == agent_id:
+                return a.availability_status == "online"
+        return False
 
     async def _fanout_target(self) -> HandoffTarget | None:
         """Every agent who is BOTH registered on a softphone and `online` in

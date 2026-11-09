@@ -1190,13 +1190,13 @@ class PhoneBridge:
             return ""
         return f"{base.rstrip('/')}/webhooks/phone/recording-status"
 
-    def _dial_status_action_url(self) -> str:
+    def _dial_status_action_url(self, final: bool = False) -> str:
         base = self._settings.twilio_webhook_base_url
         if not base:
             return ""
         # Stage 1 hands its outcome to the stage-2 handler; without the
         # softphone there is no stage 2 and the outcome is final.
-        suffix = "/fanout" if self._settings.phone_agent_softphone_enabled else ""
+        suffix = "/fanout" if self._settings.phone_agent_softphone_enabled and not final else ""
         return f"{base.rstrip('/')}/webhooks/phone/dial-status{suffix}"
 
     async def _maybe_start_recording(self, call_sid: str) -> None:
@@ -1469,7 +1469,10 @@ class PhoneBridge:
             return "ticket_created"
         if target is None:
             return "ticket_created"
-        action_url = self._dial_status_action_url()
+        # An immediate fan-out IS stage 2: its outcome must be final (apology +
+        # unanswered tag), not handed to the stage-2 handler, which would ring
+        # the same agents a second time.
+        action_url = self._dial_status_action_url(final=target.kind == "clients")
         if not action_url:
             _log.warning("phone_handoff_no_action_url_configured", call_sid=self.call_sid)
             return "ticket_created"

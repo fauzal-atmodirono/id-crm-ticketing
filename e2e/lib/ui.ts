@@ -48,12 +48,26 @@ export async function openConversation(page: Page, id: number): Promise<void> {
 }
 
 /**
+ * Open the conversation's contact panel if it is closed. Whether it is open is
+ * a per-user UI setting (is_contact_sidebar_open), so it can be closed from an
+ * earlier session; the round "contact" switch (i-ph-user-bold) only ever opens
+ * it, never toggles it shut.
+ */
+export async function openContactPanel(page: Page): Promise<void> {
+  const panel = page.getByText(/Conversation Actions/i).first();
+  if (await panel.isVisible({ timeout: 3000 }).catch(() => false)) return;
+  await page.locator('button:has(.i-ph-user-bold)').first().click();
+  await expect(panel, 'contact panel open').toBeVisible({ timeout: 15_000 });
+}
+
+/**
  * Make a value in the conversation's right panel visible: its accordion
  * ("Conversation Information" etc.) may be collapsed for this user.
  */
 export async function revealInPanel(page: Page, value: string | RegExp, section = /Conversation Information/i): Promise<void> {
   const target = page.getByText(value).first();
   if (await target.isVisible({ timeout: 3000 }).catch(() => false)) return;
+  await openContactPanel(page);
   const header = page.getByText(section).first();
   if (await header.isVisible().catch(() => false)) await header.click();
   await expect(target).toBeVisible({ timeout: 20_000 });

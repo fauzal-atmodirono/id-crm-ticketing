@@ -143,7 +143,9 @@ trackerModule('Settings', {
       // typed "/code" itself also matched a plain text search, and Enter took
       // whichever response was listed first).
       await insertCanned(page, code);
-      await expect(editor).toContainText(`[TEST] Hello ${contact.name}`);
+      // Chatwoot capitalises each word of {{contact.name}} when it fills it in.
+      const want = `[TEST] Hello ${contact.name}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      await expect(editor).toContainText(new RegExp(want, 'i'));
       ev.add(`/${code} found and inserted with the contact name filled in`);
       await ev.shot(page);
       await editor.fill('');

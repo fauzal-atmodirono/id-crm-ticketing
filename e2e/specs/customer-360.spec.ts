@@ -72,6 +72,9 @@ trackerModule('Customer 360', {
     const text = await bodyText(page);
     await ev.shot(page, { fullPage: true });
     if (/Not connected/.test(text)) ev.blocked('DMS and TSP are not connected (no Proton API access yet): the section says Not connected');
+    // With the integration switched off the backend sends no DMS block and the
+    // page leaves the DMS/TSP section out entirely (patch 0045).
+    if (!/DMS ?\/ ?TSP/.test(text)) ev.blocked('DMS and TSP are not connected (no Proton API access yet): the integration is off, so Customer 360 has no DMS/TSP section');
     expect(text, 'a DMS / TSP section with vehicle details and service history').toMatch(/Service history|Vehicles/);
     ev.add('DMS / TSP vehicle and service history shown');
   },

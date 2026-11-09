@@ -3,7 +3,7 @@ import { expect } from '../lib/fixtures';
 import { Api } from '../lib/api';
 import { FLAGS, INBOX, KEY_PREFIX, RUN_ID, TEST_PREFIX } from '../lib/env';
 import { manual, trackerModule } from '../lib/tracker';
-import { bodyText, chatTurn, consoleTab, insertCanned, openApp, openConsole, openConversation, revealInPanel, settle } from '../lib/ui';
+import { bodyText, chatTurn, consoleTab, insertCanned, openApp, openContactPanel, openConsole, openConversation, revealInPanel, settle } from '../lib/ui';
 
 const PNG_1PX = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
@@ -14,6 +14,33 @@ const TINY_PDF = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<
 /** Top-of-list tab ("Mine", "Unassigned", "All") as rendered by woot-tabs. */
 const listTab = (page: import('@playwright/test').Page, name: string) =>
   page.locator('li a', { hasText: new RegExp(`^\\s*${name}\\b`) }).first();
+
+/**
+ * How many conversations the open list tab holds, after scrolling it to its
+ * end. Read from the SPA's store (the list renders the store filtered by tab),
+ * because the virtualised list keeps only the visible rows in the DOM.
+ */
+async function listedConversations(page: import('@playwright/test').Page, assignee: string, meId: number): Promise<number> {
+  const list = page.locator('.conversations-list').first();
+  const eof = page.getByText('All conversations loaded', { exact: false });
+  for (let i = 0; i < 60 && !(await eof.isVisible().catch(() => false)); i++) {
+    await list.evaluate(el => el.scrollTo(0, el.scrollHeight)).catch(() => {});
+    await page.waitForTimeout(700);
+  }
+  const n = await page.evaluate(
+    ([tab, me]) => {
+      const store = (document.querySelector('#app') as any)?.__vue_app__?.config?.globalProperties?.$store;
+      const all: any[] | undefined = store?.getters?.getAllConversations;
+      if (!Array.isArray(all)) return -1;
+      if (tab === 'me') return all.filter(c => c.meta?.assignee?.id === me).length;
+      if (tab === 'unassigned') return all.filter(c => !c.meta?.assignee).length;
+      return all.length;
+    },
+    [assignee, meId] as [string, number],
+  );
+  if (n < 0) throw new Error('could not read the conversation list from the SPA store; count the rows by hand');
+  return n;
+}
 
 async function messages(api: Api, convId: number): Promise<any[]> {
   return Api.must(await api.cw(`conversations/${convId}/messages`), 'list messages').payload ?? [];
@@ -26,6 +53,7 @@ trackerModule('Conversations', {
       ['Unassigned', 'unassigned', 'unassigned_count'],
       ['All', 'all', 'all_count'],
     ];
+    const me = await api.me();
     await openApp(page, 'conversations');
     for (const [name, assignee, key] of tabs) {
       const r = await api.cw(`conversations?assignee_type=${assignee}&status=all&page=1`);
@@ -35,15 +63,15 @@ trackerModule('Conversations', {
       const t0 = Date.now();
       await listTab(page, name).click();
       await settle(page);
-      // The list first shows the conversations already in the store for this
-      // tab, then fills in when its own fetch returns, so wait for it (within
-      // the DoD's 3 s) instead of counting the first paint.
-      const want = Math.min(count, 25); // the list pages at 25; the tab badge is the total
-      await expect
-        .poll(() => page.locator('.conversation').count(), { timeout: 15_000, message: `${name}: rows shown vs tab count ${count}` })
-        .toBe(want);
-      const rows = await page.locator('.conversation').count();
+      await expect(page.locator('.conversation').first(), `${name} list shows rows`).toBeVisible({ timeout: count ? 15_000 : 1 }).catch(e => {
+        if (count) throw e;
+      });
       const uiMs = Date.now() - t0;
+      // The list is virtualised (virtua): only the rows on screen exist in the
+      // DOM, and it loads 25 at a time as you scroll. So scroll it to the end
+      // ("All conversations loaded") and count what the list holds.
+      const rows = await listedConversations(page, assignee, me.id);
+      expect(rows, `${name}: conversations in the list vs tab count ${count}`).toBe(count);
       ev.add(`${name}: tab ${count}, rows ${rows}, API ${r.ms} ms, page ${uiMs} ms`);
     }
     for (const p of ['mentions/conversations', 'unattended/conversations']) {
@@ -107,7 +135,7 @@ trackerModule('Conversations', {
     ev.add(`4-filter query returned ${rows.length} rows, all matching`);
     const name = `${TEST_PREFIX} Escalated high`;
     const view = Api.must(
-      await api.cw('custom_filters', { method: 'POST', body: { custom_filter: { name, type: 'conversation', query: { payload } } } }),
+      await api.cw('custom_filters', { method: 'POST', body: { custom_filter: { name, filter_type: 'conversation', query: { payload } } } }),
       'save view',
     );
     await openApp(page, 'conversations');
@@ -189,7 +217,8 @@ trackerModule('Conversations', {
     const editor = page.locator('.ProseMirror').first();
     await editor.click();
     await insertCanned(page, code);
-    await expect(editor).toContainText(contact.name);
+    // Chatwoot capitalises each word of {{contact.name}} when it fills it in.
+    await expect(editor).toContainText(new RegExp(contact.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
     ev.add('canned response inserted with {{contact.name}} filled in');
     await page.locator('input[type="file"]').first().setInputFiles([
       { name: 'test-image.png', mimeType: 'image/png', buffer: PNG_1PX },
@@ -389,6 +418,7 @@ trackerModule('Conversations', {
     const convs = Api.must(await api.cw(`contacts/${c[0].id}/conversations`), 'Ahmad conversations').payload as any[];
     expect(convs.length).toBeGreaterThan(0);
     await openConversation(page, convs[0].id);
+    await openContactPanel(page);
     const text = await bodyText(page);
     expect(text, 'DMS card loads or says not connected').toMatch(/Not connected|No DMS\/TSP record|Vehicles|Service history|DMS/);
     expect(text).toMatch(/Previous Conversations/i);
@@ -507,6 +537,7 @@ trackerModule('Conversations', {
     const last = Api.must(await api.cw(`conversations/${first.id}`), 'first conversation').last_non_activity_message?.content ?? '';
     const preview = String(last).replace(/\s+/g, ' ').trim().slice(0, 30) || 'brake noise after service';
     await openConversation(page, second.id);
+    await openContactPanel(page);
     // Scoped to the panel's list: the left conversation list previews the same
     // contact's conversations too.
     const prev = page.locator('.contact-conversation--list');

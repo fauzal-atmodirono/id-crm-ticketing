@@ -160,8 +160,9 @@ trackerModule('Knowledge', {
     const slug = t.slug ?? t.tool?.slug;
     Api.must(await api.be(`/kb/tools/${slug}`, { method: 'PUT', body: { description: `edited ${RUN_ID}` } }), 'edit tool');
     await openApp(page, kb('tools'));
-    await expect(page.getByText(title)).toBeVisible();
-    await expect(page.getByText(`edited ${RUN_ID}`)).toBeVisible();
+    // The tools page shows the title twice (table cell and card), hence first().
+    await expect(page.getByText(title).first()).toBeVisible();
+    await expect(page.getByText(`edited ${RUN_ID}`).first()).toBeVisible();
     await ev.shot(page);
     Api.must(await api.be(`/kb/tools/${slug}`, { method: 'DELETE' }), 'delete tool');
     ev.add('[TEST] custom tool (disabled) created, edit kept after reload, deleted');

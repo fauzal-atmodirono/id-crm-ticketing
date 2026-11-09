@@ -37,7 +37,7 @@ trackerModule('Contacts', {
     ev.add('search by [TEST] name (UI) and by phone (API) find the contact');
     const payload = [{ attribute_key: 'name', filter_operator: 'contains', values: [RUN_ID], query_operator: null }];
     const seg = Api.must(
-      await api.cw('custom_filters', { method: 'POST', body: { custom_filter: { name: `${TEST_PREFIX} segment`, type: 'contact', query: { payload } } } }),
+      await api.cw('custom_filters', { method: 'POST', body: { custom_filter: { name: `${TEST_PREFIX} segment`, filter_type: 'contact', query: { payload } } } }),
       'save segment',
     );
     // Reopen it the way a person does: from Contacts, then the segment's link.
@@ -48,7 +48,7 @@ trackerModule('Contacts', {
     if (await link.isVisible({ timeout: 10_000 }).catch(() => false)) await link.click();
     else await openApp(page, `contacts/segments/${seg.id}`);
     await expect(page).toHaveURL(new RegExp(`contacts/segments/${seg.id}`));
-    await expect(page.getByText(`${TEST_PREFIX} segment`).first(), 'segment title shown').toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('main').getByText(`${TEST_PREFIX} segment`).filter({ visible: true }).first(), 'segment title shown').toBeVisible({ timeout: 30_000 });
     await expect(page.getByText(c.name).first(), 'segment reopens with the same filter').toBeVisible({ timeout: 30_000 });
     ev.add(`segment "${TEST_PREFIX} segment" reopens and lists the [TEST] contacts`);
     await ev.shot(page);

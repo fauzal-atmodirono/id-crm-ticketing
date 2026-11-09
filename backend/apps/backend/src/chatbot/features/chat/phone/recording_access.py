@@ -29,12 +29,16 @@ its own: the `call_recording_object` custom attribute is a hint (agents can
 edit custom attributes), and an object whose metadata names another
 conversation is refused (404).
 
+A hint that points at another conversation's object is ignored and resolution
+falls through to the backend note, so a wrong attribute cannot hide the real
+recording.
+
 **Legacy objects** (archived before the metadata existed) are accepted only via
 a private "[Call archived to Cloud Storage]" note that (a) was authored by the
 backend's own Chatwoot API user -- the identity its `api_access_token`
 resolves to via `/api/v1/profile` (`ApiTokenIdentity`) -- and (b) names an
-object whose CallSid matches this conversation's phone session
-(`additional_attributes.session_id` or `external_id` == `phone-<CallSid>`).
+object whose CallSid matches this conversation's phone session, read only from
+fields agents cannot edit (`conversation_session_ids`).
 On that first successful resolution the object's metadata is backfilled; if the
 service account may not update metadata, the recording is refused rather than
 served unbound. A backend identity that cannot be resolved disables the legacy
@@ -272,10 +276,19 @@ def call_sid_of(object_name: str) -> str:
 
 
 def conversation_session_ids(conversation: dict[str, Any] | None) -> set[str]:
+    """The `phone-<CallSid>` session ids this conversation can be proven to
+    belong to, from fields agents cannot edit in Chatwoot (ruling R46): the
+    conversation's `additional_attributes.session_id`, stamped at create, and
+    the call contact's `identifier`, which the adapter sets to the session id
+    when it creates the contact. NOT `custom_attributes.external_id`: custom
+    attributes are agent-editable. A caller attached to an existing contact by
+    phone number carries that contact's older identifier, so the session id is
+    the field that usually decides."""
     conv = conversation or {}
+    sender = ((conv.get("meta") or {}).get("sender") or {}) if isinstance(conv.get("meta"), dict) else {}
     out = {
         str((conv.get("additional_attributes") or {}).get("session_id") or ""),
-        str((conv.get("custom_attributes") or {}).get("external_id") or ""),
+        str(sender.get("identifier") or ""),
     }
     return {s for s in out if s.startswith("phone-")}
 
@@ -352,10 +365,13 @@ async def resolve_recording(  # noqa: PLR0911, PLR0912, PLR0915 -- each return i
                 "available", ArchivedRecording(audio, transcript, "attribute"), info.size
             )
         elif bound(info):
+            # A hint naming another conversation's object proves nothing about
+            # THIS conversation's recording: fall through to the backend note.
             _log.warning(
-                "call_recording_bound_elsewhere", conversation_id=cid, object_conversation=bound(info)
+                "call_recording_hint_bound_elsewhere",
+                conversation_id=cid,
+                object_conversation=bound(info),
             )
-            return Resolution("mismatch")
     elif audio:
         _log.warning("call_recording_attribute_rejected", conversation_id=cid)
 

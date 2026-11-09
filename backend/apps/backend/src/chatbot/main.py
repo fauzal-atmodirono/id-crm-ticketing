@@ -235,6 +235,9 @@ def _wire_assist(
                 "x-chatwoot-access-token",
                 "x-chatwoot-client",
                 "x-chatwoot-uid",
+                # The call-recording panel's transcript fetch carries its
+                # short-lived token here rather than in a URL (patch 0094).
+                "x-recording-token",
             ],
         )
 

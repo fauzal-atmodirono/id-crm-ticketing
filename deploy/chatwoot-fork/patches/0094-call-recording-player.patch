@@ -3,10 +3,10 @@ Subject: [PATCH 0094] conversation sidebar: in-CRM call recording player (signed
 
 diff --git a/app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue b/app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue
 new file mode 100644
-index 0000000..46eb97e
+index 0000000..4e53511
 --- /dev/null
 +++ b/app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue
-@@ -0,0 +1,237 @@
+@@ -0,0 +1,252 @@
 +<script setup>
 +// ProtonCallRecordingPanel.vue — OUR file (patch 0094). Plays a call's
 +// archived recording inside the conversation sidebar.
@@ -159,6 +159,17 @@ index 0000000..46eb97e
 +  transcriptOpen.value = true;
 +}
 +
++// The backend puts the 429's wait (also its Retry-After header) in the body,
++// which is what adminRequest keeps on the error as `detail`.
++function retryMinutes(error) {
++  try {
++    const seconds = Number(JSON.parse(error?.detail || '{}')?.detail?.retry_after_seconds);
++    return seconds > 0 ? Math.ceil(seconds / 60) : null;
++  } catch (e) {
++    return null;
++  }
++}
++
 +async function retranscribe() {
 +  busy.value = true;
 +  message.value = '';
@@ -167,10 +178,14 @@ index 0000000..46eb97e
 +    message.value =
 +      'Re-transcription queued. The new transcript will appear as a private note shortly.';
 +  } catch (e) {
-+    message.value =
-+      e?.status === 429
-+        ? 'This call was re-transcribed recently. Try again later.'
-+        : 'Could not start re-transcription.';
++    if (e?.status === 429) {
++      const minutes = retryMinutes(e);
++      message.value = minutes
++        ? `Re-transcribe limit reached — try again in ${minutes} min`
++        : 'Re-transcribe limit reached — try again later';
++    } else {
++      message.value = 'Could not start re-transcription.';
++    }
 +  } finally {
 +    busy.value = false;
 +  }

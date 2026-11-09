@@ -116,3 +116,9 @@ def test_panel_script_parses(panel, tmp_path):
     script = panel.split("<script setup>", 1)[1].split("</script>", 1)[0]
     (tmp_path / "panel.mjs").write_text(script)
     subprocess.run(["node", "--check", str(tmp_path / "panel.mjs")], check=True)
+
+
+def test_a_rate_limited_retranscribe_says_how_long_to_wait(panel):
+    assert "Re-transcribe limit reached — try again in ${minutes} min" in panel
+    assert "?.detail?.retry_after_seconds" in panel
+    assert "Math.ceil(seconds / 60)" in panel

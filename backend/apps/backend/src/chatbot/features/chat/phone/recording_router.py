@@ -35,7 +35,10 @@ request for a link writes `call_recording_play` (actor, conversation, object,
 time); later Range requests on the same link do not, and re-minting -- the
 panel does so when a link expires mid-listen -- creates a new link and so a new
 row. If the audit store refuses the row, the link's slot is released and the
-request is 503: no audio is served without its audit row. Same for transcript
+request is 503: no audio is served without its audit row. Requests that
+arrive while a link's first audit write is still in flight wait for it
+(`_audited_once`) and share its outcome, so concurrent Range requests cannot
+stream ahead of the row. Same for transcript
 views and re-transcription requests.
 
 **Tokens never reach access logs** (R44 item 4): `install_access_log_redaction`
@@ -120,7 +123,8 @@ _NO_STORE = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
 # Chatwoot conversation ids are integers; anything else is refused (422).
 ConversationId = Annotated[str, Path(pattern=r"^\d{1,12}$")]
 
-_audited_links: OrderedDict[str, None] = OrderedDict()
+# nonce -> True (audited) or the Future of the audit write in flight.
+_audited_links: OrderedDict[str, Any] = OrderedDict()
 _last_retranscribe: dict[str, float] = {}
 _user_runs: dict[int, deque[float]] = {}
 _global_runs: deque[float] = deque()
@@ -168,18 +172,35 @@ def install_access_log_redaction() -> None:
 # --- helpers -------------------------------------------------------------------
 
 
-def _claim_link(nonce: str) -> bool:
-    """True exactly once per link (until released), so one listen is one row."""
-    if not nonce or nonce in _audited_links:
-        return False
-    _audited_links[nonce] = None
+async def _audited_once(nonce: str, write: Callable[[], Awaitable[bool]]) -> bool:
+    """Audit a link exactly once, and make every request on it wait for that.
+
+    The first request for a link writes the audit row; any request arriving
+    while that write is in flight awaits the same Future instead of streaming
+    (PDPA: no byte leaves before the row is confirmed). Success marks the link
+    audited for good; failure forgets it, so every waiter answers 503 and the
+    next request retries the write."""
+    if not nonce:
+        return await write()
+    state = _audited_links.get(nonce)
+    if state is True:
+        return True
+    if isinstance(state, asyncio.Future):
+        return bool(await state)
+    future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+    _audited_links[nonce] = future
     while len(_audited_links) > _STATE_CAP:
         _audited_links.popitem(last=False)
-    return True
-
-
-def _release_link(nonce: str) -> None:
-    _audited_links.pop(nonce, None)
+    try:
+        ok = bool(await write())
+    except Exception:
+        ok = False
+    if ok:
+        _audited_links[nonce] = True
+    else:
+        _audited_links.pop(nonce, None)
+    future.set_result(ok)
+    return ok
 
 
 def _audio_media_type(name: str) -> str:
@@ -295,14 +316,9 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
             raise HTTPException(status_code=404, detail="Recording not found")
         return res
 
-    async def _audit_or_503(
-        event_type: str,
-        cid: str,
-        user_id: int | None,
-        object_name: str,
-        remark: str,
-        on_fail: Callable[[], None] | None = None,
-    ) -> None:
+    async def _write_audit(
+        event_type: str, cid: str, user_id: int | None, object_name: str, remark: str
+    ) -> bool:
         stored = await record_event(
             audit,
             event_type=event_type,
@@ -314,12 +330,26 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
             actor_source="call-recording-player",
         )
         if not stored:
+            _log.error("call_recording_audit_failed", conversation_id=cid, event_type=event_type)
+        return stored
+
+    def _audit_refused() -> HTTPException:
+        return HTTPException(
+            status_code=503, detail="Audit log unavailable; recording access refused"
+        )
+
+    async def _audit_or_503(
+        event_type: str,
+        cid: str,
+        user_id: int | None,
+        object_name: str,
+        remark: str,
+        on_fail: Callable[[], None] | None = None,
+    ) -> None:
+        if not await _write_audit(event_type, cid, user_id, object_name, remark):
             if on_fail is not None:
                 on_fail()
-            _log.error("call_recording_audit_failed", conversation_id=cid, event_type=event_type)
-            raise HTTPException(
-                status_code=503, detail="Audit log unavailable; recording access refused"
-            )
+            raise _audit_refused()
 
     def _verify(cid: str, token: str | None, kind: str) -> TokenClaims:
         secret = _secret()
@@ -434,16 +464,18 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
         if request.method == "HEAD":  # metadata only: no bytes, so no play row
             return Response(status_code=code, headers=headers, media_type=media_type)
 
-        if _claim_link(claims.nonce):
-            await _audit_or_503(
+        played = await _audited_once(
+            claims.nonce,
+            lambda: _write_audit(
                 EVENT_CALL_RECORDING_PLAY,
                 conversation_id,
                 claims.user_id,
                 name,
                 "Call recording played",
-                on_fail=lambda: _release_link(claims.nonce),
-            )
-            _log.info("call_recording_played", conversation_id=conversation_id, user_id=claims.user_id)
+            ),
+        )
+        if not played:
+            raise _audit_refused()
 
         async def _chunks() -> AsyncIterator[bytes]:
             pos = first
@@ -469,15 +501,18 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
         except Exception as exc:
             _log.error("call_transcript_read_failed", conversation_id=conversation_id, error=str(exc))
             raise HTTPException(status_code=404, detail="Transcript not available") from exc
-        if _claim_link(claims.nonce):
-            await _audit_or_503(
+        viewed = await _audited_once(
+            claims.nonce,
+            lambda: _write_audit(
                 EVENT_CALL_RECORDING_TRANSCRIPT_VIEW,
                 conversation_id,
                 claims.user_id,
                 claims.object_name,
                 "Call transcript viewed",
-                on_fail=lambda: _release_link(claims.nonce),
-            )
+            ),
+        )
+        if not viewed:
+            raise _audit_refused()
         return Response(
             content=data,
             media_type="text/plain; charset=utf-8",
@@ -505,9 +540,14 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
         except Exception as exc:
             _log.error("call_retranscribe_note_failed", conversation_id=conversation_id, error=str(exc))
 
-    def _too_many(detail: str, retry_after: float) -> HTTPException:
+    def _too_many(message: str, retry_after: float) -> HTTPException:
+        """429 with the wait in BOTH the Retry-After header and the body: the
+        panel's adminRequest surfaces only the body (`err.detail`)."""
+        wait = int(retry_after) + 1
         return HTTPException(
-            status_code=429, detail=detail, headers={"Retry-After": str(int(retry_after) + 1)}
+            status_code=429,
+            detail={"message": message, "retry_after_seconds": wait},
+            headers={"Retry-After": str(wait)},
         )
 
     @router.post("/{conversation_id}/recording/retranscribe", dependencies=enabled)

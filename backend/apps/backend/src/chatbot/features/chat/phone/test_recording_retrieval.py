@@ -299,10 +299,21 @@ def test_without_transcription_re_transcribe_is_not_offered(settings, world) -> 
 # --- conversation binding (R43) ---------------------------------------------------
 
 
-def test_an_attribute_pointing_at_another_conversations_object_is_404(settings, world) -> None:
+def test_an_attribute_pointing_at_another_conversations_object_does_not_play(
+    settings, world
+) -> None:
     world.storage.meta[AUDIO] = {"conversation_id": "43", "call_sid": "CA1"}
-    res = _client(settings, world).get("/calls/42/recording", headers=SESSION)
-    assert res.status_code == 404
+    body = _meta(_client(settings, world))
+    assert body["status"] == "empty" and "play_url" not in body
+
+
+def test_a_backend_note_bound_elsewhere_is_404(settings, world) -> None:
+    world.conversations["42"]["custom_attributes"] = {}
+    world.storage.meta[AUDIO] = {"conversation_id": "43"}
+    world.messages["42"] = [
+        {"id": 9, "private": True, "content": NOTE, "sender": {"type": "user", "id": 900}}
+    ]
+    assert _client(settings, world).get("/calls/42/recording", headers=SESSION).status_code == 404
 
 
 def test_an_agent_authored_fake_note_is_ignored(settings, world) -> None:
@@ -561,6 +572,8 @@ def test_retranscribe_is_rate_limited_per_conversation(settings, world) -> None:
     assert client.post("/calls/42/recording/retranscribe", headers=SESSION).status_code == 202
     again = client.post("/calls/42/recording/retranscribe", headers=SESSION)
     assert again.status_code == 429 and int(again.headers["retry-after"]) > 0
+    # The panel reads the wait from the body (adminRequest keeps no headers).
+    assert again.json()["detail"]["retry_after_seconds"] == int(again.headers["retry-after"])
     assert client.post("/calls/43/recording/retranscribe", headers=SESSION).status_code == 202
 
 
@@ -580,7 +593,8 @@ def test_retranscribe_has_a_per_user_hourly_cap(settings, world) -> None:
     assert client.post("/calls/42/recording/retranscribe", headers=SESSION).status_code == 202
     assert client.post("/calls/43/recording/retranscribe", headers=SESSION).status_code == 202
     res = client.post("/calls/44/recording/retranscribe", headers=SESSION)
-    assert res.status_code == 429 and "Hourly" in res.json()["detail"]
+    assert res.status_code == 429 and "Hourly" in res.json()["detail"]["message"]
+    assert res.json()["detail"]["retry_after_seconds"] > 0
     # Another person is not limited by the first one's cap.
     assert client.post("/calls/45/recording/retranscribe", headers=OTHER).status_code == 202
 
@@ -670,3 +684,78 @@ def test_redaction_leaves_other_paths_alone() -> None:
     assert redact_recording_tokens("/calls/1/recording/transcript?t=abc") == (
         "/calls/1/recording/transcript?t=REDACTED"
     )
+
+
+# --- concurrent first requests on one link (PDPA: audit before any byte) --------
+
+
+class _GatedAudit(InMemoryAuditLog):
+    """append() blocks until released, then succeeds or fails."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        import asyncio
+
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.succeed = True
+        self.calls = 0
+
+    async def append(self, entry) -> None:
+        self.calls += 1
+        self.entered.set()
+        await self.release.wait()
+        if not self.succeed:
+            raise RuntimeError("audit store down")
+        await super().append(entry)
+
+
+async def _concurrent_plays(settings, world, succeed: bool):
+    import asyncio
+
+    import httpx
+
+    audit = _GatedAudit()
+    audit.succeed = succeed
+    app = FastAPI()
+    app.include_router(
+        build_recording_router(
+            settings,
+            authz_repo=_Repo({"call_recording.listen"}, Scope()),
+            validator=_Validator(),
+            audit=audit,
+            chatwoot_read=world.read,
+            chatwoot_messages=world.read_messages,
+            post_note=world.post_note,
+            backend_sender=world.backend,
+            storage=world.storage,
+            transcribe=world.transcribe,
+        )
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        meta = await client.get("/calls/42/recording", headers=SESSION)
+        path = meta.json()["play_url"]
+        first = asyncio.create_task(client.get(path, headers={"Range": "bytes=0-99"}))
+        await audit.entered.wait()
+        second = asyncio.create_task(client.get(path, headers={"Range": "bytes=100-199"}))
+        await asyncio.sleep(0.05)
+        # The second request is parked behind the first one's audit write.
+        assert not second.done()
+        assert world.storage.reads == []
+        audit.release.set()
+        return await first, await second, audit
+
+
+async def test_concurrent_first_requests_wait_for_the_audit_row(settings, world) -> None:
+    a, b, audit = await _concurrent_plays(settings, world, succeed=True)
+    assert (a.status_code, b.status_code) == (206, 206)
+    assert audit.calls == 1
+    assert len(await _rows(audit, "call_recording_play")) == 1
+
+
+async def test_concurrent_requests_all_fail_when_the_audit_row_fails(settings, world) -> None:
+    a, b, audit = await _concurrent_plays(settings, world, succeed=False)
+    assert (a.status_code, b.status_code) == (503, 503)
+    assert world.storage.reads == []
+    assert audit.calls == 1

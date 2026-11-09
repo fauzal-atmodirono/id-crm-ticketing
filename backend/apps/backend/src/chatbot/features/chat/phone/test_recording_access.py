@@ -217,8 +217,11 @@ async def _no_messages(_cid, _before=None):
     return []
 
 
-def _conv(attrs=None, session="phone-CA1"):
-    return {"custom_attributes": attrs or {}, "additional_attributes": {"session_id": session}}
+def _conv(attrs=None, session="phone-CA1", identifier=None):
+    conv = {"custom_attributes": attrs or {}, "additional_attributes": {"session_id": session}}
+    if identifier is not None:
+        conv["meta"] = {"sender": {"identifier": identifier}}
+    return conv
 
 
 async def _resolve(conv, store, messages=None, backend=_backend, cid="42"):
@@ -242,12 +245,22 @@ async def test_an_attribute_whose_object_is_bound_here_plays() -> None:
     assert res.recording == ArchivedRecording(AUDIO, TEXT, "attribute")
 
 
-async def test_an_attribute_pointing_at_another_conversations_object_is_refused() -> None:
+async def test_an_attribute_pointing_at_another_conversations_object_is_not_played() -> None:
     """An agent can edit custom attributes; pointing conversation 42 at
     conversation 43's recording must not play it."""
     store = Store({AUDIO: {"conversation_id": "43"}})
     res = await _resolve(_conv({"call_recording_object": AUDIO}), store)
-    assert res.status == "mismatch"
+    assert res.status == "empty"
+
+
+async def test_a_hint_bound_elsewhere_falls_through_to_the_backend_note() -> None:
+    """A wrong (or tampered) attribute must not hide this call's real
+    recording: the backend's own note is still consulted."""
+    own = f"{PREFIX}/2026-11-09/CA1.mp3"
+    other = f"{PREFIX}/2026-11-09/CA9.mp3"
+    store = Store({other: {"conversation_id": "43"}, own: {"conversation_id": "42"}})
+    res = await _resolve(_conv({"call_recording_object": other}), store, [_note()])
+    assert res.status == "available" and res.recording.audio_object == own
 
 
 async def test_an_attribute_to_an_unbound_object_is_only_a_hint() -> None:
@@ -300,6 +313,22 @@ async def test_a_public_message_shaped_like_the_note_is_ignored() -> None:
 async def test_a_legacy_note_for_another_calls_sid_is_refused() -> None:
     store = Store({AUDIO: {}})
     res = await _resolve(_conv(session="phone-CA_OTHER"), store, [_note()])
+    assert res.status == "mismatch"
+    assert store.patched == []
+
+
+async def test_the_legacy_sid_can_come_from_the_call_contacts_identifier() -> None:
+    store = Store({AUDIO: {}})
+    res = await _resolve(_conv(session="", identifier="phone-CA1"), store, [_note()])
+    assert res.status == "available"
+
+
+async def test_an_agent_editable_external_id_cannot_vouch_for_a_legacy_object() -> None:
+    """Ruling R46: custom_attributes.external_id is agent-editable, so it is
+    not evidence of which call this conversation is."""
+    store = Store({AUDIO: {}})
+    conv = _conv({"external_id": "phone-CA1"}, session="phone-CA_OTHER")
+    res = await _resolve(conv, store, [_note()])
     assert res.status == "mismatch"
     assert store.patched == []
 

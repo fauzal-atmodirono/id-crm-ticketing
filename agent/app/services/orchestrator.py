@@ -18,6 +18,7 @@ conversation is reopened for a human to review — the AI never auto-sends.
 from __future__ import annotations
 
 import asyncio
+import re
 import base64
 import json
 import logging
@@ -521,6 +522,7 @@ async def _process_conversation(conversation_id: int) -> None:
     # customer_context empty, which makes _build_system_prompt a no-op. Runs as
     # part of a background task, so it must never raise (see CLAUDE.md).
     customer_context = ""
+    caller_context = ""
     # Hoisted out of the try so they survive a failure inside it: a contact we
     # could not read must degrade to "no profiling this turn", not to a
     # NameError at the call site below.
@@ -558,6 +560,17 @@ async def _process_conversation(conversation_id: int) -> None:
                 else ""
             )
             customer_context = format_customer_context(contact_attributes)
+            # Chat-side caller context (flag, default off): the same minimal
+            # "who is this" view the phone line uses. Fail-open ("" on error).
+            if (
+                settings.chat_caller_context_enabled
+                and proton is not None
+                and inbox_id in settings.chat_caller_context_inbox_set
+            ):
+                phone = (body.get("phone_number") if isinstance(body, dict) else None) or (
+                    sender.get("phone_number")
+                )
+                caller_context = await proton.get_contact_context(str(phone or ""))
     except Exception:
         logger.debug(
             "orchestrator: could not resolve customer context for conversation %s; "
@@ -566,7 +579,9 @@ async def _process_conversation(conversation_id: int) -> None:
         )
 
     system_prompt = _build_system_prompt(
-        persona, customer_context, settings.investor_profiling_enabled
+        persona,
+        "\n\n".join(c for c in (customer_context, caller_context) if c),
+        settings.investor_profiling_enabled,
     )
 
     # Fetch persona messages for the inbox (fail-open: None on any error).
@@ -603,6 +618,7 @@ async def _process_conversation(conversation_id: int) -> None:
         await _process_via_chat_agent(
             conversation_id, message_list, effective_mode, chatwoot, handoff_message,
             inbox_id=inbox_id,
+            caller_context=caller_context,
         )
         return
 
@@ -820,6 +836,15 @@ def _apply_media_budget(
         )
 
 
+_CRM_MARKER = re.compile(r"\[\s*CUSTOMER\s+CONTEXT", re.IGNORECASE)
+
+
+def _neutralise_crm_marker(text: str) -> str:
+    """Customer text that imitates the bracketed CRM note loses its bracket,
+    so the only "[CUSTOMER CONTEXT" the model sees is the one we prepend."""
+    return _CRM_MARKER.sub("(quoted by the customer) CUSTOMER CONTEXT", text)
+
+
 async def _process_via_chat_agent(
     conversation_id: int,
     message_list: list[dict],
@@ -827,6 +852,7 @@ async def _process_via_chat_agent(
     chatwoot,
     handoff_message: str,
     inbox_id: int | None = None,
+    caller_context: str = "",
 ) -> None:
     """Drive one turn through the backend ADK agent (POST /chat/turn) and map the
     result onto Chatwoot. Chatwoot owns the handoff; the backend only signals it.
@@ -890,6 +916,16 @@ async def _process_via_chat_agent(
             )
         return
 
+    if settings.chat_caller_context_enabled:
+        # A customer must not be able to pass their own text off as our CRM
+        # note: the marker is neutralised wherever it appears, words kept.
+        text = _neutralise_crm_marker(text)
+    if caller_context:
+        # The chat agent's instruction is composed in the backend and
+        # /chat/turn takes no extra context field, so the CRM view travels as
+        # a clearly-marked note ahead of the customer's own words.
+        text = f"[{caller_context}]\n\n{text}" if text else f"[{caller_context}]"
+
     proton = get_proton_config_client()
     result = (
         await proton.chat_turn(
@@ -922,6 +958,13 @@ async def _process_via_chat_agent(
     if handoff:
         reason = (handoff or {}).get("reason", "") if isinstance(handoff, dict) else ""
         await _log_chat_action(conversation_id, "chat_turn:handoff", str(reason))
+        # A backend with HANDOFF_RETURN_AI_REPLY on sends the model's own
+        # acknowledgement with the handoff; it names what was reported, so it
+        # replaces the fixed handoff message. Absent (the default) -> unchanged.
+        ai_ack = (result.get("reply") or "").strip()
+        if ai_ack:
+            chunks = await _format_reply_for_channel(ai_ack, chatwoot, inbox_id)
+            handoff_message = "\n\n".join(chunks) or handoff_message
         await _handoff_to_human_via_chatwoot(conversation_id, chatwoot, handoff_message)
         return
 

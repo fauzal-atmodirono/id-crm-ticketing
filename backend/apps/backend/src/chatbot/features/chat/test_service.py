@@ -390,6 +390,44 @@ async def test_handle_turn_crm_session_signals_handoff_without_escalating() -> N
 
 
 @pytest.mark.asyncio
+async def test_handle_turn_crm_handoff_returns_ai_reply_when_enabled() -> None:
+    """HANDOFF_RETURN_AI_REPLY on: a `crm-` handoff keeps the model's own
+    sentence alongside the signal, so the agent can send it instead of the
+    tenant's fixed handoff message. Still no backend escalation."""
+    settings = get_settings().model_copy(update={"handoff_return_ai_reply": True})
+    ticketing_port = InMemoryTicketingAdapter()
+
+    def fake_runner_factory(_agent: Any) -> _FakeRunner:
+        return _FakeRunner(
+            reply="I have reported the warning light to our service team.",
+            session_service=svc._adk_sessions,
+            session_id="crm-43",
+            trigger_handoff=True,
+        )
+
+    svc = OrchestratorService(
+        settings=settings,
+        chat_port=InMemoryChatAdapter(),
+        ticketing_port=ticketing_port,
+        knowledge_port=InMemoryKnowledgeAdapter(),
+        tts_port=MockVoiceAdapter(),
+        runner_factory=fake_runner_factory,
+    )
+
+    result = await svc.handle_turn(session_id="crm-43", text="My engine light is on")
+
+    assert result.handoff is not None
+    assert result.reply == "I have reported the warning light to our service team."
+    assert len(ticketing_port.tickets) == 0
+
+
+def test_handoff_return_ai_reply_defaults_off() -> None:
+    from chatbot.platform.config import Settings
+
+    assert Settings.model_fields["handoff_return_ai_reply"].default is False
+
+
+@pytest.mark.asyncio
 async def test_handle_voice_turn_happy_path() -> None:
     settings = get_settings()
     chat_port = InMemoryChatAdapter()

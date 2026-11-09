@@ -21,6 +21,7 @@ onMounted(async () => {
       <nav class="nav">
         <router-link to="/">Channels</router-link>
         <router-link to="/dashboard">Dashboard</router-link>
+        <router-link to="/customer">Customer app</router-link>
       </nav>
     </div>
     <div v-if="health" class="badges">

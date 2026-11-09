@@ -424,3 +424,51 @@ def test_builtin_override_partial_update_preserves_other_fields() -> None:
     skb = builtins["search_knowledge_base"]
     assert skb["enabled"] is False
     assert skb["description"] == "Custom description"
+
+
+# ---------------------------------------------------------------------------
+# KNOW-006: an empty / missing parameter schema means "no parameters"
+# ---------------------------------------------------------------------------
+
+_EMPTY_SCHEMA = {"type": "object", "properties": {}}
+
+
+def test_create_with_empty_param_schema_normalised() -> None:
+    c, store = _make_client_with_store()
+    tool = {**_VALID_TOOL, "param_schema": {}}
+    r = c.post("/kb/tools", json=tool, headers={"x-api-key": _KEY})
+    assert r.status_code == 200, r.text
+    saved = asyncio.run(store.get_custom(r.json()["slug"]))
+    assert saved.param_schema == _EMPTY_SCHEMA
+
+
+def test_create_without_param_schema_normalised() -> None:
+    c, store = _make_client_with_store()
+    tool = {k: v for k, v in _VALID_TOOL.items() if k != "param_schema"}
+    r = c.post("/kb/tools", json=tool, headers={"x-api-key": _KEY})
+    assert r.status_code == 200, r.text
+    assert asyncio.run(store.get_custom(r.json()["slug"])).param_schema == _EMPTY_SCHEMA
+
+
+def test_create_with_null_param_schema_normalised() -> None:
+    c, store = _make_client_with_store()
+    tool = {**_VALID_TOOL, "param_schema": None}
+    r = c.post("/kb/tools", json=tool, headers={"x-api-key": _KEY})
+    assert r.status_code == 200, r.text
+    assert asyncio.run(store.get_custom(r.json()["slug"])).param_schema == _EMPTY_SCHEMA
+
+
+def test_put_empty_param_schema_normalised() -> None:
+    c, store = _make_client_with_store()
+    slug = c.post("/kb/tools", json=_VALID_TOOL, headers={"x-api-key": _KEY}).json()["slug"]
+    r = c.put(f"/kb/tools/{slug}", json={"param_schema": {}}, headers={"x-api-key": _KEY})
+    assert r.status_code == 200, r.text
+    assert asyncio.run(store.get_custom(slug)).param_schema == _EMPTY_SCHEMA
+
+
+def test_put_without_param_schema_keeps_existing() -> None:
+    c, store = _make_client_with_store()
+    slug = c.post("/kb/tools", json=_VALID_TOOL, headers={"x-api-key": _KEY}).json()["slug"]
+    r = c.put(f"/kb/tools/{slug}", json={"description": "edited"}, headers={"x-api-key": _KEY})
+    assert r.status_code == 200
+    assert asyncio.run(store.get_custom(slug)).param_schema == _VALID_TOOL["param_schema"]

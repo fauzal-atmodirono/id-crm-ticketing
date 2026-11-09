@@ -324,7 +324,8 @@ async def test_bulleted_text_is_not_a_mask(tmp_path) -> None:
         assert res.status_code == 200, (who, res.text)
     created = client.post(
         "/rsa/incidents",
-        json={"incident_date": "2026-11-02", "vehicle_no": "W1", "cause": "• flat"},
+        json={"incident_date": "2026-11-02", "vehicle_no": "W1", "cause": "• flat",
+              "vehicle_model": "X50"},
         headers=session("agent"),
     )
     assert created.status_code == 200

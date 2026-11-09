@@ -5,6 +5,12 @@ demands a validated Chatwoot session holding the permission (the shared
 x-api-key alone is refused, since the browser ships that key to every agent);
 with RBAC off it falls back to the shared-secret check, as before. Manual
 staff data entry: no background tasks, no dispatch-system integration.
+
+Vehicle model is required on this operator API (tracker RSA-001): a create
+without a non-blank `vehicle_model`, or a PATCH that blanks it, is a 422 naming
+the field. The rule lives here, not in the repository, so rows saved before it
+(and the demo seeder, which writes through the repository) still load, list
+and accept edits that leave the model alone.
 """
 
 from __future__ import annotations
@@ -28,6 +34,16 @@ from chatbot.features.authz.data_scope import (
 from chatbot.features.authz.deps import require_permission
 from chatbot.features.metrics.export import spreadsheet_safe
 from chatbot.features.privacy.access import PiiPolicy, build_pii_dependency
+
+
+_VEHICLE_MODEL_REQUIRED = "vehicle_model is required"
+
+
+def _require_vehicle_model(value: str | None) -> str:
+    model = (value or "").strip()
+    if not model:
+        raise HTTPException(status_code=422, detail=_VEHICLE_MODEL_REQUIRED)
+    return model
 
 
 class _IncidentRequest(BaseModel):
@@ -125,9 +141,12 @@ def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRout
         scope: Scope = Depends(data_scope),
         pii: PiiPolicy = Depends(pii_policy),
     ) -> dict[str, str]:
+        vehicle_model = _require_vehicle_model(payload.vehicle_model)
         _require_dealer_in_scope(payload.purchased_from, scope)
         pii.refuse_masked_write(payload.model_dump(mode="json"))
-        incident_id = await repo.create_incident(**payload.model_dump())
+        incident_id = await repo.create_incident(
+            **{**payload.model_dump(), "vehicle_model": vehicle_model}
+        )
         return {"id": incident_id, "status": "created"}
 
     @router.get("/rsa/incidents", dependencies=[guard])
@@ -192,6 +211,9 @@ def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRout
         pii: PiiPolicy = Depends(pii_policy),
     ) -> dict[str, str]:
         fields = {k: v for k, v in payload.model_dump().items() if v is not None}
+        # Omitted/null leaves the stored model alone; a sent blank would erase it.
+        if "vehicle_model" in fields:
+            fields["vehicle_model"] = _require_vehicle_model(fields["vehicle_model"])
         current = None
         if not scope.unrestricted or pii.masked:
             current = await repo.get_incident(incident_id)

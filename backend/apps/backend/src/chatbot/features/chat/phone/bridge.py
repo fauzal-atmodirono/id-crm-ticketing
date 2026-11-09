@@ -235,6 +235,7 @@ class PhoneBridge:
         dealer_slugs: list[str] | None = None,
         announcement_mark: str | None = None,
         announcement_seconds: float = 0.0,
+        announcement_sent_at: float | None = None,
         timing: dict[str, Any] | None = None,
         stream_started_at: float | None = None,
         greeting_prompt: str | None = None,
@@ -250,6 +251,10 @@ class PhoneBridge:
         self._announcement_mark = announcement_mark
         self._announcement_pending = announcement_mark is not None
         self._announcement_seconds = announcement_seconds
+        # time.monotonic() when router.py sent the notice frames; the watchdog
+        # deadline counts from there (the bridge is built after the Live
+        # connect, seconds later).
+        self._announcement_sent_at = announcement_sent_at
         self._announcement_watchdog: asyncio.Task[None] | None = None
         self._held_audio: list[dict[str, object]] = []
         # Monotonic deadline of the post-interruption drop window, or None.
@@ -949,10 +954,11 @@ class PhoneBridge:
         """Twilio confirmed the PDPA notice has played: release the held
         model audio and only now start the recording."""
         self._announcement_pending = False
-        self._announcement_done.set()
         if self._announcement_watchdog is not None and not self._announcement_watchdog.done():
             self._announcement_watchdog.cancel()
         await self._release_held_audio()
+        # Only now may a waiting handoff redirect: the held line is sent.
+        self._announcement_done.set()
         await self._greet_if_deferred()
         if (
             self.call_sid
@@ -962,8 +968,14 @@ class PhoneBridge:
             self._recording_start_attempted = True
             self._recording_task = asyncio.create_task(self._maybe_start_recording(self.call_sid))
 
+    def _announcement_wait_left(self) -> float:
+        total = self._announcement_seconds + _ANNOUNCEMENT_GRACE_SECONDS
+        if self._announcement_sent_at is None:
+            return total
+        return max(0.0, self._announcement_sent_at + total - time.monotonic())
+
     async def _run_announcement_watchdog(self) -> None:
-        await asyncio.sleep(self._announcement_seconds + _ANNOUNCEMENT_GRACE_SECONDS)
+        await asyncio.sleep(self._announcement_wait_left())
         await self.announcement_watchdog_expired()
 
     async def announcement_watchdog_expired(self) -> None:
@@ -973,11 +985,11 @@ class PhoneBridge:
         if not self._announcement_pending:
             return
         self._announcement_pending = False
-        self._announcement_done.set()
         # Never record this call: the notice is unproven.
         self._recording_start_attempted = True
         _log.warning("phone_announcement_unconfirmed_no_recording", call_sid=self.call_sid)
         await self._release_held_audio()
+        self._announcement_done.set()
         await self._greet_if_deferred()
 
     async def greet_when_ready(self) -> None:
@@ -1073,7 +1085,11 @@ class PhoneBridge:
         decided on the row so far (for the greeting) and finally when it
         closes (R41: a stray first fragment never marks real speech)."""
         if self._user_row is None:
-            self._append_transcript("USER", text)
+            # A plain append, never the merging _append_transcript: the
+            # assistant output that closed the previous caller row may have
+            # been dropped (interrupt tail), leaving transcript[-1] a USER
+            # row this one must not be written over.
+            self.transcript.append(("USER", text))
             self._user_row = (len(self.transcript) - 1, text)
             self._user_row_streaming = False
         else:
@@ -1436,7 +1452,9 @@ class PhoneBridge:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(
                     self._announcement_done.wait(),
-                    timeout=self._announcement_seconds + _ANNOUNCEMENT_GRACE_SECONDS,
+                    # + 1 s: the watchdog itself fires at the deadline and
+                    # then still sends the held audio.
+                    timeout=self._announcement_wait_left() + 1.0,
                 )
         # Review fix (Important 1): both awaits below are bounded -- see
         # _HANDOFF_RESOLVE_TIMEOUT_SECONDS/_HANDOFF_REDIRECT_TIMEOUT_SECONDS'

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -490,3 +491,96 @@ async def test_handoff_during_the_notice_waits_for_it_to_finish() -> None:
     await b.handle_twilio({"event": "mark", "mark": {"name": "pdpa_notice"}})
     assert await task == "transferring"
     assert order == ["mark", "redirect"]
+
+
+# --- fix round 2 ------------------------------------------------------------------
+
+
+async def test_a_new_row_never_overwrites_an_earlier_caller_row() -> None:
+    """The assistant output that closed row "a" was dropped (interrupt tail),
+    so transcript[-1] is still USER: the new row must be its own entry, not
+    written over the merged one (which lost "a")."""
+    live = _Live(
+        [
+            InputTranscript("a"),
+            Interrupted(),
+            OutputTranscript("tail"),
+            InputTranscript("b"),
+            InputTranscript("c"),
+        ]
+    )
+    b = _bridge(live, [])
+    await b.pump()
+    users = "".join(t for r, t in b.transcript if r == "USER")
+    assert "a" in users and users.endswith("bc")
+    assert ("USER", "bc") in b.transcript
+
+
+async def test_handoff_waiting_on_the_notice_starts_after_the_held_audio_is_sent() -> None:
+    order: list[str] = []
+    sent: list[dict[str, Any]] = []
+
+    async def send(msg: dict[str, Any]) -> None:
+        if msg.get("event") == "media":
+            await asyncio.sleep(0)  # a real websocket send yields
+            order.append("held audio")
+        sent.append(msg)
+
+    class _CC:
+        async def start_recording(self, call_sid: str, callback: str) -> str:
+            return "RE1"
+
+        async def redirect(self, call_sid: str, twiml: str) -> bool:
+            order.append("redirect")
+            return True
+
+    class _Resolver:
+        async def prefetch(self) -> None: ...
+
+        async def resolve(self) -> Any:
+            return HandoffTarget(kind="pstn", value="+60000000000")
+
+    s = Settings(
+        _env_file=None,
+        twilio_webhook_base_url="https://example.test",
+        phone_transcript_live_enabled=True,
+        phone_handoff_enabled=True,
+    )
+    b = PhoneBridge(
+        _Live([AUDIO]),  # type: ignore[arg-type]
+        _FakeKnowledge(),
+        _FakeLog(),  # type: ignore[arg-type]
+        send,
+        s,
+        clock=_Clock(),
+        call_control=_CC(),  # type: ignore[arg-type]
+        handoff_resolver=_Resolver(),
+        announcement_mark="pdpa_notice",
+        announcement_seconds=3.0,
+    )
+    b.stream_sid = "S1"
+    b.call_sid = "CA1"
+    await b.pump()  # the AI's handoff line, held behind the notice
+    task = asyncio.create_task(b._attempt_transfer())
+    await asyncio.sleep(0)
+    await b.handle_twilio({"event": "mark", "mark": {"name": "pdpa_notice"}})
+    await task
+    assert order == ["held audio", "redirect"]
+
+
+async def test_watchdog_counts_from_when_the_notice_was_sent() -> None:
+    """The bridge is built after the Live connect; the watchdog deadline is
+    notice length + grace from when the notice frames went out, not from the
+    bridge's "start"."""
+    live = _Live([])
+    b = _bridge(
+        live,
+        [],
+        announcement_mark="pdpa_notice",
+        announcement_seconds=0.1,
+        announcement_sent_at=time.monotonic() - 5.0,  # sent 5 s ago
+    )
+    await b.handle_twilio({"event": "start", "start": {"streamSid": "S1", "callSid": "CA1"}})
+    await asyncio.sleep(0.3)
+    assert b._announcement_done.is_set()  # expired ~0.1 s after start, not 5.1 s
+    await b.finalize()

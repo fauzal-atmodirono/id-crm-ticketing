@@ -1878,10 +1878,12 @@ class ChatRouter:
             custom = start_info.get("customParameters")
             notice_requested = isinstance(custom, dict) and custom.get(_NOTICE_PARAM) == "stream"
             notice_seconds: float | None = None
+            notice_sent_at: float | None = None
             stream_sid = str(start_info.get("streamSid") or "")
             if notice_requested and stream_sid:
                 audio = self._announcement_audio.get(settings.phone_recording_announcement)
                 if audio:
+                    notice_sent_at = time.monotonic()
                     notice_seconds = await self._play_notice(websocket, stream_sid, audio)
                 else:
                     _log.warning("phone_announcement_audio_missing_no_recording", call_sid=call_sid)
@@ -2031,6 +2033,7 @@ class ChatRouter:
                     dealer_slugs=dealer_slugs,
                     announcement_mark=_NOTICE_MARK if notice_requested else None,
                     announcement_seconds=notice_seconds or 0.0,
+                    announcement_sent_at=notice_sent_at,
                     timing=timing,
                     stream_started_at=stream_started_at,
                     greeting_prompt=_GREETING_PROMPT if settings.phone_fast_start_enabled else None,

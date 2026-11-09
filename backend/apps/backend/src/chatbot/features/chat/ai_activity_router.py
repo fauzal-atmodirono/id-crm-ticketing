@@ -114,6 +114,12 @@ def build_ai_activity_router(
         "ai_activity.view", repo=authz_repo, validator=validator, settings=settings
     )
     cache: dict[str, Any] = {"at": None, "body": None, "dims": {}}
+    # Final review M12: single-flight refresh. Without it, N admins polling
+    # on an expired cache each ran the full Chatwoot fan-out (two list calls
+    # plus a pause lookup per row). The fresh-cache read stays lock-free; a
+    # miss takes the lock and re-checks, so the waiters reuse the first
+    # caller's build.
+    refresh_lock = asyncio.Lock()
     data_scope = build_scope_dependency(settings, repo=authz_repo, validator=validator)
 
     async def _fetch(status: str, **kw: Any) -> list[dict[str, Any]] | None:
@@ -214,11 +220,15 @@ def build_ai_activity_router(
     async def ai_activity(
         scope: Scope = Depends(data_scope), pii: PiiPolicy = Depends(pii_policy)
     ) -> dict[str, Any]:
-        now = clock()
-        if cache["body"] is not None and now - cache["at"] < CACHE_SECONDS:
-            return pii.apply(_scoped(cache["body"], scope))
-        body, dims = await _build()
-        cache["at"], cache["body"], cache["dims"] = now, body, dims
-        return pii.apply(_scoped(body, scope))
+        def _fresh() -> bool:
+            return cache["body"] is not None and clock() - cache["at"] < CACHE_SECONDS
+
+        if not _fresh():
+            async with refresh_lock:
+                if not _fresh():
+                    now = clock()
+                    body, dims = await _build()
+                    cache["at"], cache["body"], cache["dims"] = now, body, dims
+        return pii.apply(_scoped(cache["body"], scope))
 
     return router

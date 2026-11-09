@@ -83,12 +83,22 @@ class IvrRoutes:
         bridge_twiml: Callable[[], str],
         fanout_identities: Callable[[], Awaitable[list[str]]],
         record_dial_outcome: Callable[[str, str], Awaitable[None]] | None = None,
+        hold_transfer_twiml: Callable[[str], Awaitable[str | None]] | None = None,
+        enter_acw: Callable[[str, str | None], Awaitable[None]] | None = None,
     ) -> None:
         self._settings = settings
         self._log_port = log_port
         self._bridge_twiml = bridge_twiml
         self._fanout_identities = fanout_identities
         self._record_dial_outcome = record_dial_outcome
+        # Final review I2: on an IVR call the parent <Dial action> is ring(),
+        # not /webhooks/phone/dial-status, so ring() must run the same two
+        # hooks that handler runs on an answered dial -- FIX-15 hold/transfer
+        # (the agent pressed Hold: caller goes to hold media, not <Hangup/>)
+        # and P6 After-Call-Work. Both are ChatRouter's own methods (bounded,
+        # fail-open); None = that feature is not wired.
+        self._hold_transfer_twiml = hold_transfer_twiml
+        self._enter_acw = enter_acw
 
     def register(self, router: APIRouter) -> None:
         router.add_api_route(ivr.PATH_LANGUAGE, self.language, methods=["POST"])
@@ -314,7 +324,19 @@ class IvrRoutes:
         # /webhooks/phone/dial-status (Task 18), once per call.
         if call_sid and self._record_dial_outcome is not None:
             background_tasks.add_task(self._record_dial_outcome, call_sid, status)
-        if status in _ANSWERED or status == "canceled":
+        if status in _ANSWERED:
+            # Same order as dial-status: abandon record, then the hold check
+            # (the agent may still be on the call, in a conference), then ACW.
+            if call_sid and self._hold_transfer_twiml is not None:
+                held = await self._hold_transfer_twiml(call_sid)
+                if held is not None:
+                    return _xml(held)
+            if call_sid and self._enter_acw is not None and settings.acw_enabled:
+                background_tasks.add_task(
+                    self._enter_acw, call_sid, params.get("DialCallSid") or None
+                )
+            return _xml(ivr.HANGUP_TWIML)
+        if status == "canceled":
             return _xml(ivr.HANGUP_TWIML)
         if cat == "rsa":
             # Safety: an unanswered RSA line must still reach help 24/7.

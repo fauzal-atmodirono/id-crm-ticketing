@@ -776,3 +776,117 @@ def test_slow_case_open_is_bounded_and_still_dials(clock) -> None:
 
 def test_case_open_timeout_defaults_to_3s() -> None:
     assert Settings(_env_file=None).phone_ivr_case_open_timeout_seconds == 3.0
+
+
+# --- final review I2: hold/transfer and ACW on an IVR-routed agent call -----
+#
+# On an IVR agent call the parent <Dial action> is /voice/phone/ivr/ring, not
+# /webhooks/phone/dial-status. When the agent presses Hold, the agent leg moves
+# into a conference and the <Dial> ends with DialCallStatus=completed; ring()
+# used to answer <Hangup/>, dropping the caller, and never started ACW.
+
+_HOLD_TWIML = "<Response><Enqueue>held-CA1</Enqueue></Response>"
+
+
+class _FakeHold:
+    def __init__(self, twiml: str | None) -> None:
+        self.twiml = twiml
+        self.asked: list[str] = []
+
+    async def caller_twiml_after_dial(self, caller_sid: str) -> str | None:
+        self.asked.append(caller_sid)
+        return self.twiml
+
+
+class _FakeAcw:
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    async def start_after_call(self, conversation_id: int, *, now: Any = None) -> int | None:
+        self.calls.append(conversation_id)
+        return 7
+
+
+class _AcwIvrLog(_IvrLog):
+    async def find_conversation_ticket(self, session_id: str) -> str | None:
+        return "42" if session_id == "phone-CA1" else None
+
+
+@pytest.mark.usefixtures("clock")
+@pytest.mark.parametrize("cat,stage", [("inquiry", "1"), ("complaint", "2"), ("rsa", "final")])
+def test_ivr_call_put_on_hold_gets_hold_twiml_not_hangup(cat: str, stage: str) -> None:
+    hold = _FakeHold(_HOLD_TWIML)
+    client, _ = _client(
+        _IvrLog(), settings=_agent_settings(phone_ivr_rsa_number=_RSA), hold_transfer=hold
+    )
+    xml = _post(
+        client, "/voice/phone/ivr/ring", {"lang": "en", "cat": cat, "stage": stage},
+        {"DialCallStatus": "completed"},
+    ).text
+    assert xml == _HOLD_TWIML
+    assert hold.asked == ["CA1"]
+
+
+@pytest.mark.usefixtures("clock")
+def test_ivr_answered_call_without_a_hold_session_still_hangs_up() -> None:
+    hold = _FakeHold(None)
+    client, _ = _client(_IvrLog(), settings=_agent_settings(), hold_transfer=hold)
+    xml = _post(
+        client, "/voice/phone/ivr/ring", {"lang": "en", "cat": "inquiry", "stage": "1"},
+        {"DialCallStatus": "completed"},
+    ).text
+    assert "<Hangup/>" in xml and "<Dial" not in xml
+    assert hold.asked == ["CA1"]
+
+
+@pytest.mark.usefixtures("clock")
+def test_ivr_unanswered_ring_does_not_ask_the_hold_hook() -> None:
+    hold = _FakeHold(_HOLD_TWIML)
+    client, _ = _client(_IvrLog(), settings=_agent_settings(), hold_transfer=hold)
+    xml = _text(
+        _post(
+            client, "/voice/phone/ivr/ring", {"lang": "en", "cat": "inquiry", "stage": "1"},
+            {"DialCallStatus": "no-answer"},
+        ).text
+    )
+    assert "stage=2" in xml
+    assert hold.asked == []
+
+
+@pytest.mark.usefixtures("clock")
+def test_ivr_answered_call_enters_acw() -> None:
+    acw = _FakeAcw()
+    client, _ = _client(
+        _AcwIvrLog(), settings=_agent_settings(acw_enabled=True), acw_controller=acw
+    )
+    xml = _post(
+        client, "/voice/phone/ivr/ring", {"lang": "en", "cat": "inquiry", "stage": "1"},
+        {"DialCallStatus": "completed"},
+    ).text
+    assert "<Hangup/>" in xml
+    assert acw.calls == [42]
+
+
+@pytest.mark.usefixtures("clock")
+def test_ivr_acw_respects_the_flag_and_the_hold() -> None:
+    acw = _FakeAcw()
+    client, _ = _client(
+        _AcwIvrLog(), settings=_agent_settings(acw_enabled=False), acw_controller=acw
+    )
+    _post(
+        client, "/voice/phone/ivr/ring", {"lang": "en", "cat": "inquiry", "stage": "1"},
+        {"DialCallStatus": "completed"},
+    )
+    assert acw.calls == []
+    # Held: the agent is still on the call -- ACW starts at the conference
+    # leave event instead, exactly as on /webhooks/phone/dial-status.
+    acw = _FakeAcw()
+    client, _ = _client(
+        _AcwIvrLog(), settings=_agent_settings(acw_enabled=True),
+        acw_controller=acw, hold_transfer=_FakeHold(_HOLD_TWIML),
+    )
+    _post(
+        client, "/voice/phone/ivr/ring", {"lang": "en", "cat": "inquiry", "stage": "1"},
+        {"DialCallStatus": "completed"},
+    )
+    assert acw.calls == []

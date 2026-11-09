@@ -24,7 +24,11 @@ import structlog
 from chatbot.features.chat.case_state import CHATWOOT_CASE_STATE_ATTR, CaseState
 from chatbot.features.chat.escalation_attachments import AttachmentFetcher
 from chatbot.features.chat.escalation_attachments import collect as collect_attachments
-from chatbot.features.chat.audit_events import EVENT_ESCALATION_NOTIFY, record_event
+from chatbot.features.chat.audit_events import (
+    EVENT_ESCALATION_NOTIFY,
+    mask_recipient,
+    record_event,
+)
 from chatbot.features.chat.settings_facade import get_effective_value
 
 # Delivery outcomes recorded on each escalation leg. `delivered` means the SMTP
@@ -280,7 +284,10 @@ class EscalationNotifier:
             remarks=error,
             sla_status=sla_status,
             actor_source=actor_source or "agent-service",
-            recipients=list(recipients),
+            # Final review M2: same trail rule as the ladder -- e-mail in
+            # full, a phone-shaped recipient masked (privacy.pii). The
+            # operator note below still names it in full.
+            recipients=[mask_recipient(r) for r in recipients],
             transport=transport,
             delivery_status=status,
         )

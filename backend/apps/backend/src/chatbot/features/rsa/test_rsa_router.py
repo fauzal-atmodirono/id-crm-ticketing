@@ -153,3 +153,16 @@ def test_rsa_shared_key_ok_when_rbac_off():
     c = _rbac_client(rbac_enabled=False)
     assert c.get("/rsa/incidents", headers=_headers()).status_code == 200
     assert c.get("/rsa/incidents").status_code == 401
+
+
+def test_csv_export_neutralises_formula_cells(client):
+    """Final review M1: operator-typed text starting with = + - @ is exported
+    with a leading apostrophe so a spreadsheet shows it instead of running it."""
+    client.post(
+        "/rsa/incidents",
+        json={"incident_date": "2026-07-01", "vehicle_no": "A1", "cause": "=HYPERLINK(\"x\")"},
+        headers=_headers(),
+    )
+    response = client.get("/rsa/incidents/export?format=csv", headers=_headers())
+    assert "'=HYPERLINK" in response.text
+    assert ",=HYPERLINK" not in response.text

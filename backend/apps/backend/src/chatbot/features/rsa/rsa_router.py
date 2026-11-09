@@ -26,6 +26,7 @@ from chatbot.features.authz.data_scope import (
     require_unrestricted,
 )
 from chatbot.features.authz.deps import require_permission
+from chatbot.features.metrics.export import spreadsheet_safe
 from chatbot.features.privacy.access import PiiPolicy, build_pii_dependency
 
 
@@ -161,7 +162,9 @@ def build_rsa_router(repo, settings, authz_repo=None, validator=None) -> APIRout
             writer.writerow(fieldnames)
             for row in rows:
                 record = pii.apply(_incident_dict(row))
-                writer.writerow([record.get(f) for f in fieldnames])
+                # Final review M1: free-text fields (cause, remarks) are
+                # operator-typed; never let one run as a formula.
+                writer.writerow([spreadsheet_safe(record.get(f)) for f in fieldnames])
         else:
             writer.writerow(["(no data)"])
         return Response(

@@ -320,3 +320,24 @@ def test_oversize_attachment_is_skipped_with_a_note(monkeypatch: pytest.MonkeyPa
     msg = email.sent[0]
     assert [a[0].rsplit(".", 1)[1] for a in msg["attachments"]] == ["pdf"]
     assert "xlsx" in msg["body"] and "20 MB" in msg["body"]
+
+
+def test_weekly_xlsx_neutralises_formula_cells() -> None:
+    """Final review M1: a dealer/PIC name starting with = + - @ must not run
+    as a formula in the downloaded workbook."""
+    from chatbot.features.metrics.query_port import DealerEscalationMetrics, DealerEscalationRow
+
+    class Evil(MockMetricsQuery):
+        async def fetch_dealer_escalation(self, *a: Any, **k: Any) -> Any:
+            return DealerEscalationMetrics(
+                by_dealer=[DealerEscalationRow("=cmd|' /C calc'!A0", 1, None, None, None)],
+                slowest_cases=[],
+            )
+
+    report = asyncio.run(fetch_weekly_report(Evil(), last_full_week(date(2026, 11, 11))))
+    wb = load_workbook(io.BytesIO(render_weekly_xlsx(report)))
+    cells = [
+        c.value for ws in wb.worksheets for row in ws.iter_rows() for c in row
+        if isinstance(c.value, str) and "calc" in c.value
+    ]
+    assert cells == ["'=cmd|' /C calc'!A0"]

@@ -222,3 +222,22 @@ async def test_the_note_can_be_switched_off():
     poster = _Poster()
     await _notify(_Sender(fail_for={"pic@test"}), poster=poster, settings=settings)
     assert not [c for c in poster.calls if c.get("private")]
+
+
+async def test_phone_shaped_recipients_are_masked_in_the_trail_like_the_ladder():
+    """Final review M2: same rule as escalation_ladder (privacy.pii.
+    mask_recipient): e-mail kept in full, a phone-shaped recipient masked to
+    its last 3 digits. The operator's failure note still names it in full."""
+    audit = InMemoryAuditLog()
+    poster = _Poster()
+    notifier = EscalationNotifier(
+        _Settings(), _Registry(), _Sender(), None, _noop_cw,
+        dealer_store=_DealerStore(), chatwoot_post_message=poster, audit=audit,
+    )
+    await notifier._record_delivery(
+        "42", leg="customer_ack", recipients=["+60123456789", "pic@test"],
+        transport="whatsapp", ok=False, error="boom",
+    )
+    (entry,) = await audit.list_for_ticket("42")
+    assert entry.recipients == ["********789", "pic@test"]
+    assert any("+60123456789" in str(c) for c in poster.calls)

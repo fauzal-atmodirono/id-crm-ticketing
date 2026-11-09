@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from dataclasses import fields
 from typing import TYPE_CHECKING, Any, cast
 
@@ -21,6 +22,29 @@ from reportlab.platypus import (  # type: ignore[import-untyped]
 
 if TYPE_CHECKING:
     from chatbot.features.metrics.query_port import DashboardMetrics
+
+
+# Final review M1: a text cell starting with one of these is read as a
+# formula by Excel/Sheets/LibreOffice (CSV and XLSX alike) -- "=HYPERLINK(...)"
+# in a dealer name or an RSA cause would run when an operator opens the
+# download. OWASP's mitigation: prefix a single quote, which every spreadsheet
+# shows as text. Only strings are touched; numbers (incl. negatives) are not.
+# One exemption: a plain phone number ("+60 12-345 6789", or its masked form
+# "+60•••••6789") has no letters, operators or references, so it cannot call
+# anything; it is left as is so phone columns stay usable.
+_FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+_PLAIN_PHONE = re.compile(r"\+[0-9 ()\-•*]+")
+
+
+def spreadsheet_safe(value: Any) -> Any:
+    """`value`, with a leading "'" if it is a string a spreadsheet would run."""
+    if (
+        isinstance(value, str)
+        and value.startswith(_FORMULA_TRIGGERS)
+        and not _PLAIN_PHONE.fullmatch(value)
+    ):
+        return "'" + value
+    return value
 
 
 def _blocks(metrics: Any) -> list[tuple[str, list[Any]]]:
@@ -62,7 +86,7 @@ def render_xlsx(metrics: DashboardMetrics) -> bytes:
             field_names = _exportable_field_names(rows)
             ws.append(field_names)
             for row in rows:
-                ws.append([getattr(cast(Any, row), n) for n in field_names])
+                ws.append([spreadsheet_safe(getattr(cast(Any, row), n)) for n in field_names])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -113,7 +137,9 @@ def render_csv(metrics: Any) -> bytes:
             field_names = _exportable_field_names(rows)
             writer.writerow(field_names)
             for row in rows:
-                writer.writerow([getattr(cast(Any, row), n) for n in field_names])
+                writer.writerow(
+                    [spreadsheet_safe(getattr(cast(Any, row), n)) for n in field_names]
+                )
         else:
             writer.writerow(["(no data)"])
         writer.writerow([])

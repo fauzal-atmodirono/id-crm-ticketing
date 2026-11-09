@@ -41,7 +41,7 @@ from reportlab.platypus import (  # type: ignore[import-untyped]
     TableStyle,
 )
 
-from chatbot.features.metrics.export import _blocks, _exportable_field_names
+from chatbot.features.metrics.export import _blocks, _exportable_field_names, spreadsheet_safe
 from chatbot.features.metrics.period import PeriodRange
 
 if TYPE_CHECKING:
@@ -228,7 +228,7 @@ def render_weekly_xlsx(report: WeeklyReport) -> bytes:
                 names = _exportable_field_names(rows)
                 ws.append(names)
                 for r in rows:
-                    ws.append([getattr(cast(Any, r), n) for n in names])
+                    ws.append([spreadsheet_safe(getattr(cast(Any, r), n)) for n in names])
     out = io.BytesIO()
     wb.save(out)
     return out.getvalue()

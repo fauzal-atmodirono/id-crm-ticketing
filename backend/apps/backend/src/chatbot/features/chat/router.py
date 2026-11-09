@@ -557,6 +557,13 @@ class ChatRouter:
                 record_dial_outcome=(
                     self._record_dial_outcome if abandon_store is not None else None
                 ),
+                # Final review I2: hold/transfer + ACW on IVR agent calls.
+                hold_transfer_twiml=(
+                    self._hold_transfer_twiml if hold_transfer is not None else None
+                ),
+                enter_acw=(
+                    self._enter_acw_best_effort if acw_controller is not None else None
+                ),
             )
             self._ivr.register(self.router)
 

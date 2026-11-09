@@ -576,3 +576,36 @@ async def test_put_role_scope_unknown_role_reread_failure_and_unchanged_audit(tm
     assert res.json()["scope"]["dealer_slugs"] == ["penang"]
     repo.get_role_scope = real_get  # type: ignore[method-assign]
     assert (await repo.get_role_scope("kl_dealer")).dealer_slugs == {"penang"}
+
+
+async def test_dealer_and_case_aging_csv_exports_follow_their_json_routes(tmp_path) -> None:
+    """Final review M3: the two CSV exports whose JSON routes are scoped
+    (dealer-escalation, case-aging) serve a scoped caller filtered rows, like
+    those routes; the rest of the export router still refuses one (403)."""
+    from chatbot.features.metrics.export_router import build_metrics_export_router
+
+    repo = await _repo_with_scoped_user(tmp_path, Scope.build(dealer_slugs=["kl"]))
+    fake = _ScopeHonouringClient(
+        {
+            "v_dealer_escalation": [_dealer_rows("kl"), _dealer_rows("penang")],
+            "v_dealer_escalation_slowest_cases": [],
+        }
+    )
+    settings = scoped_settings(metrics_api_key=METRICS_KEY, metrics_provider="bigquery")
+    port = BigQueryMetricsQuery(settings, client=fake)
+    client = _client(
+        build_metrics_export_router(port, settings), repo=repo, validator=FakeValidator(TOKENS)
+    )
+    headers = {"x-api-key": METRICS_KEY, **session("scoped")}
+
+    res = client.get("/metrics/dealer-escalation/export", headers=headers)
+    assert res.status_code == 200, res.text
+    assert "penang" not in res.text and "kl" in res.text
+    assert client.get("/metrics/case-aging/export", headers=headers).status_code == 200
+    for path in ("sla-buckets", "volume-by-type", "departments"):
+        assert client.get(f"/metrics/{path}/export", headers=headers).status_code == 403, path
+    assert client.get("/metrics/weekly-report/export", headers=headers).status_code == 403
+    admin = client.get(
+        "/metrics/dealer-escalation/export", headers={"x-api-key": METRICS_KEY, **session("admin")}
+    )
+    assert "penang" in admin.text

@@ -278,3 +278,31 @@ async def test_adapter_listing_flags_truncation_and_filters_label() -> None:
     adapter._request = fails_second  # type: ignore[method-assign]
     out = await adapter.list_conversations_by_status("pending", max_pages=3)
     assert out.truncated is True and len(out) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cache_misses_build_once():
+    """Final review M12: N admins polling at once on an expired cache must
+    trigger ONE Chatwoot refresh (single-flight), not N."""
+    from chatbot.features.authz.data_scope import UNRESTRICTED
+    from chatbot.features.privacy.access import UNMASKED
+
+    chatwoot = _fake_chatwoot(pending=[_conv(1, last=_msg("hi", message_type=0))])
+    inner = chatwoot.list_conversations_by_status.side_effect
+
+    async def slow(status, **kw):
+        await asyncio.sleep(0.05)
+        return await inner(status, **kw)
+
+    chatwoot.list_conversations_by_status.side_effect = slow
+    now = [1000.0]
+    router = build_ai_activity_router(
+        chatwoot, None, None, get_settings(), clock=lambda: now[0]
+    )
+    endpoint = next(r.endpoint for r in router.routes if r.path == "/admin/ai-activity")
+
+    bodies = await asyncio.gather(
+        *(endpoint(scope=UNRESTRICTED, pii=UNMASKED) for _ in range(5))
+    )
+    assert chatwoot.list_conversations_by_status.await_count == 2  # one refresh = 2 sources
+    assert all(b["conversations"] == bodies[0]["conversations"] for b in bodies)

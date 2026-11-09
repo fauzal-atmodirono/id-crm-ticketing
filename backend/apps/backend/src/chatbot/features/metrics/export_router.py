@@ -22,7 +22,10 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import Response
 
-from chatbot.features.authz.data_scope import build_unscoped_only_dependency
+from chatbot.features.authz.data_scope import (
+    build_report_scope_dependency,
+    build_unscoped_only_dependency,
+)
 from chatbot.features.metrics.export import render_csv, render_pdf, render_xlsx
 from chatbot.features.metrics.period import PeriodRange
 from chatbot.features.metrics.weekly_report import (
@@ -43,13 +46,16 @@ _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def build_metrics_export_router(port: MetricsQueryPort, settings: Settings) -> APIRouter:
-    # Wave 2 Task 28: no view behind this router carries a scope dimension
-    # on every block, so a data-scoped caller is refused (data_scope.py rule
-    # 6). Flag off: a no-op that never reads the session.
-    router = APIRouter(
-        tags=["metrics"],
-        dependencies=[Depends(build_unscoped_only_dependency(settings, "The report export"))],
-    )
+    # Wave 2 Task 28: every route declares a data-scope stance, the same one
+    # as its JSON twin in insights_router.py. `unscoped_only`: no scope
+    # dimension on every block, so a data-scoped caller is refused
+    # (data_scope.py rule 6). `scoped` (final review M3): the dealer-
+    # escalation and case-aging CSVs read the same scope-aware views as their
+    # scoped JSON routes, so they serve a scoped caller filtered rows instead
+    # of a 403. Flag off: both are no-ops that never read the session.
+    router = APIRouter(tags=["metrics"])
+    unscoped_only = [Depends(build_unscoped_only_dependency(settings, "The report export"))]
+    scoped = [Depends(build_report_scope_dependency(settings, port))]
 
     def _require_key(x_api_key: str | None) -> None:
         key = settings.metrics_api_key
@@ -60,7 +66,7 @@ def build_metrics_export_router(port: MetricsQueryPort, settings: Settings) -> A
         ):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
-    @router.get("/metrics/export")
+    @router.get("/metrics/export", dependencies=unscoped_only)
     async def export(format: str = "xlsx") -> Response:
         metrics = await port.fetch_dashboard()
         if format == "xlsx":
@@ -77,7 +83,7 @@ def build_metrics_export_router(port: MetricsQueryPort, settings: Settings) -> A
             )
         raise HTTPException(status_code=400, detail="format must be xlsx or pdf")
 
-    @router.get("/metrics/weekly-report/export")
+    @router.get("/metrics/weekly-report/export", dependencies=unscoped_only)
     async def export_weekly(
         format: str = "pdf",
         week_of: str | None = None,
@@ -122,8 +128,10 @@ def build_metrics_export_router(port: MetricsQueryPort, settings: Settings) -> A
             headers={"Content-Disposition": f"attachment; filename={stem}.xlsx"},
         )
 
-    def _csv_route(path: str, filename: str, fetch: Callable[[], Awaitable[Any]]) -> None:
-        @router.get(path, name=f"export_csv_{filename}")
+    def _csv_route(
+        path: str, filename: str, fetch: Callable[[], Awaitable[Any]], dependencies: list[Any]
+    ) -> None:
+        @router.get(path, name=f"export_csv_{filename}", dependencies=dependencies)
         async def _export_csv(x_api_key: str | None = Header(default=None)) -> Response:
             _require_key(x_api_key)
             metrics = await fetch()
@@ -133,10 +141,17 @@ def build_metrics_export_router(port: MetricsQueryPort, settings: Settings) -> A
                 headers={"Content-Disposition": f"attachment; filename={filename}.csv"},
             )
 
-    _csv_route("/metrics/dealer-escalation/export", "dealer-escalation", port.fetch_dealer_escalation)
-    _csv_route("/metrics/sla-buckets/export", "sla-buckets", port.fetch_sla_buckets)
-    _csv_route("/metrics/case-aging/export", "case-aging", port.fetch_case_aging)
-    _csv_route("/metrics/volume-by-type/export", "volume-by-type", port.fetch_volume_by_type_division)
-    _csv_route("/metrics/departments/export", "departments", port.fetch_departments)
+    _csv_route(
+        "/metrics/dealer-escalation/export", "dealer-escalation", port.fetch_dealer_escalation, scoped
+    )
+    _csv_route("/metrics/sla-buckets/export", "sla-buckets", port.fetch_sla_buckets, unscoped_only)
+    _csv_route("/metrics/case-aging/export", "case-aging", port.fetch_case_aging, scoped)
+    _csv_route(
+        "/metrics/volume-by-type/export",
+        "volume-by-type",
+        port.fetch_volume_by_type_division,
+        unscoped_only,
+    )
+    _csv_route("/metrics/departments/export", "departments", port.fetch_departments, unscoped_only)
 
     return router

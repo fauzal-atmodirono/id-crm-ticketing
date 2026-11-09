@@ -521,6 +521,7 @@ async def _process_conversation(conversation_id: int) -> None:
     # customer_context empty, which makes _build_system_prompt a no-op. Runs as
     # part of a background task, so it must never raise (see CLAUDE.md).
     customer_context = ""
+    caller_context = ""
     # Hoisted out of the try so they survive a failure inside it: a contact we
     # could not read must degrade to "no profiling this turn", not to a
     # NameError at the call site below.
@@ -558,6 +559,13 @@ async def _process_conversation(conversation_id: int) -> None:
                 else ""
             )
             customer_context = format_customer_context(contact_attributes)
+            # Chat-side caller context (flag, default off): the same minimal
+            # "who is this" view the phone line uses. Fail-open ("" on error).
+            if settings.chat_caller_context_enabled and proton is not None:
+                phone = (body.get("phone_number") if isinstance(body, dict) else None) or (
+                    sender.get("phone_number")
+                )
+                caller_context = await proton.get_contact_context(str(phone or ""))
     except Exception:
         logger.debug(
             "orchestrator: could not resolve customer context for conversation %s; "
@@ -566,7 +574,9 @@ async def _process_conversation(conversation_id: int) -> None:
         )
 
     system_prompt = _build_system_prompt(
-        persona, customer_context, settings.investor_profiling_enabled
+        persona,
+        "\n\n".join(c for c in (customer_context, caller_context) if c),
+        settings.investor_profiling_enabled,
     )
 
     # Fetch persona messages for the inbox (fail-open: None on any error).
@@ -603,6 +613,7 @@ async def _process_conversation(conversation_id: int) -> None:
         await _process_via_chat_agent(
             conversation_id, message_list, effective_mode, chatwoot, handoff_message,
             inbox_id=inbox_id,
+            caller_context=caller_context,
         )
         return
 
@@ -827,6 +838,7 @@ async def _process_via_chat_agent(
     chatwoot,
     handoff_message: str,
     inbox_id: int | None = None,
+    caller_context: str = "",
 ) -> None:
     """Drive one turn through the backend ADK agent (POST /chat/turn) and map the
     result onto Chatwoot. Chatwoot owns the handoff; the backend only signals it.
@@ -889,6 +901,12 @@ async def _process_via_chat_agent(
                 settings.whatsapp_media_understanding_enabled,
             )
         return
+
+    if caller_context:
+        # The chat agent's instruction is composed in the backend and
+        # /chat/turn takes no extra context field, so the CRM view travels as
+        # a clearly-marked note ahead of the customer's own words.
+        text = f"[{caller_context}]\n\n{text}" if text else f"[{caller_context}]"
 
     proton = get_proton_config_client()
     result = (

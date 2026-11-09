@@ -362,6 +362,26 @@ class ProtonConfigClient:
             for doc in documents
         )
 
+    async def get_contact_context(self, phone: str) -> str:
+        """The backend's chat caller-context paragraph for a phone number
+        (GET /agent/contact-context), or "" on no match, any error, non-2xx
+        or a malformed body -- never raises. Short timeout: it runs before
+        the bot's turn. Not cached (the contact changes as the bot saves)."""
+        if not phone:
+            return ""
+        try:
+            response = await self._client.get(
+                "/agent/contact-context", params={"phone": phone}, timeout=3.0
+            )
+            if response.status_code != 200:
+                return ""
+            data = response.json()
+            text = data.get("instruction") if isinstance(data, dict) else None
+            return text.strip() if isinstance(text, str) else ""
+        except Exception:
+            logger.debug("proton_config: contact context lookup failed", exc_info=True)
+            return ""
+
     async def chat_turn(
         self,
         session_id: str,

@@ -519,3 +519,128 @@ async def test_chat_agent_attachment_fetch_failure_falls_back_gracefully(monkeyp
     await _run(monkeypatch)
 
     assert not chat_turn.called
+
+
+# --- Chat-side caller context (CHAT_CALLER_CONTEXT_ENABLED) -----------------
+
+_CTX_INSTRUCTION = (
+    "CUSTOMER CONTEXT (from our CRM records, not written by the customer): this "
+    "customer matches first name Ahmad, car Proton X50 (plate ending 1101)."
+)
+
+
+def _mock_contact_routes():
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                **CONVERSATION_RESPONSE,
+                "meta": {"sender": {"id": 55, "phone_number": "+60000000101"}},
+            },
+        )
+    )
+    respx.get(f"{CHATWOOT}/api/v1/accounts/1/contacts/55").mock(
+        return_value=httpx.Response(
+            200, json={"payload": {"id": 55, "phone_number": "+60000000101", "custom_attributes": {}}}
+        )
+    )
+
+
+def _chat_turn_ok():
+    return respx.post(f"{PROTON}/chat/turn").mock(
+        return_value=httpx.Response(
+            200,
+            json={"reply": "Hello", "handoff": None, "products": [], "forwarded_to_agent": False},
+        )
+    )
+
+
+@respx.mock
+async def test_caller_context_flag_on_prefixes_the_crm_note_to_the_chat_turn(monkeypatch):
+    import json
+
+    monkeypatch.setattr(get_settings(), "chat_caller_context_enabled", True)
+    _mock_common_routes("auto")
+    _mock_contact_routes()  # after: replaces the meta-less conversation route
+    ctx_route = respx.get(f"{PROTON}/agent/contact-context").mock(
+        return_value=httpx.Response(200, json={"view": {}, "instruction": _CTX_INSTRUCTION})
+    )
+    chat_turn = _chat_turn_ok()
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json={"id": 1})
+    )
+
+    await _run(monkeypatch)
+
+    assert ctx_route.calls.last.request.url.params["phone"] == "+60000000101"
+    sent = json.loads(chat_turn.calls.last.request.content)["text"]
+    assert sent.startswith("[" + _CTX_INSTRUCTION + "]")
+    assert sent.endswith("ada detail spesification?")
+
+
+@respx.mock
+async def test_caller_context_flag_off_never_asks_and_text_is_unchanged(monkeypatch):
+    import json
+
+    _mock_common_routes("auto")
+    _mock_contact_routes()  # after: replaces the meta-less conversation route
+    ctx_route = respx.get(f"{PROTON}/agent/contact-context")
+    chat_turn = _chat_turn_ok()
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json={"id": 1})
+    )
+
+    await _run(monkeypatch)
+
+    assert not ctx_route.called
+    assert json.loads(chat_turn.calls.last.request.content)["text"] == "ada detail spesification?"
+
+
+@respx.mock
+async def test_caller_context_failure_is_fail_open(monkeypatch):
+    import json
+
+    monkeypatch.setattr(get_settings(), "chat_caller_context_enabled", True)
+    _mock_common_routes("auto")
+    _mock_contact_routes()  # after: replaces the meta-less conversation route
+    respx.get(f"{PROTON}/agent/contact-context").mock(return_value=httpx.Response(500))
+    chat_turn = _chat_turn_ok()
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json={"id": 1})
+    )
+
+    await _run(monkeypatch)
+
+    assert json.loads(chat_turn.calls.last.request.content)["text"] == "ada detail spesification?"
+
+
+@respx.mock
+async def test_caller_context_reaches_the_legacy_router_system_prompt(monkeypatch):
+    from app.ai.gemini import Decision
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "chat_agent_enabled", False)
+    monkeypatch.setattr(settings, "chat_caller_context_enabled", True)
+    seen: list[str] = []
+
+    async def _capture(system_prompt, *args, **kwargs):
+        seen.append(system_prompt)
+        return Decision("handoff_to_human", {}, None, None)
+
+    monkeypatch.setattr(gemini, "decide", _capture)
+    _mock_common_routes("auto")
+    _mock_contact_routes()  # after: replaces the meta-less conversation route
+    respx.get(f"{PROTON}/agent/contact-context").mock(
+        return_value=httpx.Response(200, json={"view": {}, "instruction": _CTX_INSTRUCTION})
+    )
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/messages").mock(
+        return_value=httpx.Response(200, json={"id": 1})
+    )
+    respx.post(f"{CHATWOOT}/api/v1/accounts/1/conversations/42/toggle_status").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.route().mock(return_value=httpx.Response(200, json={}))
+
+    await _run(monkeypatch)
+
+    assert seen and seen[0].endswith(_CTX_INSTRUCTION)

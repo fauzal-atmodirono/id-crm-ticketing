@@ -65,6 +65,16 @@ class Settings(BaseSettings):
     # matching the Proton website agent. Default False = legacy router (byte-
     # identical). Supersedes kb_grounded_replies on this path when enabled.
     chat_agent_enabled: bool = False
+    # Chat-side caller context (2026-11-09). When the bot answers, fetch the
+    # backend's minimal "who is this" view of the contact's phone number
+    # (GET /agent/contact-context: first name, car model(s), plate last 4,
+    # usual dealer -- never the phone, surname or full plate) and give it to
+    # the AI: appended to the legacy router's system prompt, or, on the
+    # chat_agent_enabled path (whose instruction lives in the backend), as a
+    # bracketed CRM note ahead of the customer's text. Needs the backend's
+    # CHAT_CALLER_CONTEXT_ENABLED (same env var, both services). Default
+    # False = no lookup, prompts byte-identical. Fail-open.
+    chat_caller_context_enabled: bool = False
     # Voice-note + image understanding for the agent-bot's chat-agent path
     # (orchestrator.py's _process_via_chat_agent, chat_agent_enabled=True
     # only). Default False = today's text-only behavior, byte-identical.

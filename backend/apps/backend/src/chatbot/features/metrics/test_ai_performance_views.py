@@ -41,6 +41,11 @@ AI_VIEWS = (
 )
 
 
+
+def _esc(value: str) -> str:
+    """How _sql_string escapes a literal for BigQuery (backslash, not doubled quotes)."""
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
 def _ddls() -> dict[str, str]:
     return view_ddls(PROJECT, DATASET)
 
@@ -82,7 +87,7 @@ def test_the_deflection_definition_string_is_returned_with_the_report() -> None:
     """On the report, not in a comment -- a caption is droppable."""
     sql = _ddls()["v_ai_deflection"]
     assert "AS deflection_definition" in sql
-    assert AI_DEFLECTION_DEFINITION.replace("'", "''") in sql
+    assert _esc(AI_DEFLECTION_DEFINITION) in sql
     # the definition says the thing that distinguishes the two readings
     assert "NOT deflected" in AI_DEFLECTION_DEFINITION
     assert "before a human took over" in AI_DEFLECTION_DEFINITION
@@ -100,7 +105,7 @@ def test_ai_vs_human_volumes_sum_to_the_total_case_count() -> None:
     assert "WHERE" not in sql, "a filtered view cannot sum to the case count"
     # and the bucket total travels on the row so the sum is checkable without
     # a second query
-    assert "SUM(COUNT(*)) OVER (PARTITION BY DATE(created_at), channel) AS cases_in_bucket" in sql
+    assert "SUM(cases) OVER (PARTITION BY day, channel) AS cases_in_bucket" in sql
 
 
 def test_escalation_reasons_are_grouped_by_the_handoff_reason() -> None:
@@ -169,9 +174,9 @@ def test_no_ai_report_is_built_on_resolved_by() -> None:
     # the reader off it -- so strip the quoted literals before checking that
     # no *expression* touches the column.
     literals = (
-        AI_RESOLUTION_BASIS.replace("'", "''"),
-        AI_DEFLECTION_DEFINITION.replace("'", "''"),
-        AI_HANDOFF_REASON_BASIS.replace("'", "''"),
+        _esc(AI_RESOLUTION_BASIS),
+        _esc(AI_DEFLECTION_DEFINITION),
+        _esc(AI_HANDOFF_REASON_BASIS),
     )
     for view in AI_VIEWS:
         sql = ddls[view]
@@ -194,7 +199,7 @@ def test_the_four_reports_share_one_definition_of_human_involvement() -> None:
 
 def test_the_resolution_basis_is_returned_on_every_report_that_uses_it() -> None:
     ddls = _ddls()
-    escaped = AI_RESOLUTION_BASIS.replace("'", "''")
+    escaped = _esc(AI_RESOLUTION_BASIS)
     for view in ("v_ai_resolution", "v_ai_vs_human", "v_csat_by_resolution"):
         assert "AS resolution_basis" in ddls[view], view
         assert escaped in ddls[view], view
@@ -261,7 +266,7 @@ def test_ai_accuracy_view_counts_ai_resolved_cases_that_stayed_resolved() -> Non
     # denominator travels with the rate
     assert "AS ai_resolved" in sql
     assert "AS accuracy_basis" in sql
-    assert AI_ACCURACY_BASIS.replace("'", "''") in sql
+    assert _esc(AI_ACCURACY_BASIS) in sql
     assert "draft" in AI_ACCURACY_BASIS.lower(), "must say draft acceptance is not measured"
 
 
@@ -281,7 +286,7 @@ def test_ai_root_cause_view_ranks_categories_with_week_over_week_growth() -> Non
     # growth is NULL for a brand-new issue, never infinity or 0
     assert "SAFE_DIVIDE(w.cases - COALESCE(p.cases, 0), NULLIF(p.cases, 0)) AS wow_growth_rate" in sql
     assert "AS root_cause_basis" in sql
-    assert AI_ROOT_CAUSE_BASIS.replace("'", "''") in sql
+    assert _esc(AI_ROOT_CAUSE_BASIS) in sql
 
 
 def test_ai_kb_improvement_view_lists_unanswered_topics_for_faq_updates() -> None:
@@ -296,7 +301,7 @@ def test_ai_kb_improvement_view_lists_unanswered_topics_for_faq_updates() -> Non
     assert "AS faq_suggestion" in sql
     assert "GROUP BY day, topic, faq_suggestion, kb_basis" in sql
     assert "AS kb_basis" in sql
-    assert AI_KB_IMPROVEMENT_BASIS.replace("'", "''") in sql
+    assert _esc(AI_KB_IMPROVEMENT_BASIS) in sql
     assert "agent search" in AI_KB_IMPROVEMENT_BASIS.lower(), "must name the missing search signal"
 
 
@@ -323,3 +328,24 @@ def test_w2_views_never_claim_capabilities_the_warehouse_cannot_back() -> None:
 def test_root_cause_week_complete_uses_the_reporting_timezone() -> None:
     zoned = view_ddls(PROJECT, DATASET, reporting_timezone="Asia/Kuala_Lumpur")
     assert "CURRENT_DATE('Asia/Kuala_Lumpur')" in zoned["v_ai_root_cause"]
+
+
+def test_sql_string_uses_bigquery_backslash_escaping() -> None:
+    # GoogleSQL has no doubled-quote escape: 'a''b' is a syntax error that made
+    # CREATE VIEW v_kb_coverage fail on proton and stopped ensure_views.
+    from chatbot.features.metrics.bigquery_schema import _sql_string
+
+    assert _sql_string("it's") == "'it\\'s'"
+    assert _sql_string("a\\b") == "'a\\\\b'"
+    assert _sql_string("Subcategory='Unresolved Query'") == "'Subcategory=\\'Unresolved Query\\''"
+
+
+def test_window_views_aggregate_before_the_window() -> None:
+    # BigQuery rejects PARTITION BY on a raw column of a grouped query
+    # ("neither grouped nor aggregated"); both views window over a subquery.
+    ddls = _ddls()
+    for view in ("v_ai_vs_human", "v_ai_escalation_reasons"):
+        sql = ddls[view]
+        assert "SUM(COUNT(*)) OVER" not in sql, view
+        assert "OVER (PARTITION BY day" in sql, view
+        assert " FROM (SELECT " in sql, view

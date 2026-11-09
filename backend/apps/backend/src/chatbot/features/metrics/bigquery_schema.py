@@ -786,29 +786,36 @@ def view_ddls(
         # `v_concern_pivot` was written to avoid.
         "v_ai_vs_human": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_ai_vs_human` AS "
+            # The window runs over the grouped rows in an outer SELECT:
+            # BigQuery rejects a PARTITION BY on the raw column of a grouped
+            # query ("neither grouped nor aggregated").
+            f"SELECT day, channel, resolution_path, cases, "
+            f"SUM(cases) OVER (PARTITION BY day, channel) AS cases_in_bucket, "
+            f"resolution_basis FROM ("
             f"SELECT {d_created} AS day, channel, "
             f"CASE WHEN NOT ({_RESOLVED_SQL}) THEN 'unresolved' "
             f"WHEN {_HUMAN_TOUCH_SQL} THEN 'agent_resolved' "
             f"ELSE 'ai_resolved' END AS resolution_path, "
             f"COUNT(*) AS cases, "
-            f"SUM(COUNT(*)) OVER (PARTITION BY {d_created}, channel) AS cases_in_bucket, "
             f"{_sql_string(AI_RESOLUTION_BASIS)} AS resolution_basis "
-            f"FROM {fq} GROUP BY day, channel, resolution_path, resolution_basis"
+            f"FROM {fq} GROUP BY day, channel, resolution_path, resolution_basis)"
         ),
         # A `not_classified` bucket of its own, never folded into another
         # reason: an escalation nobody classified is a gap in classification,
         # not a category of problem.
         "v_ai_escalation_reasons": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_ai_escalation_reasons` AS "
+            f"SELECT day, handoff_reason, cases, "
+            f"SUM(cases) OVER (PARTITION BY day) AS escalated_cases, "
+            f"SAFE_DIVIDE(cases, SUM(cases) OVER (PARTITION BY day)) "
+            f"AS share_of_escalations, "
+            f"handoff_reason_basis FROM ("
             f"SELECT {d_created} AS day, "
             f"COALESCE(NULLIF(TRIM(subcategory), ''), 'not_classified') AS handoff_reason, "
             f"COUNT(*) AS cases, "
-            f"SUM(COUNT(*)) OVER (PARTITION BY {d_created}) AS escalated_cases, "
-            f"SAFE_DIVIDE(COUNT(*), SUM(COUNT(*)) OVER (PARTITION BY {d_created})) "
-            f"AS share_of_escalations, "
             f"{_sql_string(AI_HANDOFF_REASON_BASIS)} AS handoff_reason_basis "
             f"FROM {fq} WHERE {_HUMAN_TOUCH_SQL} "
-            f"GROUP BY day, handoff_reason, handoff_reason_basis "
+            f"GROUP BY day, handoff_reason, handoff_reason_basis) "
             f"ORDER BY cases DESC"
         ),
         "v_ai_deflection": (
@@ -1196,10 +1203,11 @@ AI_COST_EXCLUDED_TOKEN_CLASSES: tuple[str, ...] = (
 
 
 def _sql_string(value: str) -> str:
-    """A single-quoted SQL literal. Doubles embedded quotes -- these strings
-    are ours, but a reason sentence acquiring an apostrophe must not be able
-    to produce a view that fails at query time on somebody's dashboard."""
-    return "'" + value.replace("'", "''") + "'"
+    """A single-quoted BigQuery string literal. Escapes with backslashes:
+    GoogleSQL has no doubled-quote escape (`'a''b'` is two adjacent literals,
+    a syntax error), so a reason sentence acquiring an apostrophe used to make
+    CREATE VIEW fail and stop ensure_views for every view after it."""
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def ai_cost_view_ddls(

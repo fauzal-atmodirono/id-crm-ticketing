@@ -20,6 +20,7 @@ from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
 from chatbot.features.chat.customer360_router import (
     _DMS_BUDGET_FLOOR_SECONDS,
     _build_dms_block,
+    _plate_variants,
     build_customer360_router,
 )
 from chatbot.features.chat.dms_client import (
@@ -1029,3 +1030,109 @@ async def test_adapter_conversation_plate_filter_posts_vehicle_plate():
     assert body["payload"][0]["query_operator"] == "OR"
     assert body["payload"][-1]["query_operator"] is None
     assert await adapter.find_conversations_by_vehicle_plate([]) == []
+
+
+# --- C360-002 review: exactness and ranking -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rsa_fallback_same_plate_two_phones_newest_incident_wins(tmp_path, respx_mock):
+    """Documented choice: one plate, two phones on file (e.g. the car was
+    sold) -> the phone on the NEWEST incident names the contact."""
+    old = {"id": 51, "phone_number": "+60120000051"}
+    new = {"id": 52, "phone_number": "+60120000052"}
+    chatwoot = _fake_chatwoot()
+
+    async def by_phone(phone):
+        return [c for c in (old, new) if c["phone_number"].endswith(phone[-4:])]
+
+    chatwoot.search_contacts.side_effect = by_phone
+    rsa_repo = InMemoryRsaRepository()
+    await rsa_repo.create_incident(incident_date="2026-01-05", vehicle_no="VEF 4321",
+                                   vehicle_model="X50", cause="x", customer_phone="0120000051")
+    await rsa_repo.create_incident(incident_date="2026-10-05", vehicle_no="VEF4321",
+                                   vehicle_model="X50", cause="y", customer_phone="0120000052")
+    await rsa_repo.create_incident(incident_date="2026-09-05", vehicle_no="VEF4321",
+                                   vehicle_model="X50", cause="z", customer_phone="0120000052")
+    client = await _client_for(tmp_path, "rsa_newest", 46, respx_mock, chatwoot, rsa_repo)
+    body = client.get("/admin/customer360/search?q=VEF4321", headers=HEADERS).json()
+    assert body["contact"]["id"] == 52
+    phones = [c.args[0] for c in chatwoot.search_contacts.await_args_list]
+    assert phones[0] == "0120000052"
+    assert phones.count("0120000052") == 1  # deduped
+
+
+@pytest.mark.asyncio
+async def test_rsa_fallback_ignores_substring_only_neighbour(tmp_path, respx_mock):
+    contact = {"id": 53, "phone_number": "+60120000053"}
+    chatwoot = _fake_chatwoot(contacts=[contact])
+    rsa_repo = InMemoryRsaRepository()
+    await rsa_repo.create_incident(incident_date="2026-10-05", vehicle_no="VGH12345",
+                                   vehicle_model="X50", cause="x", customer_phone="0120000053")
+    client = await _client_for(tmp_path, "rsa_substr", 47, respx_mock, chatwoot, rsa_repo)
+    body = client.get("/admin/customer360/search?q=VGH1234", headers=HEADERS).json()
+    assert len(body["rsa_incidents"]) == 1  # still listed (partial plate search)
+    assert body["contact"] is None  # but never names a contact
+    chatwoot.search_contacts.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rsa_fallback_only_for_plate_shaped_queries(tmp_path, respx_mock):
+    contact = {"id": 54, "phone_number": "+60120000054"}
+    chatwoot = _fake_chatwoot(contacts=[contact])
+    rsa_repo = InMemoryRsaRepository()
+    await rsa_repo.create_incident(incident_date="2026-10-05", vehicle_no="flat tyre",
+                                   vehicle_model="X50", cause="x", customer_phone="0120000054")
+    client = await _client_for(tmp_path, "rsa_shape", 48, respx_mock, chatwoot, rsa_repo)
+    body = client.get("/admin/customer360/search?q=flat%20tyre", headers=HEADERS).json()
+    assert body["contact"] is None
+    chatwoot.search_contacts.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_exact_conversation_plate_beats_substring_contact(tmp_path, respx_mock):
+    near = {"id": 55, "custom_attributes": {"vehicle_no": "VJK12345"}}
+    owner = {"id": 56, "name": "Exact Owner"}
+    conv = {"id": 810, "inbox_id": 1, "custom_attributes": {"vehicle_plate": "VJK1234"},
+            "meta": {"sender": owner}}
+    chatwoot = _fake_chatwoot()
+    chatwoot.find_contacts_by_vehicle_no.return_value = [near]
+    chatwoot.find_conversations_by_vehicle_plate.return_value = [conv]
+    client = await _client_for(
+        tmp_path, "rank_cross", 49, respx_mock, chatwoot, InMemoryRsaRepository()
+    )
+    body = client.get("/admin/customer360/search?q=VJK1234", headers=HEADERS).json()
+    assert body["contact"]["id"] == 56
+
+
+@pytest.mark.asyncio
+async def test_substring_hits_do_not_suppress_exact_rsa_fallback(tmp_path, respx_mock):
+    near = {"id": 57, "custom_attributes": {"vehicle_no": "VLM12345"}}
+    rsa_owner = {"id": 58, "phone_number": "+60120000058"}
+    chatwoot = _fake_chatwoot(contacts=[rsa_owner])
+    chatwoot.find_contacts_by_vehicle_no.return_value = [near]
+    rsa_repo = InMemoryRsaRepository()
+    await rsa_repo.create_incident(incident_date="2026-10-05", vehicle_no="VLM 1234",
+                                   vehicle_model="X50", cause="x", customer_phone="0120000058")
+    client = await _client_for(tmp_path, "rank_rsa", 50, respx_mock, chatwoot, rsa_repo)
+    body = client.get("/admin/customer360/search?q=VLM1234", headers=HEADERS).json()
+    assert body["contact"]["id"] == 58
+
+
+@pytest.mark.asyncio
+async def test_exact_contact_hit_suppresses_rsa_fallback(tmp_path, respx_mock):
+    exact = {"id": 59, "custom_attributes": {"vehicle_no": "VNP 1234"}}
+    chatwoot = _fake_chatwoot(contacts=[{"id": 60, "phone_number": "+60120000060"}])
+    chatwoot.find_contacts_by_vehicle_no.return_value = [exact]
+    rsa_repo = InMemoryRsaRepository()
+    await rsa_repo.create_incident(incident_date="2026-10-05", vehicle_no="VNP1234",
+                                   vehicle_model="X50", cause="x", customer_phone="0120000060")
+    client = await _client_for(tmp_path, "rank_exact", 51, respx_mock, chatwoot, rsa_repo)
+    body = client.get("/admin/customer360/search?q=VNP1234", headers=HEADERS).json()
+    assert body["contact"]["id"] == 59
+    chatwoot.search_contacts.assert_not_awaited()
+
+
+def test_typed_variant_strips_like_wildcards():
+    variants = _plate_variants("ab%c_1 2")
+    assert all("%" not in v and "_" not in v for v in variants)

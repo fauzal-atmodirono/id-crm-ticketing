@@ -244,6 +244,72 @@ async def test_escalation_admin_lists_only_scoped_dealers(tmp_path) -> None:
     dealer_store.set.assert_not_called()
 
 
+def _plate_chatwoot(*, plate_convs=(), phone_contacts=()) -> AsyncMock:
+    chatwoot = AsyncMock()
+    chatwoot.find_contacts_by_vehicle_no.return_value = []
+    chatwoot.find_conversations_by_vehicle_plate.return_value = list(plate_convs)
+    chatwoot.search_contacts.return_value = list(phone_contacts)
+    chatwoot.list_contact_conversations.return_value = list(plate_convs)
+    return chatwoot
+
+
+async def test_plate_on_out_of_scope_conversation_reveals_no_contact(tmp_path) -> None:
+    """R57/PDPA: the contact behind a plate-matched case is shown only when
+    the caller's scope permits that case."""
+    owner = {"id": 61, "name": "Hidden Owner"}
+    conv = _conv(90, 4, ["dealer_penang"], custom_attributes={"vehicle_plate": "VAB1234"},
+                 meta={"sender": owner})
+    for scope, user_sees in (
+        (Scope.build(inbox_ids=[3]), False),
+        (Scope.build(dealer_slugs=["kl"]), False),
+        (Scope.build(inbox_ids=[4]), True),
+        (Scope.build(dealer_slugs=["penang"]), True),
+    ):
+        sub = tmp_path / str(id(scope))
+        sub.mkdir()
+        repo = await _repo_with_scoped_user(sub, scope, "customer360.view")
+        client = _client(build_customer360_router(
+            _plate_chatwoot(plate_convs=[conv]), InMemoryRsaRepository(), repo,
+            FakeValidator(TOKENS), scoped_settings(),
+        ))
+        body = client.get(
+            "/admin/customer360/search?q=VAB1234", headers=session("scoped")
+        ).json()
+        if user_sees:
+            assert body["contact"] == owner, scope
+            assert [c["id"] for c in body["conversations"]] == [90]
+        else:
+            assert body["contact"] is None, scope
+            assert body["conversations"] == []
+
+
+async def test_plate_on_out_of_scope_rsa_incident_reveals_no_contact(tmp_path) -> None:
+    contact = {"id": 62, "name": "Rsa Owner", "phone_number": "+60120000062"}
+    for scope, user_sees in (
+        (Scope.build(inbox_ids=[3]), False),  # an incident names no inbox
+        (Scope.build(dealer_slugs=["kl"]), False),
+        (Scope.build(dealer_slugs=["penang"]), True),
+    ):
+        rsa = InMemoryRsaRepository()
+        await rsa.create_incident(
+            incident_date="2026-11-01", vehicle_no="VCD5678", vehicle_model="X50",
+            cause="x", customer_phone="012-000 0062", purchased_from="penang",
+        )
+        sub = tmp_path / str(id(scope))
+        sub.mkdir()
+        repo = await _repo_with_scoped_user(sub, scope, "customer360.view")
+        chatwoot = _plate_chatwoot(phone_contacts=[contact])
+        client = _client(build_customer360_router(
+            chatwoot, rsa, repo, FakeValidator(TOKENS), scoped_settings(),
+        ))
+        body = client.get(
+            "/admin/customer360/search?q=VCD5678", headers=session("scoped")
+        ).json()
+        assert (body["contact"] == contact) is user_sees, scope
+        if not user_sees:
+            chatwoot.search_contacts.assert_not_awaited()
+
+
 # --- RSA incidents -------------------------------------------------------------
 
 

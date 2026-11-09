@@ -124,14 +124,14 @@ def _plate_key(value: str | None) -> str:
 
 def _plate_variants(query: str) -> list[str]:
     """Spellings of one plate to OR together in Chatwoot's ``contains``
-    filter: compact (``BMT5518``) and letter/digit-spaced (``BMT 5518``),
-    the two ways operators type plates into the contact attribute."""
+    filter: compact (``BMT5518``), letter/digit-spaced (``BMT 5518``),
+    dashed (``BMT-5518``) and the spelling as typed (upper-cased, spaces
+    collapsed, ``%``/``_`` removed so it can't act as an ILIKE wildcard)."""
     compact = _plate_key(query)
     spaced = re.sub(r"(?<=[A-Z])(?=\d)|(?<=\d)(?=[A-Z])", " ", compact)
     dashed = spaced.replace(" ", "-")
-    # The spelling as typed (upper-cased, runs of spaces collapsed) too: a
-    # plate like "TEST ABC123V" splits where the regex above would not.
-    typed = re.sub(r"\s+", " ", query.strip().upper())
+    # A plate like "TEST ABC123V" splits where the regex above would not.
+    typed = re.sub(r"\s+", " ", re.sub(r"[%_]", "", query).strip().upper())
     return list(dict.fromkeys(v for v in (compact, spaced, dashed, typed) if v))
 
 
@@ -139,6 +139,60 @@ def _plate_variants(query: str) -> list[str]:
 # "BMT 5518", BMT-5518, W1234A). One-letter model names like "X50"/"S70" and
 # anything with punctuation ("e.MAS 7") are deliberately NOT plate-like.
 _PLATE_LIKE_RE = re.compile(r"^[A-Za-z]{2,3}[\s-]?\d{1,4}[A-Za-z]?$")
+
+_PLATE_MIN_CHARS, _PLATE_MAX_CHARS = 4, 12
+_PLATE_GROUPS_RE = re.compile(r"^[A-Za-z0-9]+(?:[\s-][A-Za-z0-9]+){0,2}$")
+
+
+def _plate_shaped(query: str) -> bool:
+    """Whether the RSA-phone fallback may run for this query: the classic
+    ``_PLATE_LIKE_RE`` shape, or a letters+digits plate of 4-12 characters in
+    at most three space/dash groups (``TEST ABC123V``, ``W 1234 B``). Model
+    names (``X50``, ``e.MAS 7``) and words (``flat tyre``) are not."""
+    q = query.strip()
+    if _PLATE_LIKE_RE.match(q):
+        return True
+    if not _PLATE_GROUPS_RE.match(q):
+        return False
+    key = _plate_key(q)
+    return (
+        _PLATE_MIN_CHARS <= len(key) <= _PLATE_MAX_CHARS
+        and any(c.isalpha() for c in key)
+        and any(c.isdigit() for c in key)
+    )
+
+
+def _incident_phones(incidents: list[dict[str, Any]], needle: str) -> list[str]:
+    """Phones of the incidents whose plate EQUALS the query (no substring
+    neighbours), newest incident first, deduplicated by digits. Newest wins
+    on purpose: one plate with two phones on file (car sold, new owner) is
+    most likely the latest caller's."""
+    exact = [
+        i for i in incidents
+        if i.get("customer_phone") and _plate_key(i.get("vehicle_no")) == needle
+    ]
+    exact.sort(
+        key=lambda i: (str(i.get("incident_date") or ""),
+                       str(i.get("customer_called_in_time") or "")),
+        reverse=True,
+    )
+    seen: set[str] = set()
+    phones: list[str] = []
+    for i in exact:
+        digits = _digits(i["customer_phone"])
+        if digits and digits not in seen:
+            seen.add(digits)
+            phones.append(i["customer_phone"])
+    return phones
+
+
+def _merge_conversations(into: list[dict[str, Any]], more: list[dict[str, Any]]) -> None:
+    seen = {c.get("id") for c in into}
+    for conv in more:
+        if conv.get("id") not in seen:
+            seen.add(conv.get("id"))
+            into.append(conv)
+
 
 # Total budget for the whole Chatwoot side of a vehicle search (contacts
 # filter + per-contact conversations). Past it we return what we have.
@@ -204,6 +258,11 @@ def _rsa_incident_dict(row: Any) -> dict[str, Any]:
         "remarks": row.remarks,
         "created_by": row.created_by,
     }
+
+
+def _rsa_dims(incident: dict[str, Any]) -> dict[str, Any]:
+    """An RSA incident's only scope dimension: the dealer it was bought from."""
+    return {"dealer_slugs": incident.get("purchased_from")}
 
 
 def _dms_customer_dict(customer: DmsCustomer) -> dict[str, Any]:
@@ -353,17 +412,24 @@ async def _plate_lookup(
     needle: str,
     plate_contacts: list[dict[str, Any]],
     conversations: list[dict[str, Any]],
+    *,
+    scope: Scope,
     incident_phones: list[str] | None = None,
 ) -> None:
     """Fill ``plate_contacts``/``conversations`` in place (so whatever
     finished survives a wait_for timeout). C360-002: the plate can live in
-    three places, tried in this order of trust --
-      1. the contact's ``vehicle_no`` attribute (contacts/filter),
+    three places --
+      1. the contact's ``vehicle_no`` attribute (contacts/filter; contacts
+         are account-wide, as everywhere in Customer 360),
       2. a case's ``vehicle_plate`` attribute (conversations/filter; the
-         conversation's ``meta.sender`` is its contact),
-      3. an RSA incident with that plate, through its ``customer_phone``.
-    1 and 2 run concurrently; 3 only when neither found a contact. Then the
-    matched contacts' conversations are fetched concurrently."""
+         case's ``meta.sender`` is its contact),
+      3. an RSA incident with exactly that plate, through its phone
+         (``incident_phones``: already scope-filtered, exact, newest first).
+    1 and 2 run concurrently. R57/PDPA: a case outside the caller's data
+    scope is dropped BEFORE its contact is taken, so a scoped user cannot
+    learn who owns a plate from a row they may not see. Candidates are
+    ranked exact plate first (then contact before case); 3 runs only when
+    neither 1 nor 2 found an EXACT plate."""
     variants = _plate_variants(query)
     found, plate_convs = await asyncio.gather(
         _dicts_or_empty(chatwoot.find_contacts_by_vehicle_no(variants), "contact_vehicle_no"),
@@ -371,38 +437,34 @@ async def _plate_lookup(
             chatwoot.find_conversations_by_vehicle_plate(variants), "conversation_vehicle_plate"
         ),
     )
-    found = [c for c in found if c.get("id") is not None]
-    # exact plate first, so `contact` is the real owner, not a substring
-    # neighbour
-    found.sort(
-        key=lambda c: _plate_key((c.get("custom_attributes") or {}).get("vehicle_no")) != needle
-    )
-    plate_convs.sort(
-        key=lambda c: _plate_key((c.get("custom_attributes") or {}).get("vehicle_plate"))
-        != needle
-    )
+    plate_convs = apply_scope(plate_convs, scope, conversation_dimensions)
+    _merge_conversations(conversations, plate_convs)
+
+    candidates: list[tuple[bool, dict[str, Any]]] = [
+        (_plate_key((c.get("custom_attributes") or {}).get("vehicle_no")) == needle, c)
+        for c in found
+        if c.get("id") is not None
+    ]
     for conv in plate_convs:
         sender = (conv.get("meta") or {}).get("sender")
         if isinstance(sender, dict) and sender.get("id") is not None:
-            found.append(sender)
-    if not found and incident_phones:
+            plate = (conv.get("custom_attributes") or {}).get("vehicle_plate")
+            candidates.append((_plate_key(plate) == needle, sender))
+    if incident_phones and not any(exact for exact, _ in candidates):
         by_phone = await _contact_by_incident_phone(chatwoot, incident_phones)
         if by_phone is not None:
-            found.append(by_phone)
+            candidates.append((True, by_phone))
+    candidates.sort(key=lambda t: not t[0])  # stable: keeps source order within a rank
     unique: dict[Any, dict[str, Any]] = {}
-    for c in found:
-        unique.setdefault(c["id"], c)
+    for _exact, contact in candidates:
+        unique.setdefault(contact["id"], contact)
     plate_contacts.extend(list(unique.values())[:_MAX_PLATE_CONTACTS])
+
     per_contact = await asyncio.gather(
         *(chatwoot.list_contact_conversations(int(c["id"])) for c in plate_contacts)
     )
-    seen: set[Any] = set()
-    # A plate-matched case whose contact list came back short still shows.
-    for convs in [*per_contact, plate_convs]:
-        for conv in convs:
-            if conv.get("id") not in seen:
-                seen.add(conv.get("id"))
-                conversations.append(conv)
+    for convs in per_contact:
+        _merge_conversations(conversations, convs)
 
 
 def build_customer360_router(
@@ -485,6 +547,9 @@ def build_customer360_router(
                 for row in incidents
                 if needle and needle in _plate_key(row.vehicle_no)
             ]
+            # R57: scope first -- only incidents the caller may see can lead
+            # to a contact (applied again below; idempotent).
+            rsa_incidents = apply_scope(rsa_incidents, scope, _rsa_dims)
             plate_contacts: list[dict[str, Any]] = []
             if needle:
                 try:
@@ -495,11 +560,12 @@ def build_customer360_router(
                             needle,
                             plate_contacts,
                             conversations,
-                            incident_phones=[
-                                i["customer_phone"]
-                                for i in rsa_incidents
-                                if i.get("customer_phone")
-                            ],
+                            scope=scope,
+                            incident_phones=(
+                                _incident_phones(rsa_incidents, needle)
+                                if _plate_shaped(q_stripped)
+                                else []
+                            ),
                         ),
                         timeout=_VEHICLE_CRM_BUDGET_SECONDS,
                     )
@@ -535,9 +601,7 @@ def build_customer360_router(
         # carries a dealer (`purchased_from`), so under an inbox/team/
         # department scope it is hidden (data_scope.py rule 5).
         conversations = apply_scope(conversations, scope, conversation_dimensions)
-        rsa_incidents = apply_scope(
-            rsa_incidents, scope, lambda i: {"dealer_slugs": i.get("purchased_from")}
-        )
+        rsa_incidents = apply_scope(rsa_incidents, scope, _rsa_dims)
         result: dict[str, Any] = {
             "contact": contact,
             "conversations": conversations,

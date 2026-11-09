@@ -103,6 +103,18 @@ if TYPE_CHECKING:
 
 _log = structlog.get_logger(__name__)
 
+# R49: session ids only server-side code creates (see _guard_session).
+SERVER_OWNED_SESSION_PREFIXES = (
+    "whatsapp-",
+    "crm-",
+    "email-",
+    "phone-",
+    "zendesk-",
+    "chatwoot-conv-",
+    "sum-",
+    "audit-",
+)
+
 # FIX-15: cap on the dial-status hold/transfer session lookup (fail open).
 _HOLD_HOOK_TIMEOUT_SECONDS = 3.0
 
@@ -992,7 +1004,10 @@ class ChatRouter:
         from this Twilio-signed webhook -- never derived from a session id,
         which /chat/turn lets the browser choose. Flag off -> no kwarg, the
         call is exactly as before."""
-        if not self.orchestrator._settings.chat_turn_caller_context_enabled or not e164:
+        settings = self.orchestrator._settings
+        # M-5: no Twilio token = the webhook verified no signature, so the
+        # From number proves nothing.
+        if not settings.chat_turn_caller_context_enabled or not e164 or not settings.twilio_auth_token:
             return {}
         return {"customer_phone": e164}
 
@@ -1496,8 +1511,33 @@ class ChatRouter:
 
     # --- Frontend-facing API (consumed by the Vue app) ----------------------
 
-    async def chat_turn(self, req: ChatTurnRequest) -> ChatTurnResponse:
+    def _guard_session(self, session_id: str, x_api_key: str | None) -> None:
+        """R49: /chat/turn and /voice/turn are reachable from the browser, and
+        the browser chooses ``session_id``. A server-owned id (a WhatsApp
+        sender's, an agent-service crm- conversation, a phone call, ...)
+        would let it read or steer that session -- including its cached
+        customer paragraph. Such ids need the backend service credential the
+        agent's ProtonConfigClient already sends (x-api-key ==
+        PROTON_BACKEND_KEY, constant-time; blank key fails closed). In-process
+        channel code (Twilio WhatsApp webhook, phone bridge) never passes
+        through here."""
+        if not session_id.strip().lower().startswith(SERVER_OWNED_SESSION_PREFIXES):
+            return
+        key = self.orchestrator._settings.proton_backend_key
+        if (
+            key
+            and x_api_key
+            and hmac.compare_digest(x_api_key.encode("utf-8"), key.encode("utf-8"))
+        ):
+            return
+        _log.warning("chat_turn_server_owned_session_refused", session_prefix=session_id[:9])
+        raise HTTPException(status_code=403, detail="Forbidden session id")
+
+    async def chat_turn(
+        self, req: ChatTurnRequest, x_api_key: str | None = Header(default=None)
+    ) -> ChatTurnResponse:
         """Run a single text chat turn and return the assistant's reply."""
+        self._guard_session(req.session_id, x_api_key)
         _log.info("chat_turn_received", session_id=req.session_id, text_length=len(req.text))
         result = await self.orchestrator.handle_turn(
             session_id=req.session_id,
@@ -1592,11 +1632,13 @@ class ChatRouter:
         session_id: str = Form(...),
         audio: UploadFile = File(...),  # noqa: B008  (FastAPI file injection)
         persona_phone: str | None = Form(default=None),
+        x_api_key: str | None = Header(default=None),
     ) -> Response:
         """Run a single voice turn. Returns MP3 audio with X-Reply-Text + X-Handoff-* headers.
 
         ``persona_phone``: the test console's persona (brief 6), allowlisted
         by the service exactly as for /chat/turn."""
+        self._guard_session(session_id, x_api_key)
         audio_bytes = await audio.read()
         mime_type = audio.content_type or "audio/ogg"
         _log.info(

@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from chatbot.features.contact_context.personal import (
+    BOOKING_LINE,
     PRIVACY_FLOOR,
     recognised_paragraph,
     shared_paragraph,
@@ -61,7 +62,6 @@ def test_recognised_several_cars_greets_and_asks_which(channel: str) -> None:
     assert "Hi Lim" in text
     assert "which car" in text
     assert "Proton X70" in text and "Proton Persona" in text
-    assert "never the plates" in text
     assert PRIVACY_FLOOR in text
 
 
@@ -109,3 +109,49 @@ def test_privacy_floor_names_what_may_and_may_never_be_used() -> None:
         assert word in PRIVACY_FLOOR
     for word in ("full phone number", "full plate number", "address", "IC number", "surname"):
         assert word in PRIVACY_FLOOR
+
+
+# --- fix round 1 (R50, M-2) ----------------------------------------------------
+
+EMPTY: dict[str, Any] = {"first_name": "", "vehicles": [], "usual_dealer": ""}
+
+
+@pytest.mark.parametrize("channel", CHANNELS)
+def test_an_empty_record_is_an_unknown_customer(channel: str) -> None:
+    text = recognised_paragraph(EMPTY, channel=channel)  # type: ignore[arg-type]
+    assert text == unknown_paragraph(channel=channel)  # type: ignore[arg-type]
+    # an open-case count alone identifies nobody either
+    assert recognised_paragraph(EMPTY, channel="chat", extra_facts=["2 open case(s)"]) == (
+        unknown_paragraph(channel="chat")
+    )
+
+
+def test_partial_record_never_ask_list_is_only_what_is_on_file() -> None:
+    dealer_only = {"first_name": "", "vehicles": [], "usual_dealer": "Petaling Jaya"}
+    text = recognised_paragraph(dealer_only, channel="chat")
+    assert "Never ask for what we already have (their phone number or dealer)" in text
+    assert "tell them their usual dealer" in text
+    assert "first name" not in text.split("who they are")[1].split(".")[0]
+    car_only = recognised_paragraph(
+        {"first_name": "", "vehicles": [{"model": "Proton Saga"}], "usual_dealer": ""},
+        channel="call",
+    )
+    assert "Never ask for what we already have (their phone number or car)" in car_only
+    assert "tell them their car model(s)" in car_only
+
+
+def test_full_record_never_ask_list_has_everything() -> None:
+    text = recognised_paragraph(AHMAD, channel="call")
+    assert "(their name, phone number, car or dealer)" in text
+    assert "tell them their first name, car model(s) and usual dealer" in text
+
+
+def test_two_cars_may_be_told_apart_by_plate_ending_only() -> None:
+    text = recognised_paragraph(LIM, channel="chat")
+    assert "or the plate ending if two models are the same" in text
+    assert "never the plates" not in text
+
+
+def test_booking_line_mentions_the_known_number_without_reading_it() -> None:
+    assert "already have their phone number" in BOOKING_LINE
+    assert "full name and email" in BOOKING_LINE

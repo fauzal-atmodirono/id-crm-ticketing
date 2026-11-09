@@ -561,8 +561,9 @@ def _car_phrase(v: CallerVehicle) -> str:
 
 
 _FLOW = (
-    "CALL FLOW: there is no menu -- the caller talks to you directly. Greet, identify "
-    "the caller, help them (use kb_search), and hand off only when needed. "
+    "CALL FLOW: there is no menu -- the caller talks to you directly. Greet them as "
+    "the rules below say (never ask a recognised caller who they are), help them (use "
+    "kb_search), and hand off only when needed. "
     "SAFETY FIRST: if the caller reports a breakdown, an accident, smoke, a warning "
     "light while driving, or being stranded on a road, FIRST make sure they are safe "
     "(hazard lights on, move away from traffic only if it is safe, call 999 if anyone "
@@ -696,7 +697,8 @@ def spoken_match_guidance(c: CallerCandidate) -> str:
         car = (
             "They have more than one car on file ("
             + "; ".join(_car_phrase(v) for v in cars)
-            + "): ask which car the call is about (models only, never plates). "
+            + "): ask which car the call is about (name the models, or the plate ending if "
+            "two models are the same). "
         )
     else:
         car = "Ask for their car registration number and model if it matters. "

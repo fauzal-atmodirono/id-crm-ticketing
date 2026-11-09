@@ -9,7 +9,7 @@ import type {
 } from '@/features/chat/types';
 
 export const useChatStore = defineStore('chat', () => {
-  const sessionId = ref<string>(`sim-${Math.floor(Math.random() * 9999)}`);
+  const sessionId = ref<string>(`sim-${crypto.randomUUID()}`);
   const messages = ref<ChatMessage[]>([
     {
       role: 'system',
@@ -76,7 +76,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function resetSession(): void {
     closeAgentStream();
-    sessionId.value = `sim-${Math.floor(Math.random() * 9999)}`;
+    sessionId.value = `sim-${crypto.randomUUID()}`;
     messages.value = [
       { role: 'system', text: `New session: ${sessionId.value}` },
     ];

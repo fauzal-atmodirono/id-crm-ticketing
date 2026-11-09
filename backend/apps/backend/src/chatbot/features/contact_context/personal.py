@@ -65,6 +65,15 @@ _CHAT_UNKNOWN = (
 )
 
 
+# /chat/turn + /voice/turn, recognised customer on a trusted number (R51):
+# book_test_drive_tool is given the number server-side, so the model never
+# needs to ask for it -- and still never reads it out (PRIVACY_FLOOR).
+BOOKING_LINE = (
+    "For a booking you already have their phone number, so do not ask for it; you may "
+    "ask for their full name and email if the booking needs them. "
+)
+
+
 def _car(v: Mapping[str, Any]) -> str:
     model = str(v.get("model") or "") or "car"
     ending = str(v.get("plate_ending") or "")
@@ -111,10 +120,25 @@ def _greeting(first: str, cars: list[Mapping[str, Any]], when: str) -> str:
     )
 
 
+def has_facts(customer: Mapping[str, Any]) -> bool:
+    """A record identifies someone only with a first name, a car or a dealer
+    (R50): a bare "Customer" contact on the number is an unknown customer."""
+    return bool(customer.get("first_name") or _cars(customer) or customer.get("usual_dealer"))
+
+
+def _join(items: list[str], last: str) -> str:
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + f" {last} " + items[-1]
+
+
 def recognised_paragraph(
     customer: Mapping[str, Any], *, channel: Channel, extra_facts: Sequence[str] = ()
 ) -> str:
-    """The paragraph for a number that matches exactly one customer."""
+    """The paragraph for a number that matches exactly one customer; the
+    unknown paragraph when the record carries nothing that identifies them."""
+    if not has_facts(customer):
+        return unknown_paragraph(channel=channel)
     cars = _cars(customer)
     first = str(customer.get("first_name") or "")
     dealer = str(customer.get("usual_dealer") or "")
@@ -125,26 +149,34 @@ def recognised_paragraph(
         who = "caller"
     else:
         head = CHAT_HEAD + f"this customer matches ONE customer in our records: {facts}. "
-        when = "first reply in this conversation (only once: if you have already greeted them, do not greet them again)"
+        when = (
+            "first reply in this conversation (only once: if you have already greeted "
+            "them, do not greet them again)"
+        )
         who = "customer"
     text = head + _greeting(first, cars, when)
     if len(cars) > 1:
         text += (
-            "They have more than one car on file: ask which car this is about (you may "
-            "name the models, never the plates). "
+            "They have more than one car on file: ask which car this is about (name the "
+            "models, or the plate ending if two models are the same). "
         )
+    # Only what is actually on file (R50); the number is, since it matched.
+    have = (["name"] if first else []) + ["phone number"]
+    have += (["car"] if cars else []) + (["dealer"] if dealer else [])
+    text += f"Never ask for what we already have (their {_join(have, 'or')}); use it instead"
     use = []
     if dealer:
         use.append(f"offer their usual dealer ({dealer}) for a booking")
     if cars:
         use.append("refer to their car by its model")
-    text += "Never ask for what we already have (their name, phone number, car or dealer); use it instead"
     text += (", e.g. " + " and ".join(use) + ". ") if use else ". "
     if not cars:
         text += "Ask for their car registration number and model only if it matters. "
+    known = (["first name"] if first else []) + (["car model(s)"] if cars else [])
+    known += ["usual dealer"] if dealer else []
     text += (
         "If they ask who they are or whether you know them, say yes and tell them their "
-        "first name, car model(s) and usual dealer (whatever of these is on file). "
+        f"{_join(known, 'and')}. "
     )
     not_them = f"they are not {first}" if first else "this is not them"
     text += f"If the {who} says {not_them}, apologise and treat them as a new customer. "

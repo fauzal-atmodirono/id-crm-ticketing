@@ -746,3 +746,17 @@ def test_lookup_failure_is_marked_failed_and_a_miss_is_not() -> None:
     assert down.failed and down.candidates == []
     miss = asyncio.run(CallerContextService(_Empty(), s).lookup(PHONE, "caller_id"))
     assert not miss.failed and miss.candidates == []
+
+
+def test_an_empty_single_record_is_an_unknown_caller() -> None:
+    """R50: a contact with no name, car or dealer identifies nobody."""
+    ctx = _ctx([{"contact_id": 11, "name": "Customer"}])
+    text = build_caller_instruction(ctx, lookup_tool=False)
+    assert "not in our records yet" in text and "matches ONE" not in text
+    assert PRIVACY_FLOOR in text
+
+
+def test_flow_does_not_ask_a_recognised_caller_who_they_are() -> None:
+    text = build_caller_instruction(_ctx([AHMAD]), lookup_tool=False)
+    assert "identify the caller" not in text
+    assert "never ask a recognised caller who they are" in text

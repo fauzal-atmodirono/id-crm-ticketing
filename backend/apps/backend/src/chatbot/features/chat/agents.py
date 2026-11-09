@@ -233,6 +233,12 @@ def build_ai_agent(  # noqa: PLR0915 — one builder, many tool closures
             preferred_model: The Proton model of interest (e.g. Saga, Persona, Iriz, X50, X70, X90, S70).
             preferred_dealer: Customer's preferred dealer location or city/state.
         """
+        # R51: a recognised customer's number is known server-side (signed
+        # WhatsApp sender / allowlisted console persona). Fill it only when
+        # the model left it empty -- what the customer gave always wins, and
+        # the model never guesses it.
+        if not (phone_number or "").strip():
+            phone_number = str(tool_context.state.get("caller_trusted_phone") or "")
         lead_data = {
             "customer_name": full_name,
             "customer_phone": phone_number,

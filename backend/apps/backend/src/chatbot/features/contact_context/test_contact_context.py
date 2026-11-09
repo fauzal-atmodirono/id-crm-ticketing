@@ -191,3 +191,10 @@ def test_bad_key_attempts_count_against_the_limit_too() -> None:
     )
     assert res.status_code == 429
     assert seen == []
+
+
+def test_an_empty_record_is_served_as_a_new_customer() -> None:
+    ctx = CallerContext.from_candidates(
+        "+60000000106", "caller_id", [{"contact_id": 9, "name": ""}]
+    )
+    assert "NEW customer" in chat_context_instruction(contact_view(ctx))

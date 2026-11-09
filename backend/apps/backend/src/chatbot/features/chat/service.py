@@ -5,8 +5,9 @@ import base64
 import json
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
@@ -50,7 +51,8 @@ from chatbot.features.chat.ports import (
     TicketingPort,
 )
 from chatbot.features.chat.prompts import AGENT_INSTRUCTION, build_agent_instruction
-from chatbot.features.contact_context.router import instruction_for
+from chatbot.features.contact_context.personal import BOOKING_LINE, has_facts
+from chatbot.features.contact_context.router import contact_view, instruction_for
 from chatbot.features.metrics.events import build_turn_event
 from chatbot.features.metrics.mapping import CATEGORY_TO_DIVISION
 from chatbot.platform.metered_genai import (
@@ -68,6 +70,19 @@ CallerLookup = Callable[[str], Awaitable[CallerContext]]
 # Over the lookup service's own deadline, so its partial result wins the race.
 _CALLER_LOOKUP_MARGIN = 0.25
 _CALLER_CONTEXT_CACHE_CAP = 4096
+# R52: a session's customer is re-resolved once per window, so a record an
+# agent fixes mid-conversation (or a stale miss) does not stick forever.
+_CALLER_CONTEXT_TTL_SECONDS = 30 * 60
+
+
+@dataclass(frozen=True)
+class _CallerEntry:
+    at: float
+    paragraph: str
+    # R51: the session's number, only for a RECOGNISED customer on a trusted
+    # source -- book_test_drive_tool fills an empty phone_number from it.
+    trusted_phone: str = ""
+
 
 WHATSAPP_ACTIVE = "active"
 WHATSAPP_PAUSED = "paused"
@@ -224,10 +239,11 @@ class OrchestratorService:
         # Brief 6 (R47): who the /chat/turn or /voice/turn customer is.
         # ``caller_context_lookup`` is CallerContextService.lookup bound to a
         # source (main.py; None without the flag or Chatwoot). Resolved ONCE
-        # per session into ``_caller_paragraph_by_session`` ("" = nothing to
+        # per session (per 30-min window) into ``_caller_by_session`` ("" = nothing to
         # add) and appended by the InstructionProvider.
         self._caller_context_lookup = caller_context_lookup
-        self._caller_paragraph_by_session: dict[str, str] = {}
+        self._caller_by_session: dict[str, _CallerEntry] = {}
+        self._caller_clock: Callable[[], float] = monotonic
         # 2026-11-09 pre-filled handoff note (features/chat/handoff_note.py
         # HandoffNoteService). Passed only with handoff_note_enabled and a
         # Chatwoot adapter; None keeps every handoff note exactly as before.
@@ -359,7 +375,8 @@ class OrchestratorService:
         # session. None resolved (flag off, anonymous, failure) -> unchanged.
         # getattr: the provider must never raise, even on a partly-built
         # service (tests that bypass __init__).
-        paragraph = getattr(self, "_caller_paragraph_by_session", {}).get(session_id)
+        entry = getattr(self, "_caller_by_session", {}).get(session_id)
+        paragraph = entry.paragraph if entry is not None else ""
         return f"{composed}\n\n{paragraph}" if paragraph else composed
 
     def _compose_turn_instruction(self, session_id: str, registered: str, ctx: Any) -> str:
@@ -550,16 +567,26 @@ class OrchestratorService:
         if (
             not self._settings.chat_turn_caller_context_enabled
             or self._caller_context_lookup is None
-            or session_id in self._caller_paragraph_by_session
         ):
+            return
+        now = self._caller_clock()
+        cached = self._caller_by_session.get(session_id)
+        if cached is not None and now - cached.at < _CALLER_CONTEXT_TTL_SECONDS:
             return
         phone = self._turn_caller_phone(customer_phone, persona_phone)
         paragraph = ""
+        trusted = ""
         if phone is not None:
             timeout = self._settings.phone_caller_lookup_timeout_seconds + _CALLER_LOOKUP_MARGIN
             try:
                 ctx = await asyncio.wait_for(self._caller_context_lookup(phone), timeout=timeout)
                 paragraph = instruction_for(ctx)
+                view = contact_view(ctx)
+                if paragraph and view["match"] == "single" and has_facts(view["customers"][0]):
+                    # Every phone reaching here is trusted (signed webhook or
+                    # allowlisted persona -- _turn_caller_phone).
+                    trusted = phone
+                    paragraph += " " + BOOKING_LINE
             except Exception as e:  # includes TimeoutError
                 _log.warning(
                     "chat_turn_caller_context_failed",
@@ -567,11 +594,12 @@ class OrchestratorService:
                     phone=mask(phone),
                     error_type=type(e).__name__,
                 )
-        if len(self._caller_paragraph_by_session) >= _CALLER_CONTEXT_CACHE_CAP:
+        self._caller_by_session.pop(session_id, None)
+        if len(self._caller_by_session) >= _CALLER_CONTEXT_CACHE_CAP:
             # Oldest first (dicts keep insertion order): a long-running
             # process must not grow this map by one entry per session forever.
-            self._caller_paragraph_by_session.pop(next(iter(self._caller_paragraph_by_session)))
-        self._caller_paragraph_by_session[session_id] = paragraph
+            self._caller_by_session.pop(next(iter(self._caller_by_session)))
+        self._caller_by_session[session_id] = _CallerEntry(now, paragraph, trusted)
 
     def _sync_history_from_state(self, session_id: str, session: Session) -> list[dict[str, Any]]:
         state_history = session.state.setdefault("chat_history", [])
@@ -669,8 +697,17 @@ class OrchestratorService:
         reply_text = ""
         final_part_kinds: list[str] = []
         final_event_seen = False
+        # R51: hand a recognised customer's trusted number to the booking
+        # tool via session state (never via the prompt). No entry -> the
+        # call is exactly as before.
+        entry = getattr(self, "_caller_by_session", {}).get(session_id)
+        extra: dict[str, Any] = (
+            {"state_delta": {"caller_trusted_phone": entry.trusted_phone}}
+            if entry is not None and entry.trusted_phone
+            else {}
+        )
         async for event in runner.run_async(
-            user_id=session_id, session_id=session_id, new_message=new_message
+            user_id=session_id, session_id=session_id, new_message=new_message, **extra
         ):
             if event.is_final_response() and event.content and event.content.parts:
                 final_event_seen = True

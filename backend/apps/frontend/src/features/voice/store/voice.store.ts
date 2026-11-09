@@ -10,7 +10,7 @@ import type { VoiceEntry } from '@/features/voice/types';
 export type ConversationPhase = 'idle' | 'listening' | 'processing' | 'speaking';
 
 export const useVoiceStore = defineStore('voice', () => {
-  const sessionId = ref<string>(`voice-${Math.floor(Math.random() * 9999)}`);
+  const sessionId = ref<string>(`voice-${crypto.randomUUID()}`);
   const entries = ref<VoiceEntry[]>([
     {
       kind: 'system',
@@ -97,7 +97,7 @@ export const useVoiceStore = defineStore('voice', () => {
   function resetSession(): void {
     closeAgentStream();
     stopAssistantAudio();
-    sessionId.value = `voice-${Math.floor(Math.random() * 9999)}`;
+    sessionId.value = `voice-${crypto.randomUUID()}`;
     entries.value = [{ kind: 'system', text: `New session: ${sessionId.value}` }];
     phase.value = 'idle';
     handoff.value = null;

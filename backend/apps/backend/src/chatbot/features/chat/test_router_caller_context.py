@@ -14,6 +14,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from chatbot.features.chat.adapters.mock import (
@@ -122,3 +123,62 @@ def test_whatsapp_webhook_flag_off_is_the_old_call() -> None:
         "session_id": "whatsapp-+60000000101",
         "text": "hi",
     }
+
+
+# --- fix round 1: server-owned sessions (R49), WhatsApp without a token (M-5)
+
+KEY = "backend-key"
+
+
+def _keyed() -> tuple[TestClient, OrchestratorService]:
+    return _client(proton_backend_key=KEY)
+
+
+@pytest.mark.parametrize(
+    "session_id",
+    ["whatsapp-+60000000101", "crm-1", "email-9", "phone-CA1", "zendesk-conv-1", "chatwoot-conv-3"],
+)
+def test_browser_cannot_use_a_server_owned_session(session_id: str) -> None:
+    client, orch = _keyed()
+    res = client.post("/chat/turn", json={"session_id": session_id, "text": "who am I?"})
+    assert res.status_code == 403
+    res = client.post(
+        "/chat/turn",
+        json={"session_id": session_id, "text": "hi"},
+        headers={"x-api-key": "wrong"},
+    )
+    assert res.status_code == 403
+    orch.handle_turn.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+def test_browser_cannot_use_a_server_owned_voice_session() -> None:
+    client, orch = _keyed()
+    res = client.post(
+        "/voice/turn",
+        data={"session_id": "whatsapp-+60000000101"},
+        files={"audio": ("clip.ogg", b"\x00" * 64, "audio/ogg")},
+    )
+    assert res.status_code == 403
+    orch.handle_voice_turn.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+def test_the_agent_service_credential_may_use_crm_sessions() -> None:
+    client, orch = _keyed()
+    res = client.post(
+        "/chat/turn", json={"session_id": "crm-42", "text": "hi"}, headers={"x-api-key": KEY}
+    )
+    assert res.status_code == 200
+    assert orch.handle_turn.await_args.kwargs["session_id"] == "crm-42"  # type: ignore[attr-defined]
+
+
+def test_no_backend_key_configured_fails_closed() -> None:
+    client, _ = _client(proton_backend_key="")
+    res = client.post("/chat/turn", json={"session_id": "crm-42", "text": "hi"})
+    assert res.status_code == 403
+
+
+def test_whatsapp_without_a_twilio_token_never_claims_a_number() -> None:
+    client, orch = _client(chat_turn_caller_context_enabled=True, twilio_auth_token="")
+    params = {"From": "whatsapp:+60000000101", "Body": "hi", "MessageSid": "SM1"}
+    client.post("/webhooks/twilio-whatsapp", data=params)
+    assert "customer_phone" not in orch.handle_turn.await_args.kwargs  # type: ignore[attr-defined]

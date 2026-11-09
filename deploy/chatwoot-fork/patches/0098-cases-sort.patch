@@ -1,0 +1,184 @@
+From: Proton CRM <build@proton.local>
+Subject: [PATCH 0098] cases: sort control (Newest first default, Oldest first, Recently updated) applied server-side
+
+diff --git a/app/javascript/dashboard/api/protonCases.js b/app/javascript/dashboard/api/protonCases.js
+index f75e046..ff677c6 100644
+--- a/app/javascript/dashboard/api/protonCases.js
++++ b/app/javascript/dashboard/api/protonCases.js
+@@ -44,6 +44,16 @@ const RESULTS_PER_PAGE = 25;
+ // comfortably past Package D's ~250-300 seeded demo cases.
+ const MAX_PAGES = 40;
+ 
++// CASE-002: the Cases page's sort control. Values are Chatwoot's own
++// /conversations `sort_by` keys (ConversationFinder::SORT_OPTIONS), so the
++// order is applied server-side across every page we fetch. First = default.
++export const DEFAULT_CASE_SORT = 'created_at_desc';
++export const CASE_SORTS = [
++  { value: 'created_at_desc', label: 'Newest first' },
++  { value: 'created_at_asc', label: 'Oldest first' },
++  { value: 'last_activity_at_desc', label: 'Recently updated' },
++];
++
+ function slugToLabel(slug) {
+   if (!slug) return null;
+   return slug
+@@ -139,6 +149,8 @@ export function mapConversationToCaseRow(conversation) {
+     // server-side date-range filter. Additive field; existing consumers
+     // (ProtonCasesTable.vue) don't read it and are unaffected.
+     createdAt: blankToNull(conversation.created_at),
++    // CASE-002: "Recently updated" sort key (unix epoch seconds).
++    lastActivityAt: blankToNull(conversation.last_activity_at),
+     // conversation.meta.assignee — Chatwoot's own currently-assigned agent,
+     // the same object mapping.py's _chatwoot_agent_id reads via `.id`. Read
+     // here (not fetched per row) because /conversations already embeds it on
+@@ -151,6 +163,28 @@ export function mapConversationToCaseRow(conversation) {
+   };
+ }
+ 
++// CASE-002: re-applies the chosen order to already-fetched rows and drops
++// duplicate ids. Pages are fetched one after another, so a case created or
++// updated mid-load can shift across a page boundary and appear twice or out
++// of place; this makes the final list really be in the selected order.
++// Ties (same second) fall back to the case id in the same direction.
++export function sortCaseRows(rows, sortBy) {
++  const seen = new Set();
++  const unique = rows.filter(row => {
++    if (seen.has(row.id)) return false;
++    seen.add(row.id);
++    return true;
++  });
++  const key =
++    sortBy === 'last_activity_at_desc' ? 'lastActivityAt' : 'createdAt';
++  const dir = sortBy === 'created_at_asc' ? 1 : -1;
++  return unique.sort(
++    (a, b) =>
++      dir * ((Number(a[key]) || 0) - (Number(b[key]) || 0)) ||
++      dir * ((Number(a.id) || 0) - (Number(b.id) || 0))
++  );
++}
++
+ // Fetches every conversation the current user can see (status=all, across
+ // their assigned inboxes — same scoping Chatwoot's own conversation list
+ // uses) and maps each to a case row. Paginates sequentially rather than in
+@@ -164,7 +198,10 @@ export function mapConversationToCaseRow(conversation) {
+ // incomplete Cases list is worse than a bounded one, so the page (not this
+ // module) is expected to surface `truncated` to the user rather than just
+ // showing "N of N cases" over a partial `rows`.
+-export async function fetchAllCases() {
++// `sortBy` (optional, a CASE_SORTS value) is passed to Chatwoot as
++// `sort_by`; omitted, Chatwoot's default last-activity order is kept, so the
++// Weekly Report's call is unchanged.
++export async function fetchAllCases({ sortBy } = {}) {
+   const rows = [];
+   let page = 1;
+   let keepGoing = true;
+@@ -176,7 +213,7 @@ export async function fetchAllCases() {
+       break;
+     }
+     // eslint-disable-next-line no-await-in-loop
+-    const response = await ConversationApi.get({ status: 'all', page });
++    const response = await ConversationApi.get({ status: 'all', page, sortBy });
+     const body = (response && response.data && response.data.data) || {};
+     const payload = Array.isArray(body.payload) ? body.payload : [];
+     payload.forEach(conversation => {
+@@ -187,6 +224,7 @@ export async function fetchAllCases() {
+     keepGoing = payload.length > 0 && fetchedSoFar < allCount;
+     page += 1;
+   }
++  if (sortBy) rows.splice(0, rows.length, ...sortCaseRows(rows, sortBy));
+   return {
+     rows,
+     fetchedCount: rows.length,
+diff --git a/app/javascript/dashboard/views/ProtonCasesPage.vue b/app/javascript/dashboard/views/ProtonCasesPage.vue
+index a2b8287..b93af70 100644
+--- a/app/javascript/dashboard/views/ProtonCasesPage.vue
++++ b/app/javascript/dashboard/views/ProtonCasesPage.vue
+@@ -19,7 +19,11 @@
+ <script>
+ import { useAlert } from 'dashboard/composables';
+ import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
+-import { fetchAllCases } from 'dashboard/api/protonCases';
++import {
++  fetchAllCases,
++  CASE_SORTS,
++  DEFAULT_CASE_SORT,
++} from 'dashboard/api/protonCases';
+ import ProtonCasesTable from 'dashboard/components/widgets/ProtonCasesTable.vue';
+ import Banner from 'dashboard/components-next/banner/Banner.vue';
+ 
+@@ -38,18 +42,39 @@ export default {
+       truncated: false,
+       fetchedCount: 0,
+       totalCount: 0,
++      // CASE-002: server-side order of the list; Newest first by default.
++      sortBy: DEFAULT_CASE_SORT,
++      sortOptions: CASE_SORTS,
++      sorting: false,
+     };
+   },
+   async mounted() {
+     await this.load();
+   },
+   methods: {
++    // CASE-002: re-fetch in the new order without the full-page "Loading…"
++    // swap, so the table (and the filters chosen in it) stays mounted.
++    async resort() {
++      this.sorting = true;
++      try {
++        const { rows, truncated, fetchedCount, totalCount } =
++          await fetchAllCases({ sortBy: this.sortBy });
++        this.cases = rows;
++        this.truncated = truncated;
++        this.fetchedCount = fetchedCount;
++        this.totalCount = totalCount;
++      } catch (err) {
++        useAlert('Failed to sort cases: ' + (err.message || String(err)));
++      } finally {
++        this.sorting = false;
++      }
++    },
+     async load() {
+       this.loading = true;
+       this.errored = false;
+       try {
+         const { rows, truncated, fetchedCount, totalCount } =
+-          await fetchAllCases();
++          await fetchAllCases({ sortBy: this.sortBy });
+         this.cases = rows;
+         this.truncated = truncated;
+         this.fetchedCount = fetchedCount;
+@@ -87,6 +112,34 @@ export default {
+         {{ totalCount - fetchedCount }} more exist but are not shown here or
+         included in the filters below.
+       </Banner>
++      <div class="flex items-end gap-3 mb-4">
++        <div>
++          <label
++            for="proton-cases-sort"
++            class="block mb-1 text-xs text-n-slate-11"
++          >
++            Sort by
++          </label>
++          <select
++            id="proton-cases-sort"
++            v-model="sortBy"
++            :disabled="sorting"
++            class="px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12 disabled:opacity-50"
++            @change="resort"
++          >
++            <option
++              v-for="option in sortOptions"
++              :key="option.value"
++              :value="option.value"
++            >
++              {{ option.label }}
++            </option>
++          </select>
++        </div>
++        <span v-if="sorting" class="pb-2 text-sm text-n-slate-11">
++          Sorting…
++        </span>
++      </div>
+       <ProtonCasesTable :cases="cases" />
+     </template>
+   </div>

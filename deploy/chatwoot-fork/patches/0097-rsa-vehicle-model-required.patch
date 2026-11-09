@@ -1,0 +1,84 @@
+From: Proton CRM <build@proton.local>
+Subject: [PATCH 0097] rsa incident log: vehicle model is required (label, input, named client-side check)
+
+diff --git a/app/javascript/dashboard/views/ProtonRsaPage.vue b/app/javascript/dashboard/views/ProtonRsaPage.vue
+index d63f85c..c0013ef 100644
+--- a/app/javascript/dashboard/views/ProtonRsaPage.vue
++++ b/app/javascript/dashboard/views/ProtonRsaPage.vue
+@@ -59,12 +59,28 @@ export default {
+       loading: true,
+       errored: false,
+       saving: false,
++      // RSA-001: the field the last create/edit attempt was missing, named
++      // in the operator's own term ("Vehicle model is required.").
++      formError: '',
+     };
+   },
+   async mounted() {
+     await this.load();
+   },
+   methods: {
++    // RSA-001: Vehicle model is required (the backend answers 422
++    // "vehicle_model is required" too). `required` on the input stops an
++    // empty submit; this also catches whitespace and the inline edit row,
++    // and names the field before anything is sent.
++    missingVehicleModel(source) {
++      if (String(source.vehicle_model ?? '').trim()) {
++        this.formError = '';
++        return false;
++      }
++      this.formError = `${this.t('asset_model')} is required.`;
++      useAlert(this.formError);
++      return true;
++    },
+     // Empty strings mean "unset" — convert them to null so the backend's
+     // Optional[...] fields (and PATCH's "skip null" filter) behave correctly.
+     buildPayload(source) {
+@@ -101,6 +117,7 @@ export default {
+       }
+     },
+     async create() {
++      if (this.missingVehicleModel(this.form)) return;
+       this.saving = true;
+       try {
+         await createRsaIncident(this.buildPayload(this.form));
+@@ -132,9 +149,11 @@ export default {
+     },
+     cancelEdit() {
+       this.editingId = null;
++      this.formError = '';
+       this.editForm = { ...EMPTY_FORM };
+     },
+     async saveEdit(id) {
++      if (this.missingVehicleModel(this.editForm)) return;
+       this.saving = true;
+       try {
+         await updateRsaIncident(id, this.buildPayload(this.editForm));
+@@ -269,11 +288,12 @@ export default {
+         </div>
+         <div>
+           <label class="block mb-1 text-sm text-n-slate-11"
+-            >{{ t('asset_model') }}</label
++            >{{ t('asset_model') }} *</label
+           >
+           <input
+             v-model="form.vehicle_model"
+             type="text"
++            required
+             class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+           />
+         </div>
+@@ -391,6 +411,13 @@ export default {
+             class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+           />
+         </div>
++        <p
++          v-if="formError"
++          role="alert"
++          class="m-0 text-sm md:col-span-2 text-n-ruby-11"
++        >
++          {{ formError }}
++        </p>
+         <div class="md:col-span-2">
+           <button
+             type="submit"

@@ -28,7 +28,7 @@ trackerModule('Customer 360', {
     const created = Api.must(
       await api.be('/rsa/incidents', {
         method: 'POST',
-        body: { incident_date: new Date().toISOString().slice(0, 10), vehicle_no: plate, cause: '[TEST] marker', customer_phone: contact.phone, remarks: `${TEST_PREFIX} C360 plate` },
+        body: { incident_date: new Date().toISOString().slice(0, 10), vehicle_no: plate, vehicle_model: '[TEST] X50', cause: '[TEST] marker', customer_phone: contact.phone, remarks: `${TEST_PREFIX} C360 plate` },
       }),
       'create [TEST] incident',
     );

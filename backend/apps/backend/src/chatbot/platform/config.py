@@ -728,7 +728,8 @@ class Settings(BaseSettings):
     # without "[DEMO]" in its name is never written to. Off (default) = the
     # routes are not mounted. Demo/test tenants only.
     demo_customer_app_enabled: bool = False
-    # The Chatwoot API inbox to post into. 0 = CHATWOOT_INBOX_ID.
+    # The Chatwoot API inbox to post into. 0 = DEMO_INBOX_ID, then
+    # CHATWOOT_INBOX_ID (one demo inbox for the Demo tab and the app).
     demo_customer_app_inbox_id: int = 0
 
     # Chat-side caller context (2026-11-09). See features/contact_context/.

@@ -1,9 +1,8 @@
 """The demo customer app's persona allow-list.
 
-`personas.json` next to this file is a verbatim copy of the Phone tab's
-personas (`.superpowers/sdd/2026-11-09-phone-caller-context/personas.json`,
-mirrored in the frontend's `features/phone/personas.ts`; a test keeps the
-three in step). The page sends a persona ID, never a number: the server maps
+The personas come from the ONE canonical file, `features/demo/personas.json`
+(read through `features/demo/personas.py`; the frontend's
+`features/phone/personas.ts` mirrors it and a test keeps them in step). The page sends a persona ID, never a number: the server maps
 the ID to the persona's fake number here, so the page can never post as an
 arbitrary (real) customer. Personas without a number ("unknown", "custom")
 are not on the list.
@@ -11,12 +10,11 @@ are not on the list.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
-_FILE = Path(__file__).with_name("personas.json")
+from chatbot.features.demo.personas import load_personas
+
 DEMO_TAG = "[DEMO]"
 
 
@@ -30,9 +28,8 @@ class DemoPersona:
 
 
 def _load() -> tuple[DemoPersona, ...]:
-    raw = json.loads(_FILE.read_text(encoding="utf-8"))
     out: list[DemoPersona] = []
-    for p in raw.get("personas") or []:
+    for p in load_personas():
         number = str(p.get("number") or "").strip()
         if not number:
             continue

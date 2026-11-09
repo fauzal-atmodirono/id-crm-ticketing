@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from chatbot.features.customer_app.channel import CustomerAppChannel
+from chatbot.features.demo.personas import load_personas
 from chatbot.features.customer_app.personas import (
     PERSONAS,
     allowed_persona,
@@ -94,15 +95,28 @@ def test_contact_name_always_carries_the_demo_tag() -> None:
     assert contact_name(allowed_persona("ahmad")) == "[DEMO] Ahmad"  # type: ignore[arg-type]
 
 
-def test_server_copy_matches_the_shared_personas_file() -> None:
-    shared = REPO / ".superpowers/sdd/2026-11-09-phone-caller-context/personas.json"
-    if not shared.exists():
-        pytest.skip("shared personas.json not in this checkout")
-    here = Path(__file__).with_name("personas.json")
-    assert json.loads(here.read_text()) == json.loads(shared.read_text())
+def test_there_is_one_persona_source() -> None:
+    assert not Path(__file__).with_name("personas.json").exists()
+    canonical = {p["id"]: p for p in load_personas() if p.get("number")}
+    assert set(canonical) == {p.id for p in PERSONAS}
+    for p in PERSONAS:
+        contact = (canonical[p.id].get("crm_seed") or {}).get("contact") or {}
+        assert p.seed_attributes == contact.get("custom_attributes", {})
+        assert p.seed_name == contact.get("name", "")
 
 
-def test_server_copy_matches_the_phone_tab_personas_ts() -> None:
+def test_seed_attributes_match_canonical_and_stamp_demo_seed() -> None:
+    ahmad = allowed_persona("ahmad")
+    assert ahmad is not None
+    assert ahmad.seed_attributes["vehicle_no"] == "DMO1101"
+    assert ahmad.seed_attributes["vehicle_model"] == "Proton X50"
+    from chatbot.features.customer_app.channel import DEMO_SEED_KEY, DEMO_SEED_VALUE
+    from chatbot.features.demo.safety import DEMO_SEED_MARKER
+
+    assert (DEMO_SEED_KEY, DEMO_SEED_VALUE) == ("demo_seed", DEMO_SEED_MARKER)
+
+
+def test_frontend_personas_ts_matches_canonical_file() -> None:
     ts = REPO / "backend/apps/frontend/src/features/phone/personas.ts"
     if not ts.exists():
         pytest.skip("frontend not in this checkout")
@@ -483,6 +497,24 @@ def test_dedicated_inbox_setting_wins_over_chatwoot_inbox_id() -> None:
         "conversation_id": 60
     }
     assert json.loads(open_conv.calls.last.request.content)["inbox_id"] == 5
+
+
+@respx.mock
+def test_inbox_falls_back_to_the_demo_inbox_setting() -> None:
+    respx.get(f"{CW}/contacts/search").mock(
+        return_value=httpx.Response(200, json={"payload": [_contact()]})
+    )
+    respx.get(f"{CW}/contacts/7/conversations").mock(
+        return_value=httpx.Response(200, json={"payload": []})
+    )
+    open_conv = respx.post(f"{CW}/conversations").mock(
+        return_value=httpx.Response(200, json={"id": 61})
+    )
+    respx.post(f"{CW}/conversations/61/messages").mock(return_value=httpx.Response(200, json={}))
+    respx.post(f"{CW}/conversations/61/labels").mock(return_value=httpx.Response(200, json={}))
+    c = _client(_settings(demo_inbox_id=9))
+    assert c.post("/customer-app/messages", data={"persona": "ahmad", "text": "hi"}).status_code == 200
+    assert json.loads(open_conv.calls.last.request.content)["inbox_id"] == 9
 
 
 # --------------------------------------------------------------------------

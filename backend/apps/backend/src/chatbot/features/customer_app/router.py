@@ -124,11 +124,15 @@ def build_customer_app_router(settings: Settings, channel: CustomerAppChannel) -
         return persona
 
     def _inbox_id() -> int:
-        inbox_id = settings.demo_customer_app_inbox_id or settings.chatwoot_inbox_id
+        inbox_id = (
+            settings.demo_customer_app_inbox_id
+            or settings.demo_inbox_id
+            or settings.chatwoot_inbox_id
+        )
         if not inbox_id or not settings.chatwoot_api_token or not settings.chatwoot_enabled:
             raise HTTPException(
                 status_code=503,
-                detail="Chatwoot API token and inbox (DEMO_CUSTOMER_APP_INBOX_ID or CHATWOOT_INBOX_ID) must be set",
+                detail="Chatwoot API token and inbox (DEMO_CUSTOMER_APP_INBOX_ID, DEMO_INBOX_ID or CHATWOOT_INBOX_ID) must be set",
             )
         return int(inbox_id)
 

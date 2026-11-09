@@ -109,6 +109,9 @@ class _FakePicStore:
         return list(self._records)
 
 
+_KEY = {"x-api-key": "test_api_key"}
+
+
 def _pic_record(department: str) -> PicRecord:
     return PicRecord(department=department, pic_name="Test PIC", pic_email="pic@test", pic_whatsapp="")
 
@@ -134,7 +137,7 @@ def _clean_state(monkeypatch: pytest.MonkeyPatch) -> None:
 def settings():
     from chatbot.platform.config import get_settings
 
-    return get_settings().model_copy(update={"taxonomy_admin_enabled": True, "category_department_mapping_enabled": True})
+    return get_settings().model_copy(update={"proton_backend_key": "test_api_key", "taxonomy_admin_enabled": True, "category_department_mapping_enabled": True})
 
 
 async def test_a_category_node_round_trips_its_mapped_department_slug(settings) -> None:
@@ -159,7 +162,7 @@ async def test_the_coverage_report_lists_active_categories_with_no_department(se
     app.include_router(build_taxonomy_admin_router(settings))
     client = TestClient(app)
 
-    res = client.get("/admin/taxonomy/coverage")
+    res = client.get("/admin/taxonomy/coverage", headers=_KEY)
     assert res.status_code == 200
     body = res.json()
     assert len(body["unmapped_categories"]) >= 1
@@ -181,7 +184,7 @@ async def test_the_coverage_report_lists_departments_no_category_maps_to(
     app.include_router(build_taxonomy_admin_router(settings))
     client = TestClient(app)
 
-    res = client.get("/admin/taxonomy/coverage")
+    res = client.get("/admin/taxonomy/coverage", headers=_KEY)
     assert res.status_code == 200
     body = res.json()
     # The mapped department must be absent and the unmapped one present -- key
@@ -212,7 +215,7 @@ async def test_unreferenced_departments_come_from_the_pic_store_not_a_hardcoded_
     app.include_router(build_taxonomy_admin_router(settings))
     client = TestClient(app)
 
-    res = client.get("/admin/taxonomy/coverage")
+    res = client.get("/admin/taxonomy/coverage", headers=_KEY)
     assert res.status_code == 200
     body = res.json()
     assert body["unreferenced_departments"] == ["dept_pre_sales", "dept_sales"]
@@ -235,7 +238,7 @@ async def test_unreferenced_departments_dedupe_case_insensitively(
     app.include_router(build_taxonomy_admin_router(settings))
     client = TestClient(app)
 
-    res = client.get("/admin/taxonomy/coverage")
+    res = client.get("/admin/taxonomy/coverage", headers=_KEY)
     assert res.status_code == 200
     assert res.json()["unreferenced_departments"] == ["dept_sales"]
 
@@ -259,7 +262,7 @@ async def test_pic_store_returning_no_records_yields_unknown_source_not_500(
     app.include_router(build_taxonomy_admin_router(settings))
     client = TestClient(app)
 
-    res = client.get("/admin/taxonomy/coverage")
+    res = client.get("/admin/taxonomy/coverage", headers=_KEY)
     assert res.status_code == 200
     body = res.json()
     assert body["unreferenced_departments"] == []
@@ -287,7 +290,7 @@ async def test_pic_store_raising_is_a_defensive_guard_not_the_real_failure_shape
     app.include_router(build_taxonomy_admin_router(settings))
     client = TestClient(app)
 
-    res = client.get("/admin/taxonomy/coverage")
+    res = client.get("/admin/taxonomy/coverage", headers=_KEY)
     assert res.status_code == 200
     body = res.json()
     assert body["unreferenced_departments"] == []
@@ -319,7 +322,7 @@ async def test_a_mapped_departments_stray_casing_and_whitespace_still_cancels_it
     app.include_router(build_taxonomy_admin_router(settings))
     client = TestClient(app)
 
-    res = client.get("/admin/taxonomy/coverage")
+    res = client.get("/admin/taxonomy/coverage", headers=_KEY)
     assert res.status_code == 200
     assert "dept_sales" not in res.json()["unreferenced_departments"]
 
@@ -364,6 +367,6 @@ async def test_the_retired_department_category_list_is_present_but_never_populat
     app.include_router(build_taxonomy_admin_router(settings))
     client = TestClient(app)
 
-    res = client.get("/admin/taxonomy/coverage")
+    res = client.get("/admin/taxonomy/coverage", headers=_KEY)
     assert res.status_code == 200
     assert res.json()["retired_department_categories"] == []

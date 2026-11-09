@@ -1,0 +1,209 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] Reports: weekly download sends the session; AI performance
+ and role scope hide on a backend without them (final review I4, I5, M4)
+
+* protonMetrics.js: protonBackendHeaders() is the one header builder for
+  /metrics/* (shared key + Chatwoot session triplet). The weekly report's
+  PDF/Excel download used x-api-key only and 401'd with
+  DATA_SCOPED_RBAC_ENABLED on; it now sends the same headers.
+* ProtonAiPerformanceSection (0083) and ProtonRoleScopeEditor (0084): a 404
+  (Wave 1 backend, route absent) hides the section/card instead of a red
+  error box, like 0069 and 0085 do.
+* ProtonRoleScopeEditor: the Inboxes/Teams pickers are <div>s, not <label>s
+  wrapping <button> chips.
+
+---
+diff --git a/app/javascript/dashboard/api/protonMetrics.js b/app/javascript/dashboard/api/protonMetrics.js
+index 3bc342a..d4eaf7f 100644
+--- a/app/javascript/dashboard/api/protonMetrics.js
++++ b/app/javascript/dashboard/api/protonMetrics.js
+@@ -13,23 +13,34 @@ import Auth from './auth';
+ // DATA_SCOPED_RBAC_ENABLED on the backend can narrow each report to the
+ // viewer's scope (a 403 then means "not available within your scope"). With
+ // the flag off the backend ignores these headers.
++//
++// Patch 0089 (review I4): the headers live in protonBackendHeaders() so a
++// caller that needs the raw response (the weekly report's PDF/Excel
++// download, which reads a blob, not JSON) sends exactly the same auth.
++// Sending only x-api-key there made the export 401 once
++// DATA_SCOPED_RBAC_ENABLED was on.
++export function protonBackendHeaders() {
++  const { backendKey } = useProtonConfig();
++  const authData = Auth.hasAuthCookie() ? Auth.getAuthData() : null;
++  return {
++    'Content-Type': 'application/json',
++    ...(backendKey ? { 'x-api-key': backendKey } : {}),
++    ...(authData
++      ? {
++          'x-chatwoot-access-token': authData['access-token'],
++          'x-chatwoot-client': authData.client,
++          'x-chatwoot-uid': authData.uid,
++        }
++      : {}),
++  };
++}
++
+ async function metricsRequest(path) {
+-  const { backendUrl, backendKey } = useProtonConfig();
++  const { backendUrl } = useProtonConfig();
+   if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
+ 
+-  const authData = Auth.hasAuthCookie() ? Auth.getAuthData() : null;
+   const response = await fetch(`${backendUrl}${path}`, {
+-    headers: {
+-      'Content-Type': 'application/json',
+-      ...(backendKey ? { 'x-api-key': backendKey } : {}),
+-      ...(authData
+-        ? {
+-            'x-chatwoot-access-token': authData['access-token'],
+-            'x-chatwoot-client': authData.client,
+-            'x-chatwoot-uid': authData.uid,
+-          }
+-        : {}),
+-    },
++    headers: protonBackendHeaders(),
+   });
+ 
+   if (!response.ok) {
+diff --git a/app/javascript/dashboard/components/widgets/ProtonRoleScopeEditor.vue b/app/javascript/dashboard/components/widgets/ProtonRoleScopeEditor.vue
+index f5c899a..e577dcd 100644
+--- a/app/javascript/dashboard/components/widgets/ProtonRoleScopeEditor.vue
++++ b/app/javascript/dashboard/components/widgets/ProtonRoleScopeEditor.vue
+@@ -40,6 +40,9 @@ export default {
+     return {
+       loading: true,
+       loadError: '',
++      // Patch 0089 (review I5): 404 = this backend has no role scopes (Wave 1):
++      // hide the card instead of showing an error box.
++      notAvailable: false,
+       saving: false,
+       enabled: false,
+       scopable: true,
+@@ -91,6 +94,10 @@ export default {
+         });
+         this.reset();
+       } catch (e) {
++        if (e?.status === 404) {
++          this.notAvailable = true;
++          return;
++        }
+         this.loadError = e.message || 'Could not load this role’s data scope.';
+       } finally {
+         this.loading = false;
+@@ -140,7 +147,10 @@ export default {
+ </script>
+ 
+ <template>
+-  <div class="flex flex-col gap-4 p-5 border rounded-xl border-n-weak">
++  <div
++    v-if="!notAvailable"
++    class="flex flex-col gap-4 p-5 border rounded-xl border-n-weak"
++  >
+     <div>
+       <h3 class="text-sm font-medium text-n-slate-12">Data scope</h3>
+       <p class="mt-1 text-xs text-n-slate-11">
+@@ -172,7 +182,7 @@ export default {
+       cannot carry a data scope.
+     </p>
+     <template v-else>
+-      <label class="flex flex-col gap-1">
++      <div class="flex flex-col gap-1">
+         <span class="text-xs font-medium text-n-slate-12">Inboxes</span>
+         <span v-if="knownInboxes.length" class="flex flex-wrap gap-1">
+           <button
+@@ -197,9 +207,9 @@ export default {
+           placeholder="Inbox ids, e.g. 3, 5 — empty = all inboxes"
+           @input="syncText"
+         />
+-      </label>
++      </div>
+ 
+-      <label class="flex flex-col gap-1">
++      <div class="flex flex-col gap-1">
+         <span class="text-xs font-medium text-n-slate-12">Teams</span>
+         <span v-if="knownTeams.length" class="flex flex-wrap gap-1">
+           <button
+@@ -224,7 +234,7 @@ export default {
+           placeholder="Team ids — empty = all teams"
+           @input="syncText"
+         />
+-      </label>
++      </div>
+ 
+       <label class="flex flex-col gap-1">
+         <span class="text-xs font-medium text-n-slate-12">Dealers</span>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue
+index fb3be16..f2299f9 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue
+@@ -56,6 +56,7 @@ import {
+   getLifecycle,
+   getDepartments,
+   getCallCentre,
++  protonBackendHeaders,
+ } from 'dashboard/api/protonMetrics';
+ import {
+   SCOPE_STATUS,
+@@ -509,13 +510,15 @@ const weekCases = computed(() => {
+ 
+ // ── PDF / Excel download (FIX-14) ────────────────────────────────────────
+ // The backend's weekly-report export is key-gated, so a plain <a href> can't
+-// carry x-api-key: fetch it with the shared key (same auth as metricsRequest
+-// in protonMetrics.js) and hand the blob to the browser as a download. Sends
++// carry x-api-key: fetch it with the same headers as metricsRequest in
++// protonMetrics.js (shared key + the Chatwoot session triplet, patch 0089, so
++// a scoped report still downloads with DATA_SCOPED_RBAC_ENABLED on) and hand
++// the blob to the browser as a download. Sends
+ // the exact window on screen (from/to), not a Monday snap, because the picker
+ // above can start on any day.
+ const exportingFormat = ref('');
+ async function downloadReport(format) {
+-  const { backendUrl, backendKey } = useProtonConfig();
++  const { backendUrl } = useProtonConfig();
+   if (!backendUrl) {
+     useAlert('PROTON_BACKEND_URL not configured');
+     return;
+@@ -526,7 +529,7 @@ async function downloadReport(format) {
+     const query = new URLSearchParams({ format, from, to });
+     const response = await fetch(
+       `${backendUrl}/metrics/weekly-report/export?${query.toString()}`,
+-      { headers: backendKey ? { 'x-api-key': backendKey } : {} }
++      { headers: protonBackendHeaders() }
+     );
+     if (!response.ok) throw new Error(`${response.status}`);
+     const url = URL.createObjectURL(await response.blob());
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonAiPerformanceSection.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonAiPerformanceSection.vue
+index bfd9049..d7be608 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonAiPerformanceSection.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonAiPerformanceSection.vue
+@@ -20,6 +20,10 @@ const blocks = ref({});
+ const scopes = ref({});
+ const error = ref(null);
+ const loading = ref(true);
++// Patch 0089 (review I5): a backend without /metrics/ai-performance (Wave 1,
++// or nothing routed) answers 404 -- that is "not available here", not an
++// error, so the whole section is hidden (same rule as patches 0069 and 0085).
++const notAvailable = ref(false);
+ 
+ const load = async () => {
+   loading.value = true;
+@@ -29,6 +33,10 @@ const load = async () => {
+     blocks.value = data.blocks ?? {};
+     scopes.value = data.scopes ?? {};
+   } catch (e) {
++    if (e?.status === 404) {
++      notAvailable.value = true;
++      return;
++    }
+     error.value = e.message || 'Failed to load AI performance reports';
+   } finally {
+     loading.value = false;
+@@ -175,7 +183,7 @@ const hasAnyData = computed(() =>
+ </script>
+ 
+ <template>
+-  <div class="flex flex-col gap-6">
++  <div v-if="!notAvailable" class="flex flex-col gap-6">
+     <div
+       class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
+     >

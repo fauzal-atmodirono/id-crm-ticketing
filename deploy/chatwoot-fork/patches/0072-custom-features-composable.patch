@@ -1,0 +1,133 @@
+diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
+index ecb7aea..b1402a8 100644
+--- a/app/javascript/dashboard/api/protonAdmin.js
++++ b/app/javascript/dashboard/api/protonAdmin.js
+@@ -285,3 +285,16 @@ export function upsertPresenceStatus(key, entry) {
+     body: entry,
+   });
+ }
++
++// ── Custom features (the platform switchboard) ─────────────────────────────
++
++export async function fetchCustomFeatures() {
++  return adminRequest('/admin/custom-features');
++}
++
++export async function setCustomFeature(key, enabled) {
++  return adminRequest('/admin/custom-features', {
++    method: 'POST',
++    body: { key, enabled },
++  });
++}
+diff --git a/app/javascript/dashboard/composables/useCustomFeatures.js b/app/javascript/dashboard/composables/useCustomFeatures.js
+new file mode 100644
+index 0000000..5d17c48
+--- /dev/null
++++ b/app/javascript/dashboard/composables/useCustomFeatures.js
+@@ -0,0 +1,106 @@
++// useCustomFeatures.js — OUR file. The read side of the platform feature
++// switchboard. Deliberately shaped exactly like useProtonPermissions.js:
++// module-level cache shared by every importer, one in-flight promise, and a
++// fail-CLOSED error path.
++//
++// Fail-closed is the whole point and it has a visible cost: a backend blip
++// renders the CRM empty rather than briefly rendering surfaces the tenant
++// does not have. That is the right trade for a licensing gate, but it means
++// an outage looks like a missing product — so `loadFailed` is exposed
++// separately, letting the nav say "couldn't load" instead of silently
++// showing nothing.
++import { ref } from 'vue';
++import { fetchCustomFeatures } from 'dashboard/api/protonAdmin';
++
++const features = ref(null); // null = not yet loaded
++const isSuperadmin = ref(false);
++const registry = ref([]);
++const behavior = ref({});
++const loading = ref(false);
++const loadFailed = ref(false);
++let loadPromise = null;
++let retryTimer = null;
++
++// Capped exponential backoff, not a fixed interval: on a tenant whose backend
++// is down (or PROTON_BACKEND_URL is unset, where adminRequest throws
++// synchronously), a fixed 3s retry means every open dashboard tab polls
++// /admin/custom-features forever, every 3 seconds, for as long as the tab
++// stays open. Starting at 3s and doubling up to a 60s ceiling keeps the fast
++// retry for a genuinely transient blip (the common case this exists for)
++// while not hammering a backend that is actually down for a while. Reset to
++// the floor on the next successful load, so a flaky-then-recovered backend
++// does not leave a stale multi-minute delay behind for its next hiccup.
++const RETRY_FLOOR_MS = 3000;
++const RETRY_CEILING_MS = 60000;
++let retryDelayMs = RETRY_FLOOR_MS;
++
++function ensureLoaded() {
++  if (features.value !== null || loadPromise) return loadPromise;
++  loading.value = true;
++  loadPromise = fetchCustomFeatures()
++    .then(data => {
++      features.value = Array.isArray(data.features) ? data.features : [];
++      isSuperadmin.value = Boolean(data.is_superadmin);
++      registry.value = Array.isArray(data.registry) ? data.registry : [];
++      behavior.value =
++        data.behavior &&
++        typeof data.behavior === 'object' &&
++        !Array.isArray(data.behavior)
++          ? data.behavior
++          : {};
++      loadFailed.value = false;
++      retryDelayMs = RETRY_FLOOR_MS;
++    })
++    .catch(() => {
++      // Do NOT poison the module-level singleton with [] on a transient
++      // failure (a backend hiccup, or a fetch that raced ahead of the auth
++      // cookie / a not-yet-deployed backend fix). Setting features to []
++      // here — combined with the `features.value !== null` guard above —
++      // would permanently blank every feature-gated surface for the whole
++      // page session, so a later successful /admin/custom-features (200)
++      // never reaches the nav and only a full module-resetting reload
++      // recovers. Instead: leave features null (hasFeature() still returns
++      // false, i.e. fail-closed for rendering), reset the superadmin-only
++      // fields, clear the in-flight promise, and schedule one delayed retry
++      // so an already-mounted nav self-heals without a reload once the
++      // backend is reachable.
++      isSuperadmin.value = false;
++      registry.value = [];
++      behavior.value = {};
++      loadFailed.value = true;
++      loadPromise = null;
++      if (retryTimer === null) {
++        const delay = retryDelayMs;
++        retryDelayMs = Math.min(retryDelayMs * 2, RETRY_CEILING_MS);
++        retryTimer = setTimeout(() => {
++          retryTimer = null;
++          ensureLoaded();
++        }, delay);
++      }
++    })
++    .finally(() => {
++      loading.value = false;
++    });
++  return loadPromise;
++}
++
++// Force a re-read after a toggle, so the nav reflects the change without a
++// page reload.
++async function refresh() {
++  features.value = null;
++  loadPromise = null;
++  return ensureLoaded();
++}
++
++export function useCustomFeatures() {
++  ensureLoaded();
++  return {
++    loading,
++    loadFailed,
++    isSuperadmin,
++    registry,
++    behavior,
++    refresh,
++    hasFeature: key => (features.value || []).includes(key),
++  };
++}

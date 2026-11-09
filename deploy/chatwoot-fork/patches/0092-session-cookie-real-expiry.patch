@@ -1,0 +1,37 @@
+diff --git a/app/javascript/dashboard/store/utils/api.js b/app/javascript/dashboard/store/utils/api.js
+index 470d98d..002f525 100644
+--- a/app/javascript/dashboard/store/utils/api.js
++++ b/app/javascript/dashboard/store/utils/api.js
+@@ -1,5 +1,4 @@
+ import fromUnixTime from 'date-fns/fromUnixTime';
+-import differenceInDays from 'date-fns/differenceInDays';
+ import Cookies from 'js-cookie';
+ import { LOCAL_STORAGE_KEYS } from 'dashboard/constants/localStorage';
+ import { SESSION_STORAGE_KEYS } from 'dashboard/constants/sessionStorage';
+@@ -31,7 +30,9 @@ export const getHeaderExpiry = response =>
+ export const setAuthCredentials = response => {
+   const expiryDate = getHeaderExpiry(response);
+   Cookies.set('cw_d_session_info', JSON.stringify(response.headers), {
+-    expires: differenceInDays(expiryDate, new Date()),
++    // Pass the Date itself: differenceInDays() is 0 for any lifespan under
++    // 24 h, which made js-cookie write an already-expired cookie.
++    expires: expiryDate,
+   });
+   setUser(response.data.data, expiryDate);
+ };
+diff --git a/config/initializers/zz_proton_session.rb b/config/initializers/zz_proton_session.rb
+index 0354a24..91237b1 100644
+--- a/config/initializers/zz_proton_session.rb
++++ b/config/initializers/zz_proton_session.rb
+@@ -10,4 +10,10 @@
+ # timer (the idle timer is client side, SESSION_IDLE_TIMEOUT_MINUTES). Tokens
+ # already issued keep their old expiry; the cap applies from the next login.
+ hours = ENV.fetch('SESSION_TOKEN_LIFESPAN_HOURS', '').to_i
+-DeviseTokenAuth.token_lifespan = hours.hours if hours.positive?
++# Second guard (patch 0092): a lifespan under 48 h is refused. Short lifespans
++# are not a supported way to get an idle timeout (use SESSION_IDLE_TIMEOUT_MINUTES).
++if hours.positive? && hours < 48
++  Rails.logger.warn("SESSION_TOKEN_LIFESPAN_HOURS=#{hours} ignored: values under 48 are refused")
++elsif hours.positive?
++  DeviseTokenAuth.token_lifespan = hours.hours
++end

@@ -3,11 +3,21 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { Device, type Call } from '@twilio/voice-sdk'
 import { fetchPhoneToken } from '../api/phone.api'
 import PhoneVisualizer from './PhoneVisualizer.vue'
+import { DEFAULT_PERSONA_ID, PERSONAS, type Persona } from '../personas'
 
 type Status = 'idle' | 'connecting' | 'in-call' | 'error'
 
 const status = ref<Status>('idle')
 const elapsed = ref(0)
+
+// "Call as" persona (demo). The backend ignores it unless
+// PHONE_WEB_CALL_AS_ENABLED is on and the number is on
+// PHONE_WEB_CALL_AS_NUMBERS, and never applies it to PSTN calls.
+const personaId = ref(DEFAULT_PERSONA_ID)
+const persona = computed<Persona>(
+  () => PERSONAS.find((p) => p.id === personaId.value) ?? (PERSONAS[0] as Persona),
+)
+const callAs = computed(() => persona.value.number)
 const analyser = ref<AnalyserNode | null>(null)
 
 let device: Device | null = null
@@ -62,7 +72,7 @@ async function startCall(): Promise<void> {
     status.value = 'connecting'
     const { token } = await fetchPhoneToken()
     device = new Device(token)
-    call = await device.connect()
+    call = await device.connect(callAs.value ? { params: { callAs: callAs.value } } : undefined)
     call.on('disconnect', endCall)
     call.on('accept', attachAnalyser)
     status.value = 'in-call'
@@ -95,6 +105,16 @@ onBeforeUnmount(endCall)
         <span class="phone__title">Talk to Proton support</span>
         <span class="phone__sub">Real-time voice, answered instantly by AI</span>
       </div>
+      <label class="persona">
+        <span class="persona__label">Call as</span>
+        <select v-model="personaId" class="persona__select">
+          <option v-for="p in PERSONAS" :key="p.id" :value="p.id">{{ p.label }}</option>
+        </select>
+      </label>
+      <p class="persona__hint">
+        {{ persona.description }}<br />
+        <strong>Say:</strong> {{ persona.scriptHint }}
+      </p>
       <button class="btn btn--call" type="button" @click="startCall">
         <span class="btn__glyph" aria-hidden="true">📞</span>
         {{ status === 'error' ? 'Try again' : 'Call support' }}
@@ -242,6 +262,28 @@ onBeforeUnmount(endCall)
 .ellipsis::after {
   content: '';
   animation: dots 1.4s steps(4, end) infinite;
+}
+
+.persona {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.persona__select {
+  padding: 0.45rem 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.persona__hint {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 
 .phone__err {

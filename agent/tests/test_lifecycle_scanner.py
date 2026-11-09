@@ -219,3 +219,214 @@ async def test_close_uses_per_inbox_messages(wired, monkeypatch):
     posted = [c.args[1] for c in wired.create_message.await_args_list]
     assert any("BYE" in str(m) for m in posted), posted
     assert any("OK? Y/N" in str(m) for m in posted), posted
+
+
+async def test_scan_leaves_bot_owned_pending_conversations_alone(wired, monkeypatch):
+    """`lifecycle_skip_pending` keeps us off conversations a bot still owns.
+
+    On a tenant whose inbox is driven by a third-party agent bot (aeon360),
+    `pending` means *that* bot is mid-conversation. Our idle warning posts as
+    an outgoing message from a user, which its decision table reads as a human
+    taking over: it cancels the in-flight generation and flips the
+    conversation to `open`. Observed live on 2026-08-21 — every one of our
+    lifecycle posts matched one of their `toggle_status` calls to the second.
+    """
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "lifecycle_skip_pending", True, raising=False)
+    await lifecycle_store.seed_active(70, channel="Channel::Whatsapp")
+
+    await lifecycle_scanner.scan_once()
+
+    # Never even listed: the conversation is not ours to sweep.
+    for call in wired.list_conversations.await_args_list:
+        assert call.kwargs.get("status") != "pending"
+    assert await lifecycle_store.get_state(70) == "active"
+    wired.create_message.assert_not_awaited()
+
+
+async def test_scan_still_sweeps_pending_by_default(wired):
+    """Default is off, so every existing tenant behaves exactly as before."""
+    from app.config import get_settings
+
+    assert get_settings().lifecycle_skip_pending is False
+    await lifecycle_store.seed_active(70, channel="Channel::Whatsapp")
+
+    await lifecycle_scanner.scan_once()
+
+    assert await lifecycle_store.get_state(70) == "idle_warned"
+    wired.create_message.assert_awaited()
+
+
+def test_decide_idle_action_closes_grace_after_the_warning_not_after_the_idle_reset():
+    """FIX-52: the warning is itself a message, so Chatwoot's last_activity_at
+    resets when it is posted and the old `idle >= warn+grace` check needed
+    warn+grace MORE minutes (~16 live instead of 5). The close is measured from
+    the warning (state age) against the grace the customer was promised."""
+    d = lifecycle_scanner.decide_idle_action
+    # warned 5.2 min ago, idle clock reset by the warning to 5.2 min (< 15)
+    assert d("idle_warned", 5.2, 5.2, 10, 15, 10, grace_after=5) == "close"
+    assert d("idle_warned", 4.0, 4.0, 10, 15, 10, grace_after=5) is None
+    # no grace given -> legacy behaviour
+    assert d("idle_warned", 5.2, 5.2, 10, 15, 10) is None
+
+
+async def _warned_conv_wired(monkeypatch, minutes_since_warning: float):
+    from datetime import timedelta
+
+    client = AsyncMock()
+    base = datetime.now(timezone.utc)
+    now = base + timedelta(minutes=minutes_since_warning)
+    # last_activity_at == the warning message, so idle == minutes_since_warning
+    client.list_conversations.side_effect = lambda status=None, assignee_type=None: (
+        {"data": {"payload": [
+            {"id": 71, "inbox_id": 4, "last_activity_at": int(base.timestamp()),
+             "meta": {"assignee": None}},
+        ]}} if status == "pending" else {"data": {"payload": []}}
+    )
+    client.get_inbox.return_value = {
+        "channel_type": "Channel::Whatsapp", "working_hours_enabled": False,
+    }
+    monkeypatch.setattr(lifecycle_scanner, "get_chatwoot_client", lambda: client)
+    monkeypatch.setattr(lifecycle, "get_chatwoot_client", lambda: client)
+    monkeypatch.setattr(lifecycle_scanner, "_now", lambda: now)
+    await lifecycle_store.seed_active(71, channel="Channel::Whatsapp")
+    await lifecycle_store.transition(71, lifecycle.IDLE_WARNED, warned_at=base)
+    return client
+
+
+async def test_scan_closes_within_one_sweep_of_warn_plus_grace(monkeypatch):
+    # default grace is 5 min; 5.5 min after the warning (one 60 s sweep later)
+    client = await _warned_conv_wired(monkeypatch, 5.5)
+    await lifecycle_scanner.scan_once()
+    assert await lifecycle_store.get_state(71) == "awaiting_resolution"
+    assert client.create_message.await_count == 2  # close text + resolution prompt
+
+
+async def test_scan_does_not_close_before_grace_elapses(monkeypatch):
+    client = await _warned_conv_wired(monkeypatch, 3.0)
+    await lifecycle_scanner.scan_once()
+    assert await lifecycle_store.get_state(71) == "idle_warned"
+    client.create_message.assert_not_awaited()
+
+
+def test_decide_idle_action_does_not_close_a_customer_who_replied():
+    d = lifecycle_scanner.decide_idle_action
+    assert d("idle_warned", 1, 6, 10, 15, 10, grace_after=5, replied_since_warning=True) is None
+
+
+async def test_scan_does_not_close_when_customer_replied_after_warning(monkeypatch):
+    """FIX-52 review: the state was NOT reset to ACTIVE (bot webhook missed) but
+    last_activity_at moved past warned_at -> a reply, so never close."""
+    from datetime import timedelta
+
+    client = AsyncMock()
+    base = datetime.now(timezone.utc)
+    now = base + timedelta(minutes=6)
+    reply_at = base + timedelta(minutes=3)
+    client.list_conversations.side_effect = lambda status=None, assignee_type=None: (
+        {"data": {"payload": [
+            {"id": 72, "inbox_id": 4, "last_activity_at": int(reply_at.timestamp()),
+             "meta": {"assignee": None}},
+        ]}} if status == "pending" else {"data": {"payload": []}}
+    )
+    client.get_inbox.return_value = {
+        "channel_type": "Channel::Whatsapp", "working_hours_enabled": False,
+    }
+    monkeypatch.setattr(lifecycle_scanner, "get_chatwoot_client", lambda: client)
+    monkeypatch.setattr(lifecycle, "get_chatwoot_client", lambda: client)
+    monkeypatch.setattr(lifecycle_scanner, "_now", lambda: now)
+    await lifecycle_store.seed_active(72, channel="Channel::Whatsapp")
+    await lifecycle_store.transition(72, lifecycle.IDLE_WARNED, warned_at=base)
+    await lifecycle_scanner.scan_once()
+    assert await lifecycle_store.get_state(72) == "idle_warned"
+    client.create_message.assert_not_awaited()
+
+
+def test_idle_warning_with_zero_grace_does_not_say_zero_minutes():
+    text = lifecycle.render_idle_warning(lifecycle.IDLE_WARNING_DEFAULT, 0)
+    assert "0 minutes" not in text and "shortly" in text
+    assert lifecycle.render_idle_warning("Closing in {{minutes}} minutes.", 5) == "Closing in 5 minutes."
+
+
+class _Row:
+    def __init__(self, warned_at):
+        self.warned_at = warned_at
+        self.state_changed_at = warned_at
+
+
+def test_replied_since_warning_tolerance_boundaries():
+    warned = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    ts = warned.timestamp()
+    f = lifecycle_scanner._replied_since_warning
+    assert f(_Row(warned), {"last_activity_at": ts}) is False  # the warning's own bump
+    assert f(_Row(warned), {"last_activity_at": ts + 29}) is False
+    assert f(_Row(warned), {"last_activity_at": ts + 31}) is True  # a real reply
+
+
+async def test_slow_sweep_warning_post_is_not_mistaken_for_a_reply(monkeypatch):
+    """FIX-52 hardening: the warning post lands 31 s after the sweep started
+    (slow sweep). warned_at must be stamped after the post, so the post's own
+    last_activity_at bump is not read as a customer reply and the grace close
+    still fires."""
+    from datetime import timedelta
+
+    client = AsyncMock()
+    t0 = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    post_time = t0 + timedelta(seconds=31)
+    activity = {"ts": int((t0 - timedelta(minutes=12)).timestamp())}
+    client.list_conversations.side_effect = lambda status=None, assignee_type=None: (
+        {"data": {"payload": [
+            {"id": 73, "inbox_id": 4, "last_activity_at": activity["ts"],
+             "meta": {"assignee": None}},
+        ]}} if status == "pending" else {"data": {"payload": []}}
+    )
+    client.get_inbox.return_value = {
+        "channel_type": "Channel::Whatsapp", "working_hours_enabled": False,
+    }
+    monkeypatch.setattr(lifecycle_scanner, "get_chatwoot_client", lambda: client)
+    monkeypatch.setattr(lifecycle, "get_chatwoot_client", lambda: client)
+
+    clock = iter([t0, post_time])  # sweep start, then right after the post
+    monkeypatch.setattr(lifecycle_scanner, "_now", lambda: next(clock))
+    await lifecycle_scanner.scan_once()
+    assert await lifecycle_store.get_state(73) == "idle_warned"
+    row = await lifecycle_store.get_row(73)
+    warned = row.warned_at if row.warned_at.tzinfo else row.warned_at.replace(tzinfo=timezone.utc)
+    assert warned == post_time
+
+    # The post bumped last_activity_at to post_time; next sweep is past grace.
+    activity["ts"] = int(post_time.timestamp())
+    # state age uses the real clock stamp from transition(); make it old enough
+    later = datetime.now(timezone.utc) + timedelta(minutes=6)
+    monkeypatch.setattr(lifecycle_scanner, "_now", lambda: later)
+    await lifecycle_scanner.scan_once()
+    assert await lifecycle_store.get_state(73) == "awaiting_resolution"
+
+
+async def test_outgoing_agent_message_after_warning_blocks_the_grace_close(monkeypatch):
+    """Intended: last_activity_at moves on ANY message, so an agent/staff note
+    sent after the warning means someone engaged and the idle close must not
+    fire on the customer's behalf."""
+    from datetime import timedelta
+
+    client = AsyncMock()
+    base = datetime.now(timezone.utc)
+    agent_msg_at = base + timedelta(minutes=2)
+    client.list_conversations.side_effect = lambda status=None, assignee_type=None: (
+        {"data": {"payload": [
+            {"id": 74, "inbox_id": 4, "last_activity_at": int(agent_msg_at.timestamp()),
+             "meta": {"assignee": None}},
+        ]}} if status == "pending" else {"data": {"payload": []}}
+    )
+    client.get_inbox.return_value = {
+        "channel_type": "Channel::Whatsapp", "working_hours_enabled": False,
+    }
+    monkeypatch.setattr(lifecycle_scanner, "get_chatwoot_client", lambda: client)
+    monkeypatch.setattr(lifecycle, "get_chatwoot_client", lambda: client)
+    monkeypatch.setattr(lifecycle_scanner, "_now", lambda: base + timedelta(minutes=6))
+    await lifecycle_store.seed_active(74, channel="Channel::Whatsapp")
+    await lifecycle_store.transition(74, lifecycle.IDLE_WARNED, warned_at=base)
+    await lifecycle_scanner.scan_once()
+    assert await lifecycle_store.get_state(74) == "idle_warned"
+    client.create_message.assert_not_awaited()

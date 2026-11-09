@@ -37,11 +37,27 @@ def decide_idle_action(
     warn_after: float,
     close_after: float,
     confirm_after: float,
+    grace_after: float | None = None,
+    replied_since_warning: bool = False,
 ) -> str | None:
     if state == lifecycle.ACTIVE and idle_minutes >= warn_after:
         return "warn"
-    if state == lifecycle.IDLE_WARNED and idle_minutes >= close_after:
-        return "close"
+    if state == lifecycle.IDLE_WARNED:
+        if idle_minutes >= close_after:
+            return "close"
+        # The warning is itself a message, so Chatwoot's last_activity_at is
+        # reset when it is posted and `idle >= warn+grace` alone only fires
+        # warn+grace minutes AFTER the warning (~16 min live for a promised 5).
+        # Measure the promised grace from the warning (state age) instead, so
+        # the close lands within one sweep of warn+grace.
+        # Only when the customer stayed silent: if the bot webhook reset to
+        # ACTIVE was missed, a customer who did reply must not be closed.
+        if (
+            grace_after is not None
+            and state_age_minutes >= grace_after
+            and not replied_since_warning
+        ):
+            return "close"
     if state in (lifecycle.AWAITING_RESOLUTION, lifecycle.AWAITING_SURVEY):
         if state_age_minutes >= confirm_after:
             # Both states time out to a silent close. For AWAITING_SURVEY this
@@ -49,6 +65,26 @@ def decide_idle_action(
             # a survey score, by design (no rating is better than a stale one).
             return "resolve_timeout"
     return None
+
+
+# Posting the warning bumps last_activity_at a moment before the state row is
+# stamped; activity later than warned_at + this is a real customer message.
+_WARN_REPLY_TOLERANCE_SECONDS = 30
+
+
+def _replied_since_warning(row, conv: dict) -> bool:
+    """True when Chatwoot saw activity after the warning we posted (a customer
+    reply). Fail-safe towards NOT closing when the timestamps say so; with no
+    row/timestamps there is nothing to compare, so assume no reply."""
+    if row is None:
+        return False
+    warned_at = row.warned_at or row.state_changed_at
+    last = conv.get("last_activity_at")
+    if warned_at is None or not last:
+        return False
+    if warned_at.tzinfo is None:
+        warned_at = warned_at.replace(tzinfo=timezone.utc)
+    return float(last) > warned_at.timestamp() + _WARN_REPLY_TOLERANCE_SECONDS
 
 
 def _payload_list(raw) -> list:
@@ -74,7 +110,13 @@ async def scan_once() -> None:
     inbox_cache: dict[int, dict] = {}
 
     conversations: list = []
-    for status in ("pending", "open"):
+    # `pending` means "the bot owns this". Where that bot is a third party
+    # (aeon360), our idle warning is an outgoing message from a user, which
+    # reads to it as a human takeover — it cancels the AI mid-sentence and
+    # flips the conversation to `open`. Sweeping only `open` leaves the bot's
+    # conversations alone and still auto-closes the human-owned ones.
+    statuses = ("open",) if settings.lifecycle_skip_pending else ("pending", "open")
+    for status in statuses:
         try:
             conversations += _payload_list(
                 await chatwoot.list_conversations(status=status, assignee_type="all")
@@ -119,6 +161,12 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
     # (today's behavior). Email is already excluded above.
     if (conv.get("meta") or {}).get("assignee"):
         await _maybe_resolve_stale_handoff(conv, settings, now)
+        return
+
+    # A phone call's conversation has no chat to warn or close (see
+    # lifecycle.is_phone_call_conversation). Its silent stale-handoff resolve
+    # above still applies.
+    if lifecycle.is_phone_call_conversation(conv):
         return
 
     row = await lifecycle_store.get_row(conversation_id)
@@ -166,7 +214,9 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
     confirm_after = _pick("confirm_grace_minutes", settings.lifecycle_confirm_grace_minutes)
 
     action = decide_idle_action(
-        state, idle, state_age, warn_after, close_after, confirm_after
+        state, idle, state_age, warn_after, close_after, confirm_after,
+        grace_after=grace,
+        replied_since_warning=_replied_since_warning(row, conv),
     )
     if action is None:
         return
@@ -180,8 +230,11 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
         await lifecycle._post(
             conversation_id, lifecycle.render_idle_warning(warning, grace)
         )
+        # Stamp AFTER the post, with a fresh clock: `now` is the sweep start, and
+        # on a slow sweep the post (which bumps last_activity_at) can land well
+        # past it, which _replied_since_warning would misread as a customer reply.
         await lifecycle_store.transition(
-            conversation_id, lifecycle.IDLE_WARNED, warned_at=now
+            conversation_id, lifecycle.IDLE_WARNED, warned_at=_now()
         )
         await lifecycle._mirror_state(conversation_id, lifecycle.IDLE_WARNED)
     elif action == "close":

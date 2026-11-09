@@ -294,6 +294,75 @@ def _chatwoot_source_id(conv: dict[str, object]) -> str | None:
     return None
 
 
+# Chatwoot channel types -> report channel. Used only when the sender
+# identifier carries no session-id prefix (`channel_from_external_id` ==
+# "Other"): proton's Twilio-WhatsApp and Email inboxes never set
+# `meta.sender.identifier`, so every one of their rows used to read "Other".
+# `Channel::Api` is deliberately absent -- an API inbox can front any medium,
+# and its identifier prefix is the only signal of which.
+_CHANNEL_BY_CHATWOOT_TYPE = {
+    "Channel::Whatsapp": "WhatsApp",
+    "Channel::Email": "Email",
+    "Channel::WebWidget": "Web",
+    "Channel::FacebookPage": "Facebook",
+    "Channel::Instagram": "Instagram",
+    "Channel::Telegram": "Telegram",
+    "Channel::Line": "Line",
+    "Channel::Sms": "SMS",
+}
+
+
+def _chatwoot_channel_type(conv: dict[str, object]) -> str | None:
+    meta = conv.get("meta")
+    if isinstance(meta, dict) and meta.get("channel"):
+        return str(meta["channel"])
+    return None
+
+
+def _chatwoot_channel(
+    conv: dict[str, object], source_id: str | None, inbox: dict[str, object] | None
+) -> str:
+    """Report channel for a Chatwoot conversation.
+
+    The identifier prefix wins (it is how the API inbox distinguishes the
+    media it fronts). Otherwise the Chatwoot channel type decides -- from the
+    conversation's ``meta.channel``, else the inbox's ``channel_type``. A
+    ``Channel::TwilioSms`` inbox is WhatsApp or SMS depending on the inbox's
+    ``medium``, which only the inbox payload carries; without it, "SMS".
+    """
+    by_prefix = channel_from_external_id(source_id)
+    if by_prefix != "Other":
+        return by_prefix
+    inbox = inbox if isinstance(inbox, dict) else {}
+    ctype = _chatwoot_channel_type(conv) or (
+        str(inbox["channel_type"]) if inbox.get("channel_type") else None
+    )
+    if ctype == "Channel::TwilioSms":
+        return "WhatsApp" if str(inbox.get("medium") or "").lower() == "whatsapp" else "SMS"
+    return _CHANNEL_BY_CHATWOOT_TYPE.get(ctype or "", "Other")
+
+
+def _first_reply_iso(value: object, created_iso: str | None) -> str | None:
+    """``first_reply_created_at`` as ISO, or None when there is no reply.
+
+    Chatwoot serialises "no first reply yet" as ``0``, not null. Mapped
+    naively that is 1970-01-01, and every unanswered case contributed about
+    -29 million minutes to the first-response averages. A reply that predates
+    the conversation is equally impossible and is dropped the same way.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        if float(value) <= 0:  # type: ignore[arg-type]
+            return None
+    except (TypeError, ValueError):
+        return None
+    iso = _epoch_to_iso(value)
+    if iso and created_iso and iso < created_iso:
+        return None
+    return iso
+
+
 def _chatwoot_labels(conv: dict[str, object]) -> list[str]:
     raw = conv.get("labels")
     if isinstance(raw, list):
@@ -383,8 +452,16 @@ def _chatwoot_reopen_count(conv: dict[str, object]) -> int | None:
         return None
 
 
-def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow | None:
+def map_chatwoot_conversation_to_row(
+    conv: dict[str, object], inbox: dict[str, object] | None = None
+) -> ConversationRow | None:
     """Map one Chatwoot conversation to a conversation row, or None to skip it.
+
+    ``inbox`` (the inbox detail payload, optional) only refines the channel --
+    see ``_chatwoot_channel``. A conversation is skipped only when nothing at
+    all identifies it as a real channel conversation (no identifier, no
+    labels, no CSAT/NPS, no ``meta.channel``); every item the Chatwoot list
+    API returns carries ``meta.channel``, so in practice nothing is skipped.
 
     Reads the AI-classification LABELS (not Zendesk tags), ``meta.assignee.id``
     (not ``assignee_id``), and unix-epoch timestamps. Output schema is identical
@@ -394,7 +471,13 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
     csat = _csat_from_tags(labels)
     nps = _nps_from_tags(labels)
     source_id = _chatwoot_source_id(conv)
-    if source_id is None and csat is None and nps is None and not labels:
+    if (
+        source_id is None
+        and csat is None
+        and nps is None
+        and not labels
+        and _chatwoot_channel_type(conv) is None
+    ):
         return None
 
     status = str(conv.get("status") or "")
@@ -432,11 +515,11 @@ def map_chatwoot_conversation_to_row(conv: dict[str, object]) -> ConversationRow
     # calendar minutes, reopen count) has no direct Chatwoot equivalent; these
     # fields stay best-effort until a richer source is wired up.
     resolved_at = updated_iso if status == "resolved" else None
-    first_response_at = _epoch_to_iso(conv.get("first_reply_created_at"))
+    first_response_at = _first_reply_iso(conv.get("first_reply_created_at"), created_iso)
 
     return ConversationRow(
         conversation_id=str(conv.get("id")),
-        channel=channel_from_external_id(source_id),
+        channel=_chatwoot_channel(conv, source_id, inbox),
         created_at=created_iso,
         updated_at=updated_iso,
         status=status,

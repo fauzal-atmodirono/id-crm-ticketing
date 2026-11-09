@@ -42,7 +42,7 @@ def _enable(monkeypatch, *, all_channels: bool):
     get_proton_config_client.cache_clear()
 
 
-def _stub(*, channel_type, conv_attrs=None, inbox_raises=False):
+def _stub(*, channel_type, conv_attrs=None, inbox_raises=False, meta_extra=None):
     respx.get(f"{CHATWOOT}/api/v1/accounts/1/conversations/42").mock(
         return_value=httpx.Response(
             200,
@@ -50,7 +50,7 @@ def _stub(*, channel_type, conv_attrs=None, inbox_raises=False):
                 "id": 42,
                 "inbox_id": 4,
                 "custom_attributes": conv_attrs or {},
-                "meta": {"sender": {"email": "customer@test"}},
+                "meta": {"sender": {"email": "customer@test"}, **(meta_extra or {})},
             },
         )
     )
@@ -207,4 +207,84 @@ async def test_an_inbox_fetch_failure_is_logged_and_skips_without_raising(monkey
     await sync.maybe_escalate(_payload())
 
     assert not notify.called
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_the_assignee_and_sla_status_are_sent_for_the_audit_trail(monkeypatch):
+    """FIX-17: not deployed until the agent image is rebuilt (Plan Task 32)."""
+    _enable(monkeypatch, all_channels=True)
+    notify = _stub(
+        channel_type="Channel::Whatsapp",
+        conv_attrs={"sla_status": "SLA_BREACH_NO_RESPONSE"},
+        meta_extra={"assignee": {"id": 7, "name": "Siti Agent"}},
+    )
+
+    await sync.maybe_escalate(_payload())
+
+    body = json.loads(notify.calls.last.request.read())
+    assert body["actor_name"] == "Siti Agent"
+    assert body["actor_user_id"] == 7
+    assert body["sla_status"] == "SLA_BREACH_NO_RESPONSE"
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_a_non_string_sla_status_is_sent_as_a_string(monkeypatch):
+    """Final review M9: a custom attribute is operator-editable and may hold
+    a number; the backend field is a string."""
+    _enable(monkeypatch, all_channels=True)
+    notify = _stub(channel_type="Channel::Whatsapp", conv_attrs={"sla_status": 3})
+
+    await sync.maybe_escalate(_payload())
+
+    body = json.loads(notify.calls.last.request.read())
+    assert body["sla_status"] == "3"
+    get_proton_config_client.cache_clear()
+
+
+# --- 2026-11-09 brief 3: phone (API inbox) and WhatsApp reach the dealer ------
+
+
+@respx.mock
+async def test_a_phone_call_in_the_api_inbox_escalates_to_its_dealer(monkeypatch):
+    """Phone calls live in the Chatwoot API inbox. The dealer leg rides the
+    dealer_<slug> label; whether the caller gets a written ack is the
+    backend's call (none for a phone conversation, see the backend's
+    test_escalation_router_handoff_note.py)."""
+    _enable(monkeypatch, all_channels=True)
+    notify = _stub(channel_type="Channel::Api")
+
+    await sync.maybe_escalate(_payload(labels=("escalate", "dealer_petaling_jaya")))
+
+    body = json.loads(notify.calls.last.request.read())
+    assert body["channel_type"] == "Channel::Api"
+    assert body["dealer"] == "petaling_jaya"
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_a_whatsapp_case_escalates_to_its_dealer(monkeypatch):
+    _enable(monkeypatch, all_channels=True)
+    notify = _stub(channel_type="Channel::Whatsapp")
+
+    await sync.maybe_escalate(_payload(labels=("escalate", "dealer_caroline_motor")))
+
+    body = json.loads(notify.calls.last.request.read())
+    assert body["channel_type"] == "Channel::Whatsapp"
+    assert body["dealer"] == "caroline_motor"
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_escalate_alone_still_reaches_the_backend_without_a_dealer(monkeypatch):
+    """One-click: with no dealer label the backend fills the dealer from the
+    conversation's caller_dealer attribute (backend HANDOFF_NOTE_ENABLED)."""
+    _enable(monkeypatch, all_channels=True)
+    notify = _stub(channel_type="Channel::Api", conv_attrs={"caller_dealer": "petaling_jaya"})
+
+    await sync.maybe_escalate(_payload(labels=("escalate",)))
+
+    body = json.loads(notify.calls.last.request.read())
+    assert body.get("dealer") is None
     get_proton_config_client.cache_clear()

@@ -46,6 +46,16 @@ class Settings(BaseSettings):
     vertex_location: str = "us-central1"
     gemini_model: str = "gemini-2.5-flash"
     agent_mode: str = "suggest"
+    # Demo-only. When true, a trailing `[slug]` in a customer message repoints
+    # that contact at a different demo persona (app/services/demo_persona.py).
+    # Off by default: this REWRITES a contact record, which is not something a
+    # real tenant should be one stray bracket away from.
+    demo_persona_slugs_enabled: bool = False
+    # Let the agent-bot ask the four investor-profiling questions (goal,
+    # horizon, reaction to a 20% drawdown, experience) and store the answers
+    # on the contact. Off by default, and off means the tool is not offered to
+    # the model at all -- see orchestrator._tools_for_turn.
+    investor_profiling_enabled: bool = False
     kb_grounded_replies: bool = False
     auto_resolve: bool = False
     # Route the agent-bot's decision through the backend's full ADK conversational
@@ -55,6 +65,29 @@ class Settings(BaseSettings):
     # matching the Proton website agent. Default False = legacy router (byte-
     # identical). Supersedes kb_grounded_replies on this path when enabled.
     chat_agent_enabled: bool = False
+    # Chat-side caller context (2026-11-09). When the bot answers, fetch the
+    # backend's minimal "who is this" view of the contact's phone number
+    # (GET /agent/contact-context: first name, car model(s), plate last 4,
+    # usual dealer -- never the phone, surname or full plate) and give it to
+    # the AI: appended to the legacy router's system prompt, or, on the
+    # chat_agent_enabled path (whose instruction lives in the backend), as a
+    # bracketed CRM note ahead of the customer's text. Needs the backend's
+    # CHAT_CALLER_CONTEXT_ENABLED (same env var, both services). Default
+    # False = no lookup, prompts byte-identical. Fail-open.
+    chat_caller_context_enabled: bool = False
+    # Ruling R35: caller context only on these Chatwoot inbox ids
+    # (comma-separated). Empty (default) = no inbox, even with the flag on.
+    # Proton lists only the demo API inbox.
+    chat_caller_context_inbox_ids: str = ""
+
+    @property
+    def chat_caller_context_inbox_set(self) -> frozenset[int]:
+        out: set[int] = set()
+        for part in self.chat_caller_context_inbox_ids.split(","):
+            part = part.strip()
+            if part.isdigit():
+                out.add(int(part))
+        return frozenset(out)
     # Voice-note + image understanding for the agent-bot's chat-agent path
     # (orchestrator.py's _process_via_chat_agent, chat_agent_enabled=True
     # only). Default False = today's text-only behavior, byte-identical.
@@ -91,6 +124,14 @@ class Settings(BaseSettings):
     # thread while the bot stays silent). 0 = disabled: assigned conversations
     # are left entirely to the human (today's behavior).
     lifecycle_assigned_idle_resolve_minutes: int = 0
+    # Skip `pending` conversations entirely in the idle scanner. For tenants
+    # whose inbox is driven by a *third-party* agent bot (aeon360), `pending`
+    # means that bot is mid-conversation, and our idle warning posts as an
+    # outgoing message from a user — which its decision table reads as a human
+    # taking over, cancelling the generation and flipping the conversation to
+    # `open`. Default False: on our own tenants the orchestrator is the bot,
+    # `pending` is ours to sweep, and behavior is unchanged.
+    lifecycle_skip_pending: bool = False
     lifecycle_survey_enabled: bool = True
     lifecycle_disclaimer_enabled: bool = True
     lifecycle_auto_categorize: bool = False
@@ -162,6 +203,22 @@ class Settings(BaseSettings):
     # note naming one. Never applies the label itself -- a human still has to
     # add dept_<slug> before escalate. Default off, byte-identical when unset.
     dept_suggestion_enabled: bool = False
+
+    # FIX-46 / RFP 4.25 duplicate-case detection (app/services/duplicate_detection.py):
+    # on conversation_created (and on conversation_updated once a vehicle
+    # plate/chassis case field appears), find the customer's other OPEN cases
+    # by contact, mobile number, email, vehicle registration or chassis number,
+    # then post a private note + `possible_duplicate` label + related_case_ids
+    # on the new case and a private @mention note on each existing one. Never
+    # merges anything, never messages the customer. Default off.
+    duplicate_detection_enabled: bool = False
+    # Comma-separated Chatwoot inbox ids it may act on (both the new case and
+    # any linked case must be in it). Empty = every inbox.
+    duplicate_detection_inbox_ids: str = ""
+    # Optional Gemini "same issue?" check for matches found only through the
+    # customer's identity (contact/phone/email). Vehicle matches are always
+    # kept. An AI error keeps the match. Default off.
+    duplicate_detection_ai_judge_enabled: bool = False
 
     # SOP completion (B: categorization taxonomy; C1: email auto-ack).
     # Comma-separated category slugs the bot may assign on resolution (must
@@ -402,6 +459,12 @@ class Settings(BaseSettings):
     # Proton conversational-AI backend (optional; feature disabled when blank)
     proton_backend_url: str | None = None
     proton_backend_key: str | None = None
+    # Per-request timeouts for the backend client (were hardcoded 10 s / 60 s).
+    # Defaults keep today's behaviour; the assist (draft) call gets its own,
+    # longer budget because KB + Gemini took 10.5 s under load on proton.
+    proton_backend_timeout_seconds: float = 10.0
+    proton_backend_slow_timeout_seconds: float = 60.0
+    proton_assist_timeout_seconds: float = 30.0
 
     @property
     def chatwoot_display_url(self) -> str:

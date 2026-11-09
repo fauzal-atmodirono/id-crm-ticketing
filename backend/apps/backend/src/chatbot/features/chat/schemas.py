@@ -13,6 +13,9 @@ class ChatwootSender(BaseModel):
     # Email-inbox conversations carry the customer's real address on the sender.
     # Used for the email flow's no-reply loop guard and (optionally) naming.
     email: str | None = None
+    # Chatwoot's webhook sender discriminator: "user" for an agent, "contact"
+    # for a customer ("agent_bot" for a bot). Absent on older payloads.
+    type: str | None = None
 
 
 class ChatwootConversation(BaseModel):
@@ -20,6 +23,10 @@ class ChatwootConversation(BaseModel):
     channel: str | None = None
     status: str | None = None
     inbox_id: int | None = None
+    # 2026-11-09: carried so a phone call's conversation can be recognised
+    # (handoff_note.is_phone_conversation) on its resolve event.
+    additional_attributes: dict[str, Any] | None = None
+    custom_attributes: dict[str, Any] | None = None
 
 
 class ChatwootWebhookPayload(BaseModel):
@@ -51,6 +58,8 @@ class ChatwootWebhookPayload(BaseModel):
                 "status": data.get("status"),
                 "inbox_id": data.get("inbox_id"),
                 "channel": data.get("channel"),
+                "additional_attributes": data.get("additional_attributes"),
+                "custom_attributes": data.get("custom_attributes"),
             }
         return data
 

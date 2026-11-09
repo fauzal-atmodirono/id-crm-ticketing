@@ -45,7 +45,21 @@ def test_vad_defaults_to_low_sensitivity_for_telephony():
     assert vad.start_of_speech_sensitivity == types.StartSensitivity.START_SENSITIVITY_LOW
     assert vad.end_of_speech_sensitivity == types.EndSensitivity.END_SENSITIVITY_LOW
     assert vad.silence_duration_ms == 900
-    assert vad.prefix_padding_ms == 300
+    # 2026-11-09: prefix padding is the speech needed BEFORE a start of
+    # speech is committed; 300 ms let a cough or background voice barge in
+    # (27 Oct call: noise transcribed as Hindi interrupted the answer).
+    assert vad.prefix_padding_ms == 600
+    # barge-in stays on by default
+    assert cfg.realtime_input_config.activity_handling is None
+
+
+def test_barge_in_can_be_switched_off_for_noisy_lines():
+    from google.genai import types
+
+    from chatbot.features.chat.phone.gemini_live import _build_live_config
+
+    cfg = _build_live_config(_s(gemini_live_barge_in_enabled=False), "sys", [])
+    assert cfg.realtime_input_config.activity_handling == types.ActivityHandling.NO_INTERRUPTION
 
 
 def test_vad_can_be_disabled_back_to_sdk_defaults():

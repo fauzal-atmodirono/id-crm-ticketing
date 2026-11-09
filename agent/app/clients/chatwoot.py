@@ -48,9 +48,12 @@ class ChatwootClient:
         response.raise_for_status()
         return response.json()
 
-    async def get_messages(self, conversation_id: int) -> Any:
+    async def get_messages(self, conversation_id: int, before: int | None = None) -> Any:
+        """Latest page of messages (Chatwoot pages by 20), or the page before
+        message id `before` when paging back."""
         response = await self._client.get(
-            f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}/messages"
+            f"/api/v1/accounts/{self.account_id}/conversations/{conversation_id}/messages",
+            params={"before": before} if before is not None else None,
         )
         response.raise_for_status()
         return response.json()
@@ -97,6 +100,103 @@ class ChatwootClient:
         )
         response.raise_for_status()
         return response.json()
+
+    async def update_contact(self, contact_id: int, payload: dict[str, Any]) -> Any:
+        """Patch a contact. Used only by the demo persona-slug path.
+
+        Chatwoot REPLACES `custom_attributes` on update rather than merging, so
+        callers must send the full object they want the contact to end up with.
+        The caller here builds it from a complete persona fixture, so there is
+        nothing to merge -- but the constraint is worth stating at the boundary,
+        because sending a subset silently deletes every other attribute.
+        """
+        response = await self._client.put(
+            f"/api/v1/accounts/{self.account_id}/contacts/{contact_id}",
+            json=payload,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def merge_contact_attributes(
+        self, contact_id: int, attributes: dict[str, str]
+    ) -> bool:
+        """Add `attributes` to a contact, keeping everything already there.
+
+        `update_contact` REPLACES `custom_attributes`, so a caller writing a
+        subset silently deletes the rest -- for a Bahana nasabah that is their
+        whole portfolio. This reads the current object and merges over it.
+
+        Returns True if a write happened. An empty `attributes` short-circuits
+        before the GET: a capture that recognised nothing must not cost two API
+        calls, and must not touch the contact at all.
+
+        Not atomic, and deliberately not: Chatwoot has no compare-and-swap on
+        contacts. A concurrent write between the GET and the PUT loses. The
+        exposure is one contact's attributes during a single chat turn, and the
+        alternative is a lock held across a network call.
+        """
+        if not attributes:
+            return False
+        contact = await self.get_contact(contact_id)
+        body = contact.get("payload") if isinstance(contact, dict) else None
+        body = body if isinstance(body, dict) else contact
+        current = body.get("custom_attributes") if isinstance(body, dict) else None
+        merged = dict(current) if isinstance(current, dict) else {}
+        merged.update(attributes)
+        await self.update_contact(contact_id, {"custom_attributes": merged})
+        return True
+
+    async def search_contacts(self, query: str) -> list[dict[str, Any]]:
+        """`GET /contacts/search?q=` -- Chatwoot matches name, email, phone
+        and identifier with ILIKE. First page only; callers re-check the
+        exact field they care about, since the search is fuzzy."""
+        response = await self._client.get(
+            f"/api/v1/accounts/{self.account_id}/contacts/search", params={"q": query}
+        )
+        response.raise_for_status()
+        payload = response.json().get("payload")
+        return [c for c in (payload or []) if isinstance(c, dict)]
+
+    async def filter_contacts(self, filters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """`POST /contacts/filter` with Chatwoot's filter-row payload. First
+        page only."""
+        response = await self._client.post(
+            f"/api/v1/accounts/{self.account_id}/contacts/filter", json={"payload": filters}
+        )
+        response.raise_for_status()
+        payload = response.json().get("payload")
+        return [c for c in (payload or []) if isinstance(c, dict)]
+
+    async def filter_conversations(
+        self, filters: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """`POST /conversations/filter`. A filter on a custom attribute the
+        account has no definition for is a 422 -- callers fail open."""
+        response = await self._client.post(
+            f"/api/v1/accounts/{self.account_id}/conversations/filter",
+            json={"payload": filters},
+        )
+        response.raise_for_status()
+        payload = response.json().get("payload")
+        return [c for c in (payload or []) if isinstance(c, dict)]
+
+    async def list_contact_conversations(self, contact_id: int) -> list[dict[str, Any]]:
+        """Every conversation of one contact, any inbox and any status."""
+        response = await self._client.get(
+            f"/api/v1/accounts/{self.account_id}/contacts/{contact_id}/conversations"
+        )
+        response.raise_for_status()
+        payload = response.json().get("payload")
+        return [c for c in (payload or []) if isinstance(c, dict)]
+
+    async def list_inbox_members(self, inbox_id: int) -> list[dict[str, Any]]:
+        """Agents who are members of one inbox (`GET /inbox_members/{id}`)."""
+        response = await self._client.get(
+            f"/api/v1/accounts/{self.account_id}/inbox_members/{inbox_id}"
+        )
+        response.raise_for_status()
+        payload = response.json().get("payload")
+        return [a for a in (payload or []) if isinstance(a, dict)]
 
     async def get_agent_bot(self, agent_bot_id: int) -> Any:
         """Account-scoped agent bot lookup — used only by

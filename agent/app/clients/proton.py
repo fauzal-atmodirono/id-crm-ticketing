@@ -47,12 +47,19 @@ class ProtonConfigClient:
         api_key: str,
         client: httpx.AsyncClient | None = None,
         ttl: float = 60.0,
+        timeout: float = 10.0,
+        slow_timeout: float = 60.0,
+        assist_timeout: float = 30.0,
     ) -> None:
         self._ttl = ttl
+        # Defaults equal the old hardcoded values (10 s config calls, 60 s
+        # /chat/turn); tenants tune them via PROTON_BACKEND_*_TIMEOUT_SECONDS.
+        self._slow_timeout = slow_timeout
+        self._assist_timeout = assist_timeout
         self._client = client or httpx.AsyncClient(
             base_url=base_url,
             headers={"x-api-key": api_key},
-            timeout=10.0,
+            timeout=timeout,
         )
         # Cache entries: path → (data, fetch_monotonic_time)
         self._cache: dict[str, tuple[Any, float]] = {}
@@ -355,6 +362,28 @@ class ProtonConfigClient:
             for doc in documents
         )
 
+    async def get_contact_context(self, phone: str) -> str:
+        """The backend's chat caller-context paragraph for a phone number
+        (POST /agent/contact-context), or "" on no match, any error, non-2xx
+        or a malformed body -- never raises. Short timeout: it runs before
+        the bot's turn. Not cached (the contact changes as the bot saves)."""
+        if not phone:
+            return ""
+        try:
+            # POST with a JSON body: the number never appears in a URL
+            # (access logs, httpx's request log).
+            response = await self._client.post(
+                "/agent/contact-context", json={"phone": phone}, timeout=3.0
+            )
+            if response.status_code != 200:
+                return ""
+            data = response.json()
+            text = data.get("instruction") if isinstance(data, dict) else None
+            return text.strip() if isinstance(text, str) else ""
+        except Exception:
+            logger.debug("proton_config: contact context lookup failed", exc_info=True)
+            return ""
+
     async def chat_turn(
         self,
         session_id: str,
@@ -400,7 +429,7 @@ class ProtonConfigClient:
             response = await self._client.post(
                 "/chat/turn",
                 json=payload,
-                timeout=60.0,
+                timeout=self._slow_timeout,
             )
             response.raise_for_status()
             data = response.json()
@@ -484,6 +513,9 @@ class ProtonConfigClient:
             response = await self._client.post(
                 "/assist/suggest",
                 json={"conversation_id": conversation_id, "messages": messages},
+                # KB retrieval + Gemini: 10.5 s under load was dropped by the
+                # default 10 s, losing the escalation-reply AI draft.
+                timeout=self._assist_timeout,
             )
             response.raise_for_status()
             draft = (response.json() or {}).get("draft")
@@ -530,6 +562,9 @@ class ProtonConfigClient:
         channel_type: str | None = None,
         customer_subject: str | None = None,
         customer_in_reply_to: str | None = None,
+        actor_name: str | None = None,
+        actor_user_id: int | None = None,
+        sla_status: str | None = None,
     ) -> bool:
         """Ask the backend to send the EM-7 two-thread email escalation for a
         natively-escalated Email-channel conversation (POST
@@ -541,11 +576,27 @@ class ProtonConfigClient:
         guard on that answer, so a send that never happened does not leave a
         stamp behind that permanently suppresses the escalation -- which is
         why this reports success rather than being purely fire-and-forget.
+
+        ``actor_name`` / ``actor_user_id`` / ``sla_status`` (FIX-17) name who
+        escalated and where the SLA stood, for the backend's audit trail. All
+        optional and omitted from the request when unknown, so an older backend
+        (or a caller that does not know) is unaffected; the backend derives
+        them itself when absent.
         """
+        audit_fields = {
+            k: v
+            for k, v in (
+                ("actor_name", actor_name),
+                ("actor_user_id", actor_user_id),
+                ("sla_status", sla_status),
+            )
+            if v is not None
+        }
         try:
             response = await self._client.post(
                 "/escalation/notify",
                 json={
+                    **audit_fields,
                     "conversation_id": str(conversation_id),
                     "title": title,
                     "body": body,

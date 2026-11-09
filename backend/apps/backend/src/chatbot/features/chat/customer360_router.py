@@ -58,9 +58,16 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from fastapi import APIRouter, Depends, Query
 
+from chatbot.features.authz.data_scope import (
+    Scope,
+    apply_scope,
+    build_scope_dependency,
+    conversation_dimensions,
+)
 from chatbot.features.authz.deps import require_permission
 from chatbot.features.chat.dms_client import MockDmsClient
 from chatbot.features.chat.dms_config_store import MAX_TIMEOUT_SECONDS
+from chatbot.features.privacy.access import PiiPolicy, build_pii_dependency
 
 if TYPE_CHECKING:
     from chatbot.features.authz.identity import TokenValidator
@@ -109,6 +116,54 @@ def _digits(value: str | None) -> str:
     return re.sub(r"\D", "", value or "")
 
 
+def _plate_key(value: str | None) -> str:
+    """Normalised plate for comparison: upper-case alphanumerics only, so
+    ``"bmt 5518"``, ``"BMT-5518"`` and ``"BMT5518"`` are the same plate."""
+    return re.sub(r"[^0-9A-Z]", "", (value or "").upper())
+
+
+def _plate_variants(query: str) -> list[str]:
+    """Spellings of one plate to OR together in Chatwoot's ``contains``
+    filter: compact (``BMT5518``) and letter/digit-spaced (``BMT 5518``),
+    the two ways operators type plates into the contact attribute."""
+    compact = _plate_key(query)
+    spaced = re.sub(r"(?<=[A-Z])(?=\d)|(?<=\d)(?=[A-Z])", " ", compact)
+    dashed = spaced.replace(" ", "-")
+    return list(dict.fromkeys(v for v in (compact, spaced, dashed) if v))
+
+
+# Plate-shaped: 2-3 letters, digits, optional trailing letter (BMT5518,
+# "BMT 5518", BMT-5518, W1234A). One-letter model names like "X50"/"S70" and
+# anything with punctuation ("e.MAS 7") are deliberately NOT plate-like.
+_PLATE_LIKE_RE = re.compile(r"^[A-Za-z]{2,3}[\s-]?\d{1,4}[A-Za-z]?$")
+
+# Total budget for the whole Chatwoot side of a vehicle search (contacts
+# filter + per-contact conversations). Past it we return what we have.
+_VEHICLE_CRM_BUDGET_SECONDS = 2.5
+
+
+_MIN_PHONE_SUFFIX_DIGITS = 8
+
+
+def _phones_match(a: str | None, b: str | None) -> bool:
+    """Digits-only phone equality, tolerant of a country-code/trunk-prefix
+    difference (``0123456789`` vs ``+60123456789``): one must be a suffix of
+    the other, with at least 8 digits shared so short numbers can't collide."""
+    da, db = _digits(a), _digits(b)
+    if not da or not db:
+        return False
+    short, long_ = sorted((da, db), key=len)
+    short = short.lstrip("0")
+    return len(short) >= _MIN_PHONE_SUFFIX_DIGITS and long_.endswith(short)
+
+
+# Fallback conversation scan (vehicle_model substring) is the slow path -- it
+# pages the Chatwoot conversation list. Bounded so a plate that matched no
+# contact can't stall the page.
+_MODEL_SCAN_BUDGET_SECONDS = 2.0
+_MAX_PLATE_CONTACTS = 5
+
+
 def _pick_best_contact(contacts: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
     """Prefer an exact phone-number match (digits-only comparison, so
     formatting differences like spaces/dashes/leading '+' don't matter);
@@ -132,6 +187,7 @@ def _rsa_incident_dict(row: Any) -> dict[str, Any]:
         "incident_date": row.incident_date,
         "vehicle_no": row.vehicle_no,
         "vehicle_model": row.vehicle_model,
+        "customer_phone": getattr(row, "customer_phone", None),
         "cause": row.cause,
         "purchased_from": row.purchased_from,
         "breakdown_location": row.breakdown_location,
@@ -261,6 +317,35 @@ async def _build_dms_block(
     }
 
 
+async def _plate_lookup(
+    chatwoot: ChatwootAdapter,
+    query: str,
+    needle: str,
+    plate_contacts: list[dict[str, Any]],
+    conversations: list[dict[str, Any]],
+) -> None:
+    """Fill ``plate_contacts``/``conversations`` in place (so whatever
+    finished survives a wait_for timeout): one contacts/filter call, then the
+    matched contacts' conversations fetched concurrently."""
+    found = await chatwoot.find_contacts_by_vehicle_no(_plate_variants(query))
+    found = [c for c in found if c.get("id") is not None]
+    # exact plate first, so `contact` is the real owner, not a substring
+    # neighbour
+    found.sort(
+        key=lambda c: _plate_key((c.get("custom_attributes") or {}).get("vehicle_no")) != needle
+    )
+    plate_contacts.extend(found[:_MAX_PLATE_CONTACTS])
+    per_contact = await asyncio.gather(
+        *(chatwoot.list_contact_conversations(int(c["id"])) for c in plate_contacts)
+    )
+    seen: set[Any] = set()
+    for convs in per_contact:
+        for conv in convs:
+            if conv.get("id") not in seen:
+                seen.add(conv.get("id"))
+                conversations.append(conv)
+
+
 def build_customer360_router(
     chatwoot: ChatwootAdapter,
     rsa_repo: RsaRepositoryPort,
@@ -275,8 +360,22 @@ def build_customer360_router(
         "customer360.view", repo=authz_repo, validator=validator, settings=settings
     )
 
+    data_scope = build_scope_dependency(settings, repo=authz_repo, validator=validator)
+    # Wave 2 Task 29: the whole result (contact, conversations, RSA incidents,
+    # DMS block) is masked for a caller without pii.view. The search itself
+    # still runs on the raw query -- the caller typed it, so it reveals nothing.
+    pii_policy = build_pii_dependency(settings, repo=authz_repo, validator=validator)
+
     @router.get("/search", dependencies=[Depends(view_360)])
-    async def search(q: str = Query(min_length=2)) -> dict[str, Any]:
+    async def search(
+        q: str = Query(min_length=2),
+        scope: Scope = Depends(data_scope),
+        pii: PiiPolicy = Depends(pii_policy),
+    ) -> dict[str, Any]:
+        if scope.deny_all:
+            # Unreadable scope (data_scope.py rule 7): nothing at all -- not
+            # even the contact or the DMS block, and no lookups are made.
+            return {"contact": None, "conversations": [], "rsa_incidents": []}
         contact: dict[str, Any] | None = None
         conversations: list[dict[str, Any]] = []
         rsa_incidents: list[dict[str, Any]] = []
@@ -306,29 +405,69 @@ def build_customer360_router(
             contact = _pick_best_contact(contacts, q)
             if contact is not None and contact.get("id") is not None:
                 conversations = await chatwoot.list_contact_conversations(int(contact["id"]))
-        else:
-            # Vehicle-number search path: RSA incidents are matched on their
-            # actual vehicle_no field (case-insensitive substring, since
-            # staff may search a partial plate). Conversations don't carry a
-            # vehicle number at all -- the only vehicle-related field they
-            # expose is the vehicle_model custom attribute -- so the
-            # conversation side of this branch is a best-effort substring
-            # match against vehicle_model, not a true vehicle-number lookup.
-            needle = q_stripped.lower()
             incidents = await rsa_repo.list_incidents()
             rsa_incidents = [
                 _rsa_incident_dict(row)
                 for row in incidents
-                if needle in (row.vehicle_no or "").lower()
+                if _phones_match(q_stripped, getattr(row, "customer_phone", None))
             ]
-            all_conversations = await chatwoot.list_conversations()
-            conversations = [
-                conv
-                for conv in all_conversations
-                if needle
-                in ((conv.get("custom_attributes") or {}).get("vehicle_model") or "").lower()
+        else:
+            # Vehicle-number search path. RSA incidents match on the
+            # normalised plate (spaces/case/punctuation ignored, substring so
+            # staff may search a partial plate). Conversations are found the
+            # way the Cases list "Car Plate" column reads them: the contact's
+            # ``vehicle_no`` custom attribute, via ONE Chatwoot contacts/filter
+            # call plus one conversations call per matched contact -- not a
+            # scan of every conversation, which took 4-5 s.
+            needle = _plate_key(q_stripped)
+            incidents = await rsa_repo.list_incidents()
+            rsa_incidents = [
+                _rsa_incident_dict(row)
+                for row in incidents
+                if needle and needle in _plate_key(row.vehicle_no)
             ]
+            plate_contacts: list[dict[str, Any]] = []
+            if needle:
+                try:
+                    await asyncio.wait_for(
+                        _plate_lookup(chatwoot, q_stripped, needle, plate_contacts, conversations),
+                        timeout=_VEHICLE_CRM_BUDGET_SECONDS,
+                    )
+                except Exception as exc:
+                    _log.warning("customer360_plate_lookup_failed", error_type=type(exc).__name__)
+            if plate_contacts:
+                contact = plate_contacts[0]
+            elif not _PLATE_LIKE_RE.match(q_stripped):
+                # Legacy best-effort for model-like queries ("camry", "X50"):
+                # the free-text vehicle_model attribute, time-boxed because it
+                # pages the inbox. Skipped for plate-shaped queries -- a plate
+                # that matched no contact has nothing to find there.
+                lowered = q_stripped.lower()
+                try:
+                    all_conversations = await asyncio.wait_for(
+                        chatwoot.list_conversations(), timeout=_MODEL_SCAN_BUDGET_SECONDS
+                    )
+                except Exception as exc:
+                    _log.warning("customer360_model_scan_failed", error_type=type(exc).__name__)
+                    all_conversations = []
+                conversations = [
+                    conv
+                    for conv in all_conversations
+                    if lowered
+                    in ((conv.get("custom_attributes") or {}).get("vehicle_model") or "").lower()
+                ]
 
+        # Wave 2 Task 28: this backend reads Chatwoot with its own admin
+        # token, so Chatwoot inbox membership does NOT confine what it
+        # returns -- the data scope has to. The contact itself stays visible
+        # (Chatwoot contacts are account-wide for every agent anyway); its
+        # conversations and RSA incidents are narrowed. An RSA incident only
+        # carries a dealer (`purchased_from`), so under an inbox/team/
+        # department scope it is hidden (data_scope.py rule 5).
+        conversations = apply_scope(conversations, scope, conversation_dimensions)
+        rsa_incidents = apply_scope(
+            rsa_incidents, scope, lambda i: {"dealer_slugs": i.get("purchased_from")}
+        )
         result: dict[str, Any] = {
             "contact": contact,
             "conversations": conversations,
@@ -337,6 +476,6 @@ def build_customer360_router(
         dms_block = await dms_task
         if dms_block is not None:
             result["dms"] = dms_block
-        return result
+        return pii.apply(result)
 
     return router

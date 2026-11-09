@@ -30,8 +30,13 @@ WHAT IT FETCHES. `GET /kb/suggest?q=<latest customer message>&limit=1`
 `hasFeature` it already read. Confidence gating relies on a fact already
 true of that endpoint's response shape: only `live_faq` hits carry a numeric
 `score` (Vertex hits never do), so `FAQ_SUGGESTION_CONFIDENCE_THRESHOLD`
-(0.75) rejects anything without a `score` by construction -- there is no
+(0.65) rejects anything without a `score` by construction -- there is no
 separate "is this a Vertex hit" branch to keep in sync.
+
+THRESHOLD CALIBRATION (FIX-09, 2026-11-09). 0.75 was a guess and hid every
+real suggestion: on live proton, paraphrased customer questions that hit the
+right FAQ scored 0.67-0.74 (exact wording 0.95), and the backend already drops
+anything under 0.55. The gate is now 0.65.
 
 THREE GATES, in the order they run:
 1. `faqSuggestionPopupEnabled` reads `hasFeature('faq_suggestion_popup')` --
@@ -90,21 +95,39 @@ verified against the real upstream fork -- it now can be, and is. Patches
 applying is necessary but not sufficient: the vite build still has to
 succeed, which only Cloud Build can tell us. Build via Cloud Build for amd64
 once merged; never on the prod VM, never from an arm64 Mac.
+
+FIX-23 (RFP 3.2.1 / 4.19 / 4.28, "feedback and score the FAQ quality"): the
+strip gains thumbs-up / thumbs-down next to Apply/Dismiss. Up posts score 5,
+down opens an optional reason box and posts score 1, to POST /kb/feedback with
+the CRM backend key plus the Chatwoot session triplet (same pattern as 0068).
+With RBAC on the backend takes the rater from the session and ignores the
+body's agent_id; with RBAC off the shared-key path is unchanged. Ratings are
+keyed on (faq id, agent id, conversation id), so one agent rates a FAQ once per
+conversation and a re-click replaces the vote; the FAQs admin page (0080) shows
+the average and count. Requires /kb/suggest to return the live FAQ id, which
+the backend now returns. Additions only: nothing 0074/0078 rely on is removed.
 ---
- .../widgets/WootWriter/ReplyTopPanel.vue           | 125 ++++++++++++++++++++-
- 1 file changed, 123 insertions(+), 2 deletions(-)
+ .../widgets/WootWriter/ReplyTopPanel.vue           | 238 ++++++++++++++++++++-
+ 1 file changed, 236 insertions(+), 2 deletions(-)
 diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
-index 6b4d15c..9a8d960 100644
+index c8ec523..db9a098 100644
 --- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
 +++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
-@@ -1,5 +1,5 @@
+@@ -1,11 +1,12 @@
  <script>
 -import { ref, computed } from 'vue';
 +import { ref, computed, watch } from 'vue';
  import { useKeyboardEvents } from 'dashboard/composables/useKeyboardEvents';
  import { useCaptain } from 'dashboard/composables/useCaptain';
  import { useTrack, useAlert } from 'dashboard/composables';
-@@ -27,6 +27,12 @@ const PROTON_ACTION_MODE = {
+ import { vOnClickOutside } from '@vueuse/components';
+ import { REPLY_EDITOR_MODES, CHAR_LENGTH_WARNING } from './constants';
+ import { CAPTAIN_EVENTS } from 'dashboard/helper/AnalyticsHelper/events';
++import Auth from 'dashboard/api/auth';
+ import NextButton from 'dashboard/components-next/button/Button.vue';
+ import EditorModeToggle from './EditorModeToggle.vue';
+ import CopilotMenuBar from './CopilotMenuBar.vue';
+@@ -27,6 +28,12 @@ const PROTON_ACTION_MODE = {
    summarize: 'note',
    ask_copilot: 'reply',
  };
@@ -113,11 +136,11 @@ index 6b4d15c..9a8d960 100644
 +// Only live_faq entries carry a `score` (kb_suggest_router.py's Vertex
 +// items never do), so an undefined score always fails this check --
 +// Vertex-only results are never shown as a popup, by construction.
-+const FAQ_SUGGESTION_CONFIDENCE_THRESHOLD = 0.75;
++const FAQ_SUGGESTION_CONFIDENCE_THRESHOLD = 0.65;
  
  export default {
    name: 'ReplyTopPanel',
-@@ -97,13 +103,109 @@ export default {
+@@ -97,13 +104,182 @@ export default {
      };
  
      const { captainTasksEnabled } = useCaptain();
@@ -184,6 +207,79 @@ index 6b4d15c..9a8d960 100644
 +      emit('protonAssistResult', { text, mode: 'reply' });
 +    };
 +
++    // FIX-23 (RFP 3.2.1/4.19/4.28): thumbs up/down on the suggested FAQ, with
++    // an optional reason on a thumbs-down. One rating per agent per FAQ per
++    // conversation: the backend keys on (faq, agent, conversation), so a
++    // re-click replaces the earlier vote, and `faqRatings` (keyed the same way)
++    // only drives which thumb is shown as selected. Best-effort -- a failed
++    // POST alerts and leaves the strip usable.
++    const { backendKey } = useProtonConfig();
++    const faqRatings = ref({});
++    const faqReasonOpen = ref(false);
++    const faqReason = ref('');
++    const faqRatingKey = () => {
++      const chatId = store.getters.getSelectedChat?.id;
++      return faqSuggestion.value?.id ? `${chatId}:${faqSuggestion.value.id}` : '';
++    };
++    const faqRating = computed(() => faqRatings.value[faqRatingKey()] || '');
++    const submitFaqRating = async (isUp, reason = '') => {
++      const faq = faqSuggestion.value;
++      const key = faqRatingKey();
++      if (!faq?.id || !key) return;
++      const authData = Auth.hasAuthCookie() ? Auth.getAuthData() : null;
++      try {
++        const response = await fetch(`${backendUrl}/kb/feedback`, {
++          method: 'POST',
++          headers: {
++            'Content-Type': 'application/json',
++            ...(backendKey ? { 'x-api-key': backendKey } : {}),
++            // Session triplet (same pattern as protonAssist.js, patch 0068):
++            // with RBAC on the backend takes the rater from the session and
++            // ignores agent_id; with RBAC off it ignores these headers.
++            ...(authData
++              ? {
++                  'x-chatwoot-access-token': authData['access-token'],
++                  'x-chatwoot-client': authData.client,
++                  'x-chatwoot-uid': authData.uid,
++                }
++              : {}),
++          },
++          body: JSON.stringify({
++            article_id: faq.id,
++            session_id: String(store.getters.getSelectedChat?.id || ''),
++            conversation_id: String(store.getters.getSelectedChat?.id || ''),
++            agent_id: String(store.getters.getCurrentUserID || ''),
++            helpful: isUp,
++            score: isUp ? 5 : 1,
++            reason,
++          }),
++        });
++        if (!response.ok) throw new Error(`HTTP ${response.status}`);
++        faqRatings.value = { ...faqRatings.value, [key]: isUp ? 'up' : 'down' };
++        faqReasonOpen.value = false;
++        faqReason.value = '';
++        useAlert('Thanks for the feedback.');
++      } catch (err) {
++        // eslint-disable-next-line no-console
++        console.error('[proton-assist]', 'faq-rating', 'failed', err);
++        useAlert('Could not save the FAQ rating.');
++      }
++    };
++    // A new suggestion (or a cleared one) must not inherit the previous
++    // one's half-typed reason box.
++    watch(
++      () => faqSuggestion.value?.id,
++      () => {
++        faqReasonOpen.value = false;
++        faqReason.value = '';
++      }
++    );
++    const rateFaqUp = () => submitFaqRating(true);
++    const openFaqDownReason = () => {
++      faqReasonOpen.value = !faqReasonOpen.value;
++    };
++    const submitFaqDown = () => submitFaqRating(false, faqReason.value.trim());
++
 +    const dismissFaqSuggestion = () => {
 +      if (faqSuggestion.value) {
 +        dismissedFaqMessageId.value = faqSuggestion.value.messageId;
@@ -228,7 +324,7 @@ index 6b4d15c..9a8d960 100644
  
      const showCopilotMenu = ref(false);
      const copilotToggleRef = ref(null);
-@@ -219,6 +321,10 @@ export default {
+@@ -258,6 +434,16 @@ export default {
        captainTasksEnabled,
        protonEnabled,
        showAiButton,
@@ -236,10 +332,16 @@ index 6b4d15c..9a8d960 100644
 +      faqSuggestionVisible,
 +      applyFaqSuggestion,
 +      dismissFaqSuggestion,
++      faqRating,
++      faqReasonOpen,
++      faqReason,
++      rateFaqUp,
++      openFaqDownReason,
++      submitFaqDown,
        translating,
        handleTranslateLastCustomerMessage,
        handleCopilotAction,
-@@ -279,6 +385,21 @@ export default {
+@@ -321,6 +507,54 @@ export default {
          {{ translating ? 'Translating…' : 'Translate' }}
        </button>
      </div>
@@ -257,6 +359,39 @@ index 6b4d15c..9a8d960 100644
 +      <NextButton size="xs" variant="ghost" @click="dismissFaqSuggestion">
 +        Dismiss
 +      </NextButton>
++      <template v-if="faqSuggestion.id">
++        <button
++          type="button"
++          class="faq-rate-up flex items-center hover:text-n-teal-10"
++          :class="faqRating === 'up' ? 'text-n-teal-10' : 'text-n-slate-11'"
++          title="Helpful"
++          @click="rateFaqUp"
++        >
++          <span class="i-lucide-thumbs-up" />
++        </button>
++        <button
++          type="button"
++          class="faq-rate-down flex items-center hover:text-n-ruby-9"
++          :class="faqRating === 'down' ? 'text-n-ruby-9' : 'text-n-slate-11'"
++          title="Not helpful"
++          @click="openFaqDownReason"
++        >
++          <span class="i-lucide-thumbs-down" />
++        </button>
++        <template v-if="faqReasonOpen">
++          <input
++            v-model="faqReason"
++            type="text"
++            maxlength="500"
++            placeholder="Why? (optional)"
++            class="faq-rate-reason px-2 py-0.5 text-xs border rounded border-n-weak bg-n-alpha-black1 text-n-slate-12"
++            @keydown.enter.prevent="submitFaqDown"
++          />
++          <NextButton size="xs" variant="ghost" @click="submitFaqDown">
++            Send
++          </NextButton>
++        </template>
++      </template>
 +    </div>
      <div v-if="showAiButton" class="flex items-center gap-2">
        <div class="relative">

@@ -17,7 +17,17 @@ volumes:
 
 services:
   caddy:
-    image: caddy:2-alpine
+    # PINNED, do not float back to caddy:2-alpine. v2.11.4 silently drops every
+    # request header whose name contains an underscore, with no opt-out and no
+    # log line (caddyserver/caddy#7808). That kills `api_access_token` — the
+    # spelling Chatwoot's own API docs specify — for every caller outside this
+    # VM, and surfaces as a 401 that reads exactly like a bad credential. Cost
+    # us most of 2026-08-21 on the AEON360 integration; see
+    # docs/runbooks/aeon360-whatsapp-cutover.md §3.1.
+    # v2.8.4/2.9.1/2.10.2 all pass the header through; 2.11.4 does not. The fix
+    # is milestoned for v2.11.5 — re-test with the probe in that runbook and
+    # move back to a floating tag once it ships.
+    image: caddy:2.10-alpine
     restart: unless-stopped
     ports:
       - "80:80"
@@ -55,6 +65,22 @@ services:
   mailpit:
     image: axllent/mailpit
     restart: unless-stopped
+    # Accept ANY credentials, over a plaintext connection.
+    #
+    # Not laziness -- without it the Mailpit fallback cannot work at all.
+    # Chatwoot's config/initializers/mailer.rb sets
+    # `smtp_settings[:user_name] = ENV.fetch('SMTP_USERNAME', nil)`
+    # unconditionally (no `.present?` guard, unlike the authentication line
+    # directly above it), and compose always defines `SMTP_USERNAME:
+    # ${SMTP_USERNAME:-}`. So user_name is always `""`, which is truthy in
+    # Ruby, so the Mail gem always issues AUTH -- and a default Mailpit answers
+    # `502 5.5.1 Command not implemented`, failing every outbound mail with
+    # nothing visible in the CRM. Agent invitations and password resets
+    # included. Found on AEON360 prod 2026-08-30.
+    #
+    # This only ever listens on the internal `platform` network and holds no
+    # real mail, so accepting any login costs nothing.
+    command: ["--smtp-auth-accept-any", "--smtp-auth-allow-insecure"]
     mem_limit: 128m
     networks:
       - platform

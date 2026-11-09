@@ -28,17 +28,20 @@ from typing import Any
 from fastapi.testclient import TestClient
 import pytest
 
-from chatbot.features.chat.phone.recording_router import register_recording, reset_recordings
+from chatbot.features.chat.phone.recording_router import reset_state
+
+_SECRET = "w" * 48
+_AUDIO = "proton-crm/call-recording/2026-11-09/CA1.mp3"
 
 
 @pytest.fixture(autouse=True)
 def _clean_state() -> Any:
     from chatbot.platform.config import get_settings
 
-    reset_recordings()
+    reset_state()
     get_settings.cache_clear()
     yield
-    reset_recordings()
+    reset_state()
     # Leave no cached `Settings` behind. `chatbot.main` ends with a module-level
     # `app = bootstrap_application()`, so the first import of it in a process
     # boots the app against whatever is cached; a test here that left a
@@ -70,33 +73,100 @@ def test_the_recording_endpoint_is_mounted_and_rejects_an_unauthenticated_caller
     app = _boot(monkeypatch, CALL_RECORDING_RETRIEVAL_ENABLED="true")
     client = TestClient(app)
 
-    res = client.get("/calls/conv_123/recording")
-    # 401, NOT 404: the route resolved and `call_recording.listen` refused it.
+    res = client.get("/calls/123/recording")
+    # 401, NOT 404: the route resolved and its identity gate refused it.
     assert res.status_code == 401
 
 
-def test_a_permitted_caller_reaches_the_handler_through_the_real_app(
+def test_the_shared_key_alone_never_mints_a_recording_link(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = _boot(monkeypatch, CALL_RECORDING_RETRIEVAL_ENABLED="true")
-    register_recording("conv_123", "https://storage.example.invalid/audio/123.mp3")
+    """Review R44: a recording is minted for a PERSON. The shared key every
+    browser holds is not one, so the real app answers 401 even with it."""
+    app = _boot(
+        monkeypatch,
+        CALL_RECORDING_RETRIEVAL_ENABLED="true",
+        CALL_RECORDING_SIGNING_SECRET=_SECRET,
+        CHATWOOT_ENABLED="false",
+    )
+    res = TestClient(app).get("/calls/123/recording", headers={"x-api-key": "test_key"})
+    assert res.status_code == 401
+
+
+def test_the_real_app_plays_a_bound_recording_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """main.py's wiring, not the router's: the Chatwoot reader it passes finds
+    `call_recording_object`, the default GCS storage proves the binding from
+    object metadata and serves the bytes, and the shared audit log records the
+    play. The person gate is stubbed (a real one needs a Chatwoot + RBAC DB);
+    Chatwoot and GCS are faked at their adapter boundaries."""
+    from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
+    from chatbot.features.chat.phone import recording_router
+    from chatbot.features.chat.phone.recording_access import GcsRecordingStorage, ObjectInfo
+
+    def _person(*_a, **_k):
+        async def _dep() -> int:
+            return 7
+
+        return _dep
+
+    async def _fake_request(self, method, path, payload=None):  # noqa: ARG001
+        if method == "GET" and path == "/conversations/77":
+            return {"id": 77, "custom_attributes": {"call_recording_object": _AUDIO}}
+        return None
+
+    monkeypatch.setattr(recording_router, "require_permission_with_identity", _person)
+    monkeypatch.setattr(ChatwootAdapter, "_request", _fake_request)
+    monkeypatch.setattr(
+        GcsRecordingStorage,
+        "stat",
+        lambda self, b, n: ObjectInfo(size=4, metadata={"conversation_id": "77"}),  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        GcsRecordingStorage,
+        "read",
+        lambda self, b, n, start=None, end=None: b"abcd"[start or 0 : (end + 1) if end is not None else None],  # noqa: ARG005
+    )
+    app = _boot(
+        monkeypatch,
+        CALL_RECORDING_RETRIEVAL_ENABLED="true",
+        CALL_RECORDING_SIGNING_SECRET=_SECRET,
+        PHONE_RECORDING_ARCHIVE_BUCKET="bucket-x",
+    )
     client = TestClient(app)
 
-    res = client.get("/calls/conv_123/recording", headers={"x-api-key": "test_key"})
-    assert res.status_code == 200
-    assert res.json()["status"] == "available"
+    meta = client.get("/calls/77/recording")
+    assert meta.status_code == 200, meta.text
+    assert meta.json()["status"] == "available"
+    audio = client.get(meta.json()["play_url"], headers={"Range": "bytes=1-2"})
+    assert audio.status_code == 206
+    assert audio.content == b"bc"
+
+
+def test_the_audio_route_is_mounted_and_refuses_a_bad_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _boot(
+        monkeypatch,
+        CALL_RECORDING_RETRIEVAL_ENABLED="true",
+        CALL_RECORDING_SIGNING_SECRET=_SECRET,
+    )
+    res = TestClient(app).get("/calls/123/recording/audio?t=forged")
+    # 403, NOT 404: the route exists and the HMAC check refused the link.
+    assert res.status_code == 403
 
 
 def test_the_flag_off_404s_for_a_caller_who_would_otherwise_be_permitted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Distinguishes "flag off" from "unmounted" -- the permitted caller is the
-    only way to see the flag's own 404 rather than the permission gate's 401."""
+    """The flag check runs before authentication, so "flag off" is a 404
+    that names the flag -- distinguishable from "unmounted" (FastAPI's bare
+    "Not Found") for anyone."""
     app = _boot(monkeypatch, CALL_RECORDING_RETRIEVAL_ENABLED="false")
-    register_recording("conv_123", "https://storage.example.invalid/audio/123.mp3")
     client = TestClient(app)
 
-    res = client.get("/calls/conv_123/recording", headers={"x-api-key": "test_key"})
+    res = client.get("/calls/123/recording", headers={"x-api-key": "test_key"})
     assert res.status_code == 404
     assert "CALL_RECORDING_RETRIEVAL_ENABLED" in res.json()["detail"]
 
@@ -247,3 +317,49 @@ def test_call_control_is_wired_into_the_chat_router(monkeypatch: pytest.MonkeyPa
     assert len(chat_router_instances) == 1, "expected exactly one ChatRouter instance in the app"
     (chat_router,) = chat_router_instances
     assert chat_router._call_control is not None
+
+
+# --- FIX-15: softphone hold / transfer wired from main.py --------------------
+
+
+def _chat_router(app: Any) -> Any:
+    from chatbot.features.chat.router import ChatRouter
+
+    (inst,) = {
+        route.endpoint.__self__
+        for route in _effective_routes(app)
+        if isinstance(getattr(getattr(route, "endpoint", None), "__self__", None), ChatRouter)
+    }
+    return inst
+
+
+def test_hold_transfer_wired_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _boot(
+        monkeypatch,
+        PHONE_HOLD_TRANSFER_ENABLED="true",
+        PHONE_AGENT_SOFTPHONE_ENABLED="true",
+        PHONE_HANDOFF_ENABLED="true",
+        PHONE_TRANSCRIPT_LIVE_ENABLED="true",
+    )
+    paths = {r.path for r in _effective_routes(app) if hasattr(r, "path")}
+    for p in (
+        "/voice/agent/call/hold",
+        "/voice/agent/call/resume",
+        "/voice/agent/call/transfer",
+        "/webhooks/phone/conference-status",
+        "/webhooks/phone/transfer/answer",
+        "/webhooks/phone/transfer/status",
+        "/webhooks/phone/caller-status",
+        "/webhooks/phone/hold/next",
+    ):
+        assert p in paths, p
+    assert _chat_router(app)._hold_transfer is not None
+
+
+def test_hold_transfer_off_by_default_leaves_dial_status_unhooked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _boot(monkeypatch)
+    paths = {r.path for r in _effective_routes(app) if hasattr(r, "path")}
+    assert "/webhooks/phone/transfer/answer" not in paths
+    assert _chat_router(app)._hold_transfer is None

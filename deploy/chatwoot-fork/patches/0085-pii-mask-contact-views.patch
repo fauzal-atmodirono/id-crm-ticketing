@@ -1,0 +1,360 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] Contact views: mask phone, e-mail and IC for users without
+ pii.view (Wave 2 Task 29, FIX-49)
+
+RFP 2026_028 2.2.5 asks to "validate data masking (PII protection)"; PDPA
+2010. The backend masks its own responses (Customer 360, RSA, case fields,
+AI activity) when PII_MASKING_ENABLED is on. Chatwoot's own contact views are
+not backend responses, so this patch masks them on the client:
+
+* useProtonPiiMask.js (new): asks GET /authz/me/pii once per page session
+  (under /authz/*, already routed to the backend by every tenant vhost).
+  Fail closed: masked while the answer is pending and on an error (retried
+  after 5 s); unmasked on a 404 (older backend / route absent) or when no
+  Proton backend is configured, and on any answer other than
+  { masking_enabled: true, masked: true }. Same display format as the
+  backend (+60•••••6789, s•••@gmail.com, ******-**-5678) and the same
+  anchored key rules (ic/nric/mykad, passport, vin/chassis, bank account /
+  account / card number, phone, e-mail; bank_name is not masked).
+* ContactInfo.vue (conversation contact sidebar): e-mail, phone and
+  identifier rows masked; masked rows are not copyable, not editable and
+  carry no mailto:/tel: link; the edit-contact modal button is hidden.
+  The call button still works (the agent can call without seeing).
+* ContactsCard.vue (contact list): e-mail and phone masked; the inline edit
+  form, which shows the full values, is not offered.
+* CustomAttributes.vue (sidebar contact/conversation attributes): an
+  attribute whose key names personal data is shown masked and read-only, and
+  a masked value is never saved back.
+
+UX only: Chatwoot's API still returns raw values to the browser. Not covered
+(Wave 3): the contact details page, message bodies, search results, the
+contacts CSV export, and Chatwoot's own API.
+
+diff --git a/app/javascript/dashboard/components-next/Contacts/ContactsCard/ContactsCard.vue b/app/javascript/dashboard/components-next/Contacts/ContactsCard/ContactsCard.vue
+index 8dd9d63..dec3fae 100644
+--- a/app/javascript/dashboard/components-next/Contacts/ContactsCard/ContactsCard.vue
++++ b/app/javascript/dashboard/components-next/Contacts/ContactsCard/ContactsCard.vue
+@@ -10,6 +10,10 @@ import Flag from 'dashboard/components-next/flag/Flag.vue';
+ import ContactDeleteSection from 'dashboard/components-next/Contacts/ContactsCard/ContactDeleteSection.vue';
+ import Checkbox from 'dashboard/components-next/checkbox/Checkbox.vue';
+ import countries from 'shared/constants/countries';
++// Proton patch 0085 (FIX-49): mask e-mail/phone in the contact list for a
++// user without pii.view; the inline edit form (which shows the full values)
++// is not offered to them.
++import { useProtonPiiMask } from 'dashboard/composables/useProtonPiiMask';
+ 
+ const props = defineProps({
+   id: { type: Number, required: true },
+@@ -35,6 +39,7 @@ const emit = defineEmits([
+ ]);
+ 
+ const { t } = useI18n();
++const { piiMasked, maskPii } = useProtonPiiMask();
+ 
+ const contactsFormRef = ref(null);
+ 
+@@ -165,14 +170,18 @@ const handleAvatarHover = isHovered => {
+           <div
+             class="flex flex-wrap items-center justify-start gap-x-3 gap-y-1"
+           >
+-            <div v-if="email" class="truncate max-w-72" :title="email">
++            <div
++              v-if="email"
++              class="truncate max-w-72"
++              :title="maskPii(email, 'email')"
++            >
+               <span class="text-sm text-n-slate-11">
+-                {{ email }}
++                {{ maskPii(email, 'email') }}
+               </span>
+             </div>
+             <div v-if="email" class="w-px h-3 truncate bg-n-slate-6" />
+             <span v-if="phoneNumber" class="text-sm truncate text-n-slate-11">
+-              {{ phoneNumber }}
++              {{ maskPii(phoneNumber, 'phone') }}
+             </span>
+             <div v-if="phoneNumber" class="w-px h-3 truncate bg-n-slate-6" />
+             <span
+@@ -194,6 +203,7 @@ const handleAvatarHover = isHovered => {
+       </div>
+ 
+       <Button
++        v-if="!piiMasked"
+         icon="i-lucide-chevron-down"
+         variant="ghost"
+         color="slate"
+diff --git a/app/javascript/dashboard/composables/useProtonPiiMask.js b/app/javascript/dashboard/composables/useProtonPiiMask.js
+new file mode 100644
+index 0000000..79b1f2f
+--- /dev/null
++++ b/app/javascript/dashboard/composables/useProtonPiiMask.js
+@@ -0,0 +1,143 @@
++// useProtonPiiMask.js — OUR file (patch 0085, Wave 2 Task 29 / FIX-49).
++// Masks personal identifiers (phone, e-mail, IC, passport, VIN, bank/card)
++// in Chatwoot's own contact views for a user without the `pii.view`
++// permission, when the backend's PII_MASKING_ENABLED is on.
++//
++// Asks the Proton backend once per page session: GET /authz/me/pii ->
++// { masking_enabled, masked } (under /authz/*, which every tenant's Caddy
++// vhost already routes to the backend).
++//
++// FAIL CLOSED (Task 29 review ruling):
++//   * while the answer is pending -> masked (no flash of raw data);
++//   * an error -> masked, retried after a few seconds;
++//   * EXCEPT a 404 (an older backend without the route, or nothing routed)
++//     and a tenant with no Proton backend configured at all -> unmasked,
++//     exactly as before this patch: neither can have masking switched on.
++//   * an answer -> masked only when { masking_enabled: true, masked: true }.
++// So a flag-off tenant shows masked values for the length of one request on
++// first load, then everything.
++//
++// This is UX only: Chatwoot's own API still returns the raw value to the
++// browser. The backend-owned surfaces (Customer 360, RSA, case fields, AI
++// activity) are masked server-side.
++//
++// Formats match the backend's features/privacy/pii.py display format:
++//   +60•••••6789   s•••@gmail.com   ******-**-5678   •••••••••••••2345
++import { ref, computed } from 'vue';
++import { adminRequest } from 'dashboard/api/protonAdmin';
++
++const MASK = '•';
++const RETRY_MS = 5000;
++const masked = ref(true); // pending = masked
++let loaded = false;
++let loadPromise = null;
++let retryTimer = null;
++
++function ensureLoaded() {
++  if (loaded || loadPromise) return;
++  loadPromise = adminRequest('/authz/me/pii')
++    .then(data => {
++      masked.value = !!(data && data.masking_enabled && data.masked);
++      loaded = true;
++    })
++    .catch(err => {
++      const noBackend =
++        err?.status === 404 ||
++        /PROTON_BACKEND_URL not configured/.test(err?.message || '');
++      if (noBackend) {
++        masked.value = false;
++        loaded = true;
++        return;
++      }
++      masked.value = true;
++      if (retryTimer === null) {
++        retryTimer = setTimeout(() => {
++          retryTimer = null;
++          ensureLoaded();
++        }, RETRY_MS);
++      }
++    })
++    .finally(() => {
++      loadPromise = null;
++    });
++}
++
++function tail(value, keep = 4) {
++  const chars = String(value).replace(/[^0-9A-Za-z]/g, '');
++  if (chars.length <= keep) return MASK.repeat(chars.length);
++  return MASK.repeat(chars.length - keep) + chars.slice(-keep);
++}
++
++export function maskPhone(value) {
++  const raw = String(value);
++  const digits = raw.replace(/\D/g, '');
++  if (digits.length < 6) return raw;
++  const head = (raw.trim().startsWith('+') ? '+' : '') + digits.slice(0, 2);
++  return head + MASK.repeat(digits.length - 6) + digits.slice(-4);
++}
++
++export function maskEmail(value) {
++  const raw = String(value);
++  const at = raw.indexOf('@');
++  if (at < 1) return raw;
++  return `${raw[0]}${MASK.repeat(3)}${raw.slice(at)}`;
++}
++
++export function maskIc(value) {
++  const digits = String(value).replace(/\D/g, '');
++  if (digits.length < 4) return MASK.repeat(digits.length);
++  return `******-**-${digits.slice(-4)}`;
++}
++
++// Which rule a field NAME calls for, or null for a field that is not
++// personal data. Same anchored rules as the backend's _KEY_RULES: start at a
++// name-part boundary and END the name (optional _no/_number), so bank_name
++// ("Maybank"), passport_country and ic_expiry are not masked.
++const NUM = '(_?(no|number|num))?';
++const KEY_RULES = [
++  [new RegExp('(^|_)e-?mail(_?address)?$'), 'email'],
++  [
++    new RegExp(
++      `(^|[_\\s-])(ic|nric|mykad|new_ic|old_ic|national_id|identity(_card)?)${NUM}$`
++    ),
++    'ic',
++  ],
++  [new RegExp(`(^|_)passport${NUM}$`), 'tail'],
++  [new RegExp(`(^|_)(vin|chassis)${NUM}$`), 'tail'],
++  [
++    new RegExp(
++      `(^|_)(bank_account${NUM}|(bank_)?(account|acct|card)_?(no|number|num))$`
++    ),
++    'tail',
++  ],
++  [new RegExp(`(^|_)(phone|mobile|whatsapp|msisdn|tel)${NUM}$`), 'phone'],
++];
++
++export function piiKindForKey(key) {
++  const k = String(key || '').toLowerCase();
++  const hit = KEY_RULES.find(([pattern]) => pattern.test(k));
++  return hit ? hit[1] : null;
++}
++
++export function maskPiiValue(value, kind) {
++  if (value === null || value === undefined || value === '') return value;
++  if (kind === 'email') return maskEmail(value);
++  if (kind === 'phone') return maskPhone(value);
++  if (kind === 'ic') return maskIc(value);
++  if (kind === 'tail') return tail(value);
++  // 'identifier': a contact identifier is usually a phone number or a
++  // WhatsApp/e-mail style address.
++  const raw = String(value);
++  if (raw.includes('@')) return maskEmail(raw);
++  if (raw.replace(/\D/g, '').length >= 9) return maskPhone(raw);
++  return raw;
++}
++
++export function useProtonPiiMask() {
++  ensureLoaded();
++  const piiMasked = computed(() => masked.value);
++  return {
++    piiMasked,
++    maskPii: (value, kind) => (masked.value ? maskPiiValue(value, kind) : value),
++  };
++}
+diff --git a/app/javascript/dashboard/routes/dashboard/conversation/contact/ContactInfo.vue b/app/javascript/dashboard/routes/dashboard/conversation/contact/ContactInfo.vue
+index 9cb6cea..f4356e7 100644
+--- a/app/javascript/dashboard/routes/dashboard/conversation/contact/ContactInfo.vue
++++ b/app/javascript/dashboard/routes/dashboard/conversation/contact/ContactInfo.vue
+@@ -17,6 +17,11 @@ import ComposeConversation from 'dashboard/components-next/NewConversation/Compo
+ import NextButton from 'dashboard/components-next/button/Button.vue';
+ import VoiceCallButton from 'dashboard/components-next/Contacts/VoiceCallButton.vue';
+ import InlineInput from 'dashboard/components-next/inline-input/InlineInput.vue';
++// Proton patch 0085 (FIX-49): mask phone/e-mail/identifier for a user without
++// pii.view when the backend's PII_MASKING_ENABLED is on. Masked rows are not
++// copyable or editable (a masked value saved back would overwrite the real
++// one), and the full edit modal is hidden; calling still works.
++import { useProtonPiiMask } from 'dashboard/composables/useProtonPiiMask';
+ 
+ export default {
+   components: {
+@@ -44,8 +49,11 @@ export default {
+   emits: ['panelClose'],
+   setup() {
+     const { isAdmin } = useAdmin();
++    const { piiMasked, maskPii } = useProtonPiiMask();
+     return {
+       isAdmin,
++      piiMasked,
++      maskPii,
+     };
+   },
+   data() {
+@@ -240,28 +248,34 @@ export default {
+         </p>
+         <div class="flex flex-col items-start w-full gap-2">
+           <ContactInfoRow
+-            :href="contact.email ? `mailto:${contact.email}` : ''"
+-            :value="contact.email"
++            :href="
++              contact.email && !piiMasked ? `mailto:${contact.email}` : ''
++            "
++            :value="maskPii(contact.email, 'email')"
+             icon="mail"
+             emoji="✉️"
+             :title="$t('CONTACT_PANEL.EMAIL_ADDRESS')"
+-            show-copy
+-            editable
++            :show-copy="!piiMasked"
++            :editable="!piiMasked"
+             @update="value => onFieldUpdate('email', value)"
+           />
+           <ContactInfoRow
+-            :href="contact.phone_number ? `tel:${contact.phone_number}` : ''"
+-            :value="contact.phone_number"
++            :href="
++              contact.phone_number && !piiMasked
++                ? `tel:${contact.phone_number}`
++                : ''
++            "
++            :value="maskPii(contact.phone_number, 'phone')"
+             icon="call"
+             emoji="📞"
+             :title="$t('CONTACT_PANEL.PHONE_NUMBER')"
+-            show-copy
+-            editable
++            :show-copy="!piiMasked"
++            :editable="!piiMasked"
+             @update="value => onFieldUpdate('phone_number', value)"
+           />
+           <ContactInfoRow
+             v-if="contact.identifier"
+-            :value="contact.identifier"
++            :value="maskPii(contact.identifier, 'identifier')"
+             icon="contact-identify"
+             emoji="🪪"
+             :title="$t('CONTACT_PANEL.IDENTIFIER')"
+@@ -315,6 +329,7 @@ export default {
+           :tooltip-label="$t('CONTACT_PANEL.CALL')"
+         />
+         <NextButton
++          v-if="!piiMasked"
+           v-tooltip.top-end="$t('EDIT_CONTACT.BUTTON_LABEL')"
+           icon="i-ph-pencil-simple"
+           slate
+diff --git a/app/javascript/dashboard/routes/dashboard/conversation/customAttributes/CustomAttributes.vue b/app/javascript/dashboard/routes/dashboard/conversation/customAttributes/CustomAttributes.vue
+index 4473343..0f16d4c 100644
+--- a/app/javascript/dashboard/routes/dashboard/conversation/customAttributes/CustomAttributes.vue
++++ b/app/javascript/dashboard/routes/dashboard/conversation/customAttributes/CustomAttributes.vue
+@@ -10,6 +10,21 @@ import { useUISettings } from 'dashboard/composables/useUISettings';
+ import { copyTextToClipboard } from 'shared/helpers/clipboard';
+ import CustomAttribute from 'dashboard/components/CustomAttribute.vue';
+ import NextButton from 'dashboard/components-next/button/Button.vue';
++// Proton patch 0085 (FIX-49): an attribute whose KEY names personal data
++// (ic_number, passport_no, vehicle_chassis, bank_account_no, ...) is shown
++// masked and read-only to a user without pii.view.
++import {
++  useProtonPiiMask,
++  piiKindForKey,
++} from 'dashboard/composables/useProtonPiiMask';
++
++const { piiMasked, maskPii } = useProtonPiiMask();
++const piiLocked = element =>
++  piiMasked.value && piiKindForKey(element.attribute_key) !== null;
++const piiValue = element =>
++  piiLocked(element)
++    ? maskPii(element.value, piiKindForKey(element.attribute_key))
++    : element.value;
+ 
+ const props = defineProps({
+   attributeType: {
+@@ -220,6 +235,8 @@ const onClickToggle = () => {
+ };
+ 
+ const onUpdate = async (key, value) => {
++  // Patch 0085: never save a masked value back over the real one.
++  if (piiMasked.value && /•|\*{6}-\*{2}-/.test(String(value ?? ''))) return;
+   const updatedAttributes = { ...customAttributes.value, [key]: value };
+   const changedLevel = CASCADE_ATTRS.indexOf(key);
+   if (changedLevel !== -1) {
+@@ -327,8 +344,8 @@ const evenClass = [
+               :values="valuesForAttribute(element)"
+               :label="element.attribute_display_name"
+               :description="element.attribute_description"
+-              :value="element.value"
+-              show-actions
++              :value="piiValue(element)"
++              :show-actions="!piiLocked(element)"
+               :attribute-regex="element.regex_pattern"
+               :regex-cue="element.regex_cue"
+               :contact-id="contactId"

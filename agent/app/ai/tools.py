@@ -75,8 +75,74 @@ HANDOFF_TO_HUMAN = types.FunctionDeclaration(
     ),
 )
 
+RECORD_INVESTOR_PREFERENCE = types.FunctionDeclaration(
+    name="record_investor_preference",
+    description=(
+        "Record what the customer just told you about how they invest: their "
+        "goal, when they need the money, how they would react to a 20% drop, "
+        "and how experienced they are. Use this only for answers the customer "
+        "actually gave in this conversation -- never infer them. Supply only "
+        "the fields they answered; the rest can be asked later. This records "
+        "preferences for personalization only and does NOT change the "
+        "customer's official risk profile."
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "goal": types.Schema(
+                type=types.Type.STRING,
+                enum=[
+                    "retirement",
+                    "education",
+                    "house",
+                    "wealth_growth",
+                    "emergency_fund",
+                    "other",
+                ],
+                description="What the customer is investing for.",
+            ),
+            "horizon": types.Schema(
+                type=types.Type.STRING,
+                enum=["short", "medium", "long", "very_long"],
+                description=(
+                    "When they need the money: short <1y, medium 1-3y, "
+                    "long 3-10y, very_long >10y."
+                ),
+            ),
+            "drawdown_reaction": types.Schema(
+                type=types.Type.STRING,
+                enum=["sell_all", "sell_some", "hold", "buy_more"],
+                description=(
+                    "What they said they would do if their portfolio fell 20%."
+                ),
+            ),
+            "experience": types.Schema(
+                type=types.Type.STRING,
+                enum=["beginner", "intermediate", "experienced"],
+                description="How experienced an investor they say they are.",
+            ),
+        },
+        required=[],
+    ),
+)
+
 TOOLS = [
     types.Tool(
         function_declarations=[SEND_REPLY, ESCALATE_TO_TICKET, HANDOFF_TO_HUMAN]
+    )
+]
+
+# The action space when a tenant has opted into investor profiling. A separate
+# list rather than a fourth entry in TOOLS, because "default off" has to mean
+# the model is never offered the tool -- appending would expose it to every
+# existing tenant, whose contacts have nowhere to put the answers.
+TOOLS_WITH_PROFILING = [
+    types.Tool(
+        function_declarations=[
+            SEND_REPLY,
+            ESCALATE_TO_TICKET,
+            HANDOFF_TO_HUMAN,
+            RECORD_INVESTOR_PREFERENCE,
+        ]
     )
 ]

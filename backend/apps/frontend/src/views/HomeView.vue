@@ -4,6 +4,7 @@ import ChannelTabs, { type Channel } from '@/components/ui/ChannelTabs.vue';
 import { ChatLog, ChatInput, useChatStore } from '@/features/chat';
 import { VoiceLog, VoiceRecorder, useVoiceStore } from '@/features/voice';
 import { PhoneCall } from '@/features/phone';
+import { DemoConsole } from '@/features/demo';
 
 const channel = ref<Channel>('chat');
 const chat = useChatStore();
@@ -36,14 +37,21 @@ function reset(): void {
       </aside>
     </transition>
 
+    <p v-if="channel === 'chat' || channel === 'voice'" class="persona-note">
+      These tabs talk to the bot anonymously. To chat, send photos or voice notes and call
+      <em>as a demo customer</em> (one CRM contact, history in Customer 360), use the
+      <router-link to="/customer">Customer app</router-link>.
+    </p>
+
     <ChatLog v-if="channel === 'chat'" />
     <VoiceLog v-else-if="channel === 'voice'" />
 
     <ChatInput v-if="channel === 'chat'" />
     <VoiceRecorder v-else-if="channel === 'voice'" />
     <PhoneCall v-else-if="channel === 'phone'" />
+    <DemoConsole v-else-if="channel === 'demo'" />
 
-    <footer class="session-row">
+    <footer v-if="channel !== 'demo'" class="session-row">
       <span>
         Session:
         <code>{{ channel === 'chat' ? chat.sessionId : channel === 'voice' ? voice.sessionId : '—' }}</code>
@@ -141,6 +149,15 @@ button {
 button:hover {
   border-color: var(--text-muted);
   color: var(--text);
+}
+
+.persona-note {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.persona-note a {
+  color: var(--accent);
 }
 
 .fade-enter-active,

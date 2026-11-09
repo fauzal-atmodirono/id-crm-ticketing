@@ -237,33 +237,13 @@ async def test_pump_accumulates_transcript() -> None:
     assert ("ASSISTANT", "hello there") in b.transcript
 
 
-async def test_pump_sends_language_hint_after_input_transcript_when_enabled() -> None:
-    live = _FakeLive([InputTranscript("Saya nak tanya")])
-    b = _bridge(live, [], settings=Settings(_env_file=None, phone_language_nudge_enabled=True))
-    await b.pump()
-    assert len(live.text_hints) == 1
-    assert "language" in live.text_hints[0].lower()
-
-
-async def test_pump_skips_language_hint_when_disabled() -> None:
-    live = _FakeLive([InputTranscript("Saya nak tanya")])
-    b = _bridge(live, [], settings=Settings(_env_file=None, phone_language_nudge_enabled=False))
-    await b.pump()
-    assert live.text_hints == []
-
-
-async def test_pump_sends_language_hint_once_per_utterance_across_fragments() -> None:
-    # A single caller utterance streamed as two InputTranscript deltas must
-    # only trigger one language-nudge hint, not one per fragment.
-    live = _FakeLive([InputTranscript("Saya"), InputTranscript(" nak tanya")])
-    b = _bridge(live, [], settings=Settings(_env_file=None, phone_language_nudge_enabled=True))
-    await b.pump()
-    assert len(live.text_hints) == 1
-
-
-async def test_pump_sends_second_language_hint_for_new_utterance_after_assistant_turn() -> None:
-    # A genuinely new caller turn (after the assistant has replied) must
-    # still trigger its own hint.
+async def test_language_nudge_flag_no_longer_injects_a_caller_turn() -> None:
+    """2026-11-09 root cause (27 Oct call): the nudge went out through
+    send_realtime_input(text=...), which the Live API treats as a CALLER
+    turn -- the model answered the reminder itself ("Ya, tentu!" right after
+    "Hello! How can I help you today?") and spoke twice per caller turn. The
+    language rule now lives in the system instruction only; the flag is
+    inert."""
     live = _FakeLive(
         [
             InputTranscript("Saya nak tanya"),
@@ -273,7 +253,7 @@ async def test_pump_sends_second_language_hint_for_new_utterance_after_assistant
     )
     b = _bridge(live, [], settings=Settings(_env_file=None, phone_language_nudge_enabled=True))
     await b.pump()
-    assert len(live.text_hints) == 2
+    assert live.text_hints == []
 
 
 async def test_finalize_writes_transcript_to_zendesk() -> None:

@@ -19,6 +19,11 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from chatbot.features.authz.data_scope import (
+    Scope,
+    build_scope_dependency,
+    conversation_dimensions,
+)
 from chatbot.features.authz.deps import require_permission
 from chatbot.features.chat.case_fields import (
     CASE_FIELDS,
@@ -26,6 +31,7 @@ from chatbot.features.chat.case_fields import (
     validate,
     validate_dealer_slug,
 )
+from chatbot.features.privacy.access import PiiPolicy, build_pii_dependency
 
 if TYPE_CHECKING:
     from chatbot.features.authz.identity import TokenValidator
@@ -70,17 +76,41 @@ def build_case_fields_router(
         if not getattr(settings, "case_fields_enabled", False):
             raise HTTPException(status_code=404, detail="Case fields not enabled")
 
-    @router.get("/cases/{conv_id}/fields", dependencies=[Depends(may_view)])
-    async def get_fields(conv_id: str) -> dict[str, Any]:
-        """Every field in the spec with its current value, so the panel can
-        render from one response without knowing the field list itself."""
-        _guard()
+    data_scope = build_scope_dependency(settings, repo=authz_repo, validator=validator)
+    # Wave 2 Task 29: values are masked per field NAME (vehicle_chassis is a
+    # VIN whatever its shape) and free text by pattern, for a caller without
+    # pii.view. A PATCH carrying a masked value is refused (400) so a masked
+    # panel can never overwrite the real one. Flag off: no-ops.
+    pii_policy = build_pii_dependency(settings, repo=authz_repo, validator=validator)
+
+    async def _read_in_scope(conv_id: str, scope: Scope) -> dict[str, Any] | None:
+        """The conversation, or 404 when it is outside the caller's data
+        scope (Wave 2 Task 28). 404 rather than 403 so an out-of-scope
+        caller cannot probe which case ids exist. Unrestricted callers keep
+        today's fail-open read; a scoped caller whose read fails gets 404 --
+        an unreadable conversation cannot be shown to be theirs."""
         try:
             conversation = await chatwoot_read(conv_id)
         except Exception:
             _log.warning("case_fields_read_failed", conv_id=conv_id)
             conversation = None
-        attrs = (conversation or {}).get("custom_attributes") or {}
+        if not scope.unrestricted and not (
+            conversation and scope.permits(conversation_dimensions(conversation))
+        ):
+            raise HTTPException(status_code=404, detail="Case not found")
+        return conversation
+
+    @router.get("/cases/{conv_id}/fields", dependencies=[Depends(may_view)])
+    async def get_fields(
+        conv_id: str,
+        scope: Scope = Depends(data_scope),
+        pii: PiiPolicy = Depends(pii_policy),
+    ) -> dict[str, Any]:
+        """Every field in the spec with its current value, so the panel can
+        render from one response without knowing the field list itself."""
+        _guard()
+        conversation = await _read_in_scope(conv_id, scope)
+        attrs = pii.apply((conversation or {}).get("custom_attributes") or {})
         return {
             "fields": [
                 {
@@ -94,10 +124,28 @@ def build_case_fields_router(
         }
 
     @router.patch("/cases/{conv_id}/fields", dependencies=[Depends(may_edit)])
-    async def patch_fields(conv_id: str, body: CaseFieldsBody) -> dict[str, Any]:
+    async def patch_fields(
+        conv_id: str,
+        body: CaseFieldsBody,
+        scope: Scope = Depends(data_scope),
+        pii: PiiPolicy = Depends(pii_policy),
+    ) -> dict[str, Any]:
         _guard()
+        current = None
+        if not scope.unrestricted:
+            current = await _read_in_scope(conv_id, scope)
+        elif pii.masked:
+            try:
+                current = await chatwoot_read(conv_id)
+            except Exception:
+                _log.warning("case_fields_read_failed", conv_id=conv_id)
+        # A masked caller's untouched field comes back in its masked form:
+        # dropped as unchanged; any other mask shape is refused (400).
+        incoming = pii.reconcile_write(
+            body.fields, (current or {}).get("custom_attributes") or None
+        )
         updates: dict[str, Any] = {}
-        for name, raw in body.fields.items():
+        for name, raw in incoming.items():
             try:
                 if name == "purchased_from_dealer":
                     updates[name] = await validate_dealer_slug(raw, dealer_store)
@@ -108,6 +156,19 @@ def build_case_fields_router(
                 # shown to the operator who has to fix it.
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        # Wave 2 Task 28: a dealer-scoped caller may not re-attribute a case
+        # to a dealer outside their scope (nor clear it, which would also
+        # move it out of their scope). Same rule as RSA's purchased_from.
+        # CASE_FIELDS has no department field, so dealer is the only
+        # scope-bearing field writable here.
+        if (
+            "purchased_from_dealer" in updates
+            and "dealer_slugs" in scope.restricted_dimensions
+            and not scope.permits({"dealer_slugs": updates["purchased_from_dealer"]})
+        ):
+            raise HTTPException(
+                status_code=403, detail="purchased_from_dealer is outside your data scope"
+            )
         if updates:
             await chatwoot_merge_attributes(conv_id, updates)
         return {"conversation_id": conv_id, "updated": sorted(updates), "status": "ok"}

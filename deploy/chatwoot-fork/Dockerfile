@@ -96,6 +96,28 @@ COPY --from=builder /app/public/vite /app/public/vite
 # stays off.
 COPY --from=builder /app/app/views/layouts/vueapp.html.erb /app/app/views/layouts/vueapp.html.erb
 
+# Patch 0079 adds a Rails initializer (SESSION_TOKEN_LIFESPAN_HOURS). Like the
+# layout above it is server-side, so it is not in public/vite and must be
+# copied explicitly or the session cap silently never applies.
+COPY --from=builder /app/config/initializers/zz_proton_session.rb /app/config/initializers/zz_proton_session.rb
+
+# Patch 0082 (password expiry, FIX-44) is also server-side: the initializer
+# that adds User#password_expired?, and the user JSON partial that exposes the
+# flag. Without both COPYs the SPA guard compiled into public/vite never sees
+# password_expired and expiry silently does nothing.
+COPY --from=builder /app/config/initializers/zz_proton_password_expiry.rb /app/config/initializers/zz_proton_password_expiry.rb
+COPY --from=builder /app/app/views/api/v1/models/_user.json.jbuilder /app/app/views/api/v1/models/_user.json.jbuilder
+# Same patch strips password_changed_at from the colleague-facing agent partial
+# and the platform user partial (copied from the builder so upstream fields stay).
+COPY --from=builder /app/app/views/api/v1/models/_agent.json.jbuilder /app/app/views/api/v1/models/_agent.json.jbuilder
+COPY --from=builder /app/app/views/platform/api/v1/models/_user.json.jbuilder /app/app/views/platform/api/v1/models/_user.json.jbuilder
+
+# Patch 0086 (FIX-51, days_before filter 500) edits a Rails service. Without
+# this COPY the fix is applied in the builder only and never ships.
+# tests/test_dockerfile_runtime_copies.py fails if any server-side patched
+# file is left out of this stage.
+COPY --from=builder /app/app/services/filter_service.rb /app/app/services/filter_service.rb
+
 # Overwrite the baked-in upstream .git_sha so the in-app "Build <sha>" display
 # (and GET /api) reflects OUR commit, not upstream's frozen v4.15.1 release
 # commit — see the PROTON_BUILD_SHA comment near the top of this file.

@@ -232,9 +232,16 @@ class ConversationLogPort(Protocol):
         subject: str,
         customer_name: str | None,
         customer_phone: str | None,
+        *,
+        attach_by_phone: bool = False,
     ) -> str:
         """Find-or-create the conversation's ticket (external_id == session_id).
-        Returns the ticket id."""
+        Returns the ticket id.
+
+        ``attach_by_phone`` (phone caller context): the phone bridge vouches
+        that ``customer_phone`` is the caller's own number, so an
+        implementation may attach to the existing contact that owns it.
+        Implementations without contacts ignore it."""
         ...
 
     async def rotate_conversation_ticket(
@@ -249,8 +256,14 @@ class ConversationLogPort(Protocol):
         and can no longer accept comments. Returns the new ticket id."""
         ...
 
-    async def find_conversation_ticket(self, session_id: str) -> str | None:
-        """Resolve an EXISTING ticket for this session, in ANY status
+    async def find_conversation_ticket(
+        self, session_id: str, *, phone: str | None = None
+    ) -> str | None:
+        """``phone`` (optional): the caller's number, letting an
+        implementation find a call attached to an existing contact; ignored
+        where it means nothing.
+
+        Resolve an EXISTING ticket for this session, in ANY status
         (unlike ``ensure_conversation_ticket``'s reuse check, which is
         active-only) -- and, critically, NEVER create one. For callers that
         must attach data to a conversation that should already exist (e.g.
@@ -397,6 +410,21 @@ class AuditEntry:
     transport: str | None = None
     delivery_status: str | None = None
     sla_status: str | None = None
+    # FIX-17 (RFP 3.2.6 / 4.38): who, what kind of event, on which object and
+    # what changed. All nullable so every row written before FIX-17 still
+    # loads. `actor` stays the display string old readers use; `actor_user_id`
+    # is the real Chatwoot user for admin writes and None for system actors.
+    # `before`/`after` are REDACTED snapshots (see audit_events.redact) -- never
+    # raw secrets or full phone numbers / emails.
+    event_type: str | None = None
+    actor_user_id: int | None = None
+    actor_name: str | None = None
+    target: str | None = None
+    # Where actor_name came from: "chatwoot-activity" (derived from the label
+    # event), "agent-service" (the service actor; no person derivable).
+    actor_source: str | None = None
+    before: dict[str, Any] | None = None
+    after: dict[str, Any] | None = None
 
 
 class AuditLogPort(Protocol):
@@ -413,4 +441,7 @@ class AuditLogPort(Protocol):
         from_ts: str | None = None,
         to_ts: str | None = None,
         limit: int = 200,
+        event_type: str | None = None,
+        actor_user_id: int | None = None,
+        target: str | None = None,
     ) -> list[AuditEntry]: ...

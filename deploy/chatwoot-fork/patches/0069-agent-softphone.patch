@@ -110,12 +110,24 @@ still-owed screenshot verification.
 
 Build via Cloud Build for amd64 once merged; never on the prod VM, never from
 an arm64 Mac.
+
+FIX-15 (RFP 2026_028 4.6) ADDITIONS: Hold / Resume / Transfer. Added lines
+only, no existing line changed. protonVoice.js gains voiceCallRequest (same
+auth forwarding, plus a JSON body) and five calls to /voice/agent/call/*.
+useProtonSoftphone.js keeps its return shape; the new state lives in a
+module-level object exposed by useProtonSoftphoneCallControls() (one Device
+per tab). The buttons show only when POST /voice/agent/call/capabilities says
+the backend flag PHONE_HOLD_TRANSFER_ENABLED is on. Status stays 'in-call'
+while held, so 0079's idle hold still defers logout. A transferred call's
+custom parameters (caller, transcript_path, transferred_by) open the same
+conversation and its transcript on the target's panel. Backend does the
+ownership check and all Twilio work (features/chat/phone/hold_transfer.py).
 ---
- app/javascript/dashboard/api/protonVoice.js       |  39 +++
+ app/javascript/dashboard/api/protonVoice.js       |  85 +++
  .../dashboard/components-next/sidebar/Sidebar.vue |  22 ++
- .../components-next/softphone/ProtonSoftphonePanel.vue | 117 +++++++
- .../dashboard/composables/useProtonSoftphone.js   | 165 ++++++++++
- 4 files changed, 343 insertions(+)
+ .../components-next/softphone/ProtonSoftphonePanel.vue | 227 +++++++
+ .../dashboard/composables/useProtonSoftphone.js   | 279 ++++++++++
+ 4 files changed, 613 insertions(+)
  create mode 100644 app/javascript/dashboard/api/protonVoice.js
  create mode 100644 app/javascript/dashboard/components-next/softphone/ProtonSoftphonePanel.vue
  create mode 100644 app/javascript/dashboard/composables/useProtonSoftphone.js
@@ -124,7 +136,7 @@ new file mode 100644
 index 0000000..a1c2d3e
 --- /dev/null
 +++ b/app/javascript/dashboard/api/protonVoice.js
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,85 @@
 +// protonVoice.js — OUR file. The softphone's three backend calls. Uses the
 +// same devise_token_auth triplet forwarding as protonAdmin.js's adminRequest,
 +// because /voice/agent/* is gated per-USER (require_permission_with_identity),
@@ -164,12 +176,58 @@ index 0000000..a1c2d3e
 +export const fetchAgentVoiceToken = () => voiceRequest('/voice/agent/token');
 +export const sendSoftphoneHeartbeat = () => voiceRequest('/voice/agent/heartbeat');
 +export const unregisterSoftphone = () => voiceRequest('/voice/agent/unregister');
++
++// FIX-15: hold / resume / transfer. Its own helper (same auth forwarding as
++// voiceRequest above) because these calls carry a JSON body: the agent's own
++// call leg SID. The backend proves the agent owns that leg before acting.
++async function voiceCallRequest(path, body) {
++  const { backendUrl, backendKey } = useProtonConfig();
++  if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
++
++  const authData = Auth.hasAuthCookie() ? Auth.getAuthData() : null;
++
++  const response = await fetch(`${backendUrl}${path}`, {
++    method: 'POST',
++    headers: {
++      'Content-Type': 'application/json',
++      ...(backendKey ? { 'x-api-key': backendKey } : {}),
++      ...(authData
++        ? {
++            'x-chatwoot-access-token': authData['access-token'],
++            'x-chatwoot-client': authData.client,
++            'x-chatwoot-uid': authData.uid,
++          }
++        : {}),
++    },
++    body: JSON.stringify(body || {}),
++  });
++
++  if (!response.ok) {
++    throw new Error(`${path} failed: ${response.status}`);
++  }
++  return response.json();
++}
++
++export const fetchCallCapabilities = () =>
++  voiceCallRequest('/voice/agent/call/capabilities');
++export const holdCall = callSid =>
++  voiceCallRequest('/voice/agent/call/hold', { call_sid: callSid });
++export const resumeCall = callSid =>
++  voiceCallRequest('/voice/agent/call/resume', { call_sid: callSid });
++export const fetchTransferTargets = () =>
++  voiceCallRequest('/voice/agent/call/transfer-targets');
++export const transferCall = (callSid, targetAgentId, mode) =>
++  voiceCallRequest('/voice/agent/call/transfer', {
++    call_sid: callSid,
++    target_agent_id: targetAgentId,
++    mode,
++  });
 diff --git a/app/javascript/dashboard/composables/useProtonSoftphone.js b/app/javascript/dashboard/composables/useProtonSoftphone.js
 new file mode 100644
 index 0000000..b2c3d4e
 --- /dev/null
 +++ b/app/javascript/dashboard/composables/useProtonSoftphone.js
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,279 @@
 +// useProtonSoftphone.js — OUR file. Owns the Twilio Device for this tab.
 +//
 +// Installed from Sidebar.vue because the sidebar is mounted on every dashboard
@@ -181,11 +239,51 @@ index 0000000..b2c3d4e
 +// would be worse than one that does not ring.
 +import { ref, onBeforeUnmount } from 'vue';
 +import { Device } from '@twilio/voice-sdk';
++import { watch } from 'vue';
 +import {
 +  fetchAgentVoiceToken,
 +  sendSoftphoneHeartbeat,
 +  unregisterSoftphone,
 +} from 'dashboard/api/protonVoice';
++// FIX-15: hold / resume / transfer. Separate import and a module-level
++// state object (one Device per tab, so one softphone instance) so the
++// panel can reach the new controls without changing the original return.
++import {
++  fetchCallCapabilities,
++  holdCall,
++  resumeCall,
++  fetchTransferTargets,
++  transferCall,
++} from 'dashboard/api/protonVoice';
++
++const callExtras = {
++  canHoldTransfer: ref(false),
++  held: ref(false),
++  transferring: ref(false),
++  transferredAway: ref(false),
++  targets: ref([]),
++  busy: ref(false),
++  error: ref(''),
++  hold: async () => {},
++  resume: async () => {},
++  loadTargets: async () => {},
++  transfer: async () => {},
++};
++
++function resetCallExtras() {
++  // A cold transfer ends OUR leg once the colleague answers: remember that
++  // so the panel can say "Call transferred" instead of a bare "Call ended".
++  callExtras.transferredAway.value = callExtras.transferring.value;
++  callExtras.held.value = false;
++  callExtras.transferring.value = false;
++  callExtras.targets.value = [];
++  callExtras.busy.value = false;
++  callExtras.error.value = '';
++}
++
++export function useProtonSoftphoneCallControls() {
++  return callExtras;
++}
 +
 +const HEARTBEAT_MS = 30000;
 +
@@ -223,6 +321,12 @@ index 0000000..b2c3d4e
 +      reason: params.get('reason') || '',
 +      summary: params.get('summary') || '',
 +    };
++    // FIX-15: a transferred call carries the customer's number and the
++    // conversation's transcript link as query parameters on `To`.
++    if (params.get('caller')) incoming.value.from = params.get('caller');
++    incoming.value.transcriptPath = params.get('transcript_path') || '';
++    incoming.value.transferredBy = params.get('transferred_by') || '';
++    callExtras.transferredAway.value = false;
 +    status.value = 'ringing';
 +
 +    incomingCall.on('accept', () => {
@@ -251,6 +355,7 @@ index 0000000..b2c3d4e
 +  function endWith(finalStatus) {
 +    stopElapsed();
 +    muted.value = false;
++    resetCallExtras();
 +    call = null;
 +    status.value = finalStatus;
 +    if (finalStatus === 'ended') {
@@ -289,6 +394,7 @@ index 0000000..b2c3d4e
 +      });
 +      await device.register();
 +      status.value = 'ready';
++      refreshCallCapabilities();
 +      await sendSoftphoneHeartbeat();
 +      heartbeatTimer = window.setInterval(() => {
 +        sendSoftphoneHeartbeat().catch(() => {});
@@ -316,11 +422,77 @@ index 0000000..b2c3d4e
 +    call.mute(muted.value);
 +  }
 +
++  // --- FIX-15: hold / resume / transfer -------------------------------
++  // The status stays 'in-call' while held, so 0079's idle hold still holds.
++  function callSid() {
++    return call?.parameters?.CallSid || '';
++  }
++
++  async function runCallAction(fn) {
++    if (!call || callExtras.busy.value) return null;
++    callExtras.busy.value = true;
++    callExtras.error.value = '';
++    try {
++      return await fn(callSid());
++    } catch {
++      callExtras.error.value = 'That did not work. Please try again.';
++      return null;
++    } finally {
++      callExtras.busy.value = false;
++    }
++  }
++
++  async function refreshCallCapabilities() {
++    try {
++      const caps = await fetchCallCapabilities();
++      callExtras.canHoldTransfer.value = !!caps?.hold_transfer;
++    } catch {
++      callExtras.canHoldTransfer.value = false;
++    }
++  }
++
++  callExtras.hold = async () => {
++    if (await runCallAction(holdCall)) callExtras.held.value = true;
++  };
++  callExtras.resume = async () => {
++    if (await runCallAction(resumeCall)) {
++      callExtras.held.value = false;
++      callExtras.transferring.value = false;
++    }
++  };
++  callExtras.loadTargets = async () => {
++    try {
++      const { agents } = await fetchTransferTargets();
++      callExtras.targets.value = agents || [];
++    } catch {
++      callExtras.targets.value = [];
++    }
++  };
++  callExtras.transfer = async (targetAgentId, mode) => {
++    const res = await runCallAction(sid =>
++      transferCall(sid, targetAgentId, mode)
++    );
++    if (res) {
++      callExtras.held.value = true;
++      callExtras.transferring.value = true;
++    }
++  };
++
 +  onBeforeUnmount(() => {
 +    if (heartbeatTimer) window.clearInterval(heartbeatTimer);
 +    stopElapsed();
 +    unregisterSoftphone().catch(() => {});
 +    device?.destroy();
++  });
++
++  // Idle-timeout hold (patch 0079): a call can outlast the idle window with no
++  // mouse/keyboard input, and signing the agent out would drop it. 0079's
++  // monitor polls window.__PROTON_IDLE_HOLD__ and defers logout while true.
++  watch(status, v => {
++    window.__PROTON_IDLE_HOLD__ = () => v === 'in-call' || v === 'ringing';
++  });
++  onBeforeUnmount(() => {
++    window.__PROTON_IDLE_HOLD__ = undefined;
 +  });
 +
 +  return {
@@ -340,7 +512,7 @@ new file mode 100644
 index 0000000..c3d4e5f
 --- /dev/null
 +++ b/app/javascript/dashboard/components-next/softphone/ProtonSoftphonePanel.vue
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,227 @@
 +<script setup>
 +// ProtonSoftphonePanel.vue — OUR file. Ring + in-call UI for a transferred
 +// phone call. Teleported to <body> so it floats above the app rather than
@@ -358,10 +530,46 @@ index 0000000..c3d4e5f
 +import { computed, onMounted } from 'vue';
 +import { useRouter } from 'vue-router';
 +import { useProtonSoftphone } from 'dashboard/composables/useProtonSoftphone';
++import { ref } from 'vue';
++import { useProtonSoftphoneCallControls } from 'dashboard/composables/useProtonSoftphone';
 +
 +const router = useRouter();
 +const { status, incoming, elapsed, muted, register, accept, reject, hangup, toggleMute } =
 +  useProtonSoftphone();
++
++// FIX-15: hold / resume / transfer.
++const {
++  canHoldTransfer,
++  held,
++  transferring,
++  transferredAway,
++  targets,
++  busy: callBusy,
++  error: callError,
++  hold,
++  resume,
++  loadTargets,
++  transfer,
++} = useProtonSoftphoneCallControls();
++const transferOpen = ref(false);
++const transferTarget = ref('');
++const warmTransfer = ref(false);
++
++async function openTransfer() {
++  transferTarget.value = '';
++  transferOpen.value = true;
++  await loadTargets();
++}
++
++async function confirmTransfer() {
++  if (!transferTarget.value) return;
++  await transfer(Number(transferTarget.value), warmTransfer.value ? 'warm' : 'cold');
++  transferOpen.value = false;
++}
++
++function openTranscript() {
++  if (incoming.value?.transcriptPath) router.push(incoming.value.transcriptPath);
++}
 +
 +onMounted(register);
 +
@@ -419,6 +627,14 @@ index 0000000..c3d4e5f
 +      >
 +        Open conversation
 +      </button>
++      <button
++        v-if="incoming?.transcriptPath"
++        type="button"
++        class="text-sm text-left underline text-n-brand"
++        @click="openTranscript"
++      >
++        Transferred call: transcript so far
++      </button>
 +
 +      <div v-if="status === 'ringing'" class="flex gap-2">
 +        <button
@@ -455,6 +671,72 @@ index 0000000..c3d4e5f
 +          Hang up
 +        </button>
 +      </div>
++      <div v-if="status === 'in-call' && canHoldTransfer" class="flex flex-col gap-2">
++        <p v-if="held && !transferring" class="text-sm text-n-slate-11">
++          Caller is on hold.
++        </p>
++        <div class="flex gap-2">
++          <button
++            type="button"
++            class="flex-1 px-3 py-2 text-sm font-medium border rounded-lg border-n-weak text-n-slate-12 hover:bg-n-alpha-black1"
++            :disabled="callBusy"
++            @click="held ? resume() : hold()"
++          >
++            {{ held ? 'Resume' : 'Hold' }}
++          </button>
++          <button
++            type="button"
++            class="flex-1 px-3 py-2 text-sm font-medium border rounded-lg border-n-weak text-n-slate-12 hover:bg-n-alpha-black1"
++            :disabled="callBusy || transferring"
++            @click="openTransfer"
++          >
++            Transfer
++          </button>
++        </div>
++        <div v-if="transferOpen && !transferring" class="flex flex-col gap-2">
++          <select
++            v-model="transferTarget"
++            class="px-2 py-1 text-sm border rounded-lg border-n-weak bg-n-background text-n-slate-12"
++          >
++            <option value="" disabled>Pick an online agent</option>
++            <option v-for="agent in targets" :key="agent.id" :value="agent.id">
++              {{ agent.name }}
++            </option>
++          </select>
++          <p v-if="!targets.length" class="text-sm text-n-slate-11">
++            No other agent is online with the softphone open.
++          </p>
++          <label class="flex items-center gap-2 text-sm text-n-slate-11">
++            <input v-model="warmTransfer" type="checkbox" />
++            Stay on the line after they answer (warm)
++          </label>
++          <div class="flex gap-2">
++            <button
++              type="button"
++              class="flex-1 px-3 py-2 text-sm font-medium text-white rounded-lg bg-n-brand hover:brightness-95"
++              :disabled="!transferTarget || callBusy"
++              @click="confirmTransfer"
++            >
++              Ring agent
++            </button>
++            <button
++              type="button"
++              class="flex-1 px-3 py-2 text-sm font-medium border rounded-lg border-n-weak text-n-slate-12 hover:bg-n-alpha-black1"
++              @click="transferOpen = false"
++            >
++              Cancel
++            </button>
++          </div>
++        </div>
++        <p v-if="transferring" class="text-sm text-n-slate-11">
++          Ringing your colleague; the caller is on hold. When they answer the
++          caller joins them. Press Resume to cancel the transfer.
++        </p>
++        <p v-if="callError" class="text-sm text-n-ruby-9">{{ callError }}</p>
++      </div>
++      <p v-if="status === 'ended' && transferredAway" class="text-sm text-n-slate-11">
++        Call transferred.
++      </p>
 +    </div>
 +  </Teleport>
 +</template>

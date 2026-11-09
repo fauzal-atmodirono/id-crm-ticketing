@@ -228,7 +228,7 @@ translation.
 |---|---|---|
 | `GET /kb/suggest` | x-api-key | always |
 | `GET,POST /kb/faq` · `PUT,DELETE /kb/faq/{entry_id}` | x-api-key | always |
-| `POST /kb/faq/bulk` | x-api-key | always |
+| `POST /kb/faq/bulk[?partial=true]` | x-api-key | always |
 | `POST /kb/feedback` | x-api-key | always |
 | `GET /kb/documents` | x-api-key | always |
 | `GET,POST /kb/assistants` · `GET,PUT,DELETE /kb/assistants/{assistant_id}` | x-api-key | always |
@@ -238,6 +238,8 @@ translation.
 | `GET /kb/inboxes` · `PUT /kb/inboxes/{inbox_id}` · `GET,PUT /kb/inboxes/{inbox_id}/timing` | x-api-key | always |
 | `GET /kb/knowledge` · `GET,DELETE /kb/knowledge/{document_id}` | x-api-key | **GATED**: `KNOWLEDGE_PG_ENABLED` + `KNOWLEDGE_DATABASE_URL` + an available embedder |
 | `POST /kb/knowledge/text` · `POST /kb/knowledge/file` | x-api-key | same gate |
+
+`POST /kb/faq/bulk` takes a CSV (`question,answer,keywords,tags`) and is all-or-nothing by default: if any row is invalid nothing is imported and the response is `{created: 0, imported: false, errors: [{row, reason}]}`. Add `?partial=true` to import the valid rows and skip the bad ones. If a store failure interrupts an all-or-nothing import and some created entries cannot be rolled back, the response lists them in `rollback_failed_ids`.
 
 The `/kb/knowledge` gate has a third condition worth knowing: with the flag on
 but **no embedder available** (no Gemini SDK or credentials), the router is

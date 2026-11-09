@@ -101,10 +101,13 @@ FLAGS_ON=(
   # ANOMALY_HOURLY_ZSCORE_K above) -- true is the only "on" a boolean has.
   TAXONOMY_ADMIN_ENABLED=true
   CATEGORY_DEPARTMENT_MAPPING_ENABLED=true
-  # DATA_SCOPED_RBAC_ENABLED is deliberately ABSENT: the flag now refuses to boot
-  # (config.py::_refuse_unimplemented_data_scoping) because the scope model exists
-  # and nothing enforces it, so enabling it would restrict no data while appearing
-  # to. Add it here in the same commit that wires enforcement.
+  # DATA_SCOPED_RBAC_ENABLED is deliberately ABSENT: it is enforced now (Wave 2
+  # Task 28) but requires RBAC_ENABLED=true (config.py::_data_scoping_requires_rbac),
+  # which this list does not set. Its flag-on paths are covered directly by
+  # features/authz/test_data_scope.py and test_scope_enforcement.py.
+  # PII_MASKING_ENABLED is ABSENT for the same reason (Wave 2 Task 29,
+  # config.py::_pii_masking_requires_rbac); its flag-on paths are covered by
+  # features/privacy/test_pii_masking.py.
 
   # --- P13: retention jobs. AUDIT_LOG_RETENTION_DAYS is non-default on purpose,
   # the same way CSAT_RANKING_MIN_SAMPLES is: a tunable left at its own default

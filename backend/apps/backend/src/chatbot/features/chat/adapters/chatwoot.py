@@ -63,6 +63,14 @@ _ACTIVE_STATUSES = frozenset({"open", "pending", "snoozed"})
 _DIVISION_DISPLAY = {"Aftersales": "After Sales"}
 
 
+class ConversationListing(list):
+    """A list of conversations plus a ``truncated`` flag: True when the page cap
+    was hit or a later page failed, so callers can say "showing the first N"
+    instead of presenting a partial list as complete."""
+
+    truncated: bool = False
+
+
 def _conversations_from(res: Any) -> list[dict[str, Any]]:
     """Normalize a Chatwoot conversation-list response to a list of dicts.
 
@@ -110,6 +118,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         self._pic_registry = pic_registry
         self._escalation_notifier = escalation_notifier
         self._paused_sessions: set[str] = set()
+        self._pause_fs_client: firestore.Client | None = None
         self._conv_by_session: dict[str, str] = {}
         self._routing_service: RoutingService | None = None
         self._channel_cache: str | None = None
@@ -488,6 +497,8 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         session_id: str,
         customer_name: str | None = None,
         customer_phone: str | None = None,
+        *,
+        attach_by_phone: bool = False,
     ) -> int | None:
         """Return a Chatwoot contact id for the session, creating one if needed.
 
@@ -519,9 +530,62 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         for contact in (search or {}).get("payload") or []:
             if contact.get("identifier") == session_id and contact.get("id") is not None:
                 return int(contact["id"])
+        if customer_phone and attach_by_phone and session_id.startswith("phone-"):
+            # 2026-11-09 caller context: Chatwoot keeps phone_number unique per
+            # account, so a create carrying a number that already belongs to a
+            # customer 422s. When -- and ONLY when -- the phone bridge vouches
+            # that this is the caller's own number (network caller ID, an
+            # allowlisted demo number, or a told number whose name matched),
+            # attach to that customer: exact digits-only, country-code
+            # tolerant match, the rule Customer 360 uses. Every other caller
+            # passing a phone (web/WhatsApp leads, book_test_drive: a number
+            # the visitor TYPED) never sets attach_by_phone, so its 422 still
+            # ends in "no contact", exactly as before.
+            return await self._contact_id_by_phone(customer_phone)
         return None
 
-    async def _existing_conversation_id(self, contact_id: int | None) -> str | None:
+    async def _contact_id_by_phone(self, phone: str) -> int | None:
+        from chatbot.features.chat.customer360_router import (  # noqa: PLC0415 -- avoid an import cycle
+            _phones_match,
+        )
+
+        for contact in await self.search_contacts(phone):
+            if contact.get("id") is not None and _phones_match(phone, contact.get("phone_number")):
+                return int(contact["id"])
+        return None
+
+    async def update_contact(self, contact_id: int, payload: dict[str, Any]) -> bool:
+        """PUT a contact update. Chatwoot MERGES ``custom_attributes`` on this
+        endpoint (``ContactsController#contact_custom_attributes``), unlike the
+        conversation custom-attributes endpoint, so no read-modify-write is
+        needed here. True when Chatwoot accepted it."""
+        res = await self._request("PUT", f"/contacts/{contact_id}", payload)
+        return res is not None
+
+    async def get_conversation(self, ticket_id: str) -> dict[str, Any] | None:
+        """GET one conversation payload (meta.sender, labels, custom and
+        additional attributes); None on any failure. Used by the handoff
+        note (features/chat/handoff_note.py)."""
+        res = await self._request("GET", f"/conversations/{ticket_id}")
+        return res if isinstance(res, dict) else None
+
+    async def set_conversation_priority(self, ticket_id: str, priority: str) -> None:
+        """Set the conversation priority (low/medium/high/urgent); anything
+        else is sent as medium, like create_ticket's mapping."""
+        await self._request(
+            "POST",
+            f"/conversations/{ticket_id}/toggle_priority",
+            {"priority": _PRIORITY_MAP.get(priority.lower(), "medium")},
+        )
+
+    async def set_conversation_attributes(self, ticket_id: str, attributes: dict[str, Any]) -> None:
+        """Public merge-set of conversation custom attributes (see
+        ``_merge_custom_attributes``)."""
+        await self._merge_custom_attributes(ticket_id, attributes)
+
+    async def _existing_conversation_id(
+        self, contact_id: int | None, session_id: str | None = None
+    ) -> str | None:
         """Return an existing ACTIVE conversation id for this contact, if any.
 
         Only open/pending/snoozed conversations in our inbox are reused — a prior
@@ -538,6 +602,31 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             for c in _conversations_from(res)
             if c.get("status") in _ACTIVE_STATUSES and c.get("inbox_id") in (inbox_id, None)
         ]
+        if session_id is not None:
+            # 2026-11-09 caller context: a phone call that attaches to an
+            # EXISTING customer is its own case -- that customer's other open
+            # case must not be reused (finalize() would post the call
+            # transcript into it and resolve it). Only this call's own
+            # conversation (a retried create) is reused, recognised by the
+            # session id stamped into additional_attributes on create
+            # (Chatwoot's conversation JSON carries no source_id). Callers
+            # pass session_id only for a phone session (every call, since
+            # 2026-11-09), so every other path is unchanged.
+            active = [
+                c
+                for c in active
+                if (c.get("additional_attributes") or {}).get("session_id") == session_id
+            ]
+        else:
+            # Never reuse a phone call's conversation for another session (a
+            # WhatsApp message from a customer whose call case is open).
+            active = [
+                c
+                for c in active
+                if not str(
+                    (c.get("additional_attributes") or {}).get("session_id") or ""
+                ).startswith("phone-")
+            ]
         if not active:
             return None
         latest = max(active, key=lambda c: c.get("last_activity_at") or c.get("created_at") or 0)
@@ -552,6 +641,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         *,
         search_existing: bool = True,
         additional_attributes: dict[str, Any] | None = None,
+        attach_by_phone: bool = False,
     ) -> str:
         """Return the conversation id for a session, creating it in the API-channel
         inbox if it does not exist yet.
@@ -567,9 +657,21 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         """
         if session_id in self._conv_by_session:
             return self._conv_by_session[session_id]
-        contact_id = await self._find_or_create_contact(session_id, customer_name, customer_phone)
+        contact_id = await self._find_or_create_contact(
+            session_id, customer_name, customer_phone, attach_by_phone=attach_by_phone
+        )
+        # Every phone call stamps its session id (2026-11-09): with or
+        # without the caller's number it is the marker the agent's lifecycle
+        # and the auto-summary use to tell a call from a chat, and it is the
+        # only way a retried create can find its own conversation (Chatwoot's
+        # conversation JSON has no source_id).
+        own_session_only = session_id.startswith("phone-")
+        if own_session_only:
+            additional_attributes = {**(additional_attributes or {}), "session_id": session_id}
         if search_existing:
-            existing = await self._existing_conversation_id(contact_id)
+            existing = await self._existing_conversation_id(
+                contact_id, session_id if own_session_only else None
+            )
             if existing is not None:
                 self._conv_by_session[session_id] = existing
                 return existing
@@ -617,6 +719,35 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         res = await self._request("GET", f"/contacts/{contact_id}/conversations", None)
         return _conversations_from(res)
 
+    async def find_contacts_by_vehicle_no(self, variants: list[str]) -> list[dict[str, Any]]:
+        """Contacts whose ``vehicle_no`` custom attribute contains any variant.
+
+        One ``POST /contacts/filter`` call (Chatwoot runs it as a single SQL
+        query) instead of paging every conversation. This is the attribute the
+        Cases list "Car Plate" column reads (patch 0043:
+        ``meta.sender.custom_attributes.vehicle_no``). ``variants`` are
+        alternative spellings of one plate (callers pass compact and spaced
+        forms) OR-ed together, since Chatwoot's ``contains`` cannot ignore
+        whitespace itself. First page only: a plate identifies one customer.
+        """
+        wanted = [v for v in dict.fromkeys(variants) if v]
+        if not wanted:
+            return []
+        body = {
+            "payload": [
+                {
+                    "attribute_key": "vehicle_no",
+                    "filter_operator": "contains",
+                    "values": [v],
+                    "query_operator": "OR" if i < len(wanted) - 1 else None,
+                }
+                for i, v in enumerate(wanted)
+            ]
+        }
+        res = await self._request("POST", "/contacts/filter", body)
+        payload = (res or {}).get("payload") if isinstance(res, dict) else None
+        return [c for c in (payload or []) if isinstance(c, dict)]
+
     async def list_conversations(self, *, max_pages: int = 5) -> list[dict[str, Any]]:
         """Page the account conversations endpoint, filtered to our inbox.
 
@@ -642,6 +773,41 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 c for c in batch if isinstance(c, dict) and c.get("inbox_id") in (inbox_id, None)
             )
         return conversations
+
+    async def list_conversations_by_status(
+        self,
+        status: str,
+        *,
+        assignee_type: str | None = None,
+        label: str | None = None,
+        max_pages: int = 2,
+    ) -> ConversationListing:
+        """Conversations in one status across ALL inboxes (read-only; the AI
+        activity monitor). Unlike ``list_conversations`` this does not filter to
+        our inbox. Raises on a failed first page so callers can tell an outage
+        from an empty list; later-page failures just truncate."""
+        out = ConversationListing()
+        for page_num in range(1, max_pages + 1):
+            path = f"/conversations?status={quote(status, safe='')}&page={page_num}"
+            if assignee_type:
+                path += f"&assignee_type={quote(assignee_type, safe='')}"
+            if label:
+                # Server-side label filter, so a page cap cannot hide them.
+                path += f"&labels[]={quote(label, safe='')}"
+            res = await self._request("GET", path)
+            if not isinstance(res, dict):
+                if page_num == 1:
+                    raise RuntimeError("chatwoot conversation list unavailable")
+                out.truncated = True  # a later page failed
+                break
+            data = res.get("data")
+            batch = data.get("payload") if isinstance(data, dict) else res.get("payload")
+            if not isinstance(batch, list) or not batch:
+                break
+            out.extend(c for c in batch if isinstance(c, dict))
+            if page_num == max_pages:
+                out.truncated = True  # cap reached with a non-empty last page
+        return out
 
     # --- ChatPort ---
     async def send_message(self, conversation_id: str, text: str) -> None:
@@ -742,6 +908,17 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             {"content": text, "message_type": "outgoing", "private": True},
         )
 
+    def _pause_client(self) -> firestore.Client:
+        # ONE client reused across pause reads/writes: the AI activity monitor
+        # checks many sessions per refresh, and a client per call is a
+        # connection setup each time.
+        if self._pause_fs_client is None:
+            self._pause_fs_client = firestore.Client(
+                project=self._settings.firestore_project_id,
+                database=self._settings.firestore_database_id,
+            )
+        return self._pause_fs_client
+
     async def pause_ai_for_session(self, session_id: str) -> None:
         _log.info("pausing_ai_for_session", session_id=session_id)
         self._paused_sessions.add(session_id)
@@ -761,10 +938,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         if self._settings.handoff_store != "firestore":
             return False
         try:
-            client = firestore.Client(
-                project=self._settings.firestore_project_id,
-                database=self._settings.firestore_database_id,
-            )
+            client = self._pause_client()
             snap = await asyncio.to_thread(
                 lambda: client.collection("paused_sessions").document(session_id).get()
             )
@@ -779,10 +953,7 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         if self._settings.handoff_store != "firestore":
             return
         try:
-            client = firestore.Client(
-                project=self._settings.firestore_project_id,
-                database=self._settings.firestore_database_id,
-            )
+            client = self._pause_client()
             doc = client.collection("paused_sessions").document(session_id)
             if paused:
                 await asyncio.to_thread(lambda: doc.set({"paused": True}))
@@ -798,8 +969,14 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         subject: str,  # noqa: ARG002
         customer_name: str | None,
         customer_phone: str | None,
+        *,
+        attach_by_phone: bool = False,
     ) -> str:
-        return await self._find_or_create_conversation(session_id, customer_name, customer_phone)
+        """``attach_by_phone`` (phone bridge only): the number is the caller's
+        own, so a phone-number conflict attaches to that contact."""
+        return await self._find_or_create_conversation(
+            session_id, customer_name, customer_phone, attach_by_phone=attach_by_phone
+        )
 
     async def rotate_conversation_ticket(
         self,
@@ -815,7 +992,9 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             session_id, customer_name, customer_phone, search_existing=False
         )
 
-    async def find_conversation_ticket(self, session_id: str) -> str | None:
+    async def find_conversation_ticket(  # noqa: PLR0911 -- one return per lookup outcome
+        self, session_id: str, *, phone: str | None = None
+    ) -> str | None:
         """Resolve an EXISTING conversation for this session WITHOUT ever
         creating one (Package C Task 5 review fix, Critical 2). Used by the
         recording-status callback, which can fire well after the call ends
@@ -858,12 +1037,30 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             if contact.get("identifier") == session_id and contact.get("id") is not None:
                 contact_id = int(contact["id"])
                 break
+        if contact_id is None and phone and session_id.startswith("phone-"):
+            # A call attached to an existing customer's contact has no
+            # phone-<CallSid> contact: the caller's number finds the contact,
+            # and only the session stamp (never "latest conversation") picks
+            # the conversation.
+            contact_id = await self._contact_id_by_phone(phone)
+            if contact_id is None:
+                return None
+            res = await self._request("GET", f"/contacts/{contact_id}/conversations", None)
+            for conv in _conversations_from(res):
+                if (conv.get("additional_attributes") or {}).get("session_id") == session_id:
+                    cid = conv.get("id")
+                    return str(cid) if cid is not None else None
+            return None
         if contact_id is None:
             return None
         res = await self._request("GET", f"/contacts/{contact_id}/conversations", None)
         for conv in _conversations_from(res):
             source_id = conv.get("source_id")
-            if source_id is not None and str(source_id) == session_id:
+            # Chatwoot's conversation JSON carries no source_id, so the
+            # session id stamped into additional_attributes on create (caller
+            # context) is what actually matches after a restart.
+            stamped = (conv.get("additional_attributes") or {}).get("session_id")
+            if stamped == session_id or (source_id is not None and str(source_id) == session_id):
                 cid = conv.get("id")
                 if cid is not None:
                     return str(cid)
@@ -1049,6 +1246,20 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 "recording_url": recording_url,
             },
         )
+
+    async def set_call_recording_archive(
+        self, ticket_id: str, *, audio_object: str, transcript_object: str = ""
+    ) -> None:
+        """Record where `recording_archive.py` put this call's audio (and
+        transcript) in the tenant's bucket: object names only, never the
+        bucket and never a URL -- the bucket comes from settings, so a stored
+        value cannot point the player anywhere else. Attributes, not a note,
+        for the same reason as `set_call_recording`. Read by
+        `phone/recording_router.py` to serve the in-CRM player. Merge-safe."""
+        attrs = {"call_recording_object": audio_object}
+        if transcript_object:
+            attrs["call_recording_transcript_object"] = transcript_object
+        await self._merge_custom_attributes(ticket_id, attrs)
 
     async def get_inbox_working_hours(self, inbox_id: int) -> dict[str, Any] | None:
         """GET one inbox's business-hours config for the Task 6 handoff

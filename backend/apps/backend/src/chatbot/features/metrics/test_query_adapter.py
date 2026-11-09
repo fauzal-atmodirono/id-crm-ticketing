@@ -19,6 +19,7 @@ from chatbot.features.metrics.query_port import (
     CaseAgingMetrics,
     DealerEscalationMetrics,
     DepartmentsMetrics,
+    EmptyMetricsQuery,
     LifecycleMetrics,
     MockMetricsQuery,
     SlaBucketMetrics,
@@ -147,9 +148,12 @@ async def test_adapter_handles_null_aggregates() -> None:
     assert metrics.volume == []  # absent view -> empty block, no crash
 
 
-def test_build_factory_returns_mock_for_noop() -> None:
+def test_build_factory_returns_empty_for_noop() -> None:
+    """"noop" is what a tenant with no warehouse runs, so it must not hand
+    the reporting pages another tenant's canned fixtures. Canned rows moved
+    behind an explicit `metrics_provider="mock"`."""
     port = build_metrics_query_port(Settings(metrics_provider="noop"))
-    assert isinstance(port, MockMetricsQuery)
+    assert isinstance(port, EmptyMetricsQuery)
 
 
 @pytest.mark.asyncio
@@ -1265,7 +1269,7 @@ async def test_no_period_row_key_sets_are_pinned_exactly() -> None:
 
 
 def test_deliberate_mock_provider_reports_unfiltered() -> None:
-    port = build_metrics_query_port(Settings(metrics_provider="noop"))
+    port = build_metrics_query_port(Settings(metrics_provider="mock"))
     assert isinstance(port, MockMetricsQuery)
     metrics = asyncio.run(port.fetch_dashboard())
     assert all(scope.status == "unfiltered" for scope in metrics.scopes.values())
@@ -1341,9 +1345,9 @@ def test_fallback_after_failed_client_init_returns_empty_for_the_five_unscoped_m
 
 def test_deliberate_mock_provider_still_returns_canned_rows_for_the_five_unscoped_methods() -> None:
     """The degraded-only empty-list behaviour must not leak into the
-    deliberate-mock path (`metrics_provider != "bigquery"`) -- those rows
+    deliberate-mock path (`metrics_provider == "mock"`) -- those rows
     are still the intended dev/test answer, unchanged by this fix."""
-    port = build_metrics_query_port(Settings(metrics_provider="noop"))
+    port = build_metrics_query_port(Settings(metrics_provider="mock"))
 
     departments = asyncio.run(port.fetch_departments())
     callcenter = asyncio.run(port.fetch_callcenter())
@@ -1356,3 +1360,75 @@ def test_deliberate_mock_provider_still_returns_canned_rows_for_the_five_unscope
     assert dealer_escalation.by_dealer and dealer_escalation.slowest_cases
     assert sla_buckets.buckets
     assert case_aging.cases
+
+
+# --- A tenant with no warehouse must render blank reports, not another
+# tenant's canned demo rows. `metrics_provider` defaults to "noop", and that
+# used to hand every reporting page `MockMetricsQuery`'s Proton-flavoured
+# fixtures ("Dealer KL", "Aftersales"/"Ali", "e.MAS 5"), which read as real
+# figures on a freshly provisioned tenant. Canned rows now require an
+# explicit `metrics_provider="mock"`. ---
+
+
+def test_default_provider_returns_empty_not_canned_rows() -> None:
+    port = build_metrics_query_port(Settings())
+    assert isinstance(port, EmptyMetricsQuery)
+
+    assert asyncio.run(port.fetch_departments()) == DepartmentsMetrics(
+        dept_pic=[], reopen=[], category_by_vehicle_model=[]
+    )
+    assert asyncio.run(port.fetch_dealer_escalation()) == DealerEscalationMetrics(
+        by_dealer=[], slowest_cases=[]
+    )
+    assert asyncio.run(port.fetch_sla_buckets()) == SlaBucketMetrics(buckets=[])
+    assert asyncio.run(port.fetch_case_aging()) == CaseAgingMetrics(cases=[])
+    assert asyncio.run(port.fetch_callcenter()) == CallCentreMetrics(
+        sla=[],
+        tasks_per_agent=[],
+        first_response=[],
+        resolution_time=[],
+        complaint_types=[],
+        peak_hours=[],
+        nps_by_agent=[],
+    )
+    assert asyncio.run(port.fetch_anomalies()) == []
+    assert asyncio.run(port.fetch_hourly_anomalies()) == ([], False)
+
+    dashboard = asyncio.run(port.fetch_dashboard())
+    assert (
+        dashboard.volume
+        == dashboard.resolution
+        == dashboard.csat
+        == dashboard.nps
+        == dashboard.speed
+        == dashboard.fallback
+        == dashboard.bounce
+        == dashboard.quality
+        == []
+    )
+    lifecycle = asyncio.run(port.fetch_lifecycle())
+    assert lifecycle.cases == [] and lifecycle.state_trend == []
+    assert asyncio.run(port.fetch_volume_by_type_division()).volume == []
+    assert asyncio.run(port.fetch_by_tag()).by_tag == []
+    after_hours = asyncio.run(port.fetch_after_hours())
+    assert after_hours.volume == [] and after_hours.first_response == []
+
+
+def test_empty_port_reports_unfiltered_not_unavailable() -> None:
+    """Nothing is broken on a warehouse-less tenant, so the badge must not
+    say "temporarily unavailable" (the degraded fallback's meaning). The
+    blocks are honestly empty and honestly all-time."""
+    metrics = asyncio.run(build_metrics_query_port(Settings()).fetch_dashboard())
+    assert all(scope.status == "unfiltered" for scope in metrics.scopes.values())
+
+
+def test_empty_port_hides_scopes_from_the_json_shape() -> None:
+    """Same byte-identical-payload guard the mock and BigQuery adapters carry."""
+    payload = asdict(asyncio.run(build_metrics_query_port(Settings()).fetch_dashboard()))
+    assert "scopes" not in payload
+
+
+def test_canned_rows_now_require_explicit_mock_provider() -> None:
+    port = build_metrics_query_port(Settings(metrics_provider="mock"))
+    assert isinstance(port, MockMetricsQuery)
+    assert asyncio.run(port.fetch_departments()).dept_pic

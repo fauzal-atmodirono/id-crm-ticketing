@@ -24,7 +24,11 @@ import structlog
 from chatbot.features.chat.case_state import CHATWOOT_CASE_STATE_ATTR, CaseState
 from chatbot.features.chat.escalation_attachments import AttachmentFetcher
 from chatbot.features.chat.escalation_attachments import collect as collect_attachments
-from chatbot.features.chat.ports import AuditEntry
+from chatbot.features.chat.audit_events import (
+    EVENT_ESCALATION_NOTIFY,
+    mask_recipient,
+    record_event,
+)
 from chatbot.features.chat.settings_facade import get_effective_value
 
 # Delivery outcomes recorded on each escalation leg. `delivered` means the SMTP
@@ -253,6 +257,10 @@ class EscalationNotifier:
         transport: str,
         ok: bool,
         error: str = "",
+        actor_name: str | None = None,
+        actor_user_id: int | None = None,
+        sla_status: str | None = None,
+        actor_source: str | None = None,
     ) -> None:
         """Write one audit row per escalation leg, and warn the operator when
         a leg failed.
@@ -263,26 +271,26 @@ class EscalationNotifier:
         never left is the failure this package exists to prevent.
         """
         status = ESCALATION_DELIVERED if ok else ESCALATION_FAILED
-        if self._audit is not None:
-            try:
-                await self._audit.append(
-                    AuditEntry(
-                        ticket_id=conv_id,
-                        session_id=f"chatwoot-conv-{conv_id}",
-                        actor="escalation-notifier",
-                        from_state="OPEN",
-                        to_state=f"ESCALATION_{leg.upper()}",
-                        at=datetime.now(UTC).isoformat(),
-                        remark=error,
-                        recipients=list(recipients),
-                        transport=transport,
-                        delivery_status=status,
-                    )
-                )
-            except Exception as exc:
-                _log.warning(
-                    "escalation_audit_write_failed", conv_id=conv_id, error=str(exc)
-                )
+        # record_event never raises: a dead audit store must not stop a leg.
+        await record_event(
+            self._audit,
+            event_type=EVENT_ESCALATION_NOTIFY,
+            target=f"case:{conv_id}",
+            ticket_id=conv_id,
+            actor_user_id=actor_user_id,
+            actor_name=actor_name or "escalation-notifier",
+            from_state="OPEN",
+            to_state=f"ESCALATION_{leg.upper()}",
+            remarks=error,
+            sla_status=sla_status,
+            actor_source=actor_source or "agent-service",
+            # Final review M2: same trail rule as the ladder -- e-mail in
+            # full, a phone-shaped recipient masked (privacy.pii). The
+            # operator note below still names it in full.
+            recipients=[mask_recipient(r) for r in recipients],
+            transport=transport,
+            delivery_status=status,
+        )
 
         if ok or not getattr(self._settings, "escalation_failure_note_enabled", False):
             return
@@ -510,6 +518,10 @@ class EscalationNotifier:
         ack_transport: str = "email",
         customer_subject: str | None = None,
         customer_in_reply_to: str | None = None,
+        actor_name: str | None = None,
+        actor_user_id: int | None = None,
+        sla_status: str | None = None,
+        actor_source: str | None = None,
     ) -> None:
         """Escalation fan-out (EM-7) for a conversation a human labelled
         `escalate` -- reached only via the /escalation/notify endpoint, called
@@ -539,6 +551,14 @@ class EscalationNotifier:
         ``f"Update on your case: {title}"`` so that deploy stays
         byte-identical.
         """
+        # Who/what the audit rows attribute the escalation to (FIX-17). Absent
+        # (an agent service that predates it) leaves the service actor.
+        audit_ctx = {
+            "actor_name": actor_name,
+            "actor_user_id": actor_user_id,
+            "sla_status": sla_status,
+            "actor_source": actor_source,
+        }
         if self._settings.email_escalation_ack_enabled:
             if ack_transport == "email" and customer_email:
                 ok, error = await self._send_customer_ack(
@@ -555,6 +575,7 @@ class EscalationNotifier:
                     transport="email",
                     ok=ok,
                     error=error,
+                    **audit_ctx,
                 )
             elif ack_transport == "conversation":
                 await self._send_chat_ack(conv_id, title=title)
@@ -586,6 +607,7 @@ class EscalationNotifier:
                     transport="email",
                     ok=ok,
                     error=error,
+                    **audit_ctx,
                 )
 
         if dealer:
@@ -606,6 +628,7 @@ class EscalationNotifier:
                     transport="email",
                     ok=ok,
                     error=error,
+                    **audit_ctx,
                 )
 
     async def _resolve_ack_template(self) -> str:

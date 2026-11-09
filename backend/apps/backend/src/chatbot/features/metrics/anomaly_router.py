@@ -18,8 +18,9 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from chatbot.features.authz.data_scope import build_unscoped_only_dependency
 from chatbot.features.metrics.anomaly import (
     HOURLY_STATUS_FLAGGED,
     evaluate_hourly_anomalies,
@@ -34,7 +35,13 @@ if TYPE_CHECKING:
 
 
 def build_metrics_anomaly_router(port: MetricsQueryPort, settings: Settings) -> APIRouter:
-    router = APIRouter(tags=["metrics"])
+    # Wave 2 Task 28: no view behind this router carries a scope dimension
+    # on every block, so a data-scoped caller is refused (data_scope.py rule
+    # 6). Flag off: a no-op that never reads the session.
+    router = APIRouter(
+        tags=["metrics"],
+        dependencies=[Depends(build_unscoped_only_dependency(settings, "The anomaly report"))],
+    )
 
     def _stamp(payload: dict[str, Any]) -> dict[str, Any]:
         """P9 task 5. `batch_freshness`, not live: both endpoints below read

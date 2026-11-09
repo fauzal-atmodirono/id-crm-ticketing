@@ -114,6 +114,15 @@ PERMISSION_REGISTRY: dict[str, str] = {
     "alerts.set_own_preferences": "Set your own alert-rule preferences",
     "alerts.manage": "Manage account-level alert-rule defaults",
     "taxonomy.manage": "Manage case taxonomy tree and category mappings",
+    # FIX-43: the AI activity monitor (GET /admin/ai-activity). Admin-only
+    # like workforce.view: a master view of every AI-handled conversation.
+    "ai_activity.view": "View the AI activity monitor",
+    # FIX-49 (Wave 2 Task 29): see personal identifiers (phone, e-mail, IC,
+    # VIN, card, passport) unmasked in backend responses when
+    # PII_MASKING_ENABLED is on (features/privacy/access.py). Admin-only like
+    # ai_activity.view: the whole point is that the default agent role does
+    # NOT have it. Proton compliance decides which further roles get it.
+    "pii.view": "See personal data (phone, e-mail, IC, VIN) unmasked",
 }
 
 _AGENT_PERMISSIONS = {

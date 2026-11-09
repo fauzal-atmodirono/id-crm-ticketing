@@ -174,6 +174,16 @@ class PicStore:
         self._settings = settings
 
     def _client(self) -> firestore.Client:
+        # Cached per store: building a Client per call re-does credential
+        # discovery and opens a new gRPC channel (seconds under VM load; the
+        # cause of /escalation/contacts exceeding the agent's 10 s timeout).
+        client = getattr(self, "_cached_client", None)
+        if client is None:
+            client = self._new_client()
+            self._cached_client = client
+        return client
+
+    def _new_client(self) -> firestore.Client:
         return firestore.Client(
             project=self._settings.firestore_project_id,
             database=self._settings.firestore_database_id,
@@ -271,6 +281,16 @@ class DealerStore:
         self._settings = settings
 
     def _client(self) -> firestore.Client:
+        # Cached per store: building a Client per call re-does credential
+        # discovery and opens a new gRPC channel (seconds under VM load; the
+        # cause of /escalation/contacts exceeding the agent's 10 s timeout).
+        client = getattr(self, "_cached_client", None)
+        if client is None:
+            client = self._new_client()
+            self._cached_client = client
+        return client
+
+    def _new_client(self) -> firestore.Client:
         return firestore.Client(
             project=self._settings.firestore_project_id,
             database=self._settings.firestore_database_id,
@@ -361,6 +381,16 @@ class ProtonNetStore:
         self._settings = settings
 
     def _client(self) -> firestore.Client:
+        # Cached per store: building a Client per call re-does credential
+        # discovery and opens a new gRPC channel (seconds under VM load; the
+        # cause of /escalation/contacts exceeding the agent's 10 s timeout).
+        client = getattr(self, "_cached_client", None)
+        if client is None:
+            client = self._new_client()
+            self._cached_client = client
+        return client
+
+    def _new_client(self) -> firestore.Client:
         return firestore.Client(
             project=self._settings.firestore_project_id,
             database=self._settings.firestore_database_id,

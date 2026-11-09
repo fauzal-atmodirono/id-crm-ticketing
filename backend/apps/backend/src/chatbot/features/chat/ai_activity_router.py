@@ -1,0 +1,234 @@
+"""AI activity monitor -- ``GET /admin/ai-activity`` (FIX-43, RFP 2026_028
+3.2.5: "a Master view/UI of all AI-handled conversations for administrator to
+monitor in real time").
+
+Data path (decision recorded in the Task 24 report): the agent service logs
+every bot decision to ``ai_actions`` in ITS Postgres, which this backend cannot
+read. Rather than add cross-service DB access (or rebuild the agent image),
+this router derives the picture from Chatwoot, which is the system of record
+for who is handling a conversation:
+
+  * ``status=pending`` conversations are the ones the agent bot is handling
+    (the orchestrator only acts on pending conversations).
+  * ``status=open`` + unassigned + the ``escalate`` label are conversations the
+    AI has handed off and no human has picked up yet.
+
+Each row is enriched with the conversation's last message, classified into a
+"last action" (what the AI -- or the customer, if the AI hasn't answered yet --
+did last), and with the backend's own pause flag (``is_ai_paused``) so a
+conversation a human took over shows as ``ai_paused``.
+
+"Real time" means a poll: the response is cached for ~12 s and the page polls
+on the ``refresh`` block it is given -- not a pushed stream.
+
+Modes are INFERRED from Chatwoot state (not read from the agent's ai_actions).
+A source that hit its page cap reports ``truncated[...] = true``.
+
+Fail-open per source: Chatwoot being unreadable for one of the two lists
+degrades that list to ``sources[...] == "unavailable"`` and never 500s or
+blanks the other. A pause-lookup failure treats the conversation as active.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+
+import structlog
+from fastapi import APIRouter, Depends
+
+from chatbot.features.authz.data_scope import (
+    Scope,
+    build_scope_dependency,
+    conversation_dimensions,
+)
+from chatbot.features.authz.deps import require_permission
+from chatbot.features.privacy.access import PiiPolicy, build_pii_dependency
+
+if TYPE_CHECKING:
+    from chatbot.features.authz.identity import TokenValidator
+    from chatbot.features.authz.repository import AuthzRepository
+    from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
+    from chatbot.platform.config import Settings
+
+_log = structlog.get_logger(__name__)
+
+CACHE_SECONDS = 12.0
+_REFRESH_SECONDS = 15
+_ESCALATE_LABEL = "escalate"
+_PREVIEW_CHARS = 160
+# Pause lookups are bounded: at most 8 in flight and 2 s overall. Anything not
+# answered in time reads as ai_active (fail-open), so a slow Firestore can
+# never stall the monitor page.
+_PAUSE_CONCURRENCY = 8
+_PAUSE_BUDGET_SECONDS = 2.0
+
+
+def _last_action(conv: dict[str, Any]) -> dict[str, Any] | None:
+    msg = conv.get("last_non_activity_message")
+    if not isinstance(msg, dict):
+        return None
+    mtype = msg.get("message_type")
+    if mtype in (0, "incoming"):
+        kind = "awaiting_ai"
+    elif msg.get("private"):
+        kind = "ai_suggestion"
+    else:
+        kind = "ai_reply"
+    at = msg.get("created_at")
+    return {
+        "type": kind,
+        "at": datetime.fromtimestamp(at, UTC).isoformat() if isinstance(at, int | float) else None,
+        "preview": (msg.get("content") or "")[:_PREVIEW_CHARS],
+    }
+
+
+def _row(conv: dict[str, Any], mode: str) -> dict[str, Any]:
+    meta = conv.get("meta") or {}
+    sender = meta.get("sender") or {}
+    return {
+        "conversation_id": conv.get("id"),
+        "inbox_id": conv.get("inbox_id"),
+        "customer": sender.get("name"),
+        "status": conv.get("status"),
+        "labels": conv.get("labels") or [],
+        "mode": mode,
+        "last_action": _last_action(conv),
+        "last_activity_at": conv.get("last_activity_at") or conv.get("timestamp"),
+    }
+
+
+def build_ai_activity_router(
+    chatwoot: ChatwootAdapter,
+    authz_repo: AuthzRepository | None,
+    validator: TokenValidator | None,
+    settings: Settings,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+) -> APIRouter:
+    router = APIRouter(prefix="/admin", tags=["ai-activity"])
+    view = require_permission(
+        "ai_activity.view", repo=authz_repo, validator=validator, settings=settings
+    )
+    cache: dict[str, Any] = {"at": None, "body": None, "dims": {}}
+    # Final review M12: single-flight refresh. Without it, N admins polling
+    # on an expired cache each ran the full Chatwoot fan-out (two list calls
+    # plus a pause lookup per row). The fresh-cache read stays lock-free; a
+    # miss takes the lock and re-checks, so the waiters reuse the first
+    # caller's build.
+    refresh_lock = asyncio.Lock()
+    data_scope = build_scope_dependency(settings, repo=authz_repo, validator=validator)
+
+    async def _fetch(status: str, **kw: Any) -> list[dict[str, Any]] | None:
+        try:
+            return await chatwoot.list_conversations_by_status(status, **kw)
+        except Exception as exc:
+            _log.warning("ai_activity_source_failed", status=status, error_type=type(exc).__name__)
+            return None
+
+    async def _paused(conv: dict[str, Any]) -> bool:
+        sender = (conv.get("meta") or {}).get("sender") or {}
+        keys = [str(conv.get("id"))]
+        keys += [str(sender[k]) for k in ("identifier", "phone_number") if sender.get(k)]
+        try:
+            for key in keys:
+                if await chatwoot.is_ai_paused(key):
+                    return True
+        except Exception as exc:
+            _log.warning("ai_activity_pause_lookup_failed", error_type=type(exc).__name__)
+        return False
+
+    async def _build() -> tuple[dict[str, Any], dict[Any, dict[str, Any]]]:
+        pending, unassigned = await asyncio.gather(
+            _fetch("pending"),
+            # Label filtered server-side so the page cap cannot hide them.
+            _fetch("open", assignee_type="unassigned", label=_ESCALATE_LABEL),
+        )
+        rows: list[dict[str, Any]] = []
+        # Wave 2 Task 28: dimension values per conversation, kept beside the
+        # cached body (never in it) so one cache serves every caller and a
+        # scoped caller is filtered per request.
+        dims = {
+            c.get("id"): conversation_dimensions(c) for c in (pending or []) + (unassigned or [])
+        }
+        if pending:
+            results: dict[int, bool] = {}
+            gate = asyncio.Semaphore(_PAUSE_CONCURRENCY)
+
+            async def _one(i: int, conv: dict[str, Any]) -> None:
+                async with gate:
+                    results[i] = await _paused(conv)
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*(_one(i, c) for i, c in enumerate(pending))),
+                    timeout=_PAUSE_BUDGET_SECONDS,
+                )
+            except TimeoutError:
+                _log.warning("ai_activity_pause_budget_exceeded", answered=len(results))
+            rows += [
+                _row(c, "ai_paused" if results.get(i) else "ai_active")
+                for i, c in enumerate(pending)
+            ]
+        for c in unassigned or []:
+            rows.append(_row(c, "escalated"))
+        rows.sort(key=lambda r: r.get("last_activity_at") or 0, reverse=True)
+        summary = {
+            m: sum(1 for r in rows if r["mode"] == m)
+            for m in ("ai_active", "ai_paused", "escalated")
+        }
+        return {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "refresh": {
+                "recommended_interval_seconds": _REFRESH_SECONDS,
+                "note": "Live poll (cached ~12s), not a pushed stream.",
+            },
+            "modes_inferred": True,
+            "truncated": {
+                "pending": bool(getattr(pending, "truncated", False)),
+                "escalated": bool(getattr(unassigned, "truncated", False)),
+            },
+            "sources": {
+                "pending": "ok" if pending is not None else "unavailable",
+                "escalated": "ok" if unassigned is not None else "unavailable",
+            },
+            "summary": summary,
+            "conversations": rows,
+        }, dims
+
+    def _scoped(body: dict[str, Any], scope: Scope) -> dict[str, Any]:
+        if scope.unrestricted:
+            return body
+        dims = cache["dims"]
+        rows = [
+            r
+            for r in body["conversations"]
+            if scope.permits(dims.get(r["conversation_id"]) or {})
+        ]
+        summary = {m: sum(1 for r in rows if r["mode"] == m) for m in body["summary"]}
+        return {**body, "summary": summary, "conversations": rows}
+
+    # Wave 2 Task 29: message previews are masked for a caller without
+    # pii.view. Like the scope, applied AFTER the shared cache and to a copy,
+    # so one caller's masking never reaches another caller.
+    pii_policy = build_pii_dependency(settings, repo=authz_repo, validator=validator)
+
+    @router.get("/ai-activity", dependencies=[Depends(view)])
+    async def ai_activity(
+        scope: Scope = Depends(data_scope), pii: PiiPolicy = Depends(pii_policy)
+    ) -> dict[str, Any]:
+        def _fresh() -> bool:
+            return cache["body"] is not None and clock() - cache["at"] < CACHE_SECONDS
+
+        if not _fresh():
+            async with refresh_lock:
+                if not _fresh():
+                    now = clock()
+                    body, dims = await _build()
+                    cache["at"], cache["body"], cache["dims"] = now, body, dims
+        return pii.apply(_scoped(cache["body"], scope))
+
+    return router

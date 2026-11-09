@@ -197,6 +197,34 @@ AI_HANDOFF_REASON_BASIS = (
     "never folded into another reason."
 )
 
+# Wave 2 task 27 (FIX-47): §4.56 ⑤ accuracy, ⑦ root cause, ⑧ KB improvement.
+# Each is built on the nearest signal the warehouse really carries, and says
+# so on every row.
+AI_ACCURACY_BASIS = (
+    "Accuracy is the share of AI-resolved cases that stayed resolved: a "
+    "reopened AI resolution counts as inaccurate. A case whose reopen count "
+    "was never synced (NULL) is excluded from the rate rather than counted as "
+    "not reopened, and is reported in ai_resolved_reopen_unknown. Draft acceptance (AI "
+    "draft sent as-is vs edited) and categorisation corrections are not "
+    "captured in the warehouse, so they are not measured here. FAQ helpful "
+    "ratings are reported separately by the FAQ quality report."
+)
+AI_ROOT_CAUSE_BASIS = (
+    "Root cause is an issue-volume proxy: cases grouped by the classified "
+    "category and subcategory, with week-over-week change. It shows what "
+    "recurs and what is growing, not a verified cause. A new issue with no "
+    "prior week has no growth rate rather than an infinite one. "
+    "week_complete is false for the current, still partial, week."
+)
+AI_KB_IMPROVEMENT_BASIS = (
+    "Unanswered means the bot classified the enquiry as Unresolved Query or "
+    "handed it off with the escalate label. Topics with the most unanswered "
+    "enquiries are candidates for a new or extended FAQ entry. Agent search "
+    "frequency (many agents searching the same topic) is not captured in the "
+    "warehouse yet, and whether a matching FAQ already exists is not joined "
+    "here, so each suggestion needs a human check against the live FAQ list."
+)
+
 
 def kb_coverage_basis(kb_score_floor: float) -> str:
     """What `v_kb_coverage`'s numbers actually measure, as a report column.
@@ -291,6 +319,7 @@ def view_ddls(
 
     zone = _validate_timezone(reporting_timezone)
     _tz = "" if zone == "UTC" else f", '{zone}'"
+    _today = "CURRENT_DATE()" if zone == "UTC" else f"CURRENT_DATE('{zone}')"
     d_created = f"DATE(created_at{_tz})"
     d_resolved = f"DATE(resolved_at{_tz})"
     d_escalated = f"DATE(dealer_escalated_at{_tz})"
@@ -757,29 +786,36 @@ def view_ddls(
         # `v_concern_pivot` was written to avoid.
         "v_ai_vs_human": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_ai_vs_human` AS "
+            # The window runs over the grouped rows in an outer SELECT:
+            # BigQuery rejects a PARTITION BY on the raw column of a grouped
+            # query ("neither grouped nor aggregated").
+            f"SELECT day, channel, resolution_path, cases, "
+            f"SUM(cases) OVER (PARTITION BY day, channel) AS cases_in_bucket, "
+            f"resolution_basis FROM ("
             f"SELECT {d_created} AS day, channel, "
             f"CASE WHEN NOT ({_RESOLVED_SQL}) THEN 'unresolved' "
             f"WHEN {_HUMAN_TOUCH_SQL} THEN 'agent_resolved' "
             f"ELSE 'ai_resolved' END AS resolution_path, "
             f"COUNT(*) AS cases, "
-            f"SUM(COUNT(*)) OVER (PARTITION BY {d_created}, channel) AS cases_in_bucket, "
             f"{_sql_string(AI_RESOLUTION_BASIS)} AS resolution_basis "
-            f"FROM {fq} GROUP BY day, channel, resolution_path, resolution_basis"
+            f"FROM {fq} GROUP BY day, channel, resolution_path, resolution_basis)"
         ),
         # A `not_classified` bucket of its own, never folded into another
         # reason: an escalation nobody classified is a gap in classification,
         # not a category of problem.
         "v_ai_escalation_reasons": (
             f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_ai_escalation_reasons` AS "
+            f"SELECT day, handoff_reason, cases, "
+            f"SUM(cases) OVER (PARTITION BY day) AS escalated_cases, "
+            f"SAFE_DIVIDE(cases, SUM(cases) OVER (PARTITION BY day)) "
+            f"AS share_of_escalations, "
+            f"handoff_reason_basis FROM ("
             f"SELECT {d_created} AS day, "
             f"COALESCE(NULLIF(TRIM(subcategory), ''), 'not_classified') AS handoff_reason, "
             f"COUNT(*) AS cases, "
-            f"SUM(COUNT(*)) OVER (PARTITION BY {d_created}) AS escalated_cases, "
-            f"SAFE_DIVIDE(COUNT(*), SUM(COUNT(*)) OVER (PARTITION BY {d_created})) "
-            f"AS share_of_escalations, "
             f"{_sql_string(AI_HANDOFF_REASON_BASIS)} AS handoff_reason_basis "
             f"FROM {fq} WHERE {_HUMAN_TOUCH_SQL} "
-            f"GROUP BY day, handoff_reason, handoff_reason_basis "
+            f"GROUP BY day, handoff_reason, handoff_reason_basis) "
             f"ORDER BY cases DESC"
         ),
         "v_ai_deflection": (
@@ -809,6 +845,58 @@ def view_ddls(
             f"AS satisfied_rate, "
             f"{_sql_string(AI_RESOLUTION_BASIS)} AS resolution_basis "
             f"FROM {fq} GROUP BY day, channel, resolution_path, resolution_basis"
+        ),
+        # ── Wave 2 task 27: ⑤ accuracy proxy.
+        "v_ai_accuracy": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_ai_accuracy` AS "
+            f"SELECT {d_created} AS day, channel, "
+            f"COUNTIF{_AI_RESOLVED_SQL} AS ai_resolved, "
+            f"COUNTIF({_AI_RESOLVED_SQL} AND reopen_count IS NULL) "
+            f"AS ai_resolved_reopen_unknown, "
+            f"COUNTIF({_AI_RESOLVED_SQL} AND reopen_count > 0) "
+            f"AS ai_resolved_reopened, "
+            f"COUNTIF({_AI_RESOLVED_SQL} AND reopen_count = 0) "
+            f"AS ai_resolved_not_reopened, "
+            f"SAFE_DIVIDE(COUNTIF({_AI_RESOLVED_SQL} AND reopen_count = 0), "
+            f"COUNTIF({_AI_RESOLVED_SQL} AND reopen_count IS NOT NULL)) AS accuracy_rate, "
+            f"{_sql_string(AI_ACCURACY_BASIS)} AS accuracy_basis "
+            f"FROM {fq} GROUP BY day, channel, accuracy_basis"
+        ),
+        # ⑦ root cause proxy: weekly category/subcategory volume with
+        # week-over-week change. `day` is the Monday of the week so the shared
+        # period filter (`day BETWEEN`) works. The previous week is an exact
+        # self-join, not LAG: LAG would compare against the last week the
+        # issue appeared, and a gap week must read as zero.
+        "v_ai_root_cause": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_ai_root_cause` AS "
+            f"WITH w AS (SELECT DATE_TRUNC({d_created}, WEEK(MONDAY)) AS day, "
+            f"COALESCE(NULLIF(TRIM(category), ''), 'not_classified') AS category, "
+            f"COALESCE(NULLIF(TRIM(subcategory), ''), 'not_classified') AS subcategory, "
+            f"COUNT(*) AS cases, "
+            f"COUNTIF({_HUMAN_TOUCH_SQL}) AS escalated_cases "
+            f"FROM {fq} GROUP BY 1, 2, 3) "
+            f"SELECT w.day, w.category, w.subcategory, w.cases, w.escalated_cases, "
+            f"COALESCE(p.cases, 0) AS prev_week_cases, "
+            f"w.cases - COALESCE(p.cases, 0) AS wow_change, "
+            f"w.day < DATE_TRUNC({_today}, WEEK(MONDAY)) AS week_complete, "
+            f"SAFE_DIVIDE(w.cases - COALESCE(p.cases, 0), NULLIF(p.cases, 0)) AS wow_growth_rate, "
+            f"{_sql_string(AI_ROOT_CAUSE_BASIS)} AS root_cause_basis "
+            f"FROM w LEFT JOIN w AS p ON p.category = w.category "
+            f"AND p.subcategory = w.subcategory "
+            f"AND p.day = DATE_SUB(w.day, INTERVAL 7 DAY)"
+        ),
+        # ⑧ KB improvement: topics the bot could not answer.
+        "v_ai_kb_improvement": (
+            f"CREATE OR REPLACE VIEW `{project}.{dataset}.v_ai_kb_improvement` AS "
+            f"SELECT {d_created} AS day, "
+            f"COALESCE(NULLIF(TRIM(category), ''), 'not_classified') AS topic, "
+            f"COUNT(*) AS unanswered_cases, "
+            f"'Add or extend an FAQ entry covering this topic' AS faq_suggestion, "
+            f"{_sql_string(AI_KB_IMPROVEMENT_BASIS)} AS kb_basis "
+            f"FROM {fq} "
+            f"WHERE LOWER(TRIM(COALESCE(subcategory, ''))) = 'unresolved query' "
+            f"OR 'escalate' IN UNNEST(labels) "
+            f"GROUP BY day, topic, faq_suggestion, kb_basis"
         ),
         # ── P8 task 9: KB coverage.
         #
@@ -1115,10 +1203,11 @@ AI_COST_EXCLUDED_TOKEN_CLASSES: tuple[str, ...] = (
 
 
 def _sql_string(value: str) -> str:
-    """A single-quoted SQL literal. Doubles embedded quotes -- these strings
-    are ours, but a reason sentence acquiring an apostrophe must not be able
-    to produce a view that fails at query time on somebody's dashboard."""
-    return "'" + value.replace("'", "''") + "'"
+    """A single-quoted BigQuery string literal. Escapes with backslashes:
+    GoogleSQL has no doubled-quote escape (`'a''b'` is two adjacent literals,
+    a syntax error), so a reason sentence acquiring an apostrophe used to make
+    CREATE VIEW fail and stop ensure_views for every view after it."""
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def ai_cost_view_ddls(

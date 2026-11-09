@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -14,6 +14,13 @@ from chatbot.features.metrics.anomaly import flag_anomalies
 from chatbot.features.metrics.export import render_pdf, render_xlsx
 from chatbot.features.metrics.freshness import record_sync_completed
 from chatbot.features.metrics.sync import ensure_views, run_sync
+from chatbot.features.metrics.weekly_report import (
+    fetch_weekly_report,
+    last_full_week,
+    local_today,
+    render_weekly_pdf,
+    render_weekly_xlsx,
+)
 
 if TYPE_CHECKING:
     from chatbot.features.metrics.email_port import EmailReportPort
@@ -21,6 +28,8 @@ if TYPE_CHECKING:
     from chatbot.platform.config import Settings
 
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+_MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 
 _log = structlog.get_logger(__name__)
 
@@ -133,4 +142,89 @@ def start_report_scheduler(
     )
     sched.start()
     _log.info("metrics_report_scheduler_started", interval_hours=settings.report_interval_hours)
+    return sched
+
+
+def run_weekly_report_job(
+    settings: Settings,
+    query_port: MetricsQueryPort,
+    email_port: EmailReportPort,
+    *,
+    today: date | None = None,
+) -> None:
+    """Email last week's full report (PDF + XLSX) to the configured list. Never raises.
+
+    Recipients come from `weekly_report_email_recipients`, deliberately NOT the
+    older `report_recipients`: that list also receives anomaly alerts, and the
+    two audiences (management vs. on-call) differ. No recipients -> no mail,
+    and the queries are not even run.
+    """
+    try:
+        recipients = settings.weekly_report_recipient_list()
+        if not recipients:
+            _log.info("weekly_report_skipped_no_recipients")
+            return
+        period = last_full_week(today or local_today(settings.reporting_timezone))
+        report = asyncio.run(fetch_weekly_report(query_port, period))
+        stem = f"weekly-report-{period.start.isoformat()}_{period.end.isoformat()}"
+        candidates = [
+            (f"{stem}.pdf", render_weekly_pdf(report), "application/pdf"),
+            (f"{stem}.xlsx", render_weekly_xlsx(report), _XLSX_MIME),
+        ]
+        attachments = [a for a in candidates if len(a[1]) <= _MAX_ATTACHMENT_BYTES]
+        body = "Attached: the weekly report (PDF and Excel) for the week above."
+        for name, data, _m in candidates:
+            if len(data) > _MAX_ATTACHMENT_BYTES:
+                # Mail servers bounce oversize messages, which would lose the
+                # whole report; send what fits and say what was left out.
+                body += (
+                    f"\n\nNot attached: {name} is {len(data) // (1024 * 1024)} MB, "
+                    "over the 20 MB limit. Download it from the Weekly Report page."
+                )
+        email_port.send_report(
+            recipients,
+            f"Weekly Report {period.start.isoformat()} to {period.end.isoformat()}",
+            body,
+            attachments,
+        )
+    except Exception as e:  # a scheduled report must never crash the app
+        _log.error("weekly_report_job_failed", error=str(e))
+
+
+def start_weekly_report_scheduler(
+    settings: Settings,
+    query_port: MetricsQueryPort,
+    email_port: EmailReportPort,
+    *,
+    scheduler: Any | None = None,
+) -> Any | None:
+    """Start the weekly cron email when `weekly_report_email_enabled`; else None."""
+    if not settings.weekly_report_email_enabled:
+        return None
+    try:
+        sched = scheduler or BackgroundScheduler(timezone=settings.reporting_timezone)
+        sched.add_job(
+            lambda: run_weekly_report_job(settings, query_port, email_port),
+            trigger="cron",
+            day_of_week=settings.weekly_report_email_day,
+            hour=settings.weekly_report_email_hour,
+            minute=0,
+            id="weekly_report_email",
+            replace_existing=True,
+        )
+        sched.start()
+    except Exception as e:  # a bad schedule must never crash-loop the backend
+        _log.warning(
+            "weekly_report_scheduler_not_started",
+            error=str(e),
+            day=settings.weekly_report_email_day,
+            hour=settings.weekly_report_email_hour,
+            timezone=settings.reporting_timezone,
+        )
+        return None
+    _log.info(
+        "weekly_report_scheduler_started",
+        day=settings.weekly_report_email_day,
+        hour=settings.weekly_report_email_hour,
+    )
     return sched

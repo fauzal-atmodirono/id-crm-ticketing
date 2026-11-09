@@ -144,7 +144,7 @@ def test_the_patch_applies_cleanly_onto_the_real_post_0054_fork_file(
     # actually landed in the file (not just that *some* patch applied).
     for marker in (
         "import { ref, computed, watch } from 'vue';",
-        "const FAQ_SUGGESTION_CONFIDENCE_THRESHOLD = 0.75;",
+        "const FAQ_SUGGESTION_CONFIDENCE_THRESHOLD = 0.65;",
         "const { hasFeature, backendUrl } = useProtonConfig();",
         "const fetchFaqSuggestion = async message =>",
         "const applyFaqSuggestion = () =>",
@@ -276,7 +276,7 @@ def test_a_suggestion_below_the_confidence_threshold_is_not_shown_as_a_popup(
     a missing score by construction, not via a second "is this Vertex"
     branch that could fall out of sync.
     """
-    assert "const FAQ_SUGGESTION_CONFIDENCE_THRESHOLD = 0.75;" in applied_file
+    assert "const FAQ_SUGGESTION_CONFIDENCE_THRESHOLD = 0.65;" in applied_file
 
     fetch_block = _extract(
         r"const fetchFaqSuggestion = async message => \{(.*?)\n    \};",
@@ -288,7 +288,7 @@ def test_a_suggestion_below_the_confidence_threshold_is_not_shown_as_a_popup(
 
     # Re-implementation of the extracted condition, exercised against
     # representative /kb/suggest response shapes.
-    threshold = 0.75
+    threshold = 0.65
 
     def accepts(top: dict[str, object] | None) -> bool:
         if not top:
@@ -300,6 +300,10 @@ def test_a_suggestion_below_the_confidence_threshold_is_not_shown_as_a_popup(
 
     assert accepts({"title": "x", "score": 0.9}) is True
     assert accepts({"title": "x", "score": 0.5}) is False  # below threshold
+    # Observed live on proton (2026-11-09): real paraphrased customer questions
+    # that hit the right FAQ scored 0.67-0.74. A 0.75 gate hid every one.
+    assert accepts({"title": "x", "score": 0.673}) is True
+    assert accepts({"title": "x", "score": 0.738}) is True
     assert accepts({"title": "x"}) is False  # Vertex hit, no score at all
     assert accepts(None) is False
 
@@ -374,3 +378,63 @@ def test_the_suggestion_does_not_leak_across_conversations(applied_file: str) ->
     assert "faqSuggestion.value = null" in refresh.group(1), (
         "a conversation with no customer message leaves the old suggestion visible"
     )
+
+
+# --- FIX-23: thumbs rating on the strip ------------------------------------
+
+
+def test_the_strip_has_thumbs_up_and_down_wired_to_handlers(applied_file: str) -> None:
+    assert re.search(r'@click="rateFaqUp"', applied_file)
+    assert re.search(r'@click="openFaqDownReason"', applied_file)
+    assert re.search(r'@click="submitFaqDown"', applied_file)
+    # Only a suggestion with a FAQ id can be rated (Vertex hits have none).
+    assert re.search(r'<template v-if="faqSuggestion\.id">', applied_file)
+    for name in ("rateFaqUp", "openFaqDownReason", "submitFaqDown", "faqRating"):
+        assert re.search(rf"^\s+{name},$", applied_file, re.MULTILINE), f"{name} not returned"
+
+
+def test_a_rating_posts_the_score_agent_and_conversation_to_kb_feedback(
+    applied_file: str,
+) -> None:
+    match = re.search(
+        r"const submitFaqRating = async \(.*?\) => \{(.*?)\n    \};", applied_file, re.DOTALL
+    )
+    assert match, "submitFaqRating not found"
+    body = match.group(1)
+    assert "/kb/feedback" in body
+    assert "method: 'POST'" in body
+    assert "'x-api-key': backendKey" in body
+    assert "article_id: faq.id" in body
+    assert "score: isUp ? 5 : 1" in body
+    assert "helpful: isUp" in body
+    assert "agent_id:" in body and "getCurrentUserID" in body
+    assert "conversation_id:" in body
+    assert "reason," in body
+    # Failure must not break the strip.
+    assert "catch (err)" in body
+
+
+def test_rating_additions_only_keep_the_0056_context_other_patches_need(
+    applied_file: str,
+) -> None:
+    # 0074/0078 anchor on these lines; the rating work must not have changed them.
+    assert "const { hasFeature, backendUrl } = useProtonConfig();" in applied_file
+    assert '<NextButton size="xs" variant="ghost" @click="dismissFaqSuggestion">' in applied_file
+
+
+def test_rating_post_forwards_the_session_triplet_and_resets_the_reason_box(
+    applied_file: str,
+) -> None:
+    assert "import Auth from 'dashboard/api/auth';" in applied_file
+    assert "Auth.hasAuthCookie() ? Auth.getAuthData() : null" in applied_file
+    for header in ("x-chatwoot-access-token", "x-chatwoot-client", "x-chatwoot-uid"):
+        assert f"'{header}'" in applied_file
+    # Selected state is a ternary, not a conflicting static + conditional class.
+    assert ":class=\"faqRating === 'up' ? 'text-n-teal-10' : 'text-n-slate-11'\"" in applied_file
+    assert ":class=\"faqRating === 'down' ? 'text-n-ruby-9' : 'text-n-slate-11'\"" in applied_file
+    reset = re.search(
+        r"\(\) => faqSuggestion\.value\?\.id,\s*\(\) => \{(.*?)\}", applied_file, re.DOTALL
+    )
+    assert reset, "no watcher resets the reason box when the suggestion changes"
+    assert "faqReasonOpen.value = false" in reset.group(1)
+    assert "faqReason.value = ''" in reset.group(1)

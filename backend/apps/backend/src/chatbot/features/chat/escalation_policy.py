@@ -52,6 +52,11 @@ class EscalationStep:
     # label is empty: it is the escalation itself, not a reminder about one.
     label: str
     channel: str = EMAIL
+    # True for a rung that still fires after the dealer replied or an agent
+    # acknowledged the case (only a resolved case stops it). Rungs 1-5 chase
+    # a dealer who has gone quiet, so a reply ends them; the 48-hour rung
+    # reports a case that is STILL unresolved, replied-to or not.
+    fires_after_reply: bool = False
 
 
 # The SOP's matrix verbatim. Step 2 is the dealer's own acknowledgement
@@ -96,6 +101,17 @@ DEFAULT_STEPS: tuple[EscalationStep, ...] = (
         label="FINAL ESCALATION - TELEPHONE",
         channel=PHONE,
     ),
+    # RFP 3.2.4: a case still unresolved 48 working hours after step 1 is
+    # escalated to the Owner whether or not anyone replied. Only a resolved
+    # case suppresses it.
+    EscalationStep(
+        step_no=6,
+        delay_working_hours=48.0,
+        to_roles=("owner",),
+        cc_roles=("principal", "area_regional_mgr", "hod"),
+        label="48H UNRESOLVED",
+        fires_after_reply=True,
+    ),
 )
 
 _ALL_ROLES = set(DEALER_ROLES) | set(PRONET_ROLES)
@@ -136,6 +152,7 @@ def load_steps(raw_json: str) -> tuple[EscalationStep, ...]:
                     cc_roles=cc_roles,
                     label=str(row.get("label", "")),
                     channel=channel,
+                    fires_after_reply=bool(row.get("fires_after_reply", False)),
                 )
             )
         return tuple(sorted(steps, key=lambda s: s.step_no))

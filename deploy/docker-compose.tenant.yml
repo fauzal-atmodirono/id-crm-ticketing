@@ -48,6 +48,19 @@ x-chatwoot-env: &chatwoot-env
   PROTON_BACKEND_URL: ${PROTON_BACKEND_PUBLIC_URL:-http://crm.localhost}
   PROTON_BACKEND_KEY: ${PROTON_BACKEND_KEY:-}
   PROTON_FEATURES: ${PROTON_FEATURES:-ai_assist,nav_menu,copilot,knowledge}
+  # Session limits (fork patch 0079, FIX-18). Both unset/0 = upstream behaviour.
+  # IDLE: SPA signs the user out after N minutes without input. LIFESPAN: caps
+  # the devise_token_auth token (hours) for logins made after the change.
+  SESSION_IDLE_TIMEOUT_MINUTES: ${SESSION_IDLE_TIMEOUT_MINUTES:-0}
+  SESSION_TOKEN_LIFESPAN_HOURS: ${SESSION_TOKEN_LIFESPAN_HOURS:-}
+  # Password expiry (fork patch 0082, FIX-44, RFP 7.6). Days before a browser
+  # user is routed to Profile settings to change their password. 0/unset = off.
+  PASSWORD_MAX_AGE_DAYS: ${PASSWORD_MAX_AGE_DAYS:-0}
+  # PII masking in Chatwoot's contact views (fork patches 0085 + 0088,
+  # FIX-49). The SAME flag the backend reads; the Rails layout turns it into
+  # window.__PROTON_PII_MASKING__. false/unset = the SPA never asks
+  # /authz/me/pii and never masks.
+  PII_MASKING_ENABLED: ${PII_MASKING_ENABLED:-false}
   # ONE SWITCH PER FEATURE. These are the SAME variables the `backend` service
   # reads out of tenants/<tenant>.env (it takes that file wholesale via
   # `env_file:`), forwarded here so the Rails layout can turn each one into the
@@ -80,6 +93,16 @@ x-chatwoot-env: &chatwoot-env
   # operator who sets PHONE_AGENT_SOFTPHONE_ENABLED gets a backend that dials
   # <Client> and a CRM panel that never renders (the two-switch trap again).
   PHONE_AGENT_SOFTPHONE_ENABLED: ${PHONE_AGENT_SOFTPHONE_ENABLED:-false}
+  # MFA / two-factor login (FIX-25, RFP 2026_028 7.3). Upstream Chatwoot turns the
+  # profile-page "Two-factor authentication" card on ONLY when all three
+  # ActiveRecord encryption keys are present (Chatwoot.mfa_enabled?). Empty =
+  # upstream behaviour (no MFA card). Generate once per tenant with
+  # scripts/ops/proton_mfa_keys.sh; never rotate or drop them afterwards (they
+  # protect users' OTP secrets and any channel credentials saved while set).
+  # Sidekiq shares this block, so it sees the same keys.
+  ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY: ${ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY:-}
+  ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY: ${ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY:-}
+  ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT: ${ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT:-}
 
 networks:
   platform:
@@ -178,8 +201,14 @@ services:
       - tenants/${TENANT}.env
     environment:
       CHATWOOT_URL: http://${TENANT}-chatwoot-rails:3000
-      CHATWOOT_PUBLIC_URL: http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io
-      AGENT_PUBLIC_URL: http://${HOST_PREFIX}agent.${PUBLIC_IP}.nip.io
+      # Human-facing links the agent stamps into notes/emails (the *_display_url
+      # properties). Overridable for the same reason FRONTEND_URL is: a tenant
+      # behind a real domain -- or behind a load balancer, where the VM has no
+      # public IP at all and the nip.io pattern is meaningless -- must be able to
+      # state its own public origin. Defaults preserve the nip.io form exactly,
+      # so tenants that set neither are unaffected.
+      CHATWOOT_PUBLIC_URL: ${CHATWOOT_PUBLIC_URL_OVERRIDE:-http://${HOST_PREFIX}crm.${PUBLIC_IP}.nip.io}
+      AGENT_PUBLIC_URL: ${AGENT_PUBLIC_URL_OVERRIDE:-http://${HOST_PREFIX}agent.${PUBLIC_IP}.nip.io}
       CHATWOOT_API_TOKEN: ${CHATWOOT_API_TOKEN}
       CHATWOOT_PLATFORM_TOKEN: ${CHATWOOT_PLATFORM_TOKEN}
       CHATWOOT_ACCOUNT_ID: ${CHATWOOT_ACCOUNT_ID}

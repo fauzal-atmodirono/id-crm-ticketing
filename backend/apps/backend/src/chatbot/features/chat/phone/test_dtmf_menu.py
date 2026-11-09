@@ -44,12 +44,19 @@ def test_the_english_menu_prompt_matches_appendix_b_verbatim() -> None:
     assert PROMPT_EN == _studio_prompt("main_menu_en")
 
 
-def test_the_malay_menu_prompt_matches_appendix_b_verbatim() -> None:
-    assert PROMPT_MS == _studio_prompt("main_menu_ms")
+# Task 31: the Malay menu and the welcome now follow Proton's SOP workbook
+# ("Untuk Ulangan, sila tekan 0"; "Welcome to Proton e.MAS centre"), which the
+# not-deployed Studio export does not ("sifar"; "service centre"). Their
+# verbatim checks moved to test_ivr.py, which reads the SOP xlsx itself; these
+# two now pin exactly the known Studio differences, so any other drift fails.
+def test_the_malay_menu_prompt_differs_from_studio_only_by_the_sop_zero() -> None:
+    assert PROMPT_MS == _studio_prompt("main_menu_ms").replace("sila tekan sifar", "sila tekan 0")
 
 
-def test_the_language_gather_prompt_matches_appendix_b_verbatim() -> None:
-    assert LANGUAGE_GATHER_PROMPT == _studio_prompt("language_gather")
+def test_the_language_gather_prompt_differs_from_studio_only_by_the_sop_centre() -> None:
+    assert LANGUAGE_GATHER_PROMPT == _studio_prompt("language_gather").replace(
+        "Proton e.MAS service centre", "Proton e.MAS centre"
+    )
 
 
 def test_pressing_1_routes_to_the_rsa_path() -> None:

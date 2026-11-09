@@ -1,4 +1,4 @@
-"""P11 Task 2 -- DTMF Menu inside the conversational AI voice bridge.
+"""P11 Task 2 -- DTMF Menu sketch (superseded by Task 31's `ivr.py`).
 
 Implements Appendix B's DTMF options using Twilio <Gather> inside TwiML, falling through
 to the conversational bridge on timeout or key 0, ensuring callers are never trapped.
@@ -10,36 +10,28 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
+from chatbot.features.chat.phone.ivr_prompts import (  # noqa: F401 -- re-exported
+    LANGUAGE_GATHER_PROMPT,
+    MENU_EN,
+    MENU_MS,
+)
+
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
 
-# Copied VERBATIM from `deploy/twilio/ivr-studio-flow.json`'s `main_menu_en` /
-# `main_menu_ms` / `language_gather` `say` properties, which is where Appendix B's
-# wording actually lives. `test_dtmf_menu.py` reads that JSON and compares, so
-# these cannot drift from it silently.
+# Task 31: the wording now lives in `ivr_prompts.py`, checked against Proton's
+# SOP workbook itself (`test_ivr.py`'s drift tests), and is re-exported here
+# under the historical names. The live IVR is `ivr.py` + `ivr_router.py`;
+# `build_dtmf_twiml` / `handle_dtmf_digit` below are the original P11 sketch
+# (its `wss://bridge.example.com` is a placeholder) and no call path uses them.
 #
-# They were previously hand-written approximations that got the menu wrong: option
-# 2 read "Sales" and option 3 "Service and Product Enquiries", where Appendix B
-# has 2 = Inquiry and 3 = Complaint. A caller with a complaint pressing 3 was
-# being labelled a service enquiry, and the Malay string contained the English
-# word "for". Both were asserted by tests named "matches appendix b verbatim".
-PROMPT_EN = (
-    "For Roadside Assistance, press 1. For Inquiry, press 2. "
-    "For Complaint, press 3. To repeat, please press zero."
-)
-
-PROMPT_MS = (
-    "Untuk Bantuan Kerosakan, tekan 1. Untuk Pertanyaan, tekan 2. "
-    "Untuk Aduan, tekan 3. Untuk Ulangan, sila tekan sifar."
-)
-
-LANGUAGE_GATHER_PROMPT = (
-    "Welcome to Proton e.MAS service centre. "
-    "Selamat datang ke Pusat Perkhidmatan Proton e.MAS. "
-    "For English, press 1. Untuk Bahasa Melayu, tekan 2."
-)
+# History worth keeping: these were once hand-written and said "Sales" for
+# option 2 and "Service and Product Enquiries" for option 3, where the SOP has
+# 2 = Inquiry and 3 = Complaint.
+PROMPT_EN = MENU_EN
+PROMPT_MS = MENU_MS
 
 
 def build_dtmf_twiml(
@@ -78,14 +70,13 @@ def handle_dtmf_digit(
     """Process DTMF digit selection."""
     if digit == "1":
         return {"target": "rsa", "action": "route_rsa", "context": "Roadside Assistance"}
-    elif digit == "2":
+    if digit == "2":
         return {"target": "bridge", "action": "context_inquiry", "context": "Inquiry"}
-    elif digit == "3":
+    if digit == "3":
         return {"target": "bridge", "action": "context_complaint", "context": "Complaint"}
-    elif digit == "0":
+    if digit == "0":
         if repeat_count < 1:
             return {"target": "repeat_menu", "action": "repeat", "repeat_count": repeat_count + 1}
         return {"target": "bridge", "action": "fallthrough", "context": "Conversational Bridge"}
-    else:
-        # Timeout (None) or invalid key -> fallthrough to bridge
-        return {"target": "bridge", "action": "fallthrough", "context": "Conversational Bridge"}
+    # Timeout (None) or invalid key -> fallthrough to bridge
+    return {"target": "bridge", "action": "fallthrough", "context": "Conversational Bridge"}

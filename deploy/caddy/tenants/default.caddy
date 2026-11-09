@@ -1,4 +1,5 @@
 http://crm.127-0-0-1.nip.io {
+	import strip_underscore_forwarding
 	# Proton AI backend paths are proxied same-origin so the Chatwoot SPA
 	# reaches the backend without CORS or a browser-unreachable internal host.
 	@proton_backend path /metrics/* /kb/* /assist/* /routing/* /authz/* /admin/* /rsa/*

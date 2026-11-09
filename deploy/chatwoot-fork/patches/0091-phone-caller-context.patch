@@ -1,0 +1,113 @@
+From: Proton CRM <build@proton.local>
+Subject: [PATCH 0091] softphone: caller name/vehicle/dealer on the ring card; Accept opens the conversation and Customer 360
+
+diff --git a/app/javascript/dashboard/composables/useProtonSoftphone.js b/app/javascript/dashboard/composables/useProtonSoftphone.js
+index dd41534..d8d334e 100644
+--- a/app/javascript/dashboard/composables/useProtonSoftphone.js
++++ b/app/javascript/dashboard/composables/useProtonSoftphone.js
+@@ -96,6 +96,18 @@ export function useProtonSoftphone() {
+     if (params.get('caller')) incoming.value.from = params.get('caller');
+     incoming.value.transcriptPath = params.get('transcript_path') || '';
+     incoming.value.transferredBy = params.get('transferred_by') || '';
++    // 0091 caller context: who is calling, as the AI identified them
++    // (backend PHONE_CALLER_CONTEXT_ENABLED). Absent params -> empty, and
++    // the card looks exactly as before.
++    incoming.value.callerName = params.get('caller_name') || '';
++    incoming.value.vehicle = params.get('vehicle') || '';
++    incoming.value.dealer = params.get('dealer') || '';
++    // The number was told by the caller / picked in the demo console, not
++    // proven by the phone network.
++    incoming.value.callerUnverified = params.get('caller_unverified') === '1';
++    // Confirmed (network caller ID, or a told number whose name matched):
++    // the only case where Accept auto-opens Customer 360.
++    incoming.value.callerConfirmed = params.get('caller_confirmed') === '1';
+     callExtras.transferredAway.value = false;
+     status.value = 'ringing';
+ 
+diff --git a/app/javascript/dashboard/components-next/softphone/ProtonSoftphonePanel.vue b/app/javascript/dashboard/components-next/softphone/ProtonSoftphonePanel.vue
+index c1a4a63..d2ca399 100644
+--- a/app/javascript/dashboard/components-next/softphone/ProtonSoftphonePanel.vue
++++ b/app/javascript/dashboard/components-next/softphone/ProtonSoftphonePanel.vue
+@@ -76,12 +76,38 @@ function openConversation() {
+     });
+   }
+ }
++
++// 0091 caller context: Accept also opens the caller's conversation here and
++// their Customer 360 in a new tab. Done from a CAPTURE-phase click on the
++// panel (marked Accept button) rather than from the SDK's async `accept`
++// event, because a browser only allows window.open inside the user's click.
++// A browser-softphone caller id (client:...) is not a number to look up.
++function openCustomer360() {
++  const q = incoming.value?.from || '';
++  if (!q || q.startsWith('client:')) return;
++  const { href } = router.resolve({
++    name: 'proton_customer360',
++    params: { accountId: router.currentRoute.value.params.accountId },
++    query: { q },
++  });
++  window.open(href, '_blank', 'noopener');
++}
++
++function onPanelClickCapture(event) {
++  if (status.value !== 'ringing') return;
++  if (!event.target?.closest?.('[data-proton-accept]')) return;
++  openConversation();
++  // Only a CONFIRMED caller's record opens by itself: an unverified number
++  // (told by the caller, not matched) may belong to someone else.
++  if (incoming.value?.callerConfirmed) openCustomer360();
++}
+ </script>
+ 
+ <template>
+   <Teleport to="body">
+     <div
+       v-if="visible"
++      @click.capture="onPanelClickCapture"
+       class="fixed z-50 flex flex-col gap-3 p-4 shadow-lg bottom-6 ltr:right-6 rtl:left-6 w-80 rounded-xl bg-n-background border border-n-weak"
+     >
+       <div class="flex items-center justify-between">
+@@ -101,8 +127,15 @@ function openConversation() {
+ 
+       <div class="text-base font-semibold text-n-slate-12">
+         {{ incoming?.from || 'Unknown number' }}
++        <span v-if="incoming?.callerUnverified" class="text-xs font-normal text-n-slate-11">(unverified)</span>
+       </div>
+       <p v-if="incoming?.reason" class="text-sm text-n-slate-11">{{ incoming.reason }}</p>
++      <p v-if="incoming?.callerName" class="text-sm font-medium text-n-slate-12">
++        {{ incoming.callerName }}
++      </p>
++      <p v-if="incoming?.vehicle || incoming?.dealer" class="text-sm text-n-slate-11">
++        {{ [incoming.vehicle, incoming.dealer].filter(Boolean).join(' · ') }}
++      </p>
+ 
+       <button
+         v-if="incoming?.conversationId"
+@@ -124,6 +157,7 @@ function openConversation() {
+       <div v-if="status === 'ringing'" class="flex gap-2">
+         <button
+           type="button"
++          data-proton-accept
+           class="flex-1 px-3 py-2 text-sm font-medium text-white rounded-lg bg-n-brand hover:brightness-95"
+           @click="accept"
+         >
+diff --git a/app/javascript/dashboard/views/ProtonCustomer360Page.vue b/app/javascript/dashboard/views/ProtonCustomer360Page.vue
+index 1519678..2eb02f6 100644
+--- a/app/javascript/dashboard/views/ProtonCustomer360Page.vue
++++ b/app/javascript/dashboard/views/ProtonCustomer360Page.vue
+@@ -45,6 +45,15 @@ export default {
+       searched: false,
+     };
+   },
++  // 0091 caller context: the softphone opens this page with ?q=<caller's
++  // number> when an agent accepts a call -- search straight away.
++  mounted() {
++    const q = this.$route?.query?.q;
++    if (typeof q === 'string' && q.trim().length >= 2) {
++      this.query = q.trim();
++      this.search();
++    }
++  },
+   methods: {
+     async search() {
+       const q = this.query.trim();

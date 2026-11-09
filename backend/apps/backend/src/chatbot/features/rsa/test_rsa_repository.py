@@ -60,3 +60,14 @@ async def test_aggregate_by_cause_and_dealer():
     assert by_cause == {"Flat Tyre": 2, "Flat Battery": 1}
     by_dealer = {r.dealer: r.count for r in agg.by_dealer}
     assert by_dealer == {"Dealer A": 2, "Dealer B": 1}
+
+
+@pytest.mark.asyncio
+async def test_rsa_phone_optional():
+    repo = InMemoryRsaRepository()
+    no_phone = await repo.create_incident(incident_date="2026-07-01", vehicle_no="A1", cause="x")
+    with_phone = await repo.create_incident(
+        incident_date="2026-07-01", vehicle_no="A2", cause="x", customer_phone="0123456789"
+    )
+    assert (await repo.get_incident(no_phone)).customer_phone is None
+    assert (await repo.get_incident(with_phone)).customer_phone == "0123456789"

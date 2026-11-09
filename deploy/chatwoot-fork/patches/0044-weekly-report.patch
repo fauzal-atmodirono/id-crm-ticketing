@@ -117,7 +117,7 @@ new file mode 100644
 index 0000000..6633164
 --- /dev/null
 +++ b/app/javascript/dashboard/routes/dashboard/settings/reports/ProtonWeeklyReport.vue
-@@ -0,0 +1,1358 @@
+@@ -0,0 +1,1418 @@
 +<!-- ProtonWeeklyReport.vue — OUR file. Package E (reporting deck parity),
 +     Task 4: one page, sections in the weekly deck's own order (see
 +     docs/superpowers/specs/2026-08-04-pkg-e-reporting-deck-parity-design.md
@@ -169,6 +169,7 @@ index 0000000..6633164
 +import ProtonCallCentrePlaceholder from './components/proton/ProtonCallCentrePlaceholder.vue';
 +import ProtonCasesTable from 'dashboard/components/widgets/ProtonCasesTable.vue';
 +import { fetchAllCases } from 'dashboard/api/protonCases';
++import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
 +import {
 +  getVolumeByType,
 +  getLifecycle,
@@ -623,6 +624,43 @@ index 0000000..6633164
 +  });
 +});
 +
++// ── PDF / Excel download (FIX-14) ────────────────────────────────────────
++// The backend's weekly-report export is key-gated, so a plain <a href> can't
++// carry x-api-key: fetch it with the shared key (same auth as metricsRequest
++// in protonMetrics.js) and hand the blob to the browser as a download. Sends
++// the exact window on screen (from/to), not a Monday snap, because the picker
++// above can start on any day.
++const exportingFormat = ref('');
++async function downloadReport(format) {
++  const { backendUrl, backendKey } = useProtonConfig();
++  if (!backendUrl) {
++    useAlert('PROTON_BACKEND_URL not configured');
++    return;
++  }
++  exportingFormat.value = format;
++  try {
++    const { from, to } = periodParams.value;
++    const query = new URLSearchParams({ format, from, to });
++    const response = await fetch(
++      `${backendUrl}/metrics/weekly-report/export?${query.toString()}`,
++      { headers: backendKey ? { 'x-api-key': backendKey } : {} }
++    );
++    if (!response.ok) throw new Error(`${response.status}`);
++    const url = URL.createObjectURL(await response.blob());
++    const link = document.createElement('a');
++    link.href = url;
++    link.download = `weekly-report-${from}_${to}.${format}`;
++    document.body.appendChild(link);
++    link.click();
++    link.remove();
++    URL.revokeObjectURL(url);
++  } catch (e) {
++    useAlert(`Could not download the weekly report (${e.message})`);
++  } finally {
++    exportingFormat.value = '';
++  }
++}
++
 +onMounted(() => {
 +  loadPeriodScoped();
 +  loadDepartments();
@@ -680,6 +718,28 @@ index 0000000..6633164
 +        (picks the exact day — not snapped to Monday; e.g. set this to a Friday
 +        to match Proton's own weekly deck)
 +      </span>
++    </div>
++    <div class="flex items-center gap-2 w-full justify-end">
++      <V4Button
++        label="Download PDF"
++        icon="i-lucide-file-text"
++        variant="faded"
++        color="slate"
++        size="sm"
++        :is-loading="exportingFormat === 'pdf'"
++        :disabled="!!exportingFormat"
++        @click="downloadReport('pdf')"
++      />
++      <V4Button
++        label="Download Excel"
++        icon="i-lucide-file-spreadsheet"
++        variant="faded"
++        color="slate"
++        size="sm"
++        :is-loading="exportingFormat === 'xlsx'"
++        :disabled="!!exportingFormat"
++        @click="downloadReport('xlsx')"
++      />
 +    </div>
 +  </div>
 +

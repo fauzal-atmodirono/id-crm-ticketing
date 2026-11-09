@@ -75,10 +75,17 @@ import structlog
 from fastapi import HTTPException
 from google.cloud import bigquery
 
+from chatbot.features.authz.data_scope import (
+    current_scope,
+    require_unrestricted,
+    scope_predicates,
+)
 from chatbot.features.metrics.query_port import (
+    AI_PERFORMANCE_VIEWS,
     AfterHoursFirstResponseRow,
     AfterHoursMetrics,
     AfterHoursVolumeRow,
+    AiPerformanceMetrics,
     AnomalyRow,
     BlockScope,
     BounceRow,
@@ -95,6 +102,7 @@ from chatbot.features.metrics.query_port import (
     DealerSlowCaseRow,
     DepartmentsMetrics,
     DeptPicRow,
+    EmptyMetricsQuery,
     FallbackRow,
     FirstResponseRow,
     HourlyAnomalyRow,
@@ -110,10 +118,10 @@ from chatbot.features.metrics.query_port import (
     SlaAchievementRow,
     SlaBucketMetrics,
     SlaBucketRow,
-    TagVolumeMetrics,
-    TagVolumeRow,
     SpeedRow,
     StateTrendRow,
+    TagVolumeMetrics,
+    TagVolumeRow,
     TasksPerAgentRow,
     VolumeByTypeDivisionMetrics,
     VolumeByTypeDivisionRow,
@@ -160,10 +168,26 @@ def _in_period(day: Any, period: PeriodRange) -> bool:
 _UNFILTERED_SCOPE = BlockScope(status="unfiltered", period=None, supported_granularity=None)
 
 
+def _jsonable_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Dates to ISO strings so the row survives `json.dumps` without a custom
+    encoder (BigQuery returns `datetime.date` for DATE columns)."""
+    return {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in row.items()}
+
+
 class BigQueryMetricsQuery:
     """Reads the 8 dashboard views. Each SELECT is wrapped in asyncio.to_thread
     so it never blocks the event loop. A missing/empty view yields an empty
-    block rather than raising — the dashboard degrades gracefully."""
+    block rather than raising — the dashboard degrades gracefully.
+
+    Data scope (Wave 2 Task 28): every view read goes through `_query_block`
+    or `_day_grain_block_for_period`, which AND the request's scope
+    (`current_scope()`, set by the router) onto the WHERE clause as bound
+    parameters. A view that cannot be narrowed to the scope raises
+    `ScopeNotApplicable` (403) -- it is never served unfiltered. The one raw
+    path (`_fetch_ai_performance_sync`) refuses any restricted scope.
+    """
+
+    supports_data_scope = True
 
     def __init__(self, settings: Settings, *, client: Any | None = None) -> None:
         self._prefix = f"{settings.bigquery_project_id}.{settings.bigquery_dataset}"
@@ -213,20 +237,31 @@ class BigQueryMetricsQuery:
         try:
             sql = f"SELECT * FROM `{self._prefix}.{view}`"  # noqa: S608
             job_config = None
+            fragments: list[str] = []
+            params: dict[str, str] = {}
             if filters is not None:
                 # `fragment` contains placeholders only; the values are bound.
                 # An UnsupportedFilter raised here is a 400 and propagates --
                 # a filter the view cannot honour must not degrade to an
                 # unfiltered answer under a filtered header.
-                fragment, params = filters.predicates_for(view)
+                fragment, filter_params = filters.predicates_for(view)
                 if fragment:
-                    sql = f"{sql} WHERE {fragment}"
-                    job_config = bigquery.QueryJobConfig(
-                        query_parameters=[
-                            bigquery.ScalarQueryParameter(name, "STRING", value)
-                            for name, value in params.items()
-                        ]
-                    )
+                    fragments.append(fragment)
+                    params.update(filter_params)
+            # Data scope: ANDed on, regardless of whether the caller passed
+            # filters -- a block read without filters is still scoped.
+            scope_fragment, scope_params = scope_predicates(view, current_scope())
+            if scope_fragment:
+                fragments.append(scope_fragment)
+                params.update(scope_params)
+            if fragments:
+                sql = f"{sql} WHERE {' AND '.join(fragments)}"
+                job_config = bigquery.QueryJobConfig(
+                    query_parameters=[
+                        bigquery.ScalarQueryParameter(name, "STRING", value)
+                        for name, value in params.items()
+                    ]
+                )
             job = self._client.query(sql, job_config=job_config)
             return [row_type(**dict(r)) for r in job.result()], True
         except HTTPException:
@@ -294,6 +329,14 @@ class BigQueryMetricsQuery:
                     bigquery.ScalarQueryParameter(name, "STRING", value)
                     for name, value in params.items()
                 ]
+        # Data scope, as in `_query_block`. Raises (403) before any query runs.
+        scope_fragment, scope_params = scope_predicates(view, current_scope())
+        if scope_fragment:
+            filter_sql = f"{filter_sql} AND {scope_fragment}"
+            job_config.query_parameters = list(job_config.query_parameters) + [
+                bigquery.ScalarQueryParameter(name, "STRING", value)
+                for name, value in scope_params.items()
+            ]
 
         sql = (
             f"SELECT FORMAT_DATE('{bucket_format}', day) AS month, "  # noqa: S608
@@ -729,22 +772,85 @@ class BigQueryMetricsQuery:
     ) -> TagVolumeMetrics:
         return await asyncio.to_thread(self._fetch_by_tag_sync, period, tag)
 
+    def _fetch_ai_performance_sync(self, period: PeriodRange | None = None) -> AiPerformanceMetrics:
+        """Wave 2 task 27: the eight AI performance reports, one block per view.
+
+        Plain dict rows, `SELECT *`, filtered by `day BETWEEN @start AND @end`
+        when a period is given (every AI view exposes a `day` column; the root
+        cause view's `day` is the Monday of the week, so a week bucket is
+        included when its Monday is in range). Not bucketed or summed here:
+        unlike the volume blocks, each view carries its own rates and
+        denominators, and re-summing a rate would be wrong. A failed view is
+        `unavailable` -- distinct from an empty `ok` block -- so a drifted view
+        never reads as "no AI activity".
+        """
+        # Raw SELECTs below bypass `_query_block`, and no AI view carries a
+        # dealer/department column: refuse rather than serve unscoped.
+        require_unrestricted(current_scope(), "The AI performance report")
+        blocks: dict[str, list[dict]] = {}
+        scopes: dict[str, BlockScope] = {}
+        for key, view in AI_PERFORMANCE_VIEWS.items():
+            sql = f"SELECT * FROM `{self._prefix}.{view}`"  # noqa: S608
+            config = None
+            if period is not None:
+                if key == "root_cause":
+                    # `day` is the week's Monday: keep every week that
+                    # OVERLAPS the range (week end >= start), so a mid-week
+                    # range still shows its week.
+                    sql += " WHERE DATE_ADD(day, INTERVAL 6 DAY) >= @start AND day <= @end"
+                else:
+                    sql += " WHERE day BETWEEN @start AND @end"
+                config = self._range_job_config(period)
+            try:
+                rows = [_jsonable_row(dict(r)) for r in self._client.query(sql, job_config=config).result()]
+                scopes[key] = (
+                    _UNFILTERED_SCOPE
+                    if period is None
+                    else BlockScope(status="ok", period=period, supported_granularity=None)
+                )
+            except Exception as e:  # one drifted view degrades to unavailable, never 500s
+                _log.error("metrics_view_query_failed", view=view, error=str(e))
+                rows = []
+                scopes[key] = BlockScope(
+                    status="unavailable", period=period, supported_granularity=None
+                )
+            if key == "root_cause":
+                rows.sort(key=lambda r: r.get("cases") or 0, reverse=True)
+            blocks[key] = rows
+        metrics = AiPerformanceMetrics(blocks=blocks)
+        metrics.attach_scopes(scopes)
+        return metrics
+
+    async def fetch_ai_performance(
+        self, period: PeriodRange | None = None
+    ) -> AiPerformanceMetrics:
+        return await asyncio.to_thread(self._fetch_ai_performance_sync, period)
+
 
 def build_metrics_query_port(settings: Settings) -> MetricsQueryPort:
     """Pick the read-side implementation from settings (reuses metrics_provider).
 
-    The two `MockMetricsQuery` constructions below are NOT the same thing
-    (Package E final fix, finding I6). The last line is a deliberate
-    choice of canned data -- the operator set `metrics_provider` to
-    something other than "bigquery", and all-time mock rows labelled
-    "unfiltered" are the intended answer. The `except` branch is a
-    *failure*: the tenant asked for BigQuery and the client could not be
-    built, so the same canned rows (682 cases, "2026-06") would render as
-    a plausible-looking real figure on a client-facing page. `degraded=True`
-    makes every block report `"unavailable"` instead, which a period-scoped
-    consumer renders as "temporarily unavailable" rather than as data.
-    Still fail-open -- a misconfigured warehouse must not raise or 500 the
-    page -- just no longer fail-open into invented numbers.
+    Three outcomes, and the two non-BigQuery ones are NOT the same thing:
+
+    - `"mock"` -- a deliberate choice of canned data (local dev, a demo).
+      The rows are the intended answer and every block reports "unfiltered":
+      all-time figures, honestly labelled as such.
+    - anything else, i.e. the `"noop"` default -- a tenant with no
+      warehouse. Empty blocks (`EmptyMetricsQuery`), because the canned rows
+      are one tenant's fixtures ("Dealer KL", "Aftersales"/"Ali", "e.MAS 5")
+      and serving them here is what made a freshly provisioned tenant's
+      Reports pages show another customer's data as if it were its own.
+      Canned rows must now be asked for by name.
+    - the `except` branch -- a *failure*: the tenant asked for BigQuery and
+      the client could not be built, so canned rows (682 cases, "2026-06")
+      would render as a plausible-looking real figure on a client-facing
+      page. `degraded=True` makes every block report `"unavailable"`, which
+      a period-scoped consumer renders as "temporarily unavailable" rather
+      than as data. Still fail-open -- a misconfigured warehouse must not
+      raise or 500 the page -- just no longer fail-open into invented
+      numbers. Deliberately NOT `EmptyMetricsQuery`: an empty report and a
+      broken one look identical to a reader, and only one of them is worth
+      paging someone about.
     """
     if settings.metrics_provider == "bigquery":
         try:
@@ -752,4 +858,6 @@ def build_metrics_query_port(settings: Settings) -> MetricsQueryPort:
         except Exception as e:  # never let init crash the app
             _log.error("metrics_query_init_failed_falling_back_to_mock", error=str(e))
             return MockMetricsQuery(degraded=True)
-    return MockMetricsQuery()
+    if settings.metrics_provider == "mock":
+        return MockMetricsQuery()
+    return EmptyMetricsQuery()

@@ -721,3 +721,86 @@ async def test_notify_email_escalation_swallows_errors():
     await client.notify_email_escalation(
         conversation_id=9, title="t", body="b", department=None, dealer=None,
     )
+
+
+@respx.mock
+async def test_notify_email_escalation_sends_actor_and_sla_status_when_known():
+    route = respx.post(f"{PROTON_BASE}/escalation/notify").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+    client = ProtonConfigClient(base_url=PROTON_BASE, api_key="k")
+    await client.notify_email_escalation(
+        conversation_id=9, title="t", body="b", department=None, dealer=None,
+        actor_name="Siti Agent", actor_user_id=7, sla_status="SLA_BREACH_NO_RESPONSE",
+    )
+    import json as _json
+    body = _json.loads(route.calls[0].request.content)
+    assert body["actor_name"] == "Siti Agent"
+    assert body["actor_user_id"] == 7
+    assert body["sla_status"] == "SLA_BREACH_NO_RESPONSE"
+
+
+# ---------------------------------------------------------------------------
+# Timeouts come from settings (Task 32 / FIX-57): 10.5 s /assist/suggest under
+# load was dropped by the old hardcoded 10 s, and /escalation/contacts too.
+# ---------------------------------------------------------------------------
+
+
+def test_backend_timeout_from_settings():
+    from app.config import get_settings
+
+    s = get_settings()
+    assert s.proton_backend_timeout_seconds == 10.0
+    assert s.proton_backend_slow_timeout_seconds == 60.0
+    assert s.proton_assist_timeout_seconds == 30.0
+
+    client = ProtonConfigClient(
+        base_url=PROTON_BASE, api_key="k", timeout=17.0, slow_timeout=77.0, assist_timeout=31.0
+    )
+    assert client._client.timeout.read == 17.0
+    assert client._slow_timeout == 77.0
+    assert client._assist_timeout == 31.0
+    # defaults preserve today's behaviour
+    default = ProtonConfigClient(base_url=PROTON_BASE, api_key="k")
+    assert default._client.timeout.read == 10.0
+    assert default._slow_timeout == 60.0
+
+
+@respx.mock
+async def test_slow_timeout_applies_to_chat_turn():
+    route = respx.post(f"{PROTON_BASE}/chat/turn").mock(
+        return_value=httpx.Response(200, json={"reply": "x"})
+    )
+    client = _make_client(slow_timeout=44.0)
+    await client.chat_turn("s", "hi")
+    assert route.calls.last.request.extensions["timeout"]["read"] == 44.0
+
+
+@respx.mock
+async def test_assist_timeout_override():
+    route = respx.post(f"{PROTON_BASE}/assist/suggest").mock(
+        return_value=httpx.Response(200, json={"draft": "hello"})
+    )
+    client = _make_client(timeout=10.0, assist_timeout=33.0)
+    assert await client.suggest_reply("1", ["m"]) == "hello"
+    assert route.calls.last.request.extensions["timeout"]["read"] == 33.0
+
+
+def test_deps_wires_timeouts_from_settings(monkeypatch):
+    from app.clients.deps import get_proton_config_client
+    from app.config import get_settings
+
+    s = get_settings()
+    monkeypatch.setattr(s, "proton_backend_url", PROTON_BASE)
+    monkeypatch.setattr(s, "proton_backend_key", "k")
+    monkeypatch.setattr(s, "proton_backend_timeout_seconds", 12.0)
+    monkeypatch.setattr(s, "proton_backend_slow_timeout_seconds", 70.0)
+    monkeypatch.setattr(s, "proton_assist_timeout_seconds", 35.0)
+    get_proton_config_client.cache_clear()
+    try:
+        c = get_proton_config_client()
+        assert c._client.timeout.read == 12.0
+        assert c._slow_timeout == 70.0
+        assert c._assist_timeout == 35.0
+    finally:
+        get_proton_config_client.cache_clear()

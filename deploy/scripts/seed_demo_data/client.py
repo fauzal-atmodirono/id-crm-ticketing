@@ -101,6 +101,7 @@ from typing import Any
 import httpx
 
 from generator import DemoCase, DemoContact, canonical_division
+from nasabah import DemoNasabah, sectors_for
 
 # Delay between API calls. A burst of ~1,500 requests at a tenant's Rails
 # app in one go is a self-inflicted outage (plan's Global Constraints).
@@ -137,8 +138,12 @@ class TenantConfig:
     - `backend_base_url` — `PROTON_BACKEND_URL` (internal, docker-network
       only) if the CLI runs from the VM, else `PROTON_BACKEND_PUBLIC_URL`
       if it runs from an operator's machine. Only `/rsa/incidents` is used.
-    - `backend_api_key` — `PROTON_BACKEND_KEY` or `FAQ_ADMIN_API_KEY`;
-      `rsa_router.py::_authorize` accepts either.
+    - `backend_api_key` — `PROTON_BACKEND_KEY` or `FAQ_ADMIN_API_KEY`.
+      `rsa_router.py` guards every route with `require_permission("sla.manage")`:
+      with `RBAC_ENABLED=false` that accepts either key, but with RBAC on it
+      demands a Chatwoot session this seeder does not have, so the shared key
+      alone is refused (401/403). RSA seeding/purging then fails with
+      `RsaAuthRefusedError` -- run it against a tenant with RBAC off.
     """
 
     chatwoot_base_url: str
@@ -475,6 +480,94 @@ async def create_contact(contact: DemoContact, batch_id: str) -> int:
     return contact_id
 
 
+def build_nasabah_custom_attributes(nasabah: DemoNasabah, batch_id: str) -> dict[str, str]:
+    """The full contact `custom_attributes` object one seeded nasabah carries.
+
+    Pure and public for the same reason `build_case_custom_attributes` is: the
+    exact key set is a contract with two consumers that never import this
+    module -- Chatwoot's contact attribute *definitions*, which is what makes
+    these render in the agent sidebar, and the agent service's
+    `customer_context` formatter, which reads them back to build the AI's
+    prompt. Renaming a key here silently empties both rather than failing.
+
+    Every value is a string. Chatwoot round-trips custom attribute values as
+    strings, and a list sent here comes back in a shape the sidebar renders
+    as an object literal. Empty lists become an explicit phrase rather than
+    an empty string: the AI reads these verbatim, and a blank field is
+    ambiguous between "holds no equities" and "we have no data", which are
+    very different things to say to a customer.
+    """
+    return {
+        "demo_seed": batch_id,
+        "risk_profile": nasabah.risk_profile,
+        "aum_band": nasabah.aum_band,
+        "rdn_balance": f"Rp {nasabah.rdn_balance:,}",
+        "holdings": ", ".join(nasabah.holdings) if nasabah.holdings else "Tidak ada",
+        "holdings_sectors": sectors_for(nasabah.holdings),
+        "days_since_last_transaction": str(nasabah.days_since_last_transaction),
+        "product_gaps": ", ".join(nasabah.product_gaps) if nasabah.product_gaps else "Tidak ada",
+        "next_best_offer": nasabah.next_best_offer,
+        "offer_rationale": nasabah.offer_rationale,
+    }
+
+
+async def create_nasabah_contact(nasabah: DemoNasabah, batch_id: str) -> int:
+    """Create one Chatwoot contact carrying a synthetic nasabah profile.
+
+    Deliberately a sibling of `create_contact` rather than a parameter on it:
+    that function writes the automotive attribute set (`vehicle_no`,
+    `vehicle_model`, `purchased_from`) that Customer 360 and the Cases list
+    read, and those two attribute sets have no overlap and no shared consumer.
+    Merging them would mean every contact carrying both vocabularies.
+
+    The create-then-verify-then-PATCH shape is copied from `create_contact`
+    for the same reason it exists there: it is unverified whether Chatwoot
+    persists unrecognised custom-attribute keys at create time, so the marker
+    is confirmed on the response and stamped explicitly if absent. A contact
+    this function returns is guaranteed marked, or the call raised.
+    """
+    config = _require_config()
+    demo_attributes = build_nasabah_custom_attributes(nasabah, batch_id)
+    payload = {
+        "inbox_id": config.chatwoot_inbox_id,
+        "name": nasabah.name,
+        "email": nasabah.email,
+        "phone_number": nasabah.phone,
+        "custom_attributes": demo_attributes,
+    }
+    response = await _chatwoot.post(_account_path("/contacts"), json=payload)
+    if response.status_code == 422:
+        raise RuntimeError(
+            f"Chatwoot rejected demo nasabah {nasabah.name!r} (phone {nasabah.phone}, "
+            f"email {nasabah.email}) with HTTP 422: {response.text.strip()[:300]}. "
+            "This is almost always a uniqueness collision -- a contact with that phone "
+            "or email already exists in this account. Purge the earlier batch, or "
+            "re-run with a different --batch-id. If the collision is on the PINNED "
+            "phone, the demo handset is already a contact in this account: either "
+            "purge it or drop --pinned-phone and edit that contact's attributes by hand."
+        )
+    response.raise_for_status()
+    data = response.json()
+    contact_obj = data.get("payload", {}).get("contact") if isinstance(data.get("payload"), dict) else None
+    contact_obj = contact_obj if isinstance(contact_obj, dict) else data
+    contact_id = contact_obj.get("id")
+    if contact_id is None:
+        raise RuntimeError(f"nasabah contact create returned no id: {data!r}")
+    contact_id = int(contact_id)
+    await _throttle()
+
+    returned_attributes = contact_obj.get("custom_attributes")
+    marker_confirmed = isinstance(returned_attributes, dict) and returned_attributes.get("demo_seed") == batch_id
+    if not marker_confirmed:
+        stamp_response = await _chatwoot.patch(
+            _account_path(f"/contacts/{contact_id}"), json={"custom_attributes": demo_attributes}
+        )
+        stamp_response.raise_for_status()
+        await _throttle()
+
+    return contact_id
+
+
 def build_case_custom_attributes(case: DemoCase, contact: DemoContact, batch_id: str, now: datetime) -> dict:
     """The full `custom_attributes` object one seeded conversation carries.
 
@@ -704,6 +797,27 @@ async def create_case(case: DemoCase, contact: DemoContact, contact_id: int, bat
     return display_id
 
 
+class RsaAuthRefusedError(RuntimeError):
+    """The backend refused the shared key on /rsa/* (RBAC is on)."""
+
+
+async def _rsa_request(method: str, path: str, **kwargs):
+    """Call a /rsa/* route; turn an RBAC refusal into an actionable error.
+
+    Once RBAC is on, `/rsa/*` needs a `sla.manage` session and the shared
+    x-api-key alone gets 401/403. Without this the seeder would surface a bare
+    `HTTPStatusError` that reads like a bad key.
+    """
+    response = await _backend.request(method, path, **kwargs)
+    if response.status_code in (401, 403):
+        raise RsaAuthRefusedError(
+            "RSA seeding needs RBAC_ENABLED=false or a session: /rsa/* refused the "
+            f"shared API key (HTTP {response.status_code}) -- the backend requires a "
+            "sla.manage Chatwoot session when RBAC is on"
+        )
+    return response
+
+
 async def create_rsa_incident(payload: dict) -> str:
     """POST one RSA incident payload as-is (generator.py builds it to match
     `rsa_router.py::_IncidentRequest` field-for-field, timestamps
@@ -719,7 +833,7 @@ async def create_rsa_incident(payload: dict) -> str:
     downstream purge consumer — it's purely informational for a summary.
     """
     _require_config()
-    response = await _backend.post("/rsa/incidents", json=payload)
+    response = await _rsa_request("POST", "/rsa/incidents", json=payload)
     response.raise_for_status()
     data = response.json()
     incident_id = data.get("id")
@@ -813,7 +927,7 @@ async def purge(batch_id: str) -> PurgeReport:
         else:
             report.contacts_deleted += 1
 
-    rsa_response = await _backend.get("/rsa/incidents")
+    rsa_response = await _rsa_request("GET", "/rsa/incidents")
     rsa_response.raise_for_status()
     rsa_data = rsa_response.json()
     incidents = rsa_data.get("incidents") if isinstance(rsa_data, dict) else None
@@ -826,7 +940,7 @@ async def purge(batch_id: str) -> PurgeReport:
         if incident_id is None:
             report.skipped.append(f"rsa incident matched batch {batch_id!r} but had no id, cannot delete")
             continue
-        delete_response = await _backend.delete(f"/rsa/incidents/{incident_id}")
+        delete_response = await _rsa_request("DELETE", f"/rsa/incidents/{incident_id}")
         await _throttle()
         if delete_response.status_code not in (200, 204):
             report.skipped.append(f"rsa incident {incident_id}: delete failed (HTTP {delete_response.status_code})")

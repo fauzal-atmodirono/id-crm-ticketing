@@ -38,8 +38,8 @@ _PRONET = ProtonNetRecord(region="central", area_regional_mgr="arm@proton.my", h
 
 
 def test_the_default_table_is_the_sop_matrix() -> None:
-    assert [s.step_no for s in DEFAULT_STEPS] == [1, 2, 3, 4, 5]
-    assert [s.delay_working_hours for s in DEFAULT_STEPS] == [0.0, 2.0, 4.0, 8.0, 8.0]
+    assert [s.step_no for s in DEFAULT_STEPS] == [1, 2, 3, 4, 5, 6]
+    assert [s.delay_working_hours for s in DEFAULT_STEPS] == [0.0, 2.0, 4.0, 8.0, 8.0, 48.0]
     assert step_by_no(DEFAULT_STEPS, 3).to_roles == ("principal",)
     assert step_by_no(DEFAULT_STEPS, 4).to_roles == ("owner",)
     assert step_by_no(DEFAULT_STEPS, 5).channel == PHONE
@@ -130,7 +130,7 @@ def test_nothing_is_due_before_its_delay() -> None:
 
 
 def test_the_top_of_the_ladder_stays_the_top() -> None:
-    assert due_step(DEFAULT_STEPS, 999.0, current_step=5) is None
+    assert due_step(DEFAULT_STEPS, 999.0, current_step=6) is None
 
 
 # --- operator overrides -----------------------------------------------------
@@ -190,3 +190,17 @@ def test_steps_are_sorted_however_the_operator_wrote_them() -> None:
     )
 
     assert [s.step_no for s in load_steps(raw)] == [1, 3]
+
+
+def test_load_steps_reads_fires_after_reply_default_false() -> None:
+    from chatbot.features.chat.escalation_policy import load_steps
+
+    raw = (
+        '[{"step_no": 1, "delay_working_hours": 0, "to_roles": ["cre"]},'
+        ' {"step_no": 2, "delay_working_hours": 48, "to_roles": ["owner"],'
+        ' "fires_after_reply": true}]'
+    )
+    steps = load_steps(raw)
+    assert [s.fires_after_reply for s in steps] == [False, True]
+    assert DEFAULT_STEPS[-1].fires_after_reply is True
+    assert all(not s.fires_after_reply for s in DEFAULT_STEPS[:-1])

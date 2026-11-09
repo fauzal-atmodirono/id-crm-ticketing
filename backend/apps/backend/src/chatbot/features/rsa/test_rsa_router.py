@@ -87,3 +87,82 @@ def test_csv_export(client):
     response = client.get("/rsa/incidents/export?format=csv", headers=_headers())
     assert response.status_code == 200
     assert response.headers["content-type"] == "text/csv; charset=utf-8"
+    assert response.text.splitlines()[0].split(",")[-1] == "customer_phone"
+
+
+# --- FIX-24: RSA routes behind RBAC ---------------------------------------
+
+
+class _FakeValidator:
+    """Resolves tokens "admin"/"agent" to non-superadmin user ids 7/8."""
+
+    async def resolve_identity(self, token, _client, _uid):
+        return {"admin": (7, False), "agent": (8, False)}.get(token)
+
+
+class _FakeRepo:
+    async def permissions_for_user(self, user_id):
+        return {"sla.manage"} if user_id == 7 else set()
+
+
+def _rbac_client(rbac_enabled=True):
+    settings = get_settings().model_copy(
+        update={"faq_admin_api_key": "test-key", "rbac_enabled": rbac_enabled}
+    )
+    app = FastAPI()
+    app.include_router(
+        build_rsa_router(InMemoryRsaRepository(), settings, _FakeRepo(), _FakeValidator())
+    )
+    return TestClient(app)
+
+
+def _session(token):
+    return {
+        "x-chatwoot-access-token": token,
+        "x-chatwoot-client": "c",
+        "x-chatwoot-uid": "u@example.com",
+    }
+
+
+_BODY = {"incident_date": "2026-07-01", "vehicle_no": "VPP8636", "cause": "Flat Tyre"}
+
+
+def test_rsa_shared_key_only_is_401_when_rbac_on():
+    c = _rbac_client()
+    assert c.get("/rsa/incidents", headers=_headers()).status_code == 401
+    assert c.post("/rsa/incidents", json=_BODY, headers=_headers()).status_code == 401
+
+
+def test_rsa_write_without_sla_manage_is_403():
+    c = _rbac_client()
+    assert c.post("/rsa/incidents", json=_BODY, headers=_session("agent")).status_code == 403
+    assert c.get("/rsa/incidents", headers=_session("agent")).status_code == 403
+    assert c.delete("/rsa/incidents/x", headers=_session("agent")).status_code == 403
+
+
+def test_rsa_with_sla_manage_session_is_200():
+    c = _rbac_client()
+    res = c.post("/rsa/incidents", json=_BODY, headers=_session("admin"))
+    assert res.status_code == 200
+    assert c.get("/rsa/incidents", headers=_session("admin")).status_code == 200
+    assert c.get("/rsa/incidents/aggregate", headers=_session("admin")).status_code == 200
+    assert c.get("/rsa/incidents/export?format=csv", headers=_session("admin")).status_code == 200
+
+
+def test_rsa_shared_key_ok_when_rbac_off():
+    c = _rbac_client(rbac_enabled=False)
+    assert c.get("/rsa/incidents", headers=_headers()).status_code == 200
+    assert c.get("/rsa/incidents").status_code == 401
+
+
+def test_csv_export_neutralises_formula_cells(client):
+    """Final review M1: operator-typed text starting with = + - @ is exported
+    with a leading apostrophe so a spreadsheet shows it instead of running it."""
+    client.post(
+        "/rsa/incidents",
+        json={"incident_date": "2026-07-01", "vehicle_no": "A1", "cause": "=HYPERLINK(\"x\")"},
+        headers=_headers(),
+    )
+    response = client.get("/rsa/incidents/export?format=csv", headers=_headers())
+    assert "'=HYPERLINK" in response.text
+    assert ",=HYPERLINK" not in response.text

@@ -1,10 +1,11 @@
-"""POST /assist/suggest|summarize|ask — Proton AI-assist endpoints.
+"""POST /assist/suggest|summarize|ask|rewrite — Proton AI-assist endpoints.
 
-Called by the patched Chatwoot frontend (patch 0002). All endpoints require
-`x-api-key` matching `Settings.proton_backend_key`; an empty key returns 503
-so misconfigured deployments fail loudly rather than leaving the endpoint open.
+Called by the patched Chatwoot frontend (patch 0002; /rewrite added by patch
+0078). All endpoints require `x-api-key` matching `Settings.proton_backend_key`;
+an empty key returns 503 so misconfigured deployments fail loudly rather than
+leaving the endpoint open.
 
-Request shape (all three endpoints share a base):
+Request shape (all four endpoints share a base):
   - conversation_id : str          — Chatwoot conversation id (for logging)
   - messages        : list[str]    — conversation turns, most-recent last
   - assistant_id    : str | None   — optional; steers output via product_name +
@@ -13,6 +14,14 @@ Request shape (all three endpoints share a base):
 
 /suggest also accepts:
   - limit : int (default 3) — max KB hits to ground the reply
+
+/rewrite also accepts (and does not use `messages` for anything but the
+inherited min-length validation — it operates on the agent's own draft, not
+the conversation transcript):
+  - content : str — the agent's current composer draft to rewrite
+  - mode    : str — one of the `_REWRITE_TASKS` keys (improve, fix_grammar,
+                    tone_professional, tone_casual, tone_straightforward,
+                    tone_confident, tone_friendly); an unknown mode is a 400
 
 Tenant overrides
 ----------------
@@ -34,6 +43,7 @@ guardrails list yields an empty prefix → behaviour-preserving.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 from typing import TYPE_CHECKING, Any
 
@@ -120,6 +130,71 @@ _ASK_SYSTEM = (
     "FAQ context:\n{faq_context}"
 )
 
+# Rules shared by every /rewrite mode. Appended after the mode-specific task
+# instruction (see `_REWRITE_TASKS`) so a persona prefix — from
+# `_apply_persona`, prepended ahead of both — can still steer output without
+# ever being able to unset these.
+_REWRITE_COMMON_RULES = (
+    "Return ONLY the rewritten message — no preamble, no explanation, and no "
+    "quotes around it. The result is inserted directly into the reply "
+    "composer, so anything you write beyond the rewritten message itself "
+    "goes to the customer verbatim.\n"
+    "Preserve the original language exactly: if the draft is in Indonesian, "
+    "the rewrite is in Indonesian; if it is in English, the rewrite is in "
+    "English. Never translate the draft into a different language.\n"
+    "Preserve meaning and every factual claim exactly as written — names, "
+    "numbers, dates, and order/case references must not change. Never invent "
+    "a commitment the agent did not make."
+)
+
+# One task instruction per /rewrite `mode`. Combined with
+# `_REWRITE_COMMON_RULES` (see `_task_system` in `build_assist_router`) to
+# form the full task system prompt before `_apply_persona` prepends the
+# operator persona. An unknown key here is what the endpoint rejects with 400.
+_REWRITE_TASKS: dict[str, str] = {
+    "improve": (
+        "You are a customer-support writing assistant. Improve the clarity "
+        "and flow of the agent's draft reply below, while keeping the "
+        "agent's intent exactly as written."
+    ),
+    "fix_grammar": (
+        "You are a customer-support proofreader. Correct ONLY the spelling, "
+        "grammar, and punctuation of the agent's draft reply below. Do not "
+        "restyle it, shorten it, or add anything to it — a punctuation or "
+        "spelling fix is in scope, a rewrite for tone or clarity is not."
+    ),
+    "tone_professional": (
+        "You are a customer-support writing assistant. Rewrite the agent's "
+        "draft reply below in a more professional, businesslike register. "
+        "Shift tone and word choice only — do not add, remove, or reorder "
+        "content."
+    ),
+    "tone_casual": (
+        "You are a customer-support writing assistant. Rewrite the agent's "
+        "draft reply below in a more casual, relaxed register, as if talking "
+        "to a friend. Shift tone and word choice only — do not add, remove, "
+        "or reorder content."
+    ),
+    "tone_straightforward": (
+        "You are a customer-support writing assistant. Rewrite the agent's "
+        "draft reply below in a more direct, straightforward register — "
+        "short sentences, no hedging, no filler. Shift tone and word choice "
+        "only — do not add, remove, or reorder content."
+    ),
+    "tone_confident": (
+        "You are a customer-support writing assistant. Rewrite the agent's "
+        "draft reply below in a more confident, assured register — remove "
+        "hedging language like 'maybe' or 'I think' without changing what is "
+        "being promised. Shift tone and word choice only — do not add, "
+        "remove, or reorder content."
+    ),
+    "tone_friendly": (
+        "You are a customer-support writing assistant. Rewrite the agent's "
+        "draft reply below in a warmer, friendlier register. Shift tone and "
+        "word choice only — do not add, remove, or reorder content."
+    ),
+}
+
 # Appended to the task system prompt ONLY on requests that actually carry
 # media, so a text-only call produces a byte-identical prompt to today's.
 #
@@ -153,6 +228,8 @@ _MEDIA_QUERY_SYSTEM = (
 
 # Ceiling on the extracted keyword string before it becomes a search query.
 _MEDIA_TERMS_MAX_CHARS = 200
+# Budget for the optional media-keyword extraction (see _media_search_terms).
+_MEDIA_TERMS_TIMEOUT_SECONDS = 4.0
 
 _SNIPPET = 300
 
@@ -179,6 +256,11 @@ class SummarizeRequest(AssistBase):
 
 class AskRequest(AssistBase):
     question: str = Field(min_length=1)
+
+
+class RewriteRequest(AssistBase):
+    content: str = Field(min_length=1)
+    mode: str
 
 
 def _build_persona_prefix(product_name: str, guardrails: list[str], language: str = "") -> str:
@@ -312,12 +394,13 @@ def build_assist_router(
     def _format_messages(messages: list[AssistMessage] | list[str]) -> str:
         return "\n".join(f"[{i + 1}] {m}" for i, m in enumerate(render_transcript(messages)))
 
-    async def _media_search_terms(media_parts: list[types.Part]) -> str:
+    async def _media_search_terms(media_parts: list[types.Part]) -> str | None:
         """Ask Gemini what the attachments actually show, as search keywords.
 
         One extra call, so it is made only where it can pay for itself — see
         `_kb_context`. Returns "" on any failure, which simply leaves retrieval
-        where it already was.
+        where it already was. Returns None on a budget timeout, which the caller
+        must not cache: a slow moment is not evidence the media has no terms.
         """
         if not media_parts:
             return ""
@@ -325,21 +408,31 @@ def build_assist_router(
             from google.genai import types as _types  # noqa: PLC0415
 
             model = await _resolve_model()
-            response = await genai_client.aio.models.generate_content(
-                model=model,
-                contents=_types.Content(
-                    role="user",
-                    parts=[
-                        _types.Part.from_text(text="What is in this media?"),
-                        *media_parts,
-                    ],
+            # Hard budget: this call only improves retrieval, and it runs BEFORE
+            # the draft call, so under load it ate the agent's 10 s client
+            # timeout and the draft was dropped (FIX-57). Past the budget we
+            # fall back to the text-only query, exactly as on any failure.
+            response = await asyncio.wait_for(
+                genai_client.aio.models.generate_content(
+                    model=model,
+                    contents=_types.Content(
+                        role="user",
+                        parts=[
+                            _types.Part.from_text(text="What is in this media?"),
+                            *media_parts,
+                        ],
+                    ),
+                    config={"system_instruction": _MEDIA_QUERY_SYSTEM},
                 ),
-                config={"system_instruction": _MEDIA_QUERY_SYSTEM},
+                timeout=_MEDIA_TERMS_TIMEOUT_SECONDS,
             )
             # Capped: a model that ignores "short list" and narrates a paragraph
             # would otherwise become the entire retrieval query and bury the
             # real terms.
             return (response.text or "").strip()[:_MEDIA_TERMS_MAX_CHARS]
+        except TimeoutError:
+            _log.warning("assist_media_terms_timeout")
+            return None
         except Exception:
             _log.warning("assist_media_terms_failed", exc_info=True)
             return ""
@@ -350,6 +443,8 @@ def build_assist_router(
         if cached is not None:
             return cached
         terms = await _media_search_terms(media_parts)
+        if terms is None:
+            return ""
         _terms_cache.put(conversation_id, terms)
         if terms:
             _log.info("assist_media_terms", conv_id=conversation_id, terms=terms)
@@ -463,5 +558,23 @@ def build_assist_router(
         )
         answer = await _generate(system, user_prompt, media_parts)
         return {"answer": answer}
+
+    @router.post("/rewrite")
+    async def rewrite(
+        req: RewriteRequest,
+        x_api_key: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        _authorize(x_api_key)
+        if req.mode not in _REWRITE_TASKS:
+            valid = ", ".join(sorted(_REWRITE_TASKS))
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown mode {req.mode!r}. Valid modes: {valid}",
+            )
+        _log.info("assist_rewrite", conv_id=req.conversation_id, mode=req.mode)
+        task_system = f"{_REWRITE_TASKS[req.mode]}\n\n{_REWRITE_COMMON_RULES}"
+        system = await _apply_persona(task_system, req.assistant_id)
+        draft = await _generate(system, req.content)
+        return {"draft": draft}
 
     return router

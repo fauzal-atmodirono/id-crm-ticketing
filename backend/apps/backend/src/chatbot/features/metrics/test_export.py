@@ -166,3 +166,46 @@ def test_export_keeps_month_start_but_drops_the_period_only_bucket() -> None:
     ] in reader
     for row in reader:
         assert "bucket" not in row
+
+
+# --- final review M1: spreadsheet formula injection --------------------------
+
+_EVIL = ["=HYPERLINK(\"http://x\")", "+1+1", "-2+3", "@SUM(A1)", "\tx", "\rx"]
+
+
+def _evil_metrics() -> DealerEscalationMetrics:
+    return DealerEscalationMetrics(
+        by_dealer=[DealerEscalationRow(d, 1, None, None, None) for d in _EVIL]
+        + [DealerEscalationRow("kl", 2, 1.5, None, None)],
+        slowest_cases=[],
+    )
+
+
+def test_spreadsheet_safe_prefixes_formula_triggers_only() -> None:
+    from chatbot.features.metrics.export import spreadsheet_safe
+
+    for value in _EVIL:
+        assert spreadsheet_safe(value) == "'" + value
+    for value in ("kl", "", "a=b", 5, -3, 1.5, None, True):
+        assert spreadsheet_safe(value) == value
+    # plain (and masked) phone numbers stay usable
+    for value in ("+60123456789", "+60 12-345 6789", "+60•••••6789"):
+        assert spreadsheet_safe(value) == value
+    assert spreadsheet_safe("+60+cmd") == "'+60+cmd"
+
+
+def test_csv_export_neutralises_formula_cells() -> None:
+    rows = list(csv.reader(io.StringIO(render_csv(_evil_metrics()).decode("utf-8"))))
+    dealers = [r[0] for r in rows if len(r) == 5 and r[0] != "dealer"]
+    assert dealers == ["'" + v for v in _EVIL] + ["kl"]
+
+
+def test_xlsx_export_neutralises_formula_cells() -> None:
+    from chatbot.features.metrics.export import render_xlsx as _render
+
+    wb = load_workbook(io.BytesIO(_render(_evil_metrics())))  # type: ignore[arg-type]
+    ws = wb["by_dealer"]
+    values = [ws.cell(row=i, column=1).value for i in range(2, ws.max_row + 1)]
+    assert values == ["'" + v for v in _EVIL] + ["kl"]
+    # numbers stay numbers
+    assert ws.cell(row=ws.max_row, column=2).value == 2

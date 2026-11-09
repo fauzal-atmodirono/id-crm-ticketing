@@ -277,6 +277,9 @@ def build_routing_router(
                         to_state=f"assigned:{agent_id}",
                         at=datetime.now(UTC).isoformat(),
                         remark=remark,
+                        event_type="case_reassignment",
+                        actor_name=actor,
+                        target=f"case:{conversation_id}",
                     )
                 )
             except Exception:

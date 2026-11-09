@@ -97,6 +97,32 @@ def test_assist_preflight_allows_the_chatwoot_session_headers(
         assert header in allowed
 
 
+def test_preflight_allows_the_call_recording_transcript_token_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The call-recording panel (fork patch 0094) fetches a transcript with
+    its token in `x-recording-token` so the token never sits in a URL. A
+    cross-origin backend must allow that header in the preflight, or the
+    browser refuses the fetch before it is sent."""
+    monkeypatch.setenv("ASSIST_CORS_ORIGINS", '["http://crm.example.com"]')
+    get_settings.cache_clear()
+    try:
+        client = TestClient(_patched_app())
+        r = client.options(
+            "/calls/42/recording/transcript",
+            headers={
+                "Origin": "http://crm.example.com",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "x-recording-token",
+            },
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert r.status_code == 200, r.text
+    assert "x-recording-token" in r.headers.get("access-control-allow-headers", "").lower()
+
+
 def test_assist_ask_route_exists_and_is_auth_guarded() -> None:
     app = _patched_app()
     client = TestClient(app)

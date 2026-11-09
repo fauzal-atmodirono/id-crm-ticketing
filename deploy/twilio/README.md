@@ -3,6 +3,17 @@
 Voice IVR for **1300-888-877**, generated from the `IVR Call` sheet of
 `docs/CRM Process Flow (1).xlsx`.
 
+> **Not the live path (checked 2026-11-09, Task 31).** Proton's Twilio number
+> posts to the backend's `/voice/phone/incoming` (AI voice bridge), not to this
+> Studio flow, and this export still carries placeholder numbers. The SOP menu
+> is now built in the backend behind `PHONE_DTMF_MENU_ENABLED`
+> (`backend/.../features/chat/phone/ivr.py`, wording in `ivr_prompts.py`),
+> which also fixes two things this flow gets wrong: it runs the office-hour
+> check before the menu, so an after-hours RSA caller never reaches RSA, and it
+> plays the queue-busy prompt only after a 20 s ring instead of after 10 s. Its wording
+> differs from the SOP in two places ("service centre"; "sifar") that the
+> backend follows the SOP on. Kept as a reference, not updated.
+
 Files:
 
 | File | What it is |

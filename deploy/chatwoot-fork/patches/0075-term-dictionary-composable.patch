@@ -1,0 +1,135 @@
+diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
+index b1402a8..f45c68d 100644
+--- a/app/javascript/dashboard/api/protonAdmin.js
++++ b/app/javascript/dashboard/api/protonAdmin.js
+@@ -298,3 +298,10 @@ export async function setCustomFeature(key, enabled) {
+     body: { key, enabled },
+   });
+ }
++
++export async function setTermProfile(profile) {
++  return adminRequest('/admin/custom-features/terms', {
++    method: 'POST',
++    body: { profile },
++  });
++}
+diff --git a/app/javascript/dashboard/composables/useCustomFeatures.js b/app/javascript/dashboard/composables/useCustomFeatures.js
+index 5d17c48..cf54423 100644
+--- a/app/javascript/dashboard/composables/useCustomFeatures.js
++++ b/app/javascript/dashboard/composables/useCustomFeatures.js
+@@ -16,6 +16,9 @@ const features = ref(null); // null = not yet loaded
+ const isSuperadmin = ref(false);
+ const registry = ref([]);
+ const behavior = ref({});
++const terms = ref({});
++const termProfile = ref('');
++const termProfiles = ref([]);
+ const loading = ref(false);
+ const loadFailed = ref(false);
+ let loadPromise = null;
+@@ -48,6 +51,11 @@ function ensureLoaded() {
+         !Array.isArray(data.behavior)
+           ? data.behavior
+           : {};
++      terms.value = data.terms || {};
++      termProfile.value = data.term_profile || '';
++      termProfiles.value = Array.isArray(data.term_profiles)
++        ? data.term_profiles
++        : [];
+       loadFailed.value = false;
+       retryDelayMs = RETRY_FLOOR_MS;
+     })
+@@ -67,6 +75,10 @@ function ensureLoaded() {
+       isSuperadmin.value = false;
+       registry.value = [];
+       behavior.value = {};
++      // Terms are NOT failed closed the way features are. A feature rendering
++      // when it should not is a licensing leak; a heading rendering its key
++      // name is just broken text. Keeping the last known vocabulary — or the
++      // key itself as a last resort — is strictly better than a blank label.
+       loadFailed.value = true;
+       loadPromise = null;
+       if (retryTimer === null) {
+@@ -101,6 +113,17 @@ export function useCustomFeatures() {
+     registry,
+     behavior,
+     refresh,
++    terms,
++    termProfile,
++    termProfiles,
++    // `form` is 'singular' (default), 'plural', 'lower' or 'plural_lower'.
++    // A missing term falls back to the key with underscores turned to
++    // spaces ("field_incident" -> "field incident") -- readable on a cold
++    // load with nothing cached yet, and still greppable back to the key.
++    // Deliberately never an empty string and never the automotive value:
++    // either would hide that the vocabulary failed to load at all.
++    t: (key, form = 'singular') =>
++      (terms.value[key] || {})[form] || key.replace(/_/g, ' '),
+     hasFeature: key => (features.value || []).includes(key),
+   };
+ }
+diff --git a/app/javascript/dashboard/views/CustomFeaturesPage.vue b/app/javascript/dashboard/views/CustomFeaturesPage.vue
+index 25dda4f..4aa44e9 100644
+--- a/app/javascript/dashboard/views/CustomFeaturesPage.vue
++++ b/app/javascript/dashboard/views/CustomFeaturesPage.vue
+@@ -12,10 +12,18 @@
+ <script setup>
+ import { ref } from 'vue';
+ import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
+-import { setCustomFeature } from 'dashboard/api/protonAdmin';
++import { setCustomFeature, setTermProfile } from 'dashboard/api/protonAdmin';
+ 
+-const { loading, loadFailed, isSuperadmin, registry, behavior, refresh } =
+-  useCustomFeatures();
++const {
++  loading,
++  loadFailed,
++  isSuperadmin,
++  registry,
++  behavior,
++  termProfile,
++  termProfiles,
++  refresh,
++} = useCustomFeatures();
+ 
+ const saving = ref('');
+ const error = ref('');
+@@ -42,6 +50,16 @@ async function toggle(row) {
+     saving.value = '';
+   }
+ }
++
++async function changeProfile(profile) {
++  error.value = '';
++  try {
++    await setTermProfile(profile);
++    await refresh();
++  } catch (e) {
++    error.value = e.message || 'Could not save';
++  }
++}
+ </script>
+ 
+ <template>
+@@ -65,6 +83,21 @@ async function toggle(row) {
+     <template v-else>
+       <div v-if="error" class="text-sm text-n-ruby-11 mb-4">{{ error }}</div>
+ 
++      <div class="mb-6">
++        <h2 class="text-sm font-semibold text-n-slate-12 mb-2">Vocabulary</h2>
++        <p class="text-xs text-n-slate-11 mb-2">
++          Which words this tenant's CRM uses. Applies to headings and labels
++          only — stored data is unaffected.
++        </p>
++        <select
++          class="text-sm rounded-lg border border-n-container bg-n-solid-2 px-3 py-1.5"
++          :value="termProfile"
++          @change="changeProfile($event.target.value)"
++        >
++          <option v-for="p in termProfiles" :key="p" :value="p">{{ p }}</option>
++        </select>
++      </div>
++
+       <div v-for="group in groups(registry)" :key="group.name" class="mb-6">
+         <h2 class="text-sm font-semibold text-n-slate-12 mb-2">
+           {{ group.name }}

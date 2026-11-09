@@ -68,8 +68,9 @@ import asyncio
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from chatbot.features.authz.data_scope import build_unscoped_only_dependency
 from chatbot.features.metrics.freshness import batch_freshness, stamp_freshness
 from chatbot.features.metrics.period import previous_period
 from chatbot.features.metrics.period_query import (
@@ -85,7 +86,13 @@ if TYPE_CHECKING:
 
 
 def build_metrics_query_router(port: MetricsQueryPort, settings: Settings) -> APIRouter:
-    router = APIRouter(tags=["metrics"])
+    # Wave 2 Task 28: no view behind this router carries a scope dimension
+    # on every block, so a data-scoped caller is refused (data_scope.py rule
+    # 6). Flag off: a no-op that never reads the session.
+    router = APIRouter(
+        tags=["metrics"],
+        dependencies=[Depends(build_unscoped_only_dependency(settings, "The executive dashboard"))],
+    )
 
     def _stamp(payload: dict[str, Any]) -> dict[str, Any]:
         """`batch_6h`, like every other BigQuery-backed response.

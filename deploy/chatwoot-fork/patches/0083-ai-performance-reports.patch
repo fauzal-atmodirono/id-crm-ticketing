@@ -1,0 +1,467 @@
+diff --git a/app/javascript/dashboard/api/protonMetrics.js b/app/javascript/dashboard/api/protonMetrics.js
+index 96cf550..e230829 100644
+--- a/app/javascript/dashboard/api/protonMetrics.js
++++ b/app/javascript/dashboard/api/protonMetrics.js
+@@ -102,6 +102,14 @@ export function getCaseAging() {
+   return metricsRequest('/metrics/case-aging');
+ }
+ 
++// GET /metrics/ai-performance -> { blocks: { resolution, ai_vs_human, csat,
++// escalation_reasons, accuracy, deflection, root_cause, kb_improvement },
++// scopes } -- the eight RFP 4.56 AI performance reports. Rows keep their own
++// definition/basis text; a block whose scope is 'unavailable' failed.
++export function getAiPerformance(period) {
++  return metricsRequest(`/metrics/ai-performance${periodQuery(period)}`);
++}
++
+ // Returns a URL string for opening /metrics/export in a new tab.
+ // format: 'csv' | 'xlsx'
+ export function exportUrl(format) {
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue
+index c816d09..76beaf3 100644
+--- a/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/BotReports.vue
+@@ -7,6 +7,7 @@ import ReportContainer from './ReportContainer.vue';
+ import { REPORTS_EVENTS } from '../../../../helper/AnalyticsHelper/events';
+ import ReportHeader from './components/ReportHeader.vue';
+ import ProtonBotSection from './components/proton/ProtonBotSection.vue';
++import ProtonAiPerformanceSection from './components/proton/ProtonAiPerformanceSection.vue';
+ 
+ export default {
+   name: 'BotReports',
+@@ -16,6 +17,7 @@ export default {
+     ReportFilters,
+     ReportContainer,
+     ProtonBotSection,
++    ProtonAiPerformanceSection,
+   },
+   data() {
+     return {
+@@ -30,6 +32,19 @@ export default {
+     };
+   },
+   computed: {
++    // ISO dates for the Proton AI section; null until a range is chosen.
++    aiPeriod() {
++      if (!this.from || !this.to) return null;
++      // Local calendar date of the picked instant (same as the weekly
++      // report's toISODate): a UTC formatter shifts a local
++      // start-of-day to the previous date east of UTC (Malaysia, UTC+8).
++      const pad = n => String(n).padStart(2, '0');
++      const iso = sec => {
++        const d = new Date(sec * 1000);
++        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
++      };
++      return { from: iso(this.from), to: iso(this.to), granularity: 'day' };
++    },
+     requestPayload() {
+       return {
+         from: this.from,
+@@ -106,5 +121,7 @@ export default {
+     />
+ 
+     <ProtonBotSection />
++
++    <ProtonAiPerformanceSection :period="aiPeriod" />
+   </div>
+ </template>
+diff --git a/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonAiPerformanceSection.vue b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonAiPerformanceSection.vue
+new file mode 100644
+index 0000000..bfd9049
+--- /dev/null
++++ b/app/javascript/dashboard/routes/dashboard/settings/reports/components/proton/ProtonAiPerformanceSection.vue
+@@ -0,0 +1,394 @@
++<script setup>
++import { ref, computed, onMounted, watch } from 'vue';
++import ReportMetricCard from '../ReportMetricCard.vue';
++import { getAiPerformance } from 'dashboard/api/protonMetrics';
++
++// RFP 2026_028 4.56: the eight AI performance reports, served by one backend
++// call (/metrics/ai-performance). Every figure is computed from the view rows
++// the backend returns; the `*_definition` / `*_basis` text each view carries is
++// shown under its card so a reader sees what the number does and does not
++// measure (e.g. AI-resolved is inferred from assignment, not message author).
++
++// `period` is { from, to, granularity } as ISO dates, or null for all time. It
++// comes from the Bot page's date filter; the backend applies it per block and
++// reports each block's scope, and a block it could not scope is captioned.
++const props = defineProps({
++  period: { type: Object, default: null },
++});
++
++const blocks = ref({});
++const scopes = ref({});
++const error = ref(null);
++const loading = ref(true);
++
++const load = async () => {
++  loading.value = true;
++  error.value = null;
++  try {
++    const data = await getAiPerformance(props.period);
++    blocks.value = data.blocks ?? {};
++    scopes.value = data.scopes ?? {};
++  } catch (e) {
++    error.value = e.message || 'Failed to load AI performance reports';
++  } finally {
++    loading.value = false;
++  }
++};
++
++onMounted(load);
++watch(
++  () => [props.period?.from, props.period?.to],
++  () => load()
++);
++
++const rows = key => blocks.value[key] ?? [];
++const unavailable = key => scopes.value[key]?.status === 'unavailable';
++// A block the backend could not scope to the selected dates is all-time.
++const allTime = key =>
++  !!props.period && scopes.value[key]?.status === 'unfiltered';
++const anyAllTime = computed(() =>
++  Object.keys(scopes.value).some(key => allTime(key))
++);
++const sum = (list, field) => list.reduce((s, r) => s + (r[field] ?? 0), 0);
++const pct = (num, den) => (den ? `${((num / den) * 100).toFixed(1)}%` : '—');
++const firstOf = (key, field) => rows(key).find(r => r[field])?.[field] ?? '';
++
++// 1 + 6: resolution and deflection share the same definition of AI-resolved,
++// so the two cards are expected to match; both are shown because the RFP
++// lists them separately.
++const resolution = computed(() => {
++  const list = rows('resolution');
++  const cases = sum(list, 'cases');
++  return {
++    cases,
++    aiResolved: sum(list, 'ai_resolved'),
++    rate: pct(sum(list, 'ai_resolved'), cases),
++  };
++});
++
++const deflection = computed(() => {
++  const list = rows('deflection');
++  const cases = sum(list, 'cases');
++  return {
++    cases,
++    deflected: sum(list, 'deflected'),
++    humanInvolved: sum(list, 'human_involved'),
++    rate: pct(sum(list, 'deflected'), cases),
++  };
++});
++
++// 2: three buckets that sum to the case count.
++const aiVsHuman = computed(() => {
++  const totals = {};
++  rows('ai_vs_human').forEach(r => {
++    totals[r.resolution_path] = (totals[r.resolution_path] ?? 0) + r.cases;
++  });
++  const all = Object.values(totals).reduce((s, n) => s + n, 0);
++  return [
++    ['ai_resolved', 'Resolved by AI'],
++    ['agent_resolved', 'Resolved with a human'],
++    ['unresolved', 'Not yet resolved'],
++  ].map(([key, label]) => ({
++    key,
++    label,
++    cases: totals[key] ?? 0,
++    share: pct(totals[key] ?? 0, all),
++  }));
++});
++
++// 3: CSAT per resolution path; weighted by respondents, not by case count.
++const csat = computed(() => {
++  const out = {};
++  rows('csat').forEach(r => {
++    const o = out[r.resolution_path] ?? { respondents: 0, weighted: 0 };
++    o.respondents += r.respondents ?? 0;
++    o.weighted += (r.avg_score ?? 0) * (r.respondents ?? 0);
++    out[r.resolution_path] = o;
++  });
++  const fmt = key =>
++    out[key]?.respondents
++      ? (out[key].weighted / out[key].respondents).toFixed(2)
++      : '—';
++  return {
++    ai: fmt('ai_resolved'),
++    aiRespondents: out.ai_resolved?.respondents ?? 0,
++    agent: fmt('agent_resolved'),
++    agentRespondents: out.agent_resolved?.respondents ?? 0,
++  };
++});
++
++const groupTop = (key, labelOf, valueField, limit = 8) => {
++  const totals = {};
++  rows(key).forEach(r => {
++    const label = labelOf(r);
++    totals[label] = (totals[label] ?? 0) + (r[valueField] ?? 0);
++  });
++  return Object.entries(totals)
++    .map(([label, count]) => ({ label, count }))
++    .sort((a, b) => b.count - a.count)
++    .slice(0, limit);
++};
++
++// 4
++const escalationReasons = computed(() =>
++  groupTop('escalation_reasons', r => r.handoff_reason, 'cases')
++);
++
++// 5
++const accuracy = computed(() => {
++  const list = rows('accuracy');
++  const aiResolved = sum(list, 'ai_resolved');
++  return {
++    aiResolved,
++    reopened: sum(list, 'ai_resolved_reopened'),
++    rate: pct(sum(list, 'ai_resolved_not_reopened'), aiResolved),
++  };
++});
++
++// 7: the latest COMPLETE week (the current week is partial, so comparing it
++// with a full previous week would read as a drop), largest issues first, with
++// the change against the week before it.
++const rootCause = computed(() => {
++  const list = rows('root_cause').filter(r => r.week_complete);
++  const latest = list.reduce((m, r) => (r.day > m ? r.day : m), '');
++  return {
++    week: latest,
++    items: list
++      .filter(r => r.day === latest)
++      .sort((a, b) => b.cases - a.cases)
++      .slice(0, 10),
++  };
++});
++const growth = r =>
++  r.wow_growth_rate === null || r.wow_growth_rate === undefined
++    ? 'new'
++    : `${r.wow_growth_rate > 0 ? '+' : ''}${(r.wow_growth_rate * 100).toFixed(0)}%`;
++
++// 8
++const kbTopics = computed(() =>
++  groupTop('kb_improvement', r => r.topic, 'unanswered_cases', 10)
++);
++
++const hasAnyData = computed(() =>
++  Object.values(blocks.value).some(list => list.length)
++);
++</script>
++
++<template>
++  <div class="flex flex-col gap-6">
++    <div
++      class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++    >
++      <h2 class="text-base font-semibold text-n-slate-12">
++        AI Performance
++      </h2>
++      <p class="text-xs text-n-slate-10 mt-1">
++        Resolution, deflection, satisfaction, escalation, accuracy, root cause
++        and knowledge base gaps for AI-handled conversations
++      </p>
++      <p v-if="anyAllTime" class="text-xs text-n-slate-10 mt-1">
++        All time: the date filter could not be applied to some figures below.
++      </p>
++    </div>
++
++    <woot-loading-state
++      v-if="loading"
++      class="text-xs"
++      message="Loading AI performance…"
++    />
++    <div
++      v-else-if="error"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10 shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++    >
++      {{ error }}
++    </div>
++    <div
++      v-else-if="!hasAnyData"
++      class="flex items-center justify-center h-24 text-sm text-n-slate-10 shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++    >
++      No AI performance data available
++    </div>
++
++    <template v-else>
++      <!-- 1 + 6 + 5: headline rates -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <div class="flex flex-wrap gap-4">
++          <ReportMetricCard
++            label="AI Case Resolution (assignment-based)"
++            info-text="Cases resolved with no human assignee, escalate label or dealer escalation, as a share of all cases"
++            :value="resolution.rate"
++            class="flex-1"
++          />
++          <ReportMetricCard
++            label="AI Deflection Rate (same basis)"
++            info-text="Cases handled end to end by the AI with no human involvement"
++            :value="deflection.rate"
++            class="flex-1"
++          />
++          <ReportMetricCard
++            label="AI Resolutions Not Reopened (proxy)"
++            info-text="AI-resolved cases that were not reopened. Not a measure of answer correctness"
++            :value="accuracy.rate"
++            class="flex-1"
++          />
++        </div>
++        <p class="text-xs text-n-slate-10 mt-3">
++          {{ resolution.aiResolved }} of {{ resolution.cases }} cases AI
++          resolved; {{ deflection.humanInvolved }} involved a human;
++          {{ accuracy.reopened }} of {{ accuracy.aiResolved }} AI resolutions
++          were reopened.
++        </p>
++        <p class="text-xs text-n-slate-10 mt-3">
++          Case resolution and deflection use the same assignment-based
++          definition, so they show the same rate; both are listed because the
++          RFP names them separately.
++        </p>
++        <p
++          v-if="unavailable('resolution') || unavailable('deflection')"
++          class="text-xs text-n-ruby-11 mt-1"
++        >
++          Some figures are temporarily unavailable.
++        </p>
++        <p class="text-xs text-n-slate-10 mt-1">
++          {{ firstOf('deflection', 'deflection_definition') }}
++        </p>
++        <p class="text-xs text-n-slate-10 mt-1">
++          {{ firstOf('accuracy', 'accuracy_basis') }}
++        </p>
++      </div>
++
++      <!-- 2: AI vs human volume -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          AI vs Human Handling
++        </h3>
++        <table class="w-full text-sm">
++          <tbody>
++            <tr v-for="r in aiVsHuman" :key="r.key">
++              <td class="py-1 text-n-slate-11">{{ r.label }}</td>
++              <td class="py-1 text-right text-n-slate-12">{{ r.cases }}</td>
++              <td class="py-1 text-right text-n-slate-10">{{ r.share }}</td>
++            </tr>
++          </tbody>
++        </table>
++        <p class="text-xs text-n-slate-10 mt-3">
++          {{ firstOf('ai_vs_human', 'resolution_basis') }}
++        </p>
++      </div>
++
++      <!-- 3: AI CSAT -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          AI Response Satisfaction (CSAT)
++        </h3>
++        <div class="flex flex-wrap gap-4">
++          <ReportMetricCard
++            label="AI-resolved CSAT"
++            :info-text="`${csat.aiRespondents} responses`"
++            :value="csat.ai"
++            class="flex-1"
++          />
++          <ReportMetricCard
++            label="Human-resolved CSAT"
++            :info-text="`${csat.agentRespondents} responses`"
++            :value="csat.agent"
++            class="flex-1"
++          />
++        </div>
++        <p class="text-xs text-n-slate-10 mt-3">
++          Average satisfaction score of the cases resolved by the AI with no
++          human involvement, against cases resolved with a human, weighted by
++          the number of responses. Only cases that returned a rating count.
++        </p>
++      </div>
++
++      <!-- 4: escalation reasons -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          AI Escalation Reasons
++        </h3>
++        <table v-if="escalationReasons.length" class="w-full text-sm">
++          <tbody>
++            <tr v-for="r in escalationReasons" :key="r.label">
++              <td class="py-1 text-n-slate-11">{{ r.label }}</td>
++              <td class="py-1 text-right text-n-slate-12">{{ r.count }}</td>
++            </tr>
++          </tbody>
++        </table>
++        <div v-else class="text-sm text-n-slate-10">No escalations</div>
++        <p class="text-xs text-n-slate-10 mt-3">
++          {{ firstOf('escalation_reasons', 'handoff_reason_basis') }}
++        </p>
++      </div>
++
++      <!-- 7: root cause -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Recurring Issues (last complete week starting
++          {{ rootCause.week || '—' }})
++        </h3>
++        <table v-if="rootCause.items.length" class="w-full text-sm">
++          <thead>
++            <tr class="text-left text-n-slate-10">
++              <th class="py-1">Category</th>
++              <th class="py-1">Subcategory</th>
++              <th class="py-1 text-right">Cases</th>
++              <th class="py-1 text-right">vs week before</th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr
++              v-for="r in rootCause.items"
++              :key="`${r.category}/${r.subcategory}`"
++            >
++              <td class="py-1 text-n-slate-11">{{ r.category }}</td>
++              <td class="py-1 text-n-slate-11">{{ r.subcategory }}</td>
++              <td class="py-1 text-right text-n-slate-12">{{ r.cases }}</td>
++              <td class="py-1 text-right text-n-slate-10">{{ growth(r) }}</td>
++            </tr>
++          </tbody>
++        </table>
++        <div v-else class="text-sm text-n-slate-10">No issue data</div>
++        <p class="text-xs text-n-slate-10 mt-3">
++          {{ firstOf('root_cause', 'root_cause_basis') }}
++          <span v-if="allTime('root_cause')">All time.</span>
++        </p>
++      </div>
++
++      <!-- 8: KB improvement -->
++      <div
++        class="shadow outline-1 outline outline-n-container rounded-xl bg-n-solid-2 px-6 py-5"
++      >
++        <h3 class="text-sm font-semibold text-n-slate-12 mb-4">
++          Knowledge Base Gaps (suggested FAQ topics)
++        </h3>
++        <table v-if="kbTopics.length" class="w-full text-sm">
++          <tbody>
++            <tr v-for="r in kbTopics" :key="r.label">
++              <td class="py-1 text-n-slate-11">{{ r.label }}</td>
++              <td class="py-1 text-right text-n-slate-12">
++                {{ r.count }} unanswered
++              </td>
++            </tr>
++          </tbody>
++        </table>
++        <div v-else class="text-sm text-n-slate-10">
++          No unanswered enquiries
++        </div>
++        <p class="text-xs text-n-slate-10 mt-3">
++          {{ firstOf('kb_improvement', 'kb_basis') }}
++        </p>
++      </div>
++    </template>
++  </div>
++</template>

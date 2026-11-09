@@ -1,0 +1,261 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] FIX-43: AI activity monitor admin page
+
+Adds the "AI activity" admin page (Sidebar entry + route + API call), a
+master view of every AI-handled conversation (RFP 2026_028 3.2.5). Backs
+GET /admin/ai-activity (ai_activity_router.py). Gated like the other admin
+pages: protonHasFeature('ai_activity') && protonHasPermission('ai_activity.view').
+The `ai_activity` switchboard feature is OFF by default (an absent key is
+off), so a superadmin enables it per tenant. Additions-only: no existing
+patch is edited; the Sidebar and routes hunks anchor on 0053's Workforce
+block, which no later patch changes.
+---
+diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
+index 7e35456..d274dc1 100644
+--- a/app/javascript/dashboard/api/protonAdmin.js
++++ b/app/javascript/dashboard/api/protonAdmin.js
+@@ -310,3 +310,11 @@ export async function setTermProfile(profile) {
+     body: { profile },
+   });
+ }
++
++// ── AI activity monitor ────────────────────────────────────────────────────
++// Backs ai_activity_router.py (GET /admin/ai-activity), gated by the
++// `ai_activity.view` permission. A ~15s poll, not a pushed stream.
++
++export function getAiActivity() {
++  return adminRequest('/admin/ai-activity');
++}
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 3e84c49..52c3d71 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -604,6 +604,19 @@ const menuItems = computed(() => {
+           },
+         ]
+       : []),
++    // FIX-43: AI activity monitor (GET /admin/ai-activity), gated like every
++    // other admin page: platform feature AND tenant permission.
++    ...(protonHasFeature('ai_activity') &&
++    protonHasPermission('ai_activity.view')
++      ? [
++          {
++            name: 'AiActivityMonitor',
++            icon: 'i-lucide-bot',
++            label: 'AI activity',
++            to: accountScopedRoute('proton_ai_activity'),
++          },
++        ]
++      : []),
+     ...(protonHasFeature('agent_status') &&
+     protonHasPermission('presence.set_own_status')
+       ? [
+diff --git a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+index 4f753b1..971f571 100644
+--- a/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
++++ b/app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+@@ -88,6 +88,12 @@ export default {
+           component: () => import('../../views/ProtonWorkforceDashboardPage.vue'),
+           meta: { permissions: ['administrator'] },
+         },
++        {
++          path: 'proton/ai-activity',
++          name: 'proton_ai_activity',
++          component: () => import('../../views/ProtonAiActivityPage.vue'),
++          meta: { permissions: ['administrator'] },
++        },
+         {
+           // Coarse pre-filter only, matching proton_knowledge (0025): a
+           // Chatwoot SuperAdmin can hold the account-level role `agent`, so
+diff --git a/app/javascript/dashboard/views/ProtonAiActivityPage.vue b/app/javascript/dashboard/views/ProtonAiActivityPage.vue
+new file mode 100644
+index 0000000..65efce0
+--- /dev/null
++++ b/app/javascript/dashboard/views/ProtonAiActivityPage.vue
+@@ -0,0 +1,186 @@
++<!-- ProtonAiActivityPage.vue — OUR file. Master view of every AI-handled
++     conversation (RFP 2026_028 3.2.5): one row per conversation with its mode
++     (AI active / AI paused = human took over / escalated, waiting for a
++     human), the customer, and the last action (customer message awaiting the
++     AI, AI suggestion, AI reply). Reads GET /admin/ai-activity and polls on
++     the interval the response recommends; "real time" here is a poll, and the
++     page shows its own `generated_at` so it never implies a pushed stream.
++     A source reported "unavailable" is shown as a warning, not as an empty
++     list. -->
++<script>
++import { useAlert } from 'dashboard/composables';
++import { getAiActivity } from 'dashboard/api/protonAdmin';
++
++const MODE_LABELS = {
++  ai_active: 'AI active',
++  ai_paused: 'AI paused (human)',
++  escalated: 'Escalated, awaiting human',
++};
++const ACTION_LABELS = {
++  awaiting_ai: 'Customer message, awaiting AI',
++  ai_suggestion: 'AI suggestion (private note)',
++  ai_reply: 'AI replied',
++};
++
++export default {
++  name: 'ProtonAiActivityPage',
++  data() {
++    return {
++      generatedAt: null,
++      refreshNote: '',
++      intervalSeconds: 15,
++      sources: {},
++      truncated: {},
++      modesInferred: true,
++      summary: {},
++      conversations: [],
++      loading: true,
++      errored: false,
++      pollHandle: null,
++    };
++  },
++  computed: {
++    truncatedSources() {
++      return Object.entries(this.truncated)
++        .filter(([, cut]) => cut)
++        .map(([name]) => name);
++    },
++    unavailableSources() {
++      return Object.entries(this.sources)
++        .filter(([, state]) => state !== 'ok')
++        .map(([name]) => name);
++    },
++  },
++  async mounted() {
++    await this.load();
++    this.schedulePoll();
++  },
++  beforeUnmount() {
++    if (this.pollHandle) clearTimeout(this.pollHandle);
++  },
++  methods: {
++    async load() {
++      this.errored = false;
++      try {
++        const data = await getAiActivity();
++        this.generatedAt = data.generated_at;
++        this.refreshNote = data.refresh?.note || '';
++        this.intervalSeconds = data.refresh?.recommended_interval_seconds || 15;
++        this.sources = data.sources || {};
++        this.truncated = data.truncated || {};
++        this.modesInferred = data.modes_inferred !== false;
++        this.summary = data.summary || {};
++        this.conversations = Array.isArray(data.conversations)
++          ? data.conversations
++          : [];
++      } catch (err) {
++        this.errored = true;
++        useAlert(
++          'Failed to load AI activity: ' + (err.message || String(err))
++        );
++      } finally {
++        this.loading = false;
++      }
++    },
++    schedulePoll() {
++      // Rescheduled (not setInterval) so a slow request cannot stack calls.
++      this.pollHandle = setTimeout(async () => {
++        await this.load();
++        this.schedulePoll();
++      }, this.intervalSeconds * 1000);
++    },
++    modeLabel(mode) {
++      return MODE_LABELS[mode] || mode;
++    },
++    actionLabel(action) {
++      return action ? ACTION_LABELS[action.type] || action.type : '—';
++    },
++    formatAt(at) {
++      return at ? new Date(at).toLocaleString() : '';
++    },
++  },
++};
++</script>
++
++<template>
++  <div class="p-6">
++    <h1 class="mb-1 text-lg font-medium text-n-slate-12">AI activity</h1>
++    <p class="mb-2 text-sm text-n-slate-11">
++      Every conversation the AI is handling or has just handed off, with its
++      current mode and the last action taken.
++    </p>
++    <p v-if="generatedAt" class="mb-3 text-xs text-n-slate-11">
++      Last updated {{ new Date(generatedAt).toLocaleString() }} —
++      {{ refreshNote }}
++    </p>
++    <p v-if="modesInferred" class="mb-3 text-xs text-n-slate-11">
++      Modes are inferred from conversation state (pending, paused, escalated),
++      not read from the AI's own decision log.
++    </p>
++    <p v-if="truncatedSources.length" class="mb-3 text-xs text-n-ruby-11">
++      List truncated for: {{ truncatedSources.join(', ') }}. Only the most
++      recent conversations are shown.
++    </p>
++    <p v-if="unavailableSources.length" class="mb-3 text-xs text-n-ruby-11">
++      Could not read: {{ unavailableSources.join(', ') }}. Rows from the other
++      source are still shown.
++    </p>
++    <div class="flex gap-4 mb-4 text-sm text-n-slate-12">
++      <span>AI active: {{ summary.ai_active || 0 }}</span>
++      <span>AI paused: {{ summary.ai_paused || 0 }}</span>
++      <span>Escalated: {{ summary.escalated || 0 }}</span>
++    </div>
++
++    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
++      Loading…
++    </div>
++    <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">
++      Could not load AI activity.
++    </div>
++    <div v-else class="overflow-x-auto border rounded-lg border-n-weak">
++      <table class="w-full text-sm border-collapse text-n-slate-11">
++        <thead>
++          <tr class="text-left border-b border-n-weak text-n-slate-12">
++            <th class="px-3 py-2 font-medium whitespace-nowrap">Conversation</th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">Customer</th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">Mode</th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">Last action</th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">Preview</th>
++          </tr>
++        </thead>
++        <tbody>
++          <tr
++            v-for="conv in conversations"
++            :key="conv.conversation_id"
++            class="border-b border-n-weak last:border-b-0"
++          >
++            <td class="px-3 py-2 whitespace-nowrap">
++              <router-link
++                :to="{
++                  name: 'inbox_conversation',
++                  params: { conversation_id: conv.conversation_id },
++                }"
++              >
++                #{{ conv.conversation_id }}
++              </router-link>
++            </td>
++            <td class="px-3 py-2 whitespace-nowrap">{{ conv.customer || '—' }}</td>
++            <td class="px-3 py-2 whitespace-nowrap">{{ modeLabel(conv.mode) }}</td>
++            <td class="px-3 py-2 whitespace-nowrap">
++              {{ actionLabel(conv.last_action) }}
++              <span v-if="conv.last_action?.at" class="text-xs">
++                ({{ formatAt(conv.last_action.at) }})
++              </span>
++            </td>
++            <td class="px-3 py-2">{{ conv.last_action?.preview || '' }}</td>
++          </tr>
++          <tr v-if="!conversations.length">
++            <td colspan="5" class="px-3 py-6 text-center text-n-slate-11">
++              No AI-handled conversations right now.
++            </td>
++          </tr>
++        </tbody>
++      </table>
++    </div>
++  </div>
++</template>

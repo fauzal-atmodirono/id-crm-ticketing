@@ -29,7 +29,11 @@ instance as /escalation/contacts.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import hmac
+import re
+import time
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -38,8 +42,10 @@ import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
+from chatbot.features.chat.audit_events import EVENT_REPLY_LINK, record_event
 from chatbot.features.chat.escalation_ack import ack_transport
-from chatbot.features.chat.ports import AuditEntry
+from chatbot.features.chat.escalation_context import derive_context
+from chatbot.features.chat.handoff_note import is_phone_conversation
 from chatbot.features.chat.sla import ACKNOWLEDGED_STATE
 
 if TYPE_CHECKING:
@@ -51,6 +57,14 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(__name__)
 
 _CWRequest = Callable[..., Coroutine[Any, Any, dict[str, Any] | None]]
+_MergeAttrs = Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]
+_AddLabel = Callable[[str, str], Coroutine[Any, Any, None]]
+
+# The agent service's once-per-escalation stamp (agent/app/services/sync.py
+# _NOTIFIED_ATTR). Written here only when this endpoint itself adds a
+# dealer_<slug> label -- see _fill_dealer.
+_NOTIFIED_ATTR = "escalation_notified_at"
+_SLUG_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 
 
 class _NotifyIn(BaseModel):
@@ -73,6 +87,12 @@ class _NotifyIn(BaseModel):
     # the message's `source_id`), so the acknowledgement threads onto their
     # mail instead of arriving as a new one. Absent = unthreaded, as before.
     customer_in_reply_to: str | None = None
+    # FIX-17: the human who escalated and the case's SLA status at that moment,
+    # so the audit trail names a person rather than a service. All optional --
+    # an agent service that predates them is unaffected.
+    actor_name: str | None = None
+    actor_user_id: int | None = None
+    sla_status: str | None = None
 
 
 class _AcknowledgeIn(BaseModel):
@@ -112,6 +132,62 @@ async def _resolve_customer_email(chatwoot_request: _CWRequest, conv_id: str) ->
     return str(email) if email else None
 
 
+# FIX-58: a notify call can outlive the agent's HTTP timeout (99-123 s were
+# observed under VM load against a 60 s client timeout), so the agent never
+# learns the first call succeeded, never stamps escalation_notified_at, and
+# the next conversation_updated event re-runs the whole escalation -- duplicate
+# customer ack, PIC forward and dealer forward. The window below makes a retry
+# for the same (conversation, recipient set) share the first call's outcome.
+#
+# In-process on purpose: the notify route has no cheap durable store of its own
+# (the only per-case state it writes is a Chatwoot custom attribute, which the
+# agent reads on its next event, not this route). The cache is therefore lost on
+# a backend restart; a retry landing after a restart inside the window can
+# still double-send. Accepted for the demo window; a Firestore-backed key is the
+# Wave 2 upgrade if restarts mid-escalation prove real.
+NOTIFY_IDEMPOTENCY_WINDOW_SECONDS = 30 * 60
+# /escalation/contacts is hit on every inbound PIC/dealer reply by the agent
+# (10 s client timeout). PIC and dealer lists change by hand a few times a day,
+# so a short TTL turns a full Firestore scan per reply into one per window.
+CONTACTS_CACHE_TTL_SECONDS = 30.0
+
+
+class ContactsCache:
+    """TTL cache for the /escalation/contacts allowlist, with explicit
+    invalidation and a single-flight guard.
+
+    The Escalation Routing admin router calls ``invalidate`` on every write, so
+    an operator's edit is reflected on the very next lookup (a new PIC's reply
+    is linked, a removed PIC is refused) instead of up to a TTL later. The
+    generation counter stops a scan that was already running when the edit
+    landed from storing its stale result afterwards. ``lock`` makes concurrent
+    misses share one Firestore scan instead of each doing their own.
+    """
+
+    def __init__(self, ttl: float = CONTACTS_CACHE_TTL_SECONDS) -> None:
+        self._ttl = ttl
+        self._entry: tuple[float, dict[str, list[dict[str, str]]]] | None = None
+        self._generation = 0
+        self.lock = asyncio.Lock()
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
+    def get(self) -> dict[str, list[dict[str, str]]] | None:
+        if self._entry is None or time.monotonic() - self._entry[0] >= self._ttl:
+            return None
+        return self._entry[1]
+
+    def put(self, value: dict[str, list[dict[str, str]]], generation: int) -> None:
+        if generation == self._generation:
+            self._entry = (time.monotonic(), value)
+
+    def invalidate(self) -> None:
+        self._generation += 1
+        self._entry = None
+
+
 def build_escalation_router(
     notifier: EscalationNotifier,
     chatwoot_request: _CWRequest,
@@ -119,31 +195,169 @@ def build_escalation_router(
     pic_store: PicStore | None = None,
     dealer_store: DealerStore | None = None,
     audit: AuditLogPort | None = None,
+    contacts_cache: ContactsCache | None = None,
+    merge_attributes: _MergeAttrs | None = None,
+    add_label: _AddLabel | None = None,
 ) -> APIRouter:
+    """``merge_attributes`` / ``add_label`` (merge-safe Chatwoot writers) are
+    used only with ``handoff_note_enabled``, by the one-click dealer
+    escalation in ``_do_notify``."""
     router = APIRouter()
     auth = _require_api_key(settings)
+    # key -> (monotonic start time, shared task). The task, not the result, is
+    # stored so a retry arriving while the first call is still running joins it
+    # instead of starting a second send.
+    inflight: dict[tuple[str, str, str, str, str], tuple[float, asyncio.Task[dict[str, str]]]] = {}
+    cache = contacts_cache if contacts_cache is not None else ContactsCache()
 
     @router.post("/escalation/notify", dependencies=[Depends(auth)])
     async def notify(payload: _NotifyIn) -> dict[str, str]:
+        key = (
+            payload.conversation_id,
+            (payload.department or "").strip().lower(),
+            (payload.dealer or "").strip().lower(),
+            (payload.channel_type or "").strip().lower(),
+            # Content hash: the agent clears escalation_notified_at on
+            # de-escalation, so a genuine re-escalation of the same
+            # department/dealer within the window must send again. Only an
+            # identical payload (a timeout retry) is suppressed.
+            hashlib.sha256(f"{payload.title}\x00{payload.body}".encode()).hexdigest()[:16],
+        )
+        now = time.monotonic()
+        for k in [k for k, (t, _) in inflight.items() if now - t > NOTIFY_IDEMPOTENCY_WINDOW_SECONDS]:
+            del inflight[k]
+        entry = inflight.get(key)
+        if entry is not None and not (
+            entry[1].done() and (entry[1].cancelled() or entry[1].exception() is not None)
+        ):
+            _log.warning(
+                "escalation_notify_duplicate_suppressed",
+                conv_id=payload.conversation_id,
+                department=payload.department,
+                dealer=payload.dealer,
+            )
+            # shield: a caller that gives up must not cancel the shared send.
+            return await asyncio.shield(entry[1])
+        task = asyncio.ensure_future(_do_notify(payload))
+        inflight[key] = (now, task)
+        return await asyncio.shield(task)
+
+    async def _read_conversation(conv_id: str) -> dict[str, Any] | None:
+        try:
+            data = await chatwoot_request("GET", f"/conversations/{conv_id}", None)
+        except Exception:
+            _log.warning("escalation_notify_conversation_read_failed", conv_id=conv_id)
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _confirmed_dealer(conv: dict[str, Any] | None) -> str | None:
+        """The dealer the customer named and that matched one configured
+        dealer (caller_dealer, written by the phone caller context or the
+        chat handoff note). Never the history dealer, never raw text."""
+        attrs = (conv or {}).get("custom_attributes") or {}
+        slug = str(attrs.get("caller_dealer") or "").strip().lower() if isinstance(attrs, dict) else ""
+        return slug if _SLUG_RE.match(slug) else None
+
+    async def _label_dealer(conv_id: str, slug: str) -> None:
+        """Make the dealer escalation visible like a hand-added one: the
+        dealer_<slug> label (reports, dealer_escalated_at, the ladder).
+        Stamp the agent's once-per-escalation guard FIRST: the label fires
+        a conversation_updated that re-enters maybe_escalate, and with the
+        stamp in place that echo is skipped instead of escalating twice."""
+        if merge_attributes is None or add_label is None:
+            return
+        try:
+            stamp = datetime.now(UTC).isoformat()
+            await merge_attributes(conv_id, {_NOTIFIED_ATTR: stamp})
+            # The merge writer swallows Chatwoot errors (fail-open), so
+            # confirm the stamp landed before labelling: a label without it
+            # lets the agent's echo send the dealer email and ack again.
+            # Losing the label is the lesser failure (the email went).
+            conv = await _read_conversation(conv_id)
+            attrs = (conv or {}).get("custom_attributes") or {}
+            if not isinstance(attrs, dict) or not attrs.get(_NOTIFIED_ATTR):
+                _log.warning("escalation_notify_dealer_label_skipped_unstamped", conv_id=conv_id)
+                return
+            await add_label(conv_id, f"dealer_{slug}")
+        except Exception as e:
+            _log.warning(
+                "escalation_notify_dealer_label_failed", conv_id=conv_id, error=str(e)
+            )
+
+    async def _do_notify(payload: _NotifyIn) -> dict[str, str]:
         transport = (
             "email" if payload.channel_type is None else ack_transport(payload.channel_type)
         )
+        dealer = payload.dealer
+        filled_dealer: str | None = None
+        if settings.handoff_note_enabled and (
+            transport == "conversation" or not (dealer or payload.department)
+        ):
+            # 2026-11-09 brief 3 (features/chat/handoff_note.py): a phone
+            # call sits in the API inbox, so its channel type says
+            # "conversation" -- but there is no thread to write to; the
+            # caller was spoken to. And `escalate` alone escalates to the
+            # dealer the customer confirmed.
+            conv = await _read_conversation(payload.conversation_id)
+            if transport == "conversation" and is_phone_conversation(conv):
+                transport = "none"
+            # Ruling: a department escalation (escalate + dept_<x>) is
+            # internal and never reaches the dealer.
+            if not dealer and not payload.department:
+                filled_dealer = _confirmed_dealer(conv)
+                dealer = filled_dealer
         customer_email = (
             await _resolve_customer_email(chatwoot_request, payload.conversation_id)
             if transport == "email"
             else None
         )
+        # Only forwarded when known, so a call without them is identical to the
+        # pre-FIX-17 call. The agent service sends none of these today, so with
+        # an audit store wired the backend derives them (escalation_context):
+        # the SLA status from the case's own trail, the actor from the
+        # conversation's "<name> added escalate" activity.
+        actor_name = payload.actor_name
+        actor_user_id = payload.actor_user_id
+        sla_status = payload.sla_status
+        actor_source: str | None = None
+        if audit is not None:
+            derived_actor, derived_sla, actor_source = await derive_context(
+                audit,
+                chatwoot_request,
+                payload.conversation_id,
+                need_actor=actor_name is None,
+                need_sla=sla_status is None,
+            )
+            if actor_name is None:
+                actor_name = derived_actor
+            else:
+                actor_source = None
+            if sla_status is None:
+                sla_status = derived_sla
+        audit_ctx = {
+            k: v
+            for k, v in (
+                ("actor_name", actor_name),
+                ("actor_user_id", actor_user_id),
+                ("sla_status", sla_status),
+                ("actor_source", actor_source),
+            )
+            if v is not None
+        }
         await notifier.notify_escalation(
             conv_id=payload.conversation_id,
             title=payload.title,
             body=payload.body,
             department=payload.department,
-            dealer=payload.dealer,
+            dealer=dealer,
             customer_email=customer_email,
             ack_transport=transport,
             customer_subject=payload.customer_subject,
             customer_in_reply_to=payload.customer_in_reply_to,
+            **audit_ctx,
         )
+        if filled_dealer:
+            await _label_dealer(payload.conversation_id, filled_dealer)
         return {"status": "ok"}
 
     @router.get("/escalation/contacts", dependencies=[Depends(auth)])
@@ -158,6 +372,25 @@ def build_escalation_router(
         "reply not linked" is always safe, where a 5xx here would just make
         the caller retry against the same failing store for no benefit.
         """
+        cached = cache.get()
+        if cached is not None:
+            return cached
+        # Single flight: concurrent misses queue here and the later ones find
+        # the first one's result on the re-check, so one scan serves them all.
+        async with cache.lock:
+            cached = cache.get()
+            if cached is not None:
+                return cached
+            generation = cache.generation
+            result, degraded = await _scan_contacts()
+            # Never cache a degraded or empty answer: a Firestore hiccup would
+            # otherwise pin "no contacts" (every reply refused) for the TTL.
+            if not degraded and result["contacts"]:
+                cache.put(result, generation)
+            return result
+
+    async def _scan_contacts() -> tuple[dict[str, list[dict[str, str]]], bool]:
+        degraded = False
         seen: set[str] = set()
         out: list[dict[str, str]] = []
 
@@ -173,6 +406,7 @@ def build_escalation_router(
                 pics = await pic_store.list_all()
             except Exception:
                 _log.warning("escalation_contacts_pic_store_failed")
+                degraded = True
                 pics = []
             for rec in pics:
                 _add(rec.pic_email, rec.pic_name, "pic")
@@ -184,6 +418,7 @@ def build_escalation_router(
                 dealers = await dealer_store.list_all()
             except Exception:
                 _log.warning("escalation_contacts_dealer_store_failed")
+                degraded = True
                 dealers = []
             for rec in dealers:
                 for member in rec.emails:
@@ -202,7 +437,7 @@ def build_escalation_router(
                 for cc in rec.cc_emails:
                     _add(cc, f"{rec.dealer} (CC)", "dealer")
 
-        return {"contacts": out}
+        return {"contacts": out}, degraded
 
     @router.post("/escalation/acknowledge", dependencies=[Depends(auth)])
     async def acknowledge(payload: _AcknowledgeIn) -> dict[str, str]:
@@ -233,17 +468,22 @@ def build_escalation_router(
         if any(e.to_state == ACKNOWLEDGED_STATE for e in existing):
             return {"status": "duplicate"}
 
-        await audit.append(
-            AuditEntry(
-                ticket_id=ticket_id,
-                session_id=f"chatwoot-conv-{ticket_id}",
-                actor=payload.actor,
-                from_state="OPEN",
-                to_state=ACKNOWLEDGED_STATE,
-                at=datetime.now(UTC).isoformat(),
-                remark=payload.remark,
-            )
+        recorded = await record_event(
+            audit,
+            event_type=EVENT_REPLY_LINK,
+            target=f"case:{ticket_id}",
+            ticket_id=ticket_id,
+            actor_name=payload.actor,
+            from_state="OPEN",
+            to_state=ACKNOWLEDGED_STATE,
+            remarks=payload.remark,
         )
+        if not recorded:
+            # The row IS the acknowledgement (the SLA engine reads it), so a
+            # failed write must not be reported as success: 503 lets the
+            # reply linker retry instead of believing the case was acknowledged.
+            _log.error("escalation_acknowledge_not_recorded", ticket_id=ticket_id)
+            raise HTTPException(status_code=503, detail="Acknowledgement not recorded")
         _log.info("escalation_acknowledged", ticket_id=ticket_id, actor=payload.actor)
         return {"status": "ok"}
 

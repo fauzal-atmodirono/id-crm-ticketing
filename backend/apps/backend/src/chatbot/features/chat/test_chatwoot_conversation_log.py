@@ -552,3 +552,38 @@ async def test_find_conversation_ticket_never_issues_a_create_call() -> None:
     fake = _FakeClient({("GET", "/contacts/search"): {"payload": []}})
     await _adapter(fake).find_conversation_ticket("phone-CA1")
     assert not any(m == "POST" for m, _p, _pl in fake.calls)
+
+
+@pytest.mark.asyncio
+async def test_set_call_recording_archive_merges_the_object_names() -> None:
+    """The call-recording player reads `call_recording_object`; the write must
+    be merge-safe like every other attribute writer here, and must never
+    become a note."""
+    fake = _FakeClient(
+        {("GET", "/conversations/55"): {"custom_attributes": {"recording_sid": "RE1"}}}
+    )
+    await _adapter(fake).set_call_recording_archive(
+        "55",
+        audio_object="proton-crm/call-recording/2026-11-09/CA1.mp3",
+        transcript_object="proton-crm/call-recording/2026-11-09/CA1.txt",
+    )
+    assert not any(p.endswith("/messages") for _m, p, _pl in fake.calls)
+    method, path, payload = fake.calls[-1]
+    assert method == "POST" and path.endswith("/custom_attributes")
+    assert payload == {
+        "custom_attributes": {
+            "recording_sid": "RE1",
+            "call_recording_object": "proton-crm/call-recording/2026-11-09/CA1.mp3",
+            "call_recording_transcript_object": "proton-crm/call-recording/2026-11-09/CA1.txt",
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_set_call_recording_archive_without_a_transcript_writes_only_the_audio() -> None:
+    fake = _FakeClient({("GET", "/conversations/55"): {"custom_attributes": {}}})
+    await _adapter(fake).set_call_recording_archive(
+        "55", audio_object="p/2026-11-09/CA1.mp3", transcript_object=""
+    )
+    _method, _path, payload = fake.calls[-1]
+    assert payload == {"custom_attributes": {"call_recording_object": "p/2026-11-09/CA1.mp3"}}

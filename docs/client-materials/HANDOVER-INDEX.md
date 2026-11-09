@@ -57,8 +57,11 @@ sandbox tenant has been provisioned, so "completable as written" is owed rather
 than verified. And **nine topics cannot be taught yet** — the workforce
 dashboard, AI quality, AI cost, targets, alert preferences, taxonomy admin and
 the Roles & Permissions redesign are all behind unbuilt fork patches or
-uncreated BigQuery views, and data scopes are *deliberately* not taught because
-`DATA_SCOPED_RBAC_ENABLED` restricts nothing (R16). Each curriculum ends with
+uncreated BigQuery views, and data scopes are not taught yet: enforcement now
+exists (Wave 2 Task 28) but is off by default and awaits Proton's sign-off of
+the scope rules and of its limits (it does not confine Chatwoot's own
+conversation views or the Cases list; see `docs/runbooks/proton-wave2-deploy.md`).
+Each curriculum ends with
 that list and its reasons. See
 [milestone artefact 05](governance/milestone-artefacts/05-training-manual.md)
 and [`training/delivery-plan.md`](training/delivery-plan.md) §7.

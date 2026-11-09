@@ -192,6 +192,21 @@ async def record_conversation_status(payload: dict) -> None:
         )
 
 
+def _assignee(conversation: dict | None) -> dict:
+    meta = (conversation or {}).get("meta") or {}
+    assignee = meta.get("assignee") or {}
+    return assignee if isinstance(assignee, dict) else {}
+
+
+def _assignee_name(conversation: dict | None) -> str | None:
+    return _assignee(conversation).get("name") or None
+
+
+def _assignee_id(conversation: dict | None) -> int | None:
+    value = _assignee(conversation).get("id")
+    return value if isinstance(value, int) else None
+
+
 async def _maybe_notify_escalation(conversation_id: int, labels: list[str]) -> None:
     """EM-7: ask the backend to send the escalation (customer ack + PIC/dealer
     forward) for a conversation an agent has labelled `escalate`.
@@ -317,6 +332,14 @@ async def _maybe_notify_escalation(conversation_id: int, labels: list[str]) -> N
         # mid-word at 100 characters. The two legs get two subjects.
         customer_subject=f"Update on your case (#{conversation_id})",
         customer_in_reply_to=customer_in_reply_to,
+        # FIX-17: the conversation's current assignee is the closest thing the
+        # agent service knows to "who escalated"; the backend prefers the
+        # Chatwoot label-activity author when it can find one.
+        actor_name=_assignee_name(conversation),
+        actor_user_id=_assignee_id(conversation),
+        # str(): the attribute is operator-editable and may hold a number;
+        # the backend field is a string. Empty/absent -> None (not sent).
+        sla_status=(str(existing["sla_status"]) if existing.get("sla_status") else None),
     )
     if not sent:
         # Deliberately notify-then-stamp, and only on a confirmed send.

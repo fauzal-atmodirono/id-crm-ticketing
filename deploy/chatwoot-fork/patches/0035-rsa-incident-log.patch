@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..042889a
 --- /dev/null
 +++ b/app/javascript/dashboard/api/protonRsa.js
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,80 @@
 +import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
 +
 +// Thin client for the Proton backend RSA incident-log endpoints
@@ -13,15 +13,31 @@ index 0000000..042889a
 +// require_permission session triplet used by protonAdmin.js's /admin + /authz
 +// routes). Errors carry a numeric `.status` so callers can special-case
 +// 401/503.
++//
++// FIX-24: the paragraph above is superseded. /rsa/incidents* now requires
++// require_permission("sla.manage") once RBAC is on, so rsaRequest ALSO sends
++// the Chatwoot browser session triplet (same as protonAdmin.js's adminRequest).
++// The shared x-api-key is still sent for tenants with RBAC off.
++import Auth from './auth';
++
 +async function rsaRequest(path, { method = 'GET', body } = {}) {
 +  const { backendUrl, backendKey } = useProtonConfig();
 +  if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
++
++  const authData = Auth.hasAuthCookie() ? Auth.getAuthData() : null;
 +
 +  const response = await fetch(`${backendUrl}${path}`, {
 +    method,
 +    headers: {
 +      'Content-Type': 'application/json',
 +      ...(backendKey ? { 'x-api-key': backendKey } : {}),
++      ...(authData
++        ? {
++            'x-chatwoot-access-token': authData['access-token'],
++            'x-chatwoot-client': authData.client,
++            'x-chatwoot-uid': authData.uid,
++          }
++        : {}),
 +    },
 +    ...(body ? { body: JSON.stringify(body) } : {}),
 +  });
@@ -116,7 +132,7 @@ new file mode 100644
 index 0000000..4e10af1
 --- /dev/null
 +++ b/app/javascript/dashboard/views/ProtonRsaPage.vue
-@@ -0,0 +1,602 @@
+@@ -0,0 +1,624 @@
 +<!-- ProtonRsaPage.vue — OUR file. Standalone roadside-assistance (RSA)
 +     incident-log entry/report page. Three stacked sections sharing one page
 +     shell: (a) an aggregate summary (cases by cause, cases by dealer, from
@@ -141,6 +157,7 @@ index 0000000..4e10af1
 +  incident_date: '',
 +  vehicle_no: '',
 +  vehicle_model: '',
++  customer_phone: '',
 +  cause: '',
 +  purchased_from: '',
 +  breakdown_location: '',
@@ -375,6 +392,16 @@ index 0000000..4e10af1
 +          />
 +        </div>
 +        <div>
++          <label class="block mb-1 text-sm text-n-slate-11"
++            >Customer phone</label
++          >
++          <input
++            v-model="form.customer_phone"
++            type="tel"
++            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          />
++        </div>
++        <div>
 +          <label class="block mb-1 text-sm text-n-slate-11">Cause *</label>
 +          <input
 +            v-model="form.cause"
@@ -524,6 +551,7 @@ index 0000000..4e10af1
 +                Late reason
 +              </th>
 +              <th class="px-3 py-2 font-medium whitespace-nowrap">Remarks</th>
++              <th class="px-3 py-2 font-medium whitespace-nowrap">Phone</th>
 +              <th class="px-3 py-2 font-medium whitespace-nowrap">Actions</th>
 +            </tr>
 +          </thead>
@@ -633,6 +661,13 @@ index 0000000..4e10af1
 +                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
 +                  />
 +                </td>
++                <td class="px-2 py-1">
++                  <input
++                    v-model="editForm.customer_phone"
++                    type="tel"
++                    class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
++                  />
++                </td>
 +                <td class="px-3 py-2 whitespace-nowrap">
 +                  <button
 +                    type="button"
@@ -693,6 +728,9 @@ index 0000000..4e10af1
 +                </td>
 +                <td class="px-3 py-2 whitespace-nowrap">
 +                  {{ incident.remarks }}
++                </td>
++                <td class="px-3 py-2 whitespace-nowrap">
++                  {{ incident.customer_phone }}
 +                </td>
 +                <td class="px-3 py-2 whitespace-nowrap">
 +                  <button

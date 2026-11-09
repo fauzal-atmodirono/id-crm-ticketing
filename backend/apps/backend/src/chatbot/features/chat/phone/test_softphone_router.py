@@ -38,7 +38,7 @@ def registry():
 
 def _client(settings, registry, user_id=17, perms=frozenset({"voice.answer"})):
     validator = AsyncMock()
-    validator.resolve_user_id.return_value = user_id
+    validator.resolve_identity.return_value = (user_id, False)
     repo = AsyncMock()
     repo.permissions_for_user.return_value = set(perms)
     app = FastAPI()

@@ -56,3 +56,25 @@ class GeminiTextToSpeechAdapter(TextToSpeechPort):
         except Exception as e:
             _log.error("gemini_tts_failed", error=str(e))
             raise
+
+    async def synthesize_mulaw8k(self, text: str, language_code: str = "en-US") -> bytes:
+        """Synthesise telephony audio: mu-law 8 kHz mono, as Twilio Media
+        Streams plays it. Used once per process for the phone recording
+        notice (phone_fast_start_enabled); asks for LINEAR16 (a WAV) and
+        converts locally, so it does not depend on which encodings a given
+        TTS model offers."""
+        from chatbot.features.chat.phone.audio_codec import wav_to_mulaw8k  # noqa: PLC0415
+
+        voice = texttospeech.VoiceSelectionParams(
+            language_code=language_code, name=self._voice_name, model_name=self._model
+        )
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.LINEAR16, sample_rate_hertz=8000
+        )
+        response = await run_in_threadpool(
+            self._client.synthesize_speech,
+            input=texttospeech.SynthesisInput(text=text),
+            voice=voice,
+            audio_config=audio_config,
+        )
+        return wav_to_mulaw8k(response.audio_content)

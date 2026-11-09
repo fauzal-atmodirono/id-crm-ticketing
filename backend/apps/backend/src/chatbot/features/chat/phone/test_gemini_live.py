@@ -61,3 +61,21 @@ async def test_send_text_hint_forwards_to_realtime_input() -> None:
     await session.send_text_hint("match the caller's language")
 
     assert sent == [{"text": "match the caller's language"}]
+
+
+@pytest.mark.asyncio
+async def test_send_greeting_is_a_completed_client_turn() -> None:
+    """The greeting prompt is ONE complete client turn (so the model answers
+    it once), sent before any caller audio."""
+    sent: list[dict] = []
+
+    class _FakeSDKSession:
+        async def send_client_content(self, **kwargs: Any) -> None:
+            sent.append(kwargs)
+
+    session = gemini_live._GeminiLiveSession(_FakeSDKSession())  # type: ignore[arg-type]
+    await session.send_greeting("Greet the caller now.")
+
+    assert len(sent) == 1 and sent[0]["turn_complete"] is True
+    turn = sent[0]["turns"]
+    assert turn.role == "user" and turn.parts[0].text == "Greet the caller now."

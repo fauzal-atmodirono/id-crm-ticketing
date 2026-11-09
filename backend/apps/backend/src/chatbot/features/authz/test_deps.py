@@ -4,7 +4,11 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from chatbot.features.authz.db import build_engine, build_session_maker, init_authz_db
-from chatbot.features.authz.deps import require_permission
+from chatbot.features.authz.deps import (
+    is_platform_superadmin,
+    require_permission,
+    require_platform_superadmin,
+)
 from chatbot.features.authz.identity import TokenValidator
 from chatbot.features.authz.repository import AuthzRepository
 from chatbot.features.authz.seed import seed_defaults
@@ -178,7 +182,7 @@ async def test_identity_dependency_returns_the_resolved_user_id():
     from chatbot.platform.config import get_settings  # noqa: PLC0415
 
     validator = AsyncMock()
-    validator.resolve_user_id.return_value = 17
+    validator.resolve_identity.return_value = (17, False)
     repo = AsyncMock()
     repo.permissions_for_user.return_value = {"voice.answer"}
 
@@ -197,3 +201,113 @@ async def test_identity_dependency_returns_the_resolved_user_id():
         )
         == 17
     )
+
+
+_SESSION_HEADERS = {
+    "x-chatwoot-access-token": "tok-sa",
+    "x-chatwoot-client": "client-1",
+    "x-chatwoot-uid": "uid-1",
+}
+
+
+def test_user_one_is_always_a_platform_superadmin():
+    """The floor. Id 1 set the platform up on every tenant, and hardcoding it
+    means no administrative accident — a revoked role, a stripped SuperAdmin
+    type — can lock the owner out of the switchboard."""
+    assert is_platform_superadmin(1, False) is True
+
+
+def test_chatwoot_super_admin_type_is_a_platform_superadmin():
+    assert is_platform_superadmin(7, True) is True
+
+
+def test_ordinary_user_is_not_a_platform_superadmin():
+    assert is_platform_superadmin(7, False) is False
+
+
+def test_platform_superadmin_requires_a_session():
+    dep = require_platform_superadmin(validator=None, settings=get_settings())
+    assert _app_with_endpoint(dep).get("/protected").status_code == 401
+
+
+def test_platform_superadmin_ignores_the_shared_secret():
+    """A shared secret identifies a service, not a person, and the switchboard
+    changes what a tenant's product IS. There must be a person."""
+    settings = get_settings().model_copy(update={"faq_admin_api_key": "secret123"})
+    dep = require_platform_superadmin(validator=None, settings=settings)
+    client = _app_with_endpoint(dep)
+    assert client.get("/protected", headers={"x-api-key": "secret123"}).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_platform_superadmin_denies_an_ordinary_user(respx_mock):
+    settings = get_settings()
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 7, "type": None})
+    )
+    dep = require_platform_superadmin(validator=TokenValidator(settings), settings=settings)
+    client = _app_with_endpoint(dep)
+    assert client.get("/protected", headers=_SESSION_HEADERS).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_platform_superadmin_allows_user_one_without_the_type(respx_mock):
+    settings = get_settings()
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 1, "type": None})
+    )
+    dep = require_platform_superadmin(validator=TokenValidator(settings), settings=settings)
+    client = _app_with_endpoint(dep)
+    assert client.get("/protected", headers=_SESSION_HEADERS).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_platform_superadmin_allows_the_super_admin_type(respx_mock):
+    settings = get_settings()
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 9, "type": "SuperAdmin"})
+    )
+    dep = require_platform_superadmin(validator=TokenValidator(settings), settings=settings)
+    client = _app_with_endpoint(dep)
+    assert client.get("/protected", headers=_SESSION_HEADERS).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_super_admin_holds_every_permission_without_a_role(tmp_path, respx_mock):
+    """Otherwise the platform owner cannot open Roles & Permissions on a tenant
+    where nobody ever assigned them a role — which is most tenants. Note there
+    is deliberately NO assign_role call here."""
+    settings = get_settings().model_copy(update={"rbac_enabled": True})
+    engine = build_engine(f"sqlite+aiosqlite:///{tmp_path}/deps_superadmin.db")
+    await init_authz_db(engine)
+    repo = AuthzRepository(build_session_maker(engine))
+    await seed_defaults(repo)
+
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 9, "type": "SuperAdmin"})
+    )
+    dep = require_permission(
+        "roles.manage", repo=repo, validator=TokenValidator(settings), settings=settings
+    )
+    client = _app_with_endpoint(dep)
+    assert client.get("/protected", headers=_SESSION_HEADERS).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_ordinary_user_with_no_role_is_still_denied(tmp_path, respx_mock):
+    """The regression guard for the bypass above: it must key on superadmin
+    status, not merely on having survived token resolution."""
+    settings = get_settings().model_copy(update={"rbac_enabled": True})
+    engine = build_engine(f"sqlite+aiosqlite:///{tmp_path}/deps_noroleuser.db")
+    await init_authz_db(engine)
+    repo = AuthzRepository(build_session_maker(engine))
+    await seed_defaults(repo)
+
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 42, "type": None})
+    )
+    dep = require_permission(
+        "roles.manage", repo=repo, validator=TokenValidator(settings), settings=settings
+    )
+    client = _app_with_endpoint(dep)
+    assert client.get("/protected", headers=_SESSION_HEADERS).status_code == 403

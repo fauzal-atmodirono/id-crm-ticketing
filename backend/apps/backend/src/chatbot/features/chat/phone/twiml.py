@@ -19,7 +19,11 @@ GOOGLE_VOICE_EN_US = "Google.en-US-Standard-C"
 GOOGLE_VOICE_MS_MY = "Google.ms-MY-Standard-A"
 
 
-def connect_stream_twiml(wss_url: str, announcement: str | None = None) -> str:
+def connect_stream_twiml(
+    wss_url: str,
+    announcement: str | None = None,
+    parameters: dict[str, str] | None = None,
+) -> str:
     """TwiML that bridges the call into a bidirectional Media Stream,
     optionally preceded by a spoken announcement.
 
@@ -50,12 +54,25 @@ def connect_stream_twiml(wss_url: str, announcement: str | None = None) -> str:
     change this fix did not attempt. Tracked as a known limitation, not
     silently accepted -- see `.env.example`'s `PHONE_RECORDING_ANNOUNCEMENT`
     comment.
+
+    `parameters` (2026-11-09 caller context) become `<Parameter>` children of
+    `<Stream>`, which Twilio delivers in the Media Streams "start" frame as
+    `start.customParameters` -- the only way to hand the websocket anything
+    from this webhook. Values are escaped with `quoteattr`. None/empty is
+    byte-identical to the shape before this parameter existed.
     """
     say = f"<Say>{escape(announcement)}</Say>" if announcement else ""
+    if parameters:
+        params = "".join(
+            f"<Parameter name={quoteattr(k)} value={quoteattr(v)}/>" for k, v in parameters.items()
+        )
+        stream = f"<Stream url={quoteattr(wss_url)}>{params}</Stream>"
+    else:
+        stream = f"<Stream url={quoteattr(wss_url)} />"
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         f"<Response>{say}<Connect>"
-        f"<Stream url={quoteattr(wss_url)} />"
+        f"{stream}"
         "</Connect></Response>"
     )
 

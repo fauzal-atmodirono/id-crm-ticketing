@@ -15,6 +15,7 @@ from chatbot.features.chat.adapters.assistants_store import build_assistants_sto
 from chatbot.features.chat.adapters.audit_log import build_audit_log
 from chatbot.features.chat.adapters.bigquery_metrics import build_metrics_port
 from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
+from chatbot.features.chat.adapters.faq_ratings import build_faq_rating_store
 from chatbot.features.chat.adapters.gcp_voice import GeminiTextToSpeechAdapter
 from chatbot.features.chat.adapters.handoff_store import build_handoff_store
 from chatbot.features.chat.adapters.inbox_assignment_store import build_inbox_assignment_store
@@ -74,7 +75,7 @@ from chatbot.features.chat.sla import start_sla_scheduler
 from chatbot.features.health_enrichment import build_health_router
 from chatbot.features.metrics.anomaly_router import build_metrics_anomaly_router
 from chatbot.features.metrics.dashboard_router import build_metrics_query_router
-from chatbot.features.metrics.email_port import build_email_report_port
+from chatbot.features.metrics.email_port import build_email_report_port, build_weekly_email_port
 from chatbot.features.metrics.email_sender import SmtpEmailSender
 from chatbot.features.metrics.export_router import build_metrics_export_router
 from chatbot.features.metrics.faq_feedback_adapter import build_faq_feedback_port
@@ -83,7 +84,11 @@ from chatbot.features.metrics.insights_router import build_metrics_insights_rout
 from chatbot.features.metrics.qa_adapter import build_qa_label_port
 from chatbot.features.metrics.qa_router import build_qa_router
 from chatbot.features.metrics.query_adapter import build_metrics_query_port
-from chatbot.features.metrics.scheduler import start_metrics_scheduler, start_report_scheduler
+from chatbot.features.metrics.scheduler import (
+    start_metrics_scheduler,
+    start_report_scheduler,
+    start_weekly_report_scheduler,
+)
 from chatbot.features.routing.acw import build_acw_controller, start_acw_sweeper
 from chatbot.features.routing.assigner import RoutingAssigner
 from chatbot.features.routing.custom_status import build_custom_status_store
@@ -230,6 +235,9 @@ def _wire_assist(
                 "x-chatwoot-access-token",
                 "x-chatwoot-client",
                 "x-chatwoot-uid",
+                # The call-recording panel's transcript fetch carries its
+                # short-lived token here rather than in a URL (patch 0094).
+                "x-recording-token",
             ],
         )
 
@@ -272,6 +280,7 @@ def _wire_agent_assist(
     scenarios_store: object,
     assignment_store: object,
     timing_store: object,
+    validator: object | None = None,
 ) -> None:
     """Wire the agent-assist FAQ routers: kb-suggest (Vertex Search + live FAQ
     semantic merge), faq-feedback, and the real-time FAQ admin CRUD.
@@ -285,7 +294,8 @@ def _wire_agent_assist(
     )
 
     app.include_router(build_kb_suggest_router(knowledge_port, live_faq_store, embedder))
-    app.include_router(build_faq_admin_router(live_faq_store, settings))
+    faq_rating_store = build_faq_rating_store(settings)
+    app.include_router(build_faq_admin_router(live_faq_store, settings, faq_rating_store))
     app.include_router(build_kb_documents_router(settings))
     app.include_router(
         build_kb_assistants_router(
@@ -315,7 +325,37 @@ def _wire_agent_assist(
     )
 
     faq_port = build_faq_feedback_port(settings)
-    app.include_router(build_faq_router(faq_port, settings))
+    app.include_router(
+        build_faq_router(
+            faq_port,
+            settings,
+            faq_rating_store,
+            faq_store=live_faq_store,
+            validator=validator,
+        )
+    )
+
+
+def _abandon_store_for(app: FastAPI, settings: Settings):
+    """FIX-16: the abandoned-call store, or None when the flag/URL is unset.
+    Built once per app (shared by the chat router that records and the metrics
+    router that reads); table creation is fail-open at startup."""
+    if not (settings.call_abandon_enabled and settings.call_abandon_database_url):
+        return None
+    store = getattr(app.state, "abandon_store", None)
+    if store is None:
+        from chatbot.features.chat.phone.abandon_store import build_abandon_store
+
+        store = build_abandon_store(
+            settings.call_abandon_database_url, settings.reporting_timezone
+        )
+        app.state.abandon_store = store
+
+        @app.on_event("startup")
+        async def _init_abandon_store() -> None:
+            await store.init()
+
+    return store
 
 
 def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
@@ -331,7 +371,11 @@ def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
     app.include_router(build_metrics_query_router(query_port, settings))
     app.include_router(build_metrics_export_router(query_port, settings))
     app.include_router(build_metrics_anomaly_router(query_port, settings))
-    app.include_router(build_metrics_insights_router(query_port, settings))
+    app.include_router(
+        build_metrics_insights_router(
+            query_port, settings, abandon_reader=_abandon_store_for(app, settings)
+        )
+    )
 
     # P5: the fourteen-row control-item slide. The actuals provider is
     # deliberately not wired yet -- every row then reports `no_data` with its
@@ -350,6 +394,15 @@ def _wire_metrics_features(app: FastAPI, settings: Settings) -> None:
         @app.on_event("shutdown")
         def _stop_report_scheduler() -> None:
             report_scheduler.shutdown(wait=False)
+
+    weekly_scheduler = start_weekly_report_scheduler(
+        settings, query_port, build_weekly_email_port(settings)
+    )
+    if weekly_scheduler is not None:
+
+        @app.on_event("shutdown")
+        def _stop_weekly_scheduler() -> None:
+            weekly_scheduler.shutdown(wait=False)
 
     metrics_scheduler = start_metrics_scheduler(settings)
     if metrics_scheduler is not None:
@@ -437,8 +490,15 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # PicRegistry/EscalationNotifier can read operator-edited routing config even when
     # RBAC — and therefore the admin CRUD router below — is off. The RBAC block reuses
     # these same instances rather than constructing duplicates.
+    from chatbot.features.tenant_config.custom_features import CustomFeatureStore
+
     pic_store = PicStore(settings)
     dealer_store = DealerStore(settings)
+    # Shared so the admin router's writes invalidate the escalation router's cache.
+    from chatbot.features.chat.escalation_router import ContactsCache  # noqa: PLC0415
+
+    escalation_contacts_cache = ContactsCache()
+    custom_feature_store = CustomFeatureStore(settings)
     pic_registry = build_pic_registry(settings, store=pic_store)
     email_sender = SmtpEmailSender(settings)
 
@@ -593,6 +653,11 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
                 pic_store=pic_store,
                 dealer_store=dealer_store,
                 audit=audit_log,
+                contacts_cache=escalation_contacts_cache,
+                # Used only with handoff_note_enabled (one-click dealer
+                # escalation from caller_dealer); merge-safe writers.
+                merge_attributes=chatwoot_client._merge_custom_attributes,
+                add_label=chatwoot_client.add_ticket_tag,
             )
         )
 
@@ -605,6 +670,22 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     _shared_scenarios_store = build_scenarios_store(settings)
     _shared_assignment_store = build_inbox_assignment_store(settings)
     _shared_timing_store = build_inbox_timing_store(settings)
+
+    # 2026-11-09 pre-filled handoff note (features/chat/handoff_note.py).
+    # Built only with the flag on and a Chatwoot adapter; None keeps every
+    # handoff note exactly as before. Dealer slugs: the operator-edited
+    # DealerStore plus DEALER_EMAIL_MAP_JSON, as for the phone caller context.
+    _handoff_note_service = None
+    if settings.handoff_note_enabled and chatwoot_client is not None:
+        from chatbot.features.chat.handoff_note import HandoffNoteService  # noqa: PLC0415
+
+        async def _note_dealer_slugs() -> list[str]:
+            records = await dealer_store.list_all()
+            return [r.dealer for r in records] + list(build_dealer_email_map(settings))
+
+        _handoff_note_service = HandoffNoteService(
+            chatwoot_client, settings, dealer_source=_note_dealer_slugs
+        )
 
     orchestrator = OrchestratorService(
         settings=settings,
@@ -619,6 +700,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         assignment_store=_shared_assignment_store,
         assistants_store=_shared_assistants_store,
         tenant_settings_store=_shared_tenant_settings_store,
+        handoff_note_service=_handoff_note_service,
     )
 
     # --- P6: after-call work, built before the chat router that consumes it ---
@@ -751,6 +833,53 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     _call_control = CallControl(settings)
     _routing_presence = PresenceFetcher(settings)
 
+    # FIX-15: softphone hold/transfer. Built only with the flag on, so with it
+    # off ChatRouter's dial-status hook is None and nothing changes. ACW for a
+    # call that went through the conference is entered at the agent's
+    # conference leave event (the dial-status "completed" that normally does it
+    # fires when the call ENTERS the conference, not when the agent leaves).
+    _hold_transfer = None
+    if settings.phone_hold_transfer_enabled:
+        from chatbot.features.chat.phone.hold_transfer import (  # noqa: PLC0415
+            CallSessionStore,
+            HoldTransferController,
+            build_hold_transfer_webhooks_router,
+        )
+
+        async def _hold_transfer_acw(agent_id: int) -> None:
+            if settings.acw_enabled:
+                await _acw_controller.enter(agent_id)
+
+        _hold_transfer = HoldTransferController(
+            settings,
+            call_control=_call_control,
+            store=CallSessionStore(settings),
+            registry=softphone_registry,
+            presence=_routing_presence,
+            find_ticket=orchestrator._conversation_log_port.find_conversation_ticket,
+            on_agent_leave=_hold_transfer_acw,
+        )
+        app.include_router(build_hold_transfer_webhooks_router(settings, _hold_transfer))
+
+    # 2026-11-09 caller context for the AI-first phone line. Built only with
+    # the flag on and a Chatwoot adapter to read from; None leaves the phone
+    # path exactly as before. Dealer slugs come from the operator-edited
+    # DealerStore, with DEALER_EMAIL_MAP_JSON as the same fallback the
+    # escalation notifier uses.
+    _caller_context_service = None
+    if settings.phone_caller_context_enabled and chatwoot_client is not None:
+        from chatbot.features.chat.phone.caller_context import (  # noqa: PLC0415
+            CallerContextService,
+        )
+
+        async def _dealer_slugs() -> list[str]:
+            records = await dealer_store.list_all()
+            return [r.dealer for r in records] + list(build_dealer_email_map(settings))
+
+        _caller_context_service = CallerContextService(
+            chatwoot_client, settings, dealer_source=_dealer_slugs
+        )
+
     app.include_router(
         build_chat_router(
             orchestrator=orchestrator,
@@ -763,6 +892,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             softphone_registry=softphone_registry,
             presence_fetcher=_routing_presence,
             call_control=_call_control,
+            abandon_store=_abandon_store_for(app, settings),
+            hold_transfer=_hold_transfer,
+            caller_context_service=_caller_context_service,
         )
     )
 
@@ -789,6 +921,15 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     if settings.routing_enabled and chatwoot_client is not None:
         chatwoot_client._routing_service = _routing_svc  # type: ignore[assignment]
 
+    # ONE Chatwoot-session validator for the whole app (its profile-lookup cache
+    # is per instance): built here, ahead of the FAQ wiring that needs it, and
+    # reused by the P6 authz block and the custom-features router below.
+    shared_token_validator = None
+    if settings.rbac_enabled:
+        from chatbot.features.authz.identity import TokenValidator as _SharedTokenValidator  # noqa: PLC0415
+
+        shared_token_validator = _SharedTokenValidator(settings)
+
     # --- Agent-assist FAQ ---
     _wire_agent_assist(
         app,
@@ -800,6 +941,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         scenarios_store=_shared_scenarios_store,
         assignment_store=_shared_assignment_store,
         timing_store=_shared_timing_store,
+        validator=shared_token_validator,  # type: ignore[arg-type]
     )
 
     # Merge CRM-authored live-FAQ into the KB that /assist + Copilot ground on,
@@ -868,12 +1010,10 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         from chatbot.features.rsa.rsa_db import build_engine as build_rsa_engine
         from chatbot.features.rsa.rsa_db import build_session_maker as build_rsa_session_maker
         from chatbot.features.rsa.rsa_repository import PgRsaRepository
-        from chatbot.features.rsa.rsa_router import build_rsa_router
 
         rsa_engine = build_rsa_engine(settings.rsa_database_url)
         rsa_session_maker = build_rsa_session_maker(rsa_engine)
         rsa_repo = PgRsaRepository(rsa_session_maker)
-        app.include_router(build_rsa_router(rsa_repo, settings))
         app.state.rsa_engine = rsa_engine
 
     @app.on_event("startup")
@@ -898,7 +1038,6 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         from chatbot.features.authz.chatwoot_role_mirror import ChatwootRoleMirror
         from chatbot.features.authz.db import build_engine as build_authz_engine
         from chatbot.features.authz.db import build_session_maker as build_authz_session_maker
-        from chatbot.features.authz.identity import TokenValidator
         from chatbot.features.authz.repository import AuthzRepository
         from chatbot.features.authz.router import build_authz_router
         from chatbot.features.chat.sla_policy_db import build_engine as build_sla_policy_engine
@@ -911,13 +1050,18 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         authz_engine = build_authz_engine(settings.rbac_database_url)
         authz_session_maker = build_authz_session_maker(authz_engine)
         authz_repo = AuthzRepository(authz_session_maker)
-        authz_validator = TokenValidator(settings)
+        authz_validator = shared_token_validator
         authz_mirror = ChatwootRoleMirror(settings)
         app.include_router(
-            build_authz_router(authz_repo, authz_validator, settings, mirror=authz_mirror)
+            build_authz_router(
+                authz_repo, authz_validator, settings, mirror=authz_mirror, audit=audit_log
+            )
         )
         app.state.authz_engine = authz_engine
         app.state.authz_repo = authz_repo
+        # Wave 2 Task 28: the data-scope dependency on routers mounted before
+        # this block (the /metrics/* routers) resolves repo + validator here.
+        app.state.authz_validator = authz_validator
 
         from chatbot.features.chat.audit_router import build_audit_router
 
@@ -926,7 +1070,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         sla_policy_engine = build_sla_policy_engine(settings.rbac_database_url)
         sla_policy_repo = SlaPolicyRepository(build_sla_policy_session_maker(sla_policy_engine))
         app.include_router(
-            build_sla_policy_router(sla_policy_repo, authz_repo, authz_validator, settings)
+            build_sla_policy_router(
+                sla_policy_repo, authz_repo, authz_validator, settings, audit=audit_log
+            )
         )
         app.state.sla_policy_engine = sla_policy_engine
 
@@ -953,6 +1099,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
                 authz_validator,
                 settings,
                 dealer_store=dealer_store,
+                audit=audit_log,
             )
         )
         app.state.ladder_policy_engine = ladder_policy_engine
@@ -970,6 +1117,8 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
                 settings,
                 # The ladder's regional CC list. Same permission, same page.
                 pronet_store=ProtonNetStore(settings),
+                on_write=escalation_contacts_cache.invalidate,
+                audit=audit_log,
             )
         )
 
@@ -1041,6 +1190,21 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
                 chatwoot_available=chatwoot_client is not None,
                 rsa_available=rsa_repo is not None,
             )
+
+        # FIX-43 AI activity monitor: needs only the Chatwoot client.
+        if chatwoot_client is not None:
+            from chatbot.features.chat.ai_activity_router import build_ai_activity_router
+
+            app.include_router(
+                build_ai_activity_router(chatwoot_client, authz_repo, authz_validator, settings)
+            )
+        else:
+            import structlog as _sl
+
+            _sl.get_logger(__name__).warning(
+                "ai_activity_prerequisites_missing",
+                detail="chatwoot_client not available; /admin/ai-activity not mounted",
+            )
     elif settings.rbac_enabled:
         import structlog as _sl
 
@@ -1048,6 +1212,13 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             "rbac_enabled_but_no_database_url",
             detail="RBAC_ENABLED is true but RBAC_DATABASE_URL is empty; /authz not mounted",
         )
+
+    # Wave 2 Task 29 (FIX-49): GET /authz/me/pii tells the fork's contact views
+    # whether to mask for this caller. Mounted on every tenant so the fork can
+    # call it unconditionally; PII_MASKING_ENABLED off answers "not masking".
+    from chatbot.features.privacy.access import build_privacy_router
+
+    app.include_router(build_privacy_router(settings, repo=authz_repo, validator=authz_validator))
 
     # Task 9: the agent softphone's token-mint + registration endpoints.
     # Mounted here, right after the RBAC block, so `authz_repo`/`authz_
@@ -1077,6 +1248,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             softphone_registry,
             repo=authz_repo,
             validator=authz_validator,
+            hold_transfer=_hold_transfer,
         )
     )
 
@@ -1114,6 +1286,24 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # off both are None and both routers fall back to the shared-secret check,
     # exactly as they did before this package.
     #
+    # RSA routes need the RBAC pair built just above (sla.manage session), so
+    # they are mounted here rather than in the RSA block.
+    if rsa_repo is not None:
+        from chatbot.features.rsa.rsa_router import build_rsa_router
+
+        app.include_router(build_rsa_router(rsa_repo, settings, authz_repo, authz_validator))
+
+    # Test console Demo tab ([DEMO] persona seed/reset). Registration-gated:
+    # flag off -> no /demo/* route exists. Reuses rsa_repo (None when RSA is
+    # off: Farid's RSA incident is then reported as not seeded).
+    if settings.demo_console_enabled:
+        from chatbot.features.demo.router import build_demo_router
+        from chatbot.features.demo.seeder import build_seeder_factory
+
+        app.include_router(
+            build_demo_router(settings, build_seeder_factory(settings, rsa_repo))
+        )
+
     # The routing config router is mounted unconditionally, as it always was --
     # `routing_enabled` gates automatic agent *selection* inside the handler,
     # never the endpoints' existence. `audit`/`authz_repo`/`validator` are new
@@ -1275,7 +1465,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     from chatbot.features.taxonomy.router import build_taxonomy_admin_router
 
     app.include_router(build_rules_router(settings, authz_repo, authz_validator))
-    app.include_router(build_taxonomy_admin_router(settings))
+    app.include_router(build_taxonomy_admin_router(settings, authz_repo, authz_validator, audit=audit_log))
 
     @app.on_event("startup")
     async def _seed_taxonomy_store() -> None:
@@ -1328,12 +1518,48 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # flag off gets 404. `test_p11_wiring.py` drives the real app for exactly
     # that, the way `test_p10_wiring.py`/`test_p6_wiring.py` do.
     #
-    # What this does NOT yet do: the handler reads an in-process registry that
-    # nothing in production writes to (see `recording_router.py`'s docstring), so
-    # against a real conversation it answers the "no recording exists" state. The
-    # mount makes the endpoint and its permission gate real; the Chatwoot
-    # custom-attribute read that would populate it is still owed.
-    app.include_router(build_recording_router(settings))
+    # The call-recording player (fork patch 0094): the handler reads the
+    # conversation (merge-safe attribute `call_recording_object`, else the
+    # archive note) with the backend's own Chatwoot token, applies the caller's
+    # data scope to it, proves the object is bound to that conversation (GCS
+    # metadata, recording_access.resolve_recording), and streams it behind a
+    # short-lived HMAC link; mint/retranscribe need a real person
+    # (require_permission_with_identity); plays are fail-closed audit rows. The /audio and /transcript routes are NOT
+    # permission-gated -- the signed link is their credential, because an
+    # <audio> element cannot send session headers (see recording_access.py).
+    # Zendesk tenants (no chatwoot_client) get the "empty" state.
+    from chatbot.features.chat.phone.recording_glossary import configure_dealer_source
+    from chatbot.features.chat.phone.recording_access import ApiTokenIdentity
+
+    # The post-call transcriber's glossary picks dealer names from the same
+    # store the escalation-routing admin edits (cached, fail-open).
+    configure_dealer_source(dealer_store)
+
+    def _recording_messages(conv_id: str, before: object = None) -> object:
+        suffix = f"?before={before}" if before is not None else ""
+        return chatwoot_client._request("GET", f"/conversations/{conv_id}/messages{suffix}", None)
+
+    async def _recording_note(conv_id: str, text: str) -> None:
+        await chatwoot_client.append_conversation_comment(conv_id, text)
+
+    app.include_router(
+        build_recording_router(
+            settings,
+            authz_repo=authz_repo,
+            validator=authz_validator,
+            audit=audit_log,
+            chatwoot_read=(
+                (lambda conv_id: chatwoot_client._request("GET", f"/conversations/{conv_id}", None))
+                if chatwoot_client is not None
+                else None
+            ),
+            chatwoot_messages=_recording_messages if chatwoot_client is not None else None,
+            post_note=_recording_note if chatwoot_client is not None else None,
+            # Who the backend's own api_access_token is: only notes it authored
+            # can vouch for a legacy (metadata-less) archived object.
+            backend_sender=ApiTokenIdentity(settings) if chatwoot_client is not None else None,
+        )
+    )
 
     # --- Proton AI-assist (rewired Captain AI) ---
     _assist_router = _wire_assist(
@@ -1411,6 +1637,22 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
 
     _wire_metrics_features(app, settings)
 
+    # Mounted unconditionally, unlike the RBAC admin routers: the switchboard
+    # is a platform-level authority that exists whether or not a tenant has
+    # opted into RBAC, and the SPA reads it on every page load.
+    from chatbot.features.authz.identity import TokenValidator as _CustomFeaturesTokenValidator
+    from chatbot.features.tenant_config.custom_features_router import (
+        build_custom_features_router,
+    )
+
+    app.include_router(
+        build_custom_features_router(
+            custom_feature_store,
+            shared_token_validator or _CustomFeaturesTokenValidator(settings),
+            settings,
+        )
+    )
+
     # --- SLA-timer escalation engine (Chatwoot has no native SLA engine) ---
     # Guarded behind sla_engine_enabled (default OFF) exactly like the metrics
     # scheduler, so nothing scans unless a deployment explicitly opts in.
@@ -1454,6 +1696,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         # With the store wired the job registers unconditionally, so the
         # admin page's Enabled toggle takes effect without a redeploy.
         policy_repo=ladder_policy_repo,
+        audit=audit_log,
     )
     if ladder_scheduler is not None:
 
@@ -1530,6 +1773,35 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         @app.on_event("shutdown")
         def _stop_recording_retention_scheduler() -> None:
             recording_retention_scheduler.shutdown(wait=False)
+
+    # 2026-11-09 mock "Proton e.MAS customer app" (demo). Mounted only with
+    # the flag on, so a tenant without it has no /customer-app routes at all.
+    if settings.demo_customer_app_enabled:
+        from chatbot.features.customer_app.channel import CustomerAppChannel  # noqa: PLC0415
+        from chatbot.features.customer_app.router import (  # noqa: PLC0415
+            build_customer_app_router,
+        )
+
+        app.include_router(build_customer_app_router(settings, CustomerAppChannel(settings)))
+
+    # 2026-11-09 chat-side caller context for the agent bot. Read-only reuse of
+    # the phone path's bounded lookup; mounted only with the flag on and a
+    # Chatwoot adapter to read from.
+    if settings.chat_caller_context_enabled and chatwoot_client is not None:
+        from chatbot.features.chat.phone.caller_context import (  # noqa: PLC0415
+            SOURCE_CALLER_ID,
+            CallerContextService,
+        )
+        from chatbot.features.contact_context.router import (  # noqa: PLC0415
+            build_contact_context_router,
+        )
+
+        _chat_ctx_service = CallerContextService(chatwoot_client, settings)
+
+        async def _chat_ctx_lookup(phone: str) -> object:
+            return await _chat_ctx_service.lookup(phone, SOURCE_CALLER_ID)
+
+        app.include_router(build_contact_context_router(settings, _chat_ctx_lookup))
 
     @app.get("/")
     def health_check() -> dict[str, str]:

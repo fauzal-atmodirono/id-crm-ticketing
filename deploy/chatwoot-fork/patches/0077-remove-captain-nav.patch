@@ -1,0 +1,101 @@
+diff --git a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+index 37c5fb6..3e84c49 100644
+--- a/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
++++ b/app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+@@ -72,7 +72,6 @@ const isFeatureEnabledonAccount = useMapGetter(
+ // comes from the same module-level singleton, so calling useCustomFeatures()
+ // a second time here is free -- it does not refetch.
+ const { hasFeature: protonHasFeature, t: tTerm } = useCustomFeatures();
+-const protonAiAssistEnabled = computed(() => protonHasFeature('ai_assist'));
+ const { hasPermission: protonHasPermission } = useProtonPermissions();
+ const { isSuperadmin } = useCustomFeatures();
+ // P9 tasks 2/3: alert on a new inbound customer message in the window the
+@@ -455,81 +454,13 @@ const menuItems = computed(() => {
+         },
+       ],
+     },
+-    ...(!protonAiAssistEnabled.value
+-      ? [
+-          {
+-            name: 'Captain',
+-            icon: 'i-woot-captain',
+-            label: t('SIDEBAR.CAPTAIN'),
+-            activeOn: ['captain_assistants_create_index'],
+-            children: [
+-              {
+-                name: 'FAQs',
+-                label: t('SIDEBAR.CAPTAIN_RESPONSES'),
+-                activeOn: [
+-                  'captain_assistants_responses_index',
+-                  'captain_assistants_responses_pending',
+-                ],
+-                to: accountScopedRoute('captain_assistants_index', {
+-                  navigationPath: 'captain_assistants_responses_index',
+-                }),
+-              },
+-              {
+-                name: 'Documents',
+-                label: t('SIDEBAR.CAPTAIN_DOCUMENTS'),
+-                activeOn: ['captain_assistants_documents_index'],
+-                to: accountScopedRoute('captain_assistants_index', {
+-                  navigationPath: 'captain_assistants_documents_index',
+-                }),
+-              },
+-              {
+-                name: 'Scenarios',
+-                label: t('SIDEBAR.CAPTAIN_SCENARIOS'),
+-                activeOn: ['captain_assistants_scenarios_index'],
+-                to: accountScopedRoute('captain_assistants_index', {
+-                  navigationPath: 'captain_assistants_scenarios_index',
+-                }),
+-              },
+-              {
+-                name: 'Playground',
+-                label: t('SIDEBAR.CAPTAIN_PLAYGROUND'),
+-                activeOn: ['captain_assistants_playground_index'],
+-                to: accountScopedRoute('captain_assistants_index', {
+-                  navigationPath: 'captain_assistants_playground_index',
+-                }),
+-              },
+-              {
+-                name: 'Inboxes',
+-                label: t('SIDEBAR.CAPTAIN_INBOXES'),
+-                activeOn: ['captain_assistants_inboxes_index'],
+-                to: accountScopedRoute('captain_assistants_index', {
+-                  navigationPath: 'captain_assistants_inboxes_index',
+-                }),
+-              },
+-              {
+-                name: 'Tools',
+-                label: t('SIDEBAR.CAPTAIN_TOOLS'),
+-                activeOn: ['captain_tools_index'],
+-                to: accountScopedRoute('captain_assistants_index', {
+-                  navigationPath: 'captain_tools_index',
+-                }),
+-              },
+-              {
+-                name: 'Settings',
+-                label: t('SIDEBAR.CAPTAIN_SETTINGS'),
+-                activeOn: [
+-                  'captain_assistants_settings_index',
+-                  'captain_assistants_guidelines_index',
+-                  'captain_assistants_guardrails_index',
+-                ],
+-                to: accountScopedRoute('captain_assistants_index', {
+-                  navigationPath: 'captain_assistants_settings_index',
+-                }),
+-              },
+-            ],
+-          },
+-        ]
+-      : []),
++    // Captain (upstream's own AI console) is removed outright, not merely
++    // hidden behind !protonAiAssistEnabled as it was before. That fallback
++    // meant a tenant WITHOUT our AI features saw upstream's Captain instead —
++    // so a tenant that had bought nothing still got an AI console, on a
++    // credit-billed upstream feature we do not support, sitting directly
++    // above our own Knowledge console. The Knowledge block below now
++    // occupies this position.
+     // No dedicated nav-level permission check here (see task 8 notes): the
+     // Knowledge console's own pages enforce `knowledge.edit` server-side.
+     // protonHasFeature now reads useCustomFeatures(), same as every other

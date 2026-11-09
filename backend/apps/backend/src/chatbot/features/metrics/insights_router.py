@@ -57,10 +57,16 @@ from __future__ import annotations
 import asyncio
 import hmac
 from dataclasses import asdict
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
+from chatbot.features.authz.data_scope import (
+    build_report_scope_dependency,
+    build_unscoped_only_dependency,
+)
 from chatbot.features.metrics.ai_cost import (
     AI_COST_VIEW,
     AiCostUsagePort,
@@ -80,6 +86,7 @@ from chatbot.features.metrics.period_query import (
 from chatbot.features.metrics.price_table import build_price_table
 
 if TYPE_CHECKING:
+    from chatbot.features.chat.phone.abandon_store import AbandonReader
     from chatbot.features.metrics.query_port import MetricsQueryPort
     from chatbot.platform.config import Settings
 
@@ -145,12 +152,20 @@ def _stamp_batch_freshness(payload: dict[str, Any], settings: Settings) -> dict[
     )
 
 
+def _report_tz(settings: Any) -> ZoneInfo:
+    try:
+        return ZoneInfo(settings.reporting_timezone or "UTC")
+    except Exception:
+        return ZoneInfo("UTC")
+
+
 def build_metrics_insights_router(
     port: MetricsQueryPort,
     settings: Settings,
     *,
     ai_cost_port: AiCostUsagePort | None = None,
     price_table: PriceLookup | None = None,
+    abandon_reader: AbandonReader | None = None,
 ) -> APIRouter:
     """The two AI-cost dependencies are keyword-only with `None` defaults so
     `main.py`'s existing call site needs no change and the real deployment
@@ -159,6 +174,18 @@ def build_metrics_insights_router(
     reads."""
     router = APIRouter(tags=["metrics"])
     _cost_cache: dict[str, Any] = {}
+    # Wave 2 Task 28 (data_scope.py). `scoped` is ONLY for routes whose every
+    # read goes through the adapter's scope-aware `_query_block` /
+    # `_day_grain_block_for_period` on views listed in SCOPABLE_VIEW_COLUMNS:
+    # /metrics/dealer-escalation (v_dealer_escalation[_slowest_cases]) and
+    # /metrics/case-aging (v_case_aging). Everything else is `unscoped_only`:
+    # departments/callcenter/sla-buckets each read at least one view with no
+    # dealer/department column (and callcenter adds a Firestore abandon-rate
+    # block), and ai-cost reads token-usage tables through its own raw
+    # queries that never see the scope. Flag off, both are no-ops that never
+    # read the session.
+    scoped = [Depends(build_report_scope_dependency(settings, port))]
+    unscoped_only = [Depends(build_unscoped_only_dependency(settings, "This report"))]
 
     def _require_key(x_api_key: str | None) -> None:
         key = settings.metrics_api_key
@@ -169,7 +196,7 @@ def build_metrics_insights_router(
         ):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
-    @router.get("/metrics/departments")
+    @router.get("/metrics/departments", dependencies=unscoped_only)
     async def departments(
         period_query: PeriodQuery,
         filters: MetricFiltersQuery,
@@ -181,7 +208,7 @@ def build_metrics_insights_router(
             asdict(await port.fetch_departments(period, filters)), settings
         )
 
-    @router.get("/metrics/callcenter")
+    @router.get("/metrics/callcenter", dependencies=unscoped_only)
     async def callcenter(
         period_query: PeriodQuery,
         filters: MetricFiltersQuery,
@@ -189,11 +216,25 @@ def build_metrics_insights_router(
     ) -> dict[str, Any]:
         _require_key(x_api_key)
         period = parse_period_or_400(period_query)
-        return _stamp_batch_freshness(
+        payload = _stamp_batch_freshness(
             asdict(await port.fetch_callcenter(period, filters)), settings
         )
+        if abandon_reader is not None:
+            # FIX-16: abandoned-call rate per day. Fail-open: a store problem
+            # must not take the rest of the call-centre report down.
+            today = datetime.now(_report_tz(settings)).date()
+            start = period.start if period else today - timedelta(days=30)
+            end = period.end if period else today
+            try:
+                payload["abandoned_calls"] = {
+                    "daily": await abandon_reader.daily_rates(start, end),
+                    "ok": True,
+                }
+            except Exception:
+                payload["abandoned_calls"] = {"daily": [], "ok": False}
+        return payload
 
-    @router.get("/metrics/lifecycle")
+    @router.get("/metrics/lifecycle", dependencies=unscoped_only)
     async def lifecycle(
         period_query: PeriodQuery,
         x_api_key: str | None = Header(default=None),
@@ -208,7 +249,7 @@ def build_metrics_insights_router(
         deltas = {"state_trend": block_delta(current, previous, "state_trend", "cases")}
         return _stamp_batch_freshness(wrap_period_response(current, previous, deltas), settings)
 
-    @router.get("/metrics/dealer-escalation")
+    @router.get("/metrics/dealer-escalation", dependencies=scoped)
     async def dealer_escalation(
         period_query: PeriodQuery,
         filters: MetricFiltersQuery,
@@ -220,7 +261,7 @@ def build_metrics_insights_router(
             asdict(await port.fetch_dealer_escalation(period, filters)), settings
         )
 
-    @router.get("/metrics/sla-buckets")
+    @router.get("/metrics/sla-buckets", dependencies=unscoped_only)
     async def sla_buckets(
         period_query: PeriodQuery,
         filters: MetricFiltersQuery,
@@ -232,7 +273,7 @@ def build_metrics_insights_router(
             asdict(await port.fetch_sla_buckets(period, filters)), settings
         )
 
-    @router.get("/metrics/case-aging")
+    @router.get("/metrics/case-aging", dependencies=scoped)
     async def case_aging(
         period_query: PeriodQuery,
         filters: MetricFiltersQuery,
@@ -244,7 +285,7 @@ def build_metrics_insights_router(
             asdict(await port.fetch_case_aging(period, filters)), settings
         )
 
-    @router.get("/metrics/after-hours")
+    @router.get("/metrics/after-hours", dependencies=unscoped_only)
     async def after_hours(
         period_query: PeriodQuery,
         x_api_key: str | None = Header(default=None),
@@ -260,7 +301,7 @@ def build_metrics_insights_router(
         period = parse_period_or_400(period_query)
         return _stamp_batch_freshness(asdict(await port.fetch_after_hours(period)), settings)
 
-    @router.get("/metrics/by-tag")
+    @router.get("/metrics/by-tag", dependencies=unscoped_only)
     async def by_tag(
         period_query: PeriodQuery,
         tag: str | None = None,
@@ -277,7 +318,29 @@ def build_metrics_insights_router(
         metrics = await port.fetch_by_tag(period, tag)
         return _stamp_batch_freshness({**asdict(metrics), "note": metrics.note}, settings)
 
-    @router.get("/metrics/ai-cost")
+    @router.get("/metrics/ai-performance", dependencies=unscoped_only)
+    async def ai_performance(
+        period_query: PeriodQuery,
+        x_api_key: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Wave 2 task 27 (FIX-47): the eight AI performance reports of RFP
+        2026_028 4.56 -- resolution, AI vs human, CSAT on AI, escalation
+        reasons, accuracy, deflection, root cause, KB improvement.
+
+        Each block keeps the definition/basis column of its view, which says
+        what the figure does and does not measure. `scopes` is per block, so a
+        failed view reads `unavailable` rather than as zero AI activity.
+        """
+        _require_key(x_api_key)
+        period = parse_period_or_400(period_query)
+        metrics = await port.fetch_ai_performance(period)
+        payload = {
+            "blocks": metrics.blocks,
+            "scopes": {k: asdict(v) for k, v in metrics.scopes.items()},
+        }
+        return _stamp_batch_freshness(payload, settings)
+
+    @router.get("/metrics/ai-cost", dependencies=unscoped_only)
     async def ai_cost(
         period_query: PeriodQuery,
         filters: MetricFiltersQuery,
@@ -315,7 +378,7 @@ def build_metrics_insights_router(
             settings,
         )
 
-    @router.get("/metrics/volume-by-type")
+    @router.get("/metrics/volume-by-type", dependencies=unscoped_only)
     async def volume_by_type(
         period_query: PeriodQuery,
         x_api_key: str | None = Header(default=None),

@@ -4,17 +4,43 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import time
+import unicodedata
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from chatbot.features.chat.csat import record_csat_on_ticket
+from chatbot.features.chat.handoff_note import (
+    DealerLine,
+    HandoffNote,
+    apply_priority,
+    conversation_path,
+    format_handoff_note,
+    handoff_priority,
+)
 from chatbot.features.chat.nps import record_nps_agent_attribution, record_nps_on_ticket
 from chatbot.features.chat.phone.agent_client_resolver import AgentClientResolver, ChainedResolver
 from chatbot.features.chat.phone.audio_codec import mulaw8k_to_pcm16k, pcm24k_to_mulaw8k
 from chatbot.features.chat.phone.call_control import CallControl
+from chatbot.features.chat.phone.caller_context import (
+    NO_MATCH_GUIDANCE,
+    SOURCE_CALLER_ID,
+    SOURCE_SPOKEN,
+    CallerContext,
+    CallerDetails,
+    dealer_display,
+    mask,
+    match_dealer,
+    names_contradict,
+    names_match,
+    normalise_mobile,
+    parse_caller_details,
+    spoken_match_guidance,
+    spoken_match_vehicles,
+)
 from chatbot.features.chat.phone.handoff_csat_tools import parse_csat_score, parse_nps_score
 from chatbot.features.chat.phone.handoff_target import HandoffTargetResolver, dial_twiml
 from chatbot.features.chat.phone.kb_tool import dispatch_kb_search
@@ -24,12 +50,14 @@ from chatbot.features.chat.phone.live_events import (
     Interrupted,
     OutputTranscript,
     ToolCall,
+    TurnComplete,
 )
 from chatbot.features.chat.phone.transcript_classifier import classify
 from chatbot.features.chat.phone.transcript_sink import TranscriptSink
 from chatbot.features.chat.ports import ConversationLogResult
 
 if TYPE_CHECKING:
+    from chatbot.features.chat.phone.caller_context import CallerContextService
     from chatbot.features.chat.phone.gemini_live import LiveSession
     from chatbot.features.chat.phone.softphone_registry import SoftphoneRegistry
     from chatbot.features.chat.ports import ConversationLogPort, KnowledgePort
@@ -120,6 +148,60 @@ _LOG_TRANSCRIPT_MAX_CHARS = 400
 _HANDOFF_RESOLVE_TIMEOUT_SECONDS = 5.0
 _HANDOFF_REDIRECT_TIMEOUT_SECONDS = 3.0
 
+# Caller context (2026-11-09): a handoff on a call whose conversation is still
+# being created waits at most this long for it, so the ringing softphone can
+# carry the conversation id. Inline in pump(), hence short.
+_HANDOFF_TICKET_WAIT_SECONDS = 2.0
+# How many numbers one call may look up through lookup_caller -- enough for
+# a misheard number or two, not enough to walk the customer base.
+_MAX_CALLER_LOOKUPS = 3
+
+
+# Barge-in (2026-11-09): after the Live API reports an interruption, audio and
+# output transcript of the CANCELLED answer can still be in flight. They are
+# dropped until the caller's new turn shows up (any input transcript), the
+# model closes its turn, or this window passes -- whichever is first. The
+# window is derived from the VAD silence window (_interrupt_drop_seconds):
+# the real next answer only starts after the caller has finished speaking
+# PLUS that silence, and the interruption fires when the caller STARTS
+# speaking, so a window shorter than the silence can never swallow it.
+_INTERRUPT_DROP_MAX_SECONDS = 1.0
+_INTERRUPT_DROP_SILENCE_SHARE = 0.8
+
+# The PDPA notice played over the stream (phone_fast_start_enabled): if
+# Twilio never confirms it played (its "mark" echo), stop holding the model's
+# audio this long after the notice should have ended -- and never record.
+_ANNOUNCEMENT_GRACE_SECONDS = 5.0
+
+# Scripts spoken on a Malaysian line (English / Bahasa Melayu are Latin,
+# Chinese is Han, Tamil is Tamil). A caller row whose content is mostly
+# outside these -- the 27 Oct call transcribed background noise as Hindi --
+# is kept on the record but marked unclear, and does not count as the caller
+# having spoken. Digits are content in any script (a phone number, a price).
+_SERVED_SCRIPTS = (
+    "LATIN",
+    "CJK",
+    "HIRAGANA",
+    "KATAKANA",
+    "FULLWIDTH",
+    "BOPOMOFO",
+    "TAMIL",
+)
+
+
+def _served(c: str) -> bool:
+    return c.isdigit() or unicodedata.name(c, "").startswith(_SERVED_SCRIPTS)
+
+
+def is_unclear_transcript(text: str) -> bool:
+    """True for a caller row that is noise rather than speech: no letters or
+    digits at all, or mostly characters of a script nobody here speaks.
+    Decided per ROW (see PhoneBridge._close_user_row), never per fragment."""
+    content = [c for c in text if c.isalnum()]
+    if not content:
+        return True
+    return sum(1 for c in content if _served(c)) * 2 < len(content)
+
 
 def _log_transcript(body: str) -> str:
     """Truncate a transcript for structured logging (Important 11).
@@ -135,7 +217,7 @@ def _log_transcript(body: str) -> str:
 
 
 class PhoneBridge:
-    def __init__(
+    def __init__(  # noqa: PLR0915 -- one statement per piece of per-call state
         self,
         live: LiveSession,
         knowledge_port: KnowledgePort,
@@ -148,8 +230,106 @@ class PhoneBridge:
         handoff_resolver: HandoffTargetResolver | None = None,
         softphone_registry: SoftphoneRegistry | None = None,
         presence_fetcher: Any | None = None,
+        caller_service: CallerContextService | None = None,
+        caller_context: CallerContext | None = None,
+        dealer_slugs: list[str] | None = None,
+        announcement_mark: str | None = None,
+        announcement_seconds: float = 0.0,
+        announcement_sent_at: float | None = None,
+        timing: dict[str, Any] | None = None,
+        stream_started_at: float | None = None,
+        greeting_prompt: str | None = None,
     ) -> None:
         self._live = live
+        self._now = clock or time.monotonic
+        # 2026-11-09 turn-taking. `announcement_mark` is set when router.py
+        # played the PDPA recording notice over the stream itself (fast
+        # start) and asked Twilio to echo this mark once it has played:
+        # until then the model's audio is held here (Twilio would queue it
+        # behind the notice anyway, but a barge-in "clear" would wipe the
+        # notice too), and recording does not start.
+        self._announcement_mark = announcement_mark
+        self._announcement_pending = announcement_mark is not None
+        self._announcement_seconds = announcement_seconds
+        # time.monotonic() when router.py sent the notice frames; the watchdog
+        # deadline counts from there (the bridge is built after the Live
+        # connect, seconds later).
+        self._announcement_sent_at = announcement_sent_at
+        self._announcement_watchdog: asyncio.Task[None] | None = None
+        self._held_audio: list[dict[str, object]] = []
+        # Monotonic deadline of the post-interruption drop window, or None.
+        self._drop_until: float | None = None
+        # The next ASSISTANT text starts a new transcript row (after a turn
+        # end or an interruption) instead of being glued onto the last one.
+        self._assistant_turn_ended = False
+        # R40: while the notice plays, caller audio is dropped (never sent to
+        # Gemini, never transcribed); this is set once it has played (mark
+        # echo) or is given up on (watchdog) -- a handoff waits for it.
+        self._announcement_done = asyncio.Event()
+        if not self._announcement_pending:
+            self._announcement_done.set()
+        silence = settings.gemini_live_vad_silence_duration_ms / 1000
+        self._interrupt_drop_seconds = min(
+            _INTERRUPT_DROP_MAX_SECONDS, _INTERRUPT_DROP_SILENCE_SHARE * silence
+        )
+        # The caller row being spoken: (index in self.transcript, raw text),
+        # judged unclear-or-speech as a whole when it closes (R41).
+        self._user_row: tuple[int, str] | None = None
+        self._user_row_streaming = False
+        self._caller_spoke = False
+        self._greeted = False
+        self._greeting_prompt = greeting_prompt
+        self._greet_after_notice = False
+        # One phone_call_timing log per call (no numbers, no PII).
+        self._timing = timing
+        self._stream_started_at = stream_started_at
+        self._timing_logged = False
+        # 2026-11-09 caller context. `caller_service` is passed only when
+        # phone_caller_context_enabled is on; None keeps every code path
+        # below exactly as it was (anonymous ticket, no caller tools, the old
+        # handoff note). `caller_context` is the pre-greeting lookup for a
+        # verified number (None = no usable caller ID: the model asks and
+        # calls lookup_caller).
+        self._caller_service = caller_service
+        self._caller_ctx = caller_context
+        self._caller_phone: str | None = caller_context.phone if caller_context else None
+        self._caller_source: str = caller_context.source if caller_context else SOURCE_SPOKEN
+        self._dealer_slugs = list(dealer_slugs or [])
+        self.caller_details = CallerDetails()
+        self._caller_dealer_slug: str | None = None
+        self._caller_lookups = 0
+        # Fix round 1: a number is only CONFIRMED -- allowed to put the call on
+        # that number's contact and to fill that contact's fields -- when the
+        # network says so (caller ID), it is an allowlisted demo number
+        # (web_call_as), or the caller told it AND the name they gave matched
+        # the record server-side (lookup_caller / save_caller_details). A told
+        # number that is not confirmed is kept on the call's own conversation
+        # as unverified and nothing else.
+        self._caller_confirmed = (
+            caller_context is not None and caller_context.source != SOURCE_SPOKEN
+        )
+        # The number contact writes are pinned to (fix round 2): the one that
+        # was confirmed, never a number told later in the call.
+        self._confirmed_phone: str | None = self._caller_phone if self._caller_confirmed else None
+        # The last told-number lookup, and the numbers whose one name check
+        # (R38) this call has already used -- per NUMBER, so re-telling the
+        # same number buys no second guess.
+        self._spoken_pending: CallerContext | None = None
+        self._spoken_tried: set[str] = set()
+        # Set once the caller is confirmed (or no longer worth waiting for); a
+        # call with no confirmed number defers its conversation create until
+        # then, so the conversation lands on the right contact.
+        self._caller_known = asyncio.Event()
+        if (self._caller_phone and self._caller_confirmed) or caller_service is None:
+            self._caller_known.set()
+        self._caller_write_task: asyncio.Task[None] | None = None
+        self._caller_write_pending = False
+        # 2026-11-09 handoff note (features/chat/handoff_note.py): with
+        # handoff_note_enabled the structured note is posted at the handoff
+        # (so the answering agent has it, with the live transcript link),
+        # and finalize() posts it only if that never landed.
+        self._handoff_note_task: asyncio.Task[None] | None = None
+        self._handoff_note_posted = False
         self._knowledge = knowledge_port
         self._log_port = conversation_log_port
         self._send_twilio = send_twilio
@@ -305,7 +485,386 @@ class PhoneBridge:
             "reason": str(handoff.get("reason") or "")[:200],
             "summary": str(handoff.get("summary") or "")[:400],
         }
+        if self._caller_service is not None:
+            # Caller context: who is on the line, so the agent's ringing card
+            # shows it and accepting opens their Customer 360 (fork 0091).
+            # `caller` is the same key FIX-15's transfer already uses for the
+            # customer's number.
+            who, vehicle, dealer = self._caller_summary()
+            params["caller"] = self._caller_phone or ""
+            params["caller_name"] = who[:80]
+            params["vehicle"] = vehicle[:80]
+            params["dealer"] = dealer[:80]
+            if self._caller_phone and (
+                self._caller_source != SOURCE_CALLER_ID or not self._caller_confirmed
+            ):
+                # Told by the caller / chosen in the demo console, not proven
+                # by the network: the card says so (fork 0091).
+                params["caller_unverified"] = "1"
+            if self._caller_phone and self._caller_confirmed:
+                # Only a confirmed number may auto-open its Customer 360 on
+                # Accept (fork 0091); an unconfirmed one is a stranger's.
+                params["caller_confirmed"] = "1"
         return {k: v for k, v in params.items() if v}
+
+    # --- caller context (2026-11-09) ---------------------------------------
+
+    def _single_candidate(self) -> Any | None:
+        return self._caller_ctx.single if self._caller_ctx is not None else None
+
+    def _effective_dealer_slug(self) -> str | None:
+        """What the caller said (confidently matched) wins; else the known
+        customer's last dealer label."""
+        if self._caller_dealer_slug:
+            return self._caller_dealer_slug
+        single = self._single_candidate()
+        return single.last_dealer if single is not None and single.last_dealer else None
+
+    def _caller_summary(self) -> tuple[str, str, str]:
+        """(who, vehicle, dealer) for the handoff note and ring parameters.
+        Full values -- these go to the CRM / an authenticated agent, never to
+        the model or the logs."""
+        d = self.caller_details
+        who = self._caller_name()
+        model, plate = self._caller_vehicle()
+        vehicle = " ".join(x for x in (model, plate) if x)
+        slug = self._effective_dealer_slug()
+        dealer = dealer_display(slug) if slug else d.dealer_text
+        return who, vehicle, dealer
+
+    def _caller_name(self) -> str:
+        single = self._single_candidate()
+        return self.caller_details.name or (single.name if single is not None else "")
+
+    def _caller_vehicle(self) -> tuple[str, str]:
+        """(model, plate): what the caller said, completed from the known
+        customer's only car when it does not contradict it."""
+        d = self.caller_details
+        single = self._single_candidate()
+        model, plate = d.model, d.plate
+        if single is not None and len(single.vehicles) == 1:
+            v = single.vehicles[0]
+            if not plate and (not model or model.lower() == v.model.lower()):
+                plate = v.plate
+            model = model or v.model
+        return model, plate
+
+    def _note_dealer(self) -> DealerLine:
+        """The handoff note's dealer: confirmed only when the caller named
+        it and it matched; the usual dealer from history is shown as not
+        confirmed (controller ruling 9 Nov: never labelled from history)."""
+        if self._caller_dealer_slug:
+            return DealerLine(slug=self._caller_dealer_slug, confirmed=True)
+        single = self._single_candidate()
+        if single is not None and single.last_dealer:
+            return DealerLine(slug=single.last_dealer, confirmed=False)
+        return DealerLine(text=self.caller_details.dealer_text)
+
+    def _handoff_note(self, ticket_id: str) -> HandoffNote:
+        handoff = self.handoff or {}
+        reason = handoff.get("reason", "")
+        summary = handoff.get("summary", "")
+        model, plate = self._caller_vehicle()
+        return HandoffNote(
+            channel="Phone call",
+            reason=reason,
+            summary=summary,
+            priority=handoff_priority(texts=[reason, summary]),
+            name=self._caller_name(),
+            mobile=self._caller_phone or "",
+            mobile_unverified=bool(self._caller_phone) and self._caller_source != SOURCE_CALLER_ID,
+            vehicle_model=model,
+            vehicle_plate=plate,
+            dealer=self._note_dealer(),
+            transcript_path=conversation_path(self._settings.chatwoot_account_id, ticket_id),
+        )
+
+    async def _post_handoff_note(self, ticket_id: str) -> None:
+        """The one structured note + priority + the phone marker (external_id
+        = phone-<CallSid>, which /escalation/notify reads to send no written
+        customer ack for a call). Idempotent per call.
+
+        ``_handoff_note_posted`` is set only on ConversationLogResult.OK, so
+        a swallowed Chatwoot failure (FAILED, no exception) leaves finalize()
+        to retry the note. Residual edge, kept on purpose: if the handoff
+        task is cancelled by finalize()'s settle timeout AFTER Chatwoot
+        accepted the post but before the flag is set, finalize() posts the
+        note a second time -- a duplicate note beats a missing one."""
+        if self._handoff_note_posted:
+            return
+        note = self._handoff_note(ticket_id)
+        result = await self._log_port.append_conversation_comment(
+            ticket_id, format_handoff_note(note), status="open"
+        )
+        if result != ConversationLogResult.OK:
+            _log.warning("phone_handoff_note_not_posted", call_sid=self.call_sid)
+            return
+        self._handoff_note_posted = True
+        try:
+            await apply_priority(self._log_port, ticket_id, note.priority)
+            if self.call_sid:
+                await self._log_port.set_ticket_external_id(ticket_id, f"phone-{self.call_sid}")
+        except Exception as e:
+            _log.warning("phone_handoff_note_extras_failed", call_sid=self.call_sid, error=str(e))
+
+    def _schedule_handoff_note(self) -> None:
+        if not self._settings.handoff_note_enabled or self._handoff_note_task is not None:
+            return
+        self._handoff_note_task = asyncio.create_task(self._handoff_note_when_ticket())
+
+    async def _handoff_note_when_ticket(self) -> None:
+        try:
+            if self.ticket_id is None and self._ticket_create_task is not None:
+                await asyncio.gather(self._ticket_create_task, return_exceptions=True)
+            if self._caller_write_task is not None:
+                # So a just-said name/plate is in the note.
+                await asyncio.gather(self._caller_write_task, return_exceptions=True)
+            if self.ticket_id is None:
+                return  # finalize() posts it
+            await self._post_handoff_note(self.ticket_id)
+        except Exception as e:
+            _log.warning("phone_handoff_note_deferred", call_sid=self.call_sid, error=str(e))
+
+    async def _settle_handoff_note_task(self) -> None:
+        if self._handoff_note_task is None:
+            return
+        try:
+            await asyncio.wait_for(self._handoff_note_task, timeout=_FLUSH_DRAIN_TIMEOUT_SECONDS)
+        except Exception as e:
+            _log.error("phone_finalize_handoff_note_failed", call_sid=self.call_sid, error=str(e))
+
+    def _ticket_customer(self) -> tuple[str | None, str | None]:
+        """(customer_name, customer_phone) for ensure_conversation_ticket."""
+        if self._caller_service is None or not self._caller_phone or not self._caller_confirmed:
+            # An unconfirmed told number never picks the contact (fix round 1).
+            return None, None
+        single = self._single_candidate()
+        return (single.name or None) if single is not None else None, self._caller_phone
+
+    def _attach_kw(self, customer_phone: str | None) -> dict[str, bool]:
+        """`attach_by_phone=True` (the adapter may attach to the contact that
+        owns the number) only for a confirmed number. Every ConversationLogPort
+        implementation accepts the keyword (Zendesk/NoOp ignore it); it is
+        still sent only when true so a flag-off call's create is
+        byte-identical to before."""
+        if customer_phone and self._caller_confirmed and customer_phone == self._confirmed_phone:
+            return {"attach_by_phone": True}
+        return {}
+
+    def _confirm_spoken(self, said_name: str) -> bool:
+        """Confirm the pending told number if exactly one of its contacts has
+        a first name matching what the caller said (server-side, never the
+        model's judgement)."""
+        ctx = self._spoken_pending
+        if ctx is None or not said_name or ctx.phone in self._spoken_tried:
+            return False
+        # R38: one name check per number per call, whatever its outcome.
+        self._spoken_tried.add(ctx.phone)
+        hits = [c for c in ctx.candidates if names_match(said_name, c.name)]
+        if len(hits) != 1:
+            if self._caller_service is not None:
+                self._caller_service.record_spoken_failure(ctx.phone)
+            return False
+        self._caller_ctx = CallerContext(phone=ctx.phone, source=SOURCE_SPOKEN, candidates=hits)
+        self._caller_phone = ctx.phone
+        self._caller_confirmed = True
+        self._confirmed_phone = ctx.phone
+        self._caller_known.set()
+        return True
+
+    def _unconfirm_spoken(self) -> None:
+        """Drop a told-number confirmation (a new number was told, or the
+        caller's name contradicts it). From here on nothing is written to any
+        contact and no record name is shown next to the number. If the
+        conversation already exists it stays on the contact it was created
+        on -- Chatwoot cannot move it -- but it gets no further contact
+        writes."""
+        if self._caller_source != SOURCE_SPOKEN:
+            return
+        self._caller_ctx = None
+        self._caller_confirmed = False
+        self._confirmed_phone = None
+        if self.ticket_id is None:
+            self._caller_known.clear()
+
+    async def _deferred_ticket_create(self, call_sid: str) -> None:
+        """No caller ID: give the caller a chance to say their number
+        (lookup_caller) so the conversation is created on THEIR contact; a
+        handoff, hangup or the deadline stops the wait. The live transcript
+        is not lost meanwhile -- the sink keeps buffering until a ticket
+        exists, then posts what it has."""
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(
+                self._caller_known.wait(),
+                timeout=self._settings.phone_caller_number_wait_seconds,
+            )
+        await self._create_ticket_at_start(call_sid)
+
+    async def _handle_lookup_caller(self, args: dict[str, object]) -> dict[str, Any]:  # noqa: PLR0911 -- one return per tool outcome
+        if self._caller_service is None:
+            return {"error": "unknown tool: lookup_caller"}
+        if self._caller_lookups >= _MAX_CALLER_LOOKUPS:
+            return {
+                "status": "limit_reached",
+                "guidance": "Do not look up another number; continue as a new caller.",
+            }
+        phone = normalise_mobile(str(args.get("mobile_number") or ""))
+        said_name = " ".join(str(args.get("caller_name") or "").split())
+        if phone is None:
+            self._caller_lookups += 1
+            return {
+                "status": "invalid_number",
+                "guidance": "That is not a complete mobile number. Ask the caller to repeat it "
+                "digit by digit, or continue without it.",
+            }
+        if not said_name:
+            return {
+                "status": "need_name",
+                "guidance": "Ask the caller for their name first, then call lookup_caller "
+                "again with mobile_number and caller_name.",
+            }
+        self._caller_lookups += 1
+        if (
+            self._caller_confirmed
+            and phone == self._confirmed_phone
+            and self._caller_ctx is not None
+            and self._caller_ctx.single is not None
+        ):
+            # The already-confirmed number told again: same answer, no new
+            # name check.
+            return self._match_response(self._caller_ctx.single)
+        # A new number replaces whatever was told before; a confirmation of
+        # an earlier number is dropped.
+        self._caller_source = SOURCE_SPOKEN
+        self._unconfirm_spoken()
+        self._spoken_pending = None
+        self._caller_phone = phone
+        matched = False
+        if phone in self._spoken_tried:
+            # Its one name check was used earlier in this call (round 3).
+            _log.info("phone_caller_lookup_retry_refused", phone=mask(phone))
+        elif self._caller_service.allow_spoken_lookup(phone):
+            ctx = await self._caller_service.lookup(phone, SOURCE_SPOKEN)
+            self._spoken_pending = ctx
+            matched = self._confirm_spoken(said_name)
+        else:
+            _log.warning("phone_caller_lookup_rate_limited", phone=mask(phone))
+        _log.info(
+            "phone_caller_lookup_tool", call_sid=self.call_sid, phone=mask(phone), matched=matched
+        )
+        # Record the told number on the case even if nothing else is said.
+        self._schedule_caller_write()
+        if not matched or self._caller_ctx is None or self._caller_ctx.single is None:
+            # The same answer for "no such number" and "wrong name": the
+            # tool is not an oracle for who owns a number.
+            return {"status": "no_match", "guidance": NO_MATCH_GUIDANCE}
+        return self._match_response(self._caller_ctx.single)
+
+    @staticmethod
+    def _match_response(c: Any) -> dict[str, Any]:
+        result: dict[str, Any] = {"status": "match", "vehicles": spoken_match_vehicles(c)}
+        if c.last_dealer:
+            result["usual_dealer"] = dealer_display(c.last_dealer)
+        result["guidance"] = spoken_match_guidance(c)
+        return result
+
+    def _handle_save_caller_details(self, args: dict[str, object]) -> dict[str, Any]:
+        if self._caller_service is None:
+            return {"error": "unknown tool: save_caller_details"}
+        details = parse_caller_details(dict(args))
+        if details.name and self._caller_source == SOURCE_SPOKEN and self._spoken_pending:
+            # A told number: a name that CONTRADICTS its confirmation (a
+            # distinctive word that does not fit) undoes it; a shorter one
+            # ("Muhammad" after "Muhammad Hafiz") does not. It never
+            # CONFIRMS one -- the lookup's caller_name was the one try (R38).
+            single = self._single_candidate() if self._caller_confirmed else None
+            if single is not None and names_contradict(details.name, single.name):
+                self._unconfirm_spoken()
+        self.caller_details = self.caller_details.merged(details)
+        if details.dealer_text:
+            self._caller_dealer_slug = match_dealer(details.dealer_text, self._dealer_slugs)
+        self._schedule_caller_write()
+        return {"status": "saved", "dealer_matched": bool(self._caller_dealer_slug)}
+
+    def _schedule_caller_write(self) -> None:
+        """CRM writes for what the caller said run detached (the tool reply
+        must not wait on Chatwoot) and one after another (later details are
+        merged over earlier ones in order)."""
+        if self._caller_service is None:
+            return
+        self._caller_write_pending = True
+        prev = self._caller_write_task
+        self._caller_write_task = asyncio.create_task(self._run_caller_write(prev))
+
+    async def _run_caller_write(self, prev: asyncio.Task[None] | None) -> None:
+        if prev is not None:
+            await asyncio.gather(prev, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                self._write_caller_when_ticket(),
+                timeout=self._settings.phone_caller_save_timeout_seconds,
+            )
+        except Exception as e:
+            # Left pending: finalize() applies it once the ticket exists. Info,
+            # not warning: waiting for a not-yet-created conversation is normal.
+            _log.info(
+                "phone_caller_write_deferred", call_sid=self.call_sid, error_type=type(e).__name__
+            )
+
+    async def _write_caller_when_ticket(self) -> None:
+        if self.ticket_id is None and self._ticket_create_task is not None:
+            await asyncio.gather(self._ticket_create_task, return_exceptions=True)
+        if self.ticket_id is None:
+            return  # finalize() will apply it
+        await self._apply_caller(self.ticket_id)
+
+    async def _apply_caller(self, ticket_id: str) -> None:
+        if self._caller_service is None:
+            return
+        await self._caller_service.save(
+            ticket_id=ticket_id,
+            phone=self._caller_phone,
+            source=self._caller_source,
+            details=self.caller_details,
+            dealer_slug=self._caller_dealer_slug,
+            # Pinned: only the number that was confirmed, never a later one.
+            contact_writes=(
+                self._caller_confirmed
+                and self._caller_phone is not None
+                and self._caller_phone == self._confirmed_phone
+            ),
+        )
+        # No dealer_<slug> label here, not even on a handoff (controller
+        # ruling 9 Nov 2026): reports count that label as "escalated to
+        # dealer", and a handoff to customer service is not that. The
+        # confirmed dealer stays on the conversation as caller_dealer; the
+        # agent's `escalate` label applies dealer_<slug> via
+        # /escalation/notify (features/chat/handoff_note.py).
+        self._caller_write_pending = False
+
+    async def _prepare_handoff_context(self) -> None:
+        """Before ringing an agent: stop waiting for a number, give a
+        still-running conversation create a short chance to finish (so the
+        ring carries the conversation id)."""
+        self._caller_known.set()
+        task = self._ticket_create_task
+        if self.ticket_id is None and task is not None and not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=_HANDOFF_TICKET_WAIT_SECONDS)
+            except Exception as e:
+                _log.warning(
+                    "phone_handoff_ticket_not_ready",
+                    call_sid=self.call_sid,
+                    error_type=type(e).__name__,
+                )
+
+    async def _settle_caller_write_task(self) -> None:
+        if self._caller_write_task is None:
+            return
+        try:
+            await asyncio.wait_for(self._caller_write_task, timeout=_FLUSH_DRAIN_TIMEOUT_SECONDS)
+        except Exception as e:
+            _log.error("phone_finalize_caller_write_failed", call_sid=self.call_sid, error=str(e))
 
     async def handle_twilio(self, msg: dict[str, object]) -> None:
         event = msg.get("event")
@@ -334,13 +893,23 @@ class PhoneBridge:
                     # reconnect (ticket_id stays None until the task actually
                     # runs), so also check the task itself isn't still
                     # in-flight.
-                    self._ticket_create_task = asyncio.create_task(
+                    create = (
                         self._create_ticket_at_start(self.call_sid)
+                        if self._caller_known.is_set()
+                        else self._deferred_ticket_create(self.call_sid)
+                    )
+                    self._ticket_create_task = asyncio.create_task(create)
+                if self._announcement_pending and self._announcement_watchdog is None:
+                    self._announcement_watchdog = asyncio.create_task(
+                        self._run_announcement_watchdog()
                     )
                 if (
                     self.call_sid
                     and not self._recording_start_attempted
                     and self._settings.phone_recording_enabled
+                    # PDPA: with the notice played over the stream, recording
+                    # waits for Twilio's confirmation that it has played.
+                    and not self._announcement_pending
                 ):
                     # Fire-and-forget, same reasoning as the ticket-create
                     # task just above: the Twilio REST call (via
@@ -366,10 +935,195 @@ class PhoneBridge:
             media = msg.get("media")
             if isinstance(media, dict):
                 payload = media.get("payload")
-                if payload:
+                if payload and not self._announcement_pending:
+                    # R40 (PDPA-conservative): nothing the caller says over
+                    # the notice reaches Gemini, so none of it is answered or
+                    # transcribed before the notice has played.
                     pcm = mulaw8k_to_pcm16k(base64.b64decode(str(payload)))
                     await self._live.send_audio(pcm)
+        elif event == "mark":
+            mark = msg.get("mark")
+            name = mark.get("name") if isinstance(mark, dict) else None
+            if self._announcement_pending and name == self._announcement_mark:
+                await self._announcement_played()
         # "stop"/"connected" need no action here; finalize() runs on socket close.
+
+    # --- turn-taking (2026-11-09) ---------------------------------------------
+
+    async def _announcement_played(self) -> None:
+        """Twilio confirmed the PDPA notice has played: release the held
+        model audio and only now start the recording."""
+        self._announcement_pending = False
+        if self._announcement_watchdog is not None and not self._announcement_watchdog.done():
+            self._announcement_watchdog.cancel()
+        await self._release_held_audio()
+        # Only now may a waiting handoff redirect: the held line is sent.
+        self._announcement_done.set()
+        await self._greet_if_deferred()
+        if (
+            self.call_sid
+            and not self._recording_start_attempted
+            and self._settings.phone_recording_enabled
+        ):
+            self._recording_start_attempted = True
+            self._recording_task = asyncio.create_task(self._maybe_start_recording(self.call_sid))
+
+    def _announcement_wait_left(self) -> float:
+        total = self._announcement_seconds + _ANNOUNCEMENT_GRACE_SECONDS
+        if self._announcement_sent_at is None:
+            return total
+        return max(0.0, self._announcement_sent_at + total - time.monotonic())
+
+    async def _run_announcement_watchdog(self) -> None:
+        await asyncio.sleep(self._announcement_wait_left())
+        await self.announcement_watchdog_expired()
+
+    async def announcement_watchdog_expired(self) -> None:
+        """No confirmation the notice played: stop holding the model's audio
+        (the caller must not sit in silence) but fail CLOSED on recording --
+        nothing proves the notice was heard."""
+        if not self._announcement_pending:
+            return
+        self._announcement_pending = False
+        # Never record this call: the notice is unproven.
+        self._recording_start_attempted = True
+        _log.warning("phone_announcement_unconfirmed_no_recording", call_sid=self.call_sid)
+        await self._release_held_audio()
+        self._announcement_done.set()
+        await self._greet_if_deferred()
+
+    async def greet_when_ready(self) -> None:
+        """Greet (``greeting_prompt``) now, or -- while the notice is still
+        playing -- right after it (mark echo / watchdog). Once per call."""
+        if self._greeting_prompt is None:
+            return
+        if self._announcement_pending:
+            self._greet_after_notice = True
+            return
+        await self.greet_if_caller_silent(self._greeting_prompt)
+
+    async def _greet_if_deferred(self) -> None:
+        if self._greet_after_notice and self._greeting_prompt is not None:
+            self._greet_after_notice = False
+            await self.greet_if_caller_silent(self._greeting_prompt)
+
+    async def _release_held_audio(self) -> None:
+        held, self._held_audio = self._held_audio, []
+        for frame in held:
+            await self._send_twilio(frame)
+
+    async def greet_if_caller_silent(self, prompt: str) -> bool:
+        """Ask the model to greet, once, and only if the caller has not
+        spoken yet -- a caller who already said "Hello" is answered by the
+        model's normal turn, and a second, injected greeting is exactly the
+        double "Hello! How can I help you today?" heard live."""
+        if self._greeted or self._caller_spoke:
+            return False
+        send = getattr(self._live, "send_greeting", None)
+        if send is None:
+            return False
+        self._greeted = True
+        try:
+            await send(prompt)
+        except Exception as e:
+            _log.warning("phone_greeting_prompt_failed", call_sid=self.call_sid, error=str(e))
+            return False
+        return True
+
+    def _in_drop_window(self) -> bool:
+        if self._drop_until is None:
+            return False
+        if self._now() >= self._drop_until:
+            self._drop_until = None
+            return False
+        return True
+
+    def _log_timing(self, first_audio_ms: int | None) -> None:
+        if self._timing is None or self._timing_logged:
+            return
+        self._timing_logged = True
+        _log.info(
+            "phone_call_timing",
+            call_sid=self.call_sid,
+            first_model_audio_ms=first_audio_ms,
+            **self._timing,
+        )
+
+    async def _forward_model_audio(self, event: AudioOut) -> None:
+        if self._in_drop_window():
+            return  # the cancelled answer's tail
+        if not self.stream_sid:
+            return
+        if not self._timing_logged and self._stream_started_at is not None:
+            self._log_timing(round((self._now() - self._stream_started_at) * 1000))
+        mulaw = pcm24k_to_mulaw8k(event.pcm)
+        frame: dict[str, object] = {
+            "event": "media",
+            "streamSid": self.stream_sid,
+            "media": {"payload": base64.b64encode(mulaw).decode()},
+        }
+        if self._announcement_pending:
+            self._held_audio.append(frame)
+            return
+        await self._send_twilio(frame)
+
+    async def _on_interrupted(self) -> None:
+        """Caller barge-in: the model's answer is cancelled. Stop it on the
+        line (Twilio "clear") and drop what is still in flight of it. During
+        the PDPA notice nothing is cleared -- only the held model audio is
+        dropped, the notice keeps playing."""
+        self._drop_until = self._now() + self._interrupt_drop_seconds
+        self._assistant_turn_ended = True
+        if self._announcement_pending:
+            self._held_audio = []
+            return
+        if self.stream_sid:
+            await self._send_twilio({"event": "clear", "streamSid": self.stream_sid})
+
+    def _add_user_fragment(self, text: str) -> None:
+        """Caller transcript fragments build one row; whether it is speech is
+        decided on the row so far (for the greeting) and finally when it
+        closes (R41: a stray first fragment never marks real speech)."""
+        if self._user_row is None:
+            # A plain append, never the merging _append_transcript: the
+            # assistant output that closed the previous caller row may have
+            # been dropped (interrupt tail), leaving transcript[-1] a USER
+            # row this one must not be written over.
+            self.transcript.append(("USER", text))
+            self._user_row = (len(self.transcript) - 1, text)
+            self._user_row_streaming = False
+        else:
+            idx, so_far = self._user_row
+            so_far += text
+            self.transcript[idx] = ("USER", so_far)
+            self._user_row = (idx, so_far)
+        live = self._settings.phone_transcript_live_enabled
+        if self._user_row_streaming:
+            if live:
+                self._sink.add("USER", text)
+        elif not is_unclear_transcript(self._user_row[1]):
+            # Speech after all: the live transcript gets the row so far and
+            # from here on every fragment as it comes (a long turn still
+            # shows up during the call).
+            self._caller_spoke = True
+            self._user_row_streaming = True
+            if live:
+                self._sink.add("USER", self._user_row[1])
+
+    def _close_user_row(self) -> None:
+        """Judge the finished caller row: noise is kept, marked "(unclear)".
+        A row that never became speech reaches the live transcript only now,
+        with that mark."""
+        if self._user_row is None:
+            return
+        idx, text = self._user_row
+        self._user_row = None
+        if self._user_row_streaming:
+            return  # speech, already streamed
+        text = f"(unclear) {text}"
+        self.transcript[idx] = ("USER", text)
+        if self._settings.phone_transcript_live_enabled:
+            self._sink.add("USER", text)
 
     async def _create_ticket_at_start(self, call_sid: str) -> None:
         """Create the conversation's ticket as soon as the call starts.
@@ -406,12 +1160,14 @@ class PhoneBridge:
         tenant and look like a standing outage.
         """
         session_id = f"phone-{call_sid}"
+        customer_name, customer_phone = self._ticket_customer()
         try:
             ticket_id = await self._log_port.ensure_conversation_ticket(
                 session_id=session_id,
                 subject=f"[phone] Conversation {session_id}",
-                customer_name=None,
-                customer_phone=None,
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+                **self._attach_kw(customer_phone),
             )
         except Exception as e:
             _log.error("phone_ticket_create_failed", session_id=session_id, error=str(e))
@@ -477,6 +1233,17 @@ class PhoneBridge:
         event is the only thing that triggers this method, and therefore
         the only thing that can trigger recording. The disclosure is
         sequenced by construction.
+
+        FAST START (phone_fast_start_enabled, 2026-11-09): when the notice
+        audio is cached, the TwiML carries no `<Say>`; router.py's
+        phone_stream plays the notice as media frames on the stream and ends
+        it with a Twilio mark. This method is then NOT triggered by "start":
+        it runs only from `_announcement_played`, i.e. once Twilio echoes
+        that mark -- Twilio's own confirmation the notice has PLAYED. If the
+        echo never comes (`announcement_watchdog_expired`) or the audio was
+        missing, the call is never recorded. While the notice plays, the
+        caller's audio is not sent to Gemini at all (R40), so nothing is
+        answered or transcribed before the disclosure either.
 
         Whole-branch review fix (Important 4): this method used to ALSO
         queue a text hint asking the Gemini model to speak the same notice
@@ -587,8 +1354,19 @@ class PhoneBridge:
                 "reason": str(event.args.get("reason") or ""),
                 "summary": str(event.args.get("summary") or ""),
             }
+            if self._caller_service is not None:
+                await self._prepare_handoff_context()
+            # Detached: the note waits for the conversation, never the ring.
+            self._schedule_handoff_note()
             status = await self._attempt_transfer()
             await self._live.send_tool_response(event.id, event.name, {"status": status})
+        elif event.name == "save_caller_details" and self._caller_service is not None:
+            await self._live.send_tool_response(
+                event.id, event.name, self._handle_save_caller_details(event.args)
+            )
+        elif event.name == "lookup_caller" and self._caller_service is not None:
+            result = await self._handle_lookup_caller(event.args)
+            await self._live.send_tool_response(event.id, event.name, result)
         elif event.name == "submit_csat":
             score = parse_csat_score(event.args)
             if score is not None:
@@ -667,6 +1445,17 @@ class PhoneBridge:
             return "transferring"
         if self.call_sid is None:
             return "ticket_created"
+        if not self._announcement_done.is_set():
+            # R5: a redirect tears the stream down -- the caller must hear the
+            # whole notice (and the AI's handoff line queued behind it) first.
+            # Bounded by the watchdog's own deadline.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    self._announcement_done.wait(),
+                    # + 1 s: the watchdog itself fires at the deadline and
+                    # then still sends the held audio.
+                    timeout=self._announcement_wait_left() + 1.0,
+                )
         # Review fix (Important 1): both awaits below are bounded -- see
         # _HANDOFF_RESOLVE_TIMEOUT_SECONDS/_HANDOFF_REDIRECT_TIMEOUT_SECONDS'
         # module-level docstring. This method runs INLINE inside pump(),
@@ -715,30 +1504,35 @@ class PhoneBridge:
     async def pump(self) -> None:
         async for event in self._live.events():
             if isinstance(event, AudioOut):
-                if self.stream_sid:
-                    mulaw = pcm24k_to_mulaw8k(event.pcm)
-                    await self._send_twilio(
-                        {
-                            "event": "media",
-                            "streamSid": self.stream_sid,
-                            "media": {"payload": base64.b64encode(mulaw).decode()},
-                        }
-                    )
+                await self._forward_model_audio(event)
             elif isinstance(event, Interrupted):
-                if self.stream_sid:
-                    await self._send_twilio({"event": "clear", "streamSid": self.stream_sid})
+                await self._on_interrupted()
+            elif isinstance(event, TurnComplete):
+                self._drop_until = None
+                self._assistant_turn_ended = True
             elif isinstance(event, InputTranscript):
-                is_new_user_turn = not (self.transcript and self.transcript[-1][0] == "USER")
-                self._append_transcript("USER", event.text)
-                if self._settings.phone_transcript_live_enabled:
-                    self._sink.add("USER", event.text)
-                if is_new_user_turn and self._settings.phone_language_nudge_enabled:
-                    await self._live.send_text_hint(
-                        "(Reminder: match your next reply's language to what "
-                        "the caller just said, even mid-conversation.)"
-                    )
+                # Any caller transcript means the caller's new turn: the
+                # cancelled answer's tail is behind us.
+                self._drop_until = None
+                self._add_user_fragment(event.text)
+                # phone_language_nudge_enabled is inert since 2026-11-09: the
+                # reminder went out as send_realtime_input(text=...), which the
+                # Live API treats as a CALLER turn -- the model answered it
+                # ("Ya, tentu!") and spoke twice per caller turn (27 Oct
+                # call). The language rule lives in the system instruction.
             elif isinstance(event, OutputTranscript):
-                self._append_transcript("ASSISTANT", event.text)
+                self._close_user_row()
+                if self._in_drop_window():
+                    continue
+                if (
+                    self._assistant_turn_ended
+                    and self.transcript
+                    and (self.transcript[-1][0] == "ASSISTANT")
+                ):
+                    self.transcript.append(("ASSISTANT", event.text))
+                else:
+                    self._append_transcript("ASSISTANT", event.text)
+                self._assistant_turn_ended = False
                 if self._settings.phone_transcript_live_enabled:
                     self._sink.add("ASSISTANT", event.text)
             elif isinstance(event, ToolCall):
@@ -888,11 +1682,13 @@ class PhoneBridge:
         """
         if self.ticket_id is not None:
             return self.ticket_id
+        customer_name, customer_phone = self._ticket_customer()
         ticket_id = await self._log_port.ensure_conversation_ticket(
             session_id=session_id,
             subject=f"[phone] Conversation {session_id}",
-            customer_name=None,
-            customer_phone=None,
+            customer_name=customer_name,
+            customer_phone=customer_phone,
+            **self._attach_kw(customer_phone),
         )
         if ticket_id == session_id:
             _log.error(
@@ -1041,9 +1837,18 @@ class PhoneBridge:
         call stays recoverable from logs, exactly like every other
         finalize failure path here.
         """
+        # Caller context: a call still waiting for the caller's number gets
+        # its conversation created now (no-op when already set / flag off).
+        self._caller_known.set()
+        if self._announcement_watchdog is not None and not self._announcement_watchdog.done():
+            self._announcement_watchdog.cancel()
+        self._close_user_row()  # a row still open at hangup is judged too
+        self._log_timing(None)
         await self._settle_ticket_create_task()
         await self._settle_recording_task()
         await self._settle_handoff_prefetch_task()
+        await self._settle_caller_write_task()
+        await self._settle_handoff_note_task()
         await self._drain_flush_queue()
 
         if not self.call_sid:
@@ -1063,8 +1868,10 @@ class PhoneBridge:
                 transcript=_log_transcript(body),
             )
 
-    async def _write_finalize_result(self, session_id: str, body: str) -> None:
-        if not self.transcript and self.handoff is None:
+    async def _write_finalize_result(self, session_id: str, body: str) -> None:  # noqa: PLR0912 -- one branch per closing write
+        # 2026-11-09: the assistant now greets first, so "nobody spoke" means
+        # no CALLER turn -- a greeting into a hung-up line is still abandoned.
+        if not any(role == "USER" for role, _ in self.transcript) and self.handoff is None:
             # Nobody spoke and nothing was escalated. Nothing to summarise
             # -- but a ticket may already exist from the call-start create,
             # and an empty open conversation must not be left behind.
@@ -1091,11 +1898,30 @@ class PhoneBridge:
             if self._settings.phone_transcript_classification_enabled:
                 status = await self._classify_and_apply(ticket_id, body, status)
 
-            if self.handoff is not None:
+            if self._caller_service is not None and self._caller_write_pending:
+                # What the caller said, if the mid-call write never landed
+                # (no ticket yet, Chatwoot slow). Inside the bounded tail
+                # like every closing write.
+                try:
+                    await self._apply_caller(ticket_id)
+                except Exception as e:
+                    _log.error("phone_finalize_caller_write_failed", error=str(e))
+
+            if self.handoff is not None and self._settings.handoff_note_enabled:
+                # The structured note, unless the handoff already posted it.
+                await self._post_handoff_note(ticket_id)
+            elif self.handoff is not None:
                 note = (
                     "[Handoff to human agent]\n"
                     f"{self.handoff.get('reason', '')}\n{self.handoff.get('summary', '')}"
                 )
+                if self._caller_service is not None:
+                    who, vehicle, dealer = self._caller_summary()
+                    note += (
+                        f"\nCaller: {who or 'not identified'}"
+                        f"\nVehicle: {vehicle or 'not given'}"
+                        f"\nDealer: {dealer or 'not given'}"
+                    )
                 await self._log_port.append_conversation_comment(ticket_id, note, status="open")
             # With live streaming on, at least one block already
             # successfully posted (during pump() or the forced flush just

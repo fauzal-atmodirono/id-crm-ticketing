@@ -34,6 +34,7 @@ async def record_transition(
     to_state: CaseState,
     at: str,
     remark: str = "",
+    actor_user_id: int | None = None,
 ) -> None:
     await audit.append(
         AuditEntry(
@@ -44,5 +45,9 @@ async def record_transition(
             to_state=to_state.value,
             at=at,
             remark=remark,
+            event_type="status_change",
+            actor_user_id=actor_user_id,
+            actor_name=actor,
+            target=f"case:{ticket_id}",
         )
     )

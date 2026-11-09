@@ -168,3 +168,28 @@ def test_handoff_guardrails_are_in_the_phone_system_instruction():
     assert "repeat or rephrase" in g
     assert "follow-up question" in g and "not a reason to hand off" in g
     assert "must" in g and "kb_search" in g
+
+
+# --- 2026-11-09 caller context: <Stream> custom parameters ------------------
+
+
+def test_connect_stream_twiml_without_parameters_is_byte_identical() -> None:
+    base = connect_stream_twiml("wss://example.test/s", "Recorded.")
+    assert base == (
+        '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Recorded.</Say><Connect>'
+        '<Stream url="wss://example.test/s" /></Connect></Response>'
+    )
+    assert connect_stream_twiml("wss://example.test/s", "Recorded.", None) == base
+    assert connect_stream_twiml("wss://example.test/s", "Recorded.", {}) == base
+
+
+def test_connect_stream_twiml_carries_escaped_parameters_inside_stream() -> None:
+    xml = connect_stream_twiml(
+        "wss://example.test/s", None, {"caller": "+60000000101", "caller_sig": 'a"<b'}
+    )
+    assert (
+        '<Stream url="wss://example.test/s">'
+        '<Parameter name="caller" value="+60000000101"/>'
+        "<Parameter name=\"caller_sig\" value='a\"&lt;b'/>"
+        "</Stream>"
+    ) in xml

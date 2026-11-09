@@ -98,28 +98,37 @@ read it (except for the race guard in §5.6).
 
 ## 5. What you need to build
 
-### 5.1 Your inbound endpoint: `POST /webhooks/whatsapp` (reused)
+### 5.1 Your inbound endpoint: `POST /chatwoot/bot`
 
-AEON360 decided on 2026-08-20 to **reuse the existing `/webhooks/whatsapp` path**
-rather than add a separate `/chatwoot/bot` route. The CRM is registered against it.
+**Built and live** — verified 2026-08-21 answering `401` to an unsigned POST at
+`https://innovation.dev.aeon360.net/aeon360-customer-waba/chatwoot/bot`.
 
-**The path is the same. The protocol is completely different.** Chatwoot does not
-speak Twilio — from cutover onward this URL receives JSON from Chatwoot, not
-form-encoded callbacks from Twilio:
+The 2026-08-20 plan was to reuse the existing `/webhooks/whatsapp` path. AEON360
+built a **separate route** instead (`src/api/chatwoot.py`), which is the better
+call — see the callout in §7. The CRM's registered `outgoing_url` was corrected to
+match on 2026-08-21.
 
-| | Twilio (today) | Chatwoot (from cutover) |
+**Two routes, two protocols.** `/webhooks/whatsapp` stays Twilio-only and untouched;
+`/chatwoot/bot` speaks Chatwoot and nothing else:
+
+| | Twilio — `/webhooks/whatsapp` | Chatwoot — `/chatwoot/bot` |
 |---|---|---|
 | Content-Type | `application/x-www-form-urlencoded` | `application/json` |
 | Body | `From=…&Body=…&MessageSid=…` | `{event, message_type, content, conversation:{status}}` |
 | Signature | `X-Twilio-Signature`, HMAC-**SHA1** over URL + sorted params | `X-Chatwoot-Signature`, HMAC-**SHA256** over `{timestamp}.{raw_body}` |
 | Idempotency key | `MessageSid` | `X-Chatwoot-Delivery` |
 
-> **During the transition, both formats arrive at this one URL.** In §8 step 3 the
-> sandbox number posts Chatwoot JSON while production `+1 682 399 3949` is still
-> posting Twilio form data. Branch on `Content-Type` for that window and run the
-> matching verifier — do **not** try to make a single verifier handle both
-> signature schemes. Once production is cut over Twilio never calls you again and
-> the Twilio branch is deleted (§5.9).
+> **No `Content-Type` branch is needed** — that was only required by the shared-path
+> plan. With two routes each verifier owns its own URL, and the two can never see
+> each other's traffic.
+>
+> **But the two routes have deliberately opposite error policies, and that inversion
+> is the trap.** `/webhooks/whatsapp` must never return 5xx, because Twilio retries
+> 5xx and hammers it. `/chatwoot/bot` must return `500` on a transient internal
+> failure, because Chatwoot retries **only** on `429`/`500` and drops `403`/`502`/`503`
+> permanently — a message silently lost. Bad signature is `403` on the Twilio route
+> and `401` on the Chatwoot one. Comment this at both call sites: a reader who knows
+> the never-5xx rule will otherwise "fix" the `500` and start losing messages.
 
 **Verify the HMAC signature and reject anything that fails.** Chatwoot signs every
 delivery:
@@ -327,10 +336,11 @@ status is `pending`.
 
 ### 5.9 What to retire
 
-- The **Twilio branch** of `POST /webhooks/whatsapp` — its form parsing and
-  `X-Twilio-Signature` validation. The route itself stays; it is now the Chatwoot
-  endpoint. Only the Twilio half is removed. **Keep it until production cutover is
-  confirmed — it is the rollback path (§8).**
+- The whole `POST /webhooks/whatsapp` route — form parsing, `X-Twilio-Signature`
+  validation, and the direct Twilio send path behind it. With `/chatwoot/bot` on a
+  separate URL the Twilio route is dead weight after cutover, not a shared handler
+  to prune. **Keep it until production cutover is confirmed — it is the entire
+  rollback path (§8), and with the sandbox retired it is the only one.**
 - `gateway_twilio.py` as the production adapter (keep it for local testing if useful).
 - `TWILIO_*` env vars on your backend, once cutover is confirmed.
 
@@ -366,7 +376,7 @@ The agent bot is **already created and attached** — `agent_bot id=1`, name
 | Account ID | `1` |
 | Inbox ID | `1` ("AEON360 Whatsapp") |
 | Agent bot ID | `1` |
-| Registered `outgoing_url` | `https://innovation.dev.aeon360.net/aeon360-customer-waba/webhooks/whatsapp` *(set 2026-08-20 — same path as your existing Twilio route, see the note below)* |
+| Registered `outgoing_url` | `https://innovation.dev.aeon360.net/aeon360-customer-waba/chatwoot/bot` *(corrected 2026-08-21 to match the route you actually built — see the note below)* |
 | `AGENT_BOT_TOKEN` | «AGENT_BOT_TOKEN» |
 | `CHATWOOT_BOT_SECRET` | «CHATWOOT_BOT_SECRET» |
 
@@ -374,20 +384,27 @@ The agent bot is **already created and attached** — `agent_bot id=1`, name
 `CHATWOOT_BOT_SECRET` is the HMAC secret for verifying inbound deliveries (§5.1).
 Store both as secrets in your deployment — do not commit them.
 
-**TLS on the CRM domain is done** (2026-08-20). The only CRM-side action still
-outstanding is repointing the Twilio webhook at cutover (§8).
+**TLS on the CRM domain is done** (2026-08-20), and the `outgoing_url` correction is
+done (2026-08-21). The only CRM-side action still outstanding is repointing the
+Twilio Sender at cutover (§8).
 
-> **⚠️ The bot URL and your old Twilio URL are the same path.** AEON360 chose on
-> 2026-08-20 to reuse `/webhooks/whatsapp` rather than stand up a separate route, and
-> the CRM is registered against it. Two consequences follow, both on your side:
+> **⚠️ The registered URL was wrong until 2026-08-21, and the failure would have been
+> silent.** This spec originally registered `outgoing_url` against
+> `/webhooks/whatsapp`; AEON360 built `/chatwoot/bot` instead and that path never
+> grew a Chatwoot branch. Verified live 2026-08-21:
 >
-> 1. **The handler must accept Chatwoot's JSON + SHA256 signature**, not Twilio's
->    form + SHA1. Reusing the URL saves no implementation work — see §5.1.
-> 2. **Keep the Twilio branch alive until production cutover is confirmed.** It is
->    the rollback path, and deleting it early strands you (§8, §5.9).
+> ```
+> POST /webhooks/whatsapp  (application/json)  → 403   ← Twilio verifier, wrong route
+> POST /chatwoot/bot       (application/json)  → 401   ← Chatwoot verifier, correct
+> ```
 >
-> If you move the endpoint elsewhere, tell Yuda — the CRM must be updated or no
-> events reach you, and the failure is silent from your side.
+> Chatwoot drops `403` permanently. Every event would have been lost with no error
+> visible on either side — the conversation would just fall to a human. The
+> registration now points at `/chatwoot/bot`.
+>
+> **If either side moves an endpoint, tell the other before deploying.** The CRM
+> must be re-registered or no events arrive, and nothing about that is visible from
+> AEON360's side.
 
 ---
 
@@ -396,32 +413,51 @@ outstanding is repointing the Twilio webhook at cutover (§8).
 The Twilio webhook switch is a one-way door — the moment it points at the CRM, the
 current demo bot goes silent. So:
 
-1. You update `/webhooks/whatsapp` to accept Chatwoot deliveries **alongside** the
-   existing Twilio ones (§5.1). Both formats must work at once for step 3.
+1. ~~You build a Chatwoot-speaking inbound endpoint.~~ **Done** — `/chatwoot/bot`
+   is deployed with `crm_enabled: true` and verified answering `401` unsigned
+   (2026-08-21).
 2. ~~Yuda registers the agent bot and gives you the token + secret.~~ **Done
-   2026-08-20** — token, secret and `outgoing_url` are all in place (§7).
-3. **Test on the Twilio sandbox number `+1 415 523 8886` first** — your existing
-   go-live runbook already documents this path. Point the *sandbox* inbound webhook
-   at the CRM and verify the whole loop end to end. The CRM's inbound URL is:
+   2026-08-20**; `outgoing_url` corrected to `/chatwoot/bot` **2026-08-21** (§7).
+3. **Repoint the production Twilio WhatsApp Sender `+1 682 399 3949`** at the CRM:
 
    ```
    https://aeon360.crm.34-50-103-151.nip.io/twilio/callback
    ```
 
-   Verified live and answering over HTTPS as of 2026-08-20.
-4. Once green, repoint the production number `+1 682 399 3949` at the same URL.
-5. Confirm, then delete the retired code in §5.9.
+   Verified live and answering `204` over HTTPS as of 2026-08-21.
+4. Run the §9 acceptance tests against the production number.
+5. Confirm stable, then delete the retired code in §5.9.
 
-Rollback at any point is: point the Twilio webhook back at
-`https://innovation.dev.aeon360.net/aeon360-customer-waba/webhooks/whatsapp`.
-**This works only while the Twilio branch of that handler is still present** — do
-not delete it (§5.9) until production has run stably on the CRM.
+> **⚠️ There is no sandbox rehearsal.** The Twilio sandbox number
+> `+1 415 523 8886` is retired and is not coming back, so step 3 *is* the test —
+> the first Chatwoot-routed message is a real one from a real handset. Three
+> consequences:
+>
+> - **Cut over in a low-traffic window**, with someone watching the CRM inbox and
+>   the WABA logs live.
+> - **Have the rollback command typed and ready before you flip**, not after.
+> - **Test 12 (backend down) can no longer be rehearsed safely** — verify it by
+>   pointing a local Chatwoot delivery at a stopped service instead of taking
+>   production down.
+
+Rollback is one command: point the Twilio **Sender** back at
+
+```
+https://innovation.dev.aeon360.net/aeon360-customer-waba/webhooks/whatsapp
+```
+
+**This works only while `/webhooks/whatsapp` is still present** — do not delete it
+(§5.9) until production has run stably on the CRM. WhatsApp routing is governed by
+the **Sender** (`/v2/Channels/Senders/{XE...}`), *not* the phone number's `SmsUrl`;
+editing the wrong one looks successful and changes nothing.
 
 ---
 
 ## 9. Acceptance tests
 
-Run all of these against the sandbox before production cutover:
+Run all of these against the production number immediately after cutover — with the
+sandbox retired there is nowhere else to run them, so treat the window as a live
+test and keep the rollback to hand (§8):
 
 | # | Scenario | Expected |
 |---|---|---|
@@ -452,7 +488,12 @@ than assuming.
   or template push), those must also go through the Chatwoot API or they will not
   appear in the CRM. Not in scope now — flag it if you have such a flow.
 - **AEON360 team CRM access** — Yuda to create accounts so the team can read
-  history.
+  history. Now more urgent than it was: with no sandbox, reading the CRM is the
+  only way AEON360 can see what a cutover message actually did.
+- **In-memory bindings vs. production.** Bindings, thread ids and the dedupe set
+  live in process memory under `--max-instances=1`, so a deploy or a scale-to-zero
+  silently reassigns members to `default_member_key` on a fresh thread. Acceptable
+  for a demo; flag before this carries real member traffic.
 - ~~**TLS on the CRM domain**~~ — **done 2026-08-20.** `https://aeon360.crm.34-50-103-151.nip.io`
   serves a Let's Encrypt certificate (expires 2026-11-17, auto-renewing). The plain
   `http://` vhost was deliberately left in place as a fallback, so nothing that was

@@ -12,12 +12,16 @@ from dataclasses import asdict
 from fastapi import APIRouter, Depends, HTTPException, status
 import structlog
 
-from chatbot.features.authz.deps import require_permission
+from chatbot.features.authz.deps import Actor, require_authenticated, require_permission, resolve_actor
+from chatbot.features.chat.audit_events import EVENT_TAXONOMY_CHANGE, record_event
 from chatbot.features.chat.pic_store import PicStore
 from chatbot.features.taxonomy.chatwoot_sync import sync_taxonomy_to_chatwoot
 from chatbot.features.taxonomy.store import TaxonomyNode, TaxonomyStore, build_taxonomy_store
 
 if TYPE_CHECKING:
+    from chatbot.features.authz.identity import TokenValidator
+    from chatbot.features.authz.repository import AuthzRepository
+    from chatbot.features.chat.ports import AuditLogPort
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
@@ -92,10 +96,25 @@ async def _unreferenced_departments(
     return unreferenced, source
 
 
-def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
+def build_taxonomy_admin_router(
+    settings: Settings,
+    authz_repo: AuthzRepository | None = None,
+    validator: TokenValidator | None = None,
+    audit: AuditLogPort | None = None,
+) -> APIRouter:
     router = APIRouter(prefix="/admin/taxonomy", tags=["taxonomy-admin"])
     store = build_taxonomy_store(settings)
     pic_store = PicStore(settings)
+
+    caller = resolve_actor(validator=validator, settings=settings)
+
+    async def _node_before(key: str) -> dict[str, Any] | None:
+        # Best-effort: a failed read costs the audit its `before`, never the edit.
+        try:
+            node = await store.get_node(key)
+        except Exception:
+            return None
+        return asdict(node) if node is not None else None
 
     def _check_enabled() -> None:
         if not settings.taxonomy_admin_enabled:
@@ -104,7 +123,12 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
                 detail="Taxonomy admin feature is disabled on this tenant (TAXONOMY_ADMIN_ENABLED=false)",
             )
 
-    @router.get("/tree")
+    @router.get(
+        "/tree",
+        dependencies=[
+            Depends(require_authenticated(repo=authz_repo, validator=validator, settings=settings))
+        ],
+    )
     async def get_taxonomy_tree() -> dict[str, Any]:
         _check_enabled()
         tree_data = await store.tree()
@@ -112,11 +136,18 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
 
     @router.post(
         "/node",
-        dependencies=[Depends(require_permission("taxonomy.manage", settings=settings))],
+        dependencies=[Depends(
+                require_permission(
+                    "taxonomy.manage", repo=authz_repo, validator=validator, settings=settings
+                )
+            )],
     )
-    async def create_or_update_node(payload: dict[str, Any]) -> dict[str, Any]:
+    async def create_or_update_node(
+        payload: dict[str, Any], actor: Actor = Depends(caller)
+    ) -> dict[str, Any]:
         _check_enabled()
         try:
+            before = await _node_before(str(payload.get("key", "")))
             node = TaxonomyNode(
                 level=int(payload["level"]),
                 key=str(payload["key"]),
@@ -128,6 +159,16 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
             )
             success = await store.create_node(node)
             if success:
+                await record_event(
+                    audit,
+                    event_type=EVENT_TAXONOMY_CHANGE,
+                    target=f"taxonomy:{node.key}",
+                    actor_user_id=actor.user_id,
+                    actor_name=actor.name,
+                    before=before,
+                    after=asdict(node),
+                    remarks="taxonomy node saved",
+                )
                 # Trigger downstream sync (gated -- see _maybe_sync_to_chatwoot)
                 await _maybe_sync_to_chatwoot(store, settings, "node_saved")
                 return {"status": "ok", "node": asdict(node)}
@@ -142,12 +183,29 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
 
     @router.post(
         "/node/{key}/retire",
-        dependencies=[Depends(require_permission("taxonomy.manage", settings=settings))],
+        dependencies=[Depends(
+                require_permission(
+                    "taxonomy.manage", repo=authz_repo, validator=validator, settings=settings
+                )
+            )],
     )
-    async def retire_taxonomy_node(key: str) -> dict[str, Any]:
+    async def retire_taxonomy_node(
+        key: str, actor: Actor = Depends(caller)
+    ) -> dict[str, Any]:
         _check_enabled()
         try:
+            before = await _node_before(key)
             active_children = await store.retire_node(key)
+            await record_event(
+                audit,
+                event_type=EVENT_TAXONOMY_CHANGE,
+                target=f"taxonomy:{key}",
+                actor_user_id=actor.user_id,
+                actor_name=actor.name,
+                before=before,
+                after={**(before or {}), "active": False},
+                remarks="taxonomy node retired",
+            )
             await _maybe_sync_to_chatwoot(store, settings, "node_retired")
             return {
                 "status": "retired",
@@ -164,7 +222,12 @@ def build_taxonomy_admin_router(settings: Settings) -> APIRouter:
         "(CATEGORY_DEPARTMENT_MAPPING_ENABLED=false)"
     )
 
-    @router.get("/coverage")
+    @router.get(
+        "/coverage",
+        dependencies=[
+            Depends(require_authenticated(repo=authz_repo, validator=validator, settings=settings))
+        ],
+    )
     async def get_taxonomy_coverage() -> dict[str, Any]:
         """Coverage report: active categories with no department, and departments not mapped.
 

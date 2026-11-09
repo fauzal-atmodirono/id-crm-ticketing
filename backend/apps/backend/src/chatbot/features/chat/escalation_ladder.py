@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from chatbot.features.chat.audit_events import EVENT_LADDER_STEP, mask_recipient, record_event
 from chatbot.features.chat.escalation_policy import (
     PHONE,
     apply_delay_overrides,
@@ -125,18 +126,24 @@ def _current_step(attrs: dict[str, Any]) -> int:
     return max(from_stamps, counter, 1 if attrs.get(NOTIFIED_ATTR) else 0)
 
 
+# Skip reasons that only stop rungs without `fires_after_reply`.
+_REPLY_SKIPS = frozenset({"dealer_replied", "acknowledged_by_agent"})
+
+
 def _should_skip(conv: dict[str, Any], attrs: dict[str, Any]) -> str | None:
     """Why this conversation is not a ladder candidate, or None."""
     if ESCALATE_LABEL not in _labels(conv):
         return "not_escalated"
     if not attrs.get(NOTIFIED_ATTR):
         return "no_step_one"
+    # Checked before the reply reasons: a resolved case must never reach the
+    # 48 h rung, which is the one rung that outlives a reply.
+    if str(conv.get("status") or "") == "resolved":
+        return "resolved"
     if attrs.get(REPLIED_ATTR):
         return "dealer_replied"
     if attrs.get(ACKNOWLEDGED_ATTR):
         return "acknowledged_by_agent"
-    if str(conv.get("status") or "") == "resolved":
-        return "resolved"
     return None
 
 
@@ -151,6 +158,7 @@ async def sweep_ladder(
     now: datetime | None = None,
     inbox_cache: InboxCache | None = None,
     policy_repo: Any = None,
+    audit: Any = None,
 ) -> list[dict[str, Any]]:
     """Advance every due case by exactly one rung. Returns what it did.
 
@@ -185,6 +193,7 @@ async def sweep_ladder(
             dealer_store=dealer_store,
             pronet_store=pronet_store,
             set_attributes=set_attributes,
+            audit=audit,
         )
         if outcome is not None:
             acted.append(outcome)
@@ -194,7 +203,7 @@ async def sweep_ladder(
     return acted
 
 
-async def describe_in_flight(
+async def describe_in_flight(  # noqa: PLR0912, PLR0915 -- one branch per row state
     conversations: list[dict[str, Any]],
     *,
     settings: Settings,
@@ -243,7 +252,12 @@ async def describe_in_flight(
         }
 
         reason = _should_skip(conv, attrs)
-        if reason is not None:
+        row_steps = steps
+        if reason in _REPLY_SKIPS:
+            # Mirrors the sweep: rungs that outlive a reply stay pending.
+            row["state"] = reason
+            row_steps = tuple(s for s in steps if s.fires_after_reply)
+        elif reason is not None:
             row["state"] = reason
             rows.append(row)
             continue
@@ -275,10 +289,12 @@ async def describe_in_flight(
         )
         current = _current_step(attrs)
         upcoming = next(
-            (s for s in sorted(steps, key=lambda s: s.step_no) if s.step_no > current), None
+            (s for s in sorted(row_steps, key=lambda s: s.step_no) if s.step_no > current),
+            None,
         )
         if upcoming is None:
-            row["state"] = "ladder_complete"
+            if reason is None:
+                row["state"] = "ladder_complete"
         else:
             row["next_step_no"] = upcoming.step_no
             row["next_due_in_working_hours"] = round(
@@ -301,6 +317,7 @@ async def _advance_one(  # noqa: PLR0911 -- each return is one reason a case is 
     dealer_store: DealerStore | None,
     pronet_store: ProtonNetStore | None,
     set_attributes: Any,
+    audit: Any = None,
 ) -> dict[str, Any] | None:
     """One conversation, at most one rung. None when nothing was due."""
     conv_id = conv.get("id")
@@ -309,7 +326,12 @@ async def _advance_one(  # noqa: PLR0911 -- each return is one reason a case is 
     ticket_id = str(conv_id)
     attrs = _attrs(conv)
 
-    if _should_skip(conv, attrs) is not None:
+    reason = _should_skip(conv, attrs)
+    if reason in _REPLY_SKIPS:
+        # A reply / acknowledgement ends rungs 1-5 but not the 48 h
+        # unresolved rung: consider only rungs that outlive a reply.
+        steps = tuple(s for s in steps if s.fires_after_reply)
+    elif reason is not None:
         return None
 
     started_at = _parse(attrs.get(NOTIFIED_ATTR))
@@ -373,6 +395,10 @@ async def _advance_one(  # noqa: PLR0911 -- each return is one reason a case is 
             contacts=to,
             deadline=clock + _PHONE_RESPONSE_WINDOW,
         )
+        await _audit_step(
+            audit, ticket_id, step, dealer, to, cc, elapsed_hours,
+            transport="phone_task", delivery_status="task_raised",
+        )
         return {**plan, "action": "phone_task"}
 
     ok, error = notifier.send_ladder_step(
@@ -384,7 +410,52 @@ async def _advance_one(  # noqa: PLR0911 -- each return is one reason a case is 
         body=_body(ticket_id),
         elapsed_working_hours=elapsed_hours,
     )
+    await _audit_step(
+        audit, ticket_id, step, dealer, to, cc, elapsed_hours,
+        transport="email",
+        delivery_status="delivered" if ok else "failed",
+        error=error,
+    )
     return {**plan, "action": "sent" if ok else "failed", "error": error}
+
+
+async def _audit_step(
+    audit: Any,
+    ticket_id: str,
+    step: EscalationStep,
+    dealer: Any,
+    to: list[str],
+    cc: list[str],
+    elapsed_hours: float,
+    *,
+    transport: str,
+    delivery_status: str,
+    error: str = "",
+) -> None:
+    """One audit row per rung actually taken (RFP 3.2.6: escalations).
+
+    Dry runs and the silent step-2 window are not recorded: nothing was
+    delivered, and a trail that lists reminders nobody received is worse than
+    one with a gap. Never raises (record_event swallows store errors).
+    """
+    slug = getattr(dealer, "dealer", None)
+    await record_event(
+        audit,
+        event_type=EVENT_LADDER_STEP,
+        target=f"dealer:{slug}" if slug else f"case:{ticket_id}",
+        ticket_id=ticket_id,
+        actor_name="escalation-ladder",
+        from_state="OPEN",
+        to_state=f"LADDER_STEP_{step.step_no}",
+        remarks=(
+            f"{step.label or 'Escalation'}: unanswered {elapsed_hours:.1f} working hours"
+            + (f", {len(cc)} cc" if cc else "")
+            + (f" ({error})" if error else "")
+        ),
+        recipients=[mask_recipient(r) for r in to],
+        transport=transport,
+        delivery_status=delivery_status,
+    )
 
 
 async def _resolve_contacts(
@@ -480,6 +551,7 @@ def run_ladder_scan_job(
     conversation_log: Any = None,
     fetch: Any = None,
     policy_repo: Any = None,
+    audit: Any = None,
 ) -> None:
     """Synchronous entry point for the scheduler. Never raises.
 
@@ -504,6 +576,7 @@ def run_ladder_scan_job(
                 set_attributes=set_attributes,
                 inbox_cache=InboxCache(conversation_log),
                 policy_repo=policy_repo,
+                audit=audit,
             )
         )
     except Exception as exc:
@@ -521,6 +594,7 @@ def start_ladder_scheduler(
     scheduler: Any | None = None,
     job: Any | None = None,
     policy_repo: Any = None,
+    audit: Any = None,
 ) -> Any | None:
     """Start the ladder sweep. Returns the scheduler, or None when unwired.
 
@@ -550,6 +624,7 @@ def start_ladder_scheduler(
                 set_attributes=set_attributes,
                 conversation_log=conversation_log,
                 policy_repo=policy_repo,
+                audit=audit,
             )
         ),
         "interval",

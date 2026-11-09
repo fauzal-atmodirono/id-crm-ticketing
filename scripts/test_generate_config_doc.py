@@ -244,3 +244,14 @@ def test_the_caveats_live_in_the_generator_not_the_document(document: str) -> No
     # that is still false on a deployed image.
     assert "FAQ_SUGGESTION_POPUP_ENABLED" in document
     assert "CALL_RECORDING_RETRIEVAL_ENABLED" in document
+
+
+def test_caveats_do_not_call_wired_flags_consumerless(document: str) -> None:
+    """Final review M8: DATA_SCOPED_RBAC_ENABLED is enforced since Wave 2
+    Task 28 and PHONE_DTMF_MENU_ENABLED gates the Task 31 IVR; the caveat list
+    must not tell the client either has no consumer."""
+    assert "`DATA_SCOPED_RBAC_ENABLED` has no consumer" not in document
+    assert "**the enforcement is absent**" not in document
+    assert "`PHONE_DTMF_MENU_ENABLED` and `PHONE_LIVE_TRANSCRIPT_ENABLED` have no consumer" not in document
+    assert "`DATA_SCOPED_RBAC_ENABLED` is enforced" in document
+

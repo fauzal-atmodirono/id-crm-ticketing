@@ -12,12 +12,14 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from chatbot.features.authz.deps import require_permission
+from chatbot.features.authz.deps import Actor, require_permission, resolve_actor
+from chatbot.features.chat.audit_events import EVENT_SLA_POLICY_CHANGE, changed_fields, record_event
 from chatbot.features.chat.sla_policy_db import SlaPolicyValues
 
 if TYPE_CHECKING:
     from chatbot.features.authz.identity import TokenValidator
     from chatbot.features.authz.repository import AuthzRepository
+    from chatbot.features.chat.ports import AuditLogPort
     from chatbot.features.chat.sla_policy_repository import SlaPolicyRepository
     from chatbot.platform.config import Settings
 
@@ -53,11 +55,35 @@ def build_sla_policy_router(
     authz_repo: AuthzRepository,
     validator: TokenValidator,
     settings: Settings,
+    audit: AuditLogPort | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/admin/sla-policy", tags=["sla-policy"])
     manage_sla = require_permission(
         "sla.manage", repo=authz_repo, validator=validator, settings=settings
     )
+
+    caller = resolve_actor(validator=validator, settings=settings)
+
+    async def _safe_read(coro):
+        # Audit-only read: a failure costs the row its `before`, never the write.
+        try:
+            return await coro
+        except Exception:
+            return None
+
+    async def _audit(actor: Actor, target: str, before, after) -> None:
+        old = _to_dict(before) if before is not None else {}
+        b, a = changed_fields(old, _to_dict(after))
+        await record_event(
+            audit,
+            event_type=EVENT_SLA_POLICY_CHANGE,
+            target=target,
+            actor_user_id=actor.user_id,
+            actor_name=actor.name,
+            before=b,
+            after=a,
+            remarks="SLA policy updated" if a else "SLA policy saved (no field changed)",
+        )
 
     @router.get("/default", dependencies=[Depends(manage_sla)])
     async def get_default() -> dict:
@@ -65,8 +91,10 @@ def build_sla_policy_router(
         return _to_dict(values) if values is not None else _to_dict(_empty())
 
     @router.put("/default", dependencies=[Depends(manage_sla)])
-    async def put_default(body: SlaPolicyBody) -> dict:
+    async def put_default(body: SlaPolicyBody, actor: Actor = Depends(caller)) -> dict:
+        before = await _safe_read(repo.get_tenant_default())
         values = await repo.upsert_tenant_default(**body.model_dump())
+        await _audit(actor, "sla:default", before, values)
         return _to_dict(values)
 
     @router.get("/inbox/{inbox_id}", dependencies=[Depends(manage_sla)])
@@ -75,8 +103,12 @@ def build_sla_policy_router(
         return _to_dict(values) if values is not None else _to_dict(_empty())
 
     @router.put("/inbox/{inbox_id}", dependencies=[Depends(manage_sla)])
-    async def put_inbox(inbox_id: int, body: SlaPolicyBody) -> dict:
+    async def put_inbox(
+        inbox_id: int, body: SlaPolicyBody, actor: Actor = Depends(caller)
+    ) -> dict:
+        before = await _safe_read(repo.get_for_inbox(inbox_id))
         values = await repo.upsert_for_inbox(inbox_id, **body.model_dump())
+        await _audit(actor, f"sla:inbox:{inbox_id}", before, values)
         return _to_dict(values)
 
     return router

@@ -24,6 +24,7 @@ class LiveSession(Protocol):
         self, call_id: str, name: str, response: dict[str, object]
     ) -> None: ...
     async def send_text_hint(self, text: str) -> None: ...
+    async def send_greeting(self, text: str) -> None: ...
     def events(self) -> AsyncIterator[LiveEvent]: ...
 
 
@@ -48,6 +49,16 @@ class _GeminiLiveSession:
         for IVR-4's per-turn language reminder. Not spoken aloud by the
         caller and does not itself count as a caller turn."""
         await self._session.send_realtime_input(text=text)
+
+    async def send_greeting(self, text: str) -> None:
+        """Make the model speak first: ONE completed client turn, sent before
+        any caller audio, so it is answered exactly once. (A realtime text
+        input -- send_text_hint -- is a caller turn of its own mid-call and
+        made the model answer twice; that is why this is a separate call.)"""
+        await self._session.send_client_content(
+            turns=types.Content(role="user", parts=[types.Part(text=text)]),
+            turn_complete=True,
+        )
 
     async def events(self) -> AsyncIterator[LiveEvent]:
         # The SDK's receive() yields one complete turn then returns; re-enter it
@@ -120,7 +131,7 @@ def _build_vad_config(settings: Settings) -> types.RealtimeInputConfig:
         if settings.gemini_live_vad_end_sensitivity.upper() == "HIGH"
         else types.EndSensitivity.END_SENSITIVITY_LOW
     )
-    return types.RealtimeInputConfig(
+    config = types.RealtimeInputConfig(
         automatic_activity_detection=types.AutomaticActivityDetection(
             start_of_speech_sensitivity=start,
             end_of_speech_sensitivity=end,
@@ -128,6 +139,9 @@ def _build_vad_config(settings: Settings) -> types.RealtimeInputConfig:
             silence_duration_ms=settings.gemini_live_vad_silence_duration_ms,
         )
     )
+    if not settings.gemini_live_barge_in_enabled:
+        config.activity_handling = types.ActivityHandling.NO_INTERRUPTION
+    return config
 
 
 @asynccontextmanager

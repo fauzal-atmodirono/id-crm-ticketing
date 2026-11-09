@@ -1,6 +1,7 @@
 """Admin CRUD for the real-time, CRM-editable FAQ knowledge base.
 
-`POST /kb/faq`, `PUT /kb/faq/{id}`, `DELETE /kb/faq/{id}`, `GET /kb/faq`.
+`POST /kb/faq`, `PUT /kb/faq/{id}`, `DELETE /kb/faq/{id}`, `GET /kb/faq`,
+`POST /kb/faq/bulk` (CSV; all-or-nothing, `?partial=true` imports valid rows only).
 Writes (and the listing) are guarded by an `x-api-key` header compared
 constant-time against `Settings.faq_admin_api_key` (mirrors how the feedback
 router guards `/kb/feedback`). An empty configured key 401s everything.
@@ -13,6 +14,8 @@ from __future__ import annotations
 import csv
 import hmac
 import io
+import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, File, Header, HTTPException, UploadFile
@@ -20,7 +23,10 @@ from pydantic import BaseModel, Field
 
 from chatbot.features.chat.ports import LiveFaqEntry
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
+    from chatbot.features.chat.adapters.faq_ratings import FaqRatingPort
     from chatbot.features.chat.ports import LiveFaqPort
     from chatbot.platform.config import Settings
 
@@ -54,8 +60,52 @@ def _entry_dict(entry: LiveFaqEntry) -> dict[str, Any]:
     }
 
 
-def build_faq_admin_router(store: LiveFaqPort | None, settings: Settings) -> APIRouter:
+_SCORES_TTL_SECONDS = 45.0
+
+
+class _ScoresCache:
+    """Short TTL cache of the ratings aggregate: `summaries()` scans the whole
+    collection, and the admin page refreshes often. A rating shows up on the
+    list within the TTL, which is fine for a quality metric."""
+
+    def __init__(self, store: FaqRatingPort | None) -> None:
+        self._store = store
+        self._at = 0.0
+        self._value: dict[str, tuple[float, int]] = {}
+
+    async def get(self) -> dict[str, tuple[float, int]]:
+        if self._store is None:
+            return {}
+        now = time.monotonic()
+        if now - self._at >= _SCORES_TTL_SECONDS:
+            self._value = await self._store.summaries()
+            self._at = now
+        return self._value
+
+
+async def _with_scores(entries: list[LiveFaqEntry], cache: _ScoresCache) -> list[dict[str, Any]]:
+    """FIX-23: average agent rating + count per FAQ (None / 0 when unrated)."""
+    scores = await cache.get()
+    rows: list[dict[str, Any]] = []
+    for e in entries:
+        avg, count = scores.get(e.id, (None, 0))
+        rows.append(
+            {
+                **_entry_dict(e),
+                "avg_score": round(avg, 2) if avg is not None else None,
+                "rating_count": count,
+            }
+        )
+    return rows
+
+
+def build_faq_admin_router(
+    store: LiveFaqPort | None,
+    settings: Settings,
+    rating_store: FaqRatingPort | None = None,
+) -> APIRouter:
     router = APIRouter(tags=["kb"])
+    scores_cache = _ScoresCache(rating_store)
 
     def _authorize(x_api_key: str | None) -> None:
         if x_api_key is None:
@@ -116,11 +166,12 @@ def build_faq_admin_router(store: LiveFaqPort | None, settings: Settings) -> API
     ) -> dict[str, Any]:
         _authorize(x_api_key)
         entries = await _require_store().list_all()
-        return {"entries": [_entry_dict(e) for e in entries]}
+        return {"entries": await _with_scores(entries, scores_cache)}
 
     @router.post("/kb/faq/bulk")
     async def bulk_create_faq(
         file: UploadFile = File(...),
+        partial: bool = False,
         x_api_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _authorize(x_api_key)
@@ -132,9 +183,14 @@ def build_faq_admin_router(store: LiveFaqPort | None, settings: Settings) -> API
         except UnicodeDecodeError as exc:
             raise HTTPException(status_code=400, detail="File must be UTF-8 encoded CSV") from exc
 
+        # FIX-53: all-or-nothing by default. Validate every row before touching
+        # the store, so a CSV with one bad row imports nothing and the operator
+        # fixes the file once instead of hunting for what half-landed.
+        # ?partial=true keeps the old row-by-row behaviour (the CRM's "Import valid
+        # rows only" button).
         reader = csv.DictReader(io.StringIO(text))
-        created = 0
         errors: list[dict[str, Any]] = []
+        valid: list[tuple[int, LiveFaqEntry]] = []
         for i, row in enumerate(reader, start=2):  # row 1 is the header
             question = (row.get("question") or "").strip()
             answer = (row.get("answer") or "").strip()
@@ -143,16 +199,55 @@ def build_faq_admin_router(store: LiveFaqPort | None, settings: Settings) -> API
                 continue
             keywords = [k.strip() for k in (row.get("keywords") or "").split(";") if k.strip()]
             tags = [t.strip() for t in (row.get("tags") or "").split(";") if t.strip()]
-            try:
-                await _require_store().create(
+            valid.append(
+                (
+                    i,
                     LiveFaqEntry(
-                        id="", question=question, answer=answer,
-                        keywords=keywords, tags=tags, active=True,
-                    )
+                        id="",
+                        question=question,
+                        answer=answer,
+                        keywords=keywords,
+                        tags=tags,
+                        active=True,
+                    ),
                 )
-                created += 1
+            )
+
+        if errors and not partial:
+            return {"created": 0, "errors": errors, "imported": False}
+
+        created_ids: list[str] = []
+        for i, entry in valid:
+            try:
+                created_ids.append(await _require_store().create(entry))
             except Exception as exc:
                 errors.append({"row": i, "reason": str(exc)})
-        return {"created": created, "errors": errors}
+                if not partial:
+                    # A store failure mid-import: undo what landed so the
+                    # all-or-nothing promise holds. Rollback can itself fail,
+                    # so say which ids are still in the store.
+                    rollback_failed: list[str] = []
+                    for entry_id in created_ids:
+                        try:
+                            await _require_store().delete(entry_id)
+                        except Exception:
+                            rollback_failed.append(entry_id)
+                    if rollback_failed:
+                        logger.error(
+                            "faq bulk import rollback incomplete: %d of %d created entries "
+                            "could not be deleted: %s",
+                            len(rollback_failed),
+                            len(created_ids),
+                            rollback_failed,
+                        )
+                    result: dict[str, Any] = {
+                        "created": len(rollback_failed),
+                        "errors": errors,
+                        "imported": False,
+                    }
+                    if rollback_failed:
+                        result["rollback_failed_ids"] = rollback_failed
+                    return result
+        return {"created": len(created_ids), "errors": errors, "imported": True}
 
     return router

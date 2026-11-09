@@ -14,6 +14,8 @@ class NoOpConversationLog(ConversationLogPort):
         subject: str,  # noqa: ARG002
         customer_name: str | None,  # noqa: ARG002
         customer_phone: str | None,  # noqa: ARG002
+        *,
+        attach_by_phone: bool = False,  # noqa: ARG002
     ) -> str:
         return ""
 
@@ -29,6 +31,8 @@ class NoOpConversationLog(ConversationLogPort):
     async def find_conversation_ticket(
         self,
         session_id: str,  # noqa: ARG002
+        *,
+        phone: str | None = None,  # noqa: ARG002
     ) -> str | None:
         return None
 
@@ -89,6 +93,15 @@ class NoOpConversationLog(ConversationLogPort):
         recording_sid: str,  # noqa: ARG002
         recording_duration: str,  # noqa: ARG002
         recording_url: str,  # noqa: ARG002
+    ) -> None:
+        return None
+
+    async def set_call_recording_archive(
+        self,
+        ticket_id: str,  # noqa: ARG002
+        *,
+        audio_object: str,  # noqa: ARG002
+        transcript_object: str = "",  # noqa: ARG002
     ) -> None:
         return None
 

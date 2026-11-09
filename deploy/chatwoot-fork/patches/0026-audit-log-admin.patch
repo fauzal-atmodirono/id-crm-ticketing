@@ -2,18 +2,23 @@ diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashbo
 index b6f3823..75b9805 100644
 --- a/app/javascript/dashboard/api/protonAdmin.js
 +++ b/app/javascript/dashboard/api/protonAdmin.js
-@@ -61,3 +61,17 @@ export async function myPermissions() {
+@@ -61,3 +61,22 @@ export async function myPermissions() {
    const data = await adminRequest('/authz/permissions');
    return Array.isArray(data.permissions) ? data.permissions : [];
  }
 +
 +// ── Audit log ─────────────────────────────────────────────────────────────
 +
-+// GET /admin/audit?actor=&from_ts=&to_ts=&limit= -> { audit: [{ ticket_id,
-+//   session_id, actor, from_state, to_state, at, remark }] }
-+export function listAudit({ actor, fromTs, toTs, limit } = {}) {
++// GET /admin/audit?actor=&actor_user_id=&event_type=&target=&from_ts=&to_ts=&limit=
++//   -> { audit: [{ ticket_id, session_id, actor, from_state, to_state, at,
++//   remark, event_type, actor_user_id, actor_name, target, before, after,
++//   sla_status, recipients, delivery_status }] }
++export function listAudit({ actor, actorUserId, eventType, target, fromTs, toTs, limit } = {}) {
 +  const params = new URLSearchParams();
 +  if (actor) params.set('actor', actor);
++  if (actorUserId) params.set('actor_user_id', String(actorUserId));
++  if (eventType) params.set('event_type', eventType);
++  if (target) params.set('target', target);
 +  if (fromTs) params.set('from_ts', fromTs);
 +  if (toTs) params.set('to_ts', toTs);
 +  if (limit) params.set('limit', String(limit));
@@ -63,7 +68,7 @@ new file mode 100644
 index 0000000..e74c455
 --- /dev/null
 +++ b/app/javascript/dashboard/views/ProtonAuditLogPage.vue
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,183 @@
 +<!-- ProtonAuditLogPage.vue — OUR file. Filterable, read-only viewer over
 +     the backend's cross-ticket audit trail (Firestore case_audit_log).
 +     Filters: actor, date range. Storage is unchanged — this only adds a
@@ -78,6 +83,9 @@ index 0000000..e74c455
 +    return {
 +      rows: [],
 +      actorFilter: '',
++      eventTypeFilter: '',
++      targetFilter: '',
++      expanded: {},
 +      fromFilter: '',
 +      toFilter: '',
 +      loading: true,
@@ -88,12 +96,21 @@ index 0000000..e74c455
 +    await this.load();
 +  },
 +  methods: {
++    // before/after are redacted server-side; show only what changed.
++    pretty(value) {
++      return value ? JSON.stringify(value, null, 2) : '';
++    },
++    toggle(i) {
++      this.expanded = { ...this.expanded, [i]: !this.expanded[i] };
++    },
 +    async load() {
 +      this.loading = true;
 +      this.errored = false;
 +      try {
 +        const data = await listAudit({
 +          actor: this.actorFilter || undefined,
++          eventType: this.eventTypeFilter || undefined,
++          target: this.targetFilter || undefined,
 +          fromTs: this.fromFilter ? new Date(this.fromFilter).toISOString() : undefined,
 +          // Use end-of-day (23:59:59.999 UTC), not midnight, so the picked
 +          // "To" date is fully included — the backend's `at <= to_ts`
@@ -126,6 +143,35 @@ index 0000000..e74c455
 +        <input
 +          v-model="actorFilter"
 +          type="text"
++          class="w-40 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        />
++      </div>
++      <div>
++        <label class="block mb-1 text-xs text-n-slate-11">Event type</label>
++        <select
++          v-model="eventTypeFilter"
++          class="px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        >
++          <option value="">All</option>
++          <option value="status_change">Status change</option>
++          <option value="escalation_notify">Escalation notified</option>
++          <option value="ladder_step">Ladder step</option>
++          <option value="reply_link">Reply acknowledged</option>
++          <option value="sla_alert">SLA alert</option>
++          <option value="case_reassignment">Reassignment</option>
++          <option value="role_change">Role change</option>
++          <option value="sla_policy_change">SLA policy change</option>
++          <option value="escalation_routing_change">Escalation routing change</option>
++          <option value="ladder_policy_change">Ladder policy change</option>
++          <option value="taxonomy_change">Taxonomy change</option>
++        </select>
++      </div>
++      <div>
++        <label class="block mb-1 text-xs text-n-slate-11">Target</label>
++        <input
++          v-model="targetFilter"
++          type="text"
++          placeholder="role:ops, dealer:kl"
 +          class="w-40 px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
 +        />
 +      </div>
@@ -169,6 +215,9 @@ index 0000000..e74c455
 +          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Actor</th>
 +          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Transition</th>
 +          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Remark</th>
++          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Event</th>
++          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">SLA</th>
++          <th class="py-3 px-4 text-start text-heading-3 text-n-slate-12">Changes</th>
 +        </tr>
 +      </thead>
 +      <tbody class="divide-y divide-n-weak">
@@ -180,6 +229,24 @@ index 0000000..e74c455
 +            {{ row.from_state }} → {{ row.to_state }}
 +          </td>
 +          <td class="py-3 px-4 text-sm text-n-slate-11">{{ row.remark }}</td>
++          <td class="py-3 px-4 text-sm text-n-slate-11 whitespace-nowrap">
++            {{ row.event_type }}<span v-if="row.target"> · {{ row.target }}</span>
++          </td>
++          <td class="py-3 px-4 text-sm text-n-slate-11 whitespace-nowrap">{{ row.sla_status }}</td>
++          <td class="py-3 px-4 text-sm text-n-slate-11">
++            <button
++              v-if="row.before || row.after"
++              type="button"
++              class="text-xs underline text-n-brand"
++              @click="toggle(i)"
++            >
++              {{ expanded[i] ? 'Hide' : 'Before / after' }}
++            </button>
++            <div v-if="expanded[i]" class="grid grid-cols-2 gap-2 mt-2 text-xs">
++              <pre class="whitespace-pre-wrap">{{ pretty(row.before) }}</pre>
++              <pre class="whitespace-pre-wrap">{{ pretty(row.after) }}</pre>
++            </div>
++          </td>
 +        </tr>
 +      </tbody>
 +    </table>

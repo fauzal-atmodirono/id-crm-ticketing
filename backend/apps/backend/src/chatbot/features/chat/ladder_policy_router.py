@@ -24,7 +24,8 @@ import structlog
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from chatbot.features.authz.deps import require_permission
+from chatbot.features.authz.deps import Actor, require_permission, resolve_actor
+from chatbot.features.chat.audit_events import EVENT_LADDER_POLICY_CHANGE, changed_fields, record_event
 from chatbot.features.chat.escalation_ladder import describe_in_flight
 from chatbot.features.chat.ladder_policy_db import LadderPolicyValues
 from chatbot.features.metrics.sync import fetch_conversations
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
     from chatbot.features.authz.repository import AuthzRepository
     from chatbot.features.chat.ladder_policy_repository import LadderPolicyRepository
     from chatbot.features.chat.pic_store import DealerStore
+    from chatbot.features.chat.ports import AuditLogPort
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
@@ -81,11 +83,14 @@ def build_ladder_policy_router(
     settings: Settings,
     dealer_store: DealerStore | None = None,
     fetch: Any = None,
+    audit: AuditLogPort | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/admin/escalation", tags=["escalation-admin"])
     manage = require_permission(
         "escalation.manage", repo=authz_repo, validator=validator, settings=settings
     )
+
+    caller = resolve_actor(validator=validator, settings=settings)
 
     @router.get("/ladder", dependencies=[Depends(manage)])
     async def get_ladder() -> dict[str, Any]:
@@ -112,8 +117,29 @@ def build_ladder_policy_router(
         }
 
     @router.put("/ladder", dependencies=[Depends(manage)])
-    async def put_ladder(body: LadderPolicyBody) -> dict[str, Any]:
+    async def put_ladder(
+        body: LadderPolicyBody, actor: Actor = Depends(caller)
+    ) -> dict[str, Any]:
+        try:  # audit-only reads: never let them 500 an applied write
+            before = _stored_dict(await repo.get())
+        except Exception:
+            before = None
         await repo.upsert(body.to_values())
+        try:
+            after = _stored_dict(await repo.get())
+        except Exception:
+            after = None
+        b, a = changed_fields(before, after)
+        await record_event(
+            audit,
+            event_type=EVENT_LADDER_POLICY_CHANGE,
+            target="ladder:policy",
+            actor_user_id=actor.user_id,
+            actor_name=actor.name,
+            before=b,
+            after=a,
+            remarks="Escalation ladder policy updated",
+        )
         effective = await repo.resolve(settings)
         _log.info(
             "ladder_policy_updated",

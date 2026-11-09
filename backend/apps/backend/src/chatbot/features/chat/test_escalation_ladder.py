@@ -399,3 +399,81 @@ async def test_an_unknown_dealer_record_is_not_climbed_either() -> None:
     )
 
     assert acted == []
+
+
+# --- step 6: 48 h unresolved (FIX-07) ----------------------------------------
+
+
+async def test_step6_fires_at_48_working_hours_when_unresolved() -> None:
+    notifier = _Notifier()
+
+    acted = await sweep_ladder(
+        [_conv(escalated_hours_ago=49, step=5)], settings=_settings(), **_deps(notifier)
+    )
+
+    assert [a["step_no"] for a in acted] == [6]
+    send = next(c for c in notifier.calls if c[0] == "send")
+    assert send[1]["to"] == ["owner@kl.my"]
+
+
+async def test_step6_does_not_fire_before_48_hours() -> None:
+    notifier = _Notifier()
+
+    assert await sweep_ladder(
+        [_conv(escalated_hours_ago=40, step=5)], settings=_settings(), **_deps(notifier)
+    ) == []
+
+
+async def test_step6_fires_even_if_dealer_replied() -> None:
+    notifier = _Notifier()
+    conv = _conv(escalated_hours_ago=49, step=5, escalation_replied_at=_NOW.isoformat())
+
+    acted = await sweep_ladder([conv], settings=_settings(), **_deps(notifier))
+
+    assert [a["step_no"] for a in acted] == [6]
+
+
+async def test_step6_fires_even_if_acknowledged() -> None:
+    notifier = _Notifier()
+    conv = _conv(escalated_hours_ago=49, step=5, escalation_acknowledged_at=_NOW.isoformat())
+
+    acted = await sweep_ladder([conv], settings=_settings(), **_deps(notifier))
+
+    assert [a["step_no"] for a in acted] == [6]
+
+
+async def test_step6_is_reached_after_a_reply_stopped_the_earlier_rungs() -> None:
+    """Dealer replied at rung 3: rungs 4-5 never fire, but 48 h still alerts."""
+    notifier = _Notifier()
+    conv = _conv(escalated_hours_ago=49, step=3, escalation_replied_at=_NOW.isoformat())
+
+    acted = await sweep_ladder([conv], settings=_settings(), **_deps(notifier))
+
+    assert [a["step_no"] for a in acted] == [6]
+
+
+async def test_step6_never_fires_when_resolved() -> None:
+    notifier = _Notifier()
+    conv = _conv(escalated_hours_ago=60, step=5, status="resolved",
+                 escalation_replied_at=_NOW.isoformat())
+
+    assert await sweep_ladder([conv], settings=_settings(), **_deps(notifier)) == []
+
+
+async def test_steps_1_to_5_still_stop_on_reply() -> None:
+    notifier = _Notifier()
+    conv = _conv(escalated_hours_ago=9, step=3, escalation_replied_at=_NOW.isoformat())
+
+    assert await sweep_ladder([conv], settings=_settings(), **_deps(notifier)) == []
+
+
+async def test_step6_works_with_stored_overrides_for_steps_2_to_5_only() -> None:
+    class _Repo:
+        async def get(self, *_a: Any, **_k: Any) -> Any:  # pragma: no cover
+            return None
+
+    from chatbot.features.chat.escalation_policy import DEFAULT_STEPS, apply_delay_overrides
+
+    steps = apply_delay_overrides(DEFAULT_STEPS, {2: 1.0, 3: 2.0, 4: 3.0, 5: 4.0})
+    assert steps[-1].step_no == 6
+    assert steps[-1].delay_working_hours == 48.0

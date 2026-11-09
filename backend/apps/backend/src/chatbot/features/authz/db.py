@@ -64,6 +64,26 @@ class UserNativeRoleMirror(Base):
     )
 
 
+class RoleScope(Base):
+    """A role's data scope (Wave 2 Task 28) -- see data_scope.py for the
+    rules. One row per scoped role; no row = the role restricts nothing.
+    Each dimension is a JSON list (sorted, normalised); an empty list does
+    not restrict. Created by the same idempotent `create_all` as the rest of
+    RBAC, so an existing tenant gains the table on its next boot with no
+    migration step."""
+
+    __tablename__ = "role_scopes"
+
+    role_id: Mapped[str] = mapped_column(ForeignKey("roles.id"), primary_key=True)
+    inbox_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    team_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    dealer_slugs: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    departments: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 # Native Chatwoot conversation/inbox visibility keys — single source of truth.
 # Lives here (rather than seed.py, which imports AuthzRepository from
 # repository.py at module level) so repository.py can import these without a

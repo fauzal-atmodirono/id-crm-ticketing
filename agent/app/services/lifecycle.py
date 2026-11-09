@@ -72,6 +72,47 @@ def _created_by_ai_handoff(payload: dict) -> bool:
     return bool(isinstance(attrs, dict) and attrs.get("ai_handoff"))
 
 
+# Prefix of the backend phone bridge's session ids (`phone-<CallSid>`).
+_PHONE_SESSION_PREFIX = "phone-"
+
+
+def is_phone_call_conversation(conv: object) -> bool:
+    """True when this conversation holds a phone call made through the backend
+    phone bridge (Twilio Media Streams + Gemini Live).
+
+    The caller is on the phone, never in a chat window, so the chat lifecycle
+    (AI disclaimer, idle warning/close, resolution prompt, rating surveys) has
+    nobody to talk to: posted into the call's conversation it only reads, to
+    the agent working the case, like messages the customer was sent. Three
+    markers, any one is enough, most reliable first:
+
+      - ``additional_attributes.session_id`` = ``phone-<CallSid>``: stamped by
+        the backend ChatwootAdapter in the create body of every phone-call
+        conversation, so it is already on the ``conversation_created`` payload.
+        (Before 2026-11-09 it was stamped only when the caller's number was
+        known, which is why the calls seen live had EMPTY attributes.)
+      - ``custom_attributes.external_id`` = ``phone-<CallSid>``: written by the
+        bridge when the call ends -- covers call conversations created before
+        the stamp above existed, on their resolve event.
+      - ``custom_attributes.caller_phone_source``: written by the caller-context
+        feature on a call whose caller was identified.
+    """
+    if not isinstance(conv, dict):
+        return False
+    add = conv.get("additional_attributes")
+    if isinstance(add, dict) and str(add.get("session_id") or "").startswith(
+        _PHONE_SESSION_PREFIX
+    ):
+        return True
+    custom = conv.get("custom_attributes")
+    if isinstance(custom, dict):
+        if str(custom.get("external_id") or "").startswith(_PHONE_SESSION_PREFIX):
+            return True
+        if custom.get("caller_phone_source"):
+            return True
+    return False
+
+
 def _is_escalation_reply(payload: dict) -> bool:
     """True when this brand-new conversation is really an emailed reply to an
     escalation we sent, not a fresh customer enquiry.
@@ -159,6 +200,14 @@ def _resolve_lifecycle_message(
 def render_idle_warning(text: str, minutes: int) -> str:
     """Replace the {{minutes}} token with the effective close-grace value.
     A message without the token is returned unchanged (backward compatible)."""
+    if minutes <= 0:
+        # Zero grace (out-of-hours default): "in 0 minutes" reads as a bug.
+        return (
+            text.replace("in {{minutes}} minutes", "shortly")
+            .replace("in {{minutes}} minute", "shortly")
+            .replace("{{minutes}} minutes", "shortly")
+            .replace("{{minutes}}", "shortly")
+        )
     return text.replace("{{minutes}}", str(minutes))
 
 
@@ -259,6 +308,17 @@ async def on_conversation_created(payload: dict) -> None:
         )
         return
     await _mirror_state(conversation_id, ACTIVE)
+
+    # A phone call's conversation (see `is_phone_call_conversation`): no
+    # disclaimer, and CLOSED straight away so the scanner never idle-warns it
+    # and the resolve hook never sends it a rating survey -- their payloads
+    # need not carry the marker for that to hold.
+    if is_phone_call_conversation(payload):
+        logger.info(
+            "lifecycle: conversation %s is a phone call; no chat lifecycle", conversation_id
+        )
+        await _close_quietly(conversation_id)
+        return
 
     # AI escalation/handoff conversations are created by the backend when a chat is
     # handed to a human. The disclaimer belongs on the bot's first reply (shown in
@@ -376,6 +436,16 @@ async def _record_survey(
         )
 
 
+async def _close_quietly(conversation_id: int) -> None:
+    """Mark the lifecycle finished without posting anything. Fail-open."""
+    try:
+        await lifecycle_store.transition(conversation_id, CLOSED)
+    except Exception:
+        logger.exception("lifecycle: failed to close conversation %s", conversation_id)
+        return
+    await _mirror_state(conversation_id, CLOSED)
+
+
 async def _post(conversation_id: int, text: str) -> None:
     """Post a public message, swallowing transient errors."""
     try:
@@ -474,6 +544,10 @@ async def on_human_resolved(payload: dict) -> None:
         return
     conversation_id = payload.get("id")
     if conversation_id is None or payload.get("status") != "resolved":
+        return
+    if is_phone_call_conversation(payload):
+        # Nobody to ask: the caller rated the call (or not) on the call itself.
+        await _close_quietly(conversation_id)
         return
 
     try:

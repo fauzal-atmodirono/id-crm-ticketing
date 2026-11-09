@@ -71,6 +71,13 @@ def _clean_state() -> None:
     _FakeFirestore.reset()
 
 
+# Wave 1 Task 5 put every /admin/taxonomy route behind require_authenticated
+# (reads) or require_permission("taxonomy.manage") (writes); with RBAC off both
+# accept the shared backend key, which is what the SPA sends. Without it every
+# route answers 401 before the feature-flag check can 404.
+_KEY = {"x-api-key": "test_key"}
+
+
 def _boot(monkeypatch: pytest.MonkeyPatch, **env: str) -> Any:
     monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
@@ -97,16 +104,26 @@ def test_taxonomy_router_is_mounted_and_reachable_through_real_app(
     app = _boot(monkeypatch, TAXONOMY_ADMIN_ENABLED="true")
     client = TestClient(app)
 
-    res = client.get("/admin/taxonomy/tree")
+    res = client.get("/admin/taxonomy/tree", headers=_KEY)
     assert res.status_code == 200
     assert "tree" in res.json()
+
+
+def test_taxonomy_tree_refuses_a_caller_with_no_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wave 1 Task 5: reading the tree needs a logged-in user or the key."""
+    app = _boot(monkeypatch, TAXONOMY_ADMIN_ENABLED="true")
+    client = TestClient(app)
+
+    assert client.get("/admin/taxonomy/tree").status_code == 401
 
 
 def test_taxonomy_router_returns_404_when_flag_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
     app = _boot(monkeypatch, TAXONOMY_ADMIN_ENABLED="false")
     client = TestClient(app)
 
-    res = client.get("/admin/taxonomy/tree")
+    res = client.get("/admin/taxonomy/tree", headers=_KEY)
     assert res.status_code == 404
 
 
@@ -129,7 +146,7 @@ def test_the_coverage_report_answers_when_the_category_department_flag_is_on(
     )
     client = TestClient(app)
 
-    res = client.get("/admin/taxonomy/coverage")
+    res = client.get("/admin/taxonomy/coverage", headers=_KEY)
     assert res.status_code == 200
     assert "unmapped_categories" in res.json()
 
@@ -145,9 +162,9 @@ def test_the_coverage_report_404s_when_only_the_taxonomy_admin_flag_is_on(
     client = TestClient(app)
 
     # The taxonomy admin itself is on, so this is not the admin gate answering.
-    assert client.get("/admin/taxonomy/tree").status_code == 200
+    assert client.get("/admin/taxonomy/tree", headers=_KEY).status_code == 200
 
-    res = client.get("/admin/taxonomy/coverage")
+    res = client.get("/admin/taxonomy/coverage", headers=_KEY)
     assert res.status_code == 404
     assert "CATEGORY_DEPARTMENT_MAPPING_ENABLED" in res.json()["detail"]
 
@@ -176,7 +193,7 @@ def test_startup_seeds_the_taxonomy_store_when_the_admin_flag_is_on(
             time.sleep(0.01)
         assert app.state.taxonomy_seed_task.done(), "seed task did not finish"
 
-        res = client.get("/admin/taxonomy/tree")
+        res = client.get("/admin/taxonomy/tree", headers=_KEY)
         assert res.status_code == 200
         roots = res.json()["tree"]
         assert {root["label"] for root in roots} == {
@@ -216,32 +233,26 @@ def test_startup_does_not_seed_when_the_admin_flag_is_off(
     assert _FakeFirestore.collections.get("taxonomy_nodes", {}) == {}
 
 
-def test_data_scoped_rbac_refuses_to_boot_because_nothing_enforces_it() -> None:
-    """The flag restricts no data, so it must not be quietly settable.
-
-    `features/authz/data_scope.py` is built and unwired: no caller for
-    `apply_scope_to_filters`, an untouched query adapter, and `_ROLE_DATA_SCOPES`
-    with no persistence or admin surface. A data-access flag that silently
-    restricts nothing is the worst shape available -- an operator configures a
-    dealer-scoped role and that user still reads every dealer's volumes.
-
-    This test is the tripwire for the fix: when enforcement lands, the validator
-    goes and this test fails, which is the point. Replace it then with one that
-    proves scoping actually filters.
+def test_data_scoped_rbac_boots_with_rbac_and_refuses_without_it() -> None:
+    """Wave 2 Task 28 replaced the "not implemented" tripwire: enforcement is
+    wired (features/authz/test_scope_enforcement.py proves each surface
+    filters), so the flag now boots -- but only alongside RBAC, because a
+    scope is resolved from the caller's RBAC roles and without RBAC it would
+    restrict nothing while appearing to.
     """
     import pytest  # noqa: PLC0415
 
     from chatbot.platform.config import Settings  # noqa: PLC0415
 
-    with pytest.raises(ValueError, match="DATA_SCOPED_RBAC_ENABLED is not implemented"):
-        Settings(data_scoped_rbac_enabled=True)
+    assert Settings(data_scoped_rbac_enabled=True, rbac_enabled=True).data_scoped_rbac_enabled
+    with pytest.raises(ValueError, match="DATA_SCOPED_RBAC_ENABLED requires RBAC_ENABLED"):
+        Settings(data_scoped_rbac_enabled=True, rbac_enabled=False)
 
 
 def test_the_flag_is_absent_from_the_flags_on_gate() -> None:
-    """Belt to the braces above: the gate must not try to enable it.
-
-    If someone adds it back to FLAGS_ON, every bootstrap test in the flags-ON half
-    fails to boot -- correct, but confusing. This says why in one place.
+    """The gate must not enable it on its own: FLAGS_ON does not set
+    RBAC_ENABLED, so the flags-ON half would refuse to boot -- correct, but
+    confusing. This says why in one place.
     """
     from pathlib import Path  # noqa: PLC0415
 
@@ -256,6 +267,6 @@ def test_the_flag_is_absent_from_the_flags_on_gate() -> None:
         ln.strip() for ln in gate.splitlines() if ln.strip().startswith("DATA_SCOPED_RBAC_ENABLED=")
     ]
     assert not enabled_lines, (
-        "DATA_SCOPED_RBAC_ENABLED is in FLAGS_ON but refuses to boot; "
-        f"remove it until enforcement is wired. Found: {enabled_lines}"
+        "DATA_SCOPED_RBAC_ENABLED is in FLAGS_ON without RBAC_ENABLED and refuses "
+        f"to boot; add RBAC_ENABLED=true alongside it. Found: {enabled_lines}"
     )

@@ -18,6 +18,7 @@ conversation is reopened for a human to review — the AI never auto-sends.
 from __future__ import annotations
 
 import asyncio
+import re
 import base64
 import json
 import logging
@@ -25,12 +26,18 @@ import logging
 import httpx
 from sqlalchemy.exc import SQLAlchemyError
 
+from datetime import datetime, timezone
+
 from app.ai import gemini
+from app.ai import tools as ai_tools
 from app.clients.deps import get_chatwoot_client, get_proton_config_client
 from app.config import get_settings
 from app.db.models import AiAction
 from app.db.session import async_session_maker
 from app.services import lifecycle, lifecycle_store, whatsapp_format
+from app.services.customer_context import format_customer_context
+from app.services import demo_persona
+from app.services import investor_profile
 from app.services.media import fetch_attachment_bytes
 from app.services.media_registry import drop_order
 
@@ -81,7 +88,34 @@ SYSTEM_PROMPT = (
 )
 
 
-def _build_system_prompt(persona: dict | None) -> str:
+def _utc_now_iso() -> str:
+    """Capture time as an ISO-8601 Z string.
+
+    A named function rather than an inline call so a test can pin it without
+    freezing the clock for everything else in the process.
+    """
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _decide_kwargs(profiling_enabled: bool) -> dict:
+    """The extra keyword arguments for `gemini.decide` this turn.
+
+    Returns `{}` when profiling is off, so the disabled call is not merely
+    equivalent to today's -- it is the same call, with the same arity. That is
+    a stronger guarantee than passing `tools=TOOLS` would give, and it is why
+    this returns kwargs rather than a tool list.
+    """
+    if not profiling_enabled:
+        return {}
+    return {"tools": ai_tools.TOOLS_WITH_PROFILING}
+
+
+def _persona_prompt(persona: dict | None) -> str:
     """Compose the agent-bot decision prompt from an assistant persona.
 
     None or all-empty persona -> the module SYSTEM_PROMPT verbatim (byte-identical
@@ -110,6 +144,43 @@ def _build_system_prompt(persona: dict | None) -> str:
             "always match the language the customer writes in."
         )
     return "\n\n".join(parts)
+
+
+PROFILING_INSTRUCTION = (
+    "You also have record_investor_preference. Call it when the customer tells "
+    "you what they are investing for, when they need the money, how they would "
+    "react to a 20% drop, or how experienced they are. Ask at most one of those "
+    "four questions per reply, only when the conversation gives you a natural "
+    "opening, and never instead of answering what they actually asked. Record "
+    "only what they said -- never infer an answer they did not give. These "
+    "preferences shape how you explain things; they do not change which "
+    "products the customer is eligible for."
+)
+
+
+def _build_system_prompt(
+    persona: dict | None, customer_context: str = "", profiling_enabled: bool = False
+) -> str:
+    """The persona prompt, plus this customer's profile when we have one.
+
+    `customer_context` defaults to "" and appends nothing when empty, so every
+    caller and every tenant that has no nasabah profile on the contact gets the
+    persona prompt byte for byte. That default is what
+    `test_no_persona_no_context_is_byte_identical_to_today` pins.
+
+    The profile goes LAST, after the persona's guardrails. An operator-authored
+    guardrail should constrain what the model does with the profile, not be
+    buried under it.
+    """
+    base = _persona_prompt(persona)
+    # Only advertised when the tool is actually in this turn's action space.
+    # Naming an action the model was not given makes it try to call one that
+    # isn't there, and `gemini._extract_decision` turns that into a handoff.
+    if profiling_enabled:
+        base = f"{base}\n\n{PROFILING_INSTRUCTION}"
+    if not customer_context:
+        return base
+    return f"{base}\n\n{customer_context}"
 
 
 def _sender_type(payload: dict) -> str | None:
@@ -344,6 +415,55 @@ async def _log_decision(conversation_id: int, decision: gemini.Decision) -> None
         )
 
 
+async def _maybe_apply_persona_slug(
+    chatwoot: Any, conversation_id: int, contact_id: int
+) -> str | None:
+    """Apply a demo persona if the newest customer message ends in a `[slug]`.
+
+    Returns the slug applied, or None. Never raises: this is a demo affordance
+    inside a background task, and a failed persona switch must cost at most the
+    switch -- not the personalization, and certainly not the reply.
+
+    Only the newest incoming message is examined. Scanning the whole history
+    would re-apply a slug from earlier in the conversation on every subsequent
+    turn, pinning the persona forever instead of switching it once.
+    """
+    try:
+        raw = await chatwoot.get_messages(conversation_id)
+        payload = raw.get("payload") if isinstance(raw, dict) else raw
+        if not isinstance(payload, list):
+            return None
+        newest = None
+        for message in payload:
+            if isinstance(message, dict) and message.get("message_type") == 0:
+                newest = message
+        if newest is None:
+            return None
+        slug = demo_persona.detect_slug(newest.get("content"))
+        if slug is None:
+            return None
+        attributes = demo_persona.attributes_for(slug)
+        name = demo_persona.display_name_for(slug)
+        if attributes is None or name is None:
+            return None
+        await chatwoot.update_contact(
+            contact_id, {"name": name, "custom_attributes": attributes}
+        )
+        logger.info(
+            "orchestrator: applied demo persona %r to contact %s (conversation %s)",
+            slug,
+            contact_id,
+            conversation_id,
+        )
+        return slug
+    except Exception:
+        logger.debug(
+            "orchestrator: demo persona slug not applied for conversation %s",
+            conversation_id,
+        )
+        return None
+
+
 async def _process_conversation(conversation_id: int) -> None:
     settings = get_settings()
     chatwoot = get_chatwoot_client()
@@ -353,6 +473,7 @@ async def _process_conversation(conversation_id: int) -> None:
     # so the decision is always based on fresh state.
     proton = get_proton_config_client()
     inbox_id: int | None = None
+    conversation_data: dict | None = None
     if proton is not None:
         try:
             conversation_data = await chatwoot.get_conversation(conversation_id)
@@ -394,7 +515,74 @@ async def _process_conversation(conversation_id: int) -> None:
                 "proceeding with default system prompt",
                 inbox_id,
             )
-    system_prompt = _build_system_prompt(persona)
+
+    # Fetch this contact's stored profile and fold it into the decision prompt.
+    # Entirely best-effort: any failure, a conversation with no sender, or a
+    # contact carrying attributes this build doesn't recognise all leave
+    # customer_context empty, which makes _build_system_prompt a no-op. Runs as
+    # part of a background task, so it must never raise (see CLAUDE.md).
+    customer_context = ""
+    caller_context = ""
+    # Hoisted out of the try so they survive a failure inside it: a contact we
+    # could not read must degrade to "no profiling this turn", not to a
+    # NameError at the call site below.
+    resolved_contact_id: int | None = None
+    resolved_risk_profile = ""
+    try:
+        if conversation_data is None:
+            conversation_data = await chatwoot.get_conversation(conversation_id)
+        sender = (conversation_data.get("meta") or {}).get("sender") or {}
+        contact_id = sender.get("id")
+        if contact_id is not None:
+            # Demo-only: a trailing `[slug]` in the customer's latest message
+            # repoints this contact at a different persona before the profile is
+            # read. It REWRITES the contact rather than only overriding the
+            # prompt, so the agent sidebar and the AI never disagree about who
+            # this nasabah is -- see app/services/demo_persona.py. Sits inside
+            # the surrounding try, so a failure here degrades to "no persona
+            # switch" rather than "no personalization at all".
+            if settings.demo_persona_slugs_enabled:
+                await _maybe_apply_persona_slug(
+                    chatwoot, conversation_id, int(contact_id)
+                )
+            resolved_contact_id = int(contact_id)
+            contact = await chatwoot.get_contact(int(contact_id))
+            body = contact.get("payload") if isinstance(contact, dict) else None
+            body = body if isinstance(body, dict) else contact
+            contact_attributes = (
+                body.get("custom_attributes") if isinstance(body, dict) else None
+            )
+            # Read for the divergence check only (design spec §5.3). Nothing on
+            # this path ever writes it back.
+            resolved_risk_profile = (
+                str(contact_attributes.get("risk_profile") or "")
+                if isinstance(contact_attributes, dict)
+                else ""
+            )
+            customer_context = format_customer_context(contact_attributes)
+            # Chat-side caller context (flag, default off): the same minimal
+            # "who is this" view the phone line uses. Fail-open ("" on error).
+            if (
+                settings.chat_caller_context_enabled
+                and proton is not None
+                and inbox_id in settings.chat_caller_context_inbox_set
+            ):
+                phone = (body.get("phone_number") if isinstance(body, dict) else None) or (
+                    sender.get("phone_number")
+                )
+                caller_context = await proton.get_contact_context(str(phone or ""))
+    except Exception:
+        logger.debug(
+            "orchestrator: could not resolve customer context for conversation %s; "
+            "proceeding without a customer profile",
+            conversation_id,
+        )
+
+    system_prompt = _build_system_prompt(
+        persona,
+        "\n\n".join(c for c in (customer_context, caller_context) if c),
+        settings.investor_profiling_enabled,
+    )
 
     # Fetch persona messages for the inbox (fail-open: None on any error).
     # Only handoff_message is consumed here; welcome_message is consumed at
@@ -430,12 +618,17 @@ async def _process_conversation(conversation_id: int) -> None:
         await _process_via_chat_agent(
             conversation_id, message_list, effective_mode, chatwoot, handoff_message,
             inbox_id=inbox_id,
+            caller_context=caller_context,
         )
         return
 
     context = _build_context(message_list)
 
-    decision = await gemini.decide(system_prompt, context)
+    decision = await gemini.decide(
+        system_prompt,
+        context,
+        **_decide_kwargs(settings.investor_profiling_enabled),
+    )
     await _log_decision(conversation_id, decision)
 
     # KB-grounded reply: for a plain answer, source the text from the backend
@@ -463,6 +656,8 @@ async def _process_conversation(conversation_id: int) -> None:
         await _execute_decision(
             conversation_id, decision, effective_mode, chatwoot,
             handoff_message=handoff_message,
+            contact_id=resolved_contact_id,
+            recorded_risk_profile=resolved_risk_profile,
         )
     except httpx.HTTPError:
         logger.exception(
@@ -641,6 +836,15 @@ def _apply_media_budget(
         )
 
 
+_CRM_MARKER = re.compile(r"\[\s*CUSTOMER\s+CONTEXT", re.IGNORECASE)
+
+
+def _neutralise_crm_marker(text: str) -> str:
+    """Customer text that imitates the bracketed CRM note loses its bracket,
+    so the only "[CUSTOMER CONTEXT" the model sees is the one we prepend."""
+    return _CRM_MARKER.sub("(quoted by the customer) CUSTOMER CONTEXT", text)
+
+
 async def _process_via_chat_agent(
     conversation_id: int,
     message_list: list[dict],
@@ -648,6 +852,7 @@ async def _process_via_chat_agent(
     chatwoot,
     handoff_message: str,
     inbox_id: int | None = None,
+    caller_context: str = "",
 ) -> None:
     """Drive one turn through the backend ADK agent (POST /chat/turn) and map the
     result onto Chatwoot. Chatwoot owns the handoff; the backend only signals it.
@@ -711,6 +916,16 @@ async def _process_via_chat_agent(
             )
         return
 
+    if settings.chat_caller_context_enabled:
+        # A customer must not be able to pass their own text off as our CRM
+        # note: the marker is neutralised wherever it appears, words kept.
+        text = _neutralise_crm_marker(text)
+    if caller_context:
+        # The chat agent's instruction is composed in the backend and
+        # /chat/turn takes no extra context field, so the CRM view travels as
+        # a clearly-marked note ahead of the customer's own words.
+        text = f"[{caller_context}]\n\n{text}" if text else f"[{caller_context}]"
+
     proton = get_proton_config_client()
     result = (
         await proton.chat_turn(
@@ -743,6 +958,13 @@ async def _process_via_chat_agent(
     if handoff:
         reason = (handoff or {}).get("reason", "") if isinstance(handoff, dict) else ""
         await _log_chat_action(conversation_id, "chat_turn:handoff", str(reason))
+        # A backend with HANDOFF_RETURN_AI_REPLY on sends the model's own
+        # acknowledgement with the handoff; it names what was reported, so it
+        # replaces the fixed handoff message. Absent (the default) -> unchanged.
+        ai_ack = (result.get("reply") or "").strip()
+        if ai_ack:
+            chunks = await _format_reply_for_channel(ai_ack, chatwoot, inbox_id)
+            handoff_message = "\n\n".join(chunks) or handoff_message
         await _handoff_to_human_via_chatwoot(conversation_id, chatwoot, handoff_message)
         return
 
@@ -802,8 +1024,49 @@ async def _handoff_to_human_via_chatwoot(
 
 
 async def _execute_decision(
-    conversation_id, decision, mode: str, chatwoot, *, handoff_message: str = ""
+    conversation_id, decision, mode: str, chatwoot, *, handoff_message: str = "",
+    contact_id: int | None = None, recorded_risk_profile: str = "",
 ) -> None:
+    if decision.action == "record_investor_preference":
+        # Personalization only. The four answers land on the contact so the
+        # sidebar and the next turn's prompt both see them; the risk_profile
+        # that gates eligibility is untouched by construction -- there is no
+        # mapping for it in investor_profile (design spec §2.3, §5.3).
+        #
+        # Deliberately silent. The customer just told us this in conversation;
+        # a "noted!" reply would be the bot narrating its own bookkeeping, and
+        # the model still gets a turn to answer whatever they actually asked.
+        #
+        # Handled before the trailing else, which hands off on any action it
+        # does not recognise.
+        if contact_id is None:
+            logger.info(
+                "orchestrator: no contact for conversation %s; cannot record "
+                "investor preference",
+                conversation_id,
+            )
+            return
+        attributes = investor_profile.canonical_attributes(
+            decision.args, captured_at=_utc_now_iso()
+        )
+        if not attributes:
+            logger.info(
+                "orchestrator: investor preference for conversation %s recognised "
+                "no answers; nothing written",
+                conversation_id,
+            )
+            return
+        await chatwoot.merge_contact_attributes(contact_id, attributes)
+
+        # Their answers and their KYC record disagree -> tell a human. This
+        # notifies; it never reconciles. Only a licensed person changes a risk
+        # profile, and only upward divergence matters: a customer who answers
+        # more cautiously than their file is already inside their eligible set.
+        implied = investor_profile.implied_risk_tier(decision.args)
+        recorded = investor_profile.recorded_risk_tier(recorded_risk_profile)
+        if implied is not None and recorded is not None and implied > recorded:
+            await chatwoot.add_labels(conversation_id, ["profile_review"])
+        return
     if decision.action == "send_reply":
         text = decision.args.get("text", "")
         if mode == "auto":

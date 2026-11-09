@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import cache
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     vertex_project_id: str | None = None
     vertex_location: str = "us-central1"
     gemini_model: str = "gemini-2.5-flash"
+    # On a handoff, return the model's own reply alongside the handoff signal
+    # (default false: the reply is suppressed and the agent posts the tenant's
+    # fixed handoff message). The agent sends this reply to the customer instead
+    # of the fixed message when present, so the acknowledgement names what was
+    # reported ("the warning light has been reported...").
+    handoff_return_ai_reply: bool = False
 
     # Vertex AI Search settings
     vertex_search_project_id: str = ""
@@ -183,6 +189,13 @@ class Settings(BaseSettings):
     rsa_enabled: bool = False
     rsa_database_url: str = ""
 
+    # FIX-16 abandoned-call rate (RFP 4.66): record each handoff <Dial>
+    # outcome (DialCallStatus=canceled == caller hung up before an agent
+    # answered) in its own small table and expose abandon rate per day in
+    # /metrics/callcenter. Default off; needs BOTH settings. Fail-open.
+    call_abandon_enabled: bool = False
+    call_abandon_database_url: str = ""
+
     # --- DMS/TSP integration shell (Package F) ---
     # Wires MockDmsClient into Customer 360's optional `dms` block. Phase 1
     # ships no real DMS adapter, so this is the ONLY thing that can put data
@@ -292,6 +305,8 @@ class Settings(BaseSettings):
     routing_sweep_interval_seconds: int = 60
 
     live_faq_collection: str = "live_faq"
+    # FIX-23: per-agent thumbs ratings of live-FAQ entries (see faq_ratings.py).
+    faq_rating_collection: str = "live_faq_ratings"
     embedding_model: str = "text-embedding-004"
 
     # Bot-metrics dashboard (Zendesk -> BigQuery sync)
@@ -299,8 +314,14 @@ class Settings(BaseSettings):
     bigquery_dataset: str = "demo_proton"
     bigquery_conversations_table: str = "conversations"
 
-    # Bot-metrics Phase 2 (per-turn MetricsPort -> BigQuery streaming)
-    metrics_provider: Literal["noop", "bigquery"] = "noop"
+    # Bot-metrics Phase 2 (per-turn MetricsPort -> BigQuery streaming).
+    # Also the read side's switch (`build_metrics_query_port`). "noop" -- the
+    # default, and what every tenant without a warehouse runs -- means EMPTY
+    # reports, not canned ones: the demo fixtures carry one tenant's dealers
+    # and vehicle models, so serving them by default put another customer's
+    # figures on a freshly provisioned tenant's Reports pages. "mock" is the
+    # opt-in for local dev and demos that still want those rows.
+    metrics_provider: Literal["noop", "mock", "bigquery"] = "noop"
     bigquery_turn_events_table: str = "turn_events"
 
     # Bot-metrics Phase 2 (in-app Zendesk -> BQ sync scheduler / the "trigger")
@@ -339,6 +360,20 @@ class Settings(BaseSettings):
     report_enabled: bool = False
     report_interval_hours: int = 24
 
+    # FIX-14 (RFP 4.74/4.78/4.82): weekly management report, PDF + XLSX by email.
+    # Default OFF: no tenant changes behaviour until enabled. Needs smtp_host
+    # (+ smtp_user/smtp_password) like every other backend-sent mail.
+    weekly_report_email_enabled: bool = False
+    # Comma-separated. Separate from report_recipients (which also gets anomaly alerts).
+    weekly_report_email_recipients: str = ""
+    # APScheduler day_of_week ("mon".."sun") and hour 0-23, in reporting_timezone.
+    # Sends the previous full Monday-Sunday week.
+    weekly_report_email_day: str = "mon"
+    weekly_report_email_hour: int = 8
+    # Optional From override for this mail only (e.g. the inbox-5 Gmail sender);
+    # empty = smtp_from. Gmail requires it to match the authenticated mailbox.
+    weekly_report_smtp_from: str = ""
+
     # Bot-metrics anomaly detection thresholds
     # Z-score multiplier for channel-volume anomaly detection
     anomaly_zscore_k: float = 3.0
@@ -347,6 +382,26 @@ class Settings(BaseSettings):
 
     def report_recipient_list(self) -> list[str]:
         return [r.strip() for r in self.report_recipients.split(",") if r.strip()]
+
+    @field_validator("weekly_report_email_day", mode="before")
+    @classmethod
+    def _weekly_day_or_default(cls, v: object) -> str:
+        # A typo here must not stop the backend booting (this Settings is built
+        # at import time): fall back to the default (mon / 08:00).
+        day = str(v).strip().lower()
+        return day if day in {"mon", "tue", "wed", "thu", "fri", "sat", "sun"} else "mon"
+
+    @field_validator("weekly_report_email_hour", mode="before")
+    @classmethod
+    def _weekly_hour_or_default(cls, v: object) -> int:
+        try:
+            hour = int(str(v).strip())
+        except ValueError:
+            return 8
+        return hour if 0 <= hour <= 23 else 8
+
+    def weekly_report_recipient_list(self) -> list[str]:
+        return [r.strip() for r in self.weekly_report_email_recipients.split(",") if r.strip()]
 
     # Chatwoot settings
     chatwoot_api_url: str = "http://localhost:3000"
@@ -425,25 +480,40 @@ class Settings(BaseSettings):
     gemini_live_vad_enabled: bool = True
     gemini_live_vad_start_sensitivity: str = "LOW"  # LOW | HIGH
     gemini_live_vad_end_sensitivity: str = "LOW"  # LOW | HIGH
-    # Audio kept BEFORE detected speech, so a barge-in does not clip its own
-    # first syllable.
-    gemini_live_vad_prefix_padding_ms: int = 300
+    # Speech required BEFORE a start of speech is committed (Live API
+    # prefix_padding_ms): the higher, the less a short noise counts as the
+    # caller talking. 2026-11-09: raised 300 -> 600 after a 27 Oct call where
+    # background noise (transcribed as Hindi) barged in and cut the answer.
+    gemini_live_vad_prefix_padding_ms: int = 600
     # Silence required before the caller's turn is considered over. Twilio's
     # default is far shorter; on a phone call that produced the model talking
     # over a caller who simply paused to think.
     gemini_live_vad_silence_duration_ms: int = 900
+    # Caller speech interrupts the assistant (barge-in). False sets the Live
+    # API's NO_INTERRUPTION: the assistant always finishes its sentence --
+    # for a line so noisy that LOW sensitivity still cuts it off.
+    gemini_live_barge_in_enabled: bool = True
     gemini_live_voice: str = "Kore"
     # Optional output language hint (e.g. "ms-MY" for Bahasa Melayu). Empty = let
     # the model auto-detect. Only honored by half-cascade Live models; native-audio
     # models auto-detect language and ignore it.
     gemini_live_language: str = ""
-    # IVR-4: after each caller utterance, send a short content-free reminder
-    # telling the model to re-evaluate the reply language fresh each turn,
-    # rather than anchoring to the conversation's established language.
-    # Default off -- byte-identical when unset; the exact Live API turn-
-    # injection semantics can't be verified without a real call, so this
-    # ships gated and can be flipped per-tenant to A/B against today.
+    # IVR-4 language reminder. INERT since 2026-11-09 (kept so existing env
+    # files still parse): it was sent as a realtime TEXT input, which the Live
+    # API treats as a caller turn -- the model answered the reminder and spoke
+    # twice per caller turn (27 Oct call). The language rule is now in the
+    # phone system instruction.
     phone_language_nudge_enabled: bool = False
+    # 2026-11-09 fast start: answer with <Connect><Stream> straight away and
+    # play the PDPA recording notice over the stream (synthesised once and
+    # cached, mu-law 8 kHz) while Gemini Live connects; the assistant then
+    # greets first. Recording starts only after Twilio confirms the notice
+    # played. No cached audio yet (first call after a restart, TTS failure)
+    # -> today's <Say> notice. Off -> today's TwiML and the caller speaks
+    # first.
+    phone_fast_start_enabled: bool = False
+    # Language code the notice is synthesised in.
+    phone_announcement_tts_language: str = "en-US"
     # Package C Task 3: create the Chatwoot conversation ticket the moment the
     # call starts (instead of only at hangup) and stream the transcript into
     # it live, in flush_seconds-ish batches, instead of writing it all at
@@ -587,6 +657,104 @@ class Settings(BaseSettings):
     # TwiML error that drops a live call, so this is a hard cap, not a
     # preference.
     phone_fanout_max_agents: int = 10
+    # FIX-15 (RFP 4.6): Hold / Resume / Transfer buttons on the softphone.
+    # Default off -> no hook in dial-status, /voice/agent/call/* 404, nothing
+    # changes. DEPENDS ON phone_agent_softphone_enabled (validator below).
+    # The call moves into a Twilio Conference only when an agent first presses
+    # Hold or Transfer -- see features/chat/phone/hold_transfer.py.
+    phone_hold_transfer_enabled: bool = False
+    # What the caller hears on hold, looped. Placeholder: a Twilio-hosted
+    # public hold track until Proton supplies its own recording (an https
+    # mp3/wav Twilio can fetch). Blank = silence.
+    phone_hold_media_url: str = "https://com.twilio.music.classical.s3.amazonaws.com/BusyStrings.mp3"
+    # Longest a caller stays on hold before the agents are released and the
+    # caller hears the bilingual apology and is hung up (20 min default).
+    phone_hold_max_seconds: int = 1200
+
+    # --- Caller context for the AI-first phone line (2026-11-09) -----------
+    # See features/chat/phone/caller_context.py. On: /voice/phone/incoming
+    # hands the caller's number (Twilio From, signature-verified, then
+    # HMAC-signed into the stream) to the voice session; the contact is
+    # looked up before the greeting (bounded, fail-open), the assistant
+    # confirms rather than recites, saves what the caller says
+    # (save_caller_details), asks for the mobile number when there is no
+    # caller ID (lookup_caller), the call conversation is created ON the
+    # caller's contact, and the handoff ring/note carry who/vehicle/dealer.
+    # Off (default) = today's anonymous call, byte-identical. Needs
+    # TWILIO_AUTH_TOKEN (to verify From and sign it); without it every call
+    # is treated as "no caller ID" and the assistant asks for the number.
+    phone_caller_context_enabled: bool = False
+    # Budget for the pre-greeting lookup (contact search + history). The
+    # greeting waits at most this long.
+    phone_caller_lookup_timeout_seconds: float = 1.5
+    # Budget for each background CRM write of what the caller said.
+    phone_caller_save_timeout_seconds: float = 8.0
+    # No caller ID: how long the call conversation waits for the caller to
+    # say their number (lookup_caller) before it is created anonymously.
+    phone_caller_number_wait_seconds: float = 45.0
+    # Test-console persona / "Call as" picker: a browser call (From
+    # client:...) may claim a number via the Voice SDK `callAs` param. NEVER
+    # applied to PSTN calls. Only effective with phone_caller_context_enabled.
+    # Demo/test tenants only -- it lets a browser user pick whose record the
+    # assistant sees.
+    phone_web_call_as_enabled: bool = False
+    # The ONLY numbers a browser call may claim (comma list, any Malaysian /
+    # E.164 form). Empty (default) = deny all, even with the flag on, so the
+    # console cannot be used to look up arbitrary numbers.
+    phone_web_call_as_numbers: str = ""
+
+    # --- Pre-filled handoff note (2026-11-09) ------------------------------
+    # See features/chat/handoff_note.py. On: every AI -> human handoff (the
+    # crm- /chat/turn branch, WhatsApp/email begin_handoff, phone calls) posts
+    # ONE structured private note (who + masked mobile, vehicle, dealer, case,
+    # reason, priority, AI summary; phone: live transcript link), sets the
+    # conversation priority from the AI's urgency (breakdown/safety = urgent)
+    # and stores a confirmed dealer as caller_dealer. A handoff never adds a
+    # dealer_<slug> label; adding `escalate` does (/escalation/notify fills
+    # the dealer from caller_dealer), and a phone call's escalation sends no
+    # written customer ack. Off (default) = today's notes, byte-identical.
+    handoff_note_enabled: bool = False
+    # Budget for the chat note's Chatwoot reads/writes (inline in /chat/turn).
+    handoff_note_timeout_seconds: float = 5.0
+
+    # Test console "Demo" tab + `python -m chatbot.features.demo.seed`: seed /
+    # reset the [DEMO] phone personas (contacts, history, Farid's RSA
+    # incident). Off (default) = no /demo/* route and the CLI refuses. Reset
+    # only removes records the seeder created (features/demo/safety.py);
+    # deletes need an administrator CHATWOOT_API_TOKEN. Seeded cases show in
+    # native Chatwoot reports until Reset (METRICS_EXCLUDE_DEMO_SEED drops
+    # them from the BigQuery sync only).
+    demo_console_enabled: bool = False
+    # API inbox the demo conversations go to; 0 = CHATWOOT_INBOX_ID. Must be
+    # a Channel::Api inbox (checked before every seed/reset). Keep it 0 or
+    # equal to CHATWOOT_INBOX_ID: phone rehearsal calls land on
+    # CHATWOOT_INBOX_ID and Reset only cleans unmarked calls on this inbox.
+    demo_inbox_id: int = 0
+    # Prefix for the Demo tab's CRM links; "" = relative (the test console is
+    # served from the CRM's own host).
+    demo_crm_base_url: str = ""
+
+    # --- Mock "Proton e.MAS customer app" (demo, 2026-11-09) ---------------
+    # See features/customer_app/. On: /customer-app/messages lets the test
+    # console's Customer page chat AS a demo persona (text, photo/video,
+    # voice note), posting incoming messages into the Chatwoot API inbox the
+    # agent bot serves, on the persona's [DEMO] contact. Only persona IDs
+    # from the server-side personas.json allow-list are accepted; a contact
+    # without "[DEMO]" in its name is never written to. Off (default) = the
+    # routes are not mounted. Demo/test tenants only.
+    demo_customer_app_enabled: bool = False
+    # The Chatwoot API inbox to post into. 0 = DEMO_INBOX_ID, then
+    # CHATWOOT_INBOX_ID (one demo inbox for the Demo tab and the app).
+    demo_customer_app_inbox_id: int = 0
+
+    # Chat-side caller context (2026-11-09). See features/contact_context/.
+    # On: POST /agent/contact-context {"phone"} (x-api-key = PROTON_BACKEND_KEY)
+    # returns the minimal "who is this" view the phone path uses (first name,
+    # car model(s), plate last 4, usual dealer, open cases -- never the phone,
+    # surname or full plate) plus a prompt paragraph, for the agent service's
+    # CHAT_CALLER_CONTEXT_ENABLED. Off (default) = not mounted. Reuses the
+    # phone lookup budget PHONE_CALLER_LOOKUP_TIMEOUT_SECONDS.
+    chat_caller_context_enabled: bool = False
 
     # Frontend CORS — origins of the Vue dev/prod app (comma-separated in env).
     # Defaults cover Vite's first few fallback ports (5173-5180) so a stale dev
@@ -1265,41 +1433,38 @@ class Settings(BaseSettings):
     # genuinely isn't the mapped default. Never wire this to apply the label
     # without a human confirming it.
     category_department_mapping_enabled: bool = False
-    # Task 6/7. **THIS SETTING DOES NOT CURRENTLY GATE ANYTHING.** No code
-    # reads it -- not `features/authz/data_scope.py`, which never takes a
-    # `Settings` at all -- so flipping it on has no effect whatsoever.
+    # Wave 2 Task 29 (FIX-49; RFP 2026_028 2.2.5, PDPA 2010): PII masking.
+    # On: backend responses shown to people -- Customer 360, RSA incidents
+    # and their CSV export, case-record fields, AI activity previews -- mask
+    # phone, e-mail, MyKad/IC, VIN/chassis, card (Luhn) and passport numbers
+    # for any caller without `pii.view` (administrator by seed; superadmin
+    # always unmasked). Fail closed: an unidentified caller is masked. Off =
+    # byte-identical responses. Never applied to what is sent to the LLM or
+    # to escalation recipients. Rules: features/privacy/pii.py. Requires
+    # RBAC_ENABLED (refused at boot otherwise). The fork's contact sidebar and
+    # contact list mask on the client from patch 0085 (GET /authz/me/pii).
+    # (Declared here, not after data_scoped_rbac_enabled: that field anchors
+    # the P11 block in test_p11_flags.py.)
+    pii_masking_enabled: bool = False
+    # Wave 2 Task 28 (FIX-48; RFP 2026_028 4.83): data-scoped permissions.
+    # On: every backend-owned data surface narrows to the caller's effective
+    # scope (union of their roles' scopes over inbox ids / team ids / dealer
+    # slugs / departments; administrator and superadmin unrestricted) --
+    # Customer 360, case fields, reports (/metrics/*), the escalation-routing
+    # admin, RSA incidents and the AI activity monitor. See
+    # `features/authz/data_scope.py` for the rules and enforcement points.
     #
-    # The intent was: resolve each caller's roles to a DataScope (inboxes /
-    # teams / dealers / own_only) and enforce it in the metrics and admin query
-    # layers (composing with P4's MetricFilters) plus Chatwoot-native inbox
-    # membership via chatwoot_role_mirror.py. Task 6's intersection logic
-    # shipped and is genuinely proven by test_data_scope.py; task 7's
-    # enforcement did not. `apply_scope_to_filters` and
-    # `resolve_user_data_scope` have no callers, there is no FastAPI dependency,
-    # role scopes live in a module-level dict with no admin surface, and
-    # query_adapter.py / chatwoot_role_mirror.py were never modified. Kept
-    # rather than deleted because wiring the enforcement is the recorded fix and
-    # this is the only backend-side record that the scope model exists; see
-    # data_scope.py's docstring and the blocked-work register.
+    # DEFAULT-PRESERVING: a role with no scope restricts nothing, so turning
+    # this on changes nothing until an operator saves a scope on a role (Roles
+    # & Permissions page, fork patch 0084). With it on, the scoped surfaces
+    # need a Chatwoot session (the shared x-api-key carries no person); the
+    # fork's reports client sends one from patch 0084 on, so deploy that image
+    # before flipping this. FAIL CLOSED: an unreadable scope is "nothing",
+    # never "everything". Requires RBAC_ENABLED (refused at boot otherwise).
     #
-    # Everything below is the contract enforcement must honour when it lands,
-    # not a description of current behaviour.
-    #
-    # `None` ON EVERY SCOPE FIELD MEANS ACCOUNT-WIDE, so every role that
-    # exists before this package keeps behaving exactly as it does today even
-    # once this is flipped on -- turning this on never narrows or widens an
-    # existing role that was never given a scope.
-    #
-    # SCOPES ARE INTERSECTIVE, NEVER ADDITIVE. Two scopes on one caller
-    # (e.g. two roles) narrow to their intersection, never their union, and
-    # an EMPTY intersection means access to NOTHING, not to everything --
-    # this is the security-relevant half of this package: a bug here is data
-    # exposure (a caller sees rows they should not), not a reporting
-    # inconvenience. Enforced in the query layer, never by hiding UI, so a
-    # caller hitting the API directly (bypassing any front end) is scoped
-    # exactly the same as one going through it. Do not "simplify" an empty
-    # intersection into "no filter" -- that grants everything to precisely
-    # the most restricted caller.
+    # Not governed: Chatwoot's own conversation lists (inbox views and the
+    # fork's Cases list read Chatwoot directly) -- those follow Chatwoot inbox
+    # membership; keep membership in line with each user's inbox scope.
     data_scoped_rbac_enabled: bool = False
 
     # --- P11: voice partials (DTMF menu, after-hours, voicemail, retention) ---
@@ -1309,23 +1474,31 @@ class Settings(BaseSettings):
     # docs/testing/phone-channel-package-c-verification.md and the blocked-work
     # register. Three of the seven currently have no consumer; each says so.
     #
-    # Gates GET /calls/{conversation_id}/recording
-    # (features/chat/phone/recording_router.py, mounted in main.py, permission
-    # call_recording.listen). Off = 404 for a permitted caller. Read that
-    # module's docstring before describing this to a client: the handler reads an
-    # in-process registry nothing writes, logs rather than writing an audit-log
-    # row, and returns a placeholder rather than a cryptographically signed URL.
+    # Gates the in-CRM call-recording player: GET /calls/{conversation_id}/
+    # recording (+ /audio, /transcript, POST /retranscribe) in
+    # features/chat/phone/recording_router.py, mounted in main.py, permission
+    # call_recording.listen. Off = 404 for a permitted caller. Finds the call's
+    # archived object (PHONE_RECORDING_ARCHIVE_*) from the conversation's
+    # `call_recording_object` attribute or, for older calls, its archive note;
+    # streams it from GCS with the backend's service account behind a
+    # short-lived HMAC link; every play is an audit-log row.
     call_recording_retrieval_enabled: bool = False
-    # **DOES NOT CURRENTLY GATE ANYTHING.** `dtmf_menu.py` exists and its prompts
-    # are verbatim from deploy/twilio/ivr-studio-flow.json, but `twiml.py` was
-    # never modified, so no <Gather> is emitted on any call path and nothing reads
-    # this flag -- `build_dtmf_twiml(enabled=...)` takes the switch as an argument
-    # no caller supplies. Turning this on has no effect.
+    # Task 31 (FIX-31): on -> `/voice/phone/incoming` answers with the Proton
+    # SOP's DTMF IVR (features/chat/phone/ivr.py + ivr_router.py) instead of
+    # going straight into the AI voice bridge: bilingual welcome, 1 English /
+    # 2 Bahasa Melayu, then 1 RSA / 2 Inquiry / 3 Complaint / 0 repeat. Needs
+    # twilio_auth_token and twilio_webhook_base_url (every IVR webhook is
+    # signature-checked); without either it logs and serves today's bridge.
+    # Off -> the IVR routes are not registered and the incoming TwiML is
+    # byte-identical to before.
     phone_dtmf_menu_enabled: bool = False
-    # Read by `after_hours.py::evaluate_after_hours_call`, which is itself called
-    # by nothing: the after-hours branch is not wired into the call path. Off is
-    # therefore indistinguishable from on today. The flag has a consumer; the
-    # consumer has no caller.
+    # Task 31: read by `after_hours.py::evaluate_after_hours_call`, which the
+    # IVR menu calls after the category choice. On -> outside the SOP office
+    # hours (phone_ivr_* below) a non-RSA caller hears the bilingual
+    # after-hours message (then voicemail, if phone_voicemail_ingest_enabled).
+    # Only reachable with phone_dtmf_menu_enabled: without the menu the call
+    # cannot be told apart from an RSA call, so the AI bridge keeps taking
+    # every call 24/7 exactly as today.
     phone_after_hours_enabled: bool = False
     # DEFAULT ON -- the only default-on flag in this programme, and deliberately
     # so. §8.1.6 requires roadside assistance 24/7, so when the after-hours path
@@ -1337,10 +1510,12 @@ class Settings(BaseSettings):
     # as one (`after_hours_bypass_disabled_by_config`). Do not "tidy" this to
     # False for consistency with its neighbours.
     phone_rsa_after_hours_bypass: bool = True
-    # Read by `voicemail_ingest.py::process_voicemail_webhook`, which has no
-    # caller: there is no Twilio RecordingUrl webhook route, and the function
-    # creates no Chatwoot conversation even when called. See its docstring --
-    # notably that attend_after is now+12h, not P1's next_working_instant.
+    # Task 31: on -> the IVR records a voicemail (after hours, or when the
+    # agent ring stage ends unanswered) and `/voice/phone/ivr/voicemail` turns
+    # it into a Chatwoot conversation on the phone inbox with the recording
+    # link, tagged `voicemail` (voicemail_ingest.py::ingest_voicemail). The
+    # transcript is added when phone_recording_transcription_enabled is on.
+    # Only reachable with phone_dtmf_menu_enabled.
     phone_voicemail_ingest_enabled: bool = False
     # **DOES NOT CURRENTLY GATE ANYTHING.** Task 6 (per-utterance transcript
     # flush when a human agent is on the call, vs today's fifteen-second cadence
@@ -1359,6 +1534,85 @@ class Settings(BaseSettings):
     # the reporting are real"; **the 90-day policy is still not in force on any
     # tenant**, and turning this on does not change that.
     phone_retention_job_enabled: bool = False
+
+    # --- Call-recording player (after the P11 block on purpose: test_p11_flags
+    # pins that block to its seven flags). Consumer: features/chat/phone/
+    # recording_router.py, gated by call_recording_retrieval_enabled above.
+    # HMAC key for the player's short-lived audio/transcript links. Empty (or
+    # under 32 characters) -> the player answers 503 rather than signing with a
+    # guessable key. Generate with `openssl rand -hex 32`; rotating it only
+    # invalidates links minted in the last few minutes.
+    call_recording_signing_secret: str = ""
+    # Lifetime of one player link, seconds. Clamped to 30..300: the link is a
+    # bearer credential (an <audio> element cannot send the Chatwoot session
+    # headers), so it must stay short; the panel re-mints on expiry.
+    call_recording_url_ttl_seconds: int = 300
+    # Minimum seconds between two re-transcriptions of one conversation (each
+    # is a full Gemini audio call). 429 inside the window.
+    call_recording_retranscribe_cooldown_seconds: int = 600
+    # Re-transcription caps per rolling hour, in-process (one backend container
+    # per tenant): per requesting user, and across the tenant. 0 = no cap.
+    # Each run is one full-call Gemini audio request, so these bound cost even
+    # when many different conversations are re-run.
+    call_recording_retranscribe_user_hourly_cap: int = 5
+    call_recording_retranscribe_global_hourly_cap: int = 30
+    # Post-call transcriber prompt: off -> the original prompt, byte-identical;
+    # on -> the Proton glossary (models, PRO-NET, RSA, DealerStore dealer names)
+    # plus the Malay/English/Mandarin/Tamil, no-noise-scripts, [inaudible]
+    # rules (features/chat/phone/recording_glossary.py). Proton-specific
+    # vocabulary, so default off; proton sets it true.
+    phone_transcript_glossary_enabled: bool = False
+
+    @field_validator("call_recording_url_ttl_seconds", mode="before")
+    @classmethod
+    def _recording_ttl_clamped(cls, v: object) -> int:
+        # A typo must not stop the backend booting; anything unreadable is the
+        # default and anything out of range is pulled back inside it.
+        try:
+            ttl = int(str(v).strip())
+        except ValueError:
+            return 300
+        return max(30, min(300, ttl))
+
+    # --- Task 31: IVR routing, timings, office hours and voices ---
+    # Outside the P11 block on purpose (test_p11_flags pins that block to
+    # exactly seven settings). Read by phone/ivr.py and ivr_router.py.
+    # Where Inquiry/Complaint (and a caller who never chose) go in office
+    # hours: "ai" = the AI voice bridge (today's live path, the default);
+    # "agent" = ring agents (online softphones, else phone_handoff_target_number)
+    # with the SOP's queue-busy prompt. "agent" with no target -> "ai".
+    phone_ivr_non_rsa_route: str = "ai"
+    # E.164 RSA line, dialled 24/7 for menu option 1. Empty -> the AI bridge
+    # takes RSA calls (24/7), as today. A placeholder number refuses boot.
+    phone_ivr_rsa_number: str = ""
+    # SOP B28: queue-busy prompt after this many seconds of ringing (non-RSA).
+    phone_ivr_queue_busy_after_seconds: int = 10
+    # SOP B32: agent must attend within this many seconds (total ring time).
+    phone_ivr_agent_attend_seconds: int = 20
+    phone_ivr_gather_timeout_seconds: int = 5
+    phone_ivr_voicemail_max_seconds: int = 120
+    # Upper bound on opening the Chatwoot case before dialling a person
+    # (agent route / RSA line). On timeout the call is dialled without a
+    # conversation_id; keep well under Twilio's 15 s webhook timeout.
+    phone_ivr_case_open_timeout_seconds: float = 3.0
+    # SOP office hours. Mon-Fri weekday window; Sat, Sun and the listed public
+    # holidays (comma-separated YYYY-MM-DD, local dates) the weekend window.
+    # Malformed values fail OPEN (treated as in hours), logged.
+    phone_ivr_timezone: str = "Asia/Kuala_Lumpur"
+    phone_ivr_weekday_hours: str = "08:30-17:30"
+    phone_ivr_weekend_hours: str = "09:00-17:00"
+    # Malaysian national public holidays 2026 (same list as the Studio flow).
+    # Keep current every year.
+    phone_ivr_public_holidays: str = (
+        "2026-01-01,2026-02-17,2026-02-18,2026-03-21,2026-03-22,2026-05-01,"
+        "2026-05-27,2026-05-31,2026-06-01,2026-06-17,2026-08-25,2026-08-31,"
+        "2026-09-16,2026-11-08,2026-12-25"
+    )
+    # SOP B12: female voice. Twilio <Say voice=...> ids. Amazon Polly has no
+    # Malay voice, so both default to Google's female Standard voices (the
+    # same ids twiml.py and the Studio flow use).
+    phone_tts_voice_en: str = "Google.en-US-Standard-C"
+    phone_tts_voice_ms: str = "Google.ms-MY-Standard-A"
 
     # --- P13: authorisation/case audit-log retention ------------------------
     # Both of these were previously read by `authz/audit_purge.py` via
@@ -1383,6 +1637,23 @@ class Settings(BaseSettings):
     # decision. Must be >= 1 (see `_retention_windows_are_positive`).
     audit_log_retention_days: int = 2557
 
+    # --- Term dictionary -------------------------------------------------
+    # Which vocabulary this tenant's UI renders. Default "automotive" is
+    # DEFAULT-PRESERVING, not a product statement: unset means today's
+    # wording, byte-identical, which is what every tenant deployed before the
+    # dictionary existed needs. proton has no value set and must keep saying
+    # Dealer/Vehicle/RSA/WIP with nothing written and nothing deployed.
+    #
+    # The cost is that the product's default vocabulary is a vertical, so a
+    # tenant provisioned without TERM_PROFILE=generic would show a bank the
+    # word "Dealer". That is the safer failure: it is loud and immediate,
+    # caught the first time anyone opens the new tenant. The other direction
+    # is silent and lands on a live customer during an unrelated deploy.
+    # add-tenant.sh writes TERM_PROFILE=generic so neither happens.
+    #
+    # A superadmin's stored choice overrides this; see term_dictionary.py.
+    term_profile: Literal["generic", "automotive"] = "automotive"
+
     # Settings configurations
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -1391,35 +1662,29 @@ class Settings(BaseSettings):
     )
 
     @model_validator(mode="after")
-    def _refuse_unimplemented_data_scoping(self) -> Settings:
-        """`DATA_SCOPED_RBAC_ENABLED` restricts nothing, so refuse to boot with it on.
+    def _data_scoping_requires_rbac(self) -> Settings:
+        """`DATA_SCOPED_RBAC_ENABLED` without `RBAC_ENABLED` would restrict
+        nothing (no session -> no person -> no scope), so refuse to boot.
 
-        P10 built the scope model (`features/authz/data_scope.py`) and never wired
-        it: `apply_scope_to_filters` and `resolve_user_data_scope` have no callers,
-        the query adapter is untouched, and `_ROLE_DATA_SCOPES` is a module dict
-        with no persistence and no admin surface. Wiring it means first deciding
-        where a role's scope is stored and who edits it, which is a design decision
-        rather than a missing line.
-
-        A silent no-op is the dangerous shape here, and this is a data-access flag:
-        an operator switches it on, configures a dealer-scoped franchise role,
-        reasonably believes that user is now confined to their own dealer, and that
-        user's `/metrics/*` keeps returning every dealer's volumes and every agent's
-        CSAT. Nothing in the product would say otherwise. Refusing to boot converts
-        a false assurance about data confinement into an obvious failure at deploy
-        time, which is the trade this codebase already makes in
-        `_phone_flag_dependencies` below.
-
-        Delete this validator in the same commit that wires enforcement -- its
-        existence is the record that the flag is not yet real.
+        A data-access flag that silently does nothing is the dangerous shape:
+        an operator configures a dealer-scoped role, reasonably believes that
+        user is confined, and nothing in the product says otherwise.
         """
-        if self.data_scoped_rbac_enabled:
+        if self.data_scoped_rbac_enabled and not self.rbac_enabled:
             raise ValueError(
-                "DATA_SCOPED_RBAC_ENABLED is not implemented and must stay false. "
-                "The scope model exists but nothing enforces it, so enabling this "
-                "would restrict no data while appearing to. See "
-                "docs/analysis/2026-08-09-blocked-work-register.md (data-scoped "
-                "RBAC) for what wiring it requires."
+                "DATA_SCOPED_RBAC_ENABLED requires RBAC_ENABLED=true: data scopes "
+                "are resolved from the caller's Chatwoot session and RBAC roles."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _pii_masking_requires_rbac(self) -> Settings:
+        """Without RBAC there is no person, so nobody could hold `pii.view`
+        and everyone would be masked -- refuse rather than boot into that."""
+        if self.pii_masking_enabled and not self.rbac_enabled:
+            raise ValueError(
+                "PII_MASKING_ENABLED requires RBAC_ENABLED=true: who sees personal "
+                "data unmasked is decided by the pii.view permission."
             )
         return self
 
@@ -1464,6 +1729,11 @@ class Settings(BaseSettings):
                 "start they can fire before it exists and their write (recording "
                 "attachment, unanswered_handoff tag) is silently lost -- Twilio does "
                 "not retry a 200. Enable PHONE_TRANSCRIPT_LIVE_ENABLED first."
+            )
+        if self.phone_hold_transfer_enabled and not self.phone_agent_softphone_enabled:
+            raise ValueError(
+                "PHONE_HOLD_TRANSFER_ENABLED requires PHONE_AGENT_SOFTPHONE_ENABLED=true: "
+                "hold and transfer act on a call an agent answered in the softphone."
             )
         if self.phone_agent_softphone_enabled and not self.phone_handoff_enabled:
             raise ValueError(

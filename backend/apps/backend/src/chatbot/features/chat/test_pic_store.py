@@ -420,3 +420,15 @@ def test_pronet_record_reads_its_two_roles() -> None:
     assert rec.contact("area_regional_mgr") == "arm@proton.my"
     assert rec.contact("hod") == "hod@proton.my"
     assert rec.contact("owner") == ""  # a dealer role is not a PRO-NET role
+
+
+def test_firestore_client_is_built_once_per_store() -> None:
+    # FIX-57: a Client per call re-did credential discovery + gRPC setup on every
+    # /escalation/contacts hit (seconds under load).
+    from unittest.mock import patch
+
+    with patch("chatbot.features.chat.pic_store.firestore.Client", autospec=True) as client_cls:
+        store = _pic_store()
+        store._client()
+        store._client()
+    assert client_cls.call_count == 1

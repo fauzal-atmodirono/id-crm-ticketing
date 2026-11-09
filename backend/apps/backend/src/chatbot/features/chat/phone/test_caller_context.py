@@ -28,6 +28,7 @@ from chatbot.features.chat.phone.caller_context import (
     usable_caller_id,
     verify_caller,
 )
+from chatbot.features.contact_context.personal import PRIVACY_FLOOR
 from chatbot.platform.config import Settings
 
 PHONE = "+60000000101"
@@ -158,10 +159,15 @@ def test_caller_view_has_first_name_model_and_plate_ending_only() -> None:
     assert "DMO1101" not in text and PHONE not in text and "bin Ali" not in text
 
 
-def test_instruction_known_caller_confirms_in_one_sentence() -> None:
+def test_instruction_known_caller_is_greeted_personally() -> None:
+    """R47: greet by first name with the car, never re-ask what we have."""
     text = build_caller_instruction(_ctx([AHMAD]), lookup_tool=False)
     assert "Ahmad" in text and "Proton X50" in text
-    assert "ONE sentence" in text
+    assert "greet them by first name" in text and "Hi Ahmad" in text
+    assert "Never ask for what we already have" in text
+    assert "who they are" in text  # "who am I?" gets an answer
+    assert "Am I speaking" not in text
+    assert PRIVACY_FLOOR in text
     assert "1101" in text  # plate ending is available to confirm against
     assert "DMO1101" not in text and PHONE not in text
     assert "save_caller_details" in text
@@ -692,3 +698,51 @@ def test_more_honorifics_are_ignored() -> None:
     assert names_match("Ahmad bin Ali", "Prof Ahmad")
     assert names_match("Aminah Yusof", "Toh Puan Aminah")
     assert not names_match("Datuk Seri Yusof", "Dato' Seri Hafiz")
+
+
+@pytest.mark.parametrize(
+    "candidates",
+    [
+        [AHMAD],
+        [
+            {
+                **AHMAD,
+                "vehicles": [
+                    {"plate": "DMO1103", "model": "Proton X70"},
+                    {"plate": "DMO1104", "model": "Proton Persona"},
+                ],
+            }
+        ],
+        [{**AHMAD, "name": ""}],
+        [AHMAD, {**AHMAD, "contact_id": 12, "name": "Siti Binti Example"}],
+        [],
+    ],
+)
+def test_no_instruction_carries_a_full_phone_plate_or_surname(
+    candidates: list[dict[str, Any]],
+) -> None:
+    text = build_caller_instruction(_ctx(candidates), lookup_tool=False)
+    for secret in (PHONE, "60000000101", "DMO1101", "DMO1103", "DMO1104", "bin Ali", "Example"):
+        assert secret not in text
+    assert PRIVACY_FLOOR in text
+
+
+def test_instruction_without_first_name_asks_it_once() -> None:
+    text = build_caller_instruction(_ctx([{**AHMAD, "name": ""}]), lookup_tool=False)
+    assert "ask for their name once" in text and "Proton X50" in text
+
+
+def test_lookup_failure_is_marked_failed_and_a_miss_is_not() -> None:
+    class _Down:
+        async def search_contacts(self, phone: str) -> list[dict[str, Any]]:
+            raise RuntimeError("chatwoot down")
+
+    class _Empty:
+        async def search_contacts(self, phone: str) -> list[dict[str, Any]]:
+            return []
+
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
+    down = asyncio.run(CallerContextService(_Down(), s).lookup(PHONE, "caller_id"))
+    assert down.failed and down.candidates == []
+    miss = asyncio.run(CallerContextService(_Empty(), s).lookup(PHONE, "caller_id"))
+    assert not miss.failed and miss.candidates == []

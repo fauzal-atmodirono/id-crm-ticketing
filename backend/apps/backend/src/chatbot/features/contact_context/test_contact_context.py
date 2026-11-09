@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from chatbot.features.chat.phone.caller_context import CallerContext
+from chatbot.features.contact_context.personal import PRIVACY_FLOOR
 from chatbot.features.contact_context.router import (
     build_contact_context_router,
     chat_context_instruction,
@@ -66,18 +67,38 @@ def test_view_is_minimal_and_strips_the_demo_tag() -> None:
         assert secret not in text
 
 
-def test_instruction_confirms_never_recites() -> None:
+def test_instruction_is_personal_never_recites() -> None:
+    """R47: greet by first name, use what we have, keep the open-case fact."""
     text = chat_context_instruction(contact_view(_ahmad()))
     assert "Ahmad" in text and "Proton X50" in text and "1101" in text
     assert "Petaling Jaya" in text
-    assert "confirm" in text.lower()
-    assert "never" in text.lower()
+    assert "Hi Ahmad" in text and "Never ask for what we already have" in text
+    assert "1 open case(s)" in text
+    assert PRIVACY_FLOOR in text
     for secret in ("60000000101", "DMO1101", "Example"):
         assert secret not in text
 
 
-def test_no_match_gives_no_instruction() -> None:
-    assert chat_context_instruction({"match": "none", "customers": []}) == ""
+def test_no_match_is_served_as_a_new_customer() -> None:
+    text = chat_context_instruction({"match": "none", "customers": []})
+    assert "NEW customer" in text and "at most three" in text
+
+
+def test_a_failed_lookup_gives_no_instruction() -> None:
+    client, _ = _client(CallerContext(phone="+60000000101", source="caller_id", failed=True))
+    res = client.post(
+        "/agent/contact-context", json={"phone": "+60000000101"}, headers={"x-api-key": KEY}
+    )
+    assert res.status_code == 200
+    assert res.json()["instruction"] == ""
+
+
+def test_an_unknown_number_gets_the_new_customer_paragraph() -> None:
+    client, _ = _client(CallerContext(phone="+60000000105", source="caller_id"))
+    res = client.post(
+        "/agent/contact-context", json={"phone": "+60000000105"}, headers={"x-api-key": KEY}
+    )
+    assert "NEW customer" in res.json()["instruction"]
 
 
 def test_several_people_on_one_number_ask_rather_than_guess() -> None:

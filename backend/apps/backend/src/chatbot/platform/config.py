@@ -755,6 +755,15 @@ class Settings(BaseSettings):
     # CHAT_CALLER_CONTEXT_ENABLED. Off (default) = not mounted. Reuses the
     # phone lookup budget PHONE_CALLER_LOOKUP_TIMEOUT_SECONDS.
     chat_caller_context_enabled: bool = False
+    # /chat/turn + /voice/turn caller context (2026-11-09, brief 6 / R47).
+    # On (with CHATWOOT configured): a WhatsApp sender's number (from the
+    # Twilio-signed webhook, never from a session id) or a test-console
+    # persona number (only with PHONE_WEB_CALL_AS_ENABLED and only a number on
+    # PHONE_WEB_CALL_AS_NUMBERS) is looked up once per session, bounded by
+    # PHONE_CALLER_LOOKUP_TIMEOUT_SECONDS and fail-open, and the same personal
+    # / new-customer paragraph the phone and customer app use is added to the
+    # agent instruction. Off (default) = byte-identical instruction.
+    chat_turn_caller_context_enabled: bool = False
 
     # Frontend CORS — origins of the Vue dev/prod app (comma-separated in env).
     # Defaults cover Vite's first few fallback ports (5173-5180) so a stale dev

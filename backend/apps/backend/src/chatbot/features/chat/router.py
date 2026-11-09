@@ -46,6 +46,7 @@ from chatbot.features.chat.phone.caller_context import (
     CallerContext,
     build_caller_instruction,
     build_language_instruction,
+    is_recognised,
     mask,
     normalise_mobile,
     parse_number_list,
@@ -116,6 +117,10 @@ class ChatTurnRequest(BaseModel):
     image_mime_type: str | None = None
     video_base64: str | None = None
     video_mime_type: str | None = None
+    # Test-console persona number (brief 6). Only honoured by the service
+    # with CHAT_TURN_CALLER_CONTEXT_ENABLED + PHONE_WEB_CALL_AS_ENABLED and a
+    # number on PHONE_WEB_CALL_AS_NUMBERS; anything else is ignored.
+    persona_phone: str | None = None
 
 
 class CsatRequest(BaseModel):
@@ -418,6 +423,25 @@ _GREETING_PROMPT = (
     "short sentence as Proton's phone assistant and ask how you can help, following "
     "the LANGUAGE and CALL FLOW rules. Do not mention this note.)"
 )
+# R47 (brief 6): for a RECOGNISED caller the generic cue above won live --
+# the model greeted anonymously and never used the name. This one points at
+# the CALL FLOW rules instead. The name itself stays in the system
+# instruction; the cue carries none.
+_GREETING_PROMPT_RECOGNISED = (
+    "(The call has just connected and the caller is listening. Greet them now in one "
+    "short sentence as Proton's phone assistant, exactly as the CALL FLOW rules say for "
+    "a recognised caller: by their first name, mentioning their car model where "
+    "natural, then ask how you can help. Follow the LANGUAGE rules. Do not mention "
+    "this note.)"
+)
+
+
+def _greeting_prompt_for(caller_ctx: CallerContext | None, *, caller_on: bool) -> str:
+    """The fast-start greeting cue; the old one unless the caller is
+    recognised (flag off / unknown / shared number: byte-identical)."""
+    if caller_on and is_recognised(caller_ctx):
+        return _GREETING_PROMPT_RECOGNISED
+    return _GREETING_PROMPT
 
 
 def _ms(seconds: float) -> int:
@@ -942,7 +966,9 @@ class ChatRouter:
             await self.orchestrator.forward_whatsapp_to_agent(session_id, body)
             return Response(status_code=200)
 
-        result = await self.orchestrator.handle_turn(session_id=session_id, text=body)
+        result = await self.orchestrator.handle_turn(
+            session_id=session_id, text=body, **self._whatsapp_caller(e164)
+        )
 
         if await self.orchestrator.needs_whatsapp_handoff(session_id):
             summary = result.reply or "Customer requested a human agent."
@@ -961,6 +987,15 @@ class ChatRouter:
         )
         return Response(status_code=200)
 
+    def _whatsapp_caller(self, e164: str) -> dict[str, Any]:
+        """The sender's number for the turn's caller context (brief 6). Only
+        from this Twilio-signed webhook -- never derived from a session id,
+        which /chat/turn lets the browser choose. Flag off -> no kwarg, the
+        call is exactly as before."""
+        if not self.orchestrator._settings.chat_turn_caller_context_enabled or not e164:
+            return {}
+        return {"customer_phone": e164}
+
     async def _attribute_nps_agent(self, ticket_id: str) -> None:
         """Best-effort: stamp the agent assigned to `ticket_id` AT THIS
         MOMENT as the NPS attribution tag (P8 task 5). Called once, at the
@@ -975,7 +1010,11 @@ class ChatRouter:
         """Second invalid survey reply: stop trapping the customer, resume
         normal AI handling of this message."""
         await self.orchestrator.resume_ai(session_id)
-        result = await self.orchestrator.handle_turn(session_id=session_id, text=body)
+        result = await self.orchestrator.handle_turn(
+            session_id=session_id,
+            text=body,
+            **self._whatsapp_caller(from_addr.replace("whatsapp:", "")),
+        )
         await self._send_whatsapp_reply(from_addr, result)
         await self.orchestrator.capture_conversation(session_id, channel="WhatsApp")
 
@@ -1470,6 +1509,7 @@ class ChatRouter:
             image_mime_type=req.image_mime_type,
             video_base64=req.video_base64,
             video_mime_type=req.video_mime_type,
+            **({"persona_phone": req.persona_phone} if req.persona_phone else {}),
         )
         return ChatTurnResponse(
             reply=result.reply,
@@ -1551,8 +1591,12 @@ class ChatRouter:
         self,
         session_id: str = Form(...),
         audio: UploadFile = File(...),  # noqa: B008  (FastAPI file injection)
+        persona_phone: str | None = Form(default=None),
     ) -> Response:
-        """Run a single voice turn. Returns MP3 audio with X-Reply-Text + X-Handoff-* headers."""
+        """Run a single voice turn. Returns MP3 audio with X-Reply-Text + X-Handoff-* headers.
+
+        ``persona_phone``: the test console's persona (brief 6), allowlisted
+        by the service exactly as for /chat/turn."""
         audio_bytes = await audio.read()
         mime_type = audio.content_type or "audio/ogg"
         _log.info(
@@ -1566,6 +1610,7 @@ class ChatRouter:
             session_id=session_id,
             audio_bytes=audio_bytes,
             audio_mime_type=mime_type,
+            **({"persona_phone": persona_phone} if persona_phone else {}),
         )
 
         headers: dict[str, str] = {}
@@ -2036,7 +2081,11 @@ class ChatRouter:
                     announcement_sent_at=notice_sent_at,
                     timing=timing,
                     stream_started_at=stream_started_at,
-                    greeting_prompt=_GREETING_PROMPT if settings.phone_fast_start_enabled else None,
+                    greeting_prompt=(
+                        _greeting_prompt_for(caller_ctx, caller_on=caller_on)
+                        if settings.phone_fast_start_enabled
+                        else None
+                    ),
                 )
                 if notice_requested and notice_seconds is None:
                     # Asked to play the notice over the stream but had no

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import { openAgentStream, postChatTurn } from '@/features/chat/api/chat.api';
+import { ANONYMOUS_PERSONA_ID, chatPersonaNumber } from '@/features/phone/personas';
 import type {
   AgentMessageEvent,
   ChatMessage,
@@ -16,6 +17,9 @@ export const useChatStore = defineStore('chat', () => {
     },
   ]);
   const isSending = ref<boolean>(false);
+  // Test-console persona (brief 6): '' number = anonymous (the default).
+  const personaId = ref<string>(ANONYMOUS_PERSONA_ID);
+  const personaPhone = computed(() => chatPersonaNumber(personaId.value));
   const handoff = ref<HandoffPayload | null>(null);
   const surveyRequested = ref<boolean>(false);
 
@@ -80,13 +84,21 @@ export const useChatStore = defineStore('chat', () => {
     surveyRequested.value = false;
   }
 
+  /** A persona change starts a fresh session: the backend resolves who the
+   *  customer is once per session. */
+  function setPersona(id: string): void {
+    if (id === personaId.value) return;
+    personaId.value = id;
+    resetSession();
+  }
+
   async function send(text: string): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed) return;
     messages.value.push({ role: 'user', text: trimmed });
     isSending.value = true;
     try {
-      const result = await postChatTurn(sessionId.value, trimmed);
+      const result = await postChatTurn(sessionId.value, trimmed, personaPhone.value);
 
       // Handoff just happened: install the system marker, open the agent
       // stream if the backend brought a live bridge up.
@@ -151,5 +163,8 @@ export const useChatStore = defineStore('chat', () => {
     send,
     dismissSurvey,
     resetSession,
+    personaId,
+    personaPhone,
+    setPersona,
   };
 });

@@ -4,7 +4,7 @@ import asyncio
 import base64
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, Literal
@@ -33,6 +33,12 @@ from chatbot.features.chat.models import (
     TurnResult,
 )
 from chatbot.features.chat.nps import record_nps_on_ticket
+from chatbot.features.chat.phone.caller_context import (
+    CallerContext,
+    mask,
+    normalise_mobile,
+    parse_number_list,
+)
 from chatbot.features.chat.ports import (
     ChatPort,
     ConversationLogPort,
@@ -44,6 +50,7 @@ from chatbot.features.chat.ports import (
     TicketingPort,
 )
 from chatbot.features.chat.prompts import AGENT_INSTRUCTION, build_agent_instruction
+from chatbot.features.contact_context.router import instruction_for
 from chatbot.features.metrics.events import build_turn_event
 from chatbot.features.metrics.mapping import CATEGORY_TO_DIVISION
 from chatbot.platform.metered_genai import (
@@ -55,6 +62,12 @@ if TYPE_CHECKING:
     from chatbot.platform.config import Settings
 
 _log = structlog.get_logger(__name__)
+
+# Brief 6: the /chat/turn customer lookup (phone -> CallerContext).
+CallerLookup = Callable[[str], Awaitable[CallerContext]]
+# Over the lookup service's own deadline, so its partial result wins the race.
+_CALLER_LOOKUP_MARGIN = 0.25
+_CALLER_CONTEXT_CACHE_CAP = 4096
 
 WHATSAPP_ACTIVE = "active"
 WHATSAPP_PAUSED = "paused"
@@ -205,8 +218,16 @@ class OrchestratorService:
         assistants_store: Any | None = None,
         tenant_settings_store: Any | None = None,
         handoff_note_service: Any | None = None,
+        caller_context_lookup: CallerLookup | None = None,
     ) -> None:
         self._settings = settings
+        # Brief 6 (R47): who the /chat/turn or /voice/turn customer is.
+        # ``caller_context_lookup`` is CallerContextService.lookup bound to a
+        # source (main.py; None without the flag or Chatwoot). Resolved ONCE
+        # per session into ``_caller_paragraph_by_session`` ("" = nothing to
+        # add) and appended by the InstructionProvider.
+        self._caller_context_lookup = caller_context_lookup
+        self._caller_paragraph_by_session: dict[str, str] = {}
         # 2026-11-09 pre-filled handoff note (features/chat/handoff_note.py
         # HandoffNoteService). Passed only with handoff_note_enabled and a
         # Chatwoot adapter; None keeps every handoff note exactly as before.
@@ -326,14 +347,20 @@ class OrchestratorService:
             return AGENT_INSTRUCTION
         registered = self._instruction_by_session.get(session_id, AGENT_INSTRUCTION)
         try:
-            return self._compose_turn_instruction(session_id, registered, ctx)
+            composed = self._compose_turn_instruction(session_id, registered, ctx)
         except Exception as e:
             _log.warning(
                 "chat_turn_instruction_composition_failed",
                 session_id=session_id,
                 error=str(e),
             )
-            return registered
+            composed = registered
+        # Brief 6: the customer paragraph, when one was resolved for this
+        # session. None resolved (flag off, anonymous, failure) -> unchanged.
+        # getattr: the provider must never raise, even on a partly-built
+        # service (tests that bypass __init__).
+        paragraph = getattr(self, "_caller_paragraph_by_session", {}).get(session_id)
+        return f"{composed}\n\n{paragraph}" if paragraph else composed
 
     def _compose_turn_instruction(self, session_id: str, registered: str, ctx: Any) -> str:
         """Layer P7's per-request sections onto the persona-only instruction.
@@ -485,6 +512,66 @@ class OrchestratorService:
         except Exception:
             self._assistant_by_session.pop(session_id, None)
             self._instruction_by_session.pop(session_id, None)
+
+    def _turn_caller_phone(
+        self, customer_phone: str | None, persona_phone: str | None
+    ) -> str | None:
+        """The number whose record this session may see, or None.
+
+        ``customer_phone`` is trusted: only server-side channel code passes it
+        (the Twilio-signed WhatsApp webhook's sender). ``persona_phone`` comes
+        from the browser (test console), so it counts only on a demo tenant
+        (PHONE_WEB_CALL_AS_ENABLED) and only for a number on
+        PHONE_WEB_CALL_AS_NUMBERS -- never an arbitrary number.
+        """
+        if customer_phone:
+            return normalise_mobile(customer_phone)
+        if not persona_phone or not self._settings.phone_web_call_as_enabled:
+            return None
+        number = normalise_mobile(persona_phone)
+        allowed = parse_number_list(self._settings.phone_web_call_as_numbers)
+        return number if number and number in allowed else None
+
+    async def _register_caller_context(
+        self,
+        session_id: str,
+        *,
+        customer_phone: str | None = None,
+        persona_phone: str | None = None,
+    ) -> None:
+        """Resolve the session's customer paragraph once. Never raises.
+
+        Bounded (PHONE_CALLER_LOOKUP_TIMEOUT_SECONDS, plus a small margin over
+        the service's own deadline) and fail-open: a timeout, an error or a
+        failed lookup adds nothing -- "we do not know" is not "a new customer".
+        The result (even "") is cached for the session, so a slow CRM costs
+        at most one bounded wait per conversation.
+        """
+        if (
+            not self._settings.chat_turn_caller_context_enabled
+            or self._caller_context_lookup is None
+            or session_id in self._caller_paragraph_by_session
+        ):
+            return
+        phone = self._turn_caller_phone(customer_phone, persona_phone)
+        paragraph = ""
+        if phone is not None:
+            timeout = self._settings.phone_caller_lookup_timeout_seconds + _CALLER_LOOKUP_MARGIN
+            try:
+                ctx = await asyncio.wait_for(self._caller_context_lookup(phone), timeout=timeout)
+                paragraph = instruction_for(ctx)
+            except Exception as e:  # includes TimeoutError
+                _log.warning(
+                    "chat_turn_caller_context_failed",
+                    session_id=session_id,
+                    phone=mask(phone),
+                    error_type=type(e).__name__,
+                )
+        if len(self._caller_paragraph_by_session) >= _CALLER_CONTEXT_CACHE_CAP:
+            # Oldest first (dicts keep insertion order): a long-running
+            # process must not grow this map by one entry per session forever.
+            self._caller_paragraph_by_session.pop(next(iter(self._caller_paragraph_by_session)))
+        self._caller_paragraph_by_session[session_id] = paragraph
 
     def _sync_history_from_state(self, session_id: str, session: Session) -> list[dict[str, Any]]:
         state_history = session.state.setdefault("chat_history", [])
@@ -689,8 +776,15 @@ class OrchestratorService:
         image_mime_type: str | None = None,
         video_base64: str | None = None,
         video_mime_type: str | None = None,
+        customer_phone: str | None = None,
+        persona_phone: str | None = None,
     ) -> TurnResult:
-        """Process a single text-based chatbot turn."""
+        """Process a single text-based chatbot turn.
+
+        ``customer_phone``: the sender's number, passed ONLY by server-side
+        channel code that has proven it (WhatsApp webhook). ``persona_phone``:
+        a test-console persona number, honoured only when allowlisted. Both
+        only matter with CHAT_TURN_CALLER_CONTEXT_ENABLED (brief 6)."""
         _log.info("processing_chatbot_turn", session_id=session_id, text_length=len(text))
         t0 = perf_counter()
 
@@ -773,6 +867,9 @@ class OrchestratorService:
         # Register the operator persona for this session (fail-open: no-op when
         # inbox_id is None or stores are not wired).
         await self._register_chat_persona(session_id, inbox_id)
+        await self._register_caller_context(
+            session_id, customer_phone=customer_phone, persona_phone=persona_phone
+        )
 
         # 5. Run the ADK Agent
         reply_text: str | None = ""
@@ -1356,6 +1453,7 @@ class OrchestratorService:
         audio_bytes: bytes,
         audio_mime_type: str = "audio/ogg",
         language_code: str = "en-US",
+        persona_phone: str | None = None,
     ) -> tuple[bytes, TurnResult]:
         """Process a single audio-based voicebot turn end-to-end through Gemini.
 
@@ -1392,6 +1490,8 @@ class OrchestratorService:
         )
 
         new_message = self._voice_message(transcription, audio_bytes, audio_mime_type)
+        # Same ADK agent and InstructionProvider as chat (brief 6).
+        await self._register_caller_context(session_id, persona_phone=persona_phone)
 
         reply_text: str | None = ""
         final_event_seen = False

@@ -10,7 +10,7 @@ Chatwoot conversation LABELS that ``ChatwootAdapter`` writes at escalation time.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import fields
+from dataclasses import fields, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -18,7 +18,11 @@ import httpx
 import structlog
 from google.cloud import bigquery
 
-from chatbot.features.metrics.bigquery_schema import CONVERSATIONS_SCHEMA, view_ddls
+from chatbot.features.metrics.bigquery_schema import (
+    CONVERSATIONS_SCHEMA,
+    ai_cost_view_ddls,
+    view_ddls,
+)
 from chatbot.features.metrics.mapping import (
     ConversationRow,
     apply_working_hours,
@@ -136,6 +140,85 @@ def fetch_conversations(
     return conversations
 
 
+def _default_get_json(settings: Settings, timeout: float) -> Callable[[str], Any]:
+    token = settings.chatwoot_api_token
+    headers = {"Api-Access-Token": token, "api_access_token": token}
+
+    def get_json(url: str) -> Any:
+        with httpx.Client(timeout=timeout) as client:
+            res = client.get(url, headers=headers)
+            res.raise_for_status()
+            return res.json()
+
+    return get_json
+
+
+def fetch_metrics_conversations(
+    settings: Settings, *, get_page: Callable[[str], dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Page EVERY conversation in the account, for the BigQuery sync.
+
+    Deliberately not ``fetch_conversations``: that one is the SLA engine's
+    scan and honours ``sla_inbox_ids``, which a tenant narrows to the inboxes
+    whose timers it wants (proton: ``3,5``). The warehouse reports on the
+    whole account -- reusing the SLA scope silently dropped proton's API inbox,
+    57 of its 116 conversations, from every report.
+    """
+    base = (
+        f"{settings.chatwoot_api_url.rstrip('/')}"
+        f"/api/v1/accounts/{settings.chatwoot_account_id}/conversations"
+    )
+    return _fetch_conversations_for_inbox(base, None, get_page or _default_get_json(settings, 30.0))
+
+
+_CSAT_MIN, _CSAT_MAX = 1, 5
+# Hard stop on paging, so a misbehaving endpoint that never returns an empty
+# page cannot spin the sync forever (25/page -> 25k responses).
+_CSAT_MAX_PAGES = 1000
+
+
+def fetch_csat_ratings(
+    settings: Settings, *, get_page: Callable[[str], Any] | None = None
+) -> dict[int, int]:
+    """Chatwoot-native CSAT ratings, as ``{conversation_id: rating}``.
+
+    The backend's own survey writes a ``csat_<n>`` label, but a Chatwoot
+    inbox (proton's Twilio-WhatsApp inbox) collects CSAT through Chatwoot's
+    built-in survey, which lands only in ``csat_survey_responses``. Only the
+    id and the 1-5 rating are kept: the response also carries the contact and
+    free-text feedback, which have no business in the warehouse. Pages until
+    an empty page. Fails open to ``{}`` -- a CSAT outage must not stop the
+    conversations load.
+    """
+    get = get_page or _default_get_json(settings, 30.0)
+    base = (
+        f"{settings.chatwoot_api_url.rstrip('/')}"
+        f"/api/v1/accounts/{settings.chatwoot_account_id}/csat_survey_responses"
+    )
+    ratings: dict[int, int] = {}
+    page_num = 1
+    try:
+        while page_num <= _CSAT_MAX_PAGES:
+            batch = get(f"{base}?page={page_num}")
+            if not isinstance(batch, list) or not batch:
+                break
+            for item in batch:
+                if not isinstance(item, dict):
+                    continue
+                cid, rating = item.get("conversation_id"), item.get("rating")
+                if (
+                    isinstance(cid, int)
+                    and isinstance(rating, int)
+                    and _CSAT_MIN <= rating <= _CSAT_MAX
+                ):
+                    ratings[cid] = rating
+            page_num += 1
+    except Exception as e:
+        _log.warning("fetch_csat_ratings_failed", error=str(e))
+        return {}
+    return ratings
+
+
 def fetch_inbox_hours(
     settings: Settings, inbox_id: int, *, get_page: Callable[[str], dict[str, Any]] | None = None
 ) -> dict[str, Any] | None:
@@ -247,6 +330,24 @@ def ensure_views(settings: Settings) -> None:
     ).values():
         client.query(ddl).result()
 
+    # The three AI-cost views behind `/metrics/ai-cost`. `ai_cost_view_ddls`
+    # existed but nothing called it, so on proton `v_ai_token_usage` was never
+    # created and the endpoint 404'd while `token_usage` held rows. Created
+    # only when the tenant reports AI cost, and after the conversation views:
+    # `token_usage` is created lazily by the first metered call, so on a
+    # tenant with no metered traffic yet the view cannot be built -- that is
+    # logged and retried next sync, never allowed to fail the sync job.
+    if getattr(settings, "ai_cost_reporting_enabled", False):
+        try:
+            for ddl in ai_cost_view_ddls(
+                settings.bigquery_project_id,
+                settings.bigquery_dataset,
+                reporting_timezone=settings.reporting_timezone,
+            ).values():
+                client.query(ddl).result()
+        except Exception as e:
+            _log.warning("ai_cost_views_failed", error=str(e))
+
 
 def run_sync(
     settings: Settings,
@@ -254,6 +355,7 @@ def run_sync(
     fetch: Callable[[Settings], list[dict[str, Any]]] | None = None,
     fetch_inbox: Callable[[Settings, int], dict[str, Any] | None] | None = None,
     load: Callable[[Settings, list[ConversationRow]], None] | None = None,
+    fetch_csat: Callable[[Settings], dict[int, int]] | None = None,
 ) -> dict[str, int]:
     """Fetch conversations, map to rows, augment with business-hours timing,
     load. Returns counts. Injectable for tests.
@@ -270,18 +372,27 @@ def run_sync(
     (defensive: a caller-supplied ``fetch_inbox`` isn't guaranteed to honor
     that contract) — degrades only that inbox's rows to calendar-time via
     ``apply_working_hours(row, None)``; it never aborts the whole sync.
+
+    The fetch is account-wide (``fetch_metrics_conversations``), not the SLA
+    scan's inbox scope. The inbox payload also feeds the channel (Twilio's
+    ``medium``), and Chatwoot-native CSAT ratings fill ``csat_score`` where no
+    ``csat_<n>`` label exists -- the label wins when both do, since it is the
+    backend's own survey answer.
     """
-    conversations = (fetch or fetch_conversations)(settings)
+    conversations = (fetch or fetch_metrics_conversations)(settings)
     if settings.metrics_exclude_demo_seed:
         conversations = [c for c in conversations if not _is_demo_seed(c)]
     fetch_inbox_fn = fetch_inbox or fetch_inbox_hours
     inbox_cache: dict[int, dict[str, Any] | None] = {}
 
+    try:
+        csat_ratings = (fetch_csat or fetch_csat_ratings)(settings) or {}
+    except Exception as e:
+        _log.warning("fetch_csat_failed_in_sync", error=str(e))
+        csat_ratings = {}
+
     rows: list[ConversationRow] = []
     for conv in conversations:
-        row = map_chatwoot_conversation_to_row(conv)
-        if row is None:
-            continue
         inbox_id = conv.get("inbox_id")
         inbox: dict[str, Any] | None = None
         if isinstance(inbox_id, int):
@@ -292,6 +403,12 @@ def run_sync(
                     _log.warning("fetch_inbox_failed_in_sync", inbox_id=inbox_id, error=str(e))
                     inbox_cache[inbox_id] = None
             inbox = inbox_cache[inbox_id]
+        row = map_chatwoot_conversation_to_row(conv, inbox)
+        if row is None:
+            continue
+        native = csat_ratings.get(conv["id"]) if isinstance(conv.get("id"), int) else None
+        if row.csat_score is None and native is not None:
+            row = replace(row, csat_score=native)
         rows.append(apply_working_hours(row, inbox))
 
     (load or load_conversations)(settings, rows)

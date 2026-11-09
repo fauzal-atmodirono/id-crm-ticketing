@@ -227,3 +227,17 @@ async def test_the_assignee_and_sla_status_are_sent_for_the_audit_trail(monkeypa
     assert body["actor_user_id"] == 7
     assert body["sla_status"] == "SLA_BREACH_NO_RESPONSE"
     get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_a_non_string_sla_status_is_sent_as_a_string(monkeypatch):
+    """Final review M9: a custom attribute is operator-editable and may hold
+    a number; the backend field is a string."""
+    _enable(monkeypatch, all_channels=True)
+    notify = _stub(channel_type="Channel::Whatsapp", conv_attrs={"sla_status": 3})
+
+    await sync.maybe_escalate(_payload())
+
+    body = json.loads(notify.calls.last.request.read())
+    assert body["sla_status"] == "3"
+    get_proton_config_client.cache_clear()

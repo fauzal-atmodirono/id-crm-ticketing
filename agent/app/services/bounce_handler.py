@@ -146,9 +146,11 @@ def _payload_list(raw) -> list:
 
 
 async def _conversation_sent(chatwoot, conversation_id: int, wanted: set[str]) -> bool:
-    """True when one of this conversation's outgoing messages has a source_id
-    in `wanted`. Looks at the latest page of messages only -- the escalation
-    mail is recent by construction."""
+    """True when any message on this conversation (any direction -- the
+    message type is deliberately not checked) has a source_id in `wanted`.
+    The ids come from the DSN's own quoted headers, so a match is the mail
+    that bounced. Looks at the latest page of messages only -- the
+    escalation mail is recent by construction."""
     for message in _payload_list(await chatwoot.get_messages(conversation_id)):
         sid = str(message.get("source_id") or "").strip().strip("<>")
         if sid and sid in wanted:
@@ -164,8 +166,8 @@ async def find_case_by_message_id(
     Chatwoot has no query-by-source_id endpoint, so candidates are gathered:
     first conversations of contacts matching a failed recipient address (the
     usual case: an agent reply to the customer), then the most recent
-    conversations of the DSN's own inbox. Each is checked for an outgoing
-    message whose source_id is a quoted id. Fail-open: errors skip a candidate.
+    conversations of the DSN's own inbox. Each is checked for a message
+    (any direction) whose source_id is a quoted id. Fail-open: errors skip a candidate.
     """
     wanted = {m.strip("<>") for m in message_ids}
     if not wanted:

@@ -337,7 +337,9 @@ async def _maybe_notify_escalation(conversation_id: int, labels: list[str]) -> N
         # Chatwoot label-activity author when it can find one.
         actor_name=_assignee_name(conversation),
         actor_user_id=_assignee_id(conversation),
-        sla_status=(existing.get("sla_status") or None),
+        # str(): the attribute is operator-editable and may hold a number;
+        # the backend field is a string. Empty/absent -> None (not sent).
+        sla_status=(str(existing["sla_status"]) if existing.get("sla_status") else None),
     )
     if not sent:
         # Deliberately notify-then-stamp, and only on a confirmed send.

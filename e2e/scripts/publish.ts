@@ -4,6 +4,7 @@
 //   npm run publish                       # dry run: prints what it would write
 //   npm run publish -- --write            # writes via `gws ... values batchUpdate`
 //   npm run publish -- --label rc21 --report results/results.json
+//   npm run publish -- --triage results/triage-run1.json   # failures → Retest/Fail/Blocked
 //
 // Dry run is the default on purpose: look at the table first. Rows are found
 // by ID in each tab's live column A, never by position, and extra tests
@@ -13,7 +14,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildWrites, mapResults, runAtLabel, type SheetWrite } from '../lib/results.ts';
+import { applyTriage, buildWrites, mapResults, runAtLabel, type SheetWrite, type TriageEntry } from '../lib/results.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SNAPSHOT = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'tracker.json'), 'utf8')) as { spreadsheetId: string };
@@ -29,10 +30,12 @@ function gws(args: string[]): any {
   return start >= 0 ? JSON.parse(out.slice(start)) : {};
 }
 
-function columnA(spreadsheetId: string, tab: string): string[] {
-  const params = JSON.stringify({ spreadsheetId, range: `'${tab.replace(/'/g, "''")}'!A1:A400` });
+// Columns A (ID) and K (existing Auto result) of a tab, by sheet row (index 0 = row 1).
+function columnsAK(spreadsheetId: string, tab: string): { a: string[]; k: string[] } {
+  const params = JSON.stringify({ spreadsheetId, range: `'${tab.replace(/'/g, "''")}'!A1:K400` });
   const r = gws(['sheets', 'spreadsheets', 'values', 'get', '--params', params]);
-  return (r.values ?? []).map((row: string[]) => row[0] ?? '');
+  const rows: string[][] = r.values ?? [];
+  return { a: rows.map(row => row[0] ?? ''), k: rows.map(row => row[10] ?? '') };
 }
 
 function main(): number {
@@ -45,17 +48,32 @@ function main(): number {
     return 1;
   }
   const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
-  const mapped = mapResults(report);
+  const triagePath = arg('--triage', '');
+  const triage: TriageEntry[] = triagePath ? JSON.parse(fs.readFileSync(path.resolve(ROOT, triagePath), 'utf8')) : [];
+  const mapped = applyTriage(mapResults(report), triage);
   const runAt = runAtLabel(report.stats?.startTime ?? new Date().toISOString(), label);
 
   const tabs = [...new Set(mapped.filter(m => !m.extra).map(m => m.tab))];
   const writes: SheetWrite[] = [];
   const unmatched: string[] = [];
+  // A "Needs manual" or "Retest" from this run says nothing new about a row that already
+  // holds a result (e.g. the 9 Nov API-level re-test): keep that one.
+  const kept: string[] = [];
   for (const tab of tabs) {
-    const r = buildWrites(tab, columnA(spreadsheetId, tab), mapped, runAt);
-    writes.push(...r.writes);
+    const cols = columnsAK(spreadsheetId, tab);
+    const r = buildWrites(tab, cols.a, mapped, runAt);
+    for (const w of r.writes) {
+      const row = Number(/K(\d+):/.exec(w.range)?.[1] ?? 0);
+      const existing = (cols.k[row - 1] ?? '').trim();
+      if ((w.values[0][0] === 'Needs manual' || w.values[0][0] === 'Retest') && existing && existing !== 'Needs manual') {
+        kept.push(`${w.range} (${existing})`);
+        continue;
+      }
+      writes.push(w);
+    }
     unmatched.push(...r.unmatched.map(id => `${tab}:${id}`));
   }
+  if (kept.length) console.log(`Kept ${kept.length} existing result(s) where this run only says Needs manual or Retest.`);
 
   const counts: Record<string, number> = {};
   for (const m of mapped.filter(x => !x.extra)) counts[m.result] = (counts[m.result] ?? 0) + 1;

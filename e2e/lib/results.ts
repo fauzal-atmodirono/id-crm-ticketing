@@ -10,7 +10,31 @@
 // Extra tests for new features (IDs like VOICE-X01) are kept apart: they have
 // no sheet row.
 
-export type AutoResult = 'Pass' | 'Fail' | 'Needs manual' | 'Blocked';
+// 'Retest' only comes from a triage file (publish --triage): the row failed
+// because of the test script, the script is fixed, and a rerun is owed.
+export type AutoResult = 'Pass' | 'Fail' | 'Needs manual' | 'Blocked' | 'Retest';
+
+export interface TriageEntry {
+  id: string;
+  class: 'A' | 'B' | 'C' | 'D';
+  summary: string;
+}
+
+/** Apply a failure triage to mapped results: A (test bug, fixed) and D
+ * (unsure) become Retest, B (product finding) stays Fail with the finding as
+ * evidence, C becomes Blocked. Only rows that FAILED in this run change. */
+export function applyTriage(mapped: Mapped[], triage: TriageEntry[]): Mapped[] {
+  const byId = new Map(triage.map(t => [t.id, t]));
+  return mapped.map(m => {
+    const t = byId.get(m.id);
+    if (!t || m.result !== 'Fail') return m;
+    const s = oneLine(t.summary);
+    if (t.class === 'B') return { ...m, result: 'Fail', evidence: s };
+    if (t.class === 'C') return { ...m, result: 'Blocked', evidence: s };
+    const why = t.class === 'A' ? 'Test script fixed after this run; rerun owed' : 'Unclear; rerun owed';
+    return { ...m, result: 'Retest', evidence: oneLine(`${why}: ${t.summary}`) };
+  });
+}
 
 export interface Mapped {
   id: string;

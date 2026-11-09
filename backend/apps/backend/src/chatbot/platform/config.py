@@ -684,6 +684,27 @@ class Settings(BaseSettings):
     # assistant sees.
     phone_web_call_as_enabled: bool = False
 
+    # --- Mock "Proton e.MAS customer app" (demo, 2026-11-09) ---------------
+    # See features/customer_app/. On: /customer-app/messages lets the test
+    # console's Customer page chat AS a demo persona (text, photo/video,
+    # voice note), posting incoming messages into the Chatwoot API inbox the
+    # agent bot serves, on the persona's [DEMO] contact. Only persona IDs
+    # from the server-side personas.json allow-list are accepted; a contact
+    # without "[DEMO]" in its name is never written to. Off (default) = the
+    # routes are not mounted. Demo/test tenants only.
+    demo_customer_app_enabled: bool = False
+    # The Chatwoot API inbox to post into. 0 = CHATWOOT_INBOX_ID.
+    demo_customer_app_inbox_id: int = 0
+
+    # Chat-side caller context (2026-11-09). See features/contact_context/.
+    # On: GET /agent/contact-context?phone= (x-api-key = PROTON_BACKEND_KEY)
+    # returns the minimal "who is this" view the phone path uses (first name,
+    # car model(s), plate last 4, usual dealer, open cases -- never the phone,
+    # surname or full plate) plus a prompt paragraph, for the agent service's
+    # CHAT_CALLER_CONTEXT_ENABLED. Off (default) = not mounted. Reuses the
+    # phone lookup budget PHONE_CALLER_LOOKUP_TIMEOUT_SECONDS.
+    chat_caller_context_enabled: bool = False
+
     # Frontend CORS — origins of the Vue dev/prod app (comma-separated in env).
     # Defaults cover Vite's first few fallback ports (5173-5180) so a stale dev
     # server on 5173 doesn't break a fresh one bound to 5174+.

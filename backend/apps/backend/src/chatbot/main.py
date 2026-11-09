@@ -1703,6 +1703,35 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         def _stop_recording_retention_scheduler() -> None:
             recording_retention_scheduler.shutdown(wait=False)
 
+    # 2026-11-09 mock "Proton e.MAS customer app" (demo). Mounted only with
+    # the flag on, so a tenant without it has no /customer-app routes at all.
+    if settings.demo_customer_app_enabled:
+        from chatbot.features.customer_app.channel import CustomerAppChannel  # noqa: PLC0415
+        from chatbot.features.customer_app.router import (  # noqa: PLC0415
+            build_customer_app_router,
+        )
+
+        app.include_router(build_customer_app_router(settings, CustomerAppChannel(settings)))
+
+    # 2026-11-09 chat-side caller context for the agent bot. Read-only reuse of
+    # the phone path's bounded lookup; mounted only with the flag on and a
+    # Chatwoot adapter to read from.
+    if settings.chat_caller_context_enabled and chatwoot_client is not None:
+        from chatbot.features.chat.phone.caller_context import (  # noqa: PLC0415
+            SOURCE_CALLER_ID,
+            CallerContextService,
+        )
+        from chatbot.features.contact_context.router import (  # noqa: PLC0415
+            build_contact_context_router,
+        )
+
+        _chat_ctx_service = CallerContextService(chatwoot_client, settings)
+
+        async def _chat_ctx_lookup(phone: str) -> object:
+            return await _chat_ctx_service.lookup(phone, SOURCE_CALLER_ID)
+
+        app.include_router(build_contact_context_router(settings, _chat_ctx_lookup))
+
     @app.get("/")
     def health_check() -> dict[str, str]:
         return {

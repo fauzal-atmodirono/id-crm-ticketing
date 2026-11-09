@@ -268,7 +268,7 @@ def test_a_placeholder_contact_never_confirms(said: str, record: str) -> None:
     ("said", "record", "want"),
     [
         ("Encik Ahmad", "Ahmad bin Ali", True),
-        ("Dato' Seri Ahmad", "Ahmad", False),  # "seri" is the 2nd counted word
+        ("Dato' Seri Ahmad", "Ahmad", True),  # "seri" is an honorific now
         ("Dr Lim", "Lim Wei", True),
         ("Tan Sri Ahmad", "Ahmad", True),
         ("Puan Sri Aminah", "Siti Aminah", True),
@@ -676,3 +676,19 @@ async def test_save_never_raises() -> None:
         details=CallerDetails(name="A"),
         dealer_slug=None,
     )
+
+
+def test_more_placeholders_never_confirm() -> None:
+    from chatbot.features.chat.phone.caller_context import names_match
+
+    for name in ("[DEMO] New caller", "New customer", "Anonymous", "Guest"):
+        assert not names_match(name, name.replace("[DEMO] ", "")), name
+
+
+def test_more_honorifics_are_ignored() -> None:
+    from chatbot.features.chat.phone.caller_context import names_match
+
+    assert names_match("Ahmad bin Ali", "Dato' Seri Ahmad")
+    assert names_match("Ahmad bin Ali", "Prof Ahmad")
+    assert names_match("Aminah Yusof", "Toh Puan Aminah")
+    assert not names_match("Datuk Seri Yusof", "Dato' Seri Hafiz")

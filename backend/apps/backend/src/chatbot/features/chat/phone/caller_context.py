@@ -82,7 +82,9 @@ _MY_NATIONAL_DIGITS = (9, 11)  # 0 + 8..10
 _MAX_CANDIDATES = 3
 _MAX_VEHICLES = 5
 _OPEN_STATUSES = frozenset({"open", "pending", "snoozed"})
-_PLACEHOLDER_NAMES = frozenset({"", "customer", "caller", "unknown", "phone caller"})
+_PLACEHOLDER_NAMES = frozenset(
+    {"", "customer", "caller", "unknown", "phone caller", "new caller", "new customer", "anonymous", "guest"}
+)
 _DEALER_LABEL = re.compile(r"^dealer_(.+)$")
 
 # Dealer list is consulted on every call; it changes when an operator edits
@@ -324,6 +326,16 @@ _COMMON_NAME_PARTS = frozenset(
 # joined first so "Tan" the surname is untouched.
 _HONORIFICS = frozenset(
     {
+        "seri",
+        "sri",
+        "tun",
+        "tohpuan",
+        "prof",
+        "ustaz",
+        "ustazah",
+        "mdm",
+        "miss",
+        "sir",
         "encik",
         "en",
         "puan",
@@ -352,6 +364,7 @@ def _name_tokens(text: str | None) -> list[str]:
     raw = _DEMO_TAG.sub("", text or "").casefold()
     raw = re.sub(r"\ba\s*/\s*([lp])\b", r"a\1", raw)  # a/l, a/p -> al, ap
     raw = re.sub(r"\b(tan|puan)\s+sri\b", r"\1sri", raw)
+    raw = re.sub(r"\btoh\s+puan\b", "tohpuan", raw)
     return [t for t in _NAME_TOKEN.findall(raw) if t not in _HONORIFICS]
 
 

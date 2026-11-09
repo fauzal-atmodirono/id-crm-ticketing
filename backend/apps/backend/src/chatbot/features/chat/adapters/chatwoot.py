@@ -1247,6 +1247,20 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             },
         )
 
+    async def set_call_recording_archive(
+        self, ticket_id: str, *, audio_object: str, transcript_object: str = ""
+    ) -> None:
+        """Record where `recording_archive.py` put this call's audio (and
+        transcript) in the tenant's bucket: object names only, never the
+        bucket and never a URL -- the bucket comes from settings, so a stored
+        value cannot point the player anywhere else. Attributes, not a note,
+        for the same reason as `set_call_recording`. Read by
+        `phone/recording_router.py` to serve the in-CRM player. Merge-safe."""
+        attrs = {"call_recording_object": audio_object}
+        if transcript_object:
+            attrs["call_recording_transcript_object"] = transcript_object
+        await self._merge_custom_attributes(ticket_id, attrs)
+
     async def get_inbox_working_hours(self, inbox_id: int) -> dict[str, Any] | None:
         """GET one inbox's business-hours config for the Task 6 handoff
         gate. Same ``_request`` fail-open shape as ``list_inboxes`` just

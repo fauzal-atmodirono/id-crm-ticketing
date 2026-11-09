@@ -235,6 +235,9 @@ def _wire_assist(
                 "x-chatwoot-access-token",
                 "x-chatwoot-client",
                 "x-chatwoot-uid",
+                # The call-recording panel's transcript fetch carries its
+                # short-lived token here rather than in a URL (patch 0094).
+                "x-recording-token",
             ],
         )
 
@@ -1515,12 +1518,48 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # flag off gets 404. `test_p11_wiring.py` drives the real app for exactly
     # that, the way `test_p10_wiring.py`/`test_p6_wiring.py` do.
     #
-    # What this does NOT yet do: the handler reads an in-process registry that
-    # nothing in production writes to (see `recording_router.py`'s docstring), so
-    # against a real conversation it answers the "no recording exists" state. The
-    # mount makes the endpoint and its permission gate real; the Chatwoot
-    # custom-attribute read that would populate it is still owed.
-    app.include_router(build_recording_router(settings))
+    # The call-recording player (fork patch 0094): the handler reads the
+    # conversation (merge-safe attribute `call_recording_object`, else the
+    # archive note) with the backend's own Chatwoot token, applies the caller's
+    # data scope to it, proves the object is bound to that conversation (GCS
+    # metadata, recording_access.resolve_recording), and streams it behind a
+    # short-lived HMAC link; mint/retranscribe need a real person
+    # (require_permission_with_identity); plays are fail-closed audit rows. The /audio and /transcript routes are NOT
+    # permission-gated -- the signed link is their credential, because an
+    # <audio> element cannot send session headers (see recording_access.py).
+    # Zendesk tenants (no chatwoot_client) get the "empty" state.
+    from chatbot.features.chat.phone.recording_glossary import configure_dealer_source
+    from chatbot.features.chat.phone.recording_access import ApiTokenIdentity
+
+    # The post-call transcriber's glossary picks dealer names from the same
+    # store the escalation-routing admin edits (cached, fail-open).
+    configure_dealer_source(dealer_store)
+
+    def _recording_messages(conv_id: str, before: object = None) -> object:
+        suffix = f"?before={before}" if before is not None else ""
+        return chatwoot_client._request("GET", f"/conversations/{conv_id}/messages{suffix}", None)
+
+    async def _recording_note(conv_id: str, text: str) -> None:
+        await chatwoot_client.append_conversation_comment(conv_id, text)
+
+    app.include_router(
+        build_recording_router(
+            settings,
+            authz_repo=authz_repo,
+            validator=authz_validator,
+            audit=audit_log,
+            chatwoot_read=(
+                (lambda conv_id: chatwoot_client._request("GET", f"/conversations/{conv_id}", None))
+                if chatwoot_client is not None
+                else None
+            ),
+            chatwoot_messages=_recording_messages if chatwoot_client is not None else None,
+            post_note=_recording_note if chatwoot_client is not None else None,
+            # Who the backend's own api_access_token is: only notes it authored
+            # can vouch for a legacy (metadata-less) archived object.
+            backend_sender=ApiTokenIdentity(settings) if chatwoot_client is not None else None,
+        )
+    )
 
     # --- Proton AI-assist (rewired Captain AI) ---
     _assist_router = _wire_assist(

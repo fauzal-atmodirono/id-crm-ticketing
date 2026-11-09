@@ -15,9 +15,10 @@ the flag on can produce a deletion by itself:
 * The tick needs a **candidate source** (something that lists recordings with
   their age) and a **deleter** (something that removes the audio at the
   provider). Neither exists yet: there is no Twilio recording-delete adapter,
-  and `recording_router.py`'s registry is an in-process dict nothing in
-  production writes. Both are injected parameters, so wiring them later is a
-  main.py change, not a rewrite.
+  and the player (`recording_router.py`) reads the GCS archive rather than a
+  listable registry -- it reports "deleted" only when the archived object is
+  actually gone (e.g. a bucket lifecycle rule). Both are injected parameters,
+  so wiring them later is a main.py change, not a rewrite.
 * With no deleter the pass is a **dry run**: it reports how many recordings are
   past the window and touches nothing. It deliberately does not mark them
   deleted. Marking a recording `is_deleted` while the audio still exists at the

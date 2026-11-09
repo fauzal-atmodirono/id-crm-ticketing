@@ -52,15 +52,24 @@ def object_path(prefix: str, call_sid: str, when: datetime, suffix: str) -> str:
     return f"{prefix.strip('/')}/{day}/{call_sid}.{suffix}"
 
 
-def _upload_sync(settings: Settings, path: str, data: bytes, content_type: str) -> str | None:
+def _upload_sync(
+    settings: Settings,
+    path: str,
+    data: bytes,
+    content_type: str,
+    metadata: dict[str, str] | None = None,
+) -> str | None:
     """Blocking GCS upload; callers run it via asyncio.to_thread. Returns the
-    gs:// URI."""
+    gs:// URI. `metadata` becomes the object's custom metadata -- set before
+    the write, so the object never exists without it."""
     try:
         from google.cloud import storage  # noqa: PLC0415
 
         client = storage.Client(project=settings.firestore_project_id or None)
         bucket = client.bucket(settings.phone_recording_archive_bucket)
         blob = bucket.blob(path)
+        if metadata:
+            blob.metadata = dict(metadata)
         blob.upload_from_string(data, content_type=content_type)
         return f"gs://{settings.phone_recording_archive_bucket}/{path}"
     except Exception as e:
@@ -74,10 +83,16 @@ async def archive_call(
     audio: bytes | None,
     transcript: str | None,
     when: datetime | None = None,
+    conversation_id: str = "",
 ) -> dict[str, str]:
     """Upload whatever we have. Returns {"audio": uri, "transcript": uri} for
     the parts that succeeded -- a partial result is deliberate: a transcript
     that lands without its audio is still worth having, and vice versa.
+
+    `conversation_id` is written into each object's GCS metadata
+    (`conversation_id`, `call_sid`). That metadata -- not anything stored in
+    Chatwoot -- is what the call-recording player checks before it will play
+    an object for a conversation (recording_access.py).
     """
     if not settings.phone_recording_archive_enabled:
         return {}
@@ -94,6 +109,9 @@ async def archive_call(
     prefix = settings.phone_recording_archive_prefix
     fmt = settings.phone_recording_archive_format
     out: dict[str, str] = {}
+    meta = {"call_sid": call_sid}
+    if conversation_id:
+        meta["conversation_id"] = str(conversation_id)
 
     if audio:
         uri = await asyncio.to_thread(
@@ -102,6 +120,7 @@ async def archive_call(
             object_path(prefix, call_sid, stamp, fmt),
             audio,
             f"audio/{'mpeg' if fmt == 'mp3' else fmt}",
+            metadata=meta,
         )
         if uri:
             out["audio"] = uri
@@ -112,6 +131,7 @@ async def archive_call(
             object_path(prefix, call_sid, stamp, "txt"),
             transcript.encode("utf-8"),
             "text/plain; charset=utf-8",
+            metadata=meta,
         )
         if uri:
             out["transcript"] = uri

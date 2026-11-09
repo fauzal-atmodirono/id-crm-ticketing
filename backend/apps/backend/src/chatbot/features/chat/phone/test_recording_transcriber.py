@@ -104,3 +104,77 @@ async def test_attach_swallows_a_chatwoot_failure(settings):
         return_value="CUSTOMER: hi",
     ):
         assert await process_recording(settings, port, "42", "https://x") is False
+
+
+# --- call-recording player: the archived object names reach the conversation --
+
+
+async def test_archiving_stamps_the_object_names_on_the_conversation(settings):
+    """The player finds a recording by the `call_recording_object` custom
+    attribute; without this write every new call would fall back to parsing
+    the archive note."""
+    archived = settings.model_copy(
+        update={
+            "phone_recording_archive_enabled": True,
+            "phone_recording_archive_bucket": "bucket-x",
+        }
+    )
+    port = AsyncMock()
+    archive = AsyncMock(
+        return_value={
+            "audio": "gs://bucket-x/proton-crm/call-recording/2026-11-09/CA1.mp3",
+            "transcript": "gs://bucket-x/proton-crm/call-recording/2026-11-09/CA1.txt",
+        }
+    )
+    with patch(
+        "chatbot.features.chat.phone.recording_transcriber.fetch_recording",
+        new=AsyncMock(return_value=b"audio"),
+    ), patch(
+        "chatbot.features.chat.phone.recording_transcriber._transcribe_sync",
+        return_value="CUSTOMER: hi",
+    ), patch("chatbot.features.chat.phone.recording_transcriber.archive_call", new=archive):
+        assert await process_recording(archived, port, "42", "https://x", "CA1")
+    # The ticket id is what binds the archived objects to this conversation.
+    assert archive.await_args.kwargs["conversation_id"] == "42"
+    port.set_call_recording_archive.assert_awaited_once_with(
+        "42",
+        audio_object="proton-crm/call-recording/2026-11-09/CA1.mp3",
+        transcript_object="proton-crm/call-recording/2026-11-09/CA1.txt",
+    )
+
+
+async def test_a_failed_attribute_stamp_does_not_undo_the_archive(settings):
+    archived = settings.model_copy(
+        update={
+            "phone_recording_archive_enabled": True,
+            "phone_recording_archive_bucket": "bucket-x",
+            "phone_recording_transcription_enabled": False,
+        }
+    )
+    port = AsyncMock()
+    port.set_call_recording_archive.side_effect = RuntimeError("chatwoot down")
+    with patch(
+        "chatbot.features.chat.phone.recording_transcriber.fetch_recording",
+        new=AsyncMock(return_value=b"audio"),
+    ), patch(
+        "chatbot.features.chat.phone.recording_transcriber.archive_call",
+        new=AsyncMock(return_value={"audio": "gs://bucket-x/p/2026-11-09/CA1.mp3"}),
+    ):
+        assert await process_recording(archived, port, "42", "https://x", "CA1") is True
+    port.append_conversation_comment.assert_awaited_once()
+
+
+async def test_transcribe_audio_uses_the_glossary_prompt(settings):
+    from chatbot.features.chat.phone.recording_transcriber import transcribe_audio
+
+    settings = settings.model_copy(update={"phone_transcript_glossary_enabled": True})
+
+    seen: list[str] = []
+
+    def _fake(_settings, _audio, prompt=None):
+        seen.append(prompt or "")
+        return "CUSTOMER: saya nak tanya pasal X70"
+
+    with patch("chatbot.features.chat.phone.recording_transcriber._transcribe_sync", new=_fake):
+        assert await transcribe_audio(settings, b"audio") == "CUSTOMER: saya nak tanya pasal X70"
+    assert "X70" in seen[0] and "[inaudible]" in seen[0]

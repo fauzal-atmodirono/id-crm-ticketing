@@ -45,6 +45,11 @@ EVENT_SLA_POLICY_CHANGE = "sla_policy_change"
 EVENT_ESCALATION_ROUTING_CHANGE = "escalation_routing_change"
 EVENT_LADDER_POLICY_CHANGE = "ladder_policy_change"
 EVENT_TAXONOMY_CHANGE = "taxonomy_change"
+# Call-recording player (phone/recording_router.py): who listened to / read /
+# re-transcribed which conversation's recording. target="conversation:<id>".
+EVENT_CALL_RECORDING_PLAY = "call_recording_play"
+EVENT_CALL_RECORDING_TRANSCRIPT_VIEW = "call_recording_transcript_view"
+EVENT_CALL_RECORDING_RETRANSCRIBE = "call_recording_retranscribe"
 
 SYSTEM_ACTOR_USER_ID = None
 

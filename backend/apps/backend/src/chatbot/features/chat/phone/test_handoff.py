@@ -1572,6 +1572,9 @@ async def _dial_xml_for(target: HandoffTarget, **settings_overrides: Any) -> str
     return twilio_client.calls.updated[0][1]
 
 
+# After a skipped stage 1 the fan-out's no-answer lands on the plain
+# /dial-status route; the apology + `unanswered_handoff` tag there are covered
+# by the existing plain-route tests under "--- /webhooks/phone/dial-status".
 async def test_immediate_fanout_action_is_final_not_stage_two() -> None:
     """Stage 1 skipped (assignee busy/offline) -> the immediate fan-out IS stage 2,
     so its dial-status must NOT go to /fanout (which would ring everyone again)."""

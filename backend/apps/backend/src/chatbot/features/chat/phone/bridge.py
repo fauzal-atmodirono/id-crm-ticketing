@@ -1195,7 +1195,8 @@ class PhoneBridge:
         if not base:
             return ""
         # Stage 1 hands its outcome to the stage-2 handler; without the
-        # softphone there is no stage 2 and the outcome is final.
+        # softphone there is no stage 2 and the outcome is final. `final=True`
+        # (an immediate fan-out, which IS stage 2) also uses the plain route.
         suffix = "/fanout" if self._settings.phone_agent_softphone_enabled and not final else ""
         return f"{base.rstrip('/')}/webhooks/phone/dial-status{suffix}"
 

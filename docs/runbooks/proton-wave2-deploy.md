@@ -21,7 +21,10 @@ Values are never printed.
    and the three `ACTIVE_RECORD_ENCRYPTION_*` MFA keys. Without it those keys
    reach the backend but never Rails (the stale-compose trap: flags work in the
    backend and do nothing in the CRM). All forwarded values default to
-   off/blank, so this step changes nothing on its own.
+   off/blank, so this step changes nothing on its own. If you already added the
+   `ACTIVE_RECORD_ENCRYPTION_*` lines by hand (docs/runbooks/proton-mfa-keys.md),
+   `patch --dry-run` reports that hunk as previously applied: answer "n" to the
+   reverse prompt and skip only that hunk.
 2. **Chatwoot image `rc17`, rebuilt from the final HEAD** (Cloud Build only:
    `gcloud builds submit deploy/chatwoot-fork/ --config
    deploy/chatwoot-fork/cloudbuild.yaml --substitutions _REGISTRY=<proton AR repo>`,

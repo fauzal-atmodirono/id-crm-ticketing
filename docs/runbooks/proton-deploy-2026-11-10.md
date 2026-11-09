@@ -29,6 +29,10 @@ gcloud compute scp \
 gcloud compute ssh crm-ticketing --project lv-playground-genai --zone asia-southeast2-a
 ```
 
+If you copied these files to the VM before 9 Nov evening, copy them again:
+the deploy script changed in the final review (rollback keeps the MFA keys,
+config-key check, longer Rails health wait).
+
 On the VM (the three files stay together in `/tmp`, the script finds the
 others next to itself):
 

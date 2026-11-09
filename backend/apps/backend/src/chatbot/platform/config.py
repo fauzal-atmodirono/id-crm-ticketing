@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     vertex_project_id: str | None = None
     vertex_location: str = "us-central1"
     gemini_model: str = "gemini-2.5-flash"
+    # On a handoff, return the model's own reply alongside the handoff signal
+    # (default false: the reply is suppressed and the agent posts the tenant's
+    # fixed handoff message). The agent sends this reply to the customer instead
+    # of the fixed message when present, so the acknowledgement names what was
+    # reported ("the warning light has been reported...").
+    handoff_return_ai_reply: bool = False
 
     # Vertex AI Search settings
     vertex_search_project_id: str = ""

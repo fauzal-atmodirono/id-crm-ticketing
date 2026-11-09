@@ -823,7 +823,10 @@ class OrchestratorService:
                 reason=session_state.get("handoff_reason", "help_request"),
                 language=session_state.get("language", "unknown"),
             )
-            reply_text = None
+            # HANDOFF_RETURN_AI_REPLY (default off): keep the model's own
+            # sentence so the agent sends it instead of the fixed message.
+            if not self._settings.handoff_return_ai_reply:
+                reply_text = None
         elif reply_text:
             # 6. Append assistant message to history (skip when handing off).
             updated_session = await self._adk_sessions.get_session(

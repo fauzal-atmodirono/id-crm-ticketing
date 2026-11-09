@@ -922,6 +922,13 @@ async def _process_via_chat_agent(
     if handoff:
         reason = (handoff or {}).get("reason", "") if isinstance(handoff, dict) else ""
         await _log_chat_action(conversation_id, "chat_turn:handoff", str(reason))
+        # A backend with HANDOFF_RETURN_AI_REPLY on sends the model's own
+        # acknowledgement with the handoff; it names what was reported, so it
+        # replaces the fixed handoff message. Absent (the default) -> unchanged.
+        ai_ack = (result.get("reply") or "").strip()
+        if ai_ack:
+            chunks = await _format_reply_for_channel(ai_ack, chatwoot, inbox_id)
+            handoff_message = "\n\n".join(chunks) or handoff_message
         await _handoff_to_human_via_chatwoot(conversation_id, chatwoot, handoff_message)
         return
 

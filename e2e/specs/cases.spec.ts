@@ -10,6 +10,8 @@ const filter = (page: Page, label: string) =>
   page.locator('label', { hasText: new RegExp(`^\\s*${label}\\s*$`) }).locator('xpath=following-sibling::select[1]').first();
 
 const rows = (page: Page) => page.locator('table tbody tr');
+/** Case rows only (each has a #id link), not an empty-state row. */
+const caseRows = (page: Page) => page.locator('table tbody tr').filter({ has: page.locator('td a') });
 
 trackerModule('Cases', {
   'CASE-001': async ({ page, ev }) => {
@@ -26,25 +28,66 @@ trackerModule('Cases', {
     await ev.shot(page);
   },
 
-  'CASE-002': async ({ page, ev }) => {
+  'CASE-002': async ({ page, api, ev }) => {
     await openApp(page, 'proton/cases');
     await expect(rows(page).first()).toBeVisible({ timeout: 45_000 });
     await filter(page, 'Status').selectOption('open');
-    const types = await filter(page, 'Case type').locator('option').allInnerTexts();
-    const type = types.map(t => t.trim()).find(t => t && !/^all\b/i.test(t)); // skip the "All case types" option
-    if (type) await filter(page, 'Case type').selectOption({ label: type });
     await settle(page);
-    const n = await rows(page).count();
-    const statusIdx = (await page.locator('table thead th').allInnerTexts()).findIndex(h => /^\s*Status\s*$/.test(h));
+    // A filter that returns nothing proves nothing: pick the first case type
+    // with at least 2 open cases, else fall back to Status = Open alone.
+    const typeSelect = filter(page, 'Case type');
+    const types = (await typeSelect.locator('option').allInnerTexts()).map(t => t.trim()).filter(t => t && !/^all\b/i.test(t));
+    let type: string | null = null;
+    for (const t of types) {
+      await typeSelect.selectOption({ label: t });
+      await settle(page);
+      if ((await caseRows(page).count()) >= 2) {
+        type = t;
+        break;
+      }
+    }
+    if (!type) {
+      await typeSelect.selectOption({ index: 0 }); // "All case types"
+      await settle(page);
+    }
+    const n = await caseRows(page).count();
+    ev.add(`Status=open${type ? ` + Case type=${type}` : ' (no case type has 2+ open cases)'}: ${n} rows`);
+    if (n < 2) ev.handOff('fewer than 2 open cases, so neither the filter nor the sort order can be checked');
+    const heads = (await page.locator('table thead th').allInnerTexts()).map(h => h.trim());
+    const statusIdx = heads.findIndex(h => /^Status$/.test(h));
     for (let i = 0; i < n; i++) {
-      const status = await rows(page).nth(i).locator('td').nth(statusIdx).innerText();
+      const status = await caseRows(page).nth(i).locator('td').nth(statusIdx).innerText();
       expect(status.toLowerCase(), `row ${i} status`).toContain('open');
     }
-    ev.add(`Status=open + Case type=${type ?? '(none)'}: ${n} rows, all Open`);
-    const ids = (await rows(page).locator('td:first-child').allInnerTexts()).map(t => Number(t.replace(/\D/g, '')));
-    const desc = ids.every((v, i) => i === 0 || ids[i - 1] >= v);
-    ev.add(`rows ordered newest first by case id: ${desc}`);
-    expect(desc, 'sorted by date (newest first)').toBeTruthy();
+    ev.add('every row is Open');
+
+    // Sort (patch 0098): "Sort by" Newest first (default) / Oldest first, by
+    // creation time. The Created column is minute-precision local text, so the
+    // order is checked against each listed case's created_at from the API.
+    expect(heads, 'Created column').toContain('Created');
+    const sortSelect = page.locator('#proton-cases-sort');
+    await expect(sortSelect, 'Sort by control').toBeVisible();
+    expect(await sortSelect.inputValue(), 'Newest first is the default').toBe('created_at_desc');
+    const createdAt = new Map<number, number>();
+    const orderOk = async (dir: 1 | -1): Promise<string> => {
+      const ids = (await caseRows(page).locator('td:first-child').allInnerTexts()).map(t => Number(t.replace(/\D/g, ''))).slice(0, 30);
+      for (const id of ids) {
+        if (!createdAt.has(id)) createdAt.set(id, Number(Api.must(await api.cw(`conversations/${id}`), `case ${id}`).created_at));
+      }
+      const ts = ids.map(id => createdAt.get(id)!);
+      const bad = ts.findIndex((t, i) => i > 0 && dir * (t - ts[i - 1]) < 0);
+      return bad < 0 ? 'ok' : `#${ids[bad - 1]} then #${ids[bad]}`;
+    };
+    const newest = await orderOk(-1);
+    ev.add(`Newest first: ${newest === 'ok' ? 'created_at descending' : `out of order at ${newest}`}`);
+    expect(newest, 'Newest first sorts by created date, newest first').toBe('ok');
+    await sortSelect.selectOption('created_at_asc');
+    await expect(page.getByText('Sorting…')).toHaveCount(0, { timeout: 45_000 });
+    await settle(page);
+    expect(await caseRows(page).count(), 'the filter is kept after sorting').toBe(n);
+    const oldest = await orderOk(1);
+    ev.add(`Oldest first: ${oldest === 'ok' ? 'created_at ascending' : `out of order at ${oldest}`}`);
+    expect(oldest, 'Oldest first sorts by created date, oldest first').toBe('ok');
     await ev.shot(page);
   },
 

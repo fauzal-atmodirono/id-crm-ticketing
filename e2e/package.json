@@ -1,0 +1,20 @@
+{
+  "name": "proton-crm-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Headed Playwright end-to-end suite for the Proton CRM, one spec per tracker-sheet module.",
+  "type": "module",
+  "scripts": {
+    "e2e": "node scripts/run.mjs",
+    "e2e:list": "playwright test --list",
+    "sync-tracker": "python3 scripts/sync-tracker.py",
+    "publish": "node --experimental-strip-types scripts/publish.ts",
+    "test:unit": "node --experimental-strip-types --test unit/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "@types/node": "^22.10.0",
+    "typescript": "~5.7.2"
+  }
+}

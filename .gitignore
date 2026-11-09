@@ -17,3 +17,12 @@ __pycache__/
 .phase1-venv/
 .pytest_cache/
 .DS_Store
+
+# Playwright e2e suite (e2e/): run output, deps, any browser profile or auth state
+e2e/results/
+e2e/node_modules/
+e2e/.probe/
+e2e/test-results/
+e2e/**/.auth/
+e2e/**/*-profile/
+e2e/**/storageState*.json

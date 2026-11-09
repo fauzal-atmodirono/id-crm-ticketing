@@ -1,0 +1,2227 @@
+{
+ "spreadsheetId": "1mqZphjnBxU4BYUCwc0Nu-Lf0yYbqGEV590Oo_76uqDU",
+ "tabs": [
+  {
+   "tab": "Conversations",
+   "rows": [
+    {
+     "id": "CONV-001",
+     "row": 2,
+     "subModule": "Lists",
+     "test": "Conversation lists open with correct counts",
+     "steps": "1. Log in as an agent.\n2. Click Conversations in the left sidebar.\n3. Click each tab at the top of the list in turn: Mine, Unassigned, All.\n4. In the sidebar under Conversations, click Mentions, then Unattended.\n5. For each, compare the number on the tab with the number of rows in the list.\n6. Refresh the page and check All is selected and the status filter is All.",
+     "dod": "Each list loads in under 3 s. The count on each tab matches the conversations shown. All is the default tab and status filter.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-002",
+     "row": 3,
+     "subModule": "Lists",
+     "test": "Inbox, team and label views",
+     "steps": "1. In the sidebar, expand Conversations.\n2. Click one inbox under Inboxes (for example WhatsApp).\n3. Click one team under Teams.\n4. Click one label under Labels (for example dept_sales).\n5. Open 3 conversations in each view and check they belong to that inbox, team or label.",
+     "dod": "Only conversations from that inbox, team or label are listed.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-003",
+     "row": 4,
+     "subModule": "Filters",
+     "test": "Filter and save a custom view",
+     "steps": "1. Log in as a supervisor and open Conversations.\n2. Click the filter icon above the list.\n3. Add filters: Status = Open, Priority = High, Labels = escalate, Created at = last 7 days. Click Apply filters.\n4. Check every row matches all four filters.\n5. Click Save filter, name it [TEST] Escalated high, and save.\n6. Find the view under Folders in the sidebar, click away, then click it again to reopen.",
+     "dod": "Results match every filter. The saved view appears in the sidebar and reopens with the same filters.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-004",
+     "row": 5,
+     "subModule": "Search",
+     "test": "Search conversations",
+     "steps": "1. Open Conversations.\n2. In the search box above the list, type a word from a recent message (for example servis) and press Enter.\n3. Repeat with a contact name, then with a phone number.\n4. Click one result and check the matching conversation opens at that message.",
+     "dod": "Matching conversations and messages are returned. Clicking a result opens that conversation.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-005",
+     "row": 6,
+     "subModule": "Inbound: WhatsApp",
+     "test": "WhatsApp message creates a conversation",
+     "steps": "1. Log in as an agent who is a member of the WhatsApp inbox and set status Online.\n2. From the test phone, send to the Proton WhatsApp number: [TEST] Hi, I want to book a service for my X50.\n3. Start a stopwatch when you press send.\n4. Check the conversation appears in Conversations > WhatsApp inbox within 10 s.\n5. Check the contact name and phone number on the conversation.\n6. Check the toast pops up and the alert sound plays.",
+     "dod": "Conversation appears in the WhatsApp inbox within 10 s with the contact's name and number. The inbound toast and sound fire for the agent.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-006",
+     "row": 7,
+     "subModule": "Inbound: Email",
+     "test": "Email creates a conversation",
+     "steps": "1. From the external test mailbox, email the E.Mas Centre address.\n2. Subject: [TEST] Brake noise X70. Body: two lines of text. Attach a small JPG.\n3. In the CRM open Conversations > the Email inbox.\n4. Check the conversation appears within 2 minutes.\n5. Open it and check subject, body and the image attachment.",
+     "dod": "Conversation appears in the Email inbox within 2 min. Subject, body and attachment are intact.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": "Email inbox IMAP/SMTP not working (5 Nov audit). Fix before testing."
+    },
+    {
+     "id": "CONV-007",
+     "row": 8,
+     "subModule": "Reply",
+     "test": "Reply reaches the customer",
+     "steps": "1. Open the [TEST] WhatsApp conversation.\n2. Make sure the Reply tab (not Private Note) is selected in the reply box.\n3. Type: [TEST] Thank you, we will call you shortly. Press Send.\n4. Check the test phone receives it and the message shows as sent (no red error icon).\n5. Repeat on the [TEST] email conversation and check the reply lands in the same email thread in the test mailbox.",
+     "dod": "The customer receives the reply on the same channel and email thread. The message shows as sent with no error.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": "Email part depends on the email inbox fix."
+    },
+    {
+     "id": "CONV-008",
+     "row": 9,
+     "subModule": "Notes and mentions",
+     "test": "Private note with @mention",
+     "steps": "1. Open a [TEST] conversation.\n2. Click the Private Note tab in the reply box (the box turns yellow).\n3. Type @ and pick another test agent, then add: please check this case.\n4. Press Add note.\n5. Check the test phone received nothing.\n6. Log in as the mentioned agent in Window B: check the bell notification and that the conversation is in Mentions.",
+     "dod": "The customer receives nothing. The mentioned agent gets a notification and the conversation appears in their Mentions list.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-009",
+     "row": 10,
+     "subModule": "Attachments and canned responses",
+     "test": "Attach a file and insert a canned response",
+     "steps": "1. Open a [TEST] conversation, Reply tab.\n2. Click the paperclip icon and attach one image and one PDF. Press Send.\n3. Check both arrive on the test phone and open.\n4. In the reply box type / and start typing a canned response name.\n5. Pick it, check the text is inserted and any {{contact.name}} is replaced with the real name.",
+     "dod": "Files are delivered and can be previewed. The canned text is inserted with its variables filled in.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-010",
+     "row": 11,
+     "subModule": "AI draft (agent-bot)",
+     "test": "Bot drafts the reply as a private note",
+     "steps": "1. Make sure the WhatsApp inbox AI mode is Suggest (Knowledge > Inboxes).\n2. From the test phone, start a new chat: [TEST] Berapa harga servis 10,000 km untuk X50?\n3. Open the new conversation in the CRM.\n4. Within about 30 s check a yellow private note with the suggested reply appears.\n5. Check the test phone did not receive the AI reply.\n6. Check the conversation status is Open, waiting for an agent.",
+     "dod": "Within about 30 s a private note with the suggested reply appears. Nothing is sent to the customer. The conversation is open for a human.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": "Proton runs AGENT_MODE=auto (audit), so replies go straight to the customer. Decide suggest or auto first."
+    },
+    {
+     "id": "CONV-011",
+     "row": 12,
+     "subModule": "Copilot",
+     "test": "Suggest reply, rewrite and Ask Copilot",
+     "steps": "1. Open a [TEST] conversation with a customer question.\n2. Click the Copilot button above the reply box and choose suggest reply.\n3. Check a draft appears in the reply box and can be edited.\n4. Select the draft and use each rewrite action (for example shorter, more formal).\n5. Open the Copilot panel, type in Ask about this conversation…: what is the customer asking? Press Enter.\n6. Check the answer matches the thread and no error message shows.",
+     "dod": "A relevant draft appears in the composer and can be edited. Rewrites change tone without changing facts. No 401 or 500 errors.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-012",
+     "row": 13,
+     "subModule": "Translate",
+     "test": "Translate EN, BM, ZH and TA",
+     "steps": "1. Open a conversation whose last customer message is in Bahasa Malaysia.\n2. Click Translate above the reply box and pick English.\n3. Check the translation appears within 5 s and the original message is still visible.\n4. Repeat for Chinese and Tamil.\n5. Write a draft reply in English and translate it to BM and ZH.\n6. If you see Translation failed. Please try again., note it as Fail.",
+     "dod": "Each translation returns within 5 s and the original text is kept.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": "Tamil works for reading inbound messages only; outbound Tamil replies are not supported (audit)."
+    },
+    {
+     "id": "CONV-013",
+     "row": 14,
+     "subModule": "FAQ suggestions",
+     "test": "FAQ strip and Apply",
+     "steps": "1. Check Knowledge > FAQs has an FAQ about service booking.\n2. From the test phone send: [TEST] How do I book a service?\n3. Open the conversation and look at the FAQ strip above the reply box.\n4. Check the service booking FAQ is listed.\n5. Click Apply and check its answer is placed in the reply box (not sent).",
+     "dod": "Matching FAQs show in the strip. Apply puts the FAQ answer into the composer.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-014",
+     "row": 15,
+     "subModule": "Assignment",
+     "test": "Assign agent, team and priority",
+     "steps": "1. Log in as a supervisor and open a [TEST] conversation.\n2. In the right panel under Conversation Actions, set Assigned agent to a test agent.\n3. Set Assigned team to a test team and Priority to High.\n4. Check the assignee shows in the list and the conversation header.\n5. Check the activity line (for example assigned to …) appears in the thread.\n6. Log in as that agent and check the notification.",
+     "dod": "Assignee shows in the list and the header. The assignee is notified. An activity message is logged.",
+     "role": "Supervisor",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-015",
+     "row": 16,
+     "subModule": "Auto-assignment",
+     "test": "Presence-aware routing",
+     "steps": "1. Prepare 3 test agents in the WhatsApp inbox: A Online, B Busy, C Offline (My status).\n2. From the test phone send a new message: [TEST] routing check.\n3. Open the new conversation and check it was assigned to agent A.\n4. Set A to Busy and send another new message from a second test number.\n5. Check it stays unassigned or goes to the next Online agent, never to B or C.",
+     "dod": "The new conversation goes only to an Online agent, following the channel priority.",
+     "role": "Supervisor",
+     "priority": "P1",
+     "knownIssue": "Firestore presence index missing (audit)."
+    },
+    {
+     "id": "CONV-016",
+     "row": 17,
+     "subModule": "Labels",
+     "test": "Add and remove labels",
+     "steps": "1. Open a [TEST] conversation.\n2. In the right panel under Labels, click the edit icon and add two labels (for example dept_sales and vip).\n3. Remove one of them.\n4. Check the remaining label shows on the conversation and in the list row.\n5. Click the label in the sidebar and check the conversation is listed.",
+     "dod": "Labels show on the conversation and in the list. Filtering by the label finds the conversation.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-017",
+     "row": 18,
+     "subModule": "Status",
+     "test": "Snooze, resolve and reopen",
+     "steps": "1. Open a [TEST] conversation.\n2. Click the arrow next to Resolve and choose Snooze > Until tomorrow.\n3. Check it leaves the Open list and appears under Snoozed.\n4. Open it and click Resolve. Check it is under Resolved.\n5. From the test phone send a new message in the same chat.\n6. Check the conversation is Open again.",
+     "dod": "Snoozed conversation leaves Open until the snooze time. Resolved moves to Resolved. The customer message reopens it.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-018",
+     "row": 19,
+     "subModule": "Case taxonomy",
+     "test": "AI fills case taxonomy, agent can correct it",
+     "steps": "1. Open the [TEST] conversation created in CONV-005 after the AI has replied or drafted.\n2. In the right panel open Conversation information.\n3. Check case_type, case_category, case_subcategory, case_detail and vehicle_model are filled.\n4. Change case_category with the dropdown; check the subcategory list changes to match.\n5. Refresh the page and check your change was kept.",
+     "dod": "case_type, case_category, case_subcategory, case_detail and vehicle_model are filled. The agent's change saves and stays after refresh.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-019",
+     "row": 20,
+     "subModule": "Contact panel",
+     "test": "DMS card and previous conversations",
+     "steps": "1. Open a conversation from a returning customer.\n2. In the right panel, find the DMS card.\n3. Check it shows vehicle data or a clear not-connected message (no spinning or blank card).\n4. Scroll to Previous Conversations and check older chats are listed and open when clicked.",
+     "dod": "The DMS card loads or shows a clear not-connected message. Previous conversations are listed.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-020",
+     "row": 21,
+     "subModule": "Department suggestion",
+     "test": "AI suggests a department",
+     "steps": "1. From the external test mailbox, email: [TEST] My car makes noise after the last service at the dealer.\n2. Open the new email conversation.\n3. Within about 30 s check a private note suggests a department (for example dept_aftersales).\n4. Do not apply it yet; note the suggestion in Evidence.",
+     "dod": "A private note suggests the department label to apply.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "Depends on the email inbox fix."
+    },
+    {
+     "id": "CONV-021",
+     "row": 22,
+     "subModule": "Escalation: department",
+     "test": "Escalate to the department PIC",
+     "steps": "1. Check Escalation Routing has a PIC email (a Devoteam test mailbox) for the department you will use.\n2. Open the [TEST] email conversation.\n3. In Labels add the department label (for example dept_sales). Then add escalate.\n4. Start a stopwatch.\n5. Within about 15 s check the customer test mailbox gets an acknowledgement email.\n6. Check the PIC test mailbox gets a forward whose Reply-To contains +case<conversation id>.\n7. In Conversation information check escalation_notified_at has a time.",
+     "dod": "Within about 15 s two emails go out: an acknowledgement to the customer and a forward to the PIC with a +case<id> Reply-To. escalation_notified_at is stamped.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": "Email inbox IMAP/SMTP not working (5 Nov audit). Fix before testing. Departments without a PIC email nobody."
+    },
+    {
+     "id": "CONV-022",
+     "row": 23,
+     "subModule": "Escalation: reply loop",
+     "test": "PIC reply links back to the case",
+     "steps": "1. In the PIC test mailbox, open the forward from ESC test.\n2. Click Reply (keep the Reply-To address) and write: [TEST] PIC reply, part ordered, ETA 3 days. Send.\n3. In the CRM, open the case and wait up to 40 s.\n4. Check the reply shows as a private note.\n5. Check an AI draft reply for the customer appears.\n6. Check the escalation_replied label was added.",
+     "dod": "Within about 40 s the reply shows as a private note, an AI draft for the customer appears and the escalation_replied label is added.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": "Depends on the email inbox fix."
+    },
+    {
+     "id": "CONV-023",
+     "row": 24,
+     "subModule": "Escalation: dealer",
+     "test": "Dealer ladder starts and stops",
+     "steps": "1. Check the test dealer in Escalation Routing has Devoteam test addresses for every ladder contact.\n2. On a [TEST] email case add the dealer_<slug> label, then escalate.\n3. Check dealer_escalated_at is stamped in Conversation information.\n4. Check the CRE and Sales/AS Manager test mailboxes get step 1, with Principal, ARM and HOD in CC.\n5. Reply from the CRE test mailbox.\n6. Check the case gets escalation_replied and no step 3 reminder is sent later.\n7. Resolve the case when done.",
+     "dod": "dealer_escalated_at is stamped. Step 1 emails CRE and Sales/AS Manager with Principal, ARM and HOD in CC. Reminders stop after the dealer reply.",
+     "role": "Supervisor",
+     "priority": "P1",
+     "knownIssue": "Ladder is live (dry run off). Resolve the test case afterwards so no reminders go out."
+    },
+    {
+     "id": "CONV-024",
+     "row": 25,
+     "subModule": "Softphone",
+     "test": "Make and receive a call",
+     "steps": "1. Open a [TEST] conversation with a phone number.\n2. Click the call icon and allow the microphone when the browser asks.\n3. Answer on the test phone and speak both ways. Click Mute, then Unmute.\n4. Hang up and check Call ended shows and the call is logged on the conversation.\n5. Call the agent number from the test phone and check Incoming call shows; answer it.",
+     "dod": "The call connects with audio both ways and is logged on the conversation.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": "Only if the softphone feature is on."
+    },
+    {
+     "id": "CONV-025",
+     "row": 26,
+     "subModule": "Lifecycle messages",
+     "test": "Welcome, inactivity and resolution messages",
+     "steps": "1. Note the welcome, inactivity and resolution texts in Knowledge > Settings.\n2. From the test phone start a new chat: [TEST] hello.\n3. Check the welcome message arrives once.\n4. Do not reply; wait past the inactivity time set on the inbox. Check the inactivity message arrives once.\n5. In the CRM click Resolve. Check the resolution message arrives once.",
+     "dod": "Each configured message is sent once, at the configured time.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-026",
+     "row": 27,
+     "subModule": "CSAT",
+     "test": "CSAT survey on resolve",
+     "steps": "1. Check CSAT is on for the WhatsApp inbox (Settings > Inboxes > WhatsApp > CSAT).\n2. Resolve a [TEST] WhatsApp conversation.\n3. On the test phone, open the survey and give 5 stars with comment [TEST].\n4. Open Reports > CSAT and check the rating is listed.",
+     "dod": "The customer receives the survey and the rating shows in the CSAT report.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-027",
+     "row": 28,
+     "subModule": "Social channels",
+     "test": "Facebook Messenger and Instagram intake",
+     "steps": "1. Open Settings > Inboxes and look for a Messenger and an Instagram inbox.\n2. From a test Facebook account, send [TEST] hello to the Proton page.\n3. From a test Instagram account, send [TEST] hello as a DM.\n4. Check both arrive as conversations in their inbox.",
+     "dod": "Both messages arrive as conversations in the shared conversation list, next to WhatsApp and email.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "No Messenger or Instagram inbox is connected on proton today. Needs Meta page access from Proton."
+    },
+    {
+     "id": "CONV-028",
+     "row": 29,
+     "subModule": "Attachments",
+     "test": "Large files and many formats",
+     "steps": "1. From the test phone send a 15 MB video and an .xlsx file on WhatsApp.\n2. From the test mailbox send a 20 MB PDF and a .zip.\n3. Open each conversation and download every file.",
+     "dod": "Every file arrives and opens. Any file refused is refused by the channel's own limit (WhatsApp media is capped at 16 MB by Meta), with an error the agent can see.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "Channel providers set hard size limits; record the actual limit you hit."
+    },
+    {
+     "id": "CONV-029",
+     "row": 30,
+     "subModule": "Media",
+     "test": "Voice notes, photos and video",
+     "steps": "1. From the test phone send a voice note, a photo of a dashboard warning light and a 10 s video.\n2. Open the conversation.\n3. Play the voice note and video, open the photo.\n4. Click Copilot suggest reply.",
+     "dod": "All media plays or opens in the conversation. The suggested reply refers to what is in the photo.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-030",
+     "row": 31,
+     "subModule": "Summary",
+     "test": "Conversation summary",
+     "steps": "1. Open a [TEST] conversation with at least 6 messages.\n2. Click Copilot and choose Summarize.\n3. Read the summary.",
+     "dod": "The summary is in English and covers the customer's issue, what was done and the outcome.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "Automatic summary on resolve is off (AUTO_SUMMARY_ON_RESOLVE_ENABLED). Manual Summarize only."
+    },
+    {
+     "id": "CONV-031",
+     "row": 32,
+     "subModule": "Email delivery failure",
+     "test": "Failed email alerts the agent",
+     "steps": "1. Create a [TEST] contact with email nobody@invalid-domain-test.example.\n2. Start an email conversation to that contact and send a reply.\n3. Wait 2 minutes and check the conversation.",
+     "dod": "A note or alert tells the agent the email bounced or the address is invalid.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "Email inbox IMAP/SMTP not working (5 Nov audit). Fix before testing. BOUNCE_HANDLING_ENABLED is on; the escalation failure note is off."
+    },
+    {
+     "id": "CONV-032",
+     "row": 33,
+     "subModule": "After-hours",
+     "test": "Out-of-hours messages are marked",
+     "steps": "1. Check the WhatsApp inbox business hours (Settings > Inboxes > WhatsApp > Business Hours).\n2. Send a message from the test phone outside those hours.\n3. Open the conversation and check its attributes and labels.",
+     "dod": "The out-of-office reply is sent, and the conversation is marked as received after hours so reports can count it.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "Working-hours SLA is off (SLA_WORKING_HOURS_ENABLED). Check where the after-hours mark is stored."
+    },
+    {
+     "id": "CONV-033",
+     "row": 34,
+     "subModule": "Colloquial language",
+     "test": "AI understands short forms and slang",
+     "steps": "1. From the test phone send: brp lama siap? nk service\n2. Then: kete sy rosak kat highway, tlg\n3. Open the conversation and read the AI reply or draft.",
+     "dod": "The AI reads the first as asking how long a service takes and the second as a breakdown, and answers each correctly.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONV-034",
+     "row": 35,
+     "subModule": "Duplicate cases",
+     "test": "Second enquiry from the same customer",
+     "steps": "1. From the test phone open a case about brake noise and resolve it.\n2. Send a new message about the same brake noise.\n3. Open the new conversation and the contact panel.",
+     "dod": "The agent sees the earlier case under Previous Conversations and can link or merge. Record whether anything was merged automatically.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "AI duplicate detection and auto-merge (RFP 4.25) is not built. Only manual contact merge exists."
+    }
+   ]
+  },
+  {
+   "tab": "Voice & Phone",
+   "rows": [
+    {
+     "id": "VOICE-001",
+     "row": 2,
+     "subModule": "IVR routing",
+     "test": "Spoken request routes the call",
+     "steps": "1. Call the Proton number from the test phone.\n2. Say: my car broke down on the highway, I need a tow.\n3. Hang up and call again. Say: I want to speak to an agent.",
+     "dod": "The first call goes to the RSA route, the second to a live agent. Each call creates a conversation in the phone inbox.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "VOICE-002",
+     "row": 3,
+     "subModule": "AI voice agent",
+     "test": "AI answers calls in four languages",
+     "steps": "1. Call and ask about service booking in Bahasa Malaysia.\n2. Call again in English, then Chinese, then Tamil.",
+     "dod": "The AI answers in the language the caller used each time and hands off when asked.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": "Tamil quality not yet evaluated."
+    },
+    {
+     "id": "VOICE-003",
+     "row": 4,
+     "subModule": "Live transcript",
+     "test": "Call transcript shows live",
+     "steps": "1. Call and get handed to an agent.\n2. Watch the agent's screen while you talk in BM and English.",
+     "dod": "Text appears on the agent's screen during the call, in the language spoken.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "VOICE-004",
+     "row": 5,
+     "subModule": "Softphone controls",
+     "test": "Mute, hold and transfer",
+     "steps": "1. Answer a test call on the softphone.\n2. Click Mute, then Unmute.\n3. Put the call on hold and listen on the test phone.\n4. Transfer the call to a second agent.",
+     "dod": "Mute works both ways, hold plays the hold recording, and the second agent receives the call with the case.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": "Hold with recording and transfer: check they exist in the softphone; record if missing."
+    },
+    {
+     "id": "VOICE-005",
+     "row": 6,
+     "subModule": "Recordings",
+     "test": "Play back a call recording",
+     "steps": "1. After a test call, open its conversation.\n2. Play the recording and open its transcript.",
+     "dod": "The recording plays and the transcript is attached to the case.",
+     "role": "Supervisor",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "VOICE-006",
+     "row": 7,
+     "subModule": "AI to human handoff",
+     "test": "Caller asks for a person",
+     "steps": "1. Call and talk to the AI.\n2. Say: saya nak cakap dengan orang.",
+     "dod": "The call moves to an agent's softphone with the conversation so far.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "VOICE-007",
+     "row": 8,
+     "subModule": "After-hours calls",
+     "test": "After-hours message and voicemail",
+     "steps": "1. Call outside business hours.\n2. Listen to the message, leave a voicemail.\n3. Call again and say it is a breakdown.",
+     "dod": "An after-hours message plays, the voicemail becomes a case, and the breakdown call still reaches RSA.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "Built, but switched off on proton (PHONE_AFTER_HOURS_ENABLED, PHONE_VOICEMAIL_INGEST_ENABLED). Turn it on in the tenant env first, or mark N/A."
+    },
+    {
+     "id": "VOICE-008",
+     "row": 9,
+     "subModule": "Post-call rating",
+     "test": "Caller rates the agent after the call",
+     "steps": "1. At the end of a call, the agent sends the caller to the rating.\n2. Rate 9 on the keypad or by voice.",
+     "dod": "The rating is saved against the agent.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "NPS survey is not running on proton."
+    },
+    {
+     "id": "VOICE-009",
+     "row": 10,
+     "subModule": "Abandoned calls",
+     "test": "Dropped calls in the queue are counted",
+     "steps": "1. Call while all agents are busy.\n2. Hang up while waiting.\n3. Open the call report.",
+     "dod": "The call is counted as abandoned.",
+     "role": "Supervisor",
+     "priority": "P3",
+     "knownIssue": "Check the abandon report exists; record if missing."
+    }
+   ]
+  },
+  {
+   "tab": "Knowledge",
+   "rows": [
+    {
+     "id": "KNOW-001",
+     "row": 2,
+     "subModule": "Assistants",
+     "test": "Create, edit and delete an assistant",
+     "steps": "1. Log in as admin. Click Knowledge > Assistants.\n2. Click the add button. Name: [TEST] Assistant, Description: test only. Save.\n3. Edit the name to [TEST] Assistant 2 and save. Refresh.\n4. Delete the test assistant from the Actions column and confirm it is gone.",
+     "dod": "Each change saves and stays after refresh.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "KNOW-002",
+     "row": 3,
+     "subModule": "FAQs",
+     "test": "Add, edit and delete an FAQ",
+     "steps": "1. Click Knowledge > FAQs and click the add button.\n2. Question: [TEST] Where is the nearest service centre? Answer: use the dealer locator on proton.com. Keywords: service, centre. Save.\n3. Edit the answer, save, refresh, and check the edit stayed.\n4. Delete the FAQ.\n5. From the test phone ask the same question and check the FAQ strip no longer shows it.",
+     "dod": "Changes stay after refresh. A deleted FAQ is no longer suggested in conversations.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "KNOW-003",
+     "row": 4,
+     "subModule": "FAQs: bulk CSV",
+     "test": "Bulk upload FAQs",
+     "steps": "1. Create test.csv with columns question,answer,keywords and 5 rows starting with [TEST].\n2. Knowledge > FAQs > Bulk upload (CSV), pick test.csv.\n3. Check the success message shows 5 rows imported and they appear in the list.\n4. Make bad.csv with the answer column removed and upload it.\n5. Check an error names the missing column and no new rows appear.\n6. Delete the 5 test FAQs.",
+     "dod": "The valid file imports all 5 rows and shows the count. The bad file shows an error naming the problem and imports nothing.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "KNOW-004",
+     "row": 5,
+     "subModule": "Documents",
+     "test": "Upload, list and delete a document",
+     "steps": "1. Click Knowledge > Documents and upload a small PDF named [TEST] brochure.pdf.\n2. Wait until its status shows ready.\n3. Use Filter by title, URL, snippet… to find it.\n4. Delete it and check it is gone.\n5. Open the old document URL and check a message appears, not a blank page.",
+     "dod": "The document is listed with its status. After delete it is gone. A missing document shows a message, not a blank page.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "KNOW-005",
+     "row": 6,
+     "subModule": "Scenarios",
+     "test": "Create and edit a scenario",
+     "steps": "1. Click Knowledge > Scenarios and click the add button.\n2. Title: [TEST] Warranty claim handling. Description: test only. Save.\n3. Edit the description and save. Refresh and check it stayed.\n4. Delete the test scenario.",
+     "dod": "The scenario saves and stays after refresh.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "KNOW-006",
+     "row": 7,
+     "subModule": "Tools",
+     "test": "Create and edit a tool",
+     "steps": "1. Click Knowledge > Tools > Custom tools and click the add button.\n2. Name: [TEST] Check order status, Method: GET, Endpoint: a test URL. Save.\n3. Edit the description and save. Refresh and check it stayed.\n4. Delete the test tool.",
+     "dod": "The tool saves and stays after refresh.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "KNOW-007",
+     "row": 8,
+     "subModule": "Playground",
+     "test": "Answers come from the knowledge base",
+     "steps": "1. Click Knowledge > Playground and pick the Proton assistant.\n2. In Ask the assistant something… type a question from an existing FAQ (for example warranty period for X50).\n3. Check the answer matches the FAQ text.\n4. Ask something not in the KB (for example the price of a Ferrari).\n5. Check the assistant says it does not know or offers a human, and invents nothing.",
+     "dod": "The first answer uses the FAQ or document content. The second hands off or says it does not know, with no made-up answer.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "KNOW-008",
+     "row": 9,
+     "subModule": "Inboxes",
+     "test": "Map an assistant to an inbox",
+     "steps": "1. Click Knowledge > Inboxes.\n2. Find the WhatsApp inbox row and set Assistant to the Proton assistant and Mode to Suggest.\n3. Save, refresh, and check the values stayed.\n4. Send a test message and check the draft note uses this assistant's tone.",
+     "dod": "The mapping saves. The bot on that inbox uses this assistant's persona.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "KNOW-009",
+     "row": 10,
+     "subModule": "Settings: persona",
+     "test": "Persona, language, temperature and guardrails",
+     "steps": "1. Click Knowledge > Settings and pick the Proton assistant.\n2. In the instructions add: End every reply with Terima kasih, Proton e.MAS. Save.\n3. From the test phone send a new question.\n4. Check the AI draft or reply ends with that line.\n5. Remove the line, save, and check the next reply goes back to normal.",
+     "dod": "Settings stay after refresh and the next bot reply follows the change.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "KNOW-010",
+     "row": 11,
+     "subModule": "Settings: messages",
+     "test": "Welcome, handoff, resolution and lifecycle messages",
+     "steps": "1. In Knowledge > Settings, edit the welcome, handoff and resolution messages, starting each with [TEST].\n2. Save.\n3. Start a chat from the test phone and check the [TEST] welcome arrives.\n4. Ask for a human and check the [TEST] handoff message.\n5. Resolve and check the [TEST] resolution message.\n6. Restore the original texts and save.",
+     "dod": "The customer receives the edited text.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "KNOW-011",
+     "row": 12,
+     "subModule": "Settings: email templates",
+     "test": "Escalation email templates",
+     "steps": "1. In Knowledge > Settings open the email templates.\n2. Add [TEST] to the acknowledgement subject. Save.\n3. Run the CONV-021 escalation.\n4. Check the acknowledgement email subject starts with [TEST].\n5. Restore the template.",
+     "dod": "The escalation emails use the edited template.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": "Depends on the email inbox fix."
+    },
+    {
+     "id": "KNOW-012",
+     "row": 13,
+     "subModule": "FAQ quality",
+     "test": "Agents rate FAQ answers",
+     "steps": "1. Open a conversation where the FAQ strip shows a suggestion.\n2. Use the rating or feedback control on the suggestion.\n3. As admin, open Knowledge > FAQs and look for the rating.",
+     "dod": "The agent's rating is saved and visible to the admin against that FAQ.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "Check the rating control exists on the strip; record if missing."
+    },
+    {
+     "id": "KNOW-013",
+     "row": 14,
+     "subModule": "KB improvement",
+     "test": "Unanswered questions suggest new FAQs",
+     "steps": "1. Ask the bot 3 questions that have no FAQ.\n2. As admin, look for a list of unanswered or suggested FAQ topics.",
+     "dod": "The admin can see the unanswered topics and add an FAQ from them.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": "Not built as a screen (RFP 4.56 item 8). Record as N/A unless found."
+    }
+   ]
+  },
+  {
+   "tab": "AI capabilities",
+   "rows": [
+    {
+     "id": "AI-001",
+     "row": 2,
+     "subModule": "24/7 chatbot",
+     "test": "Bot answers at night and hands off",
+     "steps": "1. At night, send a question covered by an FAQ.\n2. Then ask something complex: my car was repaired 3 times and still fails, I want compensation.",
+     "dod": "The FAQ question is answered. The complex one is handed to a human with the conversation open for the morning shift.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": "AGENT_MODE=auto on proton: replies go straight to the customer."
+    },
+    {
+     "id": "AI-002",
+     "row": 3,
+     "subModule": "Sentiment",
+     "test": "Angry or urgent messages are flagged",
+     "steps": "1. Send: This is the third time! Nobody helps me, I am very angry.\n2. Send: Kereta mati tengah jalan, anak saya dalam kereta.",
+     "dod": "The first is flagged dissatisfied, the second urgent, and the reply tone adjusts.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "Built, but switched off on proton (SENTIMENT_CLASSIFIER_ENABLED). Turn it on in the tenant env first, or mark N/A."
+    },
+    {
+     "id": "AI-003",
+     "row": 4,
+     "subModule": "Image understanding",
+     "test": "AI reads a photo and asks the right question",
+     "steps": "1. Send a photo of a warning light on the dashboard.\n2. Read the AI reply or draft.",
+     "dod": "The AI names the likely issue and asks a relevant follow-up question.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "Photo/video diagnosis has not been tried on a real customer image yet."
+    },
+    {
+     "id": "AI-004",
+     "row": 5,
+     "subModule": "Suggested reply sources",
+     "test": "Suggestions use KB and past resolved cases",
+     "steps": "1. Open a conversation similar to a resolved [TEST] case.\n2. Click Copilot suggest reply.",
+     "dod": "The draft uses FAQ content and, where relevant, how the earlier case was solved.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": "Built, but switched off on proton (RESOLVED_CASE_INDEX_ENABLED). Turn it on in the tenant env first, or mark N/A."
+    },
+    {
+     "id": "AI-005",
+     "row": 6,
+     "subModule": "AI activity monitor",
+     "test": "Admin sees all AI-handled conversations",
+     "steps": "1. As admin, look for a view listing every conversation the AI is handling now.\n2. Use Reports > Bot and a bot-handled filter as a fallback.",
+     "dod": "The admin can see live AI conversations in one place.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": "No dedicated AI activity page was built (RFP 3.2.5)."
+    },
+    {
+     "id": "AI-006",
+     "row": 7,
+     "subModule": "Outbound Tamil",
+     "test": "Translate a reply into Tamil",
+     "steps": "1. Write a reply and translate it to Tamil.\n2. Send it.",
+     "dod": "The Tamil reply is sent.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": "Built, but switched off on proton (TRANSLATION_OUTBOUND_TAMIL_ENABLED). Turn it on in the tenant env first, or mark N/A. Returns 403 today."
+    },
+    {
+     "id": "AI-007",
+     "row": 8,
+     "subModule": "AI usage metering",
+     "test": "AI usage is counted per conversation",
+     "steps": "1. Open the AI cost or usage report.",
+     "dod": "Token or call usage is shown per day and per conversation.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": "Built, but switched off on proton (TOKEN_METERING_ENABLED, AI_COST_REPORTING_ENABLED). Turn it on in the tenant env first, or mark N/A."
+    },
+    {
+     "id": "AI-008",
+     "row": 9,
+     "subModule": "Categorisation accuracy",
+     "test": "AI taxonomy matches the agent's judgement",
+     "steps": "1. Pick 10 recent conversations.\n2. For each, compare the AI case category with what the agent would choose.\n3. Record how many match.",
+     "dod": "At least 8 of 10 match (or the target Proton agrees).",
+     "role": "Supervisor",
+     "priority": "P1",
+     "knownIssue": "Human Resolve does not trigger auto-categorise (audit)."
+    }
+   ]
+  },
+  {
+   "tab": "SLA Policies",
+   "rows": [
+    {
+     "id": "SLA-001",
+     "row": 2,
+     "subModule": "Policies",
+     "test": "Create and edit a policy",
+     "steps": "1. Log in as admin. Click SLA Policies in the sidebar.\n2. Create a policy [TEST] SLA with first response 15 min and resolution 4 h.\n3. Save and check the SLA policy saved. message.\n4. Edit the resolution to 8 h, save, refresh, and check it stayed.",
+     "dod": "The policy and its thresholds save and are listed.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "SLA-002",
+     "row": 3,
+     "subModule": "Scope",
+     "test": "Policy applies to the right inboxes",
+     "steps": "1. On SLA Policies check the Scope includes the live WhatsApp and Email inboxes.\n2. Send a new message from the test phone.\n3. Open the conversation and check an SLA timer is shown.\n4. If there is no timer, mark Blocked (scope still on deleted inbox 4).",
+     "dod": "The SLA timer shows on the conversation.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": "SLA_INBOX_IDS still points at deleted inbox 4 (audit)."
+    },
+    {
+     "id": "SLA-003",
+     "row": 4,
+     "subModule": "Warning",
+     "test": "Warning before breach",
+     "steps": "1. Use a [TEST] conversation in a scoped inbox and do not reply.\n2. Wait until the warning threshold.\n3. Check one warning note or alert appears on the conversation.\n4. Check no second warning is posted for the same threshold.",
+     "dod": "A warning note or alert is posted once.",
+     "role": "Supervisor",
+     "priority": "P1",
+     "knownIssue": "Depends on the SLA scope fix."
+    },
+    {
+     "id": "SLA-004",
+     "row": 5,
+     "subModule": "Breach",
+     "test": "Breach note and PIC email",
+     "steps": "1. Keep the same conversation unanswered past the breach time.\n2. Check a private breach note is posted.\n3. Check the department PIC test mailbox receives one breach email.\n4. Note the time of both in Evidence.",
+     "dod": "A private breach note is posted and the department PIC gets one email.",
+     "role": "Supervisor",
+     "priority": "P1",
+     "knownIssue": "Depends on the SLA scope fix and the email inbox fix."
+    },
+    {
+     "id": "SLA-005",
+     "row": 6,
+     "subModule": "Tier-2",
+     "test": "Tier-2 re-alert",
+     "steps": "1. Keep the breached conversation untouched past the Tier-2 threshold.\n2. Check the Tier-2 contact (test address) receives one re-alert.\n3. Reply to the conversation and resolve it to stop further alerts.",
+     "dod": "The Tier-2 contact is alerted once.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Depends on the SLA scope fix."
+    },
+    {
+     "id": "SLA-006",
+     "row": 7,
+     "subModule": "Access",
+     "test": "Only sla.manage can open the page",
+     "steps": "1. Log in as an agent.\n2. Check SLA Policies is not in the sidebar.\n3. Paste the SLA Policies page URL (copied from the admin session) into the address bar.\n4. Check access is refused or you are redirected, and no policy data is shown.",
+     "dod": "The menu item is hidden and the direct URL is blocked.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    }
+   ]
+  },
+  {
+   "tab": "Audit Log",
+   "rows": [
+    {
+     "id": "AUD-001",
+     "row": 2,
+     "subModule": "Entries",
+     "test": "Admin actions are recorded",
+     "steps": "1. As admin, change a test user's role in Roles & Permissions.\n2. Edit the [TEST] SLA policy.\n3. Edit a dealer email in Escalation Routing.\n4. Open Audit Log and check all three entries with Actor, time and before/after values.",
+     "dod": "Each action is listed with who, what, when, and the before and after values.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "AUD-002",
+     "row": 3,
+     "subModule": "Filters",
+     "test": "Filter and search",
+     "steps": "1. On Audit Log set From to today and filter by your own user.\n2. Check only your entries show.\n3. Filter by one action type and check the list narrows.",
+     "dod": "Only matching entries are shown.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "AUD-003",
+     "row": 4,
+     "subModule": "Integrity",
+     "test": "Entries cannot be changed",
+     "steps": "1. Open any entry in Audit Log.\n2. Look for edit or delete buttons.\n3. Check none exist, and the entry cannot be changed.",
+     "dod": "There is no way to edit or delete an entry.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "AUD-004",
+     "row": 5,
+     "subModule": "Access",
+     "test": "Only audit.view can open the page",
+     "steps": "1. Log in as an agent.\n2. Check Audit Log is not in the sidebar.\n3. Paste the Audit Log URL and check access is refused.",
+     "dod": "The menu item is hidden and the URL is blocked.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": ""
+    }
+   ]
+  },
+  {
+   "tab": "Roles & Permissions",
+   "rows": [
+    {
+     "id": "ROLE-001",
+     "row": 2,
+     "subModule": "Roles",
+     "test": "Create a role",
+     "steps": "1. As admin, open Roles & Permissions > Roles.\n2. Create a role, Name: [TEST] Viewer.\n3. Use Search permissions… to add customer360.view only. Do not tick Chatwoot access.\n4. Save and check it is listed with one permission.",
+     "dod": "The role saves and is listed with its permissions.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "ROLE-002",
+     "row": 3,
+     "subModule": "Assignment",
+     "test": "Assign the role to a user",
+     "steps": "1. Open the [TEST] Viewer role and add a test agent (Search people…).\n2. Save. In Window B log in as that agent.\n3. Check Customer 360 shows in the sidebar, and SLA Policies and Escalation Routing do not.\n4. Try a forbidden page by URL and check it is refused.",
+     "dod": "The user sees only the menus and pages the role allows. Forbidden actions return a permission error.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "ROLE-003",
+     "row": 4,
+     "subModule": "Edit",
+     "test": "Change a role's permissions",
+     "steps": "1. Remove customer360.view from [TEST] Viewer and save.\n2. In Window B refresh.\n3. Check Customer 360 is gone from the sidebar and its URL is refused.",
+     "dod": "The removed page or action is no longer available.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "ROLE-004",
+     "row": 5,
+     "subModule": "Safety",
+     "test": "Admins keep their administrator rights",
+     "steps": "1. Open each role that has admins as members.\n2. Check Chatwoot access is not ticked on any of them.\n3. Log in as one admin and check Settings is still visible.",
+     "dod": "Chatwoot access is not ticked on any role with admin members. Admins still see Settings.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": "A custom role with Chatwoot access replaces administrator. Never tick it on an admin's role."
+    },
+    {
+     "id": "ROLE-005",
+     "row": 6,
+     "subModule": "Delete",
+     "test": "Delete a role",
+     "steps": "1. Delete the [TEST] Viewer role.\n2. In Window B log in again as the test agent.\n3. Check they can log in and have the default agent menus.",
+     "dod": "Its users fall back to their default role and can still log in.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    }
+   ]
+  },
+  {
+   "tab": "Escalation Routing",
+   "rows": [
+    {
+     "id": "ESC-001",
+     "row": 2,
+     "subModule": "Departments",
+     "test": "Department to PIC mapping",
+     "steps": "1. As admin, open Escalation Routing > Department.\n2. Pick a department and set PIC name, PIC email (Devoteam test mailbox) and PIC WhatsApp.\n3. Save and refresh; check it stayed.\n4. Run CONV-021 for that department and check the forward goes to the new PIC email.\n5. List departments with no PIC in Evidence.",
+     "dod": "The change saves and the next escalation for that department goes to the new PIC.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": "Departments without a PIC email nobody (audit). Fill them before the demo."
+    },
+    {
+     "id": "ESC-002",
+     "row": 3,
+     "subModule": "Dealers",
+     "test": "Dealer to email mapping",
+     "steps": "1. Open Escalation Routing > Dealers and pick a test dealer.\n2. Set Email and CC emails to Devoteam test addresses. Save.\n3. Refresh and check it stayed.",
+     "dod": "The change saves and is used for the next dealer escalation.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "ESC-003",
+     "row": 4,
+     "subModule": "Groups",
+     "test": "Escalation groups",
+     "steps": "1. Open Dealer groups and create Group name [TEST] group.\n2. Add two test emails in Members. Save.\n3. Refresh and check the group and members show.",
+     "dod": "The group saves with its members.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "ESC-004",
+     "row": 5,
+     "subModule": "Manager contact",
+     "test": "Escalation manager contact",
+     "steps": "1. Open the escalation manager contact field and enter a test address.\n2. Save, refresh, and check it stayed.",
+     "dod": "The contact saves and stays after refresh.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "ESC-005",
+     "row": 6,
+     "subModule": "Ladder contacts",
+     "test": "Dealer ladder contacts",
+     "steps": "1. Open Ladder contacts for the test dealer.\n2. Fill CRE, Sales/AS Manager, Principal, ARM, HOD and Owner with Devoteam test addresses, plus PRO-NET region.\n3. Save, refresh, and check every field stayed.",
+     "dod": "All contacts save and show on the dealer.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "ESC-006",
+     "row": 7,
+     "subModule": "Ladder settings",
+     "test": "Step hours and dry run",
+     "steps": "1. Open the ladder settings section.\n2. Check Step 2 = 2 h, Step 3 = 4 h, Step 4 = 8 h, Step 5 = 8 h, and note the dry-run switch state.\n3. Do not change dry run on proton without approval.\n4. In the in-flight table check open dealer cases show Case, Dealer, Rung, Next step and Due in.",
+     "dod": "Settings save. The in-flight view shows each open dealer case and its current step.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": "Dry run is off on proton, so reminders are real."
+    },
+    {
+     "id": "ESC-007",
+     "row": 8,
+     "subModule": "Access",
+     "test": "Only escalation.manage can open the page",
+     "steps": "1. Log in as an agent.\n2. Check Escalation Routing is not in the sidebar.\n3. Paste its URL and check access is refused.",
+     "dod": "The menu item is hidden and the URL is blocked.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "ESC-008",
+     "row": 9,
+     "subModule": "Team email groups",
+     "test": "Choosing a group includes everyone",
+     "steps": "1. Create Dealer group [TEST] Aftersales Team with 3 Devoteam test addresses.\n2. Escalate a [TEST] email case to that group.\n3. Check all 3 test mailboxes.",
+     "dod": "Every member of the group receives the forward without anyone typing addresses.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": "Email inbox IMAP/SMTP not working (5 Nov audit). Fix before testing."
+    },
+    {
+     "id": "ESC-009",
+     "row": 10,
+     "subModule": "WhatsApp alert to PIC",
+     "test": "PIC gets a WhatsApp alert",
+     "steps": "1. Set PIC WhatsApp to a Devoteam test phone for one department.\n2. Escalate a [TEST] case to that department.\n3. Check the test phone.",
+     "dod": "The test phone gets a WhatsApp alert naming the case.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": "Optional in the RFP. Check the PIC WhatsApp sender is configured before testing."
+    },
+    {
+     "id": "ESC-010",
+     "row": 11,
+     "subModule": "Attachments",
+     "test": "Escalation forward carries the customer's photos",
+     "steps": "1. From the test mailbox send a case email with 2 photos and a web link.\n2. Escalate it to a department.\n3. Open the forward in the PIC test mailbox.",
+     "dod": "The forward includes both photos and the link.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": "Email inbox IMAP/SMTP not working (5 Nov audit). Fix before testing."
+    },
+    {
+     "id": "ESC-011",
+     "row": 12,
+     "subModule": "48-hour alert",
+     "test": "Unresolved case alert at 48 hours",
+     "steps": "1. Leave a [TEST] dealer case open with no resolution.\n2. Check the ladder settings for a 48-hour step.\n3. Wait or use a short test delay, then check for the alert.",
+     "dod": "An unresolved-case alert is sent at 48 hours.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Ladder runs 2/4/8 working hours; there is no 48-hour step configured today."
+    },
+    {
+     "id": "ESC-012",
+     "row": 13,
+     "subModule": "History",
+     "test": "Every escalation step is recorded",
+     "steps": "1. Run ESC escalation tests above.\n2. Open Audit Log and filter by the test case.",
+     "dod": "Each notification, acknowledgement, escalation and update is listed with recipient or agent name, date and time, SLA status and remarks.",
+     "role": "Supervisor",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "ESC-013",
+     "row": 14,
+     "subModule": "On-duty check",
+     "test": "Escalation checks who is on duty",
+     "steps": "1. Set every agent in the target team to Offline.\n2. Escalate a case that would be assigned to that team.",
+     "dod": "The system does not assign it to an offline agent and tells the sender no one is on duty.",
+     "role": "Supervisor",
+     "priority": "P3",
+     "knownIssue": "Built, but switched off on proton (ESCALATION_PRESENCE_CHECK_ENABLED). Turn it on in the tenant env first, or mark N/A."
+    }
+   ]
+  },
+  {
+   "tab": "Workforce & My status",
+   "rows": [
+    {
+     "id": "WF-001",
+     "row": 2,
+     "subModule": "Workforce dashboard",
+     "test": "Live agent status and load",
+     "steps": "1. Log in as a supervisor (Window A) and an agent (Window B).\n2. In Window A click Workforce.\n3. Check the agent is listed with status Online and the right number of open conversations.\n4. Check Cases closed today and Login/logout show values.",
+     "dod": "Each agent's status and open conversation count are shown and match reality.",
+     "role": "Supervisor",
+     "priority": "P1",
+     "knownIssue": "Firestore presence index missing (audit)."
+    },
+    {
+     "id": "WF-002",
+     "row": 3,
+     "subModule": "Workforce dashboard",
+     "test": "Updates when status changes",
+     "steps": "1. Keep Workforce open in Window A.\n2. In Window B set My status to Busy.\n3. Check Window A shows Busy within about 30 s.\n4. Check Availability history records the change.",
+     "dod": "The dashboard shows the new status within about 30 s.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Firestore presence index missing (audit)."
+    },
+    {
+     "id": "WF-003",
+     "row": 4,
+     "subModule": "My status",
+     "test": "Set own status",
+     "steps": "1. As an agent click My status in the sidebar (or the status selector by your avatar).\n2. Pick Online, then Busy, then Offline.\n3. After each, check the header shows it.\n4. Refresh and check the last status was kept.",
+     "dod": "The selected status shows in the header and stays after refresh.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "WF-004",
+     "row": 5,
+     "subModule": "My status",
+     "test": "Routing follows status",
+     "steps": "1. Run CONV-015 and record the result here too.",
+     "dod": "No new conversation is assigned to the Busy agent.",
+     "role": "Supervisor",
+     "priority": "P1",
+     "knownIssue": "Same test as CONV-015."
+    },
+    {
+     "id": "WF-005",
+     "row": 6,
+     "subModule": "Access",
+     "test": "Only workforce.view can open the dashboard",
+     "steps": "1. Log in as an agent.\n2. Check Workforce is not in the sidebar.\n3. Paste its URL and check access is refused.",
+     "dod": "The menu item is hidden and the URL is blocked.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "WF-006",
+     "row": 7,
+     "subModule": "Named statuses",
+     "test": "Eight named statuses",
+     "steps": "1. Open My status.\n2. Check Available, Busy (On Call), Lunch, Break, Coaching, Training, Toilet and Prayer are listed.\n3. Pick each in turn and send a test message while on it.",
+     "dod": "Every status can be picked. Only Available receives new conversations.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "WF-007",
+     "row": 8,
+     "subModule": "10-minute alert",
+     "test": "Agent and admin alerted after 10 minutes away",
+     "steps": "1. Set a test agent to Break.\n2. Wait 10 minutes.\n3. Check the agent's and an admin's notifications.",
+     "dod": "Both get an alert that the agent has been unavailable for 10 minutes.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Built, but switched off on proton (PRESENCE_THRESHOLD_ALERTS_ENABLED). Turn it on in the tenant env first, or mark N/A."
+    },
+    {
+     "id": "WF-008",
+     "row": 9,
+     "subModule": "1-hour alert",
+     "test": "Admin alerted after 1 hour with open cases",
+     "steps": "1. Leave the test agent on Break with 2 open cases for 1 hour.\n2. Check the admin's notifications.",
+     "dod": "The admin gets an alert listing the agent's open cases.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Built, but switched off on proton (PRESENCE_THRESHOLD_ALERTS_ENABLED). Turn it on in the tenant env first, or mark N/A."
+    },
+    {
+     "id": "WF-009",
+     "row": 10,
+     "subModule": "Follow-up reminders",
+     "test": "Follow-up date with reminder and timeout warning",
+     "steps": "1. On a [TEST] conversation set a follow-up date 5 minutes ahead.\n2. Wait for the reminder.\n3. Do nothing for 1 more hour.",
+     "dod": "A reminder arrives at the follow-up time, then a Timeout Warning after 1 hour, each with sound, desktop and in-app alerts.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "Built, but switched off on proton (FOLLOW_UP_DATE_ENABLED). Turn it on in the tenant env first, or mark N/A."
+    },
+    {
+     "id": "WF-010",
+     "row": 11,
+     "subModule": "Overflow",
+     "test": "Busy priority channel overflows to free agents",
+     "steps": "1. Set every WhatsApp-priority agent to Busy.\n2. Leave one Email-priority agent Available.\n3. Send a new WhatsApp message.",
+     "dod": "The conversation is assigned to the available Email-priority agent.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Check fair-share and sweep routing flags; record what happens."
+    },
+    {
+     "id": "WF-011",
+     "row": 12,
+     "subModule": "Login records",
+     "test": "Working days and login/logout history",
+     "steps": "1. Log a test agent in and out twice.\n2. Open Workforce > the agent's Login/logout and Availability history.",
+     "dod": "Both logins and logouts are listed with times.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Firestore presence index missing (audit)."
+    }
+   ]
+  },
+  {
+   "tab": "Customer 360",
+   "rows": [
+    {
+     "id": "C360-001",
+     "row": 2,
+     "subModule": "Search",
+     "test": "Search by phone number",
+     "steps": "1. Click Customer 360.\n2. In Phone number or vehicle number type the test phone number and search.\n3. Check the Contact, its conversations (with Inbox and Status) and any RSA incidents are listed.",
+     "dod": "The contact, its conversations and RSA incidents are returned.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "C360-002",
+     "row": 3,
+     "subModule": "Search",
+     "test": "Search by vehicle number",
+     "steps": "1. Type the vehicle number from a test case and search.\n2. Check the matching contact and cases are returned.",
+     "dod": "The matching contact and cases are returned.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "C360-003",
+     "row": 4,
+     "subModule": "No result",
+     "test": "Unknown number",
+     "steps": "1. Search 0000000000.\n2. Check a clear no-results message shows and there is no error.",
+     "dod": "A clear no-results message is shown, no error.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "C360-004",
+     "row": 5,
+     "subModule": "Navigation",
+     "test": "Open a conversation from the result",
+     "steps": "1. Search the test phone again.\n2. Click one conversation in the result.\n3. Check it opens in Conversations.",
+     "dod": "The conversation opens.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "C360-005",
+     "row": 6,
+     "subModule": "Access",
+     "test": "Only customer360.view can open the page",
+     "steps": "1. Log in with a role without customer360.view.\n2. Check Customer 360 is not in the sidebar.\n3. Paste its URL and check access is refused.",
+     "dod": "The menu item is hidden and the URL is blocked.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "C360-006",
+     "row": 7,
+     "subModule": "DMS/TSP data",
+     "test": "Vehicle and service history from DMS/TSP",
+     "steps": "1. Search a test vehicle in Customer 360.\n2. Check the DMS / TSP section.",
+     "dod": "Vehicle details and service history from the DMS and TSP are shown.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "DMS and TSP are not connected (no Proton API access yet). Shows Not connected."
+    },
+    {
+     "id": "C360-007",
+     "row": 8,
+     "subModule": "Speed",
+     "test": "Data loads within 3 seconds",
+     "steps": "1. Search the test phone number with a stopwatch running.\n2. Repeat 3 times.",
+     "dod": "Each result loads in under 3 seconds, and slower parts load without blocking the rest.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "C360-008",
+     "row": 9,
+     "subModule": "Pop-up on call",
+     "test": "Card opens when a customer calls",
+     "steps": "1. Call the Proton number from the test phone while logged in as an agent.\n2. Answer on the softphone.",
+     "dod": "The customer's profile card opens automatically with their details and history.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "Check the softphone opens the card; record if it does not."
+    }
+   ]
+  },
+  {
+   "tab": "Cases",
+   "rows": [
+    {
+     "id": "CASE-001",
+     "row": 2,
+     "subModule": "List",
+     "test": "Case list loads",
+     "steps": "1. Click Cases in the sidebar.\n2. Check columns Case ID, Channel, Case type, Concern, Car Plate, Dealer, Division and Status are filled for recent cases.",
+     "dod": "Cases are listed with taxonomy, status and assignee columns.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "CASE-002",
+     "row": 3,
+     "subModule": "Filters",
+     "test": "Filter and sort",
+     "steps": "1. Filter Status = Open and one Case type.\n2. Check every row matches.\n3. Sort by date and check the order is right.",
+     "dod": "Results match the filter and the sort order.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "CASE-003",
+     "row": 4,
+     "subModule": "Navigation",
+     "test": "Open a case",
+     "steps": "1. Click one row.\n2. Check the linked conversation opens.",
+     "dod": "The linked conversation opens.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "CASE-004",
+     "row": 5,
+     "subModule": "Consistency",
+     "test": "Counts match Conversations",
+     "steps": "1. Note the number of open cases.\n2. Open Conversations > All with status Open and compare the count.\n3. Write both numbers in Evidence.",
+     "dod": "The two counts are the same.",
+     "role": "Supervisor",
+     "priority": "P3",
+     "knownIssue": ""
+    }
+   ]
+  },
+  {
+   "tab": "RSA Incident Log",
+   "rows": [
+    {
+     "id": "RSA-001",
+     "row": 2,
+     "subModule": "Create",
+     "test": "Log an incident",
+     "steps": "1. As admin click RSA Incident Log and add an incident.\n2. Fill Date, Vehicle model, Breakdown, Cause, Called in, Arrived, Total km, Purchased from, Remarks, with [TEST] in Remarks. Save.\n3. Add another and leave Vehicle model empty. Try to save.\n4. Check the missing field is named and nothing saves.",
+     "dod": "The full incident saves. The incomplete one shows which field is missing.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "RSA-002",
+     "row": 3,
+     "subModule": "Edit and list",
+     "test": "Edit and find an incident",
+     "steps": "1. Edit the [TEST] incident Remarks and save.\n2. Search the list for [TEST] and check it is found with the edit.",
+     "dod": "Changes save and the search finds it.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "RSA-003",
+     "row": 4,
+     "subModule": "Customer 360",
+     "test": "Incident shows in Customer 360",
+     "steps": "1. Use the test phone number on the incident.\n2. Search that number in Customer 360.\n3. Check the incident shows under RSA incidents.",
+     "dod": "The incident is listed for that contact.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "RSA-004",
+     "row": 5,
+     "subModule": "Access",
+     "test": "Only sla.manage can open the page",
+     "steps": "1. Log in as an agent.\n2. Check RSA Incident Log is not in the sidebar.\n3. Paste its URL and check access is refused.",
+     "dod": "The menu item is hidden and the URL is blocked.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": ""
+    }
+   ]
+  },
+  {
+   "tab": "Alert preferences",
+   "rows": [
+    {
+     "id": "ALRT-001",
+     "row": 2,
+     "subModule": "Own preferences",
+     "test": "Agent sets own alerts",
+     "steps": "1. As an agent click Alert preferences.\n2. For A customer sends a new message, turn Sound off and keep On-screen on. Click Save.\n3. Check Saved. This applies to you only.\n4. Send a message from the test phone and check a toast shows with no sound.\n5. Turn Sound back on and save.",
+     "dod": "The setting saves. The next inbound shows a toast with no sound.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "ALRT-002",
+     "row": 3,
+     "subModule": "Account default",
+     "test": "Admin sets the account default",
+     "steps": "1. As admin open Account defaults on the same page.\n2. Change one rule (for example An SLA deadline is approaching, On-screen on) and click Save default.\n3. Log in as a user who never saved their own settings and check the new default applies.",
+     "dod": "The default saves and applies to users who have not set their own.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "ALRT-003",
+     "row": 4,
+     "subModule": "Access",
+     "test": "Agent cannot change the account default",
+     "steps": "1. Log in as an agent and open Alert preferences.\n2. Check Account defaults cannot be edited (hidden or read-only).",
+     "dod": "Only the agent's own settings can be changed.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": ""
+    }
+   ]
+  },
+  {
+   "tab": "Case taxonomy",
+   "rows": [
+    {
+     "id": "TAX-001",
+     "row": 2,
+     "subModule": "Tree",
+     "test": "Taxonomy tree loads",
+     "steps": "1. As admin click Case taxonomy.\n2. Check the tree loads with Level, Department, Key and Label columns.\n3. Note the node count in Evidence (about 346 when seeded).",
+     "dod": "The full tree loads (346 nodes when seeded) with departments shown.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "TAX-002",
+     "row": 3,
+     "subModule": "Add",
+     "test": "Add a node",
+     "steps": "1. Under one category add a subcategory with Key test_battery_fault and Label [TEST] Battery fault.\n2. Save.\n3. Open a conversation and check [TEST] Battery fault appears in the subcategory dropdown.",
+     "dod": "It saves and appears in the conversation taxonomy dropdown.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "TAX-003",
+     "row": 4,
+     "subModule": "Edit and disable",
+     "test": "Edit or disable a node",
+     "steps": "1. Rename the test node label and save; check the new name in the dropdown.\n2. Set a test conversation to that node.\n3. Disable the node.\n4. Check it is no longer offered in the dropdown, and the test conversation still shows its value.",
+     "dod": "Renamed text shows in the dropdown. A disabled node cannot be picked, and conversations that already use it keep their value.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "TAX-004",
+     "row": 5,
+     "subModule": "Sync flag",
+     "test": "Cascade still works",
+     "steps": "1. Open a conversation and use the case taxonomy dropdowns from type down to detail.\n2. Check each level loads the right options.\n3. Do not turn on TAXONOMY_CHATWOOT_SYNC_ENABLED.",
+     "dod": "The cascade works. TAXONOMY_CHATWOOT_SYNC_ENABLED stays off.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": "Turning the sync flag on breaks the agent sidebar cascade."
+    }
+   ]
+  },
+  {
+   "tab": "Custom features",
+   "rows": [
+    {
+     "id": "FEAT-001",
+     "row": 2,
+     "subModule": "Access",
+     "test": "Only superadmin sees the page",
+     "steps": "1. Log in as an admin who is not superadmin.\n2. Check Custom features is not in the sidebar.\n3. Paste its URL and check access is refused.",
+     "dod": "The page is not in the menu and the URL is blocked.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "FEAT-002",
+     "row": 3,
+     "subModule": "Switch off",
+     "test": "Turning a feature off hides it",
+     "steps": "1. Log in as superadmin (Yuda, id 1) and click Custom features.\n2. Turn off RSA Incident Log.\n3. In Window B (another user) refresh.\n4. Check RSA Incident Log is gone and its URL is refused.",
+     "dod": "Its menu item and page disappear and the direct URL is blocked.",
+     "role": "Superadmin",
+     "priority": "P2",
+     "knownIssue": "Turn the feature back on straight after the test."
+    },
+    {
+     "id": "FEAT-003",
+     "row": 4,
+     "subModule": "Switch on",
+     "test": "Turning it back on restores it",
+     "steps": "1. Turn RSA Incident Log back on.\n2. In Window B refresh.\n3. Check the menu item is back and the [TEST] incident is still there.",
+     "dod": "The menu item and page are back with their data intact.",
+     "role": "Superadmin",
+     "priority": "P2",
+     "knownIssue": ""
+    }
+   ]
+  },
+  {
+   "tab": "Contacts",
+   "rows": [
+    {
+     "id": "CONT-001",
+     "row": 2,
+     "subModule": "Create and edit",
+     "test": "Create and edit a contact",
+     "steps": "1. Click Contacts and the add contact button.\n2. Name [TEST] Ahmad, phone a test number, email a test address. Save.\n3. Edit the name to [TEST] Ahmad B and save. Refresh and check it stayed.",
+     "dod": "The contact saves and changes stay after refresh.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONT-002",
+     "row": 3,
+     "subModule": "Search and filter",
+     "test": "Search, filter and segments",
+     "steps": "1. Search [TEST] in the Contacts search box.\n2. Search by the test phone number.\n3. Add a filter (for example Country = Malaysia) and save it as a segment named [TEST] segment.\n4. Reopen the segment and check the same filter applies.",
+     "dod": "Results match. The segment reopens with the same filter.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONT-003",
+     "row": 4,
+     "subModule": "Merge",
+     "test": "Merge duplicates",
+     "steps": "1. Create a second contact [TEST] Ahmad dup with the same email.\n2. Open it and click Merge, then pick [TEST] Ahmad B.\n3. Check one contact remains with both contacts' conversations.",
+     "dod": "One contact remains with both contacts' conversations.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONT-004",
+     "row": 5,
+     "subModule": "Import",
+     "test": "Import contacts from CSV",
+     "steps": "1. Make contacts.csv with name,email,phone_number and 3 [TEST] rows.\n2. Contacts > Import, upload the file.\n3. Check the 3 contacts appear with the right fields.",
+     "dod": "All 3 are created with the right fields.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONT-005",
+     "row": 6,
+     "subModule": "Delete",
+     "test": "Delete a contact",
+     "steps": "1. Open each [TEST] contact and delete it.\n2. Search [TEST] and check none remain.",
+     "dod": "They no longer appear in the list or search.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "CONT-006",
+     "row": 7,
+     "subModule": "History",
+     "test": "Contact's conversations",
+     "steps": "1. Open a contact with past conversations.\n2. Check all their conversations are listed and open when clicked.",
+     "dod": "All of the contact's conversations are listed.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": ""
+    }
+   ]
+  },
+  {
+   "tab": "Reports",
+   "rows": [
+    {
+     "id": "REP-001",
+     "row": 2,
+     "subModule": "Overview",
+     "test": "Overview shows live numbers",
+     "steps": "1. Log in as a supervisor and click Reports > Overview.\n2. Set the range to the last 7 days.\n3. Check the cards show numbers (not empty or sample values).\n4. Compare open and resolved counts with Conversations filtered to the same range.",
+     "dod": "Numbers are real, not empty or sample rows, and match a manual count of test conversations.",
+     "role": "Supervisor",
+     "priority": "P1",
+     "knownIssue": "Proton /metrics/* returns empty data (audit)."
+    },
+    {
+     "id": "REP-002",
+     "row": 3,
+     "subModule": "Conversations",
+     "test": "Conversation report and date range",
+     "steps": "1. Click Reports > Conversations.\n2. Switch the range to Last 7 days, then Last 30 days.\n3. Check the numbers change and match the conversation list for each range.",
+     "dod": "Numbers change with the range and match the conversation list.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "REP-003",
+     "row": 4,
+     "subModule": "Agents",
+     "test": "Agent report",
+     "steps": "1. Click Reports > Agents and pick one test agent.\n2. Check conversations, first response time and resolution time are filled.",
+     "dod": "Conversations, first response and resolution times are shown for that agent.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "REP-004",
+     "row": 5,
+     "subModule": "Labels, Inboxes, Teams",
+     "test": "Label, inbox and team reports",
+     "steps": "1. Open Reports > Labels, then Inbox, then Team.\n2. Pick one item in each and check the counts match the filtered conversation list.",
+     "dod": "Each loads with numbers that match the filtered conversation list.",
+     "role": "Supervisor",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "REP-005",
+     "row": 6,
+     "subModule": "CSAT",
+     "test": "CSAT report",
+     "steps": "1. Click Reports > CSAT.\n2. Check the [TEST] rating from CONV-026 is listed.",
+     "dod": "The test rating is shown.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "REP-006",
+     "row": 7,
+     "subModule": "Bot",
+     "test": "Bot report",
+     "steps": "1. Click Reports > Bot.\n2. Check bot-handled and handoff counts are shown for the range.",
+     "dod": "Bot-handled and handed-off counts are shown.",
+     "role": "Supervisor",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "REP-007",
+     "row": 8,
+     "subModule": "Export",
+     "test": "Download CSV",
+     "steps": "1. On Reports > Agents click the download button.\n2. Open the CSV and check it matches the screen.",
+     "dod": "The file opens and matches the screen.",
+     "role": "Supervisor",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "REP-008",
+     "row": 9,
+     "subModule": "Weekly Report",
+     "test": "Weekly report",
+     "steps": "1. Click Reports > Weekly Report and choose last week.\n2. Check Case Volume, Channel mix, Case Status Trend and Per-Case Detail show real numbers.\n3. Compare Case Volume with Reports > Conversations for the same week.",
+     "dod": "The report generates with real numbers that match the Conversations report for that week.",
+     "role": "Supervisor",
+     "priority": "P1",
+     "knownIssue": "Depends on the /metrics fix."
+    },
+    {
+     "id": "REP-009",
+     "row": 10,
+     "subModule": "Anomaly",
+     "test": "Anomaly report",
+     "steps": "1. Click Reports > Anomaly.\n2. Check it shows data or a clear no-anomaly message, not an error or blank page.",
+     "dod": "Loads with real data or a clear no-anomaly message.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Depends on the /metrics fix."
+    },
+    {
+     "id": "REP-010",
+     "row": 11,
+     "subModule": "Departments & PIC",
+     "test": "Department and PIC report",
+     "steps": "1. Click Reports > Departments & PIC.\n2. Check escalations per department and PIC are listed, including the CONV-021 test case.",
+     "dod": "Escalations per department and PIC are shown, including the test escalation.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Depends on the /metrics fix."
+    },
+    {
+     "id": "REP-011",
+     "row": 12,
+     "subModule": "Case Lifecycle",
+     "test": "Case lifecycle report",
+     "steps": "1. Click Reports > Case Lifecycle.\n2. Check time per stage is shown for recent cases.",
+     "dod": "Time per stage is shown for recent cases.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Depends on the /metrics fix."
+    },
+    {
+     "id": "REP-012",
+     "row": 13,
+     "subModule": "Exports",
+     "test": "Export to CSV, Excel and PDF",
+     "steps": "1. Open Weekly Report, Departments & PIC and Case Lifecycle.\n2. Export each as CSV, Excel and PDF where offered.",
+     "dod": "Each format downloads and opens with the same numbers as the screen.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Record which formats each report offers."
+    },
+    {
+     "id": "REP-013",
+     "row": 14,
+     "subModule": "Scheduled email",
+     "test": "Reports emailed to management",
+     "steps": "1. Check whether a report schedule can be set up.\n2. Schedule the Weekly Report to a Devoteam test address.",
+     "dod": "The report arrives by email on schedule as PDF or Excel.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Scheduled report email is off and needs SMTP. Not configured on proton."
+    },
+    {
+     "id": "REP-014",
+     "row": 15,
+     "subModule": "Power BI",
+     "test": "Power BI reads the CRM data",
+     "steps": "1. Open Power BI Desktop and connect to the BigQuery reporting dataset.\n2. Load the views and build a channel-source chart.",
+     "dod": "Views load and refresh with the latest CRM data.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": "Metrics sync to BigQuery is off (METRICS_SYNC_ENABLED); only the demo_proton dataset exists."
+    },
+    {
+     "id": "REP-015",
+     "row": 16,
+     "subModule": "After-hours",
+     "test": "After-hours volume and business-hours response time",
+     "steps": "1. Open the report covering after-hours volume.\n2. Compare in-hours and after-hours response times for last week.",
+     "dod": "After-hours case count and response times split by business hours are shown.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Depends on the /metrics fix and working-hours SLA (off)."
+    },
+    {
+     "id": "REP-016",
+     "row": 17,
+     "subModule": "Reopen rate",
+     "test": "Complaint reopen rate by dealer, department and PIC",
+     "steps": "1. Resolve and reopen a [TEST] case.\n2. Open the report with the reopen rate.",
+     "dod": "The reopen is counted and the rate is split by dealer, department and PIC.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Depends on the /metrics fix."
+    },
+    {
+     "id": "REP-017",
+     "row": 18,
+     "subModule": "Handling time",
+     "test": "AHT, after-call work and resolution time bands",
+     "steps": "1. Open the agent and call reports.\n2. Find average handling time, after-call work and the resolution time bands (same day, 1-2, 3-5, over 5 days).",
+     "dod": "All three measures are shown for the selected range.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Built, but switched off on proton (ACW_ENABLED). Turn it on in the tenant env first, or mark N/A. Depends on the /metrics fix."
+    },
+    {
+     "id": "REP-018",
+     "row": 19,
+     "subModule": "Agent NPS",
+     "test": "Agent NPS and customer rating from call and WhatsApp",
+     "steps": "1. Open the CSAT report and the Weekly Report Agent NPS section.\n2. Check ratings are split by agent and by channel.",
+     "dod": "Agent NPS and ratings show for call and WhatsApp.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "NPS survey and CSAT-by-agent are off. NPS tiles are empty."
+    },
+    {
+     "id": "REP-019",
+     "row": 20,
+     "subModule": "AI performance",
+     "test": "AI reports: resolution, AI vs human, deflection, escalations",
+     "steps": "1. Open Reports > Bot.\n2. Look for AI-resolved cases, AI vs human volume, AI satisfaction, escalation reasons, accuracy and deflection rate.",
+     "dod": "Each of the RFP's AI measures is shown, or listed as missing in Evidence.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Partly built. Bot report counts are not true AI vs human splits (Aug ledger). AI cost reporting is off."
+    },
+    {
+     "id": "REP-020",
+     "row": 21,
+     "subModule": "Keyword report",
+     "test": "Report by tag or keyword",
+     "steps": "1. Pick a label (for example dept_sales) or keyword.\n2. Run the report for last month.",
+     "dod": "Only cases with that label or keyword are counted.",
+     "role": "Supervisor",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "REP-021",
+     "row": 22,
+     "subModule": "Peak hours",
+     "test": "Popular complaint types and peak hours",
+     "steps": "1. Open the report with case types and hourly volume.",
+     "dod": "Top complaint types are ranked and busiest hours are shown.",
+     "role": "Supervisor",
+     "priority": "P3",
+     "knownIssue": "Depends on the /metrics fix."
+    },
+    {
+     "id": "REP-022",
+     "row": 23,
+     "subModule": "Dealer ranking",
+     "test": "Dealer 2-hour response rate and resolution ranking",
+     "steps": "1. Open Weekly Report > Dealer-escalation turnaround.",
+     "dod": "Dealers are ranked by 2-hour response rate, resolution rate and resolution time.",
+     "role": "Supervisor",
+     "priority": "P2",
+     "knownIssue": "Depends on the /metrics fix."
+    },
+    {
+     "id": "REP-023",
+     "row": 24,
+     "subModule": "Special states",
+     "test": "Trend of higher escalation, WIP, temporary closed and closed",
+     "steps": "1. Open Weekly Report > Case Status Trend.",
+     "dod": "Weekly counts for each state are shown as a trend.",
+     "role": "Supervisor",
+     "priority": "P3",
+     "knownIssue": "Depends on the /metrics fix."
+    }
+   ]
+  },
+  {
+   "tab": "Campaigns",
+   "rows": [
+    {
+     "id": "CAMP-001",
+     "row": 2,
+     "subModule": "Create",
+     "test": "Create a WhatsApp campaign",
+     "steps": "1. As admin click Campaigns > WhatsApp > create campaign.\n2. Title [TEST] campaign, pick an approved template, audience: a label applied only to the test contact.\n3. Save and check the audience and template are right.",
+     "dod": "The campaign saves with the right audience and template.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": "Send to test contacts only."
+    },
+    {
+     "id": "CAMP-002",
+     "row": 3,
+     "subModule": "Send",
+     "test": "Scheduled send",
+     "steps": "1. Set the schedule 10 minutes from now and save.\n2. Wait and check the test phone receives the message at that time.",
+     "dod": "The test phone receives the message at the scheduled time.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "CAMP-003",
+     "row": 4,
+     "subModule": "Results",
+     "test": "Campaign results",
+     "steps": "1. Open the campaign after it is sent.\n2. Check the sent and delivered counts.",
+     "dod": "Sent and delivered counts are shown.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    }
+   ]
+  },
+  {
+   "tab": "Help Center",
+   "rows": [
+    {
+     "id": "HELP-001",
+     "row": 2,
+     "subModule": "Portal",
+     "test": "Create a portal",
+     "steps": "1. As admin click Help Center > Portals > New portal.\n2. Name [TEST] Portal and save.\n3. Open the public URL and check it loads.",
+     "dod": "The portal saves and has a public URL.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": "Only if Help Center is in scope for Proton."
+    },
+    {
+     "id": "HELP-002",
+     "row": 3,
+     "subModule": "Articles",
+     "test": "Category and article",
+     "steps": "1. In the portal create a category [TEST] Service.\n2. Add an article [TEST] How to book a service, then Publish.\n3. Check it shows on the public portal.",
+     "dod": "The article shows on the public portal.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "HELP-003",
+     "row": 4,
+     "subModule": "Search",
+     "test": "Portal search",
+     "steps": "1. On the public portal search How to book.\n2. Check the [TEST] article is found.\n3. Delete the test portal afterwards.",
+     "dod": "The article is found.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    }
+   ]
+  },
+  {
+   "tab": "Settings",
+   "rows": [
+    {
+     "id": "SET-001",
+     "row": 2,
+     "subModule": "Account",
+     "test": "Account settings",
+     "steps": "1. As admin click Settings > Account Settings.\n2. Note the current values, then change the account name and language. Save.\n3. Check the change shows across the app.\n4. Set auto-resolve to a test value and save.\n5. Restore every original value.",
+     "dod": "Each setting saves and takes effect.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "SET-002",
+     "row": 3,
+     "subModule": "Agents",
+     "test": "Invite, change role, deactivate",
+     "steps": "1. Settings > Agents > Add Agent: name [TEST] Agent, a Devoteam test email, role Agent.\n2. Without SMTP, set the password and confirmation in /super_admin.\n3. Log in as the test agent in Window B.\n4. Change their role to Administrator, then back.\n5. Deactivate the agent and check they can no longer log in.",
+     "dod": "The agent can log in after setup. A deactivated agent cannot log in.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": "No SMTP for invites: set the password in super admin."
+    },
+    {
+     "id": "SET-003",
+     "row": 4,
+     "subModule": "Teams",
+     "test": "Create a team",
+     "steps": "1. Settings > Teams > Create new team: [TEST] Team.\n2. Add two test agents and save.\n3. Assign a [TEST] conversation to the team and check it shows under the team in the sidebar.",
+     "dod": "The team saves and the conversation shows under the team.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "SET-004",
+     "row": 5,
+     "subModule": "Inboxes: WhatsApp",
+     "test": "WhatsApp inbox settings",
+     "steps": "1. Settings > Inboxes > WhatsApp.\n2. Check the Settings, Collaborators and Configuration tabs open and show the right members.\n3. Send a test message and check it arrives.",
+     "dod": "Settings save and the message arrives.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "SET-005",
+     "row": 6,
+     "subModule": "Inboxes: Email",
+     "test": "Email inbox settings",
+     "steps": "1. Settings > Inboxes > Email > Configuration.\n2. Check IMAP and SMTP are enabled and the connection shows no error.\n3. Send a test email in (CONV-006) and reply out (CONV-007).",
+     "dod": "Both directions work.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": "Email inbox IMAP/SMTP not working (5 Nov audit). Fix before testing."
+    },
+    {
+     "id": "SET-006",
+     "row": 7,
+     "subModule": "Inboxes: hours and messages",
+     "test": "Business hours, greeting, CSAT and inactivity timing",
+     "steps": "1. Settings > Inboxes > WhatsApp > Business Hours.\n2. Set hours that exclude now and add an out-of-office message starting with [TEST]. Save.\n3. Message from the test phone and check the out-of-office message arrives.\n4. Check greeting, CSAT and inactivity settings save.\n5. Restore the original hours.",
+     "dod": "The out-of-office message is sent. Greeting, CSAT and inactivity settings save.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "SET-007",
+     "row": 8,
+     "subModule": "Labels",
+     "test": "Required labels exist",
+     "steps": "1. Settings > Labels.\n2. Check these exist: every dept_*, every dealer_*, escalate and escalation_replied.\n3. List any missing in Evidence.",
+     "dod": "dept_*, dealer_*, escalate and escalation_replied labels all exist.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "SET-008",
+     "row": 9,
+     "subModule": "Custom attributes",
+     "test": "Required attributes exist",
+     "steps": "1. Settings > Custom Attributes > Conversation.\n2. Check case_type, case_category, case_subcategory, case_detail, vehicle_model, escalation_notified_at and dealer_escalated_at exist.\n3. Check each has the expected type (list or text, date).",
+     "dod": "Taxonomy attributes, the escalation_* attributes and dealer_escalated_at exist with the right types.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "SET-009",
+     "row": 10,
+     "subModule": "Automation",
+     "test": "Automation rules",
+     "steps": "1. Settings > Automation > Add Automation Rule: [TEST] rule, when a conversation is created with message containing autotest, add label vip.\n2. Send autotest from the test phone and check the label is added once.\n3. Delete the test rule.\n4. Check rule 2 is still disabled.",
+     "dod": "The test rule fires once. Rule 2 stays disabled.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": "Keep automation rule 2 disabled."
+    },
+    {
+     "id": "SET-010",
+     "row": 11,
+     "subModule": "Agent bots",
+     "test": "Agent bot connection",
+     "steps": "1. Settings > Agent Bots.\n2. Check the bot is connected to the right inboxes.\n3. Send a test message and check the bot responds there and not in other inboxes.",
+     "dod": "The bot responds on the attached inboxes only.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "SET-011",
+     "row": 12,
+     "subModule": "Macros",
+     "test": "Create and run a macro",
+     "steps": "1. Settings > Macros > Add macro: [TEST] macro that adds a label and assigns a team.\n2. Run it from the macros button on a [TEST] conversation.\n3. Check both actions happened, then delete the macro.",
+     "dod": "Every action in the macro is applied.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "SET-012",
+     "row": 13,
+     "subModule": "Canned responses",
+     "test": "Create a canned response",
+     "steps": "1. Settings > Canned Responses > Add: short code testcr, content [TEST] Hello {{contact.name}}.\n2. In a conversation type /testcr and insert it.\n3. Check the name is filled in, then delete the canned response.",
+     "dod": "It can be found with / and is inserted correctly.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": ""
+    },
+    {
+     "id": "SET-013",
+     "row": 14,
+     "subModule": "Agent priorities",
+     "test": "Channel priority",
+     "steps": "1. Open the agent priorities page.\n2. Change the channel order (for example WhatsApp above Email) and save.\n3. Refresh and check the order stayed.\n4. Send one WhatsApp and one email at the same time and check which is assigned first.",
+     "dod": "The order saves and new conversations are routed in that order.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "SET-014",
+     "row": 15,
+     "subModule": "Integrations",
+     "test": "Webhooks and apps",
+     "steps": "1. Open Integrations.\n2. For each webhook send a test delivery and check it succeeds.\n3. On DMS / TSP check Base URL and Auth type are set (do not show the credential).\n4. Check connected apps show as connected.",
+     "dod": "Each webhook test returns success. Connected apps show as connected.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": ""
+    },
+    {
+     "id": "SET-015",
+     "row": 16,
+     "subModule": "Working hours for SLA",
+     "test": "SLA counts only working hours",
+     "steps": "1. Set business hours on the scoped inbox.\n2. Create a [TEST] case 30 minutes before closing and leave it overnight.\n3. Check the SLA timer the next morning.",
+     "dod": "The timer paused outside working hours.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": "Built, but switched off on proton (SLA_WORKING_HOURS_ENABLED). Turn it on in the tenant env first, or mark N/A."
+    }
+   ]
+  },
+  {
+   "tab": "Platform & security",
+   "rows": [
+    {
+     "id": "PLAT-001",
+     "row": 2,
+     "subModule": "Login",
+     "test": "Login and forgot password",
+     "steps": "1. Log out, log in with a test user.\n2. Click Forgot password? and enter the test user's email.",
+     "dod": "Login works. The reset email arrives.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "No SMTP for system email on proton, so the reset email may not send."
+    },
+    {
+     "id": "PLAT-002",
+     "row": 3,
+     "subModule": "MFA",
+     "test": "Two-step login",
+     "steps": "1. Open Profile settings and look for two-factor authentication.\n2. Turn it on with an authenticator app, log out and back in.",
+     "dod": "Login asks for the code and works with it.",
+     "role": "Agent",
+     "priority": "P2",
+     "knownIssue": "Check the option is visible; patch 0032 hid the Security settings menu."
+    },
+    {
+     "id": "PLAT-003",
+     "row": 4,
+     "subModule": "Password policy",
+     "test": "Password change every 3 months",
+     "steps": "1. Look for a password expiry setting.\n2. Change your own password from Profile.",
+     "dod": "Self-service change works. Expiry after 3 months is enforced.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": "Expiry prompt is not built."
+    },
+    {
+     "id": "PLAT-004",
+     "row": 5,
+     "subModule": "Idle timeout",
+     "test": "Session ends after idle time",
+     "steps": "1. Log in and leave the browser idle past the agreed timeout.\n2. Click anything.",
+     "dod": "The user is asked to log in again.",
+     "role": "Agent",
+     "priority": "P3",
+     "knownIssue": "Record the actual timeout."
+    },
+    {
+     "id": "PLAT-005",
+     "row": 6,
+     "subModule": "PII masking",
+     "test": "Personal data is masked",
+     "steps": "1. Open a conversation with a phone number and IC number in a message.\n2. Check how they show to an agent without full access.",
+     "dod": "Sensitive numbers are masked for roles that should not see them.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": "Not built; only a prompt-level mitigation exists."
+    },
+    {
+     "id": "PLAT-006",
+     "row": 7,
+     "subModule": "Data permissions",
+     "test": "Users only see their own data scope",
+     "steps": "1. Give a test role access to one team's conversations only.\n2. Log in as that user.",
+     "dod": "Only that team's conversations and reports are visible.",
+     "role": "Admin",
+     "priority": "P3",
+     "knownIssue": "Built, but switched off on proton (DATA_SCOPED_RBAC_ENABLED). Turn it on in the tenant env first, or mark N/A."
+    },
+    {
+     "id": "PLAT-007",
+     "row": 8,
+     "subModule": "Retention",
+     "test": "Data kept for 7 years",
+     "steps": "1. Check the retention settings for conversations, audit log and recordings.\n2. Check purge jobs are off or set to 7 years.",
+     "dod": "Nothing is deleted before 7 years.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": "Audit and recording purge jobs are off; confirm the written retention policy."
+    },
+    {
+     "id": "PLAT-008",
+     "row": 9,
+     "subModule": "Backup and restore",
+     "test": "Backups exist and can be restored",
+     "steps": "1. Check the VM disk snapshot schedule and the database backup schedule in GCP.\n2. Restore last night's backup to a test instance.",
+     "dod": "A backup from the last 24 hours exists and restores cleanly.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": "Not checked in the audit. Verify before go-live."
+    },
+    {
+     "id": "PLAT-009",
+     "row": 10,
+     "subModule": "Monitoring",
+     "test": "Uptime monitoring and alerts",
+     "steps": "1. Check GCP uptime checks and alert policies for the CRM URL.\n2. Stop nothing on prod; review the last 30 days of uptime.",
+     "dod": "An uptime check and an alert to the support team exist.",
+     "role": "Admin",
+     "priority": "P2",
+     "knownIssue": "Not checked in the audit."
+    }
+   ]
+  },
+  {
+   "tab": "Access by role",
+   "rows": [
+    {
+     "id": "RBAC-001",
+     "row": 2,
+     "subModule": "Admin",
+     "test": "Admin sees every module",
+     "steps": "1. Log in as admin.\n2. Click every sidebar item from Conversations to Settings.\n3. Check each page opens with no permission error.",
+     "dod": "Every module opens with no permission error.",
+     "role": "Admin",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "RBAC-002",
+     "row": 3,
+     "subModule": "Supervisor",
+     "test": "Supervisor sees operations, not admin settings",
+     "steps": "1. Log in as a supervisor.\n2. Click every sidebar item.\n3. Check Conversations, Reports, Workforce and Customer 360 open, and admin pages (Roles & Permissions, Custom features) are not shown.",
+     "dod": "Conversations, Reports, Workforce and Customer 360 open. Admin-only pages are hidden.",
+     "role": "Supervisor",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "RBAC-003",
+     "row": 4,
+     "subModule": "Agent",
+     "test": "Agent sees only daily-work modules",
+     "steps": "1. Log in as an agent.\n2. Check only Conversations, Contacts, My status and Alert preferences are in the sidebar.\n3. Note any extra item in Evidence.",
+     "dod": "Only Conversations, Contacts, My status and Alert preferences are available. Other pages are hidden.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    },
+    {
+     "id": "RBAC-004",
+     "row": 5,
+     "subModule": "Direct URL",
+     "test": "Hidden pages cannot be opened by URL",
+     "steps": "1. As admin copy the URLs of SLA Policies, Roles & Permissions and Escalation Routing.\n2. Log in as an agent and paste each URL.\n3. Check each is refused or redirected and no data shows.",
+     "dod": "Each URL is blocked or redirects. No data is shown.",
+     "role": "Agent",
+     "priority": "P1",
+     "knownIssue": ""
+    }
+   ]
+  }
+ ]
+}

@@ -33,7 +33,15 @@
 # are re-applied after the env restore, because the restore would otherwise
 # wipe the only copy of them once proton-agent is recreated. We re-apply rather
 # than skip recreating the agent: the lifecycle keys it also received must be
-# rolled back, and that needs a recreate.
+# rolled back, and that needs a recreate. The ACTIVE_RECORD_ENCRYPTION_* lines
+# (added later by proton_mfa_keys.sh, FIX-25) are always re-applied the same
+# way: restoring the pre-Wave-1 env would otherwise delete the MFA keys, which
+# are permanent once any user enrols or a channel credential is saved.
+#
+# Settings check: after the backend recreate (and after --agent) every env key
+# NAME the env script wrote is checked against the running container's
+# Settings.model_fields; a key with no field does nothing, so the names are
+# printed as a WARN and the operator decides. Never aborts, never prints values.
 # NOTE: platform-backend:latest and /opt/platform are shared by every tenant.
 set -euo pipefail
 
@@ -45,7 +53,9 @@ COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.tenant.yml}"
 ROOT="${DEPLOY_ROOT:-$(cd .. && pwd)}"      # /opt/platform
 BK="${BACKUP_DIR:-/backups/predeploy-20261110}"
 MIN_DISK_KB="${MIN_DISK_KB:-5242880}"       # 5 GB
-HEALTH_TRIES="${HEALTH_TRIES:-36}"          # x HEALTH_SLEEP seconds
+# 60 x 5 s = 5 min: Rails has taken up to ~3 min to boot on the VM; 36 tries
+# (3 min) left no margin and a slow boot would read as a failed deploy.
+HEALTH_TRIES="${HEALTH_TRIES:-60}"          # x HEALTH_SLEEP seconds
 HEALTH_SLEEP="${HEALTH_SLEEP:-5}"
 
 REPO="asia-southeast1-docker.pkg.dev/lv-playground-genai/proton-images/proton-chatwoot"
@@ -129,6 +139,27 @@ openapi_missing() {  # prints the missing paths, space-led, or nothing
 }
 openapi_body() { docker exec "$BACKEND" python3 -c \
   "import urllib.request; print(urllib.request.urlopen('http://localhost:8080/openapi.json', timeout=10).read().decode())" 2>/dev/null; }
+# settings_check CONTAINER MODULE ENV_SCRIPT_ARGS...: WARN (never fail) when an
+# env key name the env script writes is not a field of MODULE.Settings inside
+# CONTAINER. Only names cross into the container; values are never read.
+settings_check() {
+  local c="$1" mod="$2" what="$3"; shift 3
+  local names missing
+  names="$(ENV_FILE="$ENV_FILE" bash "$ENV_SCRIPT" --names "$@" | tr '\n' ' ')"
+  if ! missing="$(docker exec "$c" python3 -c \
+      "import sys; from $mod import Settings; f = set(Settings.model_fields); print(' '.join(n for n in sys.argv[1:] if n.lower() not in f))" \
+      $names 2>/dev/null)"; then
+    echo "WARN: could not read $c Settings fields; $what env keys not checked"
+    return 0
+  fi
+  missing="$(echo "$missing" | tr -s ' ' | sed 's/^ //; s/ $//')"
+  if [ -n "$missing" ]; then
+    echo "WARN: $c Settings has no field for: $missing"
+    echo "      (these keys do nothing in the running image; decide whether to continue)"
+  else
+    echo "ok: every $what env key is $( [ "$what" = agent ] && echo an || echo a ) $what Settings field"
+  fi
+}
 agent_ok() { docker exec "$AGENT" python3 -c \
   "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=5).status == 200 else 1)"; }
 
@@ -234,6 +265,7 @@ do_apply() {
   touch "$BK/backend-touched"
   run "${DC[@]}" up -d --build backend || die "backend build/up failed; run --rollback"
   backend_health
+  settings_check "$BACKEND" chatbot.platform.config backend
   step="recreate rails+sidekiq"
   touch "$BK/rails-touched"
   run "${DC[@]}" up -d --force-recreate chatwoot-rails chatwoot-sidekiq || die "rails recreate failed; run --rollback"
@@ -302,6 +334,9 @@ do_agent() {
   touch "$BK/agent-ran"
   run "${DC[@]}" up -d --no-build agent || die "agent up failed; run --rollback"
   wait_for "agent /healthz 200" agent_ok
+  # The agent image is not rebuilt: a lifecycle key newer than the running
+  # image has no field yet. Warn only.
+  settings_check "$AGENT" app.config agent --agent
   say "AGENT DONE"
 }
 
@@ -329,6 +364,14 @@ do_rollback() {
     set_kv ESCALATION_POLICY_DRY_RUN true
     echo "re-applied $n ESCALATION_POLICY_* lines (names only; copy in $BK/proton.env.pre-rollback)"
   fi
+  # MFA keys (proton_mfa_keys.sh, after Wave 1) are not in the pre-Wave-1
+  # backup; restoring it must not delete them. Re-applied whether or not
+  # --agent ran.
+  local mline mk mv m=0
+  while IFS= read -r mline; do
+    mk="${mline%%=*}"; mv="${mline#*=}"; set_kv "$mk" "$mv"; m=$((m+1))
+  done < <(grep '^ACTIVE_RECORD_ENCRYPTION_' "$BK/proton.env.pre-rollback" || true)
+  [ "$m" -eq 0 ] || echo "re-applied $m ACTIVE_RECORD_ENCRYPTION_* lines (MFA keys kept; names only)"
   # Every restore step runs before any health check; one failure never
   # stops the rest. Steps the apply never reached are skipped.
   if [ -e "$BK/backend-touched" ]; then

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Proton MFA enablement keys (FIX-25, RFP 2026_028 7.3). Run ON THE VM from
-# /opt/platform/deploy:
-#     sudo bash ../scripts/ops/proton_mfa_keys.sh [--dry-run | --rollback]
+# Proton MFA enablement keys (FIX-25, RFP 2026_028 7.3). Copy it to the VM's
+# /tmp the same way the Wave 1 runbook copies its scripts (scripts/ops is not
+# part of /opt/platform), then run ON THE VM from /opt/platform/deploy:
+#     sudo bash /tmp/proton_mfa_keys.sh [--dry-run | --rollback]
 #
 # Chatwoot shows the profile-page "Two-factor authentication" card only when the
 # three ActiveRecord encryption env vars are present. This script GENERATES them

@@ -106,4 +106,15 @@ for name in dollar hash bslash dq sq lead trail nl; do
   rc=0; FAKE_BAD="ESCALATION_POLICY_BAD=$val" bash "$S" --agent --dry-run >/dev/null 2>&1 || rc=$?
   [ "$rc" != 0 ] || fail "unsafe '$name' dry-run exited 0"
 done
+
+# --names: key names only, one per line, no file or container touched
+reset; cp tenants/proton.env pre_names
+names=$(bash "$S" --names)
+echo "$names" | grep -qx 'SLA_INBOX_IDS' || fail "--names backend"
+echo "$names" | grep -q '=' && fail "--names printed a value"
+echo "$names" | grep -q 'LIFECYCLE_' && fail "--names backend listed agent keys"
+anames=$(bash "$S" --names --agent)
+echo "$anames" | grep -qx 'LIFECYCLE_IDLE_WARN_MINUTES' || fail "--names --agent"
+echo "$anames" | grep -q 'SLA_INBOX_IDS\|ESCALATION_POLICY_' && fail "--names --agent listed other keys"
+cmp -s pre_names tenants/proton.env || fail "--names wrote env"
 echo "PASS"

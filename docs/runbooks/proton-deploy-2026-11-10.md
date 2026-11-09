@@ -73,7 +73,8 @@ Stops on the first failure and says which step failed. It:
 5. `docker compose ... pull chatwoot-rails chatwoot-sidekiq`
 6. `up -d --build backend`, backend health (`/healthz` 200, no `Traceback` since the
    container started, `/openapi.json` lists `/rsa`, `/admin/taxonomy`, `/escalation`
-   routes, warning if `rsa_customer_phone_migration_failed` appears), and only then
+   routes, warning if `rsa_customer_phone_migration_failed` appears), then the
+   Settings check (below), and only then
    `up -d --force-recreate chatwoot-rails chatwoot-sidekiq`
 7. fork health: `/api` data_services ok, sidekiq running, rails and sidekiq image tag
    rc16, `/app/login` 200, `features:` on the login page (warning only), and
@@ -82,7 +83,18 @@ Stops on the first failure and says which step failed. It:
 Expect the last lines: `ok: rails + sidekiq image tag v4.15.1-custom-rc16`, `ok: /app/.git_sha db674a88`
 and `APPLY DONE`. The apply also adds `customer_phone` to the RSA table (additive and
 harmless, but not removed by rollback).
-Rails takes up to about 3 minutes to come up; the script waits.
+Rails takes up to about 3 minutes to come up; the script waits up to 5 minutes
+(`HEALTH_TRIES=60` x 5 s; raised from 36 so a slow boot is not read as a failure).
+
+Settings check: after the backend recreate the script checks, inside
+`proton-backend`, that every env key name it wrote is a field of
+`chatbot.platform.config.Settings` (only names go into the container, values are
+never read). Expect `ok: every backend env key is a backend Settings field`. A
+`WARN: proton-backend Settings has no field for: ...` line does not stop the window:
+those keys do nothing in the running image. Decide whether that matters for the demo
+(usually it means the patch did not land as expected); `--agent` runs the same check
+against `proton-agent` with the lifecycle keys, and since the agent image is not
+rebuilt a WARN there is expected for any key newer than that image.
 
 Then in the browser: `/app/login` returns 200, sidebar renders, translate picker,
 FAQ strip, RSA phone field and the step 6 (48h) row are visible, RSA page loads
@@ -110,6 +122,18 @@ Before `--agent` the env file has no agent keys and a plain `up -d` would recrea
 
 ## 5. Rollback
 
+**Slow Rails boot is not a failed deploy.** If the apply stops at `rails /api 200 +
+data_services ok did not become healthy`, first re-check by hand before rolling back:
+
+```bash
+sudo docker exec proton-chatwoot-rails wget -qO- http://127.0.0.1:3000/api
+```
+
+If that now shows `"data_services":"ok"`, Rails was only slow: check `/app/login`
+in the browser and carry on (the remaining fork checks are the image tag and
+`/app/.git_sha`, which you can read with `docker inspect` / `docker exec ... cat
+/app/.git_sha`). Roll back only if `/api` still fails after a few more minutes.
+
 ```bash
 sudo bash /tmp/proton_deploy_2026-11-10.sh --rollback
 ```
@@ -120,7 +144,11 @@ Saves the current env to `/backups/predeploy-20261110/proton.env.pre-rollback`,
 restores the backed-up files (and deletes files the patch created), restores
 `proton.env`, forces `CHATWOOT_IMAGE` to rc15, and, if `--agent` ran, re-applies the
 `ESCALATION_POLICY_*` lines (the restore would otherwise delete the only copy; the
-agent is still recreated so its lifecycle keys roll back). Backend returns to
+agent is still recreated so its lifecycle keys roll back). It always re-applies the
+`ACTIVE_RECORD_ENCRYPTION_*` lines too (the MFA keys, if
+`docs/runbooks/proton-mfa-keys.md` ran after Wave 1): the pre-Wave-1 backup has none,
+and those keys are permanent once a user enrols or a channel credential is saved.
+Names only are printed (`re-applied N ACTIVE_RECORD_ENCRYPTION_* lines`). Backend returns to
 `platform-backend:pre-20261110` without a rebuild (rollback never builds; if that tag
 is missing it stops with instructions). Rollback does every restore first and skips
 steps the apply never reached (it uses the markers in the backup folder); health
@@ -151,6 +179,22 @@ Then re-run the three replay inputs from the Task 12 report (dashboard-light pho
 service-timing question, breakdown) against `/chat/turn` and check: photo reply has the
 three parts with the question last; the service reply asks questions instead of handing
 off; the breakdown handoff shows the safety line.
+
+## 6b. Known until Wave 2
+
+These are expected after Wave 1 and are fixed in code on `dev-yuda`, shipping with
+Wave 2 (`docs/runbooks/proton-wave2-deploy.md`). Do not open them as new bugs during
+the rehearsal:
+
+- **Idle close after ~25 min in office hours** with the running agent image (the
+  warn/close timing fix is in the agent rebuild, not in this window).
+- **Out-of-hours idle warning reads "in 0 minutes"** (same agent rebuild).
+- **A bounce of a plain agent reply gets no private note** (bounce matching by
+  Message-ID ships in the agent rebuild).
+- **AI draft on an escalation reply can be dropped at 10 s** (the backend call
+  timeout becomes a setting, `PROTON_BACKEND_TIMEOUT_SECONDS`, in the agent rebuild).
+- **"Last 7 days" (days_before) conversation filter still returns 500** until the
+  rc17 image (fork patch 0086).
 
 ## 7. The backend image is shared by every tenant
 

@@ -40,6 +40,8 @@ case "$1" in
   image) [ -e "$D/pre.tag" ] || exit 1 ;;
   tag) case "$*" in *pre-20261110*) touch "$D/pre.tag" ;; esac ;;
   exec) case "$2 $*" in
+      "proton-backend "*model_fields*) echo "$*" > "$D/backend.fieldcheck"; echo "${FAKE_MISSING:-}" ;;
+      "proton-agent "*model_fields*) echo "$*" > "$D/agent.fieldcheck"; echo "${FAKE_AGENT_MISSING:-}" ;;
       "proton-chatwoot-rails "*"/app/login"*) echo 'window.x = { features: [] }' ;;
       "proton-chatwoot-rails "*".git_sha"*) echo "${FAKE_SHA:-db674a88e1}" ;;
       "proton-chatwoot-rails "*) [ -n "${FAKE_API_BAD:-}" ] && exit 1; echo '{"version":"4","data_services":"ok"}' ;;
@@ -106,6 +108,11 @@ echo "$out" | grep -q 'git_sha db674a88' || fail "sha check"
 echo "$out" | grep -q 'sidekiq image tag\|rails + sidekiq image tag' || fail "sidekiq tag"
 echo "$out" | grep -q 'sidekiq image tag v4.15.1-custom-rc16' || fail "tag check"
 bash "$S" --apply >/dev/null 2>&1 && fail "double apply allowed"
+# I7: every backend key name is checked against Settings.model_fields
+grep -q 'chatbot.platform.config' "$D/backend.fieldcheck" || fail "backend field check not run"
+grep -q 'SLA_INBOX_IDS' "$D/backend.fieldcheck" || fail "backend field check missing key names"
+grep -q '3,5' "$D/backend.fieldcheck" && fail "field check got values"
+echo "$out" | grep -q 'ok: every backend env key is a backend Settings field' || fail "field check ok line"
 
 # --- agent
 out=$(bash "$S" --agent)
@@ -115,6 +122,12 @@ grep -q '"step_no":6' tenants/proton.env || fail "step 6 not in STEPS_JSON"
 [ "$(grep -c '^ESCALATION_POLICY_STEPS_JSON=' tenants/proton.env)" = 1 ] || fail "steps dup"
 grep -qx 'ESCALATION_POLICY_DRY_RUN=true' tenants/proton.env || fail "DRY_RUN not forced true"
 echo "$out" | grep -q 'ESCALATION_POLICY_ENABLED=true ESCALATION_POLICY_DRY_RUN=true' || fail "booleans not printed"
+grep -q 'app.config' "$D/agent.fieldcheck" || fail "agent field check not run"
+grep -q 'LIFECYCLE_IDLE_WARN_MINUTES' "$D/agent.fieldcheck" || fail "agent field check key names"
+grep -q 'ESCALATION_POLICY_' "$D/agent.fieldcheck" && fail "agent field check got backend-only keys"
+echo "$out" | grep -q 'ok: every agent env key is an agent Settings field' || fail "agent field ok line"
+# I6: the MFA script adds these later; rollback must keep them
+printf '%s\n' 'ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=mfa1secret' 'ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=mfa2secret' 'ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=mfa3secret' >> tenants/proton.env
 cp tenants/proton.env "$D/env.after-agent"
 grep -q 'up -d --no-build agent' "$D/docker.log" || fail "agent up"
 [ -e "$D/bk/agent-ran" ] || fail "agent marker"
@@ -127,10 +140,14 @@ grep -qx 'ESCALATION_POLICY_L1=a' tenants/proton.env || fail "ESCALATION line lo
 grep -q '"step_no":6' tenants/proton.env || fail "STEPS_JSON lost by rollback"
 grep -qx 'ESCALATION_POLICY_DRY_RUN=true' tenants/proton.env || fail "rollback DRY_RUN"
 grep -qx "CHATWOOT_IMAGE=${NEW%rc16}rc15" tenants/proton.env || fail "rollback image not rc15"
+grep -qx 'ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=mfa1secret' tenants/proton.env || fail "rollback wiped MFA key 1"
+grep -qx 'ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=mfa3secret' tenants/proton.env || fail "rollback wiped MFA salt"
+echo "$out" | grep -q 'mfa1secret' && fail "rollback printed an MFA key"
+echo "$out" | grep -q 're-applied 3 ACTIVE_RECORD_ENCRYPTION_\* lines' || fail "MFA re-apply line"
 grep -q 'SLA_INBOX_IDS' tenants/proton.env && fail "backend keys survived rollback"
 grep -q 'docker tag platform-backend:pre-20261110 platform-backend:latest' "$D/docker.log" || fail "rb retag"
 grep -q 'up -d --no-build --force-recreate backend' "$D/docker.log" || fail "rb backend not no-build"
-grep -v '^ESCALATION_POLICY_' tenants/proton.env | cmp -s - "$D/env.orig" || fail "rollback env (non-escalation lines) differs"
+grep -v -e '^ESCALATION_POLICY_' -e '^ACTIVE_RECORD_ENCRYPTION_' tenants/proton.env | cmp -s - "$D/env.orig" || fail "rollback env (non-escalation, non-MFA lines) differs"
 diff -r "$D/src.orig" "$R/backend" >/dev/null || fail "rollback source"
 [ ! -e "$R/backend/src/c.py" ] || fail "new file not removed"
 grep -q 'up -d --force-recreate chatwoot-rails chatwoot-sidekiq' "$D/docker.log" || fail "rb rails"
@@ -149,6 +166,15 @@ cmp -s "$D/drift.a" "$R/backend/src/a.py" || fail "source changed on drift"
 
 # --- new health / preflight cases
 reset_all(){ rm -f "$D/bk/"* "$D/pre.tag" "$D/backend.up" "$D/docker.log"; cp "$D/env.orig" tenants/proton.env; cp -r "$D/src.orig/." "$R/backend/"; rm -f "$R/backend/src/c.py"; echo "${NEW%rc16}rc15" > "$D/rails.image"; }
+reset_all
+out=$(FAKE_MISSING="SLA_INBOX_IDS ACW_ENABLED" bash "$S" --apply 2>&1) || { echo "$out"; fail "missing Settings field must only warn"; }
+echo "$out" | grep -q 'WARN: proton-backend Settings has no field for: SLA_INBOX_IDS ACW_ENABLED' || fail "missing field warn"
+echo "$out" | grep -q 'APPLY DONE' || fail "apply must complete despite field warn"
+# I6 without --agent: MFA keys added after apply survive a rollback
+printf '%s\n' 'ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=mfa1secret' >> tenants/proton.env
+out=$(bash "$S" --rollback 2>&1) || fail "rollback after MFA: $out"
+grep -qx 'ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=mfa1secret' tenants/proton.env || fail "rollback (no agent) wiped MFA key"
+grep -q 'ESCALATION_POLICY_' tenants/proton.env && fail "rollback without agent added escalation keys"
 reset_all
 FAKE_NO_OPENAPI=1 bash "$S" --apply >/dev/null 2>&1 && fail "baseline openapi gap not caught"
 [ ! -e "$D/bk/started" ] || fail "backup started despite baseline openapi gap"

@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # Proton tenant env changes for the 10 Nov demo fixes (FIX-06 scope, FIX-11,
-# FIX-28..FIX-39). Run ON THE VM from /opt/platform/deploy:
-#     bash ../scripts/ops/proton_env_2026-11-10.sh [--agent] [--dry-run | --rollback]
-#   (or wherever this file was copied; paths below are relative to the CWD)
+# FIX-28..FIX-39). Run ON THE VM from /opt/platform/deploy, from the copy the
+# Wave 1 runbook puts in /tmp (scripts/ops is not part of /opt/platform):
+#     bash /tmp/proton_env_2026-11-10.sh [--agent] [--dry-run | --rollback | --names]
+#   (normally run for you by proton_deploy_2026-11-10.sh; paths below are
+#   relative to the CWD, so cd /opt/platform/deploy first)
+#
+# --names prints only the key NAMES this run would write (backend, or with
+# --agent the agent lifecycle keys), one per line; the deploy script uses it to
+# check each name against the running container's Settings fields.
 #
 # Touches tenants/proton.env ONLY. Backs it up to tenants/proton.env.bak-20261110
 # (first run wins; re-runs never overwrite the backup). Each key is replaced in
@@ -76,10 +82,17 @@ mode=apply; agent=0
 for a in "$@"; do
   case "$a" in
     --agent) agent=1 ;;
-    --dry-run|--rollback) mode="$a" ;;
-    *) echo "usage: $0 [--agent] [--dry-run|--rollback]" >&2; exit 2 ;;
+    --dry-run|--rollback|--names) mode="$a" ;;
+    *) echo "usage: $0 [--agent] [--dry-run|--rollback|--names]" >&2; exit 2 ;;
   esac
 done
+
+if [ "$mode" = "--names" ]; then
+  # Names only, never values; reads no file and no container.
+  if [ "$agent" = 1 ]; then for kv in "${AGENT_KEYS[@]}"; do echo "${kv%%=*}"; done
+  else for kv in "${BACKEND_KEYS[@]}"; do echo "${kv%%=*}"; done; fi
+  exit 0
+fi
 
 if [ "$mode" = "--rollback" ]; then
   [ -f "$BACKUP" ] || { echo "no backup at $BACKUP" >&2; exit 1; }

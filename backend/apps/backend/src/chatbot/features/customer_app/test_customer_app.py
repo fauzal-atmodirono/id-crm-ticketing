@@ -31,7 +31,10 @@ CW = "http://chatwoot.test/api/v1/accounts/1"
 ORIGIN = "https://console.test"
 REPO = Path(__file__).resolve().parents[7]
 # The marker the app stamps on the conversations it opens (its own only).
-OWN: dict[str, Any] = {"additional_attributes": {"demo_customer_app": "ahmad"}}
+OWN: dict[str, Any] = {
+    "additional_attributes": {"demo_customer_app": "ahmad"},
+    "labels": ["demo_persona", "audit_test"],
+}
 
 
 def _settings(**over: Any) -> Settings:
@@ -190,7 +193,11 @@ def test_first_message_creates_the_demo_contact_and_a_pending_conversation() -> 
     body = json.loads(create_contact.calls.last.request.content)
     assert body["name"] == "[DEMO] Ahmad"
     assert body["phone_number"] == "+60000000101"
-    assert body["custom_attributes"] == {"vehicle_no": "DMO1101", "vehicle_model": "Proton X50"}
+    assert body["custom_attributes"] == {
+        "vehicle_no": "DMO1101",
+        "vehicle_model": "Proton X50",
+        "demo_seed": "demo_persona",
+    }
     conv = json.loads(open_conv.calls.last.request.content)
     assert conv["inbox_id"] == 1 and conv["contact_id"] == 7 and conv["status"] == "pending"
     assert conv["source_id"] == "demo-customer-app-ahmad"
@@ -225,7 +232,7 @@ def test_new_persona_contact_has_a_demo_name_and_no_attributes() -> None:
     )
     body = json.loads(create_contact.calls.last.request.content)
     assert body["name"] == "[DEMO] New caller"
-    assert "custom_attributes" not in body
+    assert body["custom_attributes"] == {"demo_seed": "demo_persona"}
 
 
 @respx.mock
@@ -567,3 +574,71 @@ def test_thread_shows_customer_and_proton_messages_only() -> None:
 def test_customer_view_drops_notes_and_activity() -> None:
     assert customer_view({"message_type": 1, "private": True}) is None
     assert customer_view({"message_type": 2}) is None
+
+
+@respx.mock
+def test_a_failed_labels_post_does_not_lose_the_message() -> None:
+    respx.get(f"{CW}/contacts/search").mock(
+        return_value=httpx.Response(200, json={"payload": [_contact()]})
+    )
+    respx.get(f"{CW}/contacts/7/conversations").mock(
+        return_value=httpx.Response(200, json={"payload": []})
+    )
+    respx.post(f"{CW}/conversations").mock(return_value=httpx.Response(200, json={"id": 90}))
+    respx.post(f"{CW}/conversations/90/labels").mock(return_value=httpx.Response(500))
+    post_msg = respx.post(f"{CW}/conversations/90/messages").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    res = _client().post("/customer-app/messages", data={"persona": "ahmad", "text": "hi"})
+
+    assert res.status_code == 200
+    assert post_msg.called
+
+
+@respx.mock
+def test_missing_demo_labels_are_merged_back_on_the_next_post() -> None:
+    respx.get(f"{CW}/contacts/search").mock(
+        return_value=httpx.Response(200, json={"payload": [_contact()]})
+    )
+    own = {**OWN, "labels": ["dealer_petaling_jaya"]}
+    respx.get(f"{CW}/contacts/7/conversations").mock(
+        return_value=httpx.Response(
+            200, json={"payload": [{"id": 91, "inbox_id": 1, **own, "status": "open"}]}
+        )
+    )
+    respx.get(f"{CW}/conversations/91/labels").mock(
+        return_value=httpx.Response(200, json={"payload": ["dealer_petaling_jaya", "audit_test"]})
+    )
+    labels = respx.post(f"{CW}/conversations/91/labels").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.post(f"{CW}/conversations/91/messages").mock(return_value=httpx.Response(200, json={}))
+
+    res = _client().post("/customer-app/messages", data={"persona": "ahmad", "text": "hi"})
+
+    assert res.status_code == 200
+    assert json.loads(labels.calls.last.request.content) == {
+        "labels": ["dealer_petaling_jaya", "audit_test", "demo_persona"]
+    }
+
+
+@respx.mock
+def test_labels_already_present_are_not_rewritten() -> None:
+    respx.get(f"{CW}/contacts/search").mock(
+        return_value=httpx.Response(200, json={"payload": [_contact()]})
+    )
+    respx.get(f"{CW}/contacts/7/conversations").mock(
+        return_value=httpx.Response(
+            200, json={"payload": [{"id": 92, "inbox_id": 1, **OWN, "status": "open"}]}
+        )
+    )
+    respx.post(f"{CW}/conversations/92/messages").mock(return_value=httpx.Response(200, json={}))
+
+    assert (
+        _client()
+        .post("/customer-app/messages", data={"persona": "ahmad", "text": "hi"})
+        .status_code
+        == 200
+    )
+    assert not [c for c in respx.calls if c.request.url.path.endswith("/labels")]

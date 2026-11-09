@@ -149,7 +149,8 @@ def build_customer_app_router(settings: Settings, channel: CustomerAppChannel) -
             if contact is None:
                 return {"conversation_id": None, "messages": []}
             contact_id = _demo_contact_id(contact, p)
-            conversation_id = await channel.latest_own_conversation(contact_id, inbox_id, p.id)
+            own = await channel.latest_own_conversation(contact_id, inbox_id, p.id)
+            conversation_id = int(own["id"]) if own else None
             raw = await channel.messages(conversation_id) if conversation_id else []
         except httpx.HTTPError as exc:
             _log.warning("customer_app_read_failed", error_type=type(exc).__name__)
@@ -191,10 +192,13 @@ def build_customer_app_router(settings: Settings, channel: CustomerAppChannel) -
                     )
                 else:
                     contact_id = _demo_contact_id(contact, p)
-                conversation_id = await channel.latest_own_conversation(contact_id, inbox_id, p.id)
-                if conversation_id is None:
+                own = await channel.latest_own_conversation(contact_id, inbox_id, p.id)
+                if own is None:
                     # The customer writes first: start a conversation for the bot.
                     conversation_id = await channel.open_conversation(contact_id, inbox_id, p.id)
+                else:
+                    conversation_id = int(own["id"])
+                    await channel.ensure_demo_labels(own)
                 await channel.post_incoming(conversation_id, body, upload)
         except httpx.HTTPError as exc:
             _log.warning("customer_app_post_failed", error_type=type(exc).__name__)

@@ -100,8 +100,12 @@ function enqueue(personaAtSend: string, text: string, file?: Blob, filename?: st
       error.value = null
       if (personaAtSend === personaId.value) await refresh()
     } catch (e) {
+      // Queued for a persona the user has since left: its error (and its
+      // words) belong to that persona, not to the thread on screen.
+      if (personaAtSend !== personaId.value) return
       error.value = e instanceof Error ? `Not sent (${e.message})` : 'Not sent'
-      if (text && !file && !draft.value) draft.value = text // give the words back
+      // Give the words back: a text, or a photo/video caption.
+      if (text && !draft.value) draft.value = text
     } finally {
       inFlight.value -= 1
     }

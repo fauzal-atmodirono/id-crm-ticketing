@@ -12,11 +12,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import httpx
+import structlog
 
 from chatbot.features.chat.customer360_router import _phones_match
 
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
+
+_log = structlog.get_logger(__name__)
 
 _TIMEOUT_SECONDS = 15.0
 
@@ -58,9 +61,12 @@ class CustomerAppChannel:
     async def create_contact(
         self, name: str, phone: str, custom_attributes: dict[str, Any] | None = None
     ) -> int:
-        body: dict[str, Any] = {"name": name, "phone_number": phone}
-        if custom_attributes:
-            body["custom_attributes"] = custom_attributes
+        # demo_seed marks the contact as demo data the demo console may reset.
+        body: dict[str, Any] = {
+            "name": name,
+            "phone_number": phone,
+            "custom_attributes": {**(custom_attributes or {}), DEMO_SEED_KEY: DEMO_SEED_VALUE},
+        }
         created = await self._request("POST", "/contacts", json=body)
         payload = created.get("payload") or created
         contact = payload.get("contact") or payload
@@ -68,7 +74,7 @@ class CustomerAppChannel:
 
     async def latest_own_conversation(
         self, contact_id: int, inbox_id: int, persona_id: str
-    ) -> int | None:
+    ) -> dict[str, Any] | None:
         """The newest unresolved conversation THIS APP opened for the persona
         (marker ``additional_attributes.demo_customer_app == persona_id``,
         stamped by ``open_conversation``). A seeded demo conversation, a phone
@@ -77,13 +83,13 @@ class CustomerAppChannel:
         JSON carries no source_id, hence the attribute marker."""
         listed = await self._request("GET", f"/contacts/{contact_id}/conversations")
         own = [
-            int(c["id"])
+            c
             for c in listed.get("payload") or []
             if c.get("inbox_id") == inbox_id
             and c.get("status") != "resolved"
             and (c.get("additional_attributes") or {}).get(APP_MARKER) == persona_id
         ]
-        return max(own) if own else None
+        return max(own, key=lambda c: int(c["id"])) if own else None
 
     async def open_conversation(self, contact_id: int, inbox_id: int, persona_id: str) -> int:
         """New conversation waiting for the bot (status pending), marked as
@@ -104,10 +110,45 @@ class CustomerAppChannel:
             },
         )
         conversation_id = int(created["id"])
-        await self._request(
-            "POST", f"/conversations/{conversation_id}/labels", json={"labels": list(DEMO_LABELS)}
-        )
+        try:
+            await self._request(
+                "POST",
+                f"/conversations/{conversation_id}/labels",
+                json={"labels": list(DEMO_LABELS)},
+            )
+        except httpx.HTTPError as exc:
+            # The marker attribute is already on it, so the next post finds
+            # this conversation and ensure_demo_labels retries.
+            _log.warning(
+                "customer_app_labels_failed",
+                conversation_id=conversation_id,
+                error_type=type(exc).__name__,
+            )
         return conversation_id
+
+    async def ensure_demo_labels(self, conversation: dict[str, Any]) -> None:
+        """Re-apply demo_persona + audit_test when missing (a labels POST that
+        failed at create). Merges with the current set (the endpoint replaces
+        it); never raises -- a missing label must not lose the message."""
+        listed = conversation.get("labels")
+        if isinstance(listed, list) and set(DEMO_LABELS) <= {str(x) for x in listed}:
+            return
+        conversation_id = int(conversation["id"])
+        try:
+            current = await self._request("GET", f"/conversations/{conversation_id}/labels")
+            labels = [str(x) for x in (current.get("payload") or [])]
+            if set(DEMO_LABELS) <= set(labels):
+                return
+            merged = list(dict.fromkeys([*labels, *DEMO_LABELS]))
+            await self._request(
+                "POST", f"/conversations/{conversation_id}/labels", json={"labels": merged}
+            )
+        except httpx.HTTPError as exc:
+            _log.warning(
+                "customer_app_labels_retry_failed",
+                conversation_id=conversation_id,
+                error_type=type(exc).__name__,
+            )
 
     async def messages(self, conversation_id: int) -> list[dict[str, Any]]:
         listed = await self._request("GET", f"/conversations/{conversation_id}/messages")

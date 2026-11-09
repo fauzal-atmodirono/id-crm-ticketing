@@ -93,8 +93,9 @@ def test_panel_renders_an_inline_player_that_does_not_preload(panel):
 
 def test_panel_is_hidden_unless_a_recording_is_available(panel):
     assert "v-if=\"state === 'available' || state === 'deleted'\"" in panel
-    # every failure (403 no permission, 404 off, 503 unconfigured) -> hidden
-    assert "if (mine === requestSeq) state.value = 'unavailable';" in panel
+    # 403 no permission, 404 off, 503 unconfigured -> no player
+    assert "const FINAL_STATUSES = [403, 404, 503];" in panel
+    assert "if (FINAL_STATUSES.includes(e?.status)) {" in panel
     # ordinary chats never ask
     assert "attrs.value.call_recording_object" in panel
     assert "attrs.value.recording_sid" in panel
@@ -120,8 +121,45 @@ def test_panel_offers_transcript_and_retranscribe(panel):
 def test_panel_reloads_when_the_recording_attribute_appears(panel_only):
     """The archive attribute lands minutes after the call; a conversation
     already open with recording_sid must pick it up."""
-    assert "attrs.value.call_recording_object,\n  ]," in panel_only
-    assert "reset();\n    if (isRecordedCall.value) load();" in panel_only
+    assert "attrs.value.call_recording_object || ''" in panel_only
+    assert "watch(\n  loadKey," in panel_only
+
+
+def test_panel_does_not_remint_on_unrelated_attribute_updates(panel_only):
+    """M2: the watcher keys on a string (conversation + recording object), not
+    a fresh array, and only a conversation change resets/unmounts."""
+    assert "const loadKey = computed(() =>" in panel_only
+    assert "`${props.conversationId}|${attrs.value.call_recording_object || ''}`" in panel_only
+    assert "watch(() => props.conversationId, reset);" in panel_only
+    assert "() => [" not in panel_only
+
+
+def test_panel_only_asks_for_agents_who_may_listen(panel_only):
+    assert (
+        "import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';"
+        in panel_only
+    )
+    assert "hasPermission('call_recording.listen')" in panel_only
+    assert "permitted.value && isRecordedCall.value" in panel_only
+
+
+def test_a_failed_refresh_keeps_a_working_player(panel):
+    assert "} else if (state.value === 'available') {\n        // A refresh failed: keep the player, say so." in panel
+    assert "message.value = 'Could not load — try again';" in panel
+
+
+def test_retranscribe_failure_does_not_tear_down_the_player(panel):
+    """M1: only 403, or 404 before anything loaded, collapses the player."""
+    assert "e?.status === 403 ||\n        (e?.status === 404 && state.value === 'idle')" in panel
+    assert "[403, 404, 503].includes(e?.status)" not in panel
+
+
+def test_starting_one_player_pauses_the_others(panel):
+    assert "const PLAY_EVENT = 'proton-call-recording-play';" in panel
+    assert "window.addEventListener(PLAY_EVENT, pauseIfOther);" in panel
+    assert "onScopeDispose(() => window.removeEventListener(PLAY_EVENT, pauseIfOther));" in panel
+    assert "if (audio && event.detail !== audio && !audio.paused) audio.pause();" in panel
+    assert "  async function onPlay() {\n    announcePlay();" in panel
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")

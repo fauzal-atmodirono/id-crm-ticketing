@@ -3,10 +3,10 @@ Subject: [PATCH 0094] conversation sidebar: in-CRM call recording player (signed
 
 diff --git a/app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue b/app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue
 new file mode 100644
-index 0000000..b34438a
+index 0000000..8b9ba9d
 --- /dev/null
 +++ b/app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,139 @@
 +<script setup>
 +// ProtonCallRecordingPanel.vue — OUR file (patch 0094). Plays a call's
 +// archived recording inside the conversation sidebar: the conversation's
@@ -19,9 +19,16 @@ index 0000000..b34438a
 +// Hidden unless the backend says a recording is available (or was deleted by
 +// retention): no permission (403), feature off (404), not configured (503) or
 +// any other failure all render nothing. Only asks for conversations the
-+// backend marked as recorded calls, so ordinary chats cost no request.
++// backend marked as recorded calls, and only for agents holding
++// `call_recording.listen` (the cached RBAC set, UX only -- the backend is the
++// boundary), so ordinary chats and other agents cost no request.
++//
++// The link is re-minted only when the conversation or its recording object
++// changes -- not on every custom-attribute update -- and without unmounting a
++// player that is in use.
 +import { computed, watch } from 'vue';
 +import { useMapGetter } from 'dashboard/composables/store';
++import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';
 +import { useProtonCallRecording } from 'dashboard/components/proton/useProtonCallRecording.js';
 +
 +const props = defineProps({
@@ -44,6 +51,9 @@ index 0000000..b34438a
 +    )
 +);
 +
++const { hasPermission } = useProtonPermissions();
++const permitted = computed(() => hasPermission('call_recording.listen'));
++
 +const {
 +  state,
 +  playUrl,
@@ -62,15 +72,22 @@ index 0000000..b34438a
 +  retranscribe,
 +} = useProtonCallRecording({ conversationId: () => props.conversationId });
 +
++// A string, so an unrelated attribute edit (a new custom_attributes object
++// with the same recording) does not re-fire the watcher.
++const loadKey = computed(() =>
++  permitted.value && isRecordedCall.value
++    ? `${props.conversationId}|${attrs.value.call_recording_object || ''}`
++    : ''
++);
++
++// Another conversation: start clean. Same conversation, new recording
++// object: load() swaps the link in place.
++watch(() => props.conversationId, reset);
 +watch(
-+  () => [
-+    props.conversationId,
-+    isRecordedCall.value,
-+    attrs.value.call_recording_object,
-+  ],
-+  () => {
-+    reset();
-+    if (isRecordedCall.value) load();
++  loadKey,
++  key => {
++    if (key) load();
++    else reset();
 +  },
 +  { immediate: true }
 +);
@@ -131,10 +148,10 @@ index 0000000..b34438a
 +</template>
 diff --git a/app/javascript/dashboard/components/proton/useProtonCallRecording.js b/app/javascript/dashboard/components/proton/useProtonCallRecording.js
 new file mode 100644
-index 0000000..2b52b84
+index 0000000..6466c16
 --- /dev/null
 +++ b/app/javascript/dashboard/components/proton/useProtonCallRecording.js
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,262 @@
 +// useProtonCallRecording.js — OUR file (patch 0094, shared with 0095).
 +//
 +// Everything a call-recording player needs from the backend
@@ -156,7 +173,10 @@ index 0000000..2b52b84
 +//
 +// Nothing here runs on its own: callers decide when to `load()` (the panel on
 +// open, the note bubble only when the agent presses a control).
-+import { ref, nextTick } from 'vue';
++//
++// One call plays at a time: starting any player announces itself on a window
++// event and every other player on the page pauses.
++import { ref, nextTick, onScopeDispose } from 'vue';
 +import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
 +import { adminRequest } from 'dashboard/api/protonAdmin';
 +
@@ -165,6 +185,16 @@ index 0000000..2b52b84
 +
 +// Re-mint this long before the link's real expiry, so a click never races it.
 +const EXPIRY_MARGIN_MS = 30000;
++
++const PLAY_EVENT = 'proton-call-recording-play';
++
++// The backend's "no player for you" answers: no permission, feature off or
++// no such recording, not configured. Anything else (502, network) is
++// transient and offers a retry instead.
++const FINAL_STATUSES = [403, 404, 503];
++
++// What the conversation list shows for an archive note (patch 0096).
++export const PROTON_CALL_NOTE_PREVIEW = '📞 Call recording';
 +
 +export function isProtonCallArchiveNote(content) {
 +  return (
@@ -197,7 +227,8 @@ index 0000000..2b52b84
 + * @param {{ conversationId: () => (number|string), messageId?: () => (number|string|null) }} opts
 + */
 +export function useProtonCallRecording({ conversationId, messageId = () => null }) {
-+  // idle (not asked yet) | available | deleted | unavailable (403/404/503/...)
++  // idle (not asked yet) | available | deleted | unavailable (403/404/503)
++  // | error (transient failure before anything loaded: retry offered)
 +  const state = ref('idle');
 +  const playUrl = ref('');
 +  const transcriptUrl = ref('');
@@ -211,6 +242,17 @@ index 0000000..2b52b84
 +  const audioEl = ref(null);
 +  let requestSeq = 0;
 +  let retriedAfterError = false;
++
++  function pauseIfOther(event) {
++    const audio = audioEl.value;
++    if (audio && event.detail !== audio && !audio.paused) audio.pause();
++  }
++  window.addEventListener(PLAY_EVENT, pauseIfOther);
++  onScopeDispose(() => window.removeEventListener(PLAY_EVENT, pauseIfOther));
++
++  function announcePlay() {
++    window.dispatchEvent(new CustomEvent(PLAY_EVENT, { detail: audioEl.value }));
++  }
 +
 +  function recordingPath() {
 +    return `/calls/${encodeURIComponent(conversationId())}/recording`;
@@ -241,8 +283,9 @@ index 0000000..2b52b84
 +    try {
 +      const res = await adminRequest(`${recordingPath()}${noteQuery()}`);
 +      if (mine !== requestSeq) return;
-+      if (res?.status === 'available' && res.play_url) {
-+        playUrl.value = absolute(res.play_url);
++      // A transcript-only archive note (per-note path) has no play_url.
++      if (res?.status === 'available' && (res.play_url || res.transcript_url)) {
++        playUrl.value = absolute(res.play_url || '');
 +        transcriptUrl.value = absolute(res.transcript_url || '');
 +        transcriptToken.value = res.transcript_token || '';
 +        canRetranscribe.value = !!res.can_retranscribe;
@@ -251,12 +294,21 @@ index 0000000..2b52b84
 +        state.value = 'available';
 +      } else if (res?.status === 'deleted') {
 +        state.value = 'deleted';
-+      } else {
++      } else if (state.value !== 'available') {
 +        state.value = 'unavailable';
 +      }
 +    } catch (e) {
-+      // 403 / 404 / 503 / network: no player, never an error banner.
-+      if (mine === requestSeq) state.value = 'unavailable';
++      if (mine !== requestSeq) return;
++      if (FINAL_STATUSES.includes(e?.status)) {
++        // 403 / 404 / 503: no player, never an error banner.
++        state.value = 'unavailable';
++      } else if (state.value === 'available') {
++        // A refresh failed: keep the player, say so.
++        message.value = 'Could not load — try again';
++      } else {
++        state.value = 'error';
++        message.value = 'Could not load — try again';
++      }
 +    } finally {
 +      if (mine === requestSeq) busy.value = false;
 +    }
@@ -279,6 +331,7 @@ index 0000000..2b52b84
 +  }
 +
 +  async function onPlay() {
++    announcePlay();
 +    if (!isStale()) return;
 +    audioEl.value?.pause();
 +    await remintAndResume(true);
@@ -328,7 +381,12 @@ index 0000000..2b52b84
 +        message.value = minutes
 +          ? `Re-transcribe limit reached — try again in ${minutes} min`
 +          : 'Re-transcribe limit reached — try again later';
-+      } else if ([403, 404, 503].includes(e?.status)) {
++      } else if (
++        e?.status === 403 ||
++        (e?.status === 404 && state.value === 'idle')
++      ) {
++        // No permission, or (before anything loaded) no such recording.
++        // A player that is already working is never torn down by this.
 +        state.value = 'unavailable';
 +      } else {
 +        message.value = 'Could not start re-transcription.';

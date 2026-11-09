@@ -113,7 +113,7 @@ def test_the_bubble_mints_its_own_note_lazily(bubble):
     # nothing on mount: no immediate watcher, no onMounted, load only in handlers
     assert "immediate" not in bubble and "onMounted" not in bubble
     assert "async function playRecording() {" in bubble
-    assert "if (state.value === 'idle') await load();" in bubble
+    assert "if (state.value === 'idle' || state.value === 'error') await load();" in bubble
 
 
 def test_the_bubble_never_autoplays(bubble):
@@ -140,8 +140,43 @@ def test_the_composable_sends_message_id(composable):
 def test_the_bubble_degrades_without_permission_or_after_retention(bubble):
     assert "📞 Call recording archived" in bubble
     assert "📞 Call recording deleted under the retention policy" in bubble
-    assert "v-if=\"state === 'unavailable'\"" in bubble
-    assert "v-else-if=\"state === 'deleted'\"" in bubble
+    assert "v-if=\"view === 'archived'\"" in bubble
+    assert "v-else-if=\"view === 'deleted'\"" in bubble
+    assert "if (state.value === 'unavailable') return 'archived';" in bubble
+
+
+def test_agents_without_listen_permission_get_no_controls_and_no_request(bubble):
+    """I-1: the cached RBAC set decides up front; a note costs no request."""
+    assert (
+        "import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';"
+        in bubble
+    )
+    assert "const permitted = computed(() => hasPermission('call_recording.listen'));" in bubble
+    assert "if (permitted.value) return 'player';" in bubble
+    assert "return permissionsLoading.value ? 'pending' : 'archived';" in bubble
+    # controls only render in the player view
+    template = bubble.split("<template>", 1)[1]
+    player = template.split("<template v-else>", 1)[1]
+    assert "▶ Play recording" in player and "📄 View transcript" in player
+    before = template.split("<template v-else>", 1)[0]
+    assert "<button" not in before
+
+
+def test_a_transcript_only_note_offers_only_the_transcript(bubble):
+    assert "const hasAudio = computed(() => !!audioObject.value);" in bubble
+    assert "v-if=\"hasAudio && state !== 'available'\"" in bubble
+    assert "v-if=\"state === 'available' && playUrl\"" in bubble
+    assert "hasAudio.value &&" in bubble  # no Re-transcribe without audio
+
+
+def test_a_transient_failure_offers_a_retry(bubble, composable):
+    assert "state.value = 'error';" in composable
+    assert "['idle', 'available', 'error'].includes(state.value)" in bubble
+
+
+def test_translate_is_disabled_for_archive_notes():
+    added = _added(P0095, MESSAGE)
+    assert "...(isProtonCallArchiveNote(props.content) ? { translate: false } : {})," in added
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")

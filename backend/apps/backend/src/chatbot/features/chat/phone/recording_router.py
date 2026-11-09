@@ -33,7 +33,8 @@ can open. This router makes those recordings playable inside the conversation
 - `POST /calls/{id}/recording/retranscribe` -- same person/permission/scope.
   Re-runs the transcriber on the archived audio in the background and posts a
   `[Re-transcribed]` private note (naming the note when `?message_id=` picked
-  one call). Limits: one per conversation per cooldown,
+  one call). Limits: one per conversation (per note with `?message_id=`) per
+  cooldown,
   plus per-user and tenant-wide hourly caps (429 + Retry-After).
 
 **Audit, fail-closed** (review R45). One row per minted LINK: the first byte
@@ -423,27 +424,31 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
         rec: ArchivedRecording = res.recording
         ttl = settings.call_recording_url_ttl_seconds
         path = f"/calls/{conversation_id}/recording"
-        token, expires = sign_token(
-            secret,
-            conversation_id=conversation_id,
-            object_name=rec.audio_object,
-            kind="audio",
-            user_id=user_id,
-            ttl_seconds=ttl,
-        )
         body: dict[str, Any] = {
             "status": "available",
             "conversation_id": conversation_id,
             **note,
-            "play_url": f"{path}/audio?t={token}",
-            "expires_at": datetime.fromtimestamp(expires, UTC).isoformat(),
             "size_bytes": res.size,
             "can_retranscribe": bool(
-                settings.phone_recording_transcription_enabled and post_note is not None
+                rec.audio_object
+                and settings.phone_recording_transcription_enabled
+                and post_note is not None
             ),
         }
+        # A transcript-only archive note (per-note path) has no audio link.
+        if rec.audio_object:
+            token, expires = sign_token(
+                secret,
+                conversation_id=conversation_id,
+                object_name=rec.audio_object,
+                kind="audio",
+                user_id=user_id,
+                ttl_seconds=ttl,
+            )
+            body["play_url"] = f"{path}/audio?t={token}"
+            body["expires_at"] = datetime.fromtimestamp(expires, UTC).isoformat()
         if rec.transcript_object:
-            t_token, _ = sign_token(
+            t_token, t_expires = sign_token(
                 secret,
                 conversation_id=conversation_id,
                 object_name=rec.transcript_object,
@@ -453,6 +458,7 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
             )
             body["transcript_url"] = f"{path}/transcript"
             body["transcript_token"] = t_token
+            body.setdefault("expires_at", datetime.fromtimestamp(t_expires, UTC).isoformat())
         _log.info(
             "call_recording_link_minted",
             conversation_id=conversation_id,
@@ -600,12 +606,14 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
                 detail="Transcription is disabled (PHONE_RECORDING_TRANSCRIPTION_ENABLED=false)",
             )
         res = await _resolve(conversation_id, scope, message_id)
-        if res.status != "available" or res.recording is None:
+        if res.status != "available" or res.recording is None or not res.recording.audio_object:
             raise HTTPException(status_code=404, detail="No call recording exists for this conversation")
 
         now = monotonic()
         cooldown = max(0, int(settings.call_recording_retranscribe_cooldown_seconds))
-        last = _last_retranscribe.get(conversation_id)
+        # Per call: a second call's note in the same conversation is its own key.
+        key = conversation_id if message_id is None else f"{conversation_id}#{message_id}"
+        last = _last_retranscribe.get(key)
         if last is not None and now - last < cooldown:
             raise _too_many(
                 "This call was re-transcribed recently; try again later", cooldown - (now - last)
@@ -624,15 +632,15 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
             )
 
         previous = last
-        _last_retranscribe[conversation_id] = now
+        _last_retranscribe[key] = now
         mine.append(now)
         _global_runs.append(now)
 
         def _rollback() -> None:
             if previous is None:
-                _last_retranscribe.pop(conversation_id, None)
+                _last_retranscribe.pop(key, None)
             else:
-                _last_retranscribe[conversation_id] = previous
+                _last_retranscribe[key] = previous
             if mine and mine[-1] == now:
                 mine.pop()
             if _global_runs and _global_runs[-1] == now:

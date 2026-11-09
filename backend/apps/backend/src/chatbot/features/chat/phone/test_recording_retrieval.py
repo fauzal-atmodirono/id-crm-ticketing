@@ -977,3 +977,69 @@ def test_retranscribe_of_a_foreign_note_is_404(settings, world) -> None:
         "/calls/42/recording/retranscribe?message_id=9", headers=SESSION
     )
     assert res.status_code == 404 and world.transcribed == []
+
+
+def test_the_note_path_without_a_bucket_is_empty_like_the_latest_path(settings, world) -> None:
+    _two_calls(world)
+    off = settings.model_copy(update={"phone_recording_archive_bucket": ""})
+    res = _note_meta(_client(off, world), 9)
+    assert res.status_code == 200 and res.json()["status"] == "empty"
+
+
+def test_retranscribe_cooldown_is_per_note(settings, world) -> None:
+    _two_calls(world)
+    client = _client(settings, world)
+    first = client.post("/calls/42/recording/retranscribe?message_id=9", headers=SESSION)
+    second = client.post("/calls/42/recording/retranscribe?message_id=11", headers=SESSION)
+    again = client.post("/calls/42/recording/retranscribe?message_id=9", headers=SESSION)
+    assert (first.status_code, second.status_code, again.status_code) == (202, 202, 429)
+
+
+TRANSCRIPT_ONLY = f"[Call archived to Cloud Storage]\n- transcript: gs://{BUCKET}/{TEXT}"
+
+
+def test_a_transcript_only_note_serves_its_transcript_and_no_audio(settings, world) -> None:
+    _two_calls(world)
+    world.messages["42"][0] = _backend_note(9, TRANSCRIPT_ONLY)
+    client = _client(settings, world)
+    body = _note_meta(client, 9).json()
+    assert body["status"] == "available" and "play_url" not in body
+    assert body["can_retranscribe"] is False
+    text = client.get(body["transcript_url"], headers={"X-Recording-Token": body["transcript_token"]})
+    assert text.text == "CUSTOMER: hello"
+
+
+def test_a_transcript_only_note_bound_elsewhere_is_404(settings, world) -> None:
+    _two_calls(world)
+    world.messages["42"][0] = _backend_note(9, TRANSCRIPT_ONLY)
+    world.storage.meta[TEXT] = {"conversation_id": "43"}
+    assert _note_meta(_client(settings, world), 9).status_code == 404
+
+
+def test_a_legacy_transcript_only_note_needs_the_call_sid(settings, world) -> None:
+    _two_calls(world)
+    world.messages["42"][0] = _backend_note(
+        9, f"[Call archived to Cloud Storage]\n- transcript: gs://{BUCKET}/{TEXT_2}"
+    )
+    world.storage.meta.pop(TEXT_2)  # unbound, and CA2 is not this conversation's call
+    assert _note_meta(_client(settings, world), 9).status_code == 404
+    assert TEXT_2 not in world.storage.meta
+    world.messages["42"][0] = _backend_note(9, TRANSCRIPT_ONLY)
+    world.storage.meta.pop(TEXT)  # unbound, CA1 matches phone-CA1 -> bound and served
+    assert _note_meta(_client(settings, world), 9).json()["status"] == "available"
+    assert world.storage.meta[TEXT]["conversation_id"] == "42"
+
+
+def test_a_transcript_only_note_cannot_be_retranscribed(settings, world) -> None:
+    _two_calls(world)
+    world.messages["42"][0] = _backend_note(9, TRANSCRIPT_ONLY)
+    res = _client(settings, world).post(
+        "/calls/42/recording/retranscribe?message_id=9", headers=SESSION
+    )
+    assert res.status_code == 404 and world.transcribed == []
+
+
+def test_the_latest_path_still_ignores_transcript_only_notes(settings, world) -> None:
+    world.conversations["42"]["custom_attributes"] = {}
+    world.messages["42"] = [_backend_note(9, TRANSCRIPT_ONLY)]
+    assert _meta(_client(settings, world))["status"] == "empty"

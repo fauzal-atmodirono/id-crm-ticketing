@@ -232,9 +232,16 @@ class ConversationLogPort(Protocol):
         subject: str,
         customer_name: str | None,
         customer_phone: str | None,
+        *,
+        attach_by_phone: bool = False,
     ) -> str:
         """Find-or-create the conversation's ticket (external_id == session_id).
-        Returns the ticket id."""
+        Returns the ticket id.
+
+        ``attach_by_phone`` (phone caller context): the phone bridge vouches
+        that ``customer_phone`` is the caller's own number, so an
+        implementation may attach to the existing contact that owns it.
+        Implementations without contacts ignore it."""
         ...
 
     async def rotate_conversation_ticket(
@@ -249,8 +256,14 @@ class ConversationLogPort(Protocol):
         and can no longer accept comments. Returns the new ticket id."""
         ...
 
-    async def find_conversation_ticket(self, session_id: str) -> str | None:
-        """Resolve an EXISTING ticket for this session, in ANY status
+    async def find_conversation_ticket(
+        self, session_id: str, *, phone: str | None = None
+    ) -> str | None:
+        """``phone`` (optional): the caller's number, letting an
+        implementation find a call attached to an existing contact; ignored
+        where it means nothing.
+
+        Resolve an EXISTING ticket for this session, in ANY status
         (unlike ``ensure_conversation_ticket``'s reuse check, which is
         active-only) -- and, critically, NEVER create one. For callers that
         must attach data to a conversation that should already exist (e.g.

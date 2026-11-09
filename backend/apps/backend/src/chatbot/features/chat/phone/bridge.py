@@ -33,6 +33,7 @@ from chatbot.features.chat.phone.caller_context import (
     dealer_display,
     mask,
     match_dealer,
+    names_contradict,
     names_match,
     normalise_mobile,
     parse_caller_details,
@@ -213,10 +214,11 @@ class PhoneBridge:
         # The number contact writes are pinned to (fix round 2): the one that
         # was confirmed, never a number told later in the call.
         self._confirmed_phone: str | None = self._caller_phone if self._caller_confirmed else None
-        # The last told-number lookup and whether its one name check (R38)
-        # has been used.
+        # The last told-number lookup, and the numbers whose one name check
+        # (R38) this call has already used -- per NUMBER, so re-telling the
+        # same number buys no second guess.
         self._spoken_pending: CallerContext | None = None
-        self._spoken_try_used = False
+        self._spoken_tried: set[str] = set()
         # Set once the caller is confirmed (or no longer worth waiting for); a
         # call with no confirmed number defers its conversation create until
         # then, so the conversation lands on the right contact.
@@ -544,8 +546,10 @@ class PhoneBridge:
 
     def _attach_kw(self, customer_phone: str | None) -> dict[str, bool]:
         """`attach_by_phone=True` (the adapter may attach to the contact that
-        owns the number) only for a confirmed number. Passed as a keyword
-        only when true, so log ports without the parameter are untouched."""
+        owns the number) only for a confirmed number. Every ConversationLogPort
+        implementation accepts the keyword (Zendesk/NoOp ignore it); it is
+        still sent only when true so a flag-off call's create is
+        byte-identical to before."""
         if customer_phone and self._caller_confirmed and customer_phone == self._confirmed_phone:
             return {"attach_by_phone": True}
         return {}
@@ -555,10 +559,10 @@ class PhoneBridge:
         a first name matching what the caller said (server-side, never the
         model's judgement)."""
         ctx = self._spoken_pending
-        if ctx is None or not said_name or self._spoken_try_used:
+        if ctx is None or not said_name or ctx.phone in self._spoken_tried:
             return False
-        # R38: one name check per looked-up number, whatever its outcome.
-        self._spoken_try_used = True
+        # R38: one name check per number per call, whatever its outcome.
+        self._spoken_tried.add(ctx.phone)
         hits = [c for c in ctx.candidates if names_match(said_name, c.name)]
         if len(hits) != 1:
             if self._caller_service is not None:
@@ -599,7 +603,7 @@ class PhoneBridge:
             )
         await self._create_ticket_at_start(call_sid)
 
-    async def _handle_lookup_caller(self, args: dict[str, object]) -> dict[str, Any]:
+    async def _handle_lookup_caller(self, args: dict[str, object]) -> dict[str, Any]:  # noqa: PLR0911 -- one return per tool outcome
         if self._caller_service is None:
             return {"error": "unknown tool: lookup_caller"}
         if self._caller_lookups >= _MAX_CALLER_LOOKUPS:
@@ -623,15 +627,26 @@ class PhoneBridge:
                 "again with mobile_number and caller_name.",
             }
         self._caller_lookups += 1
-        # A new number replaces whatever was told before; an unused
-        # confirmation of an earlier number is dropped.
+        if (
+            self._caller_confirmed
+            and phone == self._confirmed_phone
+            and self._caller_ctx is not None
+            and self._caller_ctx.single is not None
+        ):
+            # The already-confirmed number told again: same answer, no new
+            # name check.
+            return self._match_response(self._caller_ctx.single)
+        # A new number replaces whatever was told before; a confirmation of
+        # an earlier number is dropped.
         self._caller_source = SOURCE_SPOKEN
         self._unconfirm_spoken()
         self._spoken_pending = None
-        self._spoken_try_used = False
         self._caller_phone = phone
         matched = False
-        if self._caller_service.allow_spoken_lookup(phone):
+        if phone in self._spoken_tried:
+            # Its one name check was used earlier in this call (round 3).
+            _log.info("phone_caller_lookup_retry_refused", phone=mask(phone))
+        elif self._caller_service.allow_spoken_lookup(phone):
             ctx = await self._caller_service.lookup(phone, SOURCE_SPOKEN)
             self._spoken_pending = ctx
             matched = self._confirm_spoken(said_name)
@@ -646,7 +661,10 @@ class PhoneBridge:
             # The same answer for "no such number" and "wrong name": the
             # tool is not an oracle for who owns a number.
             return {"status": "no_match", "guidance": NO_MATCH_GUIDANCE}
-        c = self._caller_ctx.single
+        return self._match_response(self._caller_ctx.single)
+
+    @staticmethod
+    def _match_response(c: Any) -> dict[str, Any]:
         result: dict[str, Any] = {"status": "match", "vehicles": spoken_match_vehicles(c)}
         if c.last_dealer:
             result["usual_dealer"] = dealer_display(c.last_dealer)
@@ -658,11 +676,12 @@ class PhoneBridge:
             return {"error": "unknown tool: save_caller_details"}
         details = parse_caller_details(dict(args))
         if details.name and self._caller_source == SOURCE_SPOKEN and self._spoken_pending:
-            # A told number: a name that contradicts its confirmation undoes
-            # it. It never CONFIRMS one -- the lookup's caller_name was the
-            # one try (R38).
+            # A told number: a name that CONTRADICTS its confirmation (a
+            # distinctive word that does not fit) undoes it; a shorter one
+            # ("Muhammad" after "Muhammad Hafiz") does not. It never
+            # CONFIRMS one -- the lookup's caller_name was the one try (R38).
             single = self._single_candidate() if self._caller_confirmed else None
-            if single is not None and not names_match(details.name, single.name):
+            if single is not None and names_contradict(details.name, single.name):
                 self._unconfirm_spoken()
         self.caller_details = self.caller_details.merged(details)
         if details.dealer_text:

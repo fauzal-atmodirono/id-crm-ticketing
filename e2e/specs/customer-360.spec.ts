@@ -3,7 +3,7 @@ import { expect } from '../lib/fixtures';
 import { Api } from '../lib/api';
 import { RUN_ID, TEST_PREFIX } from '../lib/env';
 import { manual, trackerModule } from '../lib/tracker';
-import { bodyText, c360Search } from '../lib/ui';
+import { bodyText, c360Search, columnHeader } from '../lib/ui';
 
 const AHMAD = '60000000101';
 
@@ -12,7 +12,7 @@ trackerModule('Customer 360', {
     const ms = await c360Search(page, AHMAD);
     const text = await bodyText(page);
     expect(text, 'contact found').toMatch(/Ahmad/);
-    await expect(page.getByRole('columnheader', { name: 'Inbox' }).first()).toBeVisible();
+    await expect(columnHeader(page, 'Inbox'), 'conversations table with an Inbox column').toBeVisible();
     await expect(page.getByRole('heading', { name: 'RSA incidents' })).toBeVisible();
     const convs = await page.locator('table').first().locator('tbody tr').count();
     ev.add(`[DEMO] Ahmad (demo persona) by phone in ${ms} ms: contact, ${convs} conversation(s) with Inbox and Status, RSA incidents section ${/No RSA incidents found/.test(text) ? 'empty' : 'listed'}`);

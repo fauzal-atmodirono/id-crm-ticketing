@@ -5,7 +5,7 @@ import { expect, test } from '../lib/fixtures';
 import { Api } from '../lib/api';
 import { FLAGS, KEY_PREFIX, TEST_PREFIX } from '../lib/env';
 import { trackerModule } from '../lib/tracker';
-import { expectNoError, openApp, openConversation, revealInPanel } from '../lib/ui';
+import { columnHeader, expectNoError, openApp, openConversation, revealInPanel } from '../lib/ui';
 
 type Node = { key: string; label: string; level: number; parent?: string | null; children?: Node[]; department?: string | null };
 const walk = (nodes: Node[]): Node[] => nodes.flatMap(n => [n, ...walk(n.children ?? [])]);
@@ -33,7 +33,8 @@ trackerModule('Case taxonomy', {
     await openApp(page, 'proton/taxonomy');
     await expect(page.getByRole('heading', { name: 'Case Taxonomy' })).toBeVisible();
     await expectNoError(page);
-    for (const col of ['Level', 'Department', 'Key', 'Label']) await expect(page.getByRole('columnheader', { name: col, exact: true }).first()).toBeVisible();
+    // Plain <th> has role "cell" in Playwright, so headers are matched by element.
+    for (const col of ['Level', 'Department', 'Key', 'Label']) await expect(columnHeader(page, col), `${col} column`).toBeVisible({ timeout: 30_000 });
     const n = walk(await tree(api)).length;
     ev.add(`tree loads with Level/Department/Key/Label; ${n} active nodes (346 when seeded)`);
     expect(n).toBeGreaterThanOrEqual(300);

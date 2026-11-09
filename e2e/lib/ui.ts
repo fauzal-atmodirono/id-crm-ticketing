@@ -61,7 +61,30 @@ export async function revealInPanel(page: Page, value: string | RegExp, section 
 
 /** Sidebar entry by its visible label. */
 export function sidebarItem(page: Page, label: string | RegExp) {
-  return page.locator('aside').first().getByText(label, { exact: typeof label === 'string' }).first();
+  // Visible only: sub-items of collapsed groups (e.g. Knowledge > Settings)
+  // carry the same label but are hidden, and must not shadow the top-level one.
+  return page.locator('aside').first().getByText(label, { exact: typeof label === 'string' }).filter({ visible: true }).first();
+}
+
+/**
+ * Table column header by its text. Plain <th> without scope="col" has the
+ * ARIA role "cell" in Playwright, not "columnheader", so match the element.
+ */
+export function columnHeader(page: Page, name: string) {
+  return page.locator('th').filter({ hasText: new RegExp(`^\\s*${name}\\s*$`) }).first();
+}
+
+/**
+ * Composer: type "/<short code>" and pick that canned response from the
+ * mention box. The box first lists every canned response and only narrows
+ * after its search request returns, so pressing Enter early inserts whichever
+ * response happens to be first; click the matching item instead.
+ */
+export async function insertCanned(page: Page, code: string): Promise<void> {
+  await page.keyboard.type(`/${code}`);
+  const item = page.locator('.mention--box button').filter({ hasText: code }).first();
+  await expect(item, `canned response "${code}" offered after /`).toBeVisible({ timeout: 15_000 });
+  await item.click();
 }
 
 /** Seconds between two Date.now() values, 1 decimal. */
@@ -120,7 +143,9 @@ export async function newChatSession(page: Page): Promise<void> {
 /** Search Customer 360 and return how long the result took to render (ms). */
 export async function c360Search(page: Page, q: string): Promise<number> {
   await openApp(page, 'proton/customer360'); // fresh page, so the timing below is this search only
-  await page.getByPlaceholder('Phone number or vehicle number').fill(q);
+  // The placeholder ends in the tenant's term for the asset id (automotive:
+  // "vehicle no.", patch 0076), so only its fixed start is matched.
+  await page.getByPlaceholder(/^Phone number or /).fill(q);
   const t0 = Date.now();
   await page.getByRole('button', { name: 'Search', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Contact', exact: true })).toBeVisible({ timeout: 30_000 });

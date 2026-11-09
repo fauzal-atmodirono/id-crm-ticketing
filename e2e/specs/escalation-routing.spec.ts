@@ -24,7 +24,8 @@ trackerModule('Escalation Routing', {
 
   'ESC-002': async ({ page, api, ev }) => {
     await openApp(page, PAGE);
-    await expect(page.getByText('Dealers', { exact: true }).first()).toBeVisible();
+    // The dealer -> email section is "Dealer groups" since patch 0046 (no plain "Dealers" heading).
+    await expect(page.getByRole('heading', { name: /Dealer groups/ }).first()).toBeVisible();
     const d = Api.must(await api.be('/admin/escalation/dealers'), 'dealers');
     const list = (d.dealers ?? d) as any[];
     ev.add(`${list.length} dealer(s): ${list.map(x => x.dealer ?? x.slug).join(', ')}`);
@@ -92,7 +93,9 @@ trackerModule('Escalation Routing', {
 
   'ESC-012': async ({ page, api, ev }) => {
     const rows = Api.must(await api.be('/admin/audit?limit=200&event_type=escalation_notify'), 'escalation audit').audit as any[];
-    expect(rows.length, 'escalation notifications recorded').toBeGreaterThan(0);
+    // Step 1 of the row is "run the ESC escalation tests above" (ESC-008..010,
+    // all manual). With none run on this tenant there is nothing to audit yet.
+    if (!rows.length) ev.blocked('no escalation notification has been sent on this tenant yet (ESC-008..010 are manual and must run first; the ladder is in dry run)');
     const complete = rows.filter(r => (r.recipients?.length ?? 0) > 0 && r.at && r.actor);
     expect(complete.length, 'entries name recipient, actor and time').toBeGreaterThan(0);
     const transports = [...new Set(rows.map(r => r.transport).filter(Boolean))].join('/');

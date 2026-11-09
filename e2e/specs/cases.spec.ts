@@ -31,7 +31,7 @@ trackerModule('Cases', {
     await expect(rows(page).first()).toBeVisible({ timeout: 45_000 });
     await filter(page, 'Status').selectOption('open');
     const types = await filter(page, 'Case type').locator('option').allInnerTexts();
-    const type = types.map(t => t.trim()).find(t => t && !/^all$/i.test(t));
+    const type = types.map(t => t.trim()).find(t => t && !/^all\b/i.test(t)); // skip the "All case types" option
     if (type) await filter(page, 'Case type').selectOption({ label: type });
     await settle(page);
     const n = await rows(page).count();

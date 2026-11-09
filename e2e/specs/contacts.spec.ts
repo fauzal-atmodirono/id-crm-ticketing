@@ -40,7 +40,15 @@ trackerModule('Contacts', {
       await api.cw('custom_filters', { method: 'POST', body: { custom_filter: { name: `${TEST_PREFIX} segment`, type: 'contact', query: { payload } } } }),
       'save segment',
     );
-    await openApp(page, `contacts/segments/${seg.id}`);
+    // Reopen it the way a person does: from Contacts, then the segment's link.
+    // A cold deep link renders before the segment list is loaded (empty title,
+    // empty list), so it is only the fallback.
+    await openApp(page, 'contacts');
+    const link = page.locator(`aside a[href*="contacts/segments/${seg.id}"]`).first();
+    if (await link.isVisible({ timeout: 10_000 }).catch(() => false)) await link.click();
+    else await openApp(page, `contacts/segments/${seg.id}`);
+    await expect(page).toHaveURL(new RegExp(`contacts/segments/${seg.id}`));
+    await expect(page.getByText(`${TEST_PREFIX} segment`).first(), 'segment title shown').toBeVisible({ timeout: 30_000 });
     await expect(page.getByText(c.name).first(), 'segment reopens with the same filter').toBeVisible({ timeout: 30_000 });
     ev.add(`segment "${TEST_PREFIX} segment" reopens and lists the [TEST] contacts`);
     await ev.shot(page);

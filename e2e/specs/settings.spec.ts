@@ -5,7 +5,7 @@ import { expect } from '../lib/fixtures';
 import { Api } from '../lib/api';
 import { INBOX, KEY_PREFIX, RUN_ID, TEST_PREFIX } from '../lib/env';
 import { manual, trackerModule } from '../lib/tracker';
-import { bodyText, expectNoError, openApp, openConversation } from '../lib/ui';
+import { bodyText, expectNoError, insertCanned, openApp, openConversation } from '../lib/ui';
 
 trackerModule('Settings', {
   'SET-001': async ({ page, api, ev }) => {
@@ -23,7 +23,10 @@ trackerModule('Settings', {
   'SET-004': async ({ page, api, ev }) => {
     await openApp(page, `settings/inboxes/${INBOX.whatsapp}`);
     for (const tab of ['Settings', 'Collaborators', 'Configuration']) {
-      const t = page.getByRole('tab', { name: tab }).or(page.locator('a, button', { hasText: new RegExp(`^\\s*${tab}\\s*$`) })).first();
+      // Scoped to the page body: the sidebar has a hidden Knowledge > "Settings"
+      // link that otherwise matches first.
+      const main = page.locator('main').first();
+      const t = main.getByRole('tab', { name: tab }).or(main.locator('a, button', { hasText: new RegExp(`^\\s*${tab}\\s*$`) })).filter({ visible: true }).first();
       await t.click();
       await expectNoError(page);
       ev.add(`${tab} tab opens`);
@@ -136,9 +139,10 @@ trackerModule('Settings', {
       await openConversation(page, conv.id);
       const editor = page.locator('.ProseMirror').first();
       await editor.click();
-      await page.keyboard.type(`/${code}`);
-      await expect(page.getByText(code).first(), 'found with /').toBeVisible({ timeout: 15_000 });
-      await page.keyboard.press('Enter');
+      // insertCanned waits for this response in the "/" box and clicks it (the
+      // typed "/code" itself also matched a plain text search, and Enter took
+      // whichever response was listed first).
+      await insertCanned(page, code);
       await expect(editor).toContainText(`[TEST] Hello ${contact.name}`);
       ev.add(`/${code} found and inserted with the contact name filled in`);
       await ev.shot(page);

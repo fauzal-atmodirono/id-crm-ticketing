@@ -5,7 +5,7 @@
 import type { Page } from '@playwright/test';
 import { expect } from '../lib/fixtures';
 import { Api } from '../lib/api';
-import { RUN_ID, TEST_PREFIX } from '../lib/env';
+import { KEY_PREFIX, RUN_ID, TEST_PREFIX } from '../lib/env';
 
 // Test KB content is deliberately meaningless, so it can never answer a real
 // customer: a run-scoped marker, no product, warranty or dealer wording.
@@ -97,7 +97,11 @@ trackerModule('Knowledge', {
     const bad = ['question,keywords', `"${TEST_PREFIX} ${MARK} bad row?","${MARK.toLowerCase()}"`].join('\n');
     await input.setInputFiles({ name: 'bad.csv', mimeType: 'text/csv', buffer: Buffer.from(bad) });
     await expect(page.getByText(/Bulk upload failed|Nothing imported/).first()).toBeVisible({ timeout: 30_000 });
-    const msg = (await bodyText(page)).match(/(Bulk upload failed[^\n]*|Nothing imported[^\n]*)/)?.[0] ?? '';
+    // The banner's first line is generic; the per-row reasons ("row 2: question
+    // and answer are required") are listed under it (patch 0087).
+    const text = await bodyText(page);
+    const header = text.match(/(Bulk upload failed[^\n]*|Nothing imported[^\n]*)/)?.[0] ?? '';
+    const msg = [header, ...(text.match(/^\s*row \d+:.*$/gm) ?? []).map(l => l.trim())].join(' ');
     expect(msg, 'error names the missing column').toMatch(/answer/i);
     expect(await count(), 'bad file imports nothing').toBe(before + 5);
     ev.add(`bad CSV: "${msg.slice(0, 120)}", nothing imported`);
@@ -113,7 +117,9 @@ trackerModule('Knowledge', {
     await expect
       .poll(async () => String((await api.be(`/kb/knowledge/${r.id}`)).data?.status ?? ''), { timeout: 90_000, message: 'document indexed' })
       .toMatch(/^(ready|indexed|done|complete|completed|active)$/i);
-    await openApp(page, kb('documents'));
+    // /kb/knowledge (operator uploads) is listed on Knowledge > Uploads (patch
+    // 0021); Knowledge > Documents is the read-only Vertex corpus (/kb/documents).
+    await openApp(page, kb('uploads'));
     const filter = page.getByPlaceholder(/Filter by/).first();
     if (await filter.isVisible().catch(() => false)) await filter.fill(RUN_ID);
     await expect(page.getByText(title).first()).toBeVisible();
@@ -148,7 +154,7 @@ trackerModule('Knowledge', {
   'KNOW-006': async ({ page, api, ev }) => {
     const title = `${TEST_PREFIX} ${MARK} marker tool`;
     const t = Api.must(
-      await api.be('/kb/tools', { method: 'POST', body: { title, endpoint_url: 'https://example.com/e2e-zz-marker', http_method: 'GET', enabled: false } }),
+      await api.be('/kb/tools', { method: 'POST', body: { slug: `${KEY_PREFIX}_tool`, title, endpoint_url: 'https://example.com/e2e-zz-marker', http_method: 'GET', param_schema: { type: 'object', properties: {} }, enabled: false } }),
       'create tool',
     );
     const slug = t.slug ?? t.tool?.slug;

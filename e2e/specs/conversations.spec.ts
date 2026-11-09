@@ -3,7 +3,7 @@ import { expect } from '../lib/fixtures';
 import { Api } from '../lib/api';
 import { FLAGS, INBOX, KEY_PREFIX, RUN_ID, TEST_PREFIX } from '../lib/env';
 import { manual, trackerModule } from '../lib/tracker';
-import { bodyText, chatTurn, consoleTab, openApp, openConsole, openConversation, revealInPanel, settle } from '../lib/ui';
+import { bodyText, chatTurn, consoleTab, insertCanned, openApp, openConsole, openConversation, revealInPanel, settle } from '../lib/ui';
 
 const PNG_1PX = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
@@ -35,10 +35,15 @@ trackerModule('Conversations', {
       const t0 = Date.now();
       await listTab(page, name).click();
       await settle(page);
+      // The list first shows the conversations already in the store for this
+      // tab, then fills in when its own fetch returns, so wait for it (within
+      // the DoD's 3 s) instead of counting the first paint.
+      const want = Math.min(count, 25); // the list pages at 25; the tab badge is the total
+      await expect
+        .poll(() => page.locator('.conversation').count(), { timeout: 15_000, message: `${name}: rows shown vs tab count ${count}` })
+        .toBe(want);
       const rows = await page.locator('.conversation').count();
       const uiMs = Date.now() - t0;
-      // The list pages at 25; the tab badge is the total.
-      expect(rows, `${name}: rows shown vs tab count ${count}`).toBe(Math.min(count, 25));
       ev.add(`${name}: tab ${count}, rows ${rows}, API ${r.ms} ms, page ${uiMs} ms`);
     }
     for (const p of ['mentions/conversations', 'unattended/conversations']) {
@@ -127,8 +132,10 @@ trackerModule('Conversations', {
     }
     ev.add('message, contact-name and phone searches return results');
     await openApp(page, `search?q=${token}`);
-    const hit = page.getByText(new RegExp(token)).first();
-    await expect(hit).toBeVisible();
+    // The message result is a link to the conversation; a bare text match
+    // also hits "No contacts found for query '<token>'".
+    const hit = page.locator(`a[href*="/conversations/${conv.id}"]`).filter({ hasText: token }).first();
+    await expect(hit, 'message result for the [TEST] conversation').toBeVisible();
     await ev.shot(page);
     await hit.click();
     await expect(page).toHaveURL(new RegExp(`conversations/${conv.id}`));
@@ -163,7 +170,9 @@ trackerModule('Conversations', {
     await expect.poll(async () => (await messages(api, conv.id)).filter(m => m.private).length, { timeout: 20_000 }).toBeGreaterThan(0);
     const note = (await messages(api, conv.id)).filter(m => m.private).pop();
     expect(note.content).toContain(`mention://user/${me.id}/`);
-    expect(note.message_type, 'note is not sent to the customer').not.toBe(1);
+    // A Chatwoot private note is an outgoing message (message_type 1) with
+    // private=true; private is what keeps it from the customer.
+    expect(note.private, 'note is private (not sent to the customer)').toBe(true);
     ev.add(`private note ${note.id} with an @mention of the signed-in user saved (private, not sent; API inbox)`);
     ev.handOff('a colleague’s bell notification and Mentions list need a second agent mentioned and logged in (Window B)');
   },
@@ -179,9 +188,7 @@ trackerModule('Conversations', {
     await openConversation(page, conv.id);
     const editor = page.locator('.ProseMirror').first();
     await editor.click();
-    await page.keyboard.type(`/${code}`);
-    await page.waitForTimeout(1200);
-    await page.keyboard.press('Enter');
+    await insertCanned(page, code);
     await expect(editor).toContainText(contact.name);
     ev.add('canned response inserted with {{contact.name}} filled in');
     await page.locator('input[type="file"]').first().setInputFiles([
@@ -243,18 +250,24 @@ trackerModule('Conversations', {
       const r = await api.be('/assist/translate', { method: 'POST', body: { conversation_id: String(conv.id), text, target_language: target } });
       return r;
     };
+    // r.ms is the browser-side round trip of the translate call (what the
+    // agent waits for). All four are measured and recorded first, then each is
+    // held to the DoD's 5 s, so one slow call still leaves full evidence.
+    const timed: { what: string; status: number; ms: number }[] = [];
     for (const target of ['en', 'zh']) {
       const r = await tr(bm, target);
-      expect(r.status, `inbound BM -> ${target}`).toBe(200);
-      expect(r.ms, `inbound BM -> ${target} within 5 s`).toBeLessThan(5000);
+      timed.push({ what: `inbound BM -> ${target}`, status: r.status, ms: r.ms });
       ev.add(`BM->${target} ${r.ms} ms`);
     }
     const draft = 'Your car will be ready by 5 pm today. Thank you.';
     for (const target of ['ms', 'zh']) {
       const r = await tr(draft, target);
-      expect(r.status, `draft EN -> ${target}`).toBe(200);
-      expect(r.ms).toBeLessThan(5000);
+      timed.push({ what: `draft EN -> ${target}`, status: r.status, ms: r.ms });
       ev.add(`draft EN->${target} ${r.ms} ms`);
+    }
+    for (const t of timed) {
+      expect(t.status, t.what).toBe(200);
+      expect(t.ms, `${t.what} within 5 s`).toBeLessThan(5000);
     }
     const ta = await tr(bm, 'ta');
     ev.add(ta.ok ? `BM->ta ${ta.ms} ms` : `Tamil target refused (${ta.status}; outbound Tamil is off by design)`);
@@ -272,6 +285,12 @@ trackerModule('Conversations', {
     await openConversation(page, conv.id);
     const features: string[] = await page.evaluate(() => (window as any).__PROTON_CONFIG__?.features ?? []);
     if (!features.includes('faq_suggestion_popup')) ev.blocked('the FAQ strip feature (faq_suggestion_popup) is off on this tenant');
+    // The strip shows only the top /kb/suggest hit and only when its score is
+    // >= 0.65 (patch 0056). Record what the backend returns for this message so
+    // a missing strip can be told apart: low match vs. strip not rendering.
+    const sug = await api.be(`/kb/suggest?q=${encodeURIComponent('[TEST] How do I book a service?')}&limit=1`);
+    const top = (sug.data?.suggestions ?? [])[0];
+    ev.add(`/kb/suggest -> HTTP ${sug.status}; top: ${top ? `"${String(top.question ?? top.title ?? '').slice(0, 60)}" score ${top.score}` : 'none'} (strip threshold 0.65)`);
     const apply = page.getByRole('button', { name: 'Apply', exact: true });
     await expect(apply, 'FAQ strip with Apply').toBeVisible({ timeout: 30_000 });
     await ev.shot(page);
@@ -288,7 +307,9 @@ trackerModule('Conversations', {
     Api.must(await api.cw(`conversations/${conv.id}/assignments`, { method: 'POST', body: { assignee_id: me.id } }), 'assign');
     Api.must(await api.cw(`conversations/${conv.id}/toggle_priority`, { method: 'POST', body: { priority: 'high' } }), 'priority');
     await openConversation(page, conv.id);
-    await expect(page.getByText(/Assigned to/i).first(), 'assignment activity line').toBeVisible({ timeout: 30_000 });
+    // Assigning yourself logs "<name> self-assigned this conversation", not
+    // "Assigned to <name> by <name>" (Chatwoot activity text).
+    await expect(page.getByText(/Assigned to|self-assigned this conversation/i).first(), 'assignment activity line').toBeVisible({ timeout: 30_000 });
     await expect(page.getByText(me.name).first()).toBeVisible();
     ev.add(`assigned to ${me.name}, priority high; activity line shown`);
     const teams = Api.must(await api.cw('teams'), 'teams') as any[];
@@ -480,8 +501,17 @@ trackerModule('Conversations', {
     const first = await data.conversation([`${TEST_PREFIX} brake noise after service`]);
     Api.must(await api.cw(`conversations/${first.id}/toggle_status`, { method: 'POST', body: { status: 'resolved' } }), 'resolve first');
     const second = await data.conversation([`${TEST_PREFIX} brake noise is back`]);
+    // A Previous Conversations card previews the conversation's LAST message,
+    // which after resolving is no longer the customer's first line (automatic
+    // notes and lifecycle messages follow it), so look for that preview.
+    const last = Api.must(await api.cw(`conversations/${first.id}`), 'first conversation').last_non_activity_message?.content ?? '';
+    const preview = String(last).replace(/\s+/g, ' ').trim().slice(0, 30) || 'brake noise after service';
     await openConversation(page, second.id);
-    await revealInPanel(page, /brake noise after service/, /Previous Conversations/i);
+    // Scoped to the panel's list: the left conversation list previews the same
+    // contact's conversations too.
+    const prev = page.locator('.contact-conversation--list');
+    if (!(await prev.isVisible({ timeout: 3000 }).catch(() => false))) await page.getByText(/Previous Conversations/i).first().click();
+    await expect(prev.locator('.conversation', { hasText: preview }).first(), `earlier case #${first.id} under Previous Conversations`).toBeVisible({ timeout: 20_000 });
     ev.add(`[TEST] conv ${second.id} shows the earlier [TEST] case #${first.id} under Previous Conversations; no automatic merge`);
     await ev.shot(page);
   },

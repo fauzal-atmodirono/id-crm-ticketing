@@ -4,6 +4,7 @@ import ChannelTabs, { type Channel } from '@/components/ui/ChannelTabs.vue';
 import { ChatLog, ChatInput, useChatStore } from '@/features/chat';
 import { VoiceLog, VoiceRecorder, useVoiceStore } from '@/features/voice';
 import { PhoneCall } from '@/features/phone';
+import { DemoConsole } from '@/features/demo';
 
 const channel = ref<Channel>('chat');
 const chat = useChatStore();
@@ -42,8 +43,9 @@ function reset(): void {
     <ChatInput v-if="channel === 'chat'" />
     <VoiceRecorder v-else-if="channel === 'voice'" />
     <PhoneCall v-else-if="channel === 'phone'" />
+    <DemoConsole v-else-if="channel === 'demo'" />
 
-    <footer class="session-row">
+    <footer v-if="channel !== 'demo'" class="session-row">
       <span>
         Session:
         <code>{{ channel === 'chat' ? chat.sessionId : channel === 'voice' ? voice.sessionId : '—' }}</code>

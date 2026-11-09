@@ -696,6 +696,23 @@ class Settings(BaseSettings):
     # Budget for the chat note's Chatwoot reads/writes (inline in /chat/turn).
     handoff_note_timeout_seconds: float = 5.0
 
+    # Test console "Demo" tab + `python -m chatbot.features.demo.seed`: seed /
+    # reset the [DEMO] phone personas (contacts, history, Farid's RSA
+    # incident). Off (default) = no /demo/* route and the CLI refuses. Reset
+    # only removes records the seeder created (features/demo/safety.py);
+    # deletes need an administrator CHATWOOT_API_TOKEN. Seeded cases show in
+    # native Chatwoot reports until Reset (METRICS_EXCLUDE_DEMO_SEED drops
+    # them from the BigQuery sync only).
+    demo_console_enabled: bool = False
+    # API inbox the demo conversations go to; 0 = CHATWOOT_INBOX_ID. Must be
+    # a Channel::Api inbox (checked before every seed/reset). Keep it 0 or
+    # equal to CHATWOOT_INBOX_ID: phone rehearsal calls land on
+    # CHATWOOT_INBOX_ID and Reset only cleans unmarked calls on this inbox.
+    demo_inbox_id: int = 0
+    # Prefix for the Demo tab's CRM links; "" = relative (the test console is
+    # served from the CRM's own host).
+    demo_crm_base_url: str = ""
+
     # Frontend CORS — origins of the Vue dev/prod app (comma-separated in env).
     # Defaults cover Vite's first few fallback ports (5173-5180) so a stale dev
     # server on 5173 doesn't break a fresh one bound to 5174+.

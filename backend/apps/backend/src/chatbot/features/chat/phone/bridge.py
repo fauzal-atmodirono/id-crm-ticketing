@@ -6,6 +6,7 @@ import asyncio
 import base64
 import contextlib
 import time
+import unicodedata
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -49,6 +50,7 @@ from chatbot.features.chat.phone.live_events import (
     Interrupted,
     OutputTranscript,
     ToolCall,
+    TurnComplete,
 )
 from chatbot.features.chat.phone.transcript_classifier import classify
 from chatbot.features.chat.phone.transcript_sink import TranscriptSink
@@ -155,6 +157,37 @@ _HANDOFF_TICKET_WAIT_SECONDS = 2.0
 _MAX_CALLER_LOOKUPS = 3
 
 
+# Barge-in (2026-11-09): after the Live API reports an interruption, audio and
+# output transcript of the CANCELLED answer can still be in flight. They are
+# dropped until the caller's new turn shows up (a clear input transcript),
+# the model closes its turn, or this window passes -- whichever is first. It
+# can never swallow the real next answer: that only starts after the caller
+# has finished speaking plus the VAD silence window (900 ms by default),
+# and the interruption fires when the caller STARTS speaking.
+_INTERRUPT_DROP_SECONDS = 1.0
+
+# The PDPA notice played over the stream (phone_fast_start_enabled): if
+# Twilio never confirms it played (its "mark" echo), stop holding the model's
+# audio this long after the notice should have ended -- and never record.
+_ANNOUNCEMENT_GRACE_SECONDS = 5.0
+
+# Scripts the assistant serves (English / Bahasa Melayu are Latin, Chinese is
+# Han). A caller "turn" whose letters are mostly outside these -- the 27 Oct
+# call transcribed background noise as Hindi -- is kept on the record but
+# marked unclear, and does not count as the caller having spoken.
+_SERVED_SCRIPTS = ("LATIN", "CJK", "HIRAGANA", "KATAKANA", "FULLWIDTH", "BOPOMOFO")
+
+
+def is_unclear_transcript(text: str) -> bool:
+    """True for a caller transcript that is noise rather than speech we
+    serve: no letters at all, or mostly letters of another script."""
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return True
+    served = sum(1 for c in letters if unicodedata.name(c, "").startswith(_SERVED_SCRIPTS))
+    return served * 2 < len(letters)
+
+
 def _log_transcript(body: str) -> str:
     """Truncate a transcript for structured logging (Important 11).
 
@@ -169,7 +202,7 @@ def _log_transcript(body: str) -> str:
 
 
 class PhoneBridge:
-    def __init__(
+    def __init__(  # noqa: PLR0915 -- one statement per piece of per-call state
         self,
         live: LiveSession,
         knowledge_port: KnowledgePort,
@@ -185,8 +218,35 @@ class PhoneBridge:
         caller_service: CallerContextService | None = None,
         caller_context: CallerContext | None = None,
         dealer_slugs: list[str] | None = None,
+        announcement_mark: str | None = None,
+        announcement_seconds: float = 0.0,
+        timing: dict[str, Any] | None = None,
+        stream_started_at: float | None = None,
     ) -> None:
         self._live = live
+        self._now = clock or time.monotonic
+        # 2026-11-09 turn-taking. `announcement_mark` is set when router.py
+        # played the PDPA recording notice over the stream itself (fast
+        # start) and asked Twilio to echo this mark once it has played:
+        # until then the model's audio is held here (Twilio would queue it
+        # behind the notice anyway, but a barge-in "clear" would wipe the
+        # notice too), and recording does not start.
+        self._announcement_mark = announcement_mark
+        self._announcement_pending = announcement_mark is not None
+        self._announcement_seconds = announcement_seconds
+        self._announcement_watchdog: asyncio.Task[None] | None = None
+        self._held_audio: list[dict[str, object]] = []
+        # Monotonic deadline of the post-interruption drop window, or None.
+        self._drop_until: float | None = None
+        # The next ASSISTANT text starts a new transcript row (after a turn
+        # end or an interruption) instead of being glued onto the last one.
+        self._assistant_turn_ended = False
+        self._caller_spoke = False
+        self._greeted = False
+        # One phone_call_timing log per call (no numbers, no PII).
+        self._timing = timing
+        self._stream_started_at = stream_started_at
+        self._timing_logged = False
         # 2026-11-09 caller context. `caller_service` is passed only when
         # phone_caller_context_enabled is on; None keeps every code path
         # below exactly as it was (anonymous ticket, no caller tools, the old
@@ -802,10 +862,17 @@ class PhoneBridge:
                         else self._deferred_ticket_create(self.call_sid)
                     )
                     self._ticket_create_task = asyncio.create_task(create)
+                if self._announcement_pending and self._announcement_watchdog is None:
+                    self._announcement_watchdog = asyncio.create_task(
+                        self._run_announcement_watchdog()
+                    )
                 if (
                     self.call_sid
                     and not self._recording_start_attempted
                     and self._settings.phone_recording_enabled
+                    # PDPA: with the notice played over the stream, recording
+                    # waits for Twilio's confirmation that it has played.
+                    and not self._announcement_pending
                 ):
                     # Fire-and-forget, same reasoning as the ticket-create
                     # task just above: the Twilio REST call (via
@@ -834,7 +901,118 @@ class PhoneBridge:
                 if payload:
                     pcm = mulaw8k_to_pcm16k(base64.b64decode(str(payload)))
                     await self._live.send_audio(pcm)
+        elif event == "mark":
+            mark = msg.get("mark")
+            name = mark.get("name") if isinstance(mark, dict) else None
+            if self._announcement_pending and name == self._announcement_mark:
+                await self._announcement_played()
         # "stop"/"connected" need no action here; finalize() runs on socket close.
+
+    # --- turn-taking (2026-11-09) ---------------------------------------------
+
+    async def _announcement_played(self) -> None:
+        """Twilio confirmed the PDPA notice has played: release the held
+        model audio and only now start the recording."""
+        self._announcement_pending = False
+        if self._announcement_watchdog is not None and not self._announcement_watchdog.done():
+            self._announcement_watchdog.cancel()
+        await self._release_held_audio()
+        if (
+            self.call_sid
+            and not self._recording_start_attempted
+            and self._settings.phone_recording_enabled
+        ):
+            self._recording_start_attempted = True
+            self._recording_task = asyncio.create_task(self._maybe_start_recording(self.call_sid))
+
+    async def _run_announcement_watchdog(self) -> None:
+        await asyncio.sleep(self._announcement_seconds + _ANNOUNCEMENT_GRACE_SECONDS)
+        await self.announcement_watchdog_expired()
+
+    async def announcement_watchdog_expired(self) -> None:
+        """No confirmation the notice played: stop holding the model's audio
+        (the caller must not sit in silence) but fail CLOSED on recording --
+        nothing proves the notice was heard."""
+        if not self._announcement_pending:
+            return
+        self._announcement_pending = False
+        # Never record this call: the notice is unproven.
+        self._recording_start_attempted = True
+        _log.warning("phone_announcement_unconfirmed_no_recording", call_sid=self.call_sid)
+        await self._release_held_audio()
+
+    async def _release_held_audio(self) -> None:
+        held, self._held_audio = self._held_audio, []
+        for frame in held:
+            await self._send_twilio(frame)
+
+    async def greet_if_caller_silent(self, prompt: str) -> bool:
+        """Ask the model to greet, once, and only if the caller has not
+        spoken yet -- a caller who already said "Hello" is answered by the
+        model's normal turn, and a second, injected greeting is exactly the
+        double "Hello! How can I help you today?" heard live."""
+        if self._greeted or self._caller_spoke:
+            return False
+        send = getattr(self._live, "send_greeting", None)
+        if send is None:
+            return False
+        self._greeted = True
+        try:
+            await send(prompt)
+        except Exception as e:
+            _log.warning("phone_greeting_prompt_failed", call_sid=self.call_sid, error=str(e))
+            return False
+        return True
+
+    def _in_drop_window(self) -> bool:
+        if self._drop_until is None:
+            return False
+        if self._now() >= self._drop_until:
+            self._drop_until = None
+            return False
+        return True
+
+    def _log_timing(self, first_audio_ms: int | None) -> None:
+        if self._timing is None or self._timing_logged:
+            return
+        self._timing_logged = True
+        _log.info(
+            "phone_call_timing",
+            call_sid=self.call_sid,
+            first_model_audio_ms=first_audio_ms,
+            **self._timing,
+        )
+
+    async def _forward_model_audio(self, event: AudioOut) -> None:
+        if self._in_drop_window():
+            return  # the cancelled answer's tail
+        if not self.stream_sid:
+            return
+        if not self._timing_logged and self._stream_started_at is not None:
+            self._log_timing(round((self._now() - self._stream_started_at) * 1000))
+        mulaw = pcm24k_to_mulaw8k(event.pcm)
+        frame: dict[str, object] = {
+            "event": "media",
+            "streamSid": self.stream_sid,
+            "media": {"payload": base64.b64encode(mulaw).decode()},
+        }
+        if self._announcement_pending:
+            self._held_audio.append(frame)
+            return
+        await self._send_twilio(frame)
+
+    async def _on_interrupted(self) -> None:
+        """Caller barge-in: the model's answer is cancelled. Stop it on the
+        line (Twilio "clear") and drop what is still in flight of it. During
+        the PDPA notice nothing is cleared -- only the held model audio is
+        dropped, the notice keeps playing."""
+        self._drop_until = self._now() + _INTERRUPT_DROP_SECONDS
+        self._assistant_turn_ended = True
+        if self._announcement_pending:
+            self._held_audio = []
+            return
+        if self.stream_sid:
+            await self._send_twilio({"event": "clear", "streamSid": self.stream_sid})
 
     async def _create_ticket_at_start(self, call_sid: str) -> None:
         """Create the conversation's ticket as soon as the call starts.
@@ -1190,33 +1368,44 @@ class PhoneBridge:
         self._transfer_dialed = True
         return "transferring"
 
-    async def pump(self) -> None:
+    async def pump(self) -> None:  # noqa: PLR0912 -- one branch per Live event type
         async for event in self._live.events():
             if isinstance(event, AudioOut):
-                if self.stream_sid:
-                    mulaw = pcm24k_to_mulaw8k(event.pcm)
-                    await self._send_twilio(
-                        {
-                            "event": "media",
-                            "streamSid": self.stream_sid,
-                            "media": {"payload": base64.b64encode(mulaw).decode()},
-                        }
-                    )
+                await self._forward_model_audio(event)
             elif isinstance(event, Interrupted):
-                if self.stream_sid:
-                    await self._send_twilio({"event": "clear", "streamSid": self.stream_sid})
+                await self._on_interrupted()
+            elif isinstance(event, TurnComplete):
+                self._drop_until = None
+                self._assistant_turn_ended = True
             elif isinstance(event, InputTranscript):
-                is_new_user_turn = not (self.transcript and self.transcript[-1][0] == "USER")
-                self._append_transcript("USER", event.text)
+                text = event.text
+                if is_unclear_transcript(text):
+                    # Kept on the record, marked; not the caller speaking.
+                    if not (self.transcript and self.transcript[-1][0] == "USER"):
+                        text = f"(unclear) {text}"
+                else:
+                    self._caller_spoke = True
+                    self._drop_until = None
+                self._append_transcript("USER", text)
                 if self._settings.phone_transcript_live_enabled:
-                    self._sink.add("USER", event.text)
-                if is_new_user_turn and self._settings.phone_language_nudge_enabled:
-                    await self._live.send_text_hint(
-                        "(Reminder: match your next reply's language to what "
-                        "the caller just said, even mid-conversation.)"
-                    )
+                    self._sink.add("USER", text)
+                # phone_language_nudge_enabled is inert since 2026-11-09: the
+                # reminder went out as send_realtime_input(text=...), which the
+                # Live API treats as a CALLER turn -- the model answered it
+                # ("Ya, tentu!") and spoke twice per caller turn (27 Oct
+                # call). The language rule lives in the system instruction.
             elif isinstance(event, OutputTranscript):
-                self._append_transcript("ASSISTANT", event.text)
+                if self._in_drop_window():
+                    continue
+                if (
+                    self._assistant_turn_ended
+                    and self.transcript
+                    and (self.transcript[-1][0] == "ASSISTANT")
+                ):
+                    self.transcript.append(("ASSISTANT", event.text))
+                else:
+                    self._append_transcript("ASSISTANT", event.text)
+                self._assistant_turn_ended = False
                 if self._settings.phone_transcript_live_enabled:
                     self._sink.add("ASSISTANT", event.text)
             elif isinstance(event, ToolCall):
@@ -1524,6 +1713,9 @@ class PhoneBridge:
         # Caller context: a call still waiting for the caller's number gets
         # its conversation created now (no-op when already set / flag off).
         self._caller_known.set()
+        if self._announcement_watchdog is not None and not self._announcement_watchdog.done():
+            self._announcement_watchdog.cancel()
+        self._log_timing(None)
         await self._settle_ticket_create_task()
         await self._settle_recording_task()
         await self._settle_handoff_prefetch_task()
@@ -1549,7 +1741,9 @@ class PhoneBridge:
             )
 
     async def _write_finalize_result(self, session_id: str, body: str) -> None:  # noqa: PLR0912 -- one branch per closing write
-        if not self.transcript and self.handoff is None:
+        # 2026-11-09: the assistant now greets first, so "nobody spoke" means
+        # no CALLER turn -- a greeting into a hung-up line is still abandoned.
+        if not any(role == "USER" for role, _ in self.transcript) and self.handoff is None:
             # Nobody spoke and nothing was escalated. Nothing to summarise
             # -- but a ticket may already exist from the call-start create,
             # and an empty open conversation must not be left behind.

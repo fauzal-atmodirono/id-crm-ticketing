@@ -31,3 +31,28 @@ def test_roundtrip_is_audio_shaped() -> None:
     assert len(mulaw) > 0
     back = mulaw8k_to_pcm16k(mulaw)
     assert len(back) > 0
+
+
+def test_wav_to_mulaw8k_resamples_tts_output() -> None:
+    import io
+    import wave
+
+    from chatbot.features.chat.phone.audio_codec import wav_to_mulaw8k
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(b"\x10\x00" * 24000)  # 1 s
+    out = wav_to_mulaw8k(buf.getvalue())
+    assert abs(len(out) - 8000) <= 2  # 1 s at 8 kHz, 1 byte per sample
+
+
+def test_wav_to_mulaw8k_rejects_non_wav() -> None:
+    import pytest
+
+    from chatbot.features.chat.phone.audio_codec import wav_to_mulaw8k
+
+    with pytest.raises(ValueError):
+        wav_to_mulaw8k(b"ID3 not a wav")

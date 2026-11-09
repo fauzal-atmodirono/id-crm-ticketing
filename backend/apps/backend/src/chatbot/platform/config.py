@@ -480,25 +480,40 @@ class Settings(BaseSettings):
     gemini_live_vad_enabled: bool = True
     gemini_live_vad_start_sensitivity: str = "LOW"  # LOW | HIGH
     gemini_live_vad_end_sensitivity: str = "LOW"  # LOW | HIGH
-    # Audio kept BEFORE detected speech, so a barge-in does not clip its own
-    # first syllable.
-    gemini_live_vad_prefix_padding_ms: int = 300
+    # Speech required BEFORE a start of speech is committed (Live API
+    # prefix_padding_ms): the higher, the less a short noise counts as the
+    # caller talking. 2026-11-09: raised 300 -> 600 after a 27 Oct call where
+    # background noise (transcribed as Hindi) barged in and cut the answer.
+    gemini_live_vad_prefix_padding_ms: int = 600
     # Silence required before the caller's turn is considered over. Twilio's
     # default is far shorter; on a phone call that produced the model talking
     # over a caller who simply paused to think.
     gemini_live_vad_silence_duration_ms: int = 900
+    # Caller speech interrupts the assistant (barge-in). False sets the Live
+    # API's NO_INTERRUPTION: the assistant always finishes its sentence --
+    # for a line so noisy that LOW sensitivity still cuts it off.
+    gemini_live_barge_in_enabled: bool = True
     gemini_live_voice: str = "Kore"
     # Optional output language hint (e.g. "ms-MY" for Bahasa Melayu). Empty = let
     # the model auto-detect. Only honored by half-cascade Live models; native-audio
     # models auto-detect language and ignore it.
     gemini_live_language: str = ""
-    # IVR-4: after each caller utterance, send a short content-free reminder
-    # telling the model to re-evaluate the reply language fresh each turn,
-    # rather than anchoring to the conversation's established language.
-    # Default off -- byte-identical when unset; the exact Live API turn-
-    # injection semantics can't be verified without a real call, so this
-    # ships gated and can be flipped per-tenant to A/B against today.
+    # IVR-4 language reminder. INERT since 2026-11-09 (kept so existing env
+    # files still parse): it was sent as a realtime TEXT input, which the Live
+    # API treats as a caller turn -- the model answered the reminder and spoke
+    # twice per caller turn (27 Oct call). The language rule is now in the
+    # phone system instruction.
     phone_language_nudge_enabled: bool = False
+    # 2026-11-09 fast start: answer with <Connect><Stream> straight away and
+    # play the PDPA recording notice over the stream (synthesised once and
+    # cached, mu-law 8 kHz) while Gemini Live connects; the assistant then
+    # greets first. Recording starts only after Twilio confirms the notice
+    # played. No cached audio yet (first call after a restart, TTS failure)
+    # -> today's <Say> notice. Off -> today's TwiML and the caller speaks
+    # first.
+    phone_fast_start_enabled: bool = False
+    # Language code the notice is synthesised in.
+    phone_announcement_tts_language: str = "en-US"
     # Package C Task 3: create the Chatwoot conversation ticket the moment the
     # call starts (instead of only at hangup) and stream the transcript into
     # it live, in flush_seconds-ish batches, instead of writing it all at

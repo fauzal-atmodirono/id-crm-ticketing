@@ -37,3 +37,19 @@ def seeded_plates(personas: list[dict[str, Any]] | None = None) -> tuple[str, ..
         for i in ((p.get("crm_seed") or {}).get("rsa_incidents") or [])
         if i.get("vehicle_no")
     )
+
+
+def persona_language(number: str | None, personas: list[dict[str, Any]] | None = None) -> str:
+    """The test-console persona's language ("en"/"ms"/"zh") for a web
+    call-as number, "" when no persona has that number. Never raises: a
+    missing/broken personas.json just means no preferred language."""
+    if not number:
+        return ""
+    try:
+        rows = personas if personas is not None else load_personas()
+    except Exception:
+        return ""
+    for p in rows:
+        if p.get("number") == number:
+            return str(p.get("language") or "")
+    return ""

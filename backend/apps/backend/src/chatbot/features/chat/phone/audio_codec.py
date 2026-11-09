@@ -37,3 +37,27 @@ def pcm24k_to_mulaw8k(pcm: bytes) -> bytes:
     """Gemini Live output PCM16 24 kHz → μ-law 8 kHz for Twilio playback."""
     pcm8k, _ = audioop.ratecv(pcm, _WIDTH, _CHANNELS, 24000, 8000, None)
     return audioop.lin2ulaw(pcm8k, _WIDTH)
+
+
+def wav_to_mulaw8k(wav: bytes) -> bytes:
+    """A 16-bit mono/stereo WAV (Cloud TTS LINEAR16 output, any sample rate)
+    -> mu-law 8 kHz mono, ready to send to Twilio as media frames. Raises
+    ValueError on anything that is not 16-bit PCM WAV."""
+    import io  # noqa: PLC0415
+    import wave  # noqa: PLC0415
+
+    try:
+        with wave.open(io.BytesIO(wav), "rb") as w:
+            width, channels, rate = w.getsampwidth(), w.getnchannels(), w.getframerate()
+            frames = w.readframes(w.getnframes())
+    except (wave.Error, EOFError) as e:
+        raise ValueError(f"not a WAV file: {e}") from e
+    if width != _WIDTH:
+        raise ValueError(f"expected 16-bit PCM, got {width * 8}-bit")
+    if channels == 2:  # noqa: PLR2004
+        frames = audioop.tomono(frames, _WIDTH, 0.5, 0.5)
+    elif channels != 1:
+        raise ValueError(f"unsupported channel count {channels}")
+    if rate != 8000:  # noqa: PLR2004
+        frames, _ = audioop.ratecv(frames, _WIDTH, _CHANNELS, rate, 8000, None)
+    return audioop.lin2ulaw(frames, _WIDTH)

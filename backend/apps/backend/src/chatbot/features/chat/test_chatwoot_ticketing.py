@@ -779,8 +779,11 @@ async def test_phone_session_reuses_its_own_conversation_on_retry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_phone_session_without_caller_number_is_unchanged() -> None:
-    """Flag off: no phone is passed, so no session marker and the old reuse rule."""
+async def test_phone_session_without_caller_number_is_stamped_too() -> None:
+    """2026-11-09: every call conversation carries the session marker, caller
+    number or not -- it is how the agent's lifecycle (and the auto-summary)
+    tell a phone call from a chat. The calls seen live with no caller number
+    had EMPTY additional_attributes and got the chat disclaimer and surveys."""
     fake = _FakeClient(
         {
             ("POST", "/contacts"): {"payload": {"contact": {"id": 11}}},
@@ -790,7 +793,30 @@ async def test_phone_session_without_caller_number_is_unchanged() -> None:
     conv = await _adapter(fake).ensure_conversation_ticket("phone-CA1", "[phone]", None, None)
     assert conv == "73"
     create = next(pl for m, p, pl in fake.calls if m == "POST" and p.endswith("/conversations"))
-    assert "additional_attributes" not in create
+    assert create["additional_attributes"] == {"session_id": "phone-CA1"}
+
+
+@pytest.mark.asyncio
+async def test_phone_session_without_caller_number_reuses_its_own_stamped_conversation() -> None:
+    """The stamp must not break finalize()'s retried create: the call's own
+    (stamped) conversation is still found and reused."""
+    fake = _FakeClient(
+        {
+            ("POST", "/contacts"): {"payload": {"contact": {"id": 11}}},
+            ("GET", "/contacts/11/conversations"): {
+                "payload": [
+                    {
+                        "id": 74,
+                        "status": "open",
+                        "inbox_id": 7,
+                        "additional_attributes": {"session_id": "phone-CA1"},
+                    }
+                ]
+            },
+        }
+    )
+    conv = await _adapter(fake).ensure_conversation_ticket("phone-CA1", "[phone]", None, None)
+    assert conv == "74"
 
 
 @pytest.mark.asyncio

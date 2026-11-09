@@ -23,6 +23,10 @@ class ChatwootConversation(BaseModel):
     channel: str | None = None
     status: str | None = None
     inbox_id: int | None = None
+    # 2026-11-09: carried so a phone call's conversation can be recognised
+    # (handoff_note.is_phone_conversation) on its resolve event.
+    additional_attributes: dict[str, Any] | None = None
+    custom_attributes: dict[str, Any] | None = None
 
 
 class ChatwootWebhookPayload(BaseModel):
@@ -54,6 +58,8 @@ class ChatwootWebhookPayload(BaseModel):
                 "status": data.get("status"),
                 "inbox_id": data.get("inbox_id"),
                 "channel": data.get("channel"),
+                "additional_attributes": data.get("additional_attributes"),
+                "custom_attributes": data.get("custom_attributes"),
             }
         return data
 

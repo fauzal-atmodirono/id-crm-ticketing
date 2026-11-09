@@ -610,8 +610,8 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             # conversation (a retried create) is reused, recognised by the
             # session id stamped into additional_attributes on create
             # (Chatwoot's conversation JSON carries no source_id). Callers
-            # pass session_id only for a phone session WITH a caller number,
-            # so every other path is unchanged.
+            # pass session_id only for a phone session (every call, since
+            # 2026-11-09), so every other path is unchanged.
             active = [
                 c
                 for c in active
@@ -660,7 +660,12 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         contact_id = await self._find_or_create_contact(
             session_id, customer_name, customer_phone, attach_by_phone=attach_by_phone
         )
-        own_session_only = session_id.startswith("phone-") and bool(customer_phone)
+        # Every phone call stamps its session id (2026-11-09): with or
+        # without the caller's number it is the marker the agent's lifecycle
+        # and the auto-summary use to tell a call from a chat, and it is the
+        # only way a retried create can find its own conversation (Chatwoot's
+        # conversation JSON has no source_id).
+        own_session_only = session_id.startswith("phone-")
         if own_session_only:
             additional_attributes = {**(additional_attributes or {}), "session_id": session_id}
         if search_existing:

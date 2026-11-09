@@ -259,6 +259,9 @@ class CallerCandidate:
     open_cases: int = 0
     contact_plate: str = ""
     contact_model: str = ""
+    # Stored preferred language (contact custom attribute preferred_language
+    # or language), e.g. "ms"; "" = unknown.
+    language: str = ""
 
 
 # Exactly the seeding convention ("[DEMO] " prefix, case-sensitive), the same
@@ -429,6 +432,17 @@ class CallerContext:
     phone: str
     source: str
     candidates: list[CallerCandidate] = field(default_factory=list)
+    # The language to start the call in (2026-11-09): the test-console
+    # persona's for a web call-as call, else the single matched contact's
+    # stored one. "" = unknown.
+    language: str = ""
+
+    @property
+    def start_language(self) -> str:
+        if self.language:
+            return self.language
+        single = self.single
+        return single.language if single is not None else ""
 
     @classmethod
     def from_candidates(cls, phone: str, source: str, rows: list[dict[str, Any]]) -> CallerContext:
@@ -444,6 +458,7 @@ class CallerContext:
                 ),
                 last_dealer=str(r.get("last_dealer") or ""),
                 open_cases=int(r.get("open_cases") or 0),
+                language=str(r.get("language") or ""),
             )
             for r in rows
         ]
@@ -635,6 +650,59 @@ def build_caller_instruction(ctx: CallerContext | None, *, lookup_tool: bool) ->
     return _FLOW + who + _SAVE
 
 
+_LANGUAGE_NAMES = {
+    "en": "English",
+    "ms": "Bahasa Melayu",
+    "my": "Bahasa Melayu",
+    "zh": "Chinese (Mandarin)",
+    "cmn": "Chinese (Mandarin)",
+}
+
+
+def language_name(code: str | None) -> str:
+    """Map a language code or name ("en", "en-US", "ms-MY", "zh",
+    "English") to the name the model is told; "" for anything not served."""
+    raw = (code or "").strip()
+    if not raw:
+        return ""
+    key = raw.lower().replace("_", "-").split("-")[0]
+    if key in _LANGUAGE_NAMES:
+        return _LANGUAGE_NAMES[key]
+    for name in set(_LANGUAGE_NAMES.values()):
+        if raw.lower() == name.lower() or name.lower().startswith(raw.lower()):
+            return name
+    return ""
+
+
+def build_language_instruction(start_language: str | None = None) -> str:
+    """The phone LANGUAGE rule (2026-11-09). Live: a caller who asked in
+    English got an answer in Chinese, and noise transcribed as Hindi was
+    treated as a caller turn. The old rule ("switch immediately if they
+    switch") made the model chase any misheard fragment."""
+    name = language_name(start_language)
+    if name:
+        start = (
+            f"This caller's preferred language is {name}: greet them and start the call in "
+            f"{name}. "
+        )
+    else:
+        start = "If you do not know the caller's language yet, greet in English. "
+    return (
+        "LANGUAGE: you speak English, Bahasa Melayu and Chinese. "
+        + start
+        + "From then on ALWAYS reply in the language the caller is actually speaking, and "
+        "keep using it for the whole call -- every answer, every follow-up question and "
+        "the closing rating question. Switch ONLY when the caller themselves clearly says "
+        "a full sentence in another of these languages. NEVER switch because of a product "
+        "or brand name (e.g. e.MAS, X50), a knowledge-base result written in another "
+        "language, a short or unclear fragment, or background noise; when unsure, stay in "
+        "the current language. If what you hear is noise, unclear, or in a language you "
+        "do not serve, do not answer its content: briefly ask the caller to repeat, in the "
+        "current language. You speak Bahasa Melayu fluently; NEVER say you cannot speak a "
+        "language and NEVER hand off merely because of language. "
+    )
+
+
 NO_MATCH_GUIDANCE = (
     "We could not confirm that number and name together. Do not say whether the "
     "number is in our records. Treat them as a new caller: " + _UNKNOWN
@@ -754,6 +822,7 @@ def _candidate(contact: dict[str, Any], convs: list[dict[str, Any]]) -> CallerCa
         open_cases=sum(1 for c in convs if c.get("status") in _OPEN_STATUSES),
         contact_plate=_plate_key(str(ca.get("vehicle_no") or "")),
         contact_model=str(ca.get("vehicle_model") or ""),
+        language=str(ca.get("preferred_language") or ca.get("language") or "").strip(),
     )
 
 

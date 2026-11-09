@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hmac
 import json
 import re
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import asdict
@@ -33,6 +35,7 @@ from chatbot.features.chat.case_state import CHATWOOT_CASE_STATE_ATTR, CaseState
 from chatbot.features.chat.handoff_bridge import HandoffBridge, SurveyEvent
 from chatbot.features.chat.models import AgentMessageEvent
 from chatbot.features.chat.nps import parse_nps, record_nps_agent_attribution, should_survey_nps
+from chatbot.features.chat.handoff_note import is_phone_conversation
 from chatbot.features.chat.phone.agent_client_resolver import assignee_to_agent_id
 from chatbot.features.chat.phone.agent_token import agent_id_from_identity, agent_identity
 from chatbot.features.chat.phone.bridge import PhoneBridge
@@ -42,12 +45,18 @@ from chatbot.features.chat.phone.caller_context import (
     SOURCES,
     CallerContext,
     build_caller_instruction,
+    build_language_instruction,
     mask,
     normalise_mobile,
     parse_number_list,
     sign_caller,
     usable_caller_id,
     verify_caller,
+)
+from chatbot.features.chat.phone.call_start_cache import (
+    AnnouncementAudio,
+    CallerPrefetch,
+    PrefetchEntry,
 )
 from chatbot.features.chat.phone.caller_tools import LOOKUP_CALLER_TOOL, SAVE_CALLER_DETAILS_TOOL
 from chatbot.features.chat.phone.gemini_live import LiveSession, connect_live
@@ -395,6 +404,26 @@ _DIAL_HANGUP_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/><
 # existing wording covers what to SAY and in what order (which matters because
 # a redirect can cut the line mid-sentence). These add when handing off is
 # warranted at all.
+# 2026-11-09 fast start: the PDPA notice played over the stream ends with this
+# Twilio mark; the bridge starts recording only once Twilio echoes it back.
+_NOTICE_MARK = "pdpa_notice"
+# Stream <Parameter> telling /voice/phone/stream to play the notice itself.
+_NOTICE_PARAM = "notice"
+# 0.4 s of mu-law 8 kHz per media frame.
+_NOTICE_FRAME_BYTES = 3200
+# The model speaks first: one completed client turn, sent once, before the
+# caller has said anything (PhoneBridge.greet_if_caller_silent).
+_GREETING_PROMPT = (
+    "(The call has just connected and the caller is listening. Greet them now in one "
+    "short sentence as Proton's phone assistant and ask how you can help, following "
+    "the LANGUAGE and CALL FLOW rules. Do not mention this note.)"
+)
+
+
+def _ms(seconds: float) -> int:
+    return round(seconds * 1000)
+
+
 _HANDOFF_GUARDRAILS = (
     "NEVER hand off because you could not hear or understand the caller. Phone audio "
     "is lossy and callers switch languages mid-sentence, so when a turn is unclear, ASK "
@@ -476,6 +505,15 @@ class ChatRouter:
         # (`_answering_agent_id`), falling back to today's assignee-based
         # `start_after_call` when it is None, same as every existing caller.
         self._call_control = call_control
+        # 2026-11-09 call-start latency (phone/call_start_cache.py): the
+        # caller lookup starts at /voice/phone/incoming, and the PDPA notice is
+        # synthesised once for playing over the stream (fast start).
+        self._caller_prefetch = CallerPrefetch()
+        synth = getattr(orchestrator._tts_port, "synthesize_mulaw8k", None)
+        tts_language = orchestrator._settings.phone_announcement_tts_language
+        self._announcement_audio = AnnouncementAudio(
+            (lambda text: synth(text, tts_language)) if callable(synth) else None
+        )
         self._phone_token_limiter = RateLimiter(
             orchestrator._settings.phone_token_rate_limit,
             orchestrator._settings.phone_token_rate_window_seconds,
@@ -667,7 +705,12 @@ class ChatRouter:
             # never reaches this call -- only an actual resolve does.
             # `handle_resolved` never raises (see resolved_case_index.py), so
             # this is safe to await inline without a wrapping try/except here.
-            if self._resolved_case_index is not None:
+            # 2026-11-09: never for a phone call -- its transcript and handoff
+            # note are already there, and an abandoned call got an EMPTY
+            # "[Auto-summary — resolved case]" note.
+            if self._resolved_case_index is not None and not is_phone_conversation(
+                payload.conversation.model_dump()
+            ):
                 await self._resolved_case_index.handle_resolved(conversation_id=conv_id)
             return {"status": "resolved"}
 
@@ -1576,13 +1619,53 @@ class ChatRouter:
             ivr_xml = self._ivr.entry_twiml()
             if ivr_xml is not None:
                 return Response(content=ivr_xml, media_type="application/xml")
-        caller_params = await self._caller_stream_parameters(request)
+        caller = await self._verified_caller(request)
+        self._start_call_prefetch(await self._form_call_sid(request), caller)
+        caller_params = self._caller_params(caller)
         return Response(content=self._bridge_twiml(caller_params), media_type="application/xml")
 
+    @staticmethod
+    async def _form_call_sid(request: Request) -> str:
+        try:
+            form = await request.form()
+        except Exception:
+            return ""
+        return str(form.get("CallSid") or "").strip()
+
+    def _start_call_prefetch(self, call_sid: str, caller: tuple[str, str, str] | None) -> None:
+        """2026-11-09: start the caller lookup + dealer list NOW, seconds
+        before Twilio opens the stream, and note the arrival time for the
+        call's timing log. A lookup only ever runs for a verified caller."""
+        service = self._caller_context_service
+        on = self.orchestrator._settings.phone_caller_context_enabled and service is not None
+        self._caller_prefetch.start(
+            call_sid,
+            caller[1] if caller else None,
+            caller[2] if caller else None,
+            service.lookup if on and service is not None else None,
+            service.dealer_slugs if on and service is not None else None,
+        )
+
+    def _caller_params(self, caller: tuple[str, str, str] | None) -> dict[str, str] | None:
+        if caller is None:
+            return None
+        call_sid, phone, source = caller
+        return {
+            "caller": phone,
+            "caller_source": source,
+            "caller_sig": sign_caller(
+                self.orchestrator._settings.twilio_auth_token, call_sid, source, phone
+            ),
+        }
+
     async def _caller_stream_parameters(self, request: Request) -> dict[str, str] | None:
-        """2026-11-09 caller context: the caller's number as signed
-        `<Stream>` parameters, or None (= today's TwiML, and the assistant
-        asks for the number).
+        """The signed `<Stream>` caller parameters (see `_verified_caller`)."""
+        return self._caller_params(await self._verified_caller(request))
+
+    async def _verified_caller(self, request: Request) -> tuple[str, str, str] | None:
+        """2026-11-09 caller context: (CallSid, number, source) for a caller
+        whose number we may trust, or None (= no `<Stream>` caller
+        parameters, and the assistant asks for the number).
 
         Trust chain: Twilio's X-Twilio-Signature proves this POST (and its
         `From`/`callAs`) came from Twilio; the HMAC binds the number to this
@@ -1634,11 +1717,7 @@ class ChatRouter:
         if phone is None:
             return None
         _log.info("phone_caller_context_number", call_sid=call_sid, phone=mask(phone), source=source)
-        return {
-            "caller": phone,
-            "caller_source": source,
-            "caller_sig": sign_caller(token, call_sid, source, phone),
-        }
+        return call_sid, phone, source
 
     def _bridge_twiml(self, parameters: dict[str, str] | None = None) -> str:
         """Today's inbound TwiML: optional recording notice, then the AI
@@ -1652,11 +1731,27 @@ class ChatRouter:
             and settings.twilio_webhook_base_url
         ):
             announcement = settings.phone_recording_announcement
+        if announcement and settings.phone_fast_start_enabled:
+            # 2026-11-09 fast start: with the notice's audio cached, answer
+            # with <Connect><Stream> at once and let phone_stream play the
+            # notice while Gemini Live connects. Cold cache (first call after
+            # a restart, TTS down) -> today's <Say>; warming starts here.
+            self._announcement_audio.warm(announcement)
+            if self._announcement_audio.get(announcement) is not None:
+                announcement = None
+                parameters = {**(parameters or {}), _NOTICE_PARAM: "stream"}
         return connect_stream_twiml(self._phone_wss_url(), announcement, parameters)
 
-    async def _caller_from_start(self, start_msg: dict[str, Any]) -> CallerContext | None:
+    async def _caller_from_start(
+        self, start_msg: dict[str, Any], prefetch: PrefetchEntry | None = None
+    ) -> CallerContext | None:
         """Verify the signed caller parameter in the "start" frame and look
-        the caller up (bounded inside the service). None = unknown caller."""
+        the caller up (bounded inside the service). None = unknown caller.
+
+        2026-11-09: the lookup started at /voice/phone/incoming (`prefetch`)
+        is used when it is for the same verified number; otherwise this
+        looks up itself, exactly as before. A web call-as caller starts in
+        their test-console persona's language."""
         settings = self.orchestrator._settings
         service = self._caller_context_service
         if service is None or not settings.phone_caller_context_enabled:
@@ -1676,7 +1771,40 @@ class ChatRouter:
             if phone:
                 _log.warning("phone_caller_param_rejected", call_sid=call_sid, phone=mask(phone))
             return None
-        return await service.lookup(phone, source)
+        ctx = await prefetch.caller(phone, source) if prefetch is not None else None
+        if ctx is None:
+            ctx = await service.lookup(phone, source)
+        if source == SOURCE_WEB_CALL_AS and not ctx.language:
+            from chatbot.features.demo.personas import persona_language  # noqa: PLC0415
+
+            ctx.language = persona_language(phone)
+        return ctx
+
+    async def _dealer_slugs(self, prefetch: PrefetchEntry | None) -> list[str]:
+        if prefetch is not None:
+            slugs = await prefetch.dealer_slugs()
+            if slugs is not None:
+                return slugs
+        service = self._caller_context_service
+        return await service.dealer_slugs() if service is not None else []
+
+    async def _play_notice(self, websocket: WebSocket, stream_sid: str, audio: bytes) -> float:
+        """Send the cached PDPA notice to Twilio as media frames, then a mark
+        Twilio echoes back once it has PLAYED (the bridge starts recording
+        on that echo, never before). Returns the notice's length in s."""
+        for i in range(0, len(audio), _NOTICE_FRAME_BYTES):
+            chunk = audio[i : i + _NOTICE_FRAME_BYTES]
+            await websocket.send_json(
+                {
+                    "event": "media",
+                    "streamSid": stream_sid,
+                    "media": {"payload": base64.b64encode(chunk).decode()},
+                }
+            )
+        await websocket.send_json(
+            {"event": "mark", "streamSid": stream_sid, "mark": {"name": _NOTICE_MARK}}
+        )
+        return len(audio) / 8000
 
     async def phone_token(self, request: Request) -> dict[str, str]:
         """Mint a Twilio Voice access token for the browser softphone.
@@ -1712,7 +1840,7 @@ class ChatRouter:
             _log.error("voice_tts_synthesis_failed", error=str(e))
             raise HTTPException(status_code=500, detail="Voice synthesis failed") from e
 
-    async def phone_stream(self, websocket: WebSocket) -> None:
+    async def phone_stream(self, websocket: WebSocket) -> None:  # noqa: PLR0912, PLR0915 -- call setup is one sequenced flow
         """WebSocket endpoint that Twilio Media Streams connects to.
 
         Opens a Gemini Live session, constructs a PhoneBridge, then:
@@ -1725,6 +1853,7 @@ class ChatRouter:
         """
         await websocket.accept()
         settings = self.orchestrator._settings
+        stream_started_at = time.monotonic()
         try:
             # The Twilio Media Streams protocol always sends a "start" event as
             # the very first message. Read it BEFORE opening the Gemini Live
@@ -1740,6 +1869,24 @@ class ChatRouter:
             start_raw = await websocket.receive_text()
             start_msg = json.loads(start_raw)
             call_sid = _call_sid_from_start(start_msg)
+            prefetch = self._caller_prefetch.take(call_sid)
+            # 2026-11-09 fast start: play the PDPA notice FIRST, while the
+            # lookup and the Gemini Live connect below run -- the caller hears
+            # the notice instead of silence, and the assistant can greet the
+            # moment it ends. Requested by the TwiML only when the audio was
+            # cached at /incoming.
+            start_info = start_msg.get("start") if isinstance(start_msg, dict) else None
+            start_info = start_info if isinstance(start_info, dict) else {}
+            custom = start_info.get("customParameters")
+            notice_requested = isinstance(custom, dict) and custom.get(_NOTICE_PARAM) == "stream"
+            notice_seconds: float | None = None
+            stream_sid = str(start_info.get("streamSid") or "")
+            if notice_requested and stream_sid:
+                audio = self._announcement_audio.get(settings.phone_recording_announcement)
+                if audio:
+                    notice_seconds = await self._play_notice(websocket, stream_sid, audio)
+                else:
+                    _log.warning("phone_announcement_audio_missing_no_recording", call_sid=call_sid)
             # A conversation-keyed decision, exactly like the WhatsApp/email
             # survey flow -- see should_survey_nps's docstring. A missing
             # CallSid (malformed frame) fails closed to CSAT, today's
@@ -1785,7 +1932,8 @@ class ChatRouter:
             if nps_mode:
                 rating_instruction = (
                     "Do NOT ask for a rating mid-conversation. ONLY once the caller clearly signals "
-                    "they are finished (e.g. 'no, that's all', 'nothing else', 'goodbye'), ask 'On "
+                    "they are finished (e.g. 'no, that's all', 'nothing else', 'goodbye'), ask — "
+                    "in the caller's language, never switching to English for it — 'On "
                     "a scale of 0 to 10, how likely are you to recommend us to a friend or "
                     "colleague?' then STOP and wait — do not thank them, wrap up, or say anything "
                     "else until the caller replies with a number. Only after they say a number, "
@@ -1795,7 +1943,8 @@ class ChatRouter:
             else:
                 rating_instruction = (
                     "Do NOT ask for a rating mid-conversation. ONLY once the caller clearly signals "
-                    "they are finished (e.g. 'no, that's all', 'nothing else', 'goodbye'), ask 'How "
+                    "they are finished (e.g. 'no, that's all', 'nothing else', 'goodbye'), ask — "
+                    "in the caller's language, never switching to English for it — 'How "
                     "would you rate your experience from 1 to 5?' then STOP and wait — do not thank "
                     "them, wrap up, or say anything else until the caller replies with a number. "
                     "Only after they say a number, call submit_csat with it and then give a brief "
@@ -1816,10 +1965,11 @@ class ChatRouter:
                 settings.phone_caller_context_enabled
                 and self._caller_context_service is not None
             )
+            lookup_started = time.monotonic()
             if caller_on and self._caller_context_service is not None:
                 caller_ctx, dealer_slugs = await asyncio.gather(
-                    self._caller_from_start(start_msg),
-                    self._caller_context_service.dealer_slugs(),
+                    self._caller_from_start(start_msg, prefetch),
+                    self._dealer_slugs(prefetch),
                 )
                 caller_instruction = build_caller_instruction(
                     caller_ctx, lookup_tool=caller_ctx is None
@@ -1827,13 +1977,18 @@ class ChatRouter:
                 caller_tools = [SAVE_CALLER_DETAILS_TOOL]
                 if caller_ctx is None:
                     caller_tools.append(LOOKUP_CALLER_TOOL)
+            lookup_ms = _ms(time.monotonic() - lookup_started)
+            # 2026-11-09 language: start in the caller's known language (web
+            # call-as persona / stored contact language / the tenant's Live
+            # language), then never drift -- see build_language_instruction.
+            start_language = (
+                caller_ctx.start_language if caller_ctx is not None else ""
+            ) or settings.gemini_live_language
             system_instruction = (
                 "You are Proton's friendly phone support agent. Answer spoken questions "
-                "concisely and naturally. You are fully multilingual: ALWAYS reply in the SAME "
-                "language the caller uses — English, Bahasa Melayu, or Chinese — and switch "
-                "immediately if they switch. You speak Bahasa Melayu fluently; NEVER say you cannot "
-                "speak a language and NEVER hand off merely because of language. "
-                "Use the kb_search tool to ground answers in the "
+                "concisely and naturally. "
+                + build_language_instruction(start_language)
+                + "Use the kb_search tool to ground answers in the "
                 "Proton knowledge base before giving facts. "
                 + caller_instruction
                 + _HANDOFF_GUARDRAILS
@@ -1844,11 +1999,27 @@ class ChatRouter:
                 + rating_instruction
             )
             survey_tool = SUBMIT_NPS_TOOL if nps_mode else SUBMIT_CSAT_TOOL
+            live_started = time.monotonic()
             async with self._live_session_factory(
                 settings,
                 system_instruction,
                 [KB_SEARCH_TOOL, REQUEST_HANDOFF_TOOL, survey_tool, *caller_tools],
             ) as live:
+                timing: dict[str, Any] = {
+                    "incoming_to_stream_ms": (
+                        _ms(stream_started_at - prefetch.incoming_at)
+                        if prefetch is not None
+                        else None
+                    ),
+                    "lookup_ms": lookup_ms,
+                    "live_connect_ms": _ms(time.monotonic() - live_started),
+                    "prefetched": prefetch is not None,
+                    "notice": (
+                        "stream"
+                        if notice_seconds is not None
+                        else ("missing" if notice_requested else "twiml_or_none")
+                    ),
+                }
                 bridge = PhoneBridge(
                     live,
                     self.orchestrator._knowledge_port,
@@ -1860,12 +2031,24 @@ class ChatRouter:
                     caller_service=self._caller_context_service if caller_on else None,
                     caller_context=caller_ctx,
                     dealer_slugs=dealer_slugs,
+                    announcement_mark=_NOTICE_MARK if notice_requested else None,
+                    announcement_seconds=notice_seconds or 0.0,
+                    timing=timing,
+                    stream_started_at=stream_started_at,
                 )
+                if notice_requested and notice_seconds is None:
+                    # Asked to play the notice over the stream but had no
+                    # audio: fail CLOSED -- no recording on this call.
+                    await bridge.announcement_watchdog_expired()
 
                 # Feed the "start" frame read above so bridge.stream_sid is set
                 # before pump_task begins forwarding audio frames — avoiding a
                 # race between the two concurrent tasks.
                 await bridge.handle_twilio(start_msg)
+                if settings.phone_fast_start_enabled:
+                    # The assistant greets first -- once, and only if the
+                    # caller has not spoken (nothing is read from Twilio yet).
+                    await bridge.greet_if_caller_silent(_GREETING_PROMPT)
 
                 async def from_twilio() -> None:
                     while True:

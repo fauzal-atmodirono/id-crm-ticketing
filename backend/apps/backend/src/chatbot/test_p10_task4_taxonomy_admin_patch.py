@@ -313,7 +313,10 @@ def test_the_nav_gate_is_the_permission_the_router_itself_requires(
     nobody. Both are ways to ship an unreachable feature, so the key is compared
     across all three sources.
     """
-    assert 'require_permission("taxonomy.manage"' in ROUTER_TEXT
+    # Whitespace-tolerant: Wave 1 Task 5 reflowed the call onto several lines
+    # (`require_permission(\n    "taxonomy.manage", ...`), which a plain
+    # substring check read as the gate disappearing.
+    assert re.search(r'require_permission\(\s*"taxonomy\.manage"', ROUTER_TEXT)
     assert '"taxonomy.manage"' in SEED_PY.read_text(encoding="utf-8")
     assert "protonHasPermission('taxonomy.manage')" in applied[SIDEBAR_REL_PATH]
     # The page's own read path is NOT gated on it -- reading the taxonomy is not

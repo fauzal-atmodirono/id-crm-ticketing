@@ -63,16 +63,21 @@ ESCALATE_LABEL = "escalate"
 _PRIORITIES = ("low", "medium", "high", "urgent")
 _PRIORITY_ALIASES = {"normal": "medium", "critical": "urgent"}
 
-# Breakdown / roadside / accident / safety, English and Malay. Matched on word
-# starts so "towing", "injured", "kemalangan" all hit; a false "urgent" costs
-# an agent a glance, a missed one leaves a stranded driver waiting.
+# Breakdown / roadside / accident / safety, English and Malay -- PHRASES, not
+# loose words (review fix): "asap" (ASAP), "tunda" (postpone), "rosak"
+# (any fault: "aircond rosak"), "bahaya", a bare "safety" ("safety rating")
+# and a bare "crash" ("the app crash") all marked everyday cases urgent.
 _SAFETY_RE = re.compile(
-    r"\b(?:break\s?down|broke\s?down|broken\s?down|roadside|tow(?:ing|ed)?\b|accident|crash"
-    r"|collision|injur|fire\b|smoke|burning|brakes?\s+fail|stranded|airbag|emergency"
-    r"|safety|unsafe|rosak|kemalangan|terkandas|tunda|kebakaran|asap|kecemasan|bahaya"
-    r"|brek\s+tak)",
+    r"\b(?:break\s?down|broke\s?down|broken\s?down|roadside|tow\s?truck|towing"
+    r"|kereta\s+tunda|lori\s+tunda|(?:car|road|vehicle)\s+crash|accident|collision"
+    r"|injur\w*|fire\b|on\s+fire|smoke|smoking\s+engine|burning\s+smell"
+    r"|brakes?\s+(?:fail|failed|failure|not\s+working)|brek\s+tak\s+makan|brek\s+rosak"
+    r"|stranded|stuck\s+on\s+the\s+(?:highway|road)|highway|lebuhraya"
+    r"|rosak\s+(?:di\s+)?(?:tepi\s+jalan|tengah\s+jalan|di\s+tol|tol|lebuhraya)"
+    r"|kemalangan|terkandas|kebakaran|berasap|airbag|emergency|kecemasan)",
     re.IGNORECASE,
 )
+_RANK = {p: i for i, p in enumerate(_PRIORITIES)}
 
 _CHANNEL_NAMES = {
     "Channel::Whatsapp": "WhatsApp",
@@ -91,10 +96,16 @@ _MAX_SUMMARY = 1200
 _DEALER_LABEL = re.compile(r"^dealer_(.+)$")
 
 
-def handoff_priority(*, classified: str | None = None, texts: Iterable[str | None] = ()) -> str:
-    """Chatwoot priority for a handoff: ``urgent`` for breakdown/safety,
-    else the classified priority, else ``medium``."""
-    if any(_SAFETY_RE.search(t or "") for t in texts):
+def handoff_priority(
+    *,
+    classified: str | None = None,
+    texts: Iterable[str | None] = (),
+    urgent: bool = False,
+) -> str:
+    """Chatwoot priority for a handoff: ``urgent`` for breakdown/safety (or
+    ``urgent=True``: the sentiment classifier said so), else the classified
+    priority, else ``medium``."""
+    if urgent or any(_SAFETY_RE.search(t or "") for t in texts):
         return "urgent"
     key = (classified or "").strip().lower()
     key = _PRIORITY_ALIASES.get(key, key)
@@ -137,6 +148,8 @@ class DealerLine:
     slug: str = ""
     confirmed: bool = False
     text: str = ""
+    # A dealer_<slug> label is already on the conversation.
+    escalated: bool = False
 
 
 @dataclass(frozen=True)
@@ -157,6 +170,10 @@ class HandoffNote:
 
 
 def _dealer_line(d: DealerLine) -> str:
+    if d.slug and d.escalated:
+        return (
+            f"Dealer: {dealer_display(d.slug)} — already escalated to the dealer (dealer_{d.slug})"
+        )
     if d.slug and d.confirmed:
         return (
             f"Dealer: {dealer_display(d.slug)} — escalate by adding the `{ESCALATE_LABEL}` label "
@@ -202,12 +219,28 @@ def format_handoff_note(n: HandoffNote) -> str:
     return "\n".join(lines)
 
 
-async def apply_priority(port: Any, ticket_id: str, priority: str) -> None:
-    """Set the conversation priority when the port can (ChatwootAdapter);
-    a port without it (Zendesk, test fakes) just skips."""
+async def apply_priority(
+    port: Any, ticket_id: str, priority: str, *, current: str | None = None
+) -> None:
+    """Raise the conversation priority when the port can (ChatwootAdapter);
+    never lower it -- an agent or an SLA rule may already have set it
+    higher. ``current`` is read from the conversation when not given; an
+    unreadable or unset one counts as lowest. A port without a setter
+    (Zendesk, test fakes) just skips."""
     setter = getattr(port, "set_conversation_priority", None)
-    if setter is not None:
-        await setter(ticket_id, priority)
+    if setter is None:
+        return
+    if current is None:
+        getter = getattr(port, "get_conversation", None)
+        if getter is not None:
+            try:
+                conv = await getter(ticket_id)
+                current = str((conv or {}).get("priority") or "") if isinstance(conv, dict) else ""
+            except Exception:
+                current = ""
+    if _RANK.get((current or "").lower(), -1) >= _RANK.get(priority, 1):
+        return
+    await setter(ticket_id, priority)
 
 
 def _s(value: Any) -> str:
@@ -318,7 +351,7 @@ class HandoffNoteService:
         label_slug = next((m.group(1) for lbl in labels if (m := _DEALER_LABEL.match(lbl))), "")
         if label_slug:
             # Already escalated to a dealer by someone: show it as it is.
-            return DealerLine(slug=label_slug, confirmed=True), {}
+            return DealerLine(slug=label_slug, confirmed=True, escalated=True), {}
         stored = _s(attrs.get("caller_dealer")).lower()
         if stored:
             return DealerLine(slug=stored, confirmed=True), {}
@@ -367,6 +400,7 @@ class HandoffNoteService:
             priority=handoff_priority(
                 classified=_s(state.get("priority")),
                 texts=[reason, summary, _s(state.get("subcategory"))],
+                urgent=_s(state.get("sentiment")).lower() == "urgent",
             ),
             name=_s(sender.get("name")) or _s(customer_name),
             mobile=_s(sender.get("phone_number")) or _s(customer_phone),
@@ -384,7 +418,12 @@ class HandoffNoteService:
             await post(text)
         else:
             await self._chatwoot.add_private_note(conversation_id, text)
-        await apply_priority(self._chatwoot, conversation_id, note.priority)
+        await apply_priority(
+            self._chatwoot,
+            conversation_id,
+            note.priority,
+            current=str(conv.get("priority") or "") if conv else None,
+        )
         if store:
             await self._chatwoot.set_conversation_attributes(conversation_id, store)
         _log.info(

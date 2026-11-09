@@ -24,7 +24,7 @@ from chatbot.platform.config import Settings
 _H = {"x-api-key": "k"}
 
 
-def _client(conv: dict[str, Any] | None, *, on: bool = True):
+def _client(conv: dict[str, Any] | None, *, on: bool = True, stamp_sticks: bool = True):
     notifier = AsyncMock()
     calls: list[tuple[str, Any, Any]] = []
 
@@ -33,6 +33,8 @@ def _client(conv: dict[str, Any] | None, *, on: bool = True):
 
     async def merge(ticket_id: str, attrs: dict[str, Any]) -> None:
         calls.append(("attrs", ticket_id, attrs))
+        if conv is not None and stamp_sticks:
+            conv.setdefault("custom_attributes", {}).update(attrs)
 
     async def add_label(ticket_id: str, tag: str) -> None:
         calls.append(("label", ticket_id, tag))
@@ -114,4 +116,27 @@ def test_conversation_read_failure_falls_back_to_today() -> None:
     _notify(client)
     kw = notifier.notify_escalation.await_args.kwargs
     assert kw["dealer"] is None and kw["ack_transport"] == "conversation"
+    assert calls == []
+
+
+# --- fix round 1 ---------------------------------------------------------------
+
+
+def test_a_stamp_that_did_not_stick_adds_no_dealer_label() -> None:
+    """I1: the merge writer swallows Chatwoot errors. If the stamp is not
+    there on re-read, adding dealer_<slug> would let the agent's echo
+    escalate a second time -- so no label (the email already went)."""
+    client, notifier, calls = _client(
+        _phone_conv(caller_dealer="petaling_jaya"), stamp_sticks=False
+    )
+    _notify(client)
+    assert notifier.notify_escalation.await_args.kwargs["dealer"] == "petaling_jaya"
+    assert not any(c[0] == "label" for c in calls)
+
+
+def test_a_department_escalation_never_reaches_the_dealer() -> None:
+    """I3 ruling: escalate + dept_<x> is an internal escalation."""
+    client, notifier, calls = _client(_phone_conv(caller_dealer="petaling_jaya"))
+    _notify(client, department="aftersales")
+    assert notifier.notify_escalation.await_args.kwargs["dealer"] is None
     assert calls == []

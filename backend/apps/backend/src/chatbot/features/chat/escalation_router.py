@@ -267,7 +267,17 @@ def build_escalation_router(
         if merge_attributes is None or add_label is None:
             return
         try:
-            await merge_attributes(conv_id, {_NOTIFIED_ATTR: datetime.now(UTC).isoformat()})
+            stamp = datetime.now(UTC).isoformat()
+            await merge_attributes(conv_id, {_NOTIFIED_ATTR: stamp})
+            # The merge writer swallows Chatwoot errors (fail-open), so
+            # confirm the stamp landed before labelling: a label without it
+            # lets the agent's echo send the dealer email and ack again.
+            # Losing the label is the lesser failure (the email went).
+            conv = await _read_conversation(conv_id)
+            attrs = (conv or {}).get("custom_attributes") or {}
+            if not isinstance(attrs, dict) or not attrs.get(_NOTIFIED_ATTR):
+                _log.warning("escalation_notify_dealer_label_skipped_unstamped", conv_id=conv_id)
+                return
             await add_label(conv_id, f"dealer_{slug}")
         except Exception as e:
             _log.warning(
@@ -280,7 +290,9 @@ def build_escalation_router(
         )
         dealer = payload.dealer
         filled_dealer: str | None = None
-        if settings.handoff_note_enabled and (transport == "conversation" or not dealer):
+        if settings.handoff_note_enabled and (
+            transport == "conversation" or not (dealer or payload.department)
+        ):
             # 2026-11-09 brief 3 (features/chat/handoff_note.py): a phone
             # call sits in the API inbox, so its channel type says
             # "conversation" -- but there is no thread to write to; the
@@ -289,7 +301,9 @@ def build_escalation_router(
             conv = await _read_conversation(payload.conversation_id)
             if transport == "conversation" and is_phone_conversation(conv):
                 transport = "none"
-            if not dealer:
+            # Ruling: a department escalation (escalate + dept_<x>) is
+            # internal and never reaches the dealer.
+            if not dealer and not payload.department:
                 filled_dealer = _confirmed_dealer(conv)
                 dealer = filled_dealer
         customer_email = (

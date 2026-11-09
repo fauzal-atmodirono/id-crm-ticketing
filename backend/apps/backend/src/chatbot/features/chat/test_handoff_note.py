@@ -12,6 +12,7 @@ from chatbot.features.chat.handoff_note import (
     DealerLine,
     HandoffNote,
     HandoffNoteService,
+    apply_priority,
     conversation_path,
     format_handoff_note,
     handoff_priority,
@@ -292,3 +293,72 @@ async def test_post_callable_replaces_the_private_note_write() -> None:
     await _service(cw).post_for_chat("42", {"handoff_reason": "help_request"}, post=post)
     assert cw.notes == []
     assert posted and posted[0].startswith("[Handoff to human agent]")
+
+
+# --- fix round 1 ---------------------------------------------------------------
+
+
+def test_everyday_words_are_not_urgent() -> None:
+    for text in [
+        "please call me ASAP",
+        "what is the safety rating of the X50",
+        "the app crash when I log in",
+        "aircond rosak",
+        "boleh tunda servis minggu depan",  # "tunda" = postpone
+        "bahaya tak harga naik",
+    ]:
+        assert handoff_priority(texts=[text]) == "medium", text
+
+
+def test_real_breakdown_and_safety_phrases_are_urgent() -> None:
+    for text in [
+        "car crash on the way home",
+        "need a tow truck",
+        "perlukan kereta tunda",
+        "kereta rosak tepi jalan",
+        "brakes failed",
+        "brek tak makan",
+        "stuck on the highway",
+        "fire under the bonnet",
+    ]:
+        assert handoff_priority(texts=[text]) == "urgent", text
+
+
+def test_urgent_sentiment_is_urgent() -> None:
+    assert handoff_priority(classified="LOW", urgent=True) == "urgent"
+
+
+def test_existing_dealer_label_reads_already_escalated() -> None:
+    text = format_handoff_note(
+        _note(dealer=DealerLine(slug="petaling_jaya", confirmed=True, escalated=True))
+    )
+    assert "Dealer: Petaling Jaya — already escalated to the dealer (dealer_petaling_jaya)" in text
+    assert "escalate by adding" not in text
+
+
+async def test_chat_existing_dealer_label_reads_already_escalated() -> None:
+    conv = _conv()
+    conv["labels"] = ["dealer_caroline_motor"]
+    cw = _Chatwoot(conv)
+    await _service(cw).post_for_chat("42", {"handoff_reason": "help_request"})
+    assert "already escalated to the dealer (dealer_caroline_motor)" in cw.notes[0][1]
+
+
+async def test_chat_urgent_sentiment_sets_urgent() -> None:
+    cw = _Chatwoot(_conv())
+    await _service(cw).post_for_chat("42", {"priority": "LOW", "sentiment": "urgent"})
+    assert cw.priorities == [("42", "urgent")]
+
+
+async def test_priority_is_never_lowered() -> None:
+    conv = _conv()
+    conv["priority"] = "urgent"
+    cw = _Chatwoot(conv)
+    await apply_priority(cw, "42", "medium")
+    assert cw.priorities == []
+    conv["priority"] = "low"
+    await apply_priority(cw, "42", "high")
+    assert cw.priorities == [("42", "high")]
+    conv["priority"] = None
+    await apply_priority(cw, "42", "medium")
+    assert cw.priorities[-1] == ("42", "medium")

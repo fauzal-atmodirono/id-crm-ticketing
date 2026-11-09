@@ -146,3 +146,13 @@ async def test_begin_handoff_keeps_the_old_note_when_the_log_is_elsewhere() -> N
     await svc.begin_handoff("email-9", "s", channel="email")
     assert log.comments == [("77", "[Handoff to human agent]\ns")]
     assert notes.calls == []
+
+
+async def test_a_later_crm_turn_with_handoff_still_set_posts_no_second_note() -> None:
+    notes = _Notes()
+    svc = _svc(notes, "crm-44", [True, False, False])
+    await svc.handle_turn(session_id="crm-44", text="human please")
+    r2 = await svc.handle_turn(session_id="crm-44", text="still there?")
+    r3 = await svc.handle_turn(session_id="crm-44", text="hello")
+    assert r2.handoff is not None and r3.handoff is not None  # still handed off
+    assert len(notes.calls) == 1

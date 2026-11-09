@@ -1043,3 +1043,18 @@ def test_the_latest_path_still_ignores_transcript_only_notes(settings, world) ->
     world.conversations["42"]["custom_attributes"] = {}
     world.messages["42"] = [_backend_note(9, TRANSCRIPT_ONLY)]
     assert _meta(_client(settings, world))["status"] == "empty"
+
+
+def test_a_refused_audit_rolls_back_the_right_cooldown_after_pruning(
+    settings, world, monkeypatch
+) -> None:
+    """The stale-entry prune runs before the audit; its loop must not clobber
+    the cooldown key `_rollback` restores (review round 2)."""
+    monkeypatch.setattr(recording_router, "_STATE_CAP", 1)
+    recording_router._last_retranscribe.update({"7": 0.0, "8": 0.0})  # stale
+    audit = _FailingAudit()
+    client = _client(settings, world, audit=audit, monotonic=lambda: 10_000.0)
+    assert client.post("/calls/42/recording/retranscribe", headers=SESSION).status_code == 503
+    assert "42" not in recording_router._last_retranscribe
+    audit.down = False
+    assert client.post("/calls/42/recording/retranscribe", headers=SESSION).status_code == 202

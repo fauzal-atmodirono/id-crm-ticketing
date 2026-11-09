@@ -22,8 +22,17 @@ from chatbot.features.authz.data_scope import (
     Scope,
     build_scope_dependency,
 )
-from chatbot.features.authz.deps import Actor, require_permission, resolve_actor
-from chatbot.features.authz.seed import ALL_NATIVE_KEYS, NATIVE_CONVERSATION_KEYS
+from chatbot.features.authz.deps import (
+    Actor,
+    is_platform_superadmin,
+    require_permission,
+    resolve_actor,
+)
+from chatbot.features.authz.seed import (
+    ALL_NATIVE_KEYS,
+    NATIVE_CONVERSATION_KEYS,
+    PERMISSION_REGISTRY,
+)
 from chatbot.features.chat.audit_events import EVENT_ROLE_CHANGE, record_event
 
 if TYPE_CHECKING:
@@ -83,14 +92,41 @@ def build_authz_router(
             raise HTTPException(status_code=401, detail="Invalid or expired token")
         return user_id
 
+    async def _effective_permissions(
+        x_chatwoot_access_token: str | None = Header(default=None),
+        x_chatwoot_client: str | None = Header(default=None),
+        x_chatwoot_uid: str | None = Header(default=None),
+    ) -> set[str]:
+        """What the caller may do, as `require_permission` decides it.
+
+        `require_permission` lets a platform superadmin (`deps.
+        is_platform_superadmin`: Chatwoot's SuperAdmin type or the id-1 floor)
+        through every permission check when RBAC is on, whatever roles they
+        hold. The UI gates its surfaces on THIS answer, so it must say the
+        same, or the platform owner is shown "no access" for things the
+        backend would serve (review R55). Their set is the whole RBAC
+        catalogue (`PERMISSION_REGISTRY`); the native `chatwoot.*` mirror keys
+        are role-mirror plumbing that `require_permission` never checks, so
+        they are not listed. With RBAC off nothing changes: role keys only.
+        """
+        if not x_chatwoot_access_token or not x_chatwoot_client or not x_chatwoot_uid:
+            raise HTTPException(status_code=401, detail="Missing Chatwoot access token")
+        identity = await validator.resolve_identity(
+            x_chatwoot_access_token, x_chatwoot_client, x_chatwoot_uid
+        )
+        if identity is None:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+        user_id, is_super_admin_type = identity
+        if settings.rbac_enabled and is_platform_superadmin(user_id, is_super_admin_type):
+            return set(PERMISSION_REGISTRY)
+        return set(await repo.permissions_for_user(user_id))
+
     @router.get("/permissions")
-    async def my_permissions(user_id: int = Depends(_caller_user_id)) -> dict:
-        perms = await repo.permissions_for_user(user_id)
+    async def my_permissions(perms: set[str] = Depends(_effective_permissions)) -> dict:
         return {"permissions": sorted(perms)}
 
     @router.get("/check")
-    async def check(permission: str, user_id: int = Depends(_caller_user_id)) -> dict:
-        perms = await repo.permissions_for_user(user_id)
+    async def check(permission: str, perms: set[str] = Depends(_effective_permissions)) -> dict:
         return {"allowed": permission in perms}
 
     @router.get("/roles")

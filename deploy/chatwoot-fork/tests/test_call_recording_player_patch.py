@@ -175,3 +175,10 @@ def test_a_rate_limited_retranscribe_says_how_long_to_wait(panel):
     assert "Re-transcribe limit reached — try again in ${minutes} min" in panel
     assert "?.detail?.retry_after_seconds" in panel
     assert "Math.ceil(seconds / 60)" in panel
+
+
+def test_a_new_call_in_the_same_conversation_drops_the_old_transcript(panel, panel_only):
+    """Round 2: when call_recording_object changes, the previous call's
+    transcript/open state/message must not show under the new recording."""
+    assert "  function forgetTranscript() {\n    transcriptText.value = '';\n    transcriptOpen.value = false;\n    message.value = '';" in panel
+    assert "    forgetTranscript();\n    load();" in panel_only

@@ -3,10 +3,10 @@ Subject: [PATCH 0094] conversation sidebar: in-CRM call recording player (signed
 
 diff --git a/app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue b/app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue
 new file mode 100644
-index 0000000..8b9ba9d
+index 0000000..df84501
 --- /dev/null
 +++ b/app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,145 @@
 +<script setup>
 +// ProtonCallRecordingPanel.vue — OUR file (patch 0094). Plays a call's
 +// archived recording inside the conversation sidebar: the conversation's
@@ -65,6 +65,7 @@ index 0000000..8b9ba9d
 +  busy,
 +  audioEl,
 +  reset,
++  forgetTranscript,
 +  load,
 +  onPlay,
 +  onError,
@@ -81,13 +82,18 @@ index 0000000..8b9ba9d
 +);
 +
 +// Another conversation: start clean. Same conversation, new recording
-+// object: load() swaps the link in place.
++// object (a later call archived): load() swaps the link in place, but the
++// previous call's transcript and messages go first.
 +watch(() => props.conversationId, reset);
 +watch(
 +  loadKey,
 +  key => {
-+    if (key) load();
-+    else reset();
++    if (!key) {
++      reset();
++      return;
++    }
++    forgetTranscript();
++    load();
 +  },
 +  { immediate: true }
 +);
@@ -148,10 +154,10 @@ index 0000000..8b9ba9d
 +</template>
 diff --git a/app/javascript/dashboard/components/proton/useProtonCallRecording.js b/app/javascript/dashboard/components/proton/useProtonCallRecording.js
 new file mode 100644
-index 0000000..6466c16
+index 0000000..c5a757c
 --- /dev/null
 +++ b/app/javascript/dashboard/components/proton/useProtonCallRecording.js
-@@ -0,0 +1,262 @@
+@@ -0,0 +1,268 @@
 +// useProtonCallRecording.js — OUR file (patch 0094, shared with 0095).
 +//
 +// Everything a call-recording player needs from the backend
@@ -263,17 +269,22 @@ index 0000000..6466c16
 +    return m ? `?message_id=${encodeURIComponent(m)}` : '';
 +  }
 +
++  // Another recording is about to load: its transcript is not this one's.
++  function forgetTranscript() {
++    transcriptText.value = '';
++    transcriptOpen.value = false;
++    message.value = '';
++  }
++
 +  function reset() {
 +    requestSeq += 1;
 +    state.value = 'idle';
 +    playUrl.value = '';
 +    transcriptUrl.value = '';
 +    transcriptToken.value = '';
-+    transcriptText.value = '';
-+    transcriptOpen.value = false;
 +    canRetranscribe.value = false;
 +    expiresAtMs.value = 0;
-+    message.value = '';
++    forgetTranscript();
 +  }
 +
 +  async function load() {
@@ -407,6 +418,7 @@ index 0000000..6466c16
 +    busy,
 +    audioEl,
 +    reset,
++    forgetTranscript,
 +    load,
 +    onPlay,
 +    onError,

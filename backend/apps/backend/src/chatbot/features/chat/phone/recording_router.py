@@ -647,8 +647,8 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
                 _global_runs.pop()
 
         if len(_last_retranscribe) > _STATE_CAP:
-            for key in [k for k, v in _last_retranscribe.items() if now - v >= cooldown]:
-                del _last_retranscribe[key]
+            for stale in [k for k, v in _last_retranscribe.items() if now - v >= cooldown]:
+                del _last_retranscribe[stale]
 
         await _audit_or_503(
             EVENT_CALL_RECORDING_RETRANSCRIBE,

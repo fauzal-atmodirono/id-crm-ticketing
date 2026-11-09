@@ -51,19 +51,31 @@ _log = structlog.get_logger(__name__)
 # irrelevant against telephony audio that is already mu-law 8 kHz.
 _RECORDING_FORMAT = ".mp3"
 
-# The static-glossary prompt, kept under its old name for any reader of it.
-# Every real call builds its prompt per call (`_current_prompt`) so dealer
-# names added in the escalation-routing admin are included -- see
-# recording_glossary.py for why the vocabulary and the script rule exist.
-_TRANSCRIBE_PROMPT = build_transcribe_prompt(PROTON_GLOSSARY)
+# The original prompt, byte-identical, used on every tenant that has not
+# turned on PHONE_TRANSCRIPT_GLOSSARY_ENABLED.
+_TRANSCRIBE_PROMPT = (
+    "This is a recording of a customer support phone call. It has two channels: "
+    "the customer and the support side (which may be an AI assistant for part of "
+    "the call and a human agent for the rest). Transcribe the entire call "
+    "verbatim in the language actually spoken -- the callers code-switch between "
+    "English, Bahasa Melayu and Chinese, so do NOT translate. Label every turn "
+    "as CUSTOMER: or AGENT:. If a passage is genuinely unintelligible write "
+    "[inaudible] rather than guessing at words."
+)
 
 
-async def _current_prompt() -> str:
+async def _current_prompt(settings: Settings) -> str:
+    """The Proton glossary prompt (static vocabulary + DealerStore dealers +
+    the four-language/no-noise-script rules, see recording_glossary.py) when
+    the tenant enabled it, else the original prompt. Never costs a transcript:
+    a glossary failure falls back to the original."""
+    if not getattr(settings, "phone_transcript_glossary_enabled", False):
+        return _TRANSCRIBE_PROMPT
     try:
         return build_transcribe_prompt(await glossary_terms())
-    except Exception as e:  # never let the glossary cost a transcript
+    except Exception as e:
         _log.warning("recording_glossary_failed", error=str(e))
-        return _TRANSCRIBE_PROMPT
+        return build_transcribe_prompt(PROTON_GLOSSARY)
 
 
 async def fetch_recording(settings: Settings, recording_url: str) -> bytes | None:
@@ -96,7 +108,12 @@ async def fetch_recording(settings: Settings, recording_url: str) -> bytes | Non
         return None
 
 
-def _transcribe_sync(settings: Settings, audio: bytes, prompt: str | None = None) -> str | None:
+def _transcribe_sync(
+    settings: Settings,
+    audio: bytes,
+    prompt: str | None = None,
+    mime_type: str = "audio/mp3",
+) -> str | None:
     """Blocking Gemini call. Run via asyncio.to_thread by the caller -- the
     google-genai SDK is synchronous and this package never blocks the loop."""
     try:
@@ -119,7 +136,7 @@ def _transcribe_sync(settings: Settings, audio: bytes, prompt: str | None = None
             model=settings.recording_transcription_model,
             contents=[
                 prompt or _TRANSCRIBE_PROMPT,
-                types.Part.from_bytes(data=audio, mime_type="audio/mp3"),
+                types.Part.from_bytes(data=audio, mime_type=mime_type),
             ],
         )
         text = (res.text or "").strip()
@@ -141,13 +158,19 @@ async def transcribe_recording(settings: Settings, recording_url: str) -> str | 
     return await transcribe_audio(settings, audio)
 
 
-async def transcribe_audio(settings: Settings, audio: bytes) -> str | None:
-    """Transcribe bytes already in hand, with the glossary prompt. Shared by
-    the post-call path and the player's re-transcribe action, so both send
-    the model exactly the same instructions. None on any failure."""
+async def transcribe_audio(
+    settings: Settings, audio: bytes, mime_type: str = "audio/mp3"
+) -> str | None:
+    """Transcribe bytes already in hand. Shared by the post-call path and the
+    player's re-transcribe action, so both send the model exactly the same
+    instructions. `mime_type` follows the archived object's suffix (the
+    archive format may be wav). None on any failure."""
     _log.info("recording_transcribe_started", bytes=len(audio))
-    prompt = await _current_prompt()
-    text = await asyncio.to_thread(_transcribe_sync, settings, audio, prompt)
+    prompt = await _current_prompt(settings)
+    if mime_type == "audio/mp3":
+        text = await asyncio.to_thread(_transcribe_sync, settings, audio, prompt)
+    else:
+        text = await asyncio.to_thread(_transcribe_sync, settings, audio, prompt, mime_type)
     if text:
         _log.info("recording_transcribe_succeeded", chars=len(text))
     return text
@@ -225,7 +248,7 @@ async def process_recording(
                 _log.error("recording_transcript_attach_failed", ticket_id=ticket_id, error=str(e))
 
     if settings.phone_recording_archive_enabled:
-        uris = await archive_call(settings, call_sid, audio, text)
+        uris = await archive_call(settings, call_sid, audio, text, conversation_id=ticket_id)
         if uris:
             await note_archive_locations(log_port, ticket_id, uris)
             await _stamp_archive_attributes(settings, log_port, ticket_id, uris)

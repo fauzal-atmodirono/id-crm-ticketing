@@ -1535,6 +1535,18 @@ class Settings(BaseSettings):
     # Minimum seconds between two re-transcriptions of one conversation (each
     # is a full Gemini audio call). 429 inside the window.
     call_recording_retranscribe_cooldown_seconds: int = 600
+    # Re-transcription caps per rolling hour, in-process (one backend container
+    # per tenant): per requesting user, and across the tenant. 0 = no cap.
+    # Each run is one full-call Gemini audio request, so these bound cost even
+    # when many different conversations are re-run.
+    call_recording_retranscribe_user_hourly_cap: int = 5
+    call_recording_retranscribe_global_hourly_cap: int = 30
+    # Post-call transcriber prompt: off -> the original prompt, byte-identical;
+    # on -> the Proton glossary (models, PRO-NET, RSA, DealerStore dealer names)
+    # plus the Malay/English/Mandarin/Tamil, no-noise-scripts, [inaudible]
+    # rules (features/chat/phone/recording_glossary.py). Proton-specific
+    # vocabulary, so default off; proton sets it true.
+    phone_transcript_glossary_enabled: bool = False
 
     @field_validator("call_recording_url_ttl_seconds", mode="before")
     @classmethod

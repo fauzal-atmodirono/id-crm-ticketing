@@ -14,6 +14,9 @@ NEW = (
     "CALL_RECORDING_SIGNING_SECRET",
     "CALL_RECORDING_URL_TTL_SECONDS",
     "CALL_RECORDING_RETRANSCRIBE_COOLDOWN_SECONDS",
+    "CALL_RECORDING_RETRANSCRIBE_USER_HOURLY_CAP",
+    "CALL_RECORDING_RETRANSCRIBE_GLOBAL_HOURLY_CAP",
+    "PHONE_TRANSCRIPT_GLOSSARY_ENABLED",
 )
 
 
@@ -23,6 +26,9 @@ def test_defaults_are_off_and_short() -> None:
     assert s.call_recording_signing_secret == ""
     assert s.call_recording_url_ttl_seconds == 300
     assert s.call_recording_retranscribe_cooldown_seconds == 600
+    assert s.call_recording_retranscribe_user_hourly_cap == 5
+    assert s.call_recording_retranscribe_global_hourly_cap == 30
+    assert s.phone_transcript_glossary_enabled is False
 
 
 @pytest.mark.parametrize("raw,expected", [("3600", 300), ("5", 30), ("120", 120), ("junk", 300)])

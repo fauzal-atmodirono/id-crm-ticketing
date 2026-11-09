@@ -9,10 +9,13 @@ import pytest
 from chatbot.features.chat.phone.recording_access import (
     ArchivedRecording,
     InvalidRecordingToken,
+    ObjectInfo,
     RangeNotSatisfiable,
-    find_archived_recording,
+    message_sender,
+    object_bound_to,
     parse_archive_note,
     parse_range,
+    resolve_recording,
     sign_token,
     valid_object_name,
     verify_token,
@@ -163,59 +166,171 @@ def test_a_transcript_only_note_has_no_audio_to_play() -> None:
     assert parse_archive_note(note, BUCKET, PREFIX) is None
 
 
-# --- locating ----------------------------------------------------------------
+# --- resolving (R43: the binding is GCS metadata, not Chatwoot) -------------
+
+BACKEND = ("user", 900)
+
+
+class Store:
+    def __init__(self, objects: dict[str, dict] | None = None, may_update: bool = True) -> None:
+        self.objects = {k: dict(v) for k, v in (objects or {}).items()}
+        self.may_update = may_update
+        self.patched: list[tuple[str, dict]] = []
+
+    def stat(self, bucket, name):
+        assert bucket == BUCKET
+        o = self.objects.get(name)
+        return None if o is None else ObjectInfo(size=10, metadata=dict(o))
+
+    def read(self, bucket, name, start=None, end=None):
+        return b"x" * 10
+
+    def set_metadata(self, bucket, name, metadata):
+        if not self.may_update or name not in self.objects:
+            return False
+        self.objects[name].update(metadata)
+        self.patched.append((name, dict(metadata)))
+        return True
+
+
+async def _backend():
+    return BACKEND
+
+
+def _note(sender_type="user", sender_id=900, private=True, content=NOTE, mid=11):
+    return {
+        "id": mid,
+        "private": private,
+        "content": content,
+        "sender": {"type": sender_type, "id": sender_id},
+    }
+
+
+def _reader(messages):
+    async def _read(_cid, before=None):
+        return {"payload": messages} if before is None else {"payload": []}
+
+    return _read
 
 
 async def _no_messages(_cid, _before=None):
     return []
 
 
-async def test_the_custom_attribute_wins() -> None:
-    conv = {
-        "custom_attributes": {
-            "call_recording_object": AUDIO,
-            "call_recording_transcript_object": TEXT,
-        }
-    }
-    rec = await find_archived_recording("42", conv, _no_messages, bucket=BUCKET, prefix=PREFIX)
-    assert rec == ArchivedRecording(audio_object=AUDIO, transcript_object=TEXT, source="attribute")
+def _conv(attrs=None, session="phone-CA1"):
+    return {"custom_attributes": attrs or {}, "additional_attributes": {"session_id": session}}
+
+
+async def _resolve(conv, store, messages=None, backend=_backend, cid="42"):
+    return await resolve_recording(
+        cid,
+        conv,
+        _reader(messages or []),
+        store,
+        backend,
+        bucket=BUCKET,
+        prefix=PREFIX,
+    )
+
+
+async def test_an_attribute_whose_object_is_bound_here_plays() -> None:
+    store = Store({AUDIO: {"conversation_id": "42"}, TEXT: {"conversation_id": "42"}})
+    res = await _resolve(
+        _conv({"call_recording_object": AUDIO, "call_recording_transcript_object": TEXT}), store
+    )
+    assert res.status == "available"
+    assert res.recording == ArchivedRecording(AUDIO, TEXT, "attribute")
+
+
+async def test_an_attribute_pointing_at_another_conversations_object_is_refused() -> None:
+    """An agent can edit custom attributes; pointing conversation 42 at
+    conversation 43's recording must not play it."""
+    store = Store({AUDIO: {"conversation_id": "43"}})
+    res = await _resolve(_conv({"call_recording_object": AUDIO}), store)
+    assert res.status == "mismatch"
+
+
+async def test_an_attribute_to_an_unbound_object_is_only_a_hint() -> None:
+    """No metadata + no backend note -> nothing proves it is ours."""
+    store = Store({AUDIO: {}})
+    res = await _resolve(_conv({"call_recording_object": AUDIO}), store)
+    assert res.status == "empty"
+    assert store.patched == []
+
+
+async def test_a_transcript_bound_elsewhere_is_dropped() -> None:
+    store = Store({AUDIO: {"conversation_id": "42"}, TEXT: {"conversation_id": "43"}})
+    res = await _resolve(
+        _conv({"call_recording_object": AUDIO, "call_recording_transcript_object": TEXT}), store
+    )
+    assert res.status == "available" and res.recording.transcript_object == ""
 
 
 async def test_an_attribute_outside_the_prefix_is_not_trusted() -> None:
-    conv = {"custom_attributes": {"call_recording_object": "elsewhere/CA1.mp3"}}
-    rec = await find_archived_recording("42", conv, _no_messages, bucket=BUCKET, prefix=PREFIX)
-    assert rec is None
+    res = await _resolve(_conv({"call_recording_object": "elsewhere/CA1.mp3"}), Store())
+    assert res.status == "empty"
 
 
-async def test_older_calls_are_found_from_their_private_note() -> None:
-    async def _messages(_cid, before=None):
-        if before is None:
-            return [
-                {"id": 10, "private": False, "content": "hello"},
-                {"id": 11, "private": True, "content": NOTE},
-                {"id": 12, "private": True, "content": "later note"},
-            ]
-        return []
+async def test_a_legacy_backend_note_with_a_matching_sid_plays_and_backfills() -> None:
+    store = Store({AUDIO: {}, TEXT: {}})
+    res = await _resolve(_conv(), store, [_note()])
+    assert res.status == "available" and res.recording.source == "note"
+    assert res.recording.transcript_object == TEXT
+    assert store.objects[AUDIO] == {"conversation_id": "42", "call_sid": "CA1"}
+    assert store.objects[TEXT]["conversation_id"] == "42"
 
-    rec = await find_archived_recording("42", {"custom_attributes": {}}, _messages, bucket=BUCKET, prefix=PREFIX)
-    assert rec is not None and rec.audio_object == AUDIO and rec.source == "note"
+
+async def test_an_agent_authored_fake_note_is_ignored() -> None:
+    store = Store({AUDIO: {}})
+    res = await _resolve(_conv(), store, [_note(sender_id=5)])
+    assert res.status == "empty"
+    assert store.patched == []
+
+
+async def test_a_note_from_another_bot_is_ignored() -> None:
+    res = await _resolve(_conv(), Store({AUDIO: {}}), [_note(sender_type="agent_bot")])
+    assert res.status == "empty"
 
 
 async def test_a_public_message_shaped_like_the_note_is_ignored() -> None:
-    """A customer can type anything into a public message; only a private note
-    (which only staff and this backend can write) is a location record."""
+    res = await _resolve(_conv(), Store({AUDIO: {}}), [_note(private=False)])
+    assert res.status == "empty"
 
-    async def _messages(_cid, before=None):
-        return [{"id": 11, "private": False, "content": NOTE}] if before is None else []
 
-    rec = await find_archived_recording("42", {}, _messages, bucket=BUCKET, prefix=PREFIX)
-    assert rec is None
+async def test_a_legacy_note_for_another_calls_sid_is_refused() -> None:
+    store = Store({AUDIO: {}})
+    res = await _resolve(_conv(session="phone-CA_OTHER"), store, [_note()])
+    assert res.status == "mismatch"
+    assert store.patched == []
+
+
+async def test_a_legacy_object_that_cannot_be_backfilled_is_refused() -> None:
+    res = await _resolve(_conv(), Store({AUDIO: {}}, may_update=False), [_note()])
+    assert res.status == "unverifiable"
+
+
+async def test_an_unknown_backend_identity_disables_the_legacy_path() -> None:
+    async def _unknown():
+        return None
+
+    res = await _resolve(_conv(), Store({AUDIO: {}}), [_note()], backend=_unknown)
+    assert res.status == "empty"
+
+
+async def test_a_note_whose_object_is_bound_elsewhere_is_refused() -> None:
+    res = await _resolve(_conv(), Store({AUDIO: {"conversation_id": "43"}}), [_note()])
+    assert res.status == "mismatch"
+
+
+async def test_a_missing_object_is_deleted() -> None:
+    res = await _resolve(_conv(), Store(), [_note()])
+    assert res.status == "deleted"
 
 
 async def test_note_search_pages_back_through_history() -> None:
     pages = {
         None: [{"id": i, "private": False, "content": "x"} for i in range(100, 120)],
-        100: [{"id": 50, "private": True, "content": NOTE}],
+        100: [_note(mid=50)],
     }
     asked: list = []
 
@@ -223,15 +338,55 @@ async def test_note_search_pages_back_through_history() -> None:
         asked.append(before)
         return pages.get(before, [])
 
-    rec = await find_archived_recording("42", {}, _messages, bucket=BUCKET, prefix=PREFIX)
-    assert rec is not None and asked == [None, 100]
+    res = await resolve_recording(
+        "42", _conv(), _messages, Store({AUDIO: {}}), _backend, bucket=BUCKET, prefix=PREFIX
+    )
+    assert res.status == "available" and asked == [None, 100]
 
 
 async def test_a_failing_message_read_is_no_recording_not_an_error() -> None:
     async def _boom(_cid, before=None):
         raise RuntimeError("chatwoot down")
 
-    assert await find_archived_recording("42", {}, _boom, bucket=BUCKET, prefix=PREFIX) is None
+    res = await resolve_recording(
+        "42", _conv(), _boom, Store({AUDIO: {}}), _backend, bucket=BUCKET, prefix=PREFIX
+    )
+    assert res.status == "empty"
+
+
+def test_sender_is_read_from_either_chatwoot_shape() -> None:
+    assert message_sender({"sender": {"type": "user", "id": 9}}) == ("user", 9)
+    assert message_sender({"sender_type": "User", "sender_id": 9}) == ("user", 9)
+    assert message_sender({"sender_type": "AgentBot", "sender_id": 3}) == ("agent_bot", 3)
+    assert message_sender({}) is None
+
+
+async def test_the_stream_recheck_refuses_an_object_bound_elsewhere() -> None:
+    store = Store({AUDIO: {"conversation_id": "43"}})
+    assert await object_bound_to(store, BUCKET, AUDIO, "42") is None
+    assert await object_bound_to(store, BUCKET, AUDIO, "43") is not None
+
+
+async def test_api_token_identity_resolves_the_backend_user(respx_mock) -> None:
+    import httpx
+
+    from chatbot.features.chat.phone.recording_access import ApiTokenIdentity
+    from chatbot.platform.config import get_settings
+
+    settings = get_settings().model_copy(
+        update={
+            "chatwoot_api_url": "http://chatwoot.invalid",
+            "chatwoot_api_token": "tok",
+            "chatwoot_enabled": True,
+        }
+    )
+    route = respx_mock.get("http://chatwoot.invalid/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": 900})
+    )
+    ident = ApiTokenIdentity(settings)
+    assert await ident() == ("user", 900)
+    assert await ident() == ("user", 900)
+    assert route.call_count == 1
 
 
 # --- Range -------------------------------------------------------------------

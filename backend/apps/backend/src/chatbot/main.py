@@ -1518,12 +1518,15 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     # The call-recording player (fork patch 0094): the handler reads the
     # conversation (merge-safe attribute `call_recording_object`, else the
     # archive note) with the backend's own Chatwoot token, applies the caller's
-    # data scope to it, and streams the GCS object behind a short-lived HMAC
-    # link; plays are audit-log rows. The /audio and /transcript routes are NOT
+    # data scope to it, proves the object is bound to that conversation (GCS
+    # metadata, recording_access.resolve_recording), and streams it behind a
+    # short-lived HMAC link; mint/retranscribe need a real person
+    # (require_permission_with_identity); plays are fail-closed audit rows. The /audio and /transcript routes are NOT
     # permission-gated -- the signed link is their credential, because an
     # <audio> element cannot send session headers (see recording_access.py).
     # Zendesk tenants (no chatwoot_client) get the "empty" state.
     from chatbot.features.chat.phone.recording_glossary import configure_dealer_source
+    from chatbot.features.chat.phone.recording_access import ApiTokenIdentity
 
     # The post-call transcriber's glossary picks dealer names from the same
     # store the escalation-routing admin edits (cached, fail-open).
@@ -1549,6 +1552,9 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             ),
             chatwoot_messages=_recording_messages if chatwoot_client is not None else None,
             post_note=_recording_note if chatwoot_client is not None else None,
+            # Who the backend's own api_access_token is: only notes it authored
+            # can vouch for a legacy (metadata-less) archived object.
+            backend_sender=ApiTokenIdentity(settings) if chatwoot_client is not None else None,
         )
     )
 

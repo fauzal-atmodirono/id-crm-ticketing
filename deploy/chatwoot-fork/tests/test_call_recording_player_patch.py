@@ -95,9 +95,20 @@ def test_panel_remints_an_expired_link_and_keeps_position(panel):
 
 
 def test_panel_offers_transcript_and_retranscribe(panel):
-    assert "window.open(transcriptUrl.value, '_blank', 'noopener')" in panel
+    # Review R44 item 4: the transcript token goes in a header, the text is
+    # rendered inline -- never a tokenised URL in a new tab or in history.
+    assert "headers: { 'x-recording-token': transcriptToken.value }" in panel
+    assert "transcriptToken.value = res.transcript_token || '';" in panel
+    assert 'v-if="transcriptOpen"' in panel and "{{ transcriptText }}" in panel
+    assert "window.open" not in panel
     assert 'v-if="canRetranscribe"' in panel
     assert "e?.status === 429" in panel
+
+
+def test_panel_reloads_when_the_recording_attribute_appears(panel):
+    """The archive attribute lands minutes after the call; a conversation
+    already open with recording_sid must pick it up."""
+    assert "attrs.value.call_recording_object,\n  ]," in panel
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")

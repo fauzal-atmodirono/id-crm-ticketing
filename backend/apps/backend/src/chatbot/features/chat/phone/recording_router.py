@@ -1,60 +1,79 @@
-"""The in-CRM call-recording player: find, sign, stream, audit, re-transcribe.
+"""The in-CRM call-recording player: find, prove, sign, stream, audit, re-transcribe.
 
 After a call `recording_transcriber.process_recording` archives the audio (and
-transcript) to the tenant's bucket and posts a private note with `gs://`
-links -- which no staff browser can open. This router is what makes those
-recordings playable inside the conversation (fork patch 0094's sidebar panel):
+transcript) to the tenant's bucket -- with the conversation id in each object's
+GCS metadata -- and posts a private note with `gs://` links no staff browser
+can open. This router makes those recordings playable inside the conversation
+(fork patch 0094's sidebar panel):
 
-- `GET  /calls/{id}/recording` -- permission `call_recording.listen` + data
-  scope. Finds the archived object (`recording_access.find_archived_recording`:
-  the `call_recording_object` attribute, else the archive note), checks it
-  still exists, and returns `{status, play_url, expires_at, transcript_url?,
-  can_retranscribe}`. `play_url` is a BACKEND path carrying a <=5-minute
-  HMAC token -- never a bucket URL, and no object name reaches the browser.
-  Status is `available`, `empty` (no recording) or `deleted` (the object is
-  gone: a retention lifecycle rule pruned it).
-- `GET  /calls/{id}/recording/audio?t=` -- streams the object from GCS with
-  the backend's service account. Honours `Range` (206/416) so the player can
-  seek; `Cache-Control: no-store`. Authorised by the token alone, because an
-  `<audio>` element cannot send the Chatwoot session headers (see
-  recording_access.py for what the token binds).
-- `GET  /calls/{id}/recording/transcript?t=` -- the archived `.txt`, same
-  token scheme (a separate `kind`, so an audio link cannot open it).
-- `POST /calls/{id}/recording/retranscribe` -- same permission + scope; re-runs
-  the (glossary-prompted) transcriber on the archived audio in the background
-  and posts a `[Re-transcribed]` private note. One run per conversation per
-  `CALL_RECORDING_RETRANSCRIBE_COOLDOWN_SECONDS` (429 inside the window).
+- `GET  /calls/{id}/recording` -- a real PERSON with `call_recording.listen`
+  (`require_permission_with_identity`: a Chatwoot session, never the shared
+  key, so 401 with RBAC off) inside their data scope. Resolves the recording
+  and proves it belongs to this conversation (`recording_access.
+  resolve_recording`: object metadata, never a Chatwoot value alone), then
+  returns `{status, play_url, expires_at, transcript_url?, transcript_token?,
+  can_retranscribe}`. Status `available`, `empty` or `deleted`; an object
+  bound to another conversation, or a legacy one that could not be bound, is
+  404. `play_url` is a backend path carrying a <=5-minute HMAC token. The token
+  is signed, not encrypted: the object path inside it is readable, the bucket
+  never appears.
+- `GET|HEAD /calls/{id}/recording/audio?t=` -- streams the object with the
+  backend's service account after re-checking its metadata against the URL's
+  conversation. `Range` (206/416) for seeking; `Cache-Control: no-store`. The
+  token is the credential because an `<audio>` element cannot send session
+  headers.
+- `GET  /calls/{id}/recording/transcript` -- the archived `.txt`. The token
+  comes in the `X-Recording-Token` header (the panel fetches it and renders it
+  inline), so it never sits in a URL; `?t=` is still accepted.
+- `POST /calls/{id}/recording/retranscribe` -- same person/permission/scope.
+  Re-runs the transcriber on the archived audio in the background and posts a
+  `[Re-transcribed]` private note. Limits: one per conversation per cooldown,
+  plus per-user and tenant-wide hourly caps (429 + Retry-After).
 
-**Audit.** A play is one `call_recording_play` row in the audit store (the one
-`/admin/audit` serves), naming the user the link was minted for, the
-conversation and the time -- written on the FIRST byte request for a link, not
-per Range request (a single listen issues several), and not on mint (opening
-the conversation is not listening). Transcript views and re-transcriptions get
-their own event types. Rows use `target="conversation:<id>"` and a synthetic
-ticket id, so they appear in the global audit view without being mistaken for
-case status transitions on the case timeline.
+**Audit, fail-closed** (review R45). One row per minted LINK: the first byte
+request for a link writes `call_recording_play` (actor, conversation, object,
+time); later Range requests on the same link do not, and re-minting -- the
+panel does so when a link expires mid-listen -- creates a new link and so a new
+row. If the audit store refuses the row, the link's slot is released and the
+request is 503: no audio is served without its audit row. Same for transcript
+views and re-transcription requests.
 
-The audited-link set and the cooldown table are in-process. One backend
+**Tokens never reach access logs** (R44 item 4): `install_access_log_redaction`
+filters `uvicorn.access` records, replacing the `t=` value on these routes.
+A proxy in front (Caddy) has its own access log; see the deploy notes.
+
+The audited-link set, cooldowns and hourly caps are in-process. One backend
 container per tenant makes that exact; with replicas a link played on two of
-them would be audited twice (over-, never under-recorded) and the cooldown
-would be per replica.
+them is audited twice (over-, never under-recorded) and limits apply per
+replica.
 
-`CALL_RECORDING_RETRIEVAL_ENABLED` off -> every route 404s, even for a
-permitted caller (`test_p11_wiring.py` drives this through the real app).
+`CALL_RECORDING_RETRIEVAL_ENABLED` off -> every route 404s for everyone; the
+flag check runs before authentication (`test_p11_wiring.py`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
-from urllib.parse import quote
+from typing import TYPE_CHECKING, Annotated, Any
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    Header,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    status,
+)
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from chatbot.features.authz.data_scope import (
@@ -62,7 +81,7 @@ from chatbot.features.authz.data_scope import (
     build_scope_dependency,
     conversation_dimensions,
 )
-from chatbot.features.authz.deps import Actor, require_permission, resolve_actor
+from chatbot.features.authz.deps import require_permission_with_identity
 from chatbot.features.chat.audit_events import (
     EVENT_CALL_RECORDING_PLAY,
     EVENT_CALL_RECORDING_RETRANSCRIBE,
@@ -76,8 +95,9 @@ from chatbot.features.chat.phone.recording_access import (
     RangeNotSatisfiable,
     RecordingStorage,
     TokenClaims,
-    find_archived_recording,
+    object_bound_to,
     parse_range,
+    resolve_recording,
     sign_token,
     signing_secret,
     valid_object_name,
@@ -95,20 +115,61 @@ _log = structlog.get_logger(__name__)
 RETRANSCRIBED_HEADER = "[Re-transcribed]"
 _CHUNK_BYTES = 256 * 1024
 _STATE_CAP = 5000
+_HOUR = 3600.0
 _NO_STORE = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+# Chatwoot conversation ids are integers; anything else is refused (422).
+ConversationId = Annotated[str, Path(pattern=r"^\d{1,12}$")]
 
 _audited_links: OrderedDict[str, None] = OrderedDict()
 _last_retranscribe: dict[str, float] = {}
+_user_runs: dict[int, deque[float]] = {}
+_global_runs: deque[float] = deque()
 
 
 def reset_state() -> None:
-    """Test hook: forget audited links and cooldowns."""
+    """Test hook: forget audited links, cooldowns and hourly caps."""
     _audited_links.clear()
     _last_retranscribe.clear()
+    _user_runs.clear()
+    _global_runs.clear()
 
 
-def _first_use(nonce: str) -> bool:
-    """True exactly once per link, so one listen is one audit row."""
+# --- access-log redaction ------------------------------------------------------
+
+_TOKEN_IN_PATH = re.compile(r"(/recording/(?:audio|transcript)\?(?:[^\s\"]*?&)?t=)[^&\s\"]+")
+
+
+def redact_recording_tokens(text: str) -> str:
+    return _TOKEN_IN_PATH.sub(r"\1REDACTED", text)
+
+
+class RecordingTokenRedactor(logging.Filter):
+    """Rewrites the `t=` value of player links in a log record's message and
+    string args (uvicorn's access record carries the path in its args)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = redact_recording_tokens(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                redact_recording_tokens(a) if isinstance(a, str) else a for a in record.args
+            )
+        return True
+
+
+def install_access_log_redaction() -> None:
+    """Idempotent. A filter on the `uvicorn.access` LOGGER (not a handler)
+    survives uvicorn's dictConfig, which replaces handlers but keeps filters."""
+    logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, RecordingTokenRedactor) for f in logger.filters):
+        logger.addFilter(RecordingTokenRedactor())
+
+
+# --- helpers -------------------------------------------------------------------
+
+
+def _claim_link(nonce: str) -> bool:
+    """True exactly once per link (until released), so one listen is one row."""
     if not nonce or nonce in _audited_links:
         return False
     _audited_links[nonce] = None
@@ -117,11 +178,24 @@ def _first_use(nonce: str) -> bool:
     return True
 
 
+def _release_link(nonce: str) -> None:
+    _audited_links.pop(nonce, None)
+
+
 def _audio_media_type(name: str) -> str:
     return "audio/wav" if name.endswith(".wav") else "audio/mpeg"
 
 
-def build_recording_router(  # noqa: PLR0915 -- one router, four small handlers
+def _transcribe_mime(name: str) -> str:
+    return "audio/wav" if name.endswith(".wav") else "audio/mp3"
+
+
+def _prune(window: deque[float], now: float) -> None:
+    while window and now - window[0] >= _HOUR:
+        window.popleft()
+
+
+def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
     settings: Settings,
     *,
     authz_repo: AuthzRepository | None = None,
@@ -130,17 +204,18 @@ def build_recording_router(  # noqa: PLR0915 -- one router, four small handlers
     chatwoot_read: Callable[[str], Awaitable[Any]] | None = None,
     chatwoot_messages: Callable[..., Awaitable[Any]] | None = None,
     post_note: Callable[[str, str], Awaitable[Any]] | None = None,
+    backend_sender: Callable[[], Awaitable[tuple[str, int] | None]] | None = None,
     storage: RecordingStorage | None = None,
-    transcribe: Callable[[Any, bytes], Awaitable[str | None]] | None = None,
+    transcribe: Callable[..., Awaitable[str | None]] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> APIRouter:
     router = APIRouter(prefix="/calls", tags=["voice-recording"])
-    listen = require_permission(
+    person = require_permission_with_identity(
         "call_recording.listen", repo=authz_repo, validator=validator, settings=settings
     )
     data_scope = build_scope_dependency(settings, repo=authz_repo, validator=validator)
-    actor_dep = resolve_actor(validator=validator, settings=settings)
     store: RecordingStorage = storage or GcsRecordingStorage(settings)
+    install_access_log_redaction()
 
     if transcribe is None:
         from chatbot.features.chat.phone.recording_transcriber import (  # noqa: PLC0415
@@ -149,7 +224,7 @@ def build_recording_router(  # noqa: PLR0915 -- one router, four small handlers
 
         transcribe = transcribe_audio
 
-    def _check_enabled() -> None:
+    def _enabled() -> None:
         if not settings.call_recording_retrieval_enabled:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -158,6 +233,8 @@ def build_recording_router(  # noqa: PLR0915 -- one router, four small handlers
                     "(CALL_RECORDING_RETRIEVAL_ENABLED=false)"
                 ),
             )
+
+    enabled = [Depends(_enabled)]
 
     def _secret() -> str:
         secret = signing_secret(settings)
@@ -175,10 +252,14 @@ def build_recording_router(  # noqa: PLR0915 -- one router, four small handlers
     def _prefix() -> str:
         return settings.phone_recording_archive_prefix
 
+    def _name(user_id: int | None) -> str:
+        display = getattr(validator, "display_name", None)
+        name = display(user_id) if callable(display) and user_id is not None else None
+        return name or f"user:{user_id}"
+
     async def _conversation_in_scope(cid: str, scope: Scope) -> dict[str, Any] | None:
-        """The conversation, or 404 when it is outside the caller's data scope
-        (404 rather than 403 so ids cannot be probed -- same rule as the case
-        fields panel). Unrestricted callers keep a fail-open read."""
+        """The conversation, or 404 when outside the caller's data scope (404,
+        not 403, so ids cannot be probed -- the case-fields rule)."""
         conversation = None
         if chatwoot_read is not None:
             try:
@@ -195,93 +276,101 @@ def build_recording_router(  # noqa: PLR0915 -- one router, four small handlers
             raise HTTPException(status_code=404, detail="Conversation not found")
         return conversation
 
-    async def _locate(cid: str, scope: Scope) -> ArchivedRecording | None:
+    async def _resolve(cid: str, scope: Scope):
         conversation = await _conversation_in_scope(cid, scope)
-        return await find_archived_recording(
-            cid, conversation, chatwoot_messages, bucket=_bucket(), prefix=_prefix()
-        )
+        try:
+            res = await resolve_recording(
+                cid,
+                conversation,
+                chatwoot_messages,
+                store,
+                backend_sender,
+                bucket=_bucket(),
+                prefix=_prefix(),
+            )
+        except Exception as exc:
+            _log.error("call_recording_storage_failed", conversation_id=cid, error=str(exc))
+            raise HTTPException(status_code=502, detail="Recording storage unavailable") from exc
+        if res.status in ("mismatch", "unverifiable"):
+            raise HTTPException(status_code=404, detail="Recording not found")
+        return res
 
-    def _actor_name(user_id: int | None) -> str:
-        if user_id is None:
-            return "admin-api-key"
-        display = getattr(validator, "display_name", None)
-        name = display(user_id) if callable(display) else None
-        return name or f"user:{user_id}"
-
-    async def _audit(
-        event_type: str, cid: str, user_id: int | None, name: str, remark: str
+    async def _audit_or_503(
+        event_type: str,
+        cid: str,
+        user_id: int | None,
+        object_name: str,
+        remark: str,
+        on_fail: Callable[[], None] | None = None,
     ) -> None:
-        await record_event(
+        stored = await record_event(
             audit,
             event_type=event_type,
             target=f"conversation:{cid}",
             actor_user_id=user_id,
-            actor_name=name,
+            actor_name=_name(user_id),
+            after={"object": object_name},
             remarks=remark,
             actor_source="call-recording-player",
         )
+        if not stored:
+            if on_fail is not None:
+                on_fail()
+            _log.error("call_recording_audit_failed", conversation_id=cid, event_type=event_type)
+            raise HTTPException(
+                status_code=503, detail="Audit log unavailable; recording access refused"
+            )
 
     def _verify(cid: str, token: str | None, kind: str) -> TokenClaims:
         secret = _secret()
         try:
             claims = verify_token(secret, token or "", conversation_id=cid, kind=kind)
         except InvalidRecordingToken as exc:
-            _log.info(
-                "call_recording_link_refused", conversation_id=cid, kind=kind, reason=str(exc)
-            )
-            raise HTTPException(
-                status_code=403, detail="Invalid or expired recording link"
-            ) from exc
+            _log.info("call_recording_link_refused", conversation_id=cid, kind=kind, reason=str(exc))
+            raise HTTPException(status_code=403, detail="Invalid or expired recording link") from exc
         if not valid_object_name(claims.object_name, _prefix(), kind=kind):
             raise HTTPException(status_code=403, detail="Invalid or expired recording link")
         return claims
 
-    async def _size(cid: str, name: str) -> int | None:
+    async def _bound(cid: str, name: str):
+        """Per-request re-check: the object exists and its metadata names this
+        conversation. 404 otherwise."""
         try:
-            return await asyncio.to_thread(store.size, _bucket(), name)
+            info = await object_bound_to(store, _bucket(), name, cid)
         except Exception as exc:
             _log.error("call_recording_storage_failed", conversation_id=cid, error=str(exc))
             raise HTTPException(status_code=502, detail="Recording storage unavailable") from exc
+        if info is None:
+            raise HTTPException(status_code=404, detail="Recording not found")
+        return info
 
     # --- metadata ------------------------------------------------------------
 
-    @router.get("/{conversation_id}/recording", dependencies=[Depends(listen)])
+    @router.get("/{conversation_id}/recording", dependencies=enabled)
     async def get_call_recording(
-        conversation_id: str,
+        conversation_id: ConversationId,
+        user_id: int = Depends(person),
         scope: Scope = Depends(data_scope),
-        actor: Actor = Depends(actor_dep),
     ) -> JSONResponse:
-        _check_enabled()
         secret = _secret()
-        rec = await _locate(conversation_id, scope)
-        if rec is None:
+        res = await _resolve(conversation_id, scope)
+        if res.status != "available" or res.recording is None:
+            message = {
+                "deleted": "Call recording was deleted under the retention policy",
+            }.get(res.status, "No call recording exists for this conversation")
             return JSONResponse(
-                {
-                    "status": "empty",
-                    "conversation_id": conversation_id,
-                    "message": "No call recording exists for this conversation",
-                },
+                {"status": res.status, "conversation_id": conversation_id, "message": message},
                 headers=_NO_STORE,
             )
-        size = await _size(conversation_id, rec.audio_object)
-        if size is None:
-            return JSONResponse(
-                {
-                    "status": "deleted",
-                    "conversation_id": conversation_id,
-                    "message": "Call recording was deleted under the retention policy",
-                },
-                headers=_NO_STORE,
-            )
-
+        rec: ArchivedRecording = res.recording
         ttl = settings.call_recording_url_ttl_seconds
-        path = f"/calls/{quote(conversation_id, safe='')}/recording"
+        path = f"/calls/{conversation_id}/recording"
         token, expires = sign_token(
             secret,
             conversation_id=conversation_id,
             object_name=rec.audio_object,
             kind="audio",
-            user_id=actor.user_id,
+            user_id=user_id,
             ttl_seconds=ttl,
         )
         body: dict[str, Any] = {
@@ -289,7 +378,7 @@ def build_recording_router(  # noqa: PLR0915 -- one router, four small handlers
             "conversation_id": conversation_id,
             "play_url": f"{path}/audio?t={token}",
             "expires_at": datetime.fromtimestamp(expires, UTC).isoformat(),
-            "size_bytes": size,
+            "size_bytes": res.size,
             "can_retranscribe": bool(
                 settings.phone_recording_transcription_enabled and post_note is not None
             ),
@@ -300,52 +389,39 @@ def build_recording_router(  # noqa: PLR0915 -- one router, four small handlers
                 conversation_id=conversation_id,
                 object_name=rec.transcript_object,
                 kind="transcript",
-                user_id=actor.user_id,
+                user_id=user_id,
                 ttl_seconds=ttl,
             )
-            body["transcript_url"] = f"{path}/transcript?t={t_token}"
+            body["transcript_url"] = f"{path}/transcript"
+            body["transcript_token"] = t_token
         _log.info(
             "call_recording_link_minted",
             conversation_id=conversation_id,
-            user_id=actor.user_id,
+            user_id=user_id,
             source=rec.source,
         )
         return JSONResponse(body, headers=_NO_STORE)
 
     # --- audio -----------------------------------------------------------------
 
-    @router.get("/{conversation_id}/recording/audio")
+    @router.api_route(
+        "/{conversation_id}/recording/audio", methods=["GET", "HEAD"], dependencies=enabled
+    )
     async def stream_call_recording(
-        conversation_id: str,
+        request: Request,
+        conversation_id: ConversationId,
         t: str | None = Query(default=None),
         range_header: str | None = Header(default=None, alias="range"),
     ) -> Response:
-        _check_enabled()
         claims = _verify(conversation_id, t, "audio")
         bucket, name = _bucket(), claims.object_name
-        size = await _size(conversation_id, name)
-        if size is None:
-            raise HTTPException(status_code=404, detail="Recording no longer exists")
+        size = (await _bound(conversation_id, name)).size
 
         headers = {**_NO_STORE, "Accept-Ranges": "bytes", "Content-Disposition": "inline"}
         try:
             span = parse_range(range_header, size)
         except RangeNotSatisfiable:
-            return Response(
-                status_code=416, headers={**headers, "Content-Range": f"bytes */{size}"}
-            )
-
-        if _first_use(claims.nonce):
-            await _audit(
-                EVENT_CALL_RECORDING_PLAY,
-                conversation_id,
-                claims.user_id,
-                _actor_name(claims.user_id),
-                "Call recording played",
-            )
-            _log.info(
-                "call_recording_played", conversation_id=conversation_id, user_id=claims.user_id
-            )
+            return Response(status_code=416, headers={**headers, "Content-Range": f"bytes */{size}"})
 
         first, last = span if span is not None else (0, size - 1)
         headers["Content-Length"] = str(max(0, last - first + 1))
@@ -353,6 +429,21 @@ def build_recording_router(  # noqa: PLR0915 -- one router, four small handlers
         if span is not None:
             code = 206
             headers["Content-Range"] = f"bytes {first}-{last}/{size}"
+        media_type = _audio_media_type(name)
+
+        if request.method == "HEAD":  # metadata only: no bytes, so no play row
+            return Response(status_code=code, headers=headers, media_type=media_type)
+
+        if _claim_link(claims.nonce):
+            await _audit_or_503(
+                EVENT_CALL_RECORDING_PLAY,
+                conversation_id,
+                claims.user_id,
+                name,
+                "Call recording played",
+                on_fail=lambda: _release_link(claims.nonce),
+            )
+            _log.info("call_recording_played", conversation_id=conversation_id, user_id=claims.user_id)
 
         async def _chunks() -> AsyncIterator[bytes]:
             pos = first
@@ -361,32 +452,31 @@ def build_recording_router(  # noqa: PLR0915 -- one router, four small handlers
                 yield await asyncio.to_thread(store.read, bucket, name, pos, end)
                 pos = end + 1
 
-        return StreamingResponse(
-            _chunks(), status_code=code, headers=headers, media_type=_audio_media_type(name)
-        )
+        return StreamingResponse(_chunks(), status_code=code, headers=headers, media_type=media_type)
 
     # --- transcript --------------------------------------------------------------
 
-    @router.get("/{conversation_id}/recording/transcript")
+    @router.get("/{conversation_id}/recording/transcript", dependencies=enabled)
     async def get_call_transcript(
-        conversation_id: str, t: str | None = Query(default=None)
+        conversation_id: ConversationId,
+        t: str | None = Query(default=None),
+        x_recording_token: str | None = Header(default=None),
     ) -> Response:
-        _check_enabled()
-        claims = _verify(conversation_id, t, "transcript")
+        claims = _verify(conversation_id, x_recording_token or t, "transcript")
+        await _bound(conversation_id, claims.object_name)
         try:
             data = await asyncio.to_thread(store.read, _bucket(), claims.object_name, None, None)
         except Exception as exc:
-            _log.error(
-                "call_transcript_read_failed", conversation_id=conversation_id, error=str(exc)
-            )
+            _log.error("call_transcript_read_failed", conversation_id=conversation_id, error=str(exc))
             raise HTTPException(status_code=404, detail="Transcript not available") from exc
-        if _first_use(claims.nonce):
-            await _audit(
+        if _claim_link(claims.nonce):
+            await _audit_or_503(
                 EVENT_CALL_RECORDING_TRANSCRIPT_VIEW,
                 conversation_id,
                 claims.user_id,
-                _actor_name(claims.user_id),
+                claims.object_name,
                 "Call transcript viewed",
+                on_fail=lambda: _release_link(claims.nonce),
             )
         return Response(
             content=data,
@@ -400,7 +490,9 @@ def build_recording_router(  # noqa: PLR0915 -- one router, four small handlers
         """Background task: never raises (the services invariant)."""
         try:
             audio = await asyncio.to_thread(store.read, _bucket(), rec.audio_object, None, None)
-            text = await transcribe(settings, audio)
+            text = await transcribe(
+                settings, audio, mime_type=_transcribe_mime(rec.audio_object)
+            )
         except Exception as exc:
             _log.error("call_retranscribe_failed", conversation_id=conversation_id, error=str(exc))
             return
@@ -411,57 +503,79 @@ def build_recording_router(  # noqa: PLR0915 -- one router, four small handlers
             await post_note(conversation_id, f"{RETRANSCRIBED_HEADER}\n\n{text}")
             _log.info("call_retranscribed", conversation_id=conversation_id, chars=len(text))
         except Exception as exc:
-            _log.error(
-                "call_retranscribe_note_failed", conversation_id=conversation_id, error=str(exc)
-            )
+            _log.error("call_retranscribe_note_failed", conversation_id=conversation_id, error=str(exc))
 
-    @router.post("/{conversation_id}/recording/retranscribe", dependencies=[Depends(listen)])
+    def _too_many(detail: str, retry_after: float) -> HTTPException:
+        return HTTPException(
+            status_code=429, detail=detail, headers={"Retry-After": str(int(retry_after) + 1)}
+        )
+
+    @router.post("/{conversation_id}/recording/retranscribe", dependencies=enabled)
     async def retranscribe_call_recording(
-        conversation_id: str,
         background_tasks: BackgroundTasks,
+        conversation_id: ConversationId,
+        user_id: int = Depends(person),
         scope: Scope = Depends(data_scope),
-        actor: Actor = Depends(actor_dep),
     ) -> JSONResponse:
-        _check_enabled()
         if not settings.phone_recording_transcription_enabled or post_note is None:
             raise HTTPException(
                 status_code=409,
                 detail="Transcription is disabled (PHONE_RECORDING_TRANSCRIPTION_ENABLED=false)",
             )
-        rec = await _locate(conversation_id, scope)
-        if rec is None:
-            raise HTTPException(
-                status_code=404, detail="No call recording exists for this conversation"
-            )
+        res = await _resolve(conversation_id, scope)
+        if res.status != "available" or res.recording is None:
+            raise HTTPException(status_code=404, detail="No call recording exists for this conversation")
 
-        cooldown = max(0, int(settings.call_recording_retranscribe_cooldown_seconds))
         now = monotonic()
+        cooldown = max(0, int(settings.call_recording_retranscribe_cooldown_seconds))
         last = _last_retranscribe.get(conversation_id)
         if last is not None and now - last < cooldown:
-            raise HTTPException(
-                status_code=429,
-                detail="This call was re-transcribed recently; try again later",
-                headers={"Retry-After": str(int(cooldown - (now - last)) + 1)},
+            raise _too_many(
+                "This call was re-transcribed recently; try again later", cooldown - (now - last)
             )
+        user_cap = int(settings.call_recording_retranscribe_user_hourly_cap)
+        global_cap = int(settings.call_recording_retranscribe_global_hourly_cap)
+        mine = _user_runs.setdefault(user_id, deque())
+        _prune(mine, now)
+        _prune(_global_runs, now)
+        if user_cap > 0 and len(mine) >= user_cap:
+            raise _too_many("Hourly re-transcription limit reached", _HOUR - (now - mine[0]))
+        if global_cap > 0 and len(_global_runs) >= global_cap:
+            raise _too_many(
+                "Re-transcription is busy for this tenant; try again later",
+                _HOUR - (now - _global_runs[0]),
+            )
+
+        previous = last
         _last_retranscribe[conversation_id] = now
+        mine.append(now)
+        _global_runs.append(now)
+
+        def _rollback() -> None:
+            if previous is None:
+                _last_retranscribe.pop(conversation_id, None)
+            else:
+                _last_retranscribe[conversation_id] = previous
+            if mine and mine[-1] == now:
+                mine.pop()
+            if _global_runs and _global_runs[-1] == now:
+                _global_runs.pop()
+
         if len(_last_retranscribe) > _STATE_CAP:
             for key in [k for k, v in _last_retranscribe.items() if now - v >= cooldown]:
                 del _last_retranscribe[key]
 
-        await _audit(
+        await _audit_or_503(
             EVENT_CALL_RECORDING_RETRANSCRIBE,
             conversation_id,
-            actor.user_id,
-            actor.name,
+            user_id,
+            res.recording.audio_object,
             "Call recording re-transcription requested",
+            on_fail=_rollback,
         )
-        background_tasks.add_task(_run_retranscribe, conversation_id, rec)
+        background_tasks.add_task(_run_retranscribe, conversation_id, res.recording)
         return JSONResponse(
-            {
-                "status": "queued",
-                "conversation_id": conversation_id,
-                "retry_after_seconds": cooldown,
-            },
+            {"status": "queued", "conversation_id": conversation_id, "retry_after_seconds": cooldown},
             status_code=202,
             headers=_NO_STORE,
         )

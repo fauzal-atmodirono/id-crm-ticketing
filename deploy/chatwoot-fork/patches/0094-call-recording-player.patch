@@ -3,10 +3,10 @@ Subject: [PATCH 0094] conversation sidebar: in-CRM call recording player (signed
 
 diff --git a/app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue b/app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue
 new file mode 100644
-index 0000000..2f677ec
+index 0000000..46eb97e
 --- /dev/null
 +++ b/app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue
-@@ -0,0 +1,197 @@
+@@ -0,0 +1,237 @@
 +<script setup>
 +// ProtonCallRecordingPanel.vue — OUR file (patch 0094). Plays a call's
 +// archived recording inside the conversation sidebar.
@@ -22,6 +22,10 @@ index 0000000..2f677ec
 +// retention): no permission (403), feature off (404), not configured (503) or
 +// any other failure all render nothing. Only asks for conversations the
 +// backend marked as recorded calls, so ordinary chats cost no request.
++//
++// Each minted link is one audit row on first play; re-minting after expiry
++// starts a new link (and a new row). The transcript is fetched with its token
++// in a header and shown inline, so that token never sits in a URL or history.
 +import { ref, computed, watch, nextTick } from 'vue';
 +import { useMapGetter } from 'dashboard/composables/store';
 +import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
@@ -53,6 +57,9 @@ index 0000000..2f677ec
 +const state = ref('hidden'); // hidden | available | deleted
 +const playUrl = ref('');
 +const transcriptUrl = ref('');
++const transcriptToken = ref('');
++const transcriptText = ref('');
++const transcriptOpen = ref(false);
 +const canRetranscribe = ref(false);
 +const expiresAtMs = ref(0);
 +const message = ref('');
@@ -85,6 +92,7 @@ index 0000000..2f677ec
 +    if (res?.status === 'available' && res.play_url) {
 +      playUrl.value = absolute(res.play_url);
 +      transcriptUrl.value = absolute(res.transcript_url || '');
++      transcriptToken.value = res.transcript_token || '';
 +      canRetranscribe.value = !!res.can_retranscribe;
 +      expiresAtMs.value = Date.parse(res.expires_at) || 0;
 +      retriedAfterError = false;
@@ -129,9 +137,26 @@ index 0000000..2f677ec
 +  await remintAndResume(false);
 +}
 +
-+async function openTranscript() {
-+  if (isStale()) await load();
-+  if (transcriptUrl.value) window.open(transcriptUrl.value, '_blank', 'noopener');
++async function toggleTranscript() {
++  if (transcriptOpen.value) {
++    transcriptOpen.value = false;
++    return;
++  }
++  if (!transcriptText.value) {
++    if (isStale()) await load();
++    if (!transcriptUrl.value || !transcriptToken.value) return;
++    try {
++      const response = await fetch(transcriptUrl.value, {
++        headers: { 'x-recording-token': transcriptToken.value },
++      });
++      if (!response.ok) throw new Error(String(response.status));
++      transcriptText.value = await response.text();
++    } catch (e) {
++      message.value = 'Could not load the transcript.';
++      return;
++    }
++  }
++  transcriptOpen.value = true;
 +}
 +
 +async function retranscribe() {
@@ -151,9 +176,19 @@ index 0000000..2f677ec
 +  }
 +}
 +
-+watch(() => [props.conversationId, isRecordedCall.value], load, {
-+  immediate: true,
-+});
++watch(
++  () => [
++    props.conversationId,
++    isRecordedCall.value,
++    attrs.value.call_recording_object,
++  ],
++  () => {
++    transcriptText.value = '';
++    transcriptOpen.value = false;
++    load();
++  },
++  { immediate: true }
++);
 +</script>
 +
 +<template>
@@ -185,9 +220,9 @@ index 0000000..2f677ec
 +            v-if="transcriptUrl"
 +            type="button"
 +            class="text-n-brand hover:underline"
-+            @click="openTranscript"
++            @click="toggleTranscript"
 +          >
-+            Transcript
++            {{ transcriptOpen ? 'Hide transcript' : 'Transcript' }}
 +          </button>
 +          <button
 +            v-if="canRetranscribe"
@@ -199,6 +234,11 @@ index 0000000..2f677ec
 +            Re-transcribe
 +          </button>
 +        </div>
++        <pre
++          v-if="transcriptOpen"
++          class="max-h-64 overflow-y-auto whitespace-pre-wrap text-xs text-n-slate-12 bg-n-background rounded-lg p-2 border border-n-weak"
++          >{{ transcriptText }}</pre
++        >
 +        <p v-if="message" class="text-xs text-n-slate-11">{{ message }}</p>
 +      </template>
 +    </div>

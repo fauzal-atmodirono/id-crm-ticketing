@@ -124,6 +124,7 @@ async def test_the_post_call_transcriber_sends_the_glossary_prompt() -> None:
     settings = get_settings().model_copy(
         update={
             "phone_recording_transcription_enabled": True,
+            "phone_transcript_glossary_enabled": True,
             "twilio_account_sid": "AC" + "0" * 32,
             "twilio_auth_token": "tok",
         }
@@ -148,3 +149,41 @@ async def test_the_post_call_transcriber_sends_the_glossary_prompt() -> None:
 
 def test_the_cache_window_is_finite() -> None:
     assert 0 < recording_glossary._DEALER_CACHE_SECONDS <= 3600
+
+
+async def test_without_the_tenant_flag_the_original_prompt_is_sent_unchanged() -> None:
+    """Default-preserving: a tenant that has not enabled the Proton glossary
+    sends exactly the prompt it always sent."""
+    from chatbot.features.chat.phone.recording_transcriber import (
+        _TRANSCRIBE_PROMPT,
+        transcribe_audio,
+    )
+    from chatbot.platform.config import get_settings
+
+    configure_dealer_source(_Store(["bukit_jalil"]))
+    settings = get_settings().model_copy(update={"phone_transcript_glossary_enabled": False})
+    seen: list[str] = []
+
+    def _fake(_settings, _audio, prompt=None):
+        seen.append(prompt or "")
+        return "x"
+
+    with patch("chatbot.features.chat.phone.recording_transcriber._transcribe_sync", new=_fake):
+        await transcribe_audio(settings, b"a")
+    assert seen == [_TRANSCRIBE_PROMPT]
+    assert "Bukit Jalil" not in seen[0] and "Tamil" not in seen[0]
+
+
+async def test_a_wav_archive_is_sent_with_its_own_mime_type() -> None:
+    from chatbot.features.chat.phone.recording_transcriber import transcribe_audio
+    from chatbot.platform.config import get_settings
+
+    got: list[str] = []
+
+    def _fake(_settings, _audio, _prompt=None, mime_type="audio/mp3"):
+        got.append(mime_type)
+        return "x"
+
+    with patch("chatbot.features.chat.phone.recording_transcriber._transcribe_sync", new=_fake):
+        await transcribe_audio(get_settings(), b"a", mime_type="audio/wav")
+    assert got == ["audio/wav"]

@@ -678,6 +678,18 @@ class Settings(BaseSettings):
     # assistant sees.
     phone_web_call_as_enabled: bool = False
 
+    # Test console "Demo" tab + `python -m chatbot.features.demo.seed`: seed /
+    # reset the [DEMO] phone personas (contacts, history, Farid's RSA
+    # incident). Off (default) = no /demo/* route and the CLI refuses. Reset
+    # only ever removes records named "[DEMO] ..." / labelled demo_persona.
+    demo_console_enabled: bool = False
+    # API inbox the demo conversations go to; 0 = CHATWOOT_INBOX_ID. Must be
+    # a Channel::Api inbox (checked before every seed/reset).
+    demo_inbox_id: int = 0
+    # Prefix for the Demo tab's CRM links; "" = relative (the test console is
+    # served from the CRM's own host).
+    demo_crm_base_url: str = ""
+
     # Frontend CORS — origins of the Vue dev/prod app (comma-separated in env).
     # Defaults cover Vite's first few fallback ports (5173-5180) so a stale dev
     # server on 5173 doesn't break a fresh one bound to 5174+.

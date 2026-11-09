@@ -1269,6 +1269,17 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
 
         app.include_router(build_rsa_router(rsa_repo, settings, authz_repo, authz_validator))
 
+    # Test console Demo tab ([DEMO] persona seed/reset). Registration-gated:
+    # flag off -> no /demo/* route exists. Reuses rsa_repo (None when RSA is
+    # off: Farid's RSA incident is then reported as not seeded).
+    if settings.demo_console_enabled:
+        from chatbot.features.demo.router import build_demo_router
+        from chatbot.features.demo.seeder import build_seeder_factory
+
+        app.include_router(
+            build_demo_router(settings, build_seeder_factory(settings, rsa_repo))
+        )
+
     # The routing config router is mounted unconditionally, as it always was --
     # `routing_enabled` gates automatic agent *selection* inside the handler,
     # never the endpoints' existence. `audit`/`authz_repo`/`validator` are new

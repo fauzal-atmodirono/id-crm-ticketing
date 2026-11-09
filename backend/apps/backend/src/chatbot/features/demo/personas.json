@@ -1,0 +1,144 @@
+{
+  "_about": "Server-side demo personas for the test console Demo tab and the [DEMO] CRM seeder (features/demo). Mirrors .superpowers/sdd/2026-11-09-phone-caller-context/personas.json and the Phone tab's personas.ts (same ids, numbers, attribute keys). All numbers are fake (+600000001xx is not a Malaysian mobile range). Differences from the sdd copy: every conversation carries the [DEMO] history message the seeder posts, Farid has an RSA incident, each persona lists what its card shows, and Nurul's conversation has NO `escalate` label (on a live tenant with ESCALATION_ALL_CHANNELS_ENABLED it would send the EM-7 escalation email to the dealer and start the reminder ladder; the open case + case_type Complaint is what the phone demo reads).",
+  "personas": [
+    {
+      "id": "ahmad",
+      "label": "Ahmad (known customer)",
+      "number": "+60000000101",
+      "language": "en",
+      "description": "Proton X50, plate DMO 1101, dealer Petaling Jaya.",
+      "scriptHint": "Ask to book a service for your X50.",
+      "shows": [
+        "Known caller: the assistant confirms \"Ahmad\" and the X50 (plate ending 1101).",
+        "One resolved past service-booking conversation, dealer Petaling Jaya."
+      ],
+      "crm_seed": {
+        "contact": {"name": "[DEMO] Ahmad", "phone_number": "+60000000101", "custom_attributes": {"vehicle_no": "DMO1101", "vehicle_model": "Proton X50"}},
+        "conversations": [
+          {
+            "status": "resolved",
+            "labels": ["dealer_petaling_jaya"],
+            "custom_attributes": {"vehicle_plate": "DMO1101", "vehicle_model": "Proton X50", "case_type": "Service Booking"},
+            "message": "[DEMO] Hi, I would like to book the 20,000 km service for my Proton X50 at Petaling Jaya next week."
+          }
+        ],
+        "rsa_incidents": []
+      }
+    },
+    {
+      "id": "nurul",
+      "label": "Nurul (Bahasa Melayu, open complaint)",
+      "number": "+60000000102",
+      "language": "ms",
+      "description": "Proton Saga, plate DMO 1102, dealer Petaling Jaya, one open complaint case.",
+      "scriptHint": "Speak Malay; ask for an update on your complaint, then ask for a person.",
+      "shows": [
+        "Known caller with one OPEN complaint case (the assistant knows there is an open case).",
+        "Proton Saga, plate ending 1102, dealer Petaling Jaya."
+      ],
+      "crm_seed": {
+        "contact": {"name": "[DEMO] Nurul", "phone_number": "+60000000102", "custom_attributes": {"vehicle_no": "DMO1102", "vehicle_model": "Proton Saga"}},
+        "conversations": [
+          {
+            "status": "open",
+            "labels": ["dealer_petaling_jaya"],
+            "custom_attributes": {"vehicle_plate": "DMO1102", "vehicle_model": "Proton Saga", "case_type": "Complaint"},
+            "message": "[DEMO] Saya ingin membuat aduan: penghawa dingin Proton Saga saya tidak sejuk selepas servis minggu lepas."
+          }
+        ],
+        "rsa_incidents": []
+      }
+    },
+    {
+      "id": "lim",
+      "label": "Lim (fleet, two cars)",
+      "number": "+60000000103",
+      "language": "zh",
+      "description": "Proton X70 DMO 1103 and Proton Persona DMO 1104, dealer Petaling Jaya.",
+      "scriptHint": "Speak Mandarin; ask about warranty. The assistant should ask which car.",
+      "shows": [
+        "Known caller with TWO cars: the assistant asks which one (X70 ending 1103 or Persona ending 1104).",
+        "Two resolved past conversations, one per car, dealer Petaling Jaya."
+      ],
+      "crm_seed": {
+        "contact": {"name": "[DEMO] Lim", "phone_number": "+60000000103", "custom_attributes": {"vehicle_no": "DMO1103"}},
+        "conversations": [
+          {
+            "status": "resolved",
+            "labels": ["dealer_petaling_jaya"],
+            "custom_attributes": {"vehicle_plate": "DMO1103", "vehicle_model": "Proton X70"},
+            "message": "[DEMO] 你好，我想问一下我的 Proton X70 的保养时间。"
+          },
+          {
+            "status": "resolved",
+            "labels": ["dealer_petaling_jaya"],
+            "custom_attributes": {"vehicle_plate": "DMO1104", "vehicle_model": "Proton Persona"},
+            "message": "[DEMO] 你好，我的 Proton Persona 需要更换轮胎。"
+          }
+        ],
+        "rsa_incidents": []
+      }
+    },
+    {
+      "id": "farid",
+      "label": "Farid (breakdown on the highway)",
+      "number": "+60000000104",
+      "language": "en",
+      "description": "Proton X70, plate DMO 1105, dealer Petaling Jaya.",
+      "scriptHint": "Say your car stopped on the highway. Safety first, then handoff.",
+      "shows": [
+        "Known caller; safety guidance first, then handoff.",
+        "One past roadside-assistance (RSA) incident in Customer 360, plus one resolved conversation."
+      ],
+      "crm_seed": {
+        "contact": {"name": "[DEMO] Farid", "phone_number": "+60000000104", "custom_attributes": {"vehicle_no": "DMO1105", "vehicle_model": "Proton X70"}},
+        "conversations": [
+          {
+            "status": "resolved",
+            "labels": ["dealer_petaling_jaya"],
+            "custom_attributes": {"vehicle_plate": "DMO1105", "vehicle_model": "Proton X70"},
+            "message": "[DEMO] Thank you for the tow last month, the X70 is running fine now."
+          }
+        ],
+        "rsa_incidents": [
+          {
+            "incident_date": "2026-10-12",
+            "vehicle_no": "DMO1105",
+            "vehicle_model": "Proton X70",
+            "cause": "Battery Failure",
+            "purchased_from": "Petaling Jaya",
+            "breakdown_location": "[DEMO] North-South Expressway near Sungai Buloh",
+            "arrived_location": "Petaling Jaya",
+            "total_km": 18,
+            "remarks": "[DEMO] Battery replaced at the outlet; customer informed."
+          }
+        ]
+      }
+    },
+    {
+      "id": "new",
+      "label": "New caller (not in CRM)",
+      "number": "+60000000105",
+      "language": "en",
+      "description": "No contact in the CRM.",
+      "scriptHint": "Give your name, plate DMO 1106 and say you use the Shah Alam service centre (not a configured dealer: stored as text, no label).",
+      "shows": [
+        "Unknown number: the assistant asks for name, plate and dealer (at most three questions).",
+        "Nothing is seeded. A call creates a contact that is NOT a [DEMO] record, so Reset leaves it: delete it in the CRM before the next rehearsal (the card flags it)."
+      ],
+      "crm_seed": null
+    },
+    {
+      "id": "unknown",
+      "label": "Unknown caller (no number)",
+      "number": "",
+      "language": "",
+      "description": "No caller ID reaches the assistant.",
+      "scriptHint": "The assistant must ask for your mobile number; say one of the persona numbers or any other.",
+      "shows": [
+        "No caller ID: the assistant asks for the mobile number first, then looks the caller up."
+      ],
+      "crm_seed": null
+    }
+  ]
+}

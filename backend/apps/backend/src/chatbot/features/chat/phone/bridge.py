@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
@@ -15,6 +16,18 @@ from chatbot.features.chat.nps import record_nps_agent_attribution, record_nps_o
 from chatbot.features.chat.phone.agent_client_resolver import AgentClientResolver, ChainedResolver
 from chatbot.features.chat.phone.audio_codec import mulaw8k_to_pcm16k, pcm24k_to_mulaw8k
 from chatbot.features.chat.phone.call_control import CallControl
+from chatbot.features.chat.phone.caller_context import (
+    SOURCE_SPOKEN,
+    CallerContext,
+    CallerDetails,
+    caller_view,
+    dealer_display,
+    lookup_guidance,
+    mask,
+    match_dealer,
+    normalise_mobile,
+    parse_caller_details,
+)
 from chatbot.features.chat.phone.handoff_csat_tools import parse_csat_score, parse_nps_score
 from chatbot.features.chat.phone.handoff_target import HandoffTargetResolver, dial_twiml
 from chatbot.features.chat.phone.kb_tool import dispatch_kb_search
@@ -30,6 +43,7 @@ from chatbot.features.chat.phone.transcript_sink import TranscriptSink
 from chatbot.features.chat.ports import ConversationLogResult
 
 if TYPE_CHECKING:
+    from chatbot.features.chat.phone.caller_context import CallerContextService
     from chatbot.features.chat.phone.gemini_live import LiveSession
     from chatbot.features.chat.phone.softphone_registry import SoftphoneRegistry
     from chatbot.features.chat.ports import ConversationLogPort, KnowledgePort
@@ -120,6 +134,14 @@ _LOG_TRANSCRIPT_MAX_CHARS = 400
 _HANDOFF_RESOLVE_TIMEOUT_SECONDS = 5.0
 _HANDOFF_REDIRECT_TIMEOUT_SECONDS = 3.0
 
+# Caller context (2026-11-09): a handoff on a call whose conversation is still
+# being created waits at most this long for it, so the ringing softphone can
+# carry the conversation id. Inline in pump(), hence short.
+_HANDOFF_TICKET_WAIT_SECONDS = 2.0
+# How many numbers one call may look up through lookup_caller -- enough for
+# a misheard number or two, not enough to walk the customer base.
+_MAX_CALLER_LOOKUPS = 3
+
 
 def _log_transcript(body: str) -> str:
     """Truncate a transcript for structured logging (Important 11).
@@ -148,8 +170,34 @@ class PhoneBridge:
         handoff_resolver: HandoffTargetResolver | None = None,
         softphone_registry: SoftphoneRegistry | None = None,
         presence_fetcher: Any | None = None,
+        caller_service: CallerContextService | None = None,
+        caller_context: CallerContext | None = None,
+        dealer_slugs: list[str] | None = None,
     ) -> None:
         self._live = live
+        # 2026-11-09 caller context. `caller_service` is passed only when
+        # phone_caller_context_enabled is on; None keeps every code path
+        # below exactly as it was (anonymous ticket, no caller tools, the old
+        # handoff note). `caller_context` is the pre-greeting lookup for a
+        # verified number (None = no usable caller ID: the model asks and
+        # calls lookup_caller).
+        self._caller_service = caller_service
+        self._caller_ctx = caller_context
+        self._caller_phone: str | None = caller_context.phone if caller_context else None
+        self._caller_source: str = caller_context.source if caller_context else SOURCE_SPOKEN
+        self._dealer_slugs = list(dealer_slugs or [])
+        self.caller_details = CallerDetails()
+        self._caller_dealer_slug: str | None = None
+        self._caller_lookups = 0
+        # Set once the caller's number is known (or no longer worth waiting
+        # for); a call with no caller ID defers its conversation create until
+        # then, so the conversation lands on the right contact.
+        self._caller_known = asyncio.Event()
+        if self._caller_phone or caller_service is None:
+            self._caller_known.set()
+        self._caller_write_task: asyncio.Task[None] | None = None
+        self._caller_write_pending = False
+        self._dealer_labeled = False
         self._knowledge = knowledge_port
         self._log_port = conversation_log_port
         self._send_twilio = send_twilio
@@ -305,7 +353,189 @@ class PhoneBridge:
             "reason": str(handoff.get("reason") or "")[:200],
             "summary": str(handoff.get("summary") or "")[:400],
         }
+        if self._caller_service is not None:
+            # Caller context: who is on the line, so the agent's ringing card
+            # shows it and accepting opens their Customer 360 (fork 0091).
+            # `caller` is the same key FIX-15's transfer already uses for the
+            # customer's number.
+            who, vehicle, dealer = self._caller_summary()
+            params["caller"] = self._caller_phone or ""
+            params["caller_name"] = who[:80]
+            params["vehicle"] = vehicle[:80]
+            params["dealer"] = dealer[:80]
         return {k: v for k, v in params.items() if v}
+
+    # --- caller context (2026-11-09) ---------------------------------------
+
+    def _single_candidate(self) -> Any | None:
+        return self._caller_ctx.single if self._caller_ctx is not None else None
+
+    def _effective_dealer_slug(self) -> str | None:
+        """What the caller said (confidently matched) wins; else the known
+        customer's last dealer label."""
+        if self._caller_dealer_slug:
+            return self._caller_dealer_slug
+        single = self._single_candidate()
+        return single.last_dealer if single is not None and single.last_dealer else None
+
+    def _caller_summary(self) -> tuple[str, str, str]:
+        """(who, vehicle, dealer) for the handoff note and ring parameters.
+        Full values -- these go to the CRM / an authenticated agent, never to
+        the model or the logs."""
+        d = self.caller_details
+        single = self._single_candidate()
+        who = d.name or (single.name if single is not None else "")
+        model, plate = d.model, d.plate
+        if single is not None and len(single.vehicles) == 1:
+            v = single.vehicles[0]
+            if not plate and (not model or model.lower() == v.model.lower()):
+                plate = v.plate
+            model = model or v.model
+        vehicle = " ".join(x for x in (model, plate) if x)
+        slug = self._effective_dealer_slug()
+        dealer = dealer_display(slug) if slug else d.dealer_text
+        return who, vehicle, dealer
+
+    def _ticket_customer(self) -> tuple[str | None, str | None]:
+        """(customer_name, customer_phone) for ensure_conversation_ticket."""
+        if self._caller_service is None or not self._caller_phone:
+            return None, None
+        single = self._single_candidate()
+        return (single.name or None) if single is not None else None, self._caller_phone
+
+    async def _deferred_ticket_create(self, call_sid: str) -> None:
+        """No caller ID: give the caller a chance to say their number
+        (lookup_caller) so the conversation is created on THEIR contact; a
+        handoff, hangup or the deadline stops the wait. The live transcript
+        is not lost meanwhile -- the sink keeps buffering until a ticket
+        exists, then posts what it has."""
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(
+                self._caller_known.wait(),
+                timeout=self._settings.phone_caller_number_wait_seconds,
+            )
+        await self._create_ticket_at_start(call_sid)
+
+    async def _handle_lookup_caller(self, args: dict[str, object]) -> dict[str, Any]:
+        if self._caller_service is None:
+            return {"error": "unknown tool: lookup_caller"}
+        if self._caller_lookups >= _MAX_CALLER_LOOKUPS:
+            return {
+                "status": "limit_reached",
+                "guidance": "Do not look up another number; continue as a new caller.",
+            }
+        self._caller_lookups += 1
+        phone = normalise_mobile(str(args.get("mobile_number") or ""))
+        if phone is None:
+            return {
+                "status": "invalid_number",
+                "guidance": "That is not a complete mobile number. Ask the caller to repeat it "
+                "digit by digit, or continue without it.",
+            }
+        ctx = await self._caller_service.lookup(phone, SOURCE_SPOKEN)
+        self._caller_ctx = ctx
+        self._caller_phone = phone
+        self._caller_source = SOURCE_SPOKEN
+        self._caller_known.set()
+        _log.info(
+            "phone_caller_lookup_tool",
+            call_sid=self.call_sid,
+            phone=mask(phone),
+            candidates=len(ctx.candidates),
+        )
+        view = caller_view(ctx)
+        status = {"single": "match", "multiple_people": "multiple_people"}.get(
+            view["match"], "no_match"
+        )
+        # Record the told number on the case even if nothing else is said.
+        self._schedule_caller_write()
+        return {"status": status, **view, "guidance": lookup_guidance(ctx)}
+
+    def _handle_save_caller_details(self, args: dict[str, object]) -> dict[str, Any]:
+        if self._caller_service is None:
+            return {"error": "unknown tool: save_caller_details"}
+        details = parse_caller_details(dict(args))
+        self.caller_details = self.caller_details.merged(details)
+        if details.dealer_text:
+            self._caller_dealer_slug = match_dealer(details.dealer_text, self._dealer_slugs)
+        self._schedule_caller_write(label_dealer=self.handoff is not None)
+        return {"status": "saved", "dealer_matched": bool(self._caller_dealer_slug)}
+
+    def _schedule_caller_write(self, *, label_dealer: bool = False) -> None:
+        """CRM writes for what the caller said run detached (the tool reply
+        must not wait on Chatwoot) and one after another (later details are
+        merged over earlier ones in order)."""
+        if self._caller_service is None:
+            return
+        self._caller_write_pending = True
+        prev = self._caller_write_task
+        self._caller_write_task = asyncio.create_task(self._run_caller_write(prev, label_dealer))
+
+    async def _run_caller_write(self, prev: asyncio.Task[None] | None, label_dealer: bool) -> None:
+        if prev is not None:
+            await asyncio.gather(prev, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                self._write_caller_when_ticket(label_dealer),
+                timeout=self._settings.phone_caller_save_timeout_seconds,
+            )
+        except Exception as e:
+            # Left pending: finalize() applies it once the ticket exists.
+            _log.warning(
+                "phone_caller_write_deferred", call_sid=self.call_sid, error_type=type(e).__name__
+            )
+
+    async def _write_caller_when_ticket(self, label_dealer: bool) -> None:
+        if self.ticket_id is None and self._ticket_create_task is not None:
+            await asyncio.gather(self._ticket_create_task, return_exceptions=True)
+        if self.ticket_id is None:
+            return  # finalize() will apply it
+        await self._apply_caller(self.ticket_id, label_dealer=label_dealer)
+
+    async def _apply_caller(self, ticket_id: str, *, label_dealer: bool) -> None:
+        if self._caller_service is None:
+            return
+        await self._caller_service.save(
+            ticket_id=ticket_id,
+            phone=self._caller_phone,
+            source=self._caller_source,
+            details=self.caller_details,
+            dealer_slug=self._caller_dealer_slug,
+        )
+        self._caller_write_pending = False
+        slug = self._effective_dealer_slug()
+        if label_dealer and slug and not self._dealer_labeled:
+            # Only on a handoff: the dealer_<slug> label is what reporting
+            # reads as "escalated to dealer" and what the ladder routes on, so
+            # a call the assistant resolved itself must not carry it.
+            await self._log_port.add_ticket_tag(ticket_id, f"dealer_{slug}")
+            self._dealer_labeled = True
+
+    async def _prepare_handoff_context(self) -> None:
+        """Before ringing an agent: stop waiting for a number, give a
+        still-running conversation create a short chance to finish (so the
+        ring carries the conversation id), and queue the dealer label."""
+        self._caller_known.set()
+        task = self._ticket_create_task
+        if self.ticket_id is None and task is not None and not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=_HANDOFF_TICKET_WAIT_SECONDS)
+            except Exception as e:
+                _log.warning(
+                    "phone_handoff_ticket_not_ready",
+                    call_sid=self.call_sid,
+                    error_type=type(e).__name__,
+                )
+        if self._effective_dealer_slug():
+            self._schedule_caller_write(label_dealer=True)
+
+    async def _settle_caller_write_task(self) -> None:
+        if self._caller_write_task is None:
+            return
+        try:
+            await asyncio.wait_for(self._caller_write_task, timeout=_FLUSH_DRAIN_TIMEOUT_SECONDS)
+        except Exception as e:
+            _log.error("phone_finalize_caller_write_failed", call_sid=self.call_sid, error=str(e))
 
     async def handle_twilio(self, msg: dict[str, object]) -> None:
         event = msg.get("event")
@@ -334,9 +564,12 @@ class PhoneBridge:
                     # reconnect (ticket_id stays None until the task actually
                     # runs), so also check the task itself isn't still
                     # in-flight.
-                    self._ticket_create_task = asyncio.create_task(
+                    create = (
                         self._create_ticket_at_start(self.call_sid)
+                        if self._caller_known.is_set()
+                        else self._deferred_ticket_create(self.call_sid)
                     )
+                    self._ticket_create_task = asyncio.create_task(create)
                 if (
                     self.call_sid
                     and not self._recording_start_attempted
@@ -406,12 +639,13 @@ class PhoneBridge:
         tenant and look like a standing outage.
         """
         session_id = f"phone-{call_sid}"
+        customer_name, customer_phone = self._ticket_customer()
         try:
             ticket_id = await self._log_port.ensure_conversation_ticket(
                 session_id=session_id,
                 subject=f"[phone] Conversation {session_id}",
-                customer_name=None,
-                customer_phone=None,
+                customer_name=customer_name,
+                customer_phone=customer_phone,
             )
         except Exception as e:
             _log.error("phone_ticket_create_failed", session_id=session_id, error=str(e))
@@ -587,8 +821,17 @@ class PhoneBridge:
                 "reason": str(event.args.get("reason") or ""),
                 "summary": str(event.args.get("summary") or ""),
             }
+            if self._caller_service is not None:
+                await self._prepare_handoff_context()
             status = await self._attempt_transfer()
             await self._live.send_tool_response(event.id, event.name, {"status": status})
+        elif event.name == "save_caller_details" and self._caller_service is not None:
+            await self._live.send_tool_response(
+                event.id, event.name, self._handle_save_caller_details(event.args)
+            )
+        elif event.name == "lookup_caller" and self._caller_service is not None:
+            result = await self._handle_lookup_caller(event.args)
+            await self._live.send_tool_response(event.id, event.name, result)
         elif event.name == "submit_csat":
             score = parse_csat_score(event.args)
             if score is not None:
@@ -888,11 +1131,12 @@ class PhoneBridge:
         """
         if self.ticket_id is not None:
             return self.ticket_id
+        customer_name, customer_phone = self._ticket_customer()
         ticket_id = await self._log_port.ensure_conversation_ticket(
             session_id=session_id,
             subject=f"[phone] Conversation {session_id}",
-            customer_name=None,
-            customer_phone=None,
+            customer_name=customer_name,
+            customer_phone=customer_phone,
         )
         if ticket_id == session_id:
             _log.error(
@@ -1041,9 +1285,13 @@ class PhoneBridge:
         call stays recoverable from logs, exactly like every other
         finalize failure path here.
         """
+        # Caller context: a call still waiting for the caller's number gets
+        # its conversation created now (no-op when already set / flag off).
+        self._caller_known.set()
         await self._settle_ticket_create_task()
         await self._settle_recording_task()
         await self._settle_handoff_prefetch_task()
+        await self._settle_caller_write_task()
         await self._drain_flush_queue()
 
         if not self.call_sid:
@@ -1063,7 +1311,7 @@ class PhoneBridge:
                 transcript=_log_transcript(body),
             )
 
-    async def _write_finalize_result(self, session_id: str, body: str) -> None:
+    async def _write_finalize_result(self, session_id: str, body: str) -> None:  # noqa: PLR0912 -- one branch per closing write
         if not self.transcript and self.handoff is None:
             # Nobody spoke and nothing was escalated. Nothing to summarise
             # -- but a ticket may already exist from the call-start create,
@@ -1091,11 +1339,34 @@ class PhoneBridge:
             if self._settings.phone_transcript_classification_enabled:
                 status = await self._classify_and_apply(ticket_id, body, status)
 
+            if self._caller_service is not None and (
+                self._caller_write_pending
+                or (
+                    self.handoff is not None
+                    and not self._dealer_labeled
+                    and self._effective_dealer_slug()
+                )
+            ):
+                # What the caller said, if the mid-call write never landed
+                # (no ticket yet, Chatwoot slow), plus the handoff's dealer
+                # label. Inside the bounded tail like every closing write.
+                try:
+                    await self._apply_caller(ticket_id, label_dealer=self.handoff is not None)
+                except Exception as e:
+                    _log.error("phone_finalize_caller_write_failed", error=str(e))
+
             if self.handoff is not None:
                 note = (
                     "[Handoff to human agent]\n"
                     f"{self.handoff.get('reason', '')}\n{self.handoff.get('summary', '')}"
                 )
+                if self._caller_service is not None:
+                    who, vehicle, dealer = self._caller_summary()
+                    note += (
+                        f"\nCaller: {who or 'not identified'}"
+                        f"\nVehicle: {vehicle or 'not given'}"
+                        f"\nDealer: {dealer or 'not given'}"
+                    )
                 await self._log_port.append_conversation_comment(ticket_id, note, status="open")
             # With live streaming on, at least one block already
             # successfully posted (during pump() or the forced flush just

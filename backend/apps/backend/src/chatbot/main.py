@@ -837,6 +837,25 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         )
         app.include_router(build_hold_transfer_webhooks_router(settings, _hold_transfer))
 
+    # 2026-11-09 caller context for the AI-first phone line. Built only with
+    # the flag on and a Chatwoot adapter to read from; None leaves the phone
+    # path exactly as before. Dealer slugs come from the operator-edited
+    # DealerStore, with DEALER_EMAIL_MAP_JSON as the same fallback the
+    # escalation notifier uses.
+    _caller_context_service = None
+    if settings.phone_caller_context_enabled and chatwoot_client is not None:
+        from chatbot.features.chat.phone.caller_context import (  # noqa: PLC0415
+            CallerContextService,
+        )
+
+        async def _dealer_slugs() -> list[str]:
+            records = await dealer_store.list_all()
+            return [r.dealer for r in records] + list(build_dealer_email_map(settings))
+
+        _caller_context_service = CallerContextService(
+            chatwoot_client, settings, dealer_source=_dealer_slugs
+        )
+
     app.include_router(
         build_chat_router(
             orchestrator=orchestrator,
@@ -851,6 +870,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             call_control=_call_control,
             abandon_store=_abandon_store_for(app, settings),
             hold_transfer=_hold_transfer,
+            caller_context_service=_caller_context_service,
         )
     )
 

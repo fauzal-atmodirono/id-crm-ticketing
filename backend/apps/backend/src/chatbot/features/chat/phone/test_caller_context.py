@@ -1,0 +1,454 @@
+"""Caller context for AI-first phone calls (2026-11-09 brief items 1-4, 9).
+
+All numbers are fake (+600000000xx); Chatwoot is a recording fake.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+import pytest
+
+from chatbot.features.chat.phone.caller_context import (
+    CallerContext,
+    CallerContextService,
+    CallerDetails,
+    build_caller_instruction,
+    caller_view,
+    dealer_display,
+    match_dealer,
+    normalise_mobile,
+    parse_caller_details,
+    sign_caller,
+    usable_caller_id,
+    verify_caller,
+)
+from chatbot.platform.config import Settings
+
+PHONE = "+60000000101"
+
+
+# --- number handling -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "want"),
+    [
+        ("+60000000101", "+60000000101"),
+        ("60000000101", "+60000000101"),
+        ("0000000101", "+60000000101"),
+        ("012-345 6789", "+60123456789"),
+        ("+60 12-345 6789", "+60123456789"),
+        ("60123456789", "+60123456789"),
+        ("0123456789", "+60123456789"),
+        ("01123456789", "+601123456789"),
+        ("", None),
+        ("12345", None),
+        ("call me maybe", None),
+        (None, None),
+    ],
+)
+def test_normalise_mobile(raw: str | None, want: str | None) -> None:
+    assert normalise_mobile(raw) == want
+
+
+@pytest.mark.parametrize(
+    ("raw", "want"),
+    [
+        ("+60000000101", "+60000000101"),
+        ("client:proton-web-caller", None),
+        ("anonymous", None),
+        ("Restricted", None),
+        ("sip:someone@example.com", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_usable_caller_id(raw: str | None, want: str | None) -> None:
+    assert usable_caller_id(raw) == want
+
+
+def test_caller_signature_binds_call_source_and_number() -> None:
+    sig = sign_caller("tok", "CA1", "caller_id", PHONE)
+    assert verify_caller("tok", "CA1", "caller_id", PHONE, sig)
+    assert not verify_caller("tok", "CA2", "caller_id", PHONE, sig)
+    assert not verify_caller("tok", "CA1", "web_call_as", PHONE, sig)
+    assert not verify_caller("tok", "CA1", "caller_id", "+60000000102", sig)
+    assert not verify_caller("other", "CA1", "caller_id", PHONE, sig)
+    assert not verify_caller("tok", "CA1", "caller_id", PHONE, None)
+    assert not verify_caller("", "CA1", "caller_id", PHONE, sig)
+
+
+# --- dealer matching -------------------------------------------------------
+
+SLUGS = ["petaling_jaya", "caroline_motor", "komang_motor"]
+
+
+@pytest.mark.parametrize(
+    ("spoken", "want"),
+    [
+        ("Petaling Jaya", "petaling_jaya"),
+        ("the Proton service centre in petaling jaya", "petaling_jaya"),
+        ("Caroline Motor Sdn Bhd", "caroline_motor"),
+        ("petaling_jaya", "petaling_jaya"),
+        ("Shah Alam service centre", None),
+        ("motor", None),  # ambiguous: two dealers share the token
+        ("", None),
+    ],
+)
+def test_match_dealer(spoken: str, want: str | None) -> None:
+    assert match_dealer(spoken, SLUGS) == want
+
+
+def test_dealer_display() -> None:
+    assert dealer_display("petaling_jaya") == "Petaling Jaya"
+    assert dealer_display("") == ""
+
+
+def test_parse_caller_details_normalises_and_bounds() -> None:
+    d = parse_caller_details(
+        {
+            "name": "  Ahmad   bin Ali ",
+            "vehicle_registration": "dmo-1101",
+            "vehicle_model": "x50",
+            "dealer": "Petaling Jaya",
+        }
+    )
+    assert d == CallerDetails(
+        name="Ahmad bin Ali", plate="DMO1101", model="x50", dealer_text="Petaling Jaya"
+    )
+    junk = parse_caller_details({"vehicle_registration": "hello", "name": "x" * 500})
+    assert junk.plate == ""  # not plate-shaped (no digit)
+    assert len(junk.name) <= 80
+
+
+# --- the model-facing view never carries the number or the full plate ------
+
+
+def _ctx(candidates: list[dict[str, Any]], *, source: str = "caller_id") -> CallerContext:
+    return CallerContext.from_candidates(PHONE, source, candidates)
+
+
+AHMAD = {
+    "contact_id": 11,
+    "name": "Ahmad bin Ali",
+    "vehicles": [{"plate": "DMO1101", "model": "Proton X50"}],
+    "last_dealer": "petaling_jaya",
+    "open_cases": 0,
+}
+
+
+def test_caller_view_has_first_name_model_and_plate_ending_only() -> None:
+    view = caller_view(_ctx([AHMAD]))
+    text = repr(view)
+    assert view["match"] == "single"
+    assert view["customers"][0]["first_name"] == "Ahmad"
+    assert view["customers"][0]["vehicles"] == [{"model": "Proton X50", "plate_ending": "1101"}]
+    assert view["customers"][0]["usual_dealer"] == "Petaling Jaya"
+    assert "DMO1101" not in text and PHONE not in text and "bin Ali" not in text
+
+
+def test_instruction_known_caller_confirms_in_one_sentence() -> None:
+    text = build_caller_instruction(_ctx([AHMAD]), lookup_tool=False)
+    assert "Ahmad" in text and "Proton X50" in text
+    assert "ONE sentence" in text
+    assert "1101" in text  # plate ending is available to confirm against
+    assert "DMO1101" not in text and PHONE not in text
+    assert "save_caller_details" in text
+    assert "SAFETY" in text.upper()
+
+
+def test_instruction_unknown_caller_asks_at_most_three_questions() -> None:
+    text = build_caller_instruction(_ctx([]), lookup_tool=False)
+    assert "at most three" in text
+    assert "registration" in text and "dealer" in text
+    assert "lookup_caller" not in text
+
+
+def test_instruction_no_number_asks_for_mobile_and_uses_lookup_tool() -> None:
+    text = build_caller_instruction(None, lookup_tool=True)
+    assert "lookup_caller" in text and "mobile number" in text
+
+
+def test_instruction_shared_number_asks_who_without_listing() -> None:
+    other = {**AHMAD, "contact_id": 12, "name": "Siti"}
+    text = build_caller_instruction(_ctx([AHMAD, other]), lookup_tool=False)
+    assert "ask the caller for their name" in text
+    assert "do not list" in text.lower()
+
+
+def test_instruction_two_cars_asks_which() -> None:
+    lim = {
+        **AHMAD,
+        "name": "Lim",
+        "vehicles": [
+            {"plate": "DMO1103", "model": "Proton X70"},
+            {"plate": "DMO1104", "model": "Proton Persona"},
+        ],
+    }
+    text = build_caller_instruction(_ctx([lim]), lookup_tool=False)
+    assert "which car" in text
+    assert "Proton X70" in text and "Proton Persona" in text
+
+
+def test_instruction_spoken_number_caller_says_name_first() -> None:
+    text = build_caller_instruction(_ctx([AHMAD], source="spoken"), lookup_tool=True)
+    assert "say their name first" in text
+
+
+# --- the service -----------------------------------------------------------
+
+
+class _FakeChatwoot:
+    def __init__(
+        self,
+        contacts: list[dict[str, Any]] | None = None,
+        conversations: dict[int, list[dict[str, Any]]] | None = None,
+        *,
+        delay: float = 0.0,
+        conv_delay: float = 0.0,
+    ) -> None:
+        self.contacts = contacts or []
+        self.conversations = conversations or {}
+        self.delay = delay
+        self.conv_delay = conv_delay
+        self.searches: list[str] = []
+        self.contact_updates: list[tuple[int, dict[str, Any]]] = []
+        self.conv_attrs: list[tuple[str, dict[str, Any]]] = []
+
+    async def search_contacts(self, query: str) -> list[dict[str, Any]]:
+        self.searches.append(query)
+        await asyncio.sleep(self.delay)
+        return list(self.contacts)
+
+    async def list_contact_conversations(self, contact_id: int) -> list[dict[str, Any]]:
+        await asyncio.sleep(self.conv_delay)
+        return list(self.conversations.get(contact_id, []))
+
+    async def update_contact(self, contact_id: int, payload: dict[str, Any]) -> bool:
+        self.contact_updates.append((contact_id, payload))
+        return True
+
+    async def set_conversation_attributes(self, ticket_id: str, attributes: dict[str, Any]) -> None:
+        self.conv_attrs.append((ticket_id, attributes))
+
+
+def _settings(**kw: Any) -> Settings:
+    return Settings(phone_caller_context_enabled=True, **kw)
+
+
+def _service(cw: _FakeChatwoot, slugs: list[str] | None = None) -> CallerContextService:
+    async def dealers() -> list[str]:
+        return list(slugs or [])
+
+    return CallerContextService(cw, _settings(), dealer_source=dealers)
+
+
+async def test_lookup_known_caller_reads_contact_and_conversations() -> None:
+    cw = _FakeChatwoot(
+        contacts=[
+            {
+                "id": 11,
+                "name": "Ahmad bin Ali",
+                "phone_number": PHONE,
+                "custom_attributes": {"vehicle_no": "DMO 1101"},
+            },
+            {"id": 99, "name": "Someone", "phone_number": "+60000000999"},
+        ],
+        conversations={
+            11: [
+                {
+                    "id": 5,
+                    "status": "resolved",
+                    "last_activity_at": 10,
+                    "labels": ["dealer_petaling_jaya"],
+                    "custom_attributes": {"vehicle_model": "Proton X50"},
+                },
+                {
+                    "id": 6,
+                    "status": "open",
+                    "last_activity_at": 20,
+                    "labels": [],
+                    "custom_attributes": {},
+                },
+            ]
+        },
+    )
+    ctx = await _service(cw).lookup(PHONE, "caller_id")
+    assert [c.contact_id for c in ctx.candidates] == [11]  # only the exact phone match
+    c = ctx.candidates[0]
+    assert c.first_name == "Ahmad"
+    assert c.last_dealer == "petaling_jaya"
+    assert c.open_cases == 1
+    assert [(v.plate, v.model) for v in c.vehicles] == [("DMO1101", "Proton X50")]
+
+
+async def test_lookup_two_cars_from_conversation_attributes() -> None:
+    cw = _FakeChatwoot(
+        contacts=[{"id": 13, "name": "Lim", "phone_number": "+60000000103"}],
+        conversations={
+            13: [
+                {
+                    "id": 1,
+                    "status": "resolved",
+                    "custom_attributes": {
+                        "vehicle_plate": "DMO1103",
+                        "vehicle_model": "Proton X70",
+                    },
+                },
+                {
+                    "id": 2,
+                    "status": "resolved",
+                    "custom_attributes": {
+                        "vehicle_plate": "DMO1104",
+                        "vehicle_model": "Proton Persona",
+                    },
+                },
+                {
+                    "id": 3,
+                    "status": "resolved",
+                    "custom_attributes": {"vehicle_model": "Proton X70"},
+                },
+            ]
+        },
+    )
+    ctx = await _service(cw).lookup("+60000000103", "caller_id")
+    plates = sorted(v.plate for v in ctx.candidates[0].vehicles)
+    assert plates == ["DMO1103", "DMO1104"]
+
+
+async def test_lookup_placeholder_name_is_not_a_first_name() -> None:
+    cw = _FakeChatwoot(contacts=[{"id": 15, "name": "Customer", "phone_number": PHONE}])
+    ctx = await _service(cw).lookup(PHONE, "caller_id")
+    assert ctx.candidates[0].first_name == ""
+
+
+async def test_lookup_is_bounded_and_fails_open() -> None:
+    cw = _FakeChatwoot(contacts=[{"id": 11, "name": "Ahmad", "phone_number": PHONE}], delay=5.0)
+    svc = CallerContextService(
+        cw, _settings(phone_caller_lookup_timeout_seconds=0.05), dealer_source=None
+    )
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    ctx = await svc.lookup(PHONE, "caller_id")
+    assert loop.time() - start < 1.0
+    assert ctx.candidates == [] and ctx.phone == PHONE
+
+
+async def test_lookup_keeps_contact_when_history_is_slow() -> None:
+    cw = _FakeChatwoot(
+        contacts=[{"id": 11, "name": "Ahmad", "phone_number": PHONE}],
+        conversations={11: [{"id": 1, "status": "open"}]},
+        conv_delay=5.0,
+    )
+    svc = CallerContextService(
+        cw, _settings(phone_caller_lookup_timeout_seconds=0.1), dealer_source=None
+    )
+    ctx = await svc.lookup(PHONE, "caller_id")
+    assert [c.first_name for c in ctx.candidates] == ["Ahmad"]
+
+
+async def test_lookup_never_raises() -> None:
+    class _Boom(_FakeChatwoot):
+        async def search_contacts(self, query: str) -> list[dict[str, Any]]:
+            raise RuntimeError("chatwoot down")
+
+    ctx = await _service(_Boom()).lookup(PHONE, "caller_id")
+    assert ctx.candidates == []
+
+
+async def test_dealer_slugs_cached_and_fail_open() -> None:
+    calls = 0
+
+    async def dealers() -> list[str]:
+        nonlocal calls
+        calls += 1
+        return ["petaling_jaya"]
+
+    svc = CallerContextService(_FakeChatwoot(), _settings(), dealer_source=dealers)
+    assert await svc.dealer_slugs() == ["petaling_jaya"]
+    assert await svc.dealer_slugs() == ["petaling_jaya"]
+    assert calls == 1
+
+    async def broken() -> list[str]:
+        raise RuntimeError("firestore down")
+
+    svc2 = CallerContextService(_FakeChatwoot(), _settings(), dealer_source=broken)
+    assert await svc2.dealer_slugs() == []
+
+
+async def test_save_writes_conversation_attributes_and_fills_empty_contact_fields() -> None:
+    cw = _FakeChatwoot(
+        contacts=[
+            {"id": 21, "name": "Customer", "phone_number": "+60000000105", "custom_attributes": {}}
+        ]
+    )
+    details = CallerDetails(
+        name="Hafiz", plate="DMO1106", model="Proton Saga", dealer_text="Shah Alam service centre"
+    )
+    await _service(cw).save(
+        ticket_id="T-1", phone="+60000000105", source="caller_id", details=details, dealer_slug=None
+    )
+    ticket, attrs = cw.conv_attrs[-1]
+    assert ticket == "T-1"
+    assert attrs["caller_name"] == "Hafiz"
+    assert attrs["vehicle_plate"] == "DMO1106"
+    assert attrs["vehicle_model"] == "Proton Saga"
+    assert attrs["caller_dealer_text"] == "Shah Alam service centre"
+    assert "caller_dealer" not in attrs
+    cid, payload = cw.contact_updates[-1]
+    assert cid == 21
+    assert payload["name"] == "Hafiz"
+    assert payload["custom_attributes"] == {"vehicle_no": "DMO1106", "vehicle_model": "Proton Saga"}
+
+
+async def test_save_never_overwrites_a_real_contact_name_or_plate() -> None:
+    cw = _FakeChatwoot(
+        contacts=[
+            {
+                "id": 11,
+                "name": "Ahmad bin Ali",
+                "phone_number": PHONE,
+                "custom_attributes": {"vehicle_no": "DMO1101"},
+            }
+        ]
+    )
+    details = CallerDetails(name="Siti", plate="DMO9999", model="", dealer_text="Petaling Jaya")
+    await _service(cw).save(
+        ticket_id="T-1",
+        phone=PHONE,
+        source="caller_id",
+        details=details,
+        dealer_slug="petaling_jaya",
+    )
+    attrs = cw.conv_attrs[-1][1]
+    assert attrs["caller_dealer"] == "petaling_jaya"
+    assert attrs["caller_name"] == "Siti"
+    assert cw.contact_updates == []  # nothing to fill in
+
+
+async def test_save_records_unverified_number_on_the_conversation() -> None:
+    cw = _FakeChatwoot()
+    await _service(cw).save(
+        ticket_id="T-1", phone=PHONE, source="spoken", details=CallerDetails(), dealer_slug=None
+    )
+    attrs = cw.conv_attrs[-1][1]
+    assert attrs["caller_phone_source"] == "spoken"
+    assert attrs["caller_phone"] == PHONE
+
+
+async def test_save_never_raises() -> None:
+    class _Boom(_FakeChatwoot):
+        async def set_conversation_attributes(
+            self, ticket_id: str, attributes: dict[str, Any]
+        ) -> None:
+            raise RuntimeError("down")
+
+    await _service(_Boom()).save(
+        ticket_id="T-1",
+        phone=PHONE,
+        source="caller_id",
+        details=CallerDetails(name="A"),
+        dealer_slug=None,
+    )

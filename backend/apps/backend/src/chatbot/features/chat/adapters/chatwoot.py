@@ -528,9 +528,41 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         for contact in (search or {}).get("payload") or []:
             if contact.get("identifier") == session_id and contact.get("id") is not None:
                 return int(contact["id"])
+        if customer_phone:
+            # 2026-11-09 caller context: Chatwoot keeps phone_number unique per
+            # account, so a create carrying a number that already belongs to a
+            # customer 422s. That customer IS who is calling -- attach to
+            # them (exact digits-only, country-code tolerant match, the same
+            # rule Customer 360 uses), rather than leaving the call without a
+            # contact at all. Unreachable when no phone is passed (every
+            # caller before this change).
+            from chatbot.features.chat.customer360_router import (  # noqa: PLC0415 -- avoid an import cycle
+                _phones_match,
+            )
+
+            for contact in await self.search_contacts(customer_phone):
+                if contact.get("id") is not None and _phones_match(
+                    customer_phone, contact.get("phone_number")
+                ):
+                    return int(contact["id"])
         return None
 
-    async def _existing_conversation_id(self, contact_id: int | None) -> str | None:
+    async def update_contact(self, contact_id: int, payload: dict[str, Any]) -> bool:
+        """PUT a contact update. Chatwoot MERGES ``custom_attributes`` on this
+        endpoint (``ContactsController#contact_custom_attributes``), unlike the
+        conversation custom-attributes endpoint, so no read-modify-write is
+        needed here. True when Chatwoot accepted it."""
+        res = await self._request("PUT", f"/contacts/{contact_id}", payload)
+        return res is not None
+
+    async def set_conversation_attributes(self, ticket_id: str, attributes: dict[str, Any]) -> None:
+        """Public merge-set of conversation custom attributes (see
+        ``_merge_custom_attributes``)."""
+        await self._merge_custom_attributes(ticket_id, attributes)
+
+    async def _existing_conversation_id(
+        self, contact_id: int | None, session_id: str | None = None
+    ) -> str | None:
         """Return an existing ACTIVE conversation id for this contact, if any.
 
         Only open/pending/snoozed conversations in our inbox are reused — a prior
@@ -547,6 +579,21 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
             for c in _conversations_from(res)
             if c.get("status") in _ACTIVE_STATUSES and c.get("inbox_id") in (inbox_id, None)
         ]
+        if session_id is not None:
+            # 2026-11-09 caller context: a phone call that attaches to an
+            # EXISTING customer is its own case -- that customer's other open
+            # case must not be reused (finalize() would post the call
+            # transcript into it and resolve it). Only this call's own
+            # conversation (a retried create) is reused, recognised by the
+            # session id stamped into additional_attributes on create
+            # (Chatwoot's conversation JSON carries no source_id). Callers
+            # pass session_id only for a phone session WITH a caller number,
+            # so every other path is unchanged.
+            active = [
+                c
+                for c in active
+                if (c.get("additional_attributes") or {}).get("session_id") == session_id
+            ]
         if not active:
             return None
         latest = max(active, key=lambda c: c.get("last_activity_at") or c.get("created_at") or 0)
@@ -577,8 +624,13 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         if session_id in self._conv_by_session:
             return self._conv_by_session[session_id]
         contact_id = await self._find_or_create_contact(session_id, customer_name, customer_phone)
+        own_session_only = session_id.startswith("phone-") and bool(customer_phone)
+        if own_session_only:
+            additional_attributes = {**(additional_attributes or {}), "session_id": session_id}
         if search_existing:
-            existing = await self._existing_conversation_id(contact_id)
+            existing = await self._existing_conversation_id(
+                contact_id, session_id if own_session_only else None
+            )
             if existing is not None:
                 self._conv_by_session[session_id] = existing
                 return existing

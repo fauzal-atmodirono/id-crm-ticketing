@@ -580,3 +580,114 @@ async def test_escalation_labels_still_land_when_the_labels_read_fails() -> None
         session_id="whatsapp-+60123", title="Refund", body="help", urgency="high"
     )
     assert {"ai-escalation", "escalate"} <= set(fake.labels)
+
+
+# --- 2026-11-09 phone caller context: attach the call to the caller's contact --
+
+
+@pytest.mark.asyncio
+async def test_contact_create_conflict_on_phone_reuses_the_contact_with_that_number() -> None:
+    """Chatwoot keeps phone_number unique per account: creating the call's own
+    contact with the caller's number 422s when the caller is already a
+    customer. The fallback must find THAT contact by phone, not give up."""
+
+    class _Fake(_FakeClient):
+        async def _request(self, method, path, payload=None):  # type: ignore[override]
+            self.calls.append((method, path, payload))
+            if method == "POST" and path == "/contacts":
+                return None  # 422 -> _request returns None
+            if method == "GET" and "contacts/search" in path and "phone-CA1" in path:
+                return {"payload": []}
+            if method == "GET" and "contacts/search" in path:
+                return {
+                    "payload": [
+                        {"id": 5, "phone_number": "+60000000999"},
+                        {"id": 11, "phone_number": "+60000000101"},
+                    ]
+                }
+            return {}
+
+    fake = _Fake({})
+    cid = await _adapter(fake)._find_or_create_contact("phone-CA1", None, "+60000000101")
+    assert cid == 11
+
+
+@pytest.mark.asyncio
+async def test_phone_session_never_reuses_another_active_conversation_of_the_contact() -> None:
+    """An existing customer's open case must not swallow a new call: finalize()
+    would post the call transcript into it and resolve it."""
+    fake = _FakeClient(
+        {
+            ("POST", "/contacts"): {"payload": {"contact": {"id": 11}}},
+            ("GET", "/contacts/11/conversations"): {
+                "payload": [{"id": 70, "status": "open", "inbox_id": 7}]
+            },
+            ("POST", "/conversations"): {"id": 71},
+        }
+    )
+    conv = await _adapter(fake).ensure_conversation_ticket(
+        "phone-CA1", "[phone]", None, "+60000000101"
+    )
+    assert conv == "71"
+    create = next(pl for m, p, pl in fake.calls if m == "POST" and p.endswith("/conversations"))
+    # Chatwoot's conversation JSON has no source_id: the session id is stamped
+    # here so a retried create can recognise its own conversation.
+    assert create["additional_attributes"] == {"session_id": "phone-CA1"}
+
+
+@pytest.mark.asyncio
+async def test_phone_session_reuses_its_own_conversation_on_retry() -> None:
+    fake = _FakeClient(
+        {
+            ("POST", "/contacts"): {"payload": {"contact": {"id": 11}}},
+            ("GET", "/contacts/11/conversations"): {
+                "payload": [
+                    {"id": 70, "status": "open", "inbox_id": 7},
+                    {
+                        "id": 72,
+                        "status": "open",
+                        "inbox_id": 7,
+                        "additional_attributes": {"session_id": "phone-CA1"},
+                    },
+                ]
+            },
+        }
+    )
+    conv = await _adapter(fake).ensure_conversation_ticket(
+        "phone-CA1", "[phone]", None, "+60000000101"
+    )
+    assert conv == "72"
+
+
+@pytest.mark.asyncio
+async def test_phone_session_without_caller_number_is_unchanged() -> None:
+    """Flag off: no phone is passed, so no session marker and the old reuse rule."""
+    fake = _FakeClient(
+        {
+            ("POST", "/contacts"): {"payload": {"contact": {"id": 11}}},
+            ("POST", "/conversations"): {"id": 73},
+        }
+    )
+    conv = await _adapter(fake).ensure_conversation_ticket("phone-CA1", "[phone]", None, None)
+    assert conv == "73"
+    create = next(pl for m, p, pl in fake.calls if m == "POST" and p.endswith("/conversations"))
+    assert "additional_attributes" not in create
+
+
+@pytest.mark.asyncio
+async def test_update_contact_puts_payload() -> None:
+    fake = _FakeClient({("PUT", "/contacts/11"): {"id": 11}})
+    ok = await _adapter(fake).update_contact(11, {"name": "Hafiz"})
+    assert ok is True
+    assert fake.calls[-1] == ("PUT", "/contacts/11", {"name": "Hafiz"})
+
+
+@pytest.mark.asyncio
+async def test_set_conversation_attributes_merges() -> None:
+    fake = _FakeClient(
+        {("GET", "/conversations/9"): {"custom_attributes": {"external_id": "phone-CA1"}}}
+    )
+    await _adapter(fake).set_conversation_attributes("9", {"caller_name": "Hafiz"})
+    method, path, payload = fake.calls[-1]
+    assert (method, path) == ("POST", "/conversations/9/custom_attributes")
+    assert payload == {"custom_attributes": {"external_id": "phone-CA1", "caller_name": "Hafiz"}}

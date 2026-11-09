@@ -36,6 +36,19 @@ from chatbot.features.chat.nps import parse_nps, record_nps_agent_attribution, s
 from chatbot.features.chat.phone.agent_client_resolver import assignee_to_agent_id
 from chatbot.features.chat.phone.agent_token import agent_id_from_identity, agent_identity
 from chatbot.features.chat.phone.bridge import PhoneBridge
+from chatbot.features.chat.phone.caller_context import (
+    SOURCE_CALLER_ID,
+    SOURCE_WEB_CALL_AS,
+    SOURCES,
+    CallerContext,
+    build_caller_instruction,
+    mask,
+    normalise_mobile,
+    sign_caller,
+    usable_caller_id,
+    verify_caller,
+)
+from chatbot.features.chat.phone.caller_tools import LOOKUP_CALLER_TOOL, SAVE_CALLER_DETAILS_TOOL
 from chatbot.features.chat.phone.gemini_live import LiveSession, connect_live
 from chatbot.features.chat.phone.handoff_csat_tools import (
     REQUEST_HANDOFF_TOOL,
@@ -69,6 +82,7 @@ from chatbot.features.chat.twilio_signature import verify_twilio_signature
 
 if TYPE_CHECKING:
     from chatbot.features.chat.phone.abandon_store import AbandonRecorder
+    from chatbot.features.chat.phone.caller_context import CallerContextService
     from chatbot.features.chat.phone.call_control import CallControl
     from chatbot.features.chat.phone.hold_transfer import HoldTransferHook
     from chatbot.features.chat.phone.softphone_registry import SoftphoneRegistry
@@ -420,8 +434,14 @@ class ChatRouter:
         call_control: CallControl | None = None,
         abandon_store: AbandonRecorder | None = None,
         hold_transfer: HoldTransferHook | None = None,
+        caller_context_service: CallerContextService | None = None,
     ) -> None:
         self.orchestrator = orchestrator
+        # 2026-11-09: None-defaulted like the collaborators below; main.py
+        # passes one only when phone_caller_context_enabled is on. Both
+        # conditions are checked at use, so a service with the flag off (or
+        # the flag on with no Chatwoot) changes nothing.
+        self._caller_context_service = caller_context_service
         # FIX-15: None-defaulted (flag off) -> dial-status behaves as before.
         self._hold_transfer = hold_transfer
         # FIX-16: None-defaulted (flag off) -> dial-status records nothing.
@@ -1530,7 +1550,7 @@ class ChatRouter:
             base = https.replace("https://", "wss://").replace("http://", "ws://")
         return f"{base.rstrip('/')}/voice/phone/stream"
 
-    async def phone_incoming(self) -> Response:
+    async def phone_incoming(self, request: Request) -> Response:
         """Twilio Voice webhook: bridge the call into a Media Stream.
 
         Package C Task 6 review fix (carried from Task 5): when recording
@@ -1555,12 +1575,66 @@ class ChatRouter:
             ivr_xml = self._ivr.entry_twiml()
             if ivr_xml is not None:
                 return Response(content=ivr_xml, media_type="application/xml")
-        return Response(content=self._bridge_twiml(), media_type="application/xml")
+        caller_params = await self._caller_stream_parameters(request)
+        return Response(content=self._bridge_twiml(caller_params), media_type="application/xml")
 
-    def _bridge_twiml(self) -> str:
+    async def _caller_stream_parameters(self, request: Request) -> dict[str, str] | None:
+        """2026-11-09 caller context: the caller's number as signed
+        `<Stream>` parameters, or None (= today's TwiML, and the assistant
+        asks for the number).
+
+        Trust chain: Twilio's X-Twilio-Signature proves this POST (and its
+        `From`/`callAs`) came from Twilio; the HMAC binds the number to this
+        CallSid so the unauthenticated Media Streams websocket can tell it
+        was minted here. No auth token / base URL / valid signature -> None.
+        `callAs` (test-console persona) is honoured only for a browser call
+        (`From` = `client:...`) with phone_web_call_as_enabled -- never for
+        a PSTN call, whose number is the network's word.
+        """
+        settings = self.orchestrator._settings
+        if not settings.phone_caller_context_enabled or self._caller_context_service is None:
+            return None
+        token = settings.twilio_auth_token
+        base = settings.twilio_webhook_base_url
+        if not token or not base:
+            _log.warning("phone_caller_context_unverifiable_no_token_or_base")
+            return None
+        try:
+            form = await request.form()
+        except Exception as e:
+            _log.warning("phone_caller_context_form_unreadable", error_type=type(e).__name__)
+            return None
+        params = {k: str(v) for k, v in form.items()}
+        url = f"{base.rstrip('/')}/voice/phone/incoming"
+        if not verify_twilio_signature(token, url, params, request.headers.get("X-Twilio-Signature")):
+            _log.warning("phone_caller_context_signature_invalid")
+            return None
+        call_sid = params.get("CallSid", "").strip()
+        if not call_sid:
+            return None
+        raw_from = params.get("From", "")
+        phone = usable_caller_id(raw_from)
+        source = SOURCE_CALLER_ID
+        if (
+            phone is None
+            and raw_from.strip().lower().startswith("client:")
+            and settings.phone_web_call_as_enabled
+        ):
+            phone = normalise_mobile(params.get("callAs"))
+            source = SOURCE_WEB_CALL_AS
+        if phone is None:
+            return None
+        _log.info("phone_caller_context_number", call_sid=call_sid, phone=mask(phone), source=source)
+        return {
+            "caller": phone,
+            "caller_source": source,
+            "caller_sig": sign_caller(token, call_sid, source, phone),
+        }
+
+    def _bridge_twiml(self, parameters: dict[str, str] | None = None) -> str:
         """Today's inbound TwiML: optional recording notice, then the AI
         voice bridge. Also the IVR's route to the AI (RSA with no RSA line,
-        and the "ai" non-RSA route)."""
+        and the "ai" non-RSA route) -- which passes no parameters."""
         settings = self.orchestrator._settings
         announcement = None
         if (
@@ -1569,7 +1643,31 @@ class ChatRouter:
             and settings.twilio_webhook_base_url
         ):
             announcement = settings.phone_recording_announcement
-        return connect_stream_twiml(self._phone_wss_url(), announcement)
+        return connect_stream_twiml(self._phone_wss_url(), announcement, parameters)
+
+    async def _caller_from_start(self, start_msg: dict[str, Any]) -> CallerContext | None:
+        """Verify the signed caller parameter in the "start" frame and look
+        the caller up (bounded inside the service). None = unknown caller."""
+        settings = self.orchestrator._settings
+        service = self._caller_context_service
+        if service is None or not settings.phone_caller_context_enabled:
+            return None
+        start = start_msg.get("start")
+        if not isinstance(start, dict):
+            return None
+        custom = start.get("customParameters")
+        if not isinstance(custom, dict):
+            return None
+        phone = str(custom.get("caller") or "")
+        source = str(custom.get("caller_source") or "")
+        call_sid = str(start.get("callSid") or "")
+        if source not in SOURCES or not verify_caller(
+            settings.twilio_auth_token, call_sid, source, phone, str(custom.get("caller_sig") or "")
+        ):
+            if phone:
+                _log.warning("phone_caller_param_rejected", call_sid=call_sid, phone=mask(phone))
+            return None
+        return await service.lookup(phone, source)
 
     async def phone_token(self, request: Request) -> dict[str, str]:
         """Mint a Twilio Voice access token for the browser softphone.
@@ -1695,6 +1793,31 @@ class ChatRouter:
                     "thank-you. Do NOT ask for a rating if you handed off to a human. No markdown — "
                     "this is spoken aloud."
                 )
+            # 2026-11-09 caller context: who is calling, looked up BEFORE the
+            # session opens because the instruction and tool list are fixed
+            # there. Bounded inside the service (1.5 s default) and run
+            # concurrently with the dealer-list fetch; any failure is just
+            # "unknown caller". Flag off / no service -> empty paragraph, no
+            # extra tools: byte-identical.
+            caller_ctx: CallerContext | None = None
+            dealer_slugs: list[str] = []
+            caller_instruction = ""
+            caller_tools: list[Any] = []
+            caller_on = (
+                settings.phone_caller_context_enabled
+                and self._caller_context_service is not None
+            )
+            if caller_on and self._caller_context_service is not None:
+                caller_ctx, dealer_slugs = await asyncio.gather(
+                    self._caller_from_start(start_msg),
+                    self._caller_context_service.dealer_slugs(),
+                )
+                caller_instruction = build_caller_instruction(
+                    caller_ctx, lookup_tool=caller_ctx is None
+                )
+                caller_tools = [SAVE_CALLER_DETAILS_TOOL]
+                if caller_ctx is None:
+                    caller_tools.append(LOOKUP_CALLER_TOOL)
             system_instruction = (
                 "You are Proton's friendly phone support agent. Answer spoken questions "
                 "concisely and naturally. You are fully multilingual: ALWAYS reply in the SAME "
@@ -1703,6 +1826,7 @@ class ChatRouter:
                 "speak a language and NEVER hand off merely because of language. "
                 "Use the kb_search tool to ground answers in the "
                 "Proton knowledge base before giving facts. "
+                + caller_instruction
                 + _HANDOFF_GUARDRAILS
                 + "If you cannot resolve the caller's "
                 + handoff_instruction
@@ -1714,7 +1838,7 @@ class ChatRouter:
             async with self._live_session_factory(
                 settings,
                 system_instruction,
-                [KB_SEARCH_TOOL, REQUEST_HANDOFF_TOOL, survey_tool],
+                [KB_SEARCH_TOOL, REQUEST_HANDOFF_TOOL, survey_tool, *caller_tools],
             ) as live:
                 bridge = PhoneBridge(
                     live,
@@ -1723,7 +1847,10 @@ class ChatRouter:
                     websocket.send_json,
                     settings,
                     softphone_registry=self._softphone_registry,
-            presence_fetcher=self._presence_fetcher,
+                    presence_fetcher=self._presence_fetcher,
+                    caller_service=self._caller_context_service if caller_on else None,
+                    caller_context=caller_ctx,
+                    dealer_slugs=dealer_slugs,
                 )
 
                 # Feed the "start" frame read above so bridge.stream_sid is set
@@ -2390,6 +2517,7 @@ def build_chat_router(
     call_control: CallControl | None = None,
     abandon_store: AbandonRecorder | None = None,
     hold_transfer: HoldTransferHook | None = None,
+    caller_context_service: CallerContextService | None = None,
 ) -> APIRouter:
     """Builds and returns the configured FastAPI router instance."""
     return ChatRouter(
@@ -2406,4 +2534,5 @@ def build_chat_router(
         presence_fetcher=presence_fetcher,
         abandon_store=abandon_store,
         hold_transfer=hold_transfer,
+        caller_context_service=caller_context_service,
     ).router

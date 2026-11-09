@@ -650,6 +650,34 @@ class Settings(BaseSettings):
     # caller hears the bilingual apology and is hung up (20 min default).
     phone_hold_max_seconds: int = 1200
 
+    # --- Caller context for the AI-first phone line (2026-11-09) -----------
+    # See features/chat/phone/caller_context.py. On: /voice/phone/incoming
+    # hands the caller's number (Twilio From, signature-verified, then
+    # HMAC-signed into the stream) to the voice session; the contact is
+    # looked up before the greeting (bounded, fail-open), the assistant
+    # confirms rather than recites, saves what the caller says
+    # (save_caller_details), asks for the mobile number when there is no
+    # caller ID (lookup_caller), the call conversation is created ON the
+    # caller's contact, and the handoff ring/note carry who/vehicle/dealer.
+    # Off (default) = today's anonymous call, byte-identical. Needs
+    # TWILIO_AUTH_TOKEN (to verify From and sign it); without it every call
+    # is treated as "no caller ID" and the assistant asks for the number.
+    phone_caller_context_enabled: bool = False
+    # Budget for the pre-greeting lookup (contact search + history). The
+    # greeting waits at most this long.
+    phone_caller_lookup_timeout_seconds: float = 1.5
+    # Budget for each background CRM write of what the caller said.
+    phone_caller_save_timeout_seconds: float = 8.0
+    # No caller ID: how long the call conversation waits for the caller to
+    # say their number (lookup_caller) before it is created anonymously.
+    phone_caller_number_wait_seconds: float = 45.0
+    # Test-console persona / "Call as" picker: a browser call (From
+    # client:...) may claim a number via the Voice SDK `callAs` param. NEVER
+    # applied to PSTN calls. Only effective with phone_caller_context_enabled.
+    # Demo/test tenants only -- it lets a browser user pick whose record the
+    # assistant sees.
+    phone_web_call_as_enabled: bool = False
+
     # Frontend CORS — origins of the Vue dev/prod app (comma-separated in env).
     # Defaults cover Vite's first few fallback ports (5173-5180) so a stale dev
     # server on 5173 doesn't break a fresh one bound to 5174+.

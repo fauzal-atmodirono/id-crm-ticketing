@@ -228,6 +228,8 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
         subject: str,
         customer_name: str | None,
         customer_phone: str | None,
+        *,
+        attach_by_phone: bool = False,  # noqa: ARG002 -- caller context is Chatwoot-only
     ) -> str:
         cached = self._conv_tickets.get(session_id)
         if cached:
@@ -259,7 +261,12 @@ class ZendeskAdapter(ChatPort, TicketingPort, KnowledgePort, ConversationLogPort
         self._conv_tickets[session_id] = ticket_id
         return ticket_id
 
-    async def find_conversation_ticket(self, session_id: str) -> str | None:
+    async def find_conversation_ticket(
+        self,
+        session_id: str,
+        *,
+        phone: str | None = None,  # noqa: ARG002 -- caller context is Chatwoot-only
+    ) -> str | None:
         # Package C's phone channel (the only current caller) is
         # Chatwoot-only -- see set_ticket_classification's docstring. This
         # only consults the in-memory cache (no Zendesk search API call),

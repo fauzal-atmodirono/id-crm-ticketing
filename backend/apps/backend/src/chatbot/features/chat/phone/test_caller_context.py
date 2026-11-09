@@ -18,6 +18,7 @@ from chatbot.features.chat.phone.caller_context import (
     caller_view,
     dealer_display,
     match_dealer,
+    names_contradict,
     names_match,
     normalise_mobile,
     parse_caller_details,
@@ -237,7 +238,8 @@ def test_model_view_has_no_open_case_count() -> None:
         ("Abdul Rahman", "Abdul Rahman", True),
         ("Kumar a/l Rajan", "Kumar a/l Rajan", True),
         # only the first two spoken words count
-        ("Encik Tuan Ahmad", "Ahmad", False),
+        ("Kamal Hafiz Ahmad", "Ahmad", False),
+        ("Encik Tuan Ahmad", "Ahmad", True),  # honorifics are not counted words
     ],
 )
 def test_names_match(said: str, record: str, want: bool) -> None:
@@ -250,6 +252,42 @@ def test_names_match(said: str, record: str, want: bool) -> None:
 )
 def test_a_string_of_common_name_parts_matches_nobody(record: str) -> None:
     assert not names_match("Muhammad Mohd Nur Siti Ahmad Abd Ali", record)
+
+
+@pytest.mark.parametrize(
+    ("said", "record"),
+    [("Customer", "Customer"), ("Phone", "Phone caller"), ("Unknown", "Unknown"), ("x", "")],
+)
+def test_a_placeholder_contact_never_confirms(said: str, record: str) -> None:
+    """The adapter creates "Customer" contacts WITH real phones: saying
+    "Customer" must not unlock one."""
+    assert not names_match(said, record)
+
+
+@pytest.mark.parametrize(
+    ("said", "record", "want"),
+    [
+        ("Encik Ahmad", "Ahmad bin Ali", True),
+        ("Dato' Seri Ahmad", "Ahmad", False),  # "seri" is the 2nd counted word
+        ("Dr Lim", "Lim Wei", True),
+        ("Tan Sri Ahmad", "Ahmad", True),
+        ("Puan Sri Aminah", "Siti Aminah", True),
+        ("Encik", "Encik Ahmad", False),  # an honorific never matches
+        ("Wan", "Wan Ahmad", False),  # a lineage prefix needs the next word
+        ("Wan Ahmad", "Wan Ahmad", True),
+        ("Syed Ali", "Syed Hamid", False),
+        ("Haji Ahmad", "Ahmad", True),
+    ],
+)
+def test_honorifics_and_lineage_prefixes(said: str, record: str, want: bool) -> None:
+    assert names_match(said, record) is want
+
+
+def test_a_shorter_name_does_not_contradict() -> None:
+    assert not names_contradict("Muhammad", "Muhammad Hafiz")
+    assert not names_contradict("Encik", "Muhammad Hafiz")
+    assert names_contradict("Siti Aminah", "Muhammad Hafiz")
+    assert not names_contradict("Hafiz", "Muhammad Hafiz")
 
 
 def test_demo_tag_is_not_a_first_name() -> None:
@@ -589,6 +627,19 @@ def test_spoken_lookups_are_limited_by_failures_per_number_across_calls() -> Non
     assert svc.allow_spoken_lookup("+60000000102")  # per number
     now[0] += 3601
     assert svc.allow_spoken_lookup(PHONE)  # the window slides
+
+
+def test_spoken_lookups_have_a_daily_cap_per_number() -> None:
+    now = [0.0]
+    svc = CallerContextService(_FakeChatwoot(), _settings(), clock=lambda: now[0])
+    for _hour in range(2):
+        for _ in range(5):
+            svc.record_spoken_failure(PHONE)
+        now[0] += 3601
+    # 10 failures today: the hourly window is clear but the day is spent
+    assert not svc.allow_spoken_lookup(PHONE)
+    now[0] += 24 * 3600
+    assert svc.allow_spoken_lookup(PHONE)
 
 
 def test_spoken_lookups_have_a_global_failure_budget() -> None:

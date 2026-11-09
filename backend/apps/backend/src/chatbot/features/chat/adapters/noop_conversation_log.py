@@ -14,6 +14,8 @@ class NoOpConversationLog(ConversationLogPort):
         subject: str,  # noqa: ARG002
         customer_name: str | None,  # noqa: ARG002
         customer_phone: str | None,  # noqa: ARG002
+        *,
+        attach_by_phone: bool = False,  # noqa: ARG002
     ) -> str:
         return ""
 
@@ -29,6 +31,8 @@ class NoOpConversationLog(ConversationLogPort):
     async def find_conversation_ticket(
         self,
         session_id: str,  # noqa: ARG002
+        *,
+        phone: str | None = None,  # noqa: ARG002
     ) -> str | None:
         return None
 

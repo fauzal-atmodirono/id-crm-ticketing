@@ -307,6 +307,35 @@ async def test_one_confirmation_try_per_lookup() -> None:
     assert svc.failures == [PHONE]  # the failed try counts against the number
 
 
+async def test_re_looking_up_the_same_number_gets_no_second_name_check() -> None:
+    """Round 3: the one try is per NUMBER per call, not per lookup."""
+    svc = _Service(CallerContext.from_candidates(PHONE, "spoken", [AHMAD]))
+    calls = [_lookup(1, "0000000101", "Siti"), _lookup(2, "+60000000101", "Ahmad")]
+    bridge, live, log = _bridge(calls, service=svc, ctx=None)
+    await bridge.handle_twilio(_start())
+    await bridge.pump()
+    assert [r[2]["status"] for r in live.tool_responses] == ["no_match", "no_match"]
+    await bridge.finalize()
+    assert log.customers == [(None, None)]
+
+
+async def test_a_shorter_later_name_keeps_the_confirmation() -> None:
+    hafiz = {**AHMAD, "name": "Muhammad Hafiz"}
+    svc = _Service(CallerContext.from_candidates(PHONE, "spoken", [hafiz]))
+    calls = [
+        _lookup(1, "0000000101", "Hafiz"),
+        ToolCall(id="s1", name="save_caller_details", args={"name": "Muhammad"}),
+    ]
+    bridge, live, log = _bridge(
+        calls, service=svc, ctx=None, settings=_settings(phone_caller_number_wait_seconds=5)
+    )
+    await bridge.pump()
+    assert live.tool_responses[0][2]["status"] == "match"
+    await bridge.handle_twilio(_start())
+    await bridge.finalize()
+    assert log.customers == [("Muhammad Hafiz", PHONE)]
+
+
 async def test_a_successful_lookup_is_not_counted_as_a_failure() -> None:
     svc = _Service(CallerContext.from_candidates(PHONE, "spoken", [AHMAD]))
     bridge, _, _ = _bridge([_lookup(1, "0000000101", "Ahmad")], service=svc, ctx=None)
@@ -389,7 +418,8 @@ async def test_save_with_a_different_name_undoes_an_unattached_confirmation() ->
     known = CallerContext.from_candidates(PHONE, "spoken", [AHMAD])
     calls = [
         _lookup(1, "0000000101", "Ahmad"),
-        ToolCall(id="s1", name="save_caller_details", args={"name": "Siti"}),
+        # a distinctive word that does not fit ("Siti" alone would not count)
+        ToolCall(id="s1", name="save_caller_details", args={"name": "Siti Aminah"}),
     ]
     bridge, _, log = _bridge(
         calls,

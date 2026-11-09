@@ -91,6 +91,8 @@ _DEALER_CACHE_SECONDS = 300.0
 
 # Told-number lookups allowed per number per window, across all calls.
 _SPOKEN_FAILURES_PER_NUMBER = 5
+_SPOKEN_FAILURES_PER_NUMBER_DAY = 10
+_SPOKEN_DAY_SECONDS = 24 * 3600.0
 _SPOKEN_FAILURES_GLOBAL = 100
 _SPOKEN_LOOKUP_WINDOW_SECONDS = 3600.0
 _SPOKEN_LOOKUP_MAP_CAP = 2048
@@ -302,6 +304,45 @@ _COMMON_NAME_PARTS = frozenset(
         "bt",
         "al",
         "ap",
+        # lineage / royal prefixes: part of the name, but shared by many
+        "wan",
+        "nik",
+        "syed",
+        "sharifah",
+        "tengku",
+        "tunku",
+        "raja",
+        "che",
+        "megat",
+        "puteri",
+        "awang",
+        "dayang",
+    }
+)
+# Honorifics are not names at all: they are dropped before the two spoken
+# words are counted, and never match (round 3). "Tan Sri"/"Puan Sri" are
+# joined first so "Tan" the surname is untouched.
+_HONORIFICS = frozenset(
+    {
+        "encik",
+        "en",
+        "puan",
+        "pn",
+        "cik",
+        "tuan",
+        "dato",
+        "datuk",
+        "datin",
+        "tansri",
+        "puansri",
+        "haji",
+        "hajah",
+        "hj",
+        "dr",
+        "mr",
+        "mrs",
+        "ms",
+        "madam",
     }
 )
 _SPOKEN_NAME_WORDS = 2
@@ -310,7 +351,8 @@ _SPOKEN_NAME_WORDS = 2
 def _name_tokens(text: str | None) -> list[str]:
     raw = _DEMO_TAG.sub("", text or "").casefold()
     raw = re.sub(r"\ba\s*/\s*([lp])\b", r"a\1", raw)  # a/l, a/p -> al, ap
-    return _NAME_TOKEN.findall(raw)
+    raw = re.sub(r"\b(tan|puan)\s+sri\b", r"\1sri", raw)
+    return [t for t in _NAME_TOKEN.findall(raw) if t not in _HONORIFICS]
 
 
 def _distinctive(tokens: list[str]) -> str:
@@ -326,13 +368,29 @@ def names_match(said: str | None, record_name: str | None) -> bool:
     common parts (Muhammad, Nur, Siti, bin, ...) never match on their own.
     The first distinctive spoken word must equal the record's first
     distinctive word, or be a prefix of it of at least three letters
-    ("Far" for "Farid") -- never the other way round.
+    ("Far" for "Farid") -- never the other way round. Honorifics (Encik,
+    Dato', Dr, ...) are dropped before counting. A placeholder record
+    ("Customer", "Phone caller", "Unknown" -- the adapter creates those WITH
+    real phones) never matches anything.
     """
+    if _is_placeholder_name(record_name):
+        return False
     want = _distinctive(_name_tokens(record_name))
     got = _distinctive(_name_tokens(said)[:_SPOKEN_NAME_WORDS])
     if not want or not got:
         return False
     return got == want or (len(got) >= _MIN_NAME_PREFIX and want.startswith(got))
+
+
+def names_contradict(said: str | None, record_name: str | None) -> bool:
+    """Does a name the caller gave LATER rule the confirmed record out?
+
+    Only a distinctive spoken word that does not fit does: "Muhammad" (or
+    "Encik") after a confirmed "Muhammad Hafiz" says nothing new.
+    """
+    if not _distinctive(_name_tokens(said)[:_SPOKEN_NAME_WORDS]):
+        return False
+    return not names_match(said, record_name)
 
 
 def parse_number_list(raw: str | None) -> frozenset[str]:
@@ -715,27 +773,32 @@ class CallerContextService:
     def settings(self) -> Settings:
         return self._settings
 
-    def _recent(self, times: list[float], now: float) -> list[float]:
-        return [t for t in times if now - t < _SPOKEN_LOOKUP_WINDOW_SECONDS]
+    def _recent(
+        self, times: list[float], now: float, window: float = _SPOKEN_LOOKUP_WINDOW_SECONDS
+    ) -> list[float]:
+        return [t for t in times if now - t < window]
 
     def allow_spoken_lookup(self, phone: str) -> bool:
-        """May a TOLD number be looked up now? (R39)
+        """May a TOLD number be looked up now? (R39 + round 3)
 
-        Only FAILED confirmations count: ``_SPOKEN_FAILURES_PER_NUMBER`` per
-        number and ``_SPOKEN_FAILURES_GLOBAL`` across all numbers per
-        ``_SPOKEN_LOOKUP_WINDOW_SECONDS``. A successful lookup costs nothing,
-        so a real customer is only ever refused when someone else has burnt
-        the budget for their number (or the global one) with wrong names.
-        In-process only -- one backend container per tenant; a restart resets
-        it, a second replica would double it.
+        Only FAILED confirmations count: per number at most
+        ``_SPOKEN_FAILURES_PER_NUMBER`` an hour and
+        ``_SPOKEN_FAILURES_PER_NUMBER_DAY`` a day, and
+        ``_SPOKEN_FAILURES_GLOBAL`` an hour across all numbers. A successful
+        lookup costs nothing, so a real customer is only ever refused when
+        someone else has burnt the budget for their number (or the global
+        one) with wrong names. In-process only -- one backend container per
+        tenant; a restart resets it, a second replica would double it.
         """
         now = self._clock()
         self._global_failures = self._recent(self._global_failures, now)
         if len(self._global_failures) >= _SPOKEN_FAILURES_GLOBAL:
             return False
-        recent = self._recent(self._spoken_failures.get(phone, []), now)
-        self._spoken_failures[phone] = recent
-        return len(recent) < _SPOKEN_FAILURES_PER_NUMBER
+        today = self._recent(self._spoken_failures.get(phone, []), now, _SPOKEN_DAY_SECONDS)
+        self._spoken_failures[phone] = today
+        if len(today) >= _SPOKEN_FAILURES_PER_NUMBER_DAY:
+            return False
+        return len(self._recent(today, now)) < _SPOKEN_FAILURES_PER_NUMBER
 
     def record_spoken_failure(self, phone: str) -> None:
         """A told number whose name did not confirm (or had no record)."""
@@ -743,7 +806,11 @@ class CallerContextService:
         self._spoken_failures.setdefault(phone, []).append(now)
         self._global_failures.append(now)
         if len(self._spoken_failures) > _SPOKEN_LOOKUP_MAP_CAP:
-            for key in [k for k, v in self._spoken_failures.items() if not self._recent(v, now)]:
+            for key in [
+                k
+                for k, v in self._spoken_failures.items()
+                if not self._recent(v, now, _SPOKEN_DAY_SECONDS)
+            ]:
                 del self._spoken_failures[key]
 
     async def dealer_slugs(self) -> list[str]:

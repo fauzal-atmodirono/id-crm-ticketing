@@ -28,17 +28,20 @@ from typing import Any
 from fastapi.testclient import TestClient
 import pytest
 
-from chatbot.features.chat.phone.recording_router import register_recording, reset_recordings
+from chatbot.features.chat.phone.recording_router import reset_state
+
+_SECRET = "w" * 48
+_AUDIO = "proton-crm/call-recording/2026-11-09/CA1.mp3"
 
 
 @pytest.fixture(autouse=True)
 def _clean_state() -> Any:
     from chatbot.platform.config import get_settings
 
-    reset_recordings()
+    reset_state()
     get_settings.cache_clear()
     yield
-    reset_recordings()
+    reset_state()
     # Leave no cached `Settings` behind. `chatbot.main` ends with a module-level
     # `app = bootstrap_application()`, so the first import of it in a process
     # boots the app against whatever is cached; a test here that left a
@@ -78,13 +81,70 @@ def test_the_recording_endpoint_is_mounted_and_rejects_an_unauthenticated_caller
 def test_a_permitted_caller_reaches_the_handler_through_the_real_app(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = _boot(monkeypatch, CALL_RECORDING_RETRIEVAL_ENABLED="true")
-    register_recording("conv_123", "https://storage.example.invalid/audio/123.mp3")
+    """With Chatwoot off there is no conversation to read: the clear empty
+    state, from the real handler (a 404 would mean unmounted)."""
+    app = _boot(
+        monkeypatch,
+        CALL_RECORDING_RETRIEVAL_ENABLED="true",
+        CALL_RECORDING_SIGNING_SECRET=_SECRET,
+        CHATWOOT_ENABLED="false",
+    )
     client = TestClient(app)
 
     res = client.get("/calls/conv_123/recording", headers={"x-api-key": "test_key"})
     assert res.status_code == 200
-    assert res.json()["status"] == "available"
+    assert res.json()["status"] == "empty"
+
+
+def test_the_real_app_plays_an_archived_recording_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """main.py's wiring, not the router's: the Chatwoot reader it passes finds
+    `call_recording_object`, the default GCS storage serves the bytes, and the
+    shared audit log records the play. Chatwoot and GCS are faked at their
+    adapter boundaries -- nothing leaves the process."""
+    from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
+    from chatbot.features.chat.phone.recording_access import GcsRecordingStorage
+
+    async def _fake_request(self, method, path, payload=None):  # noqa: ARG001
+        if method == "GET" and path == "/conversations/77":
+            return {"id": 77, "custom_attributes": {"call_recording_object": _AUDIO}}
+        return None
+
+    monkeypatch.setattr(ChatwootAdapter, "_request", _fake_request)
+    monkeypatch.setattr(GcsRecordingStorage, "size", lambda self, b, n: 4)  # noqa: ARG005
+    monkeypatch.setattr(
+        GcsRecordingStorage,
+        "read",
+        lambda self, b, n, start=None, end=None: b"abcd"[start or 0 : (end + 1) if end is not None else None],  # noqa: ARG005
+    )
+    app = _boot(
+        monkeypatch,
+        CALL_RECORDING_RETRIEVAL_ENABLED="true",
+        CALL_RECORDING_SIGNING_SECRET=_SECRET,
+        PHONE_RECORDING_ARCHIVE_BUCKET="bucket-x",
+    )
+    client = TestClient(app)
+
+    meta = client.get("/calls/77/recording", headers={"x-api-key": "test_key"})
+    assert meta.status_code == 200, meta.text
+    assert meta.json()["status"] == "available"
+    audio = client.get(meta.json()["play_url"], headers={"Range": "bytes=1-2"})
+    assert audio.status_code == 206
+    assert audio.content == b"bc"
+
+
+def test_the_audio_route_is_mounted_and_refuses_a_bad_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _boot(
+        monkeypatch,
+        CALL_RECORDING_RETRIEVAL_ENABLED="true",
+        CALL_RECORDING_SIGNING_SECRET=_SECRET,
+    )
+    res = TestClient(app).get("/calls/conv_123/recording/audio?t=forged")
+    # 403, NOT 404: the route exists and the HMAC check refused the link.
+    assert res.status_code == 403
 
 
 def test_the_flag_off_404s_for_a_caller_who_would_otherwise_be_permitted(
@@ -93,7 +153,6 @@ def test_the_flag_off_404s_for_a_caller_who_would_otherwise_be_permitted(
     """Distinguishes "flag off" from "unmounted" -- the permitted caller is the
     only way to see the flag's own 404 rather than the permission gate's 401."""
     app = _boot(monkeypatch, CALL_RECORDING_RETRIEVAL_ENABLED="false")
-    register_recording("conv_123", "https://storage.example.invalid/audio/123.mp3")
     client = TestClient(app)
 
     res = client.get("/calls/conv_123/recording", headers={"x-api-key": "test_key"})

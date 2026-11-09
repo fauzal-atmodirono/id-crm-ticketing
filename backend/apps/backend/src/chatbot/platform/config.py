@@ -1459,12 +1459,14 @@ class Settings(BaseSettings):
     # docs/testing/phone-channel-package-c-verification.md and the blocked-work
     # register. Three of the seven currently have no consumer; each says so.
     #
-    # Gates GET /calls/{conversation_id}/recording
-    # (features/chat/phone/recording_router.py, mounted in main.py, permission
-    # call_recording.listen). Off = 404 for a permitted caller. Read that
-    # module's docstring before describing this to a client: the handler reads an
-    # in-process registry nothing writes, logs rather than writing an audit-log
-    # row, and returns a placeholder rather than a cryptographically signed URL.
+    # Gates the in-CRM call-recording player: GET /calls/{conversation_id}/
+    # recording (+ /audio, /transcript, POST /retranscribe) in
+    # features/chat/phone/recording_router.py, mounted in main.py, permission
+    # call_recording.listen. Off = 404 for a permitted caller. Finds the call's
+    # archived object (PHONE_RECORDING_ARCHIVE_*) from the conversation's
+    # `call_recording_object` attribute or, for older calls, its archive note;
+    # streams it from GCS with the backend's service account behind a
+    # short-lived HMAC link; every play is an audit-log row.
     call_recording_retrieval_enabled: bool = False
     # Task 31 (FIX-31): on -> `/voice/phone/incoming` answers with the Proton
     # SOP's DTMF IVR (features/chat/phone/ivr.py + ivr_router.py) instead of
@@ -1517,6 +1519,33 @@ class Settings(BaseSettings):
     # the reporting are real"; **the 90-day policy is still not in force on any
     # tenant**, and turning this on does not change that.
     phone_retention_job_enabled: bool = False
+
+    # --- Call-recording player (after the P11 block on purpose: test_p11_flags
+    # pins that block to its seven flags). Consumer: features/chat/phone/
+    # recording_router.py, gated by call_recording_retrieval_enabled above.
+    # HMAC key for the player's short-lived audio/transcript links. Empty (or
+    # under 32 characters) -> the player answers 503 rather than signing with a
+    # guessable key. Generate with `openssl rand -hex 32`; rotating it only
+    # invalidates links minted in the last few minutes.
+    call_recording_signing_secret: str = ""
+    # Lifetime of one player link, seconds. Clamped to 30..300: the link is a
+    # bearer credential (an <audio> element cannot send the Chatwoot session
+    # headers), so it must stay short; the panel re-mints on expiry.
+    call_recording_url_ttl_seconds: int = 300
+    # Minimum seconds between two re-transcriptions of one conversation (each
+    # is a full Gemini audio call). 429 inside the window.
+    call_recording_retranscribe_cooldown_seconds: int = 600
+
+    @field_validator("call_recording_url_ttl_seconds", mode="before")
+    @classmethod
+    def _recording_ttl_clamped(cls, v: object) -> int:
+        # A typo must not stop the backend booting; anything unreadable is the
+        # default and anything out of range is pulled back inside it.
+        try:
+            ttl = int(str(v).strip())
+        except ValueError:
+            return 300
+        return max(30, min(300, ttl))
 
     # --- Task 31: IVR routing, timings, office hours and voices ---
     # Outside the P11 block on purpose (test_p11_flags pins that block to

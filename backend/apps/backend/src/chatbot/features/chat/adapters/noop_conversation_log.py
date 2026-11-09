@@ -96,6 +96,15 @@ class NoOpConversationLog(ConversationLogPort):
     ) -> None:
         return None
 
+    async def set_call_recording_archive(
+        self,
+        ticket_id: str,  # noqa: ARG002
+        *,
+        audio_object: str,  # noqa: ARG002
+        transcript_object: str = "",  # noqa: ARG002
+    ) -> None:
+        return None
+
     async def get_inbox_working_hours(
         self,
         inbox_id: int,  # noqa: ARG002

@@ -34,6 +34,11 @@ from chatbot.features.chat.phone.recording_archive import (
     archive_call,
     note_archive_locations,
 )
+from chatbot.features.chat.phone.recording_glossary import (
+    PROTON_GLOSSARY,
+    build_transcribe_prompt,
+    glossary_terms,
+)
 
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
@@ -46,15 +51,19 @@ _log = structlog.get_logger(__name__)
 # irrelevant against telephony audio that is already mu-law 8 kHz.
 _RECORDING_FORMAT = ".mp3"
 
-_TRANSCRIBE_PROMPT = (
-    "This is a recording of a customer support phone call. It has two channels: "
-    "the customer and the support side (which may be an AI assistant for part of "
-    "the call and a human agent for the rest). Transcribe the entire call "
-    "verbatim in the language actually spoken -- the callers code-switch between "
-    "English, Bahasa Melayu and Chinese, so do NOT translate. Label every turn "
-    "as CUSTOMER: or AGENT:. If a passage is genuinely unintelligible write "
-    "[inaudible] rather than guessing at words."
-)
+# The static-glossary prompt, kept under its old name for any reader of it.
+# Every real call builds its prompt per call (`_current_prompt`) so dealer
+# names added in the escalation-routing admin are included -- see
+# recording_glossary.py for why the vocabulary and the script rule exist.
+_TRANSCRIBE_PROMPT = build_transcribe_prompt(PROTON_GLOSSARY)
+
+
+async def _current_prompt() -> str:
+    try:
+        return build_transcribe_prompt(await glossary_terms())
+    except Exception as e:  # never let the glossary cost a transcript
+        _log.warning("recording_glossary_failed", error=str(e))
+        return _TRANSCRIBE_PROMPT
 
 
 async def fetch_recording(settings: Settings, recording_url: str) -> bytes | None:
@@ -87,7 +96,7 @@ async def fetch_recording(settings: Settings, recording_url: str) -> bytes | Non
         return None
 
 
-def _transcribe_sync(settings: Settings, audio: bytes) -> str | None:
+def _transcribe_sync(settings: Settings, audio: bytes, prompt: str | None = None) -> str | None:
     """Blocking Gemini call. Run via asyncio.to_thread by the caller -- the
     google-genai SDK is synchronous and this package never blocks the loop."""
     try:
@@ -109,7 +118,7 @@ def _transcribe_sync(settings: Settings, audio: bytes) -> str | None:
         res = client.models.generate_content(
             model=settings.recording_transcription_model,
             contents=[
-                _TRANSCRIBE_PROMPT,
+                prompt or _TRANSCRIBE_PROMPT,
                 types.Part.from_bytes(data=audio, mime_type="audio/mp3"),
             ],
         )
@@ -129,11 +138,47 @@ async def transcribe_recording(settings: Settings, recording_url: str) -> str | 
     audio = await fetch_recording(settings, recording_url)
     if not audio:
         return None
+    return await transcribe_audio(settings, audio)
+
+
+async def transcribe_audio(settings: Settings, audio: bytes) -> str | None:
+    """Transcribe bytes already in hand, with the glossary prompt. Shared by
+    the post-call path and the player's re-transcribe action, so both send
+    the model exactly the same instructions. None on any failure."""
     _log.info("recording_transcribe_started", bytes=len(audio))
-    text = await asyncio.to_thread(_transcribe_sync, settings, audio)
+    prompt = await _current_prompt()
+    text = await asyncio.to_thread(_transcribe_sync, settings, audio, prompt)
     if text:
         _log.info("recording_transcribe_succeeded", chars=len(text))
     return text
+
+
+def _object_name(settings: Settings, uri: str | None) -> str:
+    """`gs://<archive bucket>/<object>` -> `<object>`; "" for anything else."""
+    head = f"gs://{settings.phone_recording_archive_bucket}/"
+    return uri[len(head):] if uri and uri.startswith(head) else ""
+
+
+async def _stamp_archive_attributes(
+    settings: Settings, log_port: Any, ticket_id: str, uris: dict[str, str]
+) -> None:
+    """Record the archived object names as conversation custom attributes
+    (`call_recording_object` / `call_recording_transcript_object`) -- what
+    `recording_router.py` reads to find a call's audio. Duck-typed: a port
+    without the method (Zendesk, test fakes) simply has no player. Never
+    raises; the archive note is the fallback the player also parses."""
+    writer = getattr(log_port, "set_call_recording_archive", None)
+    audio_object = _object_name(settings, uris.get("audio"))
+    if writer is None or not audio_object:
+        return
+    try:
+        await writer(
+            ticket_id,
+            audio_object=audio_object,
+            transcript_object=_object_name(settings, uris.get("transcript")),
+        )
+    except Exception as e:
+        _log.error("recording_archive_attribute_failed", ticket_id=ticket_id, error=str(e))
 
 
 async def process_recording(
@@ -166,10 +211,8 @@ async def process_recording(
 
     text: str | None = None
     if audio and settings.phone_recording_transcription_enabled:
-        _log.info("recording_transcribe_started", bytes=len(audio))
-        text = await asyncio.to_thread(_transcribe_sync, settings, audio)
+        text = await transcribe_audio(settings, audio)
         if text:
-            _log.info("recording_transcribe_succeeded", chars=len(text))
             try:
                 await log_port.append_conversation_comment(
                     ticket_id,
@@ -185,5 +228,6 @@ async def process_recording(
         uris = await archive_call(settings, call_sid, audio, text)
         if uris:
             await note_archive_locations(log_port, ticket_id, uris)
+            await _stamp_archive_attributes(settings, log_port, ticket_id, uris)
             wrote = True
     return wrote

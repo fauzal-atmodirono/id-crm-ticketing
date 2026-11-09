@@ -36,6 +36,12 @@ function reset(): void {
       </aside>
     </transition>
 
+    <p v-if="channel === 'chat' || channel === 'voice'" class="persona-note">
+      These tabs talk to the bot anonymously. To chat, send photos or voice notes and call
+      <em>as a demo customer</em> (one CRM contact, history in Customer 360), use the
+      <router-link to="/customer">Customer app</router-link>.
+    </p>
+
     <ChatLog v-if="channel === 'chat'" />
     <VoiceLog v-else-if="channel === 'voice'" />
 
@@ -141,6 +147,15 @@ button {
 button:hover {
   border-color: var(--text-muted);
   color: var(--text);
+}
+
+.persona-note {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.persona-note a {
+  color: var(--accent);
 }
 
 .fade-enter-active,

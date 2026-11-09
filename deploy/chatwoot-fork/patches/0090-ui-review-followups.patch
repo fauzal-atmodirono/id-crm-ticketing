@@ -1,0 +1,97 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] Small UI fixes: Tamil 403 message, AI activity alert
+ streaks, idle sign-out cleanup (final review M5, M6, M7)
+
+* ReplyTopPanel (0055): "Translating into Tamil is not enabled yet." only
+  when the target is Tamil; any other 403 is a plain failure.
+* ProtonAiActivityPage (0081): alert on the first failure of a run of
+  consecutive poll failures, not every 15 s.
+* useProtonIdleTimeout (0079): the idle sign-out also runs upstream's
+  deleteIndexedDBOnLogout / clearCookiesOnLogout, then redirects to
+  /app/login as before.
+
+---
+diff --git a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+index 30aeb29..4cd6700 100644
+--- a/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
++++ b/app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
+@@ -453,8 +453,11 @@ export default {
+         // eslint-disable-next-line no-console
+         console.error('[proton-assist]', 'translate', 'failed', err);
+         // Outbound Tamil is refused (403) until its evaluation is signed off.
++        // Patch 0090: say so only when Tamil was the target.
++        const tamilRefused =
++          target === 'ta' && String(err?.message).includes(' 403 ');
+         useAlert(
+-          String(err?.message).includes(' 403 ')
++          tamilRefused
+             ? 'Translating into Tamil is not enabled yet.'
+             : 'Translation failed. Please try again.'
+         );
+diff --git a/app/javascript/dashboard/composables/useProtonIdleTimeout.js b/app/javascript/dashboard/composables/useProtonIdleTimeout.js
+index d138a77..c160ea5 100644
+--- a/app/javascript/dashboard/composables/useProtonIdleTimeout.js
++++ b/app/javascript/dashboard/composables/useProtonIdleTimeout.js
+@@ -5,6 +5,10 @@
+ // 0 / absent leaves behaviour exactly as upstream.
+ import Cookies from 'js-cookie';
+ import Auth from 'dashboard/api/auth';
++import {
++  clearCookiesOnLogout,
++  deleteIndexedDBOnLogout,
++} from 'dashboard/store/utils/api';
+ import { createIdleMonitor } from './idleMonitor';
+ 
+ let installed = false;
+@@ -33,6 +37,19 @@ async function signOut() {
+   } finally {
+     clearTimeout(timer);
+     Cookies.remove('cw_d_session_info');
++    // Patch 0090: the same cleanup upstream's Auth.logout() runs. Each step
++    // is best effort; clearCookiesOnLogout() also points window.location at
++    // LOGOUT_REDIRECT_LINK (or /), so our own redirect is set after it.
++    try {
++      deleteIndexedDBOnLogout();
++    } catch (e) {
++      /* ignore */
++    }
++    try {
++      clearCookiesOnLogout();
++    } catch (e) {
++      /* ignore */
++    }
+     window.location.href = '/app/login';
+   }
+ }
+diff --git a/app/javascript/dashboard/views/ProtonAiActivityPage.vue b/app/javascript/dashboard/views/ProtonAiActivityPage.vue
+index 08003d1..95cb947 100644
+--- a/app/javascript/dashboard/views/ProtonAiActivityPage.vue
++++ b/app/javascript/dashboard/views/ProtonAiActivityPage.vue
+@@ -60,7 +60,6 @@ export default {
+   },
+   methods: {
+     async load() {
+-      this.errored = false;
+       try {
+         const data = await getAiActivity();
+         this.generatedAt = data.generated_at;
+@@ -73,11 +72,16 @@ export default {
+         this.conversations = Array.isArray(data.conversations)
+           ? data.conversations
+           : [];
++        this.errored = false;
+       } catch (err) {
++        // Patch 0090: alert once per run of consecutive poll failures.
++        const firstFailure = !this.errored;
+         this.errored = true;
+-        useAlert(
+-          'Failed to load AI activity: ' + (err.message || String(err))
+-        );
++        if (firstFailure) {
++          useAlert(
++            'Failed to load AI activity: ' + (err.message || String(err))
++          );
++        }
+       } finally {
+         this.loading = false;
+       }

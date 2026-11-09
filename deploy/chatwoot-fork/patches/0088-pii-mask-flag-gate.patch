@@ -1,0 +1,115 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] PII masking follows PII_MASKING_ENABLED; 5 s request timeout
+ (final review I3, ruling R26)
+
+Patch 0085 masked on every tenant while /authz/me/pii was pending or
+failing, including tenants with masking switched off. The Rails layout now
+emits window.__PROTON_PII_MASKING__ from env PII_MASKING_ENABLED (same
+mechanism as patch 0079's idle timeout; docker-compose.tenant.yml forwards
+the variable to chatwoot-rails). Flag absent/false: never call
+/authz/me/pii, never mask. Flag true: 0085's behaviour unchanged (masked
+while pending, fail closed except 404), plus a 5 s AbortController timeout
+on the request (adminRequest gains an optional `signal`).
+
+---
+diff --git a/app/javascript/dashboard/api/protonAdmin.js b/app/javascript/dashboard/api/protonAdmin.js
+index d274dc1..fbae998 100644
+--- a/app/javascript/dashboard/api/protonAdmin.js
++++ b/app/javascript/dashboard/api/protonAdmin.js
+@@ -13,7 +13,9 @@ import { useProtonConfig } from 'dashboard/composables/useProtonConfig';
+ import Auth from './auth';
+ import { httpFailure } from 'dashboard/helper/protonError';
+ 
+-export async function adminRequest(path, { method = 'GET', body } = {}) {
++// `signal` (patch 0088): optional AbortSignal so a caller can time a request
++// out; omitted = exactly the request this always sent.
++export async function adminRequest(path, { method = 'GET', body, signal } = {}) {
+   const { backendUrl, backendKey } = useProtonConfig();
+   if (!backendUrl) throw new Error('PROTON_BACKEND_URL not configured');
+ 
+@@ -33,6 +35,7 @@ export async function adminRequest(path, { method = 'GET', body } = {}) {
+         : {}),
+     },
+     ...(body ? { body: JSON.stringify(body) } : {}),
++    ...(signal ? { signal } : {}),
+   });
+ 
+   if (!response.ok) {
+diff --git a/app/javascript/dashboard/composables/useProtonPiiMask.js b/app/javascript/dashboard/composables/useProtonPiiMask.js
+index 79b1f2f..a34ab3d 100644
+--- a/app/javascript/dashboard/composables/useProtonPiiMask.js
++++ b/app/javascript/dashboard/composables/useProtonPiiMask.js
+@@ -14,8 +14,9 @@
+ //     and a tenant with no Proton backend configured at all -> unmasked,
+ //     exactly as before this patch: neither can have masking switched on.
+ //   * an answer -> masked only when { masking_enabled: true, masked: true }.
+-// So a flag-off tenant shows masked values for the length of one request on
+-// first load, then everything.
++// Patch 0088: all of the above applies only when the Rails layout says
++// PII_MASKING_ENABLED is on (window.__PROTON_PII_MASKING__); a flag-off
++// tenant never asks and never masks, not even while a request is pending.
+ //
+ // This is UX only: Chatwoot's own API still returns the raw value to the
+ // browser. The backend-owned surfaces (Customer 360, RSA, case fields, AI
+@@ -28,14 +29,32 @@ import { adminRequest } from 'dashboard/api/protonAdmin';
+ 
+ const MASK = '•';
+ const RETRY_MS = 5000;
+-const masked = ref(true); // pending = masked
++const REQUEST_TIMEOUT_MS = 5000;
++// Patch 0088 (review I3, ruling R26): the Rails layout emits
++// window.__PROTON_PII_MASKING__ from env PII_MASKING_ENABLED. Flag absent or
++// false: never call /authz/me/pii and never mask (a flag-off tenant shows
++// exactly what it showed before patch 0085). Flag true: the fail-closed
++// behaviour below (masked while pending, on error and on a timeout; only a
++// 404 unmasks).
++const piiFlagOn = () =>
++  typeof window !== 'undefined' && window.__PROTON_PII_MASKING__ === true;
++const masked = ref(piiFlagOn());
+ let loaded = false;
+ let loadPromise = null;
+ let retryTimer = null;
+ 
+ function ensureLoaded() {
++  if (!piiFlagOn()) {
++    masked.value = false;
++    loaded = true;
++    return;
++  }
+   if (loaded || loadPromise) return;
+-  loadPromise = adminRequest('/authz/me/pii')
++  // A hung request must not keep the page masked forever: abort after 5 s,
++  // which lands in the error path (masked, retried).
++  const ctrl = new AbortController();
++  const timeout = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
++  loadPromise = adminRequest('/authz/me/pii', { signal: ctrl.signal })
+     .then(data => {
+       masked.value = !!(data && data.masking_enabled && data.masked);
+       loaded = true;
+@@ -58,6 +77,7 @@ function ensureLoaded() {
+       }
+     })
+     .finally(() => {
++      clearTimeout(timeout);
+       loadPromise = null;
+     });
+ }
+diff --git a/app/views/layouts/vueapp.html.erb b/app/views/layouts/vueapp.html.erb
+index 6314d3f..2305091 100644
+--- a/app/views/layouts/vueapp.html.erb
++++ b/app/views/layouts/vueapp.html.erb
+@@ -104,6 +104,14 @@
+       // 0 / unset = off (SESSION_IDLE_TIMEOUT_MINUTES, default off).
+       window.__PROTON_IDLE_TIMEOUT_MINUTES__ = <%= [ENV.fetch('SESSION_IDLE_TIMEOUT_MINUTES', '0').to_i, 0].max %>;
+     </script>
++    <script>
++      // FIX-49 (patch 0088): client-side PII masking in Chatwoot's contact
++      // views runs only when the backend's PII_MASKING_ENABLED is on. Same
++      // env var the backend reads (forwarded by docker-compose.tenant.yml's
++      // x-chatwoot-env) and the same truthy set as patch 0058's flags.
++      // Off / unset: the SPA never asks /authz/me/pii and never masks.
++      window.__PROTON_PII_MASKING__ = <%= %w[1 true t yes y on].include?(ENV.fetch('PII_MASKING_ENABLED', '').to_s.strip.downcase) %>;
++    </script>
+     <% if @global_config['CLOUD_ANALYTICS_TOKEN'].present? %>
+     <script>
+       window.analyticsConfig = {

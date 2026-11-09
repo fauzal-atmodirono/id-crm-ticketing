@@ -67,7 +67,8 @@ trackerModule('Escalation Routing', {
     await ladder.scrollIntoViewIfNeeded();
     const l = Api.must(await api.be('/admin/escalation/ladder'), 'ladder');
     const eff = l.effective ?? l;
-    ev.add(`effective ladder: ${JSON.stringify(eff).slice(0, 220)}`);
+    const hours = Object.entries(eff).filter(([k, v]) => /step|hours/i.test(k) && typeof v === 'number').map(([k, v]) => `${k}=${v}`);
+    ev.add(`ladder step settings: ${hours.join(', ') || 'see screenshot'}; dry run ${eff.dry_run === undefined ? 'unknown' : eff.dry_run ? 'on' : 'off'} (left as is)`);
     for (const col of ['Case', 'Dealer', 'Rung', 'Next step', 'Due in']) {
       await expect(page.getByText(col, { exact: true }).first(), `in-flight column ${col}`).toBeVisible();
     }
@@ -92,10 +93,10 @@ trackerModule('Escalation Routing', {
   'ESC-012': async ({ page, api, ev }) => {
     const rows = Api.must(await api.be('/admin/audit?limit=200&event_type=escalation_notify'), 'escalation audit').audit as any[];
     expect(rows.length, 'escalation notifications recorded').toBeGreaterThan(0);
-    const sample = rows[0];
     const complete = rows.filter(r => (r.recipients?.length ?? 0) > 0 && r.at && r.actor);
     expect(complete.length, 'entries name recipient, actor and time').toBeGreaterThan(0);
-    ev.add(`${rows.length} escalation_notify entries, ${complete.length} with recipients, actor and time; latest ticket ${sample.ticket_id} at ${sample.at} via ${sample.transport ?? '?'} (${sample.delivery_status ?? '?'}, SLA ${sample.sla_status ?? '?'})`);
+    const transports = [...new Set(rows.map(r => r.transport).filter(Boolean))].join('/');
+    ev.add(`${rows.length} escalation_notify entries, ${complete.length} with recipients, actor and time (transport ${transports || '?'}, ${rows.filter(r => r.sla_status).length} with SLA status)`);
     await openApp(page, 'proton/audit-log');
     const select = page.locator('select', { has: page.locator('option', { hasText: 'Escalation notified' }) }).first();
     await select.selectOption({ label: 'Escalation notified' });

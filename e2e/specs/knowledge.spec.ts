@@ -6,6 +6,10 @@ import type { Page } from '@playwright/test';
 import { expect } from '../lib/fixtures';
 import { Api } from '../lib/api';
 import { RUN_ID, TEST_PREFIX } from '../lib/env';
+
+// Test KB content is deliberately meaningless, so it can never answer a real
+// customer: a run-scoped marker, no product, warranty or dealer wording.
+const MARK = `E2E-ZZ-${RUN_ID}`;
 import { manual, trackerModule } from '../lib/tracker';
 import { bodyText, openApp, settle } from '../lib/ui';
 
@@ -54,16 +58,16 @@ trackerModule('Knowledge', {
   },
 
   'KNOW-002': async ({ page, api, ev }) => {
-    const question = `${TEST_PREFIX} Where is the nearest service centre?`;
+    const question = `${TEST_PREFIX} ${MARK} marker question alpha?`;
     const created = Api.must(
-      await api.be('/kb/faq', { method: 'POST', body: { question, answer: 'Use the dealer locator on proton.com.', keywords: ['service', 'centre'] } }),
+      await api.be('/kb/faq', { method: 'POST', body: { question, answer: `${MARK} marker answer alpha. Not real information.`, keywords: [MARK.toLowerCase()] } }),
       'create FAQ',
     );
     const id = created.id;
     await openApp(page, kb('faqs'));
     await page.getByPlaceholder(/Filter by question/).fill(RUN_ID);
     await expect(page.getByText(question)).toBeVisible();
-    const edited = `Edited ${RUN_ID}: use the dealer locator on proton.com or call 1-800-888-398.`;
+    const edited = `${MARK} marker answer alpha, edited. Not real information.`;
     Api.must(await api.be(`/kb/faq/${id}`, { method: 'PUT', body: { answer: edited } }), 'edit FAQ');
     await page.reload();
     await settle(page);
@@ -81,7 +85,7 @@ trackerModule('Knowledge', {
   'KNOW-003': async ({ page, api, ev }) => {
     const count = async () => (Api.must(await api.be('/kb/faq'), 'faq list').entries as any[]).filter(f => String(f.question).includes(RUN_ID)).length;
     const before = await count();
-    const good = ['question,answer,keywords', ...[1, 2, 3, 4, 5].map(i => `"${TEST_PREFIX} bulk question ${i}?","Bulk answer ${i}.","bulk;test"`)].join('\n');
+    const good = ['question,answer,keywords', ...[1, 2, 3, 4, 5].map(i => `"${TEST_PREFIX} bulk ${MARK} marker question ${i}?","${MARK} marker answer ${i}. Not real information.","${MARK.toLowerCase()}"`)].join('\n');
     await openApp(page, kb('faqs'));
     const input = page.locator('input[type="file"][accept=".csv"]').first();
     await input.setInputFiles({ name: 'test.csv', mimeType: 'text/csv', buffer: Buffer.from(good) });
@@ -90,7 +94,7 @@ trackerModule('Knowledge', {
     ev.add('valid 5-row CSV: "5 entries created" and 5 rows listed');
     await page.getByPlaceholder(/Filter by question/).fill(`${RUN_ID} bulk`);
     await ev.shot(page);
-    const bad = ['question,keywords', `"${TEST_PREFIX} bad row?","x"`].join('\n');
+    const bad = ['question,keywords', `"${TEST_PREFIX} ${MARK} bad row?","${MARK.toLowerCase()}"`].join('\n');
     await input.setInputFiles({ name: 'bad.csv', mimeType: 'text/csv', buffer: Buffer.from(bad) });
     await expect(page.getByText(/Bulk upload failed|Nothing imported/).first()).toBeVisible({ timeout: 30_000 });
     const msg = (await bodyText(page)).match(/(Bulk upload failed[^\n]*|Nothing imported[^\n]*)/)?.[0] ?? '';
@@ -104,8 +108,8 @@ trackerModule('Knowledge', {
   },
 
   'KNOW-004': async ({ page, api, ev }) => {
-    const title = `${TEST_PREFIX} brochure`;
-    const r = Api.must(await api.be('/kb/knowledge/text', { method: 'POST', body: { title, body: `Test brochure ${RUN_ID}. The X50 comes with a 5-year warranty.` } }), 'create document');
+    const title = `${TEST_PREFIX} ${MARK} marker document`;
+    const r = Api.must(await api.be('/kb/knowledge/text', { method: 'POST', body: { title, body: `${MARK} marker text. Not real information.` } }), 'create document');
     await expect
       .poll(async () => String((await api.be(`/kb/knowledge/${r.id}`)).data?.status ?? ''), { timeout: 90_000, message: 'document indexed' })
       .toMatch(/^(ready|indexed|done|complete|completed|active)$/i);
@@ -126,7 +130,7 @@ trackerModule('Knowledge', {
 
   'KNOW-005': async ({ page, api, ev }) => {
     const a = await newAssistant(api, 'Scenario owner');
-    const title = `${TEST_PREFIX} Warranty claim handling`;
+    const title = `${TEST_PREFIX} ${MARK} marker scenario`;
     // Disabled, and on a [TEST] assistant: never reaches the live bot prompt.
     const s = Api.must(await api.be('/kb/scenarios', { method: 'POST', body: { assistant_id: a.id, title, description: 'test only', enabled: false } }), 'create scenario');
     const sid = s.id ?? s.scenario?.id;
@@ -142,9 +146,9 @@ trackerModule('Knowledge', {
   },
 
   'KNOW-006': async ({ page, api, ev }) => {
-    const title = `${TEST_PREFIX} Check order status`;
+    const title = `${TEST_PREFIX} ${MARK} marker tool`;
     const t = Api.must(
-      await api.be('/kb/tools', { method: 'POST', body: { title, endpoint_url: 'https://example.com/e2e-order-status', http_method: 'GET', enabled: false } }),
+      await api.be('/kb/tools', { method: 'POST', body: { title, endpoint_url: 'https://example.com/e2e-zz-marker', http_method: 'GET', enabled: false } }),
       'create tool',
     );
     const slug = t.slug ?? t.tool?.slug;
@@ -214,8 +218,8 @@ trackerModule('Knowledge', {
   'KNOW-011': manual('editing the live escalation email template and receiving the escalation email in a test mailbox'),
 
   'KNOW-012': async ({ page, api, ev }) => {
-    const question = `${TEST_PREFIX} rating check question?`;
-    const f = Api.must(await api.be('/kb/faq', { method: 'POST', body: { question, answer: 'Rating check answer.' } }), 'create FAQ');
+    const question = `${TEST_PREFIX} ${MARK} marker rating question?`;
+    const f = Api.must(await api.be('/kb/faq', { method: 'POST', body: { question, answer: `${MARK} marker rating answer. Not real information.`, keywords: [MARK.toLowerCase()] } }), 'create FAQ');
     const me = await api.me();
     const fb = await api.be('/kb/feedback', {
       method: 'POST',

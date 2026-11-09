@@ -5,12 +5,15 @@
 //   key/slug carrying the run id, and conversations carry the audit_test label;
 // - conversations are created on the API inbox (1) only, so nothing reaches a
 //   real customer channel (no WhatsApp, no email);
-// - cleanup finds records BY THE RUN ID and deletes only those, so it can never
-//   touch anything the run did not create. It runs when each worker finishes
+// - cleanup matches only the FULL run-scoped forms (a name starting with
+//   "[TEST] E2E <run id>", a key/slug/short code starting with "e2e<run id>")
+//   and deletes only those, so it can never touch anything the run did not
+//   create; afterwards it re-queries and prints a LEFTOVERS banner. It runs when each worker finishes
 //   and once more in global teardown (a worker that died mid-test still gets
 //   swept).
 import { Api } from './api';
-import { INBOX, RUN_ID, TEST_PREFIX } from './env';
+import { test } from '@playwright/test';
+import { INBOX, KEY_PREFIX, RUN_ID, TEST_PREFIX } from './env';
 
 export const AUDIT_LABEL = 'audit_test';
 
@@ -24,6 +27,8 @@ function digits(n: number): string {
 }
 
 export class TestData {
+  /** Conversations this run created (the only ones a test may send in). */
+  readonly createdConversations = new Set<number>();
   private contact: { id: number; sourceId: string; name: string; phone: string; email: string } | null = null;
 
   constructor(private readonly api: Api) {}
@@ -38,7 +43,7 @@ export class TestData {
   async newContact(label: string, extra: { email?: string; phone?: string } = {}) {
     const name = `${TEST_PREFIX} ${label}`;
     const phone = extra.phone ?? `+60009${digits(6)}`;
-    const email = extra.email ?? `e2e.${RUN_ID}.${label.replace(/\W+/g, '')}.${digits(4)}@example.com`;
+    const email = extra.email ?? `${KEY_PREFIX}.${label.replace(/\W+/g, '').toLowerCase()}.${digits(4)}@example.com`;
     const r = Api.must(
       await this.api.cw('contacts', { method: 'POST', body: { inbox_id: INBOX.api, name, phone_number: phone, email } }),
       'create [TEST] contact',
@@ -69,12 +74,24 @@ export class TestData {
       }),
       'create [TEST] conversation',
     );
+    this.createdConversations.add(conv.id);
     for (const content of messages) await this.incoming(conv.id, content);
     Api.must(
       await this.api.cw(`conversations/${conv.id}/labels`, { method: 'POST', body: { labels: [AUDIT_LABEL, ...labels] } }),
       'label [TEST] conversation',
     );
     return { id: conv.id, contactId: c.id };
+  }
+
+  /**
+   * Guard before any composer Send / Add Note: the conversation must be one
+   * this run created, on the API inbox. Anything else skips the test rather
+   * than risk writing into a real customer's conversation.
+   */
+  async assertSendable(conversationId: number): Promise<void> {
+    const c = await this.api.cw(`conversations/${conversationId}`);
+    const ok = this.createdConversations.has(conversationId) && c.ok && c.data?.inbox_id === INBOX.api;
+    if (!ok) test.skip(true, `Blocked: refusing to send in conversation ${conversationId} (not created by this run on the API inbox)`);
   }
 
   /** A customer (incoming) message. Only allowed by Chatwoot on API inboxes. */
@@ -90,9 +107,19 @@ export class TestData {
   }
 }
 
-type Sweeper = { name: string; run: (api: Api) => Promise<number> };
+interface Sweeper {
+  name: string;
+  /** Run-created records of this kind still present. */
+  find: (api: Api) => Promise<any[]>;
+  remove: (api: Api, item: any) => Promise<boolean>;
+  /** How a person finds leftovers by hand. */
+  where: string;
+}
 
-const has = (s: unknown) => typeof s === 'string' && s.includes(RUN_ID);
+/** "[TEST] E2E <run id>…" (names, questions, titles, remarks). */
+const named = (s: unknown) => typeof s === 'string' && s.startsWith(TEST_PREFIX);
+/** "e2e<run id>…" (keys, slugs, short codes, emails). */
+const keyed = (s: unknown) => typeof s === 'string' && s.toLowerCase().startsWith(KEY_PREFIX);
 
 async function del(api: Api, kind: 'cw' | 'be', path: string): Promise<boolean> {
   const r = kind === 'cw' ? await api.cw(path, { method: 'DELETE' }) : await api.be(path, { method: 'DELETE' });
@@ -102,142 +129,133 @@ async function del(api: Api, kind: 'cw' | 'be', path: string): Promise<boolean> 
 const SWEEPERS: Sweeper[] = [
   {
     name: 'contacts (and their conversations)',
-    run: async api => {
-      let n = 0;
+    where: `Contacts, search "${RUN_ID}"`,
+    find: async api => {
       const r = await api.cw(`contacts/search?q=${encodeURIComponent(RUN_ID)}&per_page=100`);
-      for (const c of r.data?.payload ?? []) {
-        if (!has(c.name) && !has(c.email)) continue;
-        // Resolve first so the conversation closes cleanly in reports, then
-        // delete the contact (Chatwoot deletes its conversations with it).
-        const convs = await api.cw(`contacts/${c.id}/conversations`);
-        for (const conv of convs.data?.payload ?? []) {
-          await api.cw(`conversations/${conv.id}/toggle_status`, { method: 'POST', body: { status: 'resolved' } });
-        }
-        if (await del(api, 'cw', `contacts/${c.id}`)) n += 1;
+      return (r.data?.payload ?? []).filter((c: any) => named(c.name) || keyed(c.email));
+    },
+    remove: async (api, c) => {
+      // Resolve first so the conversations close cleanly in reports, then
+      // delete the contact (Chatwoot deletes its conversations with it).
+      const convs = await api.cw(`contacts/${c.id}/conversations`);
+      for (const conv of convs.data?.payload ?? []) {
+        await api.cw(`conversations/${conv.id}/toggle_status`, { method: 'POST', body: { status: 'resolved' } });
       }
-      return n;
+      return del(api, 'cw', `contacts/${c.id}`);
     },
   },
   {
     name: 'canned responses',
-    run: async api => {
-      let n = 0;
-      const r = await api.cw('canned_responses');
-      for (const c of r.data ?? []) if (has(c.short_code) && (await del(api, 'cw', `canned_responses/${c.id}`))) n += 1;
-      return n;
-    },
+    where: `Settings > Canned responses, short code "${KEY_PREFIX}"`,
+    find: async api => ((await api.cw('canned_responses')).data ?? []).filter((c: any) => keyed(c.short_code)),
+    remove: (api, c) => del(api, 'cw', `canned_responses/${c.id}`),
   },
   {
     name: 'saved views and segments',
-    run: async api => {
-      let n = 0;
-      for (const type of ['conversation', 'contact']) {
-        const r = await api.cw(`custom_filters?filter_type=${type}`);
-        for (const f of r.data ?? []) if (has(f.name) && (await del(api, 'cw', `custom_filters/${f.id}`))) n += 1;
-      }
-      return n;
+    where: `Conversations > Folders and Contacts > Segments, "${TEST_PREFIX}"`,
+    find: async api => {
+      const out: any[] = [];
+      for (const type of ['conversation', 'contact']) out.push(...((await api.cw(`custom_filters?filter_type=${type}`)).data ?? []).filter((f: any) => named(f.name)));
+      return out;
     },
+    remove: (api, f) => del(api, 'cw', `custom_filters/${f.id}`),
   },
   {
     name: 'macros',
-    run: async api => {
-      let n = 0;
+    where: `Settings > Macros, "${TEST_PREFIX}"`,
+    find: async api => {
       const r = await api.cw('macros');
-      for (const m of r.data?.payload ?? r.data ?? []) if (has(m.name) && (await del(api, 'cw', `macros/${m.id}`))) n += 1;
-      return n;
+      return (r.data?.payload ?? r.data ?? []).filter((m: any) => named(m.name));
     },
+    remove: (api, m) => del(api, 'cw', `macros/${m.id}`),
   },
   {
     name: 'help center portals',
-    run: async api => {
-      let n = 0;
-      const r = await api.cw('portals');
-      for (const p of r.data?.payload ?? []) if (has(p.slug) && (await del(api, 'cw', `portals/${p.slug}`))) n += 1;
-      return n;
-    },
+    where: `Help Center > Portals, slug "e2e-${RUN_ID}"`,
+    find: async api => ((await api.cw('portals')).data?.payload ?? []).filter((p: any) => p.slug === `e2e-${RUN_ID}`),
+    remove: (api, p) => del(api, 'cw', `portals/${p.slug}`),
   },
   {
     name: 'FAQs',
-    run: async api => {
-      let n = 0;
-      const r = await api.be('/kb/faq');
-      const list = r.data?.entries ?? [];
-      for (const f of list) if (has(f.question) && (await del(api, 'be', `/kb/faq/${encodeURIComponent(f.id)}`))) n += 1;
-      return n;
-    },
+    where: `Knowledge > FAQs, filter "${RUN_ID}"`,
+    find: async api => ((await api.be('/kb/faq')).data?.entries ?? []).filter((f: any) => named(f.question)),
+    remove: (api, f) => del(api, 'be', `/kb/faq/${encodeURIComponent(f.id)}`),
   },
   {
-    name: 'assistants, scenarios',
-    run: async api => {
-      let n = 0;
-      const r = await api.be('/kb/assistants');
-      const list = r.data?.assistants ?? [];
-      for (const a of list) {
-        if (!has(a.name)) continue;
-        const s = await api.be(`/kb/scenarios?assistant_id=${encodeURIComponent(a.id)}`);
-        for (const sc of s.data?.scenarios ?? []) {
-          await del(api, 'be', `/kb/scenarios/${encodeURIComponent(sc.id)}`);
-        }
-        if (await del(api, 'be', `/kb/assistants/${encodeURIComponent(a.id)}`)) n += 1;
-      }
-      return n;
+    name: 'assistants (and their scenarios)',
+    where: `Knowledge > Assistants, "${TEST_PREFIX}"`,
+    find: async api => ((await api.be('/kb/assistants')).data?.assistants ?? []).filter((a: any) => named(a.name)),
+    remove: async (api, a) => {
+      const s = await api.be(`/kb/scenarios?assistant_id=${encodeURIComponent(a.id)}`);
+      for (const sc of s.data?.scenarios ?? []) await del(api, 'be', `/kb/scenarios/${encodeURIComponent(sc.id)}`);
+      return del(api, 'be', `/kb/assistants/${encodeURIComponent(a.id)}`);
     },
   },
   {
     name: 'custom tools',
-    run: async api => {
-      let n = 0;
-      const r = await api.be('/kb/tools');
-      const list = r.data?.custom ?? [];
-      for (const t of list) if ((has(t.title) || has(t.slug)) && (await del(api, 'be', `/kb/tools/${encodeURIComponent(t.slug)}`))) n += 1;
-      return n;
-    },
+    where: `Knowledge > Tools > Custom tools, "${TEST_PREFIX}"`,
+    find: async api => ((await api.be('/kb/tools')).data?.custom ?? []).filter((t: any) => named(t.title)),
+    remove: (api, t) => del(api, 'be', `/kb/tools/${encodeURIComponent(t.slug)}`),
   },
   {
     name: 'knowledge documents',
-    run: async api => {
-      let n = 0;
-      const r = await api.be('/kb/knowledge');
-      const list = r.data?.documents ?? [];
-      for (const d of list) if (has(d.title) && (await del(api, 'be', `/kb/knowledge/${encodeURIComponent(d.id)}`))) n += 1;
-      return n;
-    },
+    where: `Knowledge > Documents, "${TEST_PREFIX}"`,
+    find: async api => ((await api.be('/kb/knowledge')).data?.documents ?? []).filter((d: any) => named(d.title)),
+    remove: (api, d) => del(api, 'be', `/kb/knowledge/${encodeURIComponent(d.id)}`),
   },
   {
     name: 'RSA incidents',
-    run: async api => {
-      let n = 0;
-      const r = await api.be('/rsa/incidents');
-      const list = r.data?.incidents ?? [];
-      for (const i of list) if ((has(i.remarks) || has(i.vehicle_no)) && (await del(api, 'be', `/rsa/incidents/${encodeURIComponent(i.id)}`))) n += 1;
-      return n;
-    },
+    where: `RSA Incident Log, remarks "${TEST_PREFIX}"`,
+    find: async api => ((await api.be('/rsa/incidents')).data?.incidents ?? []).filter((i: any) => named(i.remarks)),
+    remove: (api, i) => del(api, 'be', `/rsa/incidents/${encodeURIComponent(i.id)}`),
   },
   {
     name: 'taxonomy nodes',
-    run: async api => {
-      let n = 0;
-      const r = await api.be('/admin/taxonomy/tree');
+    where: `Case taxonomy, key "${KEY_PREFIX}_"`,
+    find: async api => {
       const walk = (nodes: any[]): any[] => nodes.flatMap(x => [x, ...walk(x.children ?? [])]);
-      const nodes = walk(r.data?.tree ?? []);
-      for (const node of nodes) {
-        if (!has(node.key)) continue;
-        const res = await api.be(`/admin/taxonomy/node/${encodeURIComponent(node.key)}/retire`, { method: 'POST' });
-        if (res.ok) n += 1;
-      }
-      return n;
+      return walk((await api.be('/admin/taxonomy/tree')).data?.tree ?? []).filter((n: any) => keyed(n.key));
     },
+    remove: async (api, n) => (await api.be(`/admin/taxonomy/node/${encodeURIComponent(n.key)}/retire`, { method: 'POST' })).ok,
   },
 ];
 
-/** Delete everything carrying this run's id. Best effort; never throws. */
+function banner(lines: string[], log: (line: string) => void): void {
+  log('');
+  log('!'.repeat(78));
+  for (const l of lines) log(`!! ${l}`);
+  log('!'.repeat(78));
+  log('');
+}
+
+/**
+ * Delete everything this run created, then re-query and print a LEFTOVERS
+ * banner for anything still there. Best effort; never throws.
+ */
 export async function sweep(api: Api, log: (line: string) => void = console.log): Promise<void> {
+  const leftovers: string[] = [];
   for (const s of SWEEPERS) {
     try {
-      const n = await s.run(api);
+      let n = 0;
+      for (const item of await s.find(api)) if (await s.remove(api, item)) n += 1;
       if (n) log(`[e2e cleanup] removed ${n} ${s.name} (run ${RUN_ID})`);
+      const left = (await s.find(api)).length;
+      if (left) leftovers.push(`${left} ${s.name}: ${s.where}`);
     } catch (e) {
-      log(`[e2e cleanup] ${s.name}: ${(e as Error).message.slice(0, 160)}`);
+      leftovers.push(`${s.name}: could not check (${(e as Error).message.slice(0, 120)}): ${s.where}`);
     }
   }
+  if (leftovers.length) banner([`LEFTOVERS from e2e run ${RUN_ID}: remove these by hand`, ...leftovers], log);
+}
+
+/** Teardown could not even reach the CRM (e.g. the session expired). */
+export function leftoversUnknown(reason: string, log: (line: string) => void = console.log): void {
+  banner(
+    [
+      `LEFTOVERS from e2e run ${RUN_ID}: cleanup could not run (${reason.slice(0, 120)})`,
+      'Sign in and remove anything carrying the run id by hand:',
+      ...SWEEPERS.map(s => `${s.name}: ${s.where}`),
+    ],
+    log,
+  );
 }

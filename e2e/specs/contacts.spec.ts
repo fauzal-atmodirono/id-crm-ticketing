@@ -2,13 +2,13 @@
 // contacts carrying the run id.
 import { expect } from '../lib/fixtures';
 import { Api } from '../lib/api';
-import { RUN_ID, TEST_PREFIX } from '../lib/env';
+import { KEY_PREFIX, RUN_ID, TEST_PREFIX } from '../lib/env';
 import { trackerModule } from '../lib/tracker';
 import { openApp, settle } from '../lib/ui';
 
 async function findRun(api: Api, extra = ''): Promise<any[]> {
   const r = Api.must(await api.cw(`contacts/search?q=${encodeURIComponent(RUN_ID)}&per_page=100`), 'contact search');
-  return (r.payload as any[]).filter(c => String(c.name).includes(RUN_ID) && String(c.name).includes(extra));
+  return (r.payload as any[]).filter(c => String(c.name).startsWith(TEST_PREFIX) && String(c.name).includes(extra));
 }
 
 trackerModule('Contacts', {
@@ -65,7 +65,7 @@ trackerModule('Contacts', {
   },
 
   'CONT-004': async ({ page, api, ev }) => {
-    const rows = [1, 2, 3].map(i => `${TEST_PREFIX} import ${i},e2e.${RUN_ID}.import${i}@example.com,+6000877${String(Date.now()).slice(-4)}${i}`);
+    const rows = [1, 2, 3].map(i => `${TEST_PREFIX} import ${i},${KEY_PREFIX}.import${i}@example.com,+6000877${String(Date.now()).slice(-4)}${i}`);
     const csv = ['name,email,phone_number', ...rows].join('\n');
     Api.must(await api.upload('cw', 'contacts/import', { field: 'import_file', filename: 'contacts.csv', content: csv, type: 'text/csv' }), 'import');
     await expect.poll(async () => (await findRun(api, 'import')).length, { timeout: 180_000, intervals: [5000], message: 'imported contacts appear (async)' }).toBe(3);
@@ -101,6 +101,7 @@ trackerModule('Contacts', {
   'CONT-006': async ({ page, api, ev }) => {
     const c = (Api.must(await api.cw('search/contacts?q=60000000101'), 'Ahmad').payload.contacts as any[])[0];
     expect(c, '[DEMO] Ahmad').toBeTruthy();
+    expect(c.name, 'only the [DEMO] persona contact is opened').toMatch(/\[DEMO\]/);
     const convs = Api.must(await api.cw(`contacts/${c.id}/conversations`), 'conversations').payload as any[];
     await openApp(page, `contacts/${c.id}`);
     await expect(page.getByText(c.name).first()).toBeVisible();
@@ -110,7 +111,7 @@ trackerModule('Contacts', {
     await expect.poll(() => cards.count(), { timeout: 30_000, message: 'conversation history listed' }).toBe(convs.length);
     await cards.first().click();
     await expect(page).toHaveURL(/conversations\/\d+/);
-    ev.add(`${c.name}: ${convs.length} conversation(s) listed on the contact`);
+    ev.add(`[DEMO] Ahmad: ${convs.length} conversation(s) listed on the contact`);
     await ev.shot(page);
   },
 });

@@ -29,8 +29,20 @@ interface Annotation {
 const ANSI = /\u001b\[[0-9;]*m/g;
 export const EVIDENCE_MAX = 450;
 
+// Personal data never goes into evidence or the sheet: emails, phone numbers
+// (8+ digits, optional +, spaces or dashes; ISO dates are kept) and Malaysian-style vehicle plates
+// ("DMO 1105", "WXY1234A") are masked. Customer names are kept out at source
+// (specs never put them in evidence).
+const EMAIL = /[\w.+-]+@[\w-]+(\.[\w-]+)+/g;
+const PHONE = /(?<![\w-])(?!\d{4}-\d{2}-\d{2})\+?\d(?:[\s-]?\d){7,}(?![\w-])/g; // 8+ digits, not an ISO date
+const PLATE = /\b(?!HTTP|API|SLA|CSV|PDF|PIC|NPS|AHT|ACW|KB|AI|UI|X\d{2}\b)[A-Z]{1,3} ?\d{1,4}[A-Z]?\b/g;
+
+export function redact(s: string): string {
+  return s.replace(EMAIL, '[email]').replace(PHONE, '[phone]').replace(PLATE, '[plate]');
+}
+
 export function oneLine(s: string, max = EVIDENCE_MAX): string {
-  const t = s.replace(ANSI, '').replace(/\s+/g, ' ').trim();
+  const t = redact(s.replace(ANSI, '')).replace(/\s+/g, ' ').trim();
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }
 

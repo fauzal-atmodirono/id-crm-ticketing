@@ -1,7 +1,7 @@
 // Tracker tab: Conversations.
 import { expect } from '../lib/fixtures';
 import { Api } from '../lib/api';
-import { INBOX, RUN_ID, TEST_PREFIX } from '../lib/env';
+import { FLAGS, INBOX, KEY_PREFIX, RUN_ID, TEST_PREFIX } from '../lib/env';
 import { manual, trackerModule } from '../lib/tracker';
 import { bodyText, chatTurn, consoleTab, openApp, openConsole, openConversation, revealInPanel, settle } from '../lib/ui';
 
@@ -39,7 +39,7 @@ trackerModule('Conversations', {
       const uiMs = Date.now() - t0;
       // The list pages at 25; the tab badge is the total.
       expect(rows, `${name}: rows shown vs tab count ${count}`).toBe(Math.min(count, 25));
-      ev.add(`${name}: tab ${count}, rows ${rows}, API ${r.ms} ms, UI ${uiMs} ms`);
+      ev.add(`${name}: tab ${count}, rows ${rows}, API ${r.ms} ms, page ${uiMs} ms`);
     }
     for (const p of ['mentions/conversations', 'unattended/conversations']) {
       const t0 = Date.now();
@@ -55,33 +55,27 @@ trackerModule('Conversations', {
   },
 
   'CONV-002': async ({ page, api, data, ev }) => {
-    await data.conversation([`${TEST_PREFIX} inbox and label view check`]);
+    // Membership is checked from the API list; in the UI only the run's own
+    // [TEST] conversation is clicked (never a real customer's).
+    const conv = await data.conversation([`${TEST_PREFIX} inbox and label view check`]);
+    const contact = await data.testContact();
+    const inboxList = Api.must(await api.cw(`conversations?assignee_type=all&status=all&inbox_id=${INBOX.api}`), 'inbox list').data.payload as any[];
+    expect(inboxList.every(c => c.inbox_id === INBOX.api), `every row is inbox ${INBOX.api}`).toBeTruthy();
     await openApp(page, `inbox/${INBOX.api}`);
-    const inboxRows = page.locator('.conversation');
-    await expect(inboxRows.first()).toBeVisible();
-    for (let i = 0; i < Math.min(3, await inboxRows.count()); i++) {
-      await inboxRows.nth(i).click();
-      await expect(page).toHaveURL(new RegExp(`/inbox/${INBOX.api}/conversations/\\d+`));
-      const id = Number(page.url().match(/conversations\/(\d+)/)![1]);
-      const c = Api.must(await api.cw(`conversations/${id}`), 'get conversation');
-      expect(c.inbox_id, `conversation ${id} inbox`).toBe(INBOX.api);
-    }
-    ev.add(`inbox ${INBOX.api} view: first 3 rows all inbox ${INBOX.api}`);
+    const mine = page.locator('.conversation', { hasText: contact.name }).first();
+    await expect(mine, 'the [TEST] conversation is in the inbox view').toBeVisible();
+    await mine.click();
+    await expect(page).toHaveURL(new RegExp(`/inbox/${INBOX.api}/conversations/${conv.id}`));
+    ev.add(`inbox ${INBOX.api} view: ${inboxList.length} rows from the API all inbox ${INBOX.api}; the [TEST] conversation opens from it`);
+    const labelList = Api.must(await api.cw('conversations?assignee_type=all&status=all&labels[]=audit_test'), 'label list').data.payload as any[];
+    expect(labelList.every(c => (c.labels ?? []).includes('audit_test')), 'every row labelled audit_test').toBeTruthy();
     await openApp(page, 'label/audit_test');
-    const labelRows = page.locator('.conversation');
-    await expect(labelRows.first()).toBeVisible();
-    for (let i = 0; i < Math.min(3, await labelRows.count()); i++) {
-      await labelRows.nth(i).click();
-      await expect(page).toHaveURL(/\/conversations\/\d+/);
-      const id = Number(page.url().match(/conversations\/(\d+)/)![1]);
-      const labels = Api.must(await api.cw(`conversations/${id}/labels`), 'labels').payload as string[];
-      expect(labels, `conversation ${id} labels`).toContain('audit_test');
-    }
-    ev.add('label audit_test view: first 3 rows all labelled');
+    await expect(page.locator('.conversation', { hasText: contact.name }).first(), 'the [TEST] conversation is in the label view').toBeVisible();
+    ev.add(`label audit_test view: ${labelList.length} rows all labelled; the [TEST] conversation is listed`);
     const teams = Api.must(await api.cw('teams'), 'teams') as any[];
     if (teams.length) {
       await openApp(page, `team/${teams[0].id}`);
-      ev.add(`team ${teams[0].name} view opened (${await page.locator('.conversation').count()} rows)`);
+      ev.add(`team view opened (${await page.locator('.conversation').count()} rows)`);
     } else {
       ev.add('no teams exist on the account, so there is no team view to check');
     }
@@ -146,29 +140,38 @@ trackerModule('Conversations', {
   'CONV-007': manual('the reply must reach the test handset and the test mailbox thread (the suite never sends WhatsApp or email)'),
 
   'CONV-008': async ({ page, api, data, ev }) => {
+    // The @mention targets ONLY the signed-in person, so no colleague is
+    // notified by a test.
+    const me = await api.me();
     const conv = await data.conversation([`${TEST_PREFIX} please help with my booking`]);
+    await data.assertSendable(conv.id);
     await openConversation(page, conv.id);
     await page.getByText('Private Note', { exact: true }).click();
     const editor = page.locator('.ProseMirror').first();
     await editor.click();
-    await page.keyboard.type('@');
+    await page.keyboard.type(`@${me.name.split(' ')[0]}`);
     await page.waitForTimeout(1200);
     await page.keyboard.press('Enter');
     await page.keyboard.type(' please check this case [TEST]');
+    const draft = await editor.innerText();
+    if (!draft.includes(`@${me.name}`)) {
+      await editor.fill('');
+      throw new Error('the mention picker did not pick the signed-in user; nothing was sent');
+    }
     await ev.shot(page);
     await page.getByRole('button', { name: /Add Note/i }).click();
     await expect.poll(async () => (await messages(api, conv.id)).filter(m => m.private).length, { timeout: 20_000 }).toBeGreaterThan(0);
     const note = (await messages(api, conv.id)).filter(m => m.private).pop();
-    expect(note.content).toContain('mention://user/');
+    expect(note.content).toContain(`mention://user/${me.id}/`);
     expect(note.message_type, 'note is not sent to the customer').not.toBe(1);
-    ev.add(`private note ${note.id} with an @mention saved (private, not sent; API inbox)`);
-    ev.handOff('the mentioned agent’s bell notification and Mentions list need that agent’s own login (Window B)');
+    ev.add(`private note ${note.id} with an @mention of the signed-in user saved (private, not sent; API inbox)`);
+    ev.handOff('a colleague’s bell notification and Mentions list need a second agent mentioned and logged in (Window B)');
   },
 
   'CONV-009': async ({ page, api, data, ev }) => {
     const conv = await data.conversation([`${TEST_PREFIX} can you send the brochure?`]);
     const contact = await data.testContact();
-    const code = `e2e${RUN_ID}`;
+    const code = KEY_PREFIX;
     Api.must(
       await api.cw('canned_responses', { method: 'POST', body: { short_code: code, content: '[TEST] Hello {{contact.name}}' } }),
       'create canned response',
@@ -187,6 +190,7 @@ trackerModule('Conversations', {
     ]);
     await page.waitForTimeout(1500);
     await ev.shot(page);
+    await data.assertSendable(conv.id);
     await page.getByRole('button', { name: /^Send/ }).first().click();
     await expect
       .poll(async () => (await messages(api, conv.id)).filter(m => m.message_type === 1 && (m.attachments?.length ?? 0) > 0).length, { timeout: 30_000 })
@@ -331,21 +335,19 @@ trackerModule('Conversations', {
   },
 
   'CONV-018': async ({ page, api, data, ev }) => {
+    // How many conversations the AI has filled is read from the API (counts
+    // only); the UI part runs on the run's own [TEST] conversation.
     const filled = Api.must(
       await api.cw('conversations/filter?page=1', {
         method: 'POST',
         body: { payload: [{ attribute_key: 'case_type', filter_operator: 'is_present', values: [], query_operator: null, custom_attribute_type: 'conversation_attribute' }] },
       }),
       'filter case_type present',
-    ).payload as any[];
-    expect(filled.length, 'conversations with AI-filled case_type').toBeGreaterThan(0);
-    const sample = filled[0];
-    const attrs = sample.custom_attributes ?? {};
+    );
+    const rows = filled.payload as any[];
+    expect(rows.length, 'conversations with AI-filled case_type').toBeGreaterThan(0);
     const keys = ['case_type', 'case_category', 'case_subcategory', 'case_detail', 'vehicle_model'];
-    ev.add(`conv ${sample.id}: ${keys.map(k => `${k}=${attrs[k] ?? '-'}`).join(', ')}`);
-    await openConversation(page, sample.id);
-    await revealInPanel(page, String(attrs.case_type)); // case_type shown in Conversation information
-    // Agent correction, on the run's own [TEST] conversation only.
+    ev.add(`${filled.meta?.all_count ?? rows.length} conversations have case_type; on page 1: ${keys.map(k => `${k} ${rows.filter(r => r.custom_attributes?.[k]).length}`).join(', ')}`);
     const defs = Api.must(await api.cw('custom_attribute_definitions?attribute_model=0'), 'attribute definitions') as any[];
     const cat = defs.find(d => d.attribute_key === 'case_category');
     const value = cat?.attribute_values?.[1] ?? cat?.attribute_values?.[0];
@@ -362,13 +364,14 @@ trackerModule('Conversations', {
   'CONV-019': async ({ page, api, ev }) => {
     const c = Api.must(await api.cw('search/contacts?q=60000000101'), 'find Ahmad').payload.contacts as any[];
     expect(c.length, '[DEMO] Ahmad contact').toBeGreaterThan(0);
+    expect(c[0].name, 'only the [DEMO] persona contact is opened').toMatch(/\[DEMO\]/);
     const convs = Api.must(await api.cw(`contacts/${c[0].id}/conversations`), 'Ahmad conversations').payload as any[];
     expect(convs.length).toBeGreaterThan(0);
     await openConversation(page, convs[0].id);
     const text = await bodyText(page);
     expect(text, 'DMS card loads or says not connected').toMatch(/Not connected|No DMS\/TSP record|Vehicles|Service history|DMS/);
     expect(text).toMatch(/Previous Conversations/i);
-    ev.add(`conv ${convs[0].id} (${c[0].name}): DMS card ${/Not connected/.test(text) ? 'shows Not connected' : 'loaded'}; Previous Conversations listed (${convs.length} conversations)`);
+    ev.add(`[DEMO] Ahmad conv ${convs[0].id}: DMS card ${/Not connected/.test(text) ? 'shows Not connected' : 'loaded'}; Previous Conversations listed (${convs.length} conversations)`);
     await ev.shot(page);
   },
 
@@ -455,7 +458,9 @@ trackerModule('Conversations', {
     ev.handOff('a message from the test handset outside business hours');
   },
 
-  'CONV-033': async ({ page, ev }) => {
+  'CONV-033': !FLAGS.allowConsoleHandoff
+    ? manual('would open a real human handoff from the test console (re-run with --allow-console-handoff to automate it)')
+    : async ({ page, ev }) => {
     await openConsole(page);
     await consoleTab(page, 'Chat');
     const first = await chatTurn(page, 'brp lama siap? nk service', /^Anonymous/);
@@ -467,13 +472,17 @@ trackerModule('Conversations', {
     await ev.shot(page);
   },
 
-  'CONV-034': async ({ page, api, ev }) => {
-    const r = Api.must(await api.cw('conversations?assignee_type=all&status=all&labels[]=possible_duplicate'), 'possible_duplicate list');
-    const list = r.data.payload as any[];
-    expect(list.length, 'conversations flagged possible_duplicate').toBeGreaterThan(0);
-    await openConversation(page, list[0].id);
-    await expect(page.getByText(/Previous Conversations/i).first()).toBeVisible();
-    ev.add(`${list.length} conversation(s) flagged possible_duplicate; conv ${list[0].id} shows Previous Conversations; no automatic merge`);
+  'CONV-034': async ({ page, api, data, ev }) => {
+    // Flag count from the API; the UI check uses two [TEST] conversations of
+    // the run's own contact (never a real customer's).
+    const flagged = Api.must(await api.cw('conversations?assignee_type=all&status=all&labels[]=possible_duplicate'), 'possible_duplicate list').data.meta.all_count;
+    ev.add(`${flagged} conversation(s) flagged possible_duplicate by the AI (count only)`);
+    const first = await data.conversation([`${TEST_PREFIX} brake noise after service`]);
+    Api.must(await api.cw(`conversations/${first.id}/toggle_status`, { method: 'POST', body: { status: 'resolved' } }), 'resolve first');
+    const second = await data.conversation([`${TEST_PREFIX} brake noise is back`]);
+    await openConversation(page, second.id);
+    await revealInPanel(page, /brake noise after service/, /Previous Conversations/i);
+    ev.add(`[TEST] conv ${second.id} shows the earlier [TEST] case #${first.id} under Previous Conversations; no automatic merge`);
     await ev.shot(page);
   },
 });

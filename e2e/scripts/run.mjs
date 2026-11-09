@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// `npm run e2e [-- <playwright args>] [--allow-demo-reset] [--allow-taxonomy-write]`
+// `npm run e2e [-- <playwright args>] [--allow-demo-reset] [--allow-taxonomy-write] [--allow-console-handoff]`
 //
 // Thin wrapper over `playwright test`: our own opt-in flags become env vars
 // (Playwright rejects unknown CLI flags); everything else is passed through,
@@ -14,7 +14,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const own = { '--allow-demo-reset': 'E2E_ALLOW_DEMO_RESET', '--allow-taxonomy-write': 'E2E_ALLOW_TAXONOMY_WRITE' };
+const own = {
+  '--allow-demo-reset': 'E2E_ALLOW_DEMO_RESET',
+  '--allow-taxonomy-write': 'E2E_ALLOW_TAXONOMY_WRITE',
+  '--allow-console-handoff': 'E2E_ALLOW_CONSOLE_HANDOFF',
+};
 const env = { ...process.env };
 const pass = [];
 const args = process.argv.slice(2);

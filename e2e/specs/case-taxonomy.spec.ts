@@ -3,7 +3,7 @@
 // (the node is retired again in the same test and by the final sweep).
 import { expect, test } from '../lib/fixtures';
 import { Api } from '../lib/api';
-import { FLAGS, RUN_ID, TEST_PREFIX } from '../lib/env';
+import { FLAGS, KEY_PREFIX, TEST_PREFIX } from '../lib/env';
 import { trackerModule } from '../lib/tracker';
 import { expectNoError, openApp, openConversation, revealInPanel } from '../lib/ui';
 
@@ -43,7 +43,7 @@ trackerModule('Case taxonomy', {
   'TAX-002': async ({ page, api, ev }) => {
     needWriteFlag();
     const { parent, level } = await parentForTest(api);
-    const key = `test_e2e_${RUN_ID}_battery_fault`;
+    const key = `${KEY_PREFIX}_battery_fault`;
     const label = `${TEST_PREFIX} Battery fault`;
     try {
       Api.must(await api.be('/admin/taxonomy/node', { method: 'POST', body: { level, key, label, parent: parent.key } }), 'add node');
@@ -63,7 +63,7 @@ trackerModule('Case taxonomy', {
   'TAX-003': async ({ page, api, ev }) => {
     needWriteFlag();
     const { parent, level } = await parentForTest(api);
-    const key = `test_e2e_${RUN_ID}_rename`;
+    const key = `${KEY_PREFIX}_rename`;
     try {
       Api.must(await api.be('/admin/taxonomy/node', { method: 'POST', body: { level, key, label: `${TEST_PREFIX} Rename me`, parent: parent.key } }), 'add');
       const renamed = `${TEST_PREFIX} Renamed`;

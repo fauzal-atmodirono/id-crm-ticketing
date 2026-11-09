@@ -10,8 +10,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chromium, test as base, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { Api } from './api';
-import { TestData, sweep } from './data';
+import { TestData, leftoversUnknown, sweep } from './data';
 import { SCREENSHOT_DIR, appUrl } from './env';
+import { redact } from './results';
 
 export class Evidence {
   readonly lines: string[] = [];
@@ -20,8 +21,8 @@ export class Evidence {
   constructor(readonly id: string) {}
 
   add(line: string): void {
-    // One line per fact; keep it short and free of anything secret.
-    this.lines.push(line.replace(/\s+/g, ' ').trim());
+    // One line per fact; no secrets, and personal data is masked here too.
+    this.lines.push(redact(line).replace(/\s+/g, ' ').trim());
   }
 
   summary(): string {
@@ -96,7 +97,12 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   data: [
     async ({ api }, use) => {
       await use(new TestData(api));
-      await sweep(api);
+      try {
+        await api.ready();
+        await sweep(api);
+      } catch (e) {
+        leftoversUnknown((e as Error).message);
+      }
     },
     { scope: 'worker' },
   ],

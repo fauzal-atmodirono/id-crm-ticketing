@@ -2,14 +2,17 @@
 // console's Chat tab (Anonymous), never through a real customer channel.
 import { expect } from '../lib/fixtures';
 import { Api } from '../lib/api';
-import { TEST_PREFIX } from '../lib/env';
+import { FLAGS, TEST_PREFIX } from '../lib/env';
 import { manual, trackerModule } from '../lib/tracker';
 import { bodyText, chatTurn, consoleTab, newChatSession, openApp, openConsole, openConversation } from '../lib/ui';
 
 const HANDOFF = /human agent|Escalated|Connected to/i;
+const NO_HANDOFF = 'would open a real human handoff from the test console (routed to live agents, may notify PICs); re-run with --allow-console-handoff to automate it';
 
 trackerModule('AI capabilities', {
-  'AI-001': async ({ page, ev }) => {
+  'AI-001': !FLAGS.allowConsoleHandoff
+    ? manual(NO_HANDOFF)
+    : async ({ page, ev }) => {
     await openConsole(page);
     await consoleTab(page, 'Chat');
     const faq = await chatTurn(page, 'How often should I service my Proton X50?', /^Anonymous/);
@@ -23,7 +26,9 @@ trackerModule('AI capabilities', {
     await ev.shot(page);
   },
 
-  'AI-002': async ({ page, ev }) => {
+  'AI-002': !FLAGS.allowConsoleHandoff
+    ? manual(NO_HANDOFF)
+    : async ({ page, ev }) => {
     await openConsole(page);
     await consoleTab(page, 'Chat');
     const angry = await chatTurn(page, 'This is the third time! Nobody helps me, I am very angry.', /^Anonymous/);

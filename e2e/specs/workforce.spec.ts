@@ -2,7 +2,7 @@
 // person's OWN status, set to non-routable statuses (never Available, so no
 // conversation is routed to them) and restored at the end of each test.
 import type { Page } from '@playwright/test';
-import { expect } from '../lib/fixtures';
+import { expect, test } from '../lib/fixtures';
 import { Api } from '../lib/api';
 import { manual, trackerModule } from '../lib/tracker';
 import { bodyText, expectNoError, openApp, settle } from '../lib/ui';
@@ -19,11 +19,33 @@ async function choose(page: Page, label: RegExp): Promise<void> {
   await expect.poll(() => currentStatus(page), { timeout: 20_000 }).toMatch(label);
 }
 
-/** Put the person's own status back to what it was before the test. */
+function statusButton(page: Page, label: string) {
+  return page.getByRole('button', { name: new RegExp(`^\\s*${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`) }).first();
+}
+
+/**
+ * Before touching anything: the person's current status must be one the My
+ * status page can set again, or the test would leave them changed. If not,
+ * nothing is changed and the row is handed to a person.
+ */
+async function restorableOriginal(page: Page): Promise<string> {
+  const original = await currentStatus(page);
+  if (!original || !(await statusButton(page, original).isVisible().catch(() => false))) {
+    test.skip(true, `Needs manual: your current status "${original || 'unknown'}" cannot be set back from My status, so the suite will not change it`);
+  }
+  return original;
+}
+
+/** Put the person's own status back; fail loudly if that did not work. */
 async function restore(page: Page, original: string): Promise<void> {
-  if (!original) return;
-  const btn = page.getByRole('button', { name: new RegExp(`^\\s*${original.replace(/[()]/g, '.')}`) }).first();
-  if (await btn.isVisible().catch(() => false)) await btn.click();
+  try {
+    await statusButton(page, original).click();
+    await expect.poll(() => currentStatus(page), { timeout: 20_000 }).toBe(original);
+  } catch (e) {
+    const msg = `YOUR STATUS WAS NOT RESTORED: set it back to "${original}" on My status by hand`;
+    console.error(`\n${'!'.repeat(78)}\n!! ${msg}\n${'!'.repeat(78)}\n`);
+    throw new Error(`${msg} (${(e as Error).message.split('\n')[0]})`);
+  }
 }
 
 trackerModule('Workforce & My status', {
@@ -51,14 +73,17 @@ trackerModule('Workforce & My status', {
     const b = await page.context().newPage();
     try {
       await openApp(b, 'proton/my-status');
-      const original = await currentStatus(b);
-      const t0 = Date.now();
-      await choose(b, /^\s*Busy/);
-      const row = page.locator('tr', { hasText: me.name }).first();
-      await expect.poll(async () => (await row.innerText().catch(() => '')).includes('Busy'), { timeout: 35_000, message: 'dashboard shows Busy within ~30 s' }).toBeTruthy();
-      ev.add(`dashboard row for ${me.name} showed Busy ${((Date.now() - t0) / 1000).toFixed(0)} s after the change (was ${original || 'unknown'})`);
-      await ev.shot(page);
-      await restore(b, original);
+      const original = await restorableOriginal(b);
+      try {
+        const t0 = Date.now();
+        await choose(b, /^\s*Busy/);
+        const row = page.locator('tr', { hasText: me.name }).first();
+        await expect.poll(async () => (await row.innerText().catch(() => '')).includes('Busy'), { timeout: 35_000, message: 'dashboard shows Busy within ~30 s' }).toBeTruthy();
+        ev.add(`dashboard row showed Busy ${((Date.now() - t0) / 1000).toFixed(0)} s after the change (was ${original})`);
+        await ev.shot(page);
+      } finally {
+        await restore(b, original);
+      }
     } finally {
       await b.close();
     }
@@ -66,18 +91,21 @@ trackerModule('Workforce & My status', {
 
   'WF-003': async ({ page, ev }) => {
     await openApp(page, 'proton/my-status');
-    const original = await currentStatus(page);
-    ev.add(`started as ${original || 'unknown'}`);
-    for (const label of [/^\s*Busy/, /^\s*Break/]) {
-      await choose(page, label);
-      ev.add(`picked ${label.source.replace(/\^\\s\*/, '')}: shown as current`);
+    const original = await restorableOriginal(page);
+    ev.add(`started as ${original}`);
+    try {
+      for (const label of [/^\s*Busy/, /^\s*Break/]) {
+        await choose(page, label);
+        ev.add(`picked ${label.source.replace(/\^\\s\*/, '')}: shown as current`);
+      }
+      await page.reload();
+      await settle(page);
+      expect(await currentStatus(page), 'kept after refresh').toMatch(/Break/);
+      ev.add('last status kept after refresh (Available/Online skipped on purpose: it would route live conversations)');
+      await ev.shot(page);
+    } finally {
+      await restore(page, original);
     }
-    await page.reload();
-    await settle(page);
-    expect(await currentStatus(page), 'kept after refresh').toMatch(/Break/);
-    ev.add('last status kept after refresh (Available/Online skipped on purpose: it would route live conversations)');
-    await ev.shot(page);
-    await restore(page, original);
   },
 
   'WF-004': manual('same as CONV-015: needs Busy test agents and new WhatsApp messages'),

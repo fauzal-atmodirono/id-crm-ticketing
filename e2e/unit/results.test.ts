@@ -2,7 +2,7 @@
 //   npm run test:unit
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildWrites, mapResults, oneLine, runAtLabel } from '../lib/results.ts';
+import { buildWrites, mapResults, oneLine, redact, runAtLabel } from '../lib/results.ts';
 
 function spec(title: string, status: string, extra: { annotations?: any[]; error?: string } = {}) {
   return {
@@ -90,4 +90,11 @@ test('annotations repeated at test and result level are not doubled', () => {
 test('evidence is one line and capped', () => {
   assert.equal(oneLine('a\n  b\tc'), 'a b c');
   assert.equal(oneLine('x'.repeat(500)).length, 450);
+});
+
+test('personal data is masked, ordinary numbers are not', () => {
+  assert.equal(redact('call +60 12-345 6789 or e2e.x@example.com'), 'call [phone] or [email]');
+  assert.equal(redact('plate DMO 1105 and WXY1234A'), 'plate [plate] and [plate]');
+  assert.equal(redact('HTTP 422 on 2026-11-09, 113 of 113, X50 in 1200 ms'), 'HTTP 422 on 2026-11-09, 113 of 113, X50 in 1200 ms');
+  assert.equal(mapResults({ suites: [{ title: 'f', suites: [{ title: 'T', specs: [{ title: 'A-1 x', tests: [{ results: [{ status: 'failed', error: { message: 'Error: 60000000101 not found' } }] }] }] }] }] })[0].evidence, 'Error: [phone] not found');
 });

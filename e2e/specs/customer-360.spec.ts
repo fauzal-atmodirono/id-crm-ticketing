@@ -1,6 +1,7 @@
 // Tracker tab: Customer 360 (read-only lookups).
 import { expect } from '../lib/fixtures';
 import { Api } from '../lib/api';
+import { RUN_ID, TEST_PREFIX } from '../lib/env';
 import { manual, trackerModule } from '../lib/tracker';
 import { bodyText, c360Search } from '../lib/ui';
 
@@ -14,20 +15,33 @@ trackerModule('Customer 360', {
     await expect(page.getByRole('columnheader', { name: 'Inbox' }).first()).toBeVisible();
     await expect(page.getByRole('heading', { name: 'RSA incidents' })).toBeVisible();
     const convs = await page.locator('table').first().locator('tbody tr').count();
-    ev.add(`[DEMO] Ahmad by phone in ${ms} ms: contact, ${convs} conversation(s) with Inbox and Status, RSA incidents section ${/No RSA incidents found/.test(text) ? 'empty' : 'listed'}`);
+    ev.add(`[DEMO] Ahmad (demo persona) by phone in ${ms} ms: contact, ${convs} conversation(s) with Inbox and Status, RSA incidents section ${/No RSA incidents found/.test(text) ? 'empty' : 'listed'}`);
     await ev.shot(page, { fullPage: true });
   },
 
-  'C360-002': async ({ page, api, ev }) => {
-    const incidents = Api.must(await api.be('/rsa/incidents'), 'incidents').incidents as any[];
-    const plate = (incidents.find(i => /DMO 1105/i.test(i.vehicle_no)) ?? incidents.find(i => i.customer_phone) ?? incidents[0])?.vehicle_no;
-    expect(plate, 'an RSA incident with a vehicle number').toBeTruthy();
-    const ms = await c360Search(page, plate);
-    const text = await bodyText(page);
-    await ev.shot(page, { fullPage: true });
-    ev.add(`plate ${plate} in ${ms} ms: contact ${/No matching contact found/.test(text) ? 'not found' : 'found'}, conversations ${/No conversations found/.test(text) ? 'none' : 'listed'}, RSA incidents ${/No RSA incidents found/.test(text) ? 'none' : 'listed'}`);
-    expect(text, 'matching contact returned for the vehicle number').not.toMatch(/No matching contact found/);
-    expect(text, 'matching cases returned for the vehicle number').not.toMatch(/No conversations found/);
+  'C360-002': async ({ page, api, data, ev }) => {
+    // A run-created [TEST] incident for the run's [TEST] contact, so the
+    // search never surfaces a real customer.
+    const contact = await data.testContact();
+    await data.conversation([`${TEST_PREFIX} vehicle search check`]);
+    const plate = `TEST ${RUN_ID.toUpperCase()}V`;
+    const created = Api.must(
+      await api.be('/rsa/incidents', {
+        method: 'POST',
+        body: { incident_date: new Date().toISOString().slice(0, 10), vehicle_no: plate, cause: '[TEST] marker', customer_phone: contact.phone, remarks: `${TEST_PREFIX} C360 plate` },
+      }),
+      'create [TEST] incident',
+    );
+    try {
+      const ms = await c360Search(page, plate);
+      const text = await bodyText(page);
+      await ev.shot(page, { fullPage: true });
+      ev.add(`[TEST] vehicle number in ${ms} ms: contact ${/No matching contact found/.test(text) ? 'not found' : 'found'}, conversations ${/No conversations found/.test(text) ? 'none' : 'listed'}, RSA incidents ${/No RSA incidents found/.test(text) ? 'none' : 'listed'}`);
+      expect(text, 'matching contact returned for the vehicle number').not.toMatch(/No matching contact found/);
+      expect(text, 'matching cases returned for the vehicle number').not.toMatch(/No conversations found/);
+    } finally {
+      await api.be(`/rsa/incidents/${created.id}`, { method: 'DELETE' });
+    }
   },
 
   'C360-003': async ({ page, ev }) => {
@@ -41,6 +55,7 @@ trackerModule('Customer 360', {
 
   'C360-004': async ({ page, ev }) => {
     await c360Search(page, AHMAD);
+    expect(await bodyText(page), 'only the [DEMO] persona is opened').toMatch(/\[DEMO\]/);
     const link = page.locator('table').first().locator('tbody tr a').first();
     const label = (await link.innerText()).trim();
     await link.click();

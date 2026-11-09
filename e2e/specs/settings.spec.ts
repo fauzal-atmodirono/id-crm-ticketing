@@ -3,7 +3,7 @@
 // [TEST] canned response, both deleted in the test.
 import { expect } from '../lib/fixtures';
 import { Api } from '../lib/api';
-import { INBOX, RUN_ID, TEST_PREFIX } from '../lib/env';
+import { INBOX, KEY_PREFIX, RUN_ID, TEST_PREFIX } from '../lib/env';
 import { manual, trackerModule } from '../lib/tracker';
 import { bodyText, expectNoError, openApp, openConversation } from '../lib/ui';
 
@@ -112,6 +112,7 @@ trackerModule('Settings', {
     );
     const id = (macro.payload ?? macro).id;
     try {
+      await data.assertSendable(conv.id);
       Api.must(await api.cw(`macros/${id}/execute`, { method: 'POST', body: { conversation_ids: [conv.id] } }), 'run macro');
       await expect.poll(async () => (Api.must(await api.cw(`conversations/${conv.id}/labels`), 'labels').payload as string[]).includes(label), { timeout: 30_000 }).toBeTruthy();
       const msgs = Api.must(await api.cw(`conversations/${conv.id}/messages`), 'messages').payload as any[];
@@ -128,9 +129,10 @@ trackerModule('Settings', {
   'SET-012': async ({ page, api, data, ev }) => {
     const conv = await data.conversation([`${TEST_PREFIX} canned check`]);
     const contact = await data.testContact();
-    const code = `e2e${RUN_ID}cr`;
+    const code = `${KEY_PREFIX}cr`;
     const cr = Api.must(await api.cw('canned_responses', { method: 'POST', body: { short_code: code, content: '[TEST] Hello {{contact.name}}' } }), 'create canned');
     try {
+      await data.assertSendable(conv.id);
       await openConversation(page, conv.id);
       const editor = page.locator('.ProseMirror').first();
       await editor.click();

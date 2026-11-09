@@ -2,6 +2,7 @@
 import type { Page } from '@playwright/test';
 import { expect } from '../lib/fixtures';
 import { Api } from '../lib/api';
+import { TEST_PREFIX } from '../lib/env';
 import { trackerModule } from '../lib/tracker';
 import { bodyText, expectNoError, openApp, settle } from '../lib/ui';
 
@@ -21,8 +22,7 @@ trackerModule('Cases', {
     const missing = wanted.filter(w => !headers.some(h => h.toLowerCase().includes(w.toLowerCase())));
     ev.add(`columns: ${headers.join(' | ')}${missing.length ? `; not found: ${missing.join(', ')}` : ''}`);
     for (const must of ['Case ID', 'Division', 'Status']) expect(missing, `${must} column`).not.toContain(must);
-    const sample = await rows(page).first().innerText();
-    ev.add(`${await rows(page).count()} cases; first row: ${sample.replace(/\s+/g, ' ').slice(0, 140)}`);
+    ev.add(`${await rows(page).count()} cases listed`);
     await ev.shot(page);
   },
 
@@ -48,14 +48,15 @@ trackerModule('Cases', {
     await ev.shot(page);
   },
 
-  'CASE-003': async ({ page, ev }) => {
+  'CASE-003': async ({ page, data, ev }) => {
+    // Opens the run's own [TEST] case, never a real customer's.
+    const conv = await data.conversation([`${TEST_PREFIX} case open check`]);
     await openApp(page, 'proton/cases');
-    const link = rows(page).first().locator('a').first();
-    await expect(link).toBeVisible({ timeout: 45_000 });
-    const id = (await link.innerText()).replace(/\D/g, '');
+    const link = page.locator('table tbody tr a', { hasText: new RegExp(`^\\s*#${conv.id}\\s*$`) }).first();
+    await expect(link, 'the [TEST] case is listed').toBeVisible({ timeout: 45_000 });
     await link.click();
-    await expect(page).toHaveURL(new RegExp(`conversations/${id}`));
-    ev.add(`clicked #${id}: the linked conversation opened`);
+    await expect(page).toHaveURL(new RegExp(`conversations/${conv.id}`));
+    ev.add(`clicked [TEST] case #${conv.id}: the linked conversation opened`);
     await ev.shot(page);
   },
 

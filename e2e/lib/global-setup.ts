@@ -14,7 +14,7 @@
 import fs from 'node:fs';
 import { chromium, type BrowserContext, type Page } from '@playwright/test';
 import { Api } from './api';
-import { sweep } from './data';
+import { leftoversUnknown, sweep } from './data';
 import {
   BASE_URL,
   CDP_PORT,
@@ -95,9 +95,10 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   return async () => {
     try {
       const api = new Api(await context.newPage());
+      await api.ready();
       await sweep(api);
     } catch (e) {
-      console.log(`[e2e cleanup] global sweep skipped: ${(e as Error).message.slice(0, 160)}`);
+      leftoversUnknown((e as Error).message);
     }
     await context.close();
   };

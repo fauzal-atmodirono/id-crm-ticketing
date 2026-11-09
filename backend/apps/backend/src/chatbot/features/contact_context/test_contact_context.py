@@ -1,4 +1,4 @@
-"""Chat-side caller context: GET /agent/contact-context (minimal view only)."""
+"""Chat-side caller context: POST /agent/contact-context (minimal view only)."""
 
 from __future__ import annotations
 
@@ -93,10 +93,10 @@ def test_several_people_on_one_number_ask_rather_than_guess() -> None:
 
 def test_endpoint_needs_the_backend_key() -> None:
     client, seen = _client(_ahmad())
-    assert client.get("/agent/contact-context", params={"phone": "+60000000101"}).status_code == 401
-    res = client.get(
+    assert client.post("/agent/contact-context", json={"phone": "+60000000101"}).status_code == 401
+    res = client.post(
         "/agent/contact-context",
-        params={"phone": "+60000000101"},
+        json={"phone": "+60000000101"},
         headers={"x-api-key": "wrong"},
     )
     assert res.status_code == 401
@@ -105,8 +105,8 @@ def test_endpoint_needs_the_backend_key() -> None:
 
 def test_blank_key_fails_closed() -> None:
     client, seen = _client(_ahmad(), key="")
-    res = client.get(
-        "/agent/contact-context", params={"phone": "+60000000101"}, headers={"x-api-key": ""}
+    res = client.post(
+        "/agent/contact-context", json={"phone": "+60000000101"}, headers={"x-api-key": ""}
     )
     assert res.status_code == 401
     assert seen == []
@@ -114,16 +114,16 @@ def test_blank_key_fails_closed() -> None:
 
 def test_flag_off_is_404() -> None:
     client, _ = _client(_ahmad(), enabled=False)
-    res = client.get(
-        "/agent/contact-context", params={"phone": "+60000000101"}, headers={"x-api-key": KEY}
+    res = client.post(
+        "/agent/contact-context", json={"phone": "+60000000101"}, headers={"x-api-key": KEY}
     )
     assert res.status_code == 404
 
 
 def test_endpoint_returns_view_and_instruction() -> None:
     client, seen = _client(_ahmad())
-    res = client.get(
-        "/agent/contact-context", params={"phone": "+60 0000 00101"}, headers={"x-api-key": KEY}
+    res = client.post(
+        "/agent/contact-context", json={"phone": "+60 0000 00101"}, headers={"x-api-key": KEY}
     )
     assert res.status_code == 200
     body = res.json()
@@ -134,7 +134,39 @@ def test_endpoint_returns_view_and_instruction() -> None:
 
 def test_unusable_number_is_no_match_without_lookup() -> None:
     client, seen = _client(_ahmad())
-    res = client.get("/agent/contact-context", params={"phone": "abc"}, headers={"x-api-key": KEY})
+    res = client.post("/agent/contact-context", json={"phone": "abc"}, headers={"x-api-key": KEY})
     assert res.status_code == 200
     assert res.json() == {"view": {"match": "none", "customers": []}, "instruction": ""}
+    assert seen == []
+
+
+def test_get_with_the_number_in_the_url_is_not_served() -> None:
+    client, seen = _client(_ahmad())
+    res = client.get(
+        "/agent/contact-context", params={"phone": "+60000000101"}, headers={"x-api-key": KEY}
+    )
+    assert res.status_code == 405
+    assert seen == []
+
+
+def test_contact_context_is_rate_limited() -> None:
+    client, _ = _client(_ahmad())
+    codes = [
+        client.post(
+            "/agent/contact-context", json={"phone": "+60000000101"}, headers={"x-api-key": KEY}
+        ).status_code
+        for _ in range(121)
+    ]
+    assert codes[:120] == [200] * 120
+    assert codes[120] == 429
+
+
+def test_bad_key_attempts_count_against_the_limit_too() -> None:
+    client, seen = _client(_ahmad())
+    for _ in range(120):
+        client.post("/agent/contact-context", json={"phone": "x"}, headers={"x-api-key": "bad"})
+    res = client.post(
+        "/agent/contact-context", json={"phone": "+60000000101"}, headers={"x-api-key": KEY}
+    )
+    assert res.status_code == 429
     assert seen == []

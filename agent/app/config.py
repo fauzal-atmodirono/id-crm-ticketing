@@ -75,6 +75,19 @@ class Settings(BaseSettings):
     # CHAT_CALLER_CONTEXT_ENABLED (same env var, both services). Default
     # False = no lookup, prompts byte-identical. Fail-open.
     chat_caller_context_enabled: bool = False
+    # Ruling R35: caller context only on these Chatwoot inbox ids
+    # (comma-separated). Empty (default) = no inbox, even with the flag on.
+    # Proton lists only the demo API inbox.
+    chat_caller_context_inbox_ids: str = ""
+
+    @property
+    def chat_caller_context_inbox_set(self) -> frozenset[int]:
+        out: set[int] = set()
+        for part in self.chat_caller_context_inbox_ids.split(","):
+            part = part.strip()
+            if part.isdigit():
+                out.add(int(part))
+        return frozenset(out)
     # Voice-note + image understanding for the agent-bot's chat-agent path
     # (orchestrator.py's _process_via_chat_agent, chat_agent_enabled=True
     # only). Default False = today's text-only behavior, byte-identical.

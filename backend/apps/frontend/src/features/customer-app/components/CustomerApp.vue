@@ -30,7 +30,6 @@ const persona = computed<Persona | null>(
 
 const messages = ref<CustomerMessage[]>([])
 const draft = ref('')
-const sending = ref(false)
 const error = ref<string | null>(null)
 const threadEl = ref<HTMLElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -88,21 +87,50 @@ watch(personaId, (id) => {
   else stopPolling()
 })
 
-async function send(file?: Blob, filename?: string): Promise<void> {
+// Sends run one at a time, in order, and are never dropped: a voice note
+// that finishes while a text is still being posted waits its turn.
+let queue: Promise<void> = Promise.resolve()
+const inFlight = ref(0)
+
+function enqueue(personaAtSend: string, text: string, file?: Blob, filename?: string): Promise<void> {
+  inFlight.value += 1
+  const job = async (): Promise<void> => {
+    try {
+      await sendMessage(personaAtSend, text, file, filename)
+      error.value = null
+      if (personaAtSend === personaId.value) await refresh()
+    } catch (e) {
+      error.value = e instanceof Error ? `Not sent (${e.message})` : 'Not sent'
+      if (text && !file && !draft.value) draft.value = text // give the words back
+    } finally {
+      inFlight.value -= 1
+    }
+  }
+  queue = queue.then(job, job)
+  return queue
+}
+
+async function sendText(): Promise<void> {
   const id = personaId.value
   const text = draft.value.trim()
-  if (!id || sending.value || (!text && !file)) return
-  sending.value = true
-  error.value = null
-  try {
-    await sendMessage(id, text, file, filename)
-    draft.value = ''
-    await refresh()
-  } catch (e) {
-    error.value = e instanceof Error ? `Not sent (${e.message})` : 'Not sent'
-  } finally {
-    sending.value = false
-  }
+  if (!id || !text) return
+  draft.value = ''
+  await enqueue(id, text)
+}
+
+// Photo / video: the typed draft goes with it as the caption.
+async function sendMedia(file: Blob, filename: string): Promise<void> {
+  const id = personaId.value
+  if (!id) return
+  const caption = draft.value.trim()
+  draft.value = ''
+  await enqueue(id, caption, file, filename)
+}
+
+// Voice note: never takes the draft (it is a separate message).
+async function sendVoiceNote(id: string, wav: Blob): Promise<void> {
+  if (!id || id !== personaId.value) return // persona changed while recording
+  await enqueue(id, '', wav, 'voice-note.wav')
 }
 
 function pickFile(): void {
@@ -118,7 +146,7 @@ async function onFile(event: Event): Promise<void> {
     error.value = 'That file is over 15 MB.'
     return
   }
-  await send(file, file.name)
+  await sendMedia(file, file.name)
 }
 
 // Voice note: recorded in the browser and re-encoded to 16 kHz mono WAV
@@ -126,13 +154,14 @@ async function onFile(event: Event): Promise<void> {
 const voice = useVoiceCapture({ maxRecordingMs: 60_000, silenceMs: 2500 })
 
 async function toggleVoiceNote(): Promise<void> {
-  if (!personaId.value || sending.value) return
+  const id = personaId.value
+  if (!id) return
   if (voice.isActive.value) {
     await voice.stop()
     return
   }
   try {
-    await voice.start((wav) => void send(wav, 'voice-note.wav'))
+    await voice.start((wav) => void sendVoiceNote(id, wav))
   } catch {
     error.value = voice.error.value ?? 'Microphone unavailable'
   }
@@ -243,22 +272,22 @@ function timeLabel(at: number | null): string {
 
     <p v-if="error" class="banner banner--err" role="alert">{{ error }}</p>
 
-    <form class="composer" @submit.prevent="send()">
+    <form class="composer" @submit.prevent="sendText()">
       <input
         ref="fileInput"
         class="hidden"
         type="file"
-        accept="image/*,video/*"
+        accept="image/jpeg,image/png,image/webp,image/heic,video/mp4,video/quicktime"
         @change="onFile"
       />
-      <button type="button" class="icon" :disabled="!persona || sending" aria-label="Send a photo or video" @click="pickFile">
+      <button type="button" class="icon" :disabled="!persona" aria-label="Send a photo or video" @click="pickFile">
         📎
       </button>
       <button
         type="button"
         class="icon"
         :class="{ 'icon--rec': voice.isActive.value }"
-        :disabled="!persona || sending"
+        :disabled="!persona"
         :aria-label="voice.isActive.value ? 'Stop and send the voice note' : 'Record a voice note'"
         @click="toggleVoiceNote"
       >
@@ -271,7 +300,9 @@ function timeLabel(at: number | null): string {
         :placeholder="persona ? 'Message Proton' : 'Pick a customer first'"
         :disabled="!persona || voice.isActive.value"
       />
-      <button type="submit" class="send" :disabled="!persona || sending || !draft.trim()">Send</button>
+      <button type="submit" class="send" :disabled="!persona || !draft.trim()">
+        {{ inFlight ? 'Sending…' : 'Send' }}
+      </button>
     </form>
   </div>
 </template>

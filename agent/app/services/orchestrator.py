@@ -18,6 +18,7 @@ conversation is reopened for a human to review — the AI never auto-sends.
 from __future__ import annotations
 
 import asyncio
+import re
 import base64
 import json
 import logging
@@ -561,7 +562,11 @@ async def _process_conversation(conversation_id: int) -> None:
             customer_context = format_customer_context(contact_attributes)
             # Chat-side caller context (flag, default off): the same minimal
             # "who is this" view the phone line uses. Fail-open ("" on error).
-            if settings.chat_caller_context_enabled and proton is not None:
+            if (
+                settings.chat_caller_context_enabled
+                and proton is not None
+                and inbox_id in settings.chat_caller_context_inbox_set
+            ):
                 phone = (body.get("phone_number") if isinstance(body, dict) else None) or (
                     sender.get("phone_number")
                 )
@@ -831,6 +836,15 @@ def _apply_media_budget(
         )
 
 
+_CRM_MARKER = re.compile(r"\[\s*CUSTOMER\s+CONTEXT", re.IGNORECASE)
+
+
+def _neutralise_crm_marker(text: str) -> str:
+    """Customer text that imitates the bracketed CRM note loses its bracket,
+    so the only "[CUSTOMER CONTEXT" the model sees is the one we prepend."""
+    return _CRM_MARKER.sub("(quoted by the customer) CUSTOMER CONTEXT", text)
+
+
 async def _process_via_chat_agent(
     conversation_id: int,
     message_list: list[dict],
@@ -902,6 +916,10 @@ async def _process_via_chat_agent(
             )
         return
 
+    if settings.chat_caller_context_enabled:
+        # A customer must not be able to pass their own text off as our CRM
+        # note: the marker is neutralised wherever it appears, words kept.
+        text = _neutralise_crm_marker(text)
     if caller_context:
         # The chat agent's instruction is composed in the backend and
         # /chat/turn takes no extra context field, so the CRM view travels as

@@ -7,13 +7,22 @@ no more: first name, car model(s), plate last 4, usual dealer, open case
 count. Never the phone number, the surname or a full plate (Malaysia PDPA):
 the bot CONFIRMS ("is this Ahmad? about your X50?"), it does not recite.
 
-`GET /agent/contact-context?phone=...` reuses the phone path's bounded,
-fail-open `CallerContextService.lookup` (read-only here) and returns that
-minimal view plus a ready-made prompt paragraph. Guarded by
-CHAT_CALLER_CONTEXT_ENABLED (default false -> 404) and the backend's shared
-key (`x-api-key == PROTON_BACKEND_KEY`; blank key fails closed). The path is
-deliberately outside the `/kb /admin /metrics ...` prefixes Caddy exposes on
-the CRM host: only the agent service (internal network) calls it.
+`POST /agent/contact-context` with JSON ``{"phone": "..."}`` (a body, so the
+number never sits in a URL, an access log or httpx's request log) reuses
+the phone path's bounded, fail-open `CallerContextService.lookup`
+(read-only here) and returns that minimal view plus a ready-made prompt
+paragraph. Guarded by CHAT_CALLER_CONTEXT_ENABLED (default false -> not
+mounted / 404), the backend's shared key (`x-api-key == PROTON_BACKEND_KEY`,
+constant-time; blank key fails closed) and a rate limit (120/min per client
+IP, counted before the key check so guessing is bounded too).
+
+Reachability: the CRM vhost does not proxy `/agent/*`, but the test
+console's authenticated `/apps/test-console/api/*` proxy forwards every
+backend path, so a console user who also holds PROTON_BACKEND_KEY could
+call it (a Caddy block denying `/apps/test-console/api/agent/*` is planned at
+deploy). PROTON_BACKEND_KEY is also present in agents' browsers (CRM strip);
+the view is less than Customer 360 already shows them. No log line here
+carries the number unmasked.
 """
 
 from __future__ import annotations
@@ -24,7 +33,8 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Request
+from pydantic import BaseModel
 
 from chatbot.features.chat.phone.caller_context import (
     CallerContext,
@@ -33,6 +43,7 @@ from chatbot.features.chat.phone.caller_context import (
     mask,
     normalise_mobile,
 )
+from chatbot.features.chat.phone.rate_limit import RateLimiter
 
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
@@ -44,6 +55,11 @@ Lookup = Callable[[str], Awaitable[CallerContext]]
 _TAG = re.compile(r"\[\s*demo\s*\]", re.IGNORECASE)
 _PLACEHOLDERS = frozenset({"", "customer", "caller", "unknown", "phone caller"})
 _MAX_NAME = 40
+_CALLS_PER_MINUTE = 120
+
+
+class ContactContextRequest(BaseModel):
+    phone: str = ""
 
 
 def _first_name(name: str) -> str:
@@ -140,13 +156,18 @@ def chat_context_instruction(view: dict[str, Any]) -> str:
 def build_contact_context_router(settings: Settings, lookup: Lookup) -> APIRouter:
     router = APIRouter()
 
-    @router.get("/agent/contact-context")
+    limiter = RateLimiter(_CALLS_PER_MINUTE, 60.0)
+
+    @router.post("/agent/contact-context")
     async def contact_context(
-        phone: Annotated[str, Query()] = "",
+        payload: ContactContextRequest,
+        request: Request,
         x_api_key: Annotated[str | None, Header()] = None,
     ) -> dict[str, Any]:
         if not settings.chat_caller_context_enabled:
             raise HTTPException(status_code=404, detail="Not found")
+        if not limiter.allow(request.client.host if request.client else "unknown"):
+            raise HTTPException(status_code=429, detail="Too many requests")
         key = settings.proton_backend_key
         if (
             not key
@@ -154,7 +175,7 @@ def build_contact_context_router(settings: Settings, lookup: Lookup) -> APIRoute
             or not hmac.compare_digest(x_api_key.encode("utf-8"), key.encode("utf-8"))
         ):
             raise HTTPException(status_code=401, detail="Unauthorized")
-        number = normalise_mobile(phone)
+        number = normalise_mobile(payload.phone)
         if number is None:
             return {"view": contact_view(None), "instruction": ""}
         try:

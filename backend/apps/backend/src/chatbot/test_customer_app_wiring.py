@@ -65,11 +65,11 @@ def test_chat_caller_context_flag_on_mounts_the_endpoint(monkeypatch: pytest.Mon
         CHATWOOT_API_TOKEN="t",
         CHATWOOT_INBOX_ID="1",
     )
-    res = TestClient(app).get("/agent/contact-context", params={"phone": "+60000000101"})
+    res = TestClient(app).post("/agent/contact-context", json={"phone": "+60000000101"})
     assert res.status_code == 401  # mounted: wants the backend key
 
 
 def test_chat_caller_context_flag_off_is_not_mounted(monkeypatch: pytest.MonkeyPatch) -> None:
     app = _boot(monkeypatch, CHAT_CALLER_CONTEXT_ENABLED="false", CRM_PROVIDER="chatwoot")
-    res = TestClient(app).get("/agent/contact-context", params={"phone": "+60000000101"})
+    res = TestClient(app).post("/agent/contact-context", json={"phone": "+60000000101"})
     assert res.status_code == 404

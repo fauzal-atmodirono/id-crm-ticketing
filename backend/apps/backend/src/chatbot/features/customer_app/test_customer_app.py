@@ -6,6 +6,7 @@ numbers are the fake +600000001xx persona numbers.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -29,6 +30,8 @@ from chatbot.platform.config import Settings
 CW = "http://chatwoot.test/api/v1/accounts/1"
 ORIGIN = "https://console.test"
 REPO = Path(__file__).resolve().parents[7]
+# The marker the app stamps on the conversations it opens (its own only).
+OWN: dict[str, Any] = {"additional_attributes": {"demo_customer_app": "ahmad"}}
 
 
 def _settings(**over: Any) -> Settings:
@@ -176,6 +179,9 @@ def test_first_message_creates_the_demo_contact_and_a_pending_conversation() -> 
     post_msg = respx.post(f"{CW}/conversations/55/messages").mock(
         return_value=httpx.Response(200, json={"id": 900})
     )
+    labels = respx.post(f"{CW}/conversations/55/labels").mock(
+        return_value=httpx.Response(200, json={"payload": ["demo_persona", "audit_test"]})
+    )
 
     res = _client().post("/customer-app/messages", data={"persona": "ahmad", "text": " Hi there "})
 
@@ -188,6 +194,11 @@ def test_first_message_creates_the_demo_contact_and_a_pending_conversation() -> 
     conv = json.loads(open_conv.calls.last.request.content)
     assert conv["inbox_id"] == 1 and conv["contact_id"] == 7 and conv["status"] == "pending"
     assert conv["source_id"] == "demo-customer-app-ahmad"
+    assert conv["custom_attributes"] == {"demo_seed": "demo_persona"}
+    assert conv["additional_attributes"] == {"demo_customer_app": "ahmad"}
+    assert json.loads(labels.calls.last.request.content) == {
+        "labels": ["demo_persona", "audit_test"]
+    }
     msg = json.loads(post_msg.calls.last.request.content)
     assert msg == {"content": "Hi there", "message_type": "incoming"}
     assert create_contact.calls.last.request.headers["api_access_token"] == "test-token"
@@ -206,6 +217,7 @@ def test_new_persona_contact_has_a_demo_name_and_no_attributes() -> None:
     )
     respx.post(f"{CW}/conversations").mock(return_value=httpx.Response(200, json={"id": 56}))
     respx.post(f"{CW}/conversations/56/messages").mock(return_value=httpx.Response(200, json={}))
+    respx.post(f"{CW}/conversations/56/labels").mock(return_value=httpx.Response(200, json={}))
 
     assert (
         _client().post("/customer-app/messages", data={"persona": "new", "text": "hi"}).status_code
@@ -231,8 +243,9 @@ def test_existing_contact_and_open_conversation_are_reused() -> None:
             json={
                 "payload": [
                     {"id": 40, "inbox_id": 1, "status": "open"},
-                    {"id": 41, "inbox_id": 1, "status": "pending"},
-                    {"id": 42, "inbox_id": 1, "status": "resolved"},
+                    {"id": 44, "inbox_id": 1, "status": "open", "labels": ["demo_persona"]},
+                    {"id": 41, "inbox_id": 1, **OWN, "status": "pending"},
+                    {"id": 42, "inbox_id": 1, **OWN, "status": "resolved"},
                     {"id": 43, "inbox_id": 9, "status": "open"},
                 ]
             },
@@ -251,13 +264,110 @@ def test_existing_contact_and_open_conversation_are_reused() -> None:
 
 
 @respx.mock
-def test_a_number_owned_by_a_non_demo_contact_is_never_used() -> None:
+@pytest.mark.parametrize("name", ["Real Customer", "Ahmad [DEMO]", "[DEMO]Ahmad", "[demo] Ahmad"])
+def test_a_number_owned_by_a_non_demo_contact_is_never_used(name: str) -> None:
     respx.get(f"{CW}/contacts/search").mock(
-        return_value=httpx.Response(200, json={"payload": [_contact(7, "Real Customer")]})
+        return_value=httpx.Response(200, json={"payload": [_contact(7, name)]})
     )
     res = _client().post("/customer-app/messages", data={"persona": "ahmad", "text": "hi"})
     assert res.status_code == 409
     _no_writes(respx.mock)
+
+
+@respx.mock
+def test_seeded_phone_or_other_open_conversations_are_never_reused() -> None:
+    respx.get(f"{CW}/contacts/search").mock(
+        return_value=httpx.Response(200, json={"payload": [_contact()]})
+    )
+    respx.get(f"{CW}/contacts/7/conversations").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "payload": [
+                    # demo-console seed (labelled, open), a phone call, another
+                    # persona's app conversation: none of them is Ahmad's app chat.
+                    {
+                        "id": 50,
+                        "inbox_id": 1,
+                        "status": "open",
+                        "labels": ["demo_persona"],
+                        "custom_attributes": {"demo_seed": "demo_persona"},
+                    },
+                    {
+                        "id": 51,
+                        "inbox_id": 1,
+                        "status": "open",
+                        "additional_attributes": {"session_id": "phone-CA1"},
+                    },
+                    {
+                        "id": 52,
+                        "inbox_id": 1,
+                        "status": "open",
+                        "additional_attributes": {"demo_customer_app": "nurul"},
+                    },
+                ]
+            },
+        )
+    )
+    open_conv = respx.post(f"{CW}/conversations").mock(
+        return_value=httpx.Response(200, json={"id": 70})
+    )
+    respx.post(f"{CW}/conversations/70/labels").mock(return_value=httpx.Response(200, json={}))
+    post_msg = respx.post(f"{CW}/conversations/70/messages").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    res = _client().post("/customer-app/messages", data={"persona": "ahmad", "text": "hi"})
+
+    assert res.json() == {"conversation_id": 70}
+    assert open_conv.called and post_msg.called
+
+
+@respx.mock
+def test_two_fast_posts_open_only_one_conversation() -> None:
+    created: list[dict[str, Any]] = []
+
+    respx.get(f"{CW}/contacts/search").mock(
+        return_value=httpx.Response(200, json={"payload": [_contact()]})
+    )
+    respx.get(f"{CW}/contacts/7/conversations").mock(
+        side_effect=lambda _request: httpx.Response(200, json={"payload": list(created)})
+    )
+
+    async def _create(_request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.05)  # the window two unlocked posts would both fall into
+        created.append({"id": 80 + len(created), "inbox_id": 1, **OWN, "status": "pending"})
+        return httpx.Response(200, json={"id": created[-1]["id"]})
+
+    open_conv = respx.post(f"{CW}/conversations").mock(side_effect=_create)
+    respx.post(url__regex=rf"{CW}/conversations/8\d/labels").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.post(url__regex=rf"{CW}/conversations/8\d/messages").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    settings = _settings()
+    app = FastAPI()
+    app.include_router(build_customer_app_router(settings, CustomerAppChannel(settings)))
+
+    async def _both() -> list[int]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://app.test", headers={"Origin": ORIGIN}
+        ) as client:
+            results = await asyncio.gather(
+                *(
+                    client.post("/customer-app/messages", data={"persona": "ahmad", "text": t})
+                    for t in ("one", "two")
+                )
+            )
+        return [r.json()["conversation_id"] for r in results]
+
+    ids = asyncio.run(_both())  # ASGITransport is not intercepted by respx
+
+    assert open_conv.call_count == 1
+    assert ids == [80, 80]
 
 
 @respx.mock
@@ -267,7 +377,7 @@ def test_photo_is_posted_as_a_multipart_attachment() -> None:
     )
     respx.get(f"{CW}/contacts/7/conversations").mock(
         return_value=httpx.Response(
-            200, json={"payload": [{"id": 41, "inbox_id": 1, "status": "pending"}]}
+            200, json={"payload": [{"id": 41, "inbox_id": 1, **OWN, "status": "pending"}]}
         )
     )
     post_msg = respx.post(f"{CW}/conversations/41/messages").mock(
@@ -295,7 +405,7 @@ def test_voice_note_wav_is_accepted() -> None:
     )
     respx.get(f"{CW}/contacts/7/conversations").mock(
         return_value=httpx.Response(
-            200, json={"payload": [{"id": 41, "inbox_id": 1, "status": "open"}]}
+            200, json={"payload": [{"id": 41, "inbox_id": 1, **OWN, "status": "open"}]}
         )
     )
     post_msg = respx.post(f"{CW}/conversations/41/messages").mock(
@@ -319,6 +429,13 @@ def test_upload_type_size_and_empty_checks() -> None:
         files={"file": ("x.exe", b"MZ", "application/octet-stream")},
     )
     assert res.status_code == 415
+    for bad in ("image/gif", "image/svg+xml", "video/x-msvideo", "audio/flac", "application/pdf"):
+        res = c.post(
+            "/customer-app/messages",
+            data={"persona": "ahmad"},
+            files={"file": ("x.bin", b"x", bad)},
+        )
+        assert res.status_code == 415, bad
     big = b"0" * (15 * 1024 * 1024 + 1)
     res = c.post(
         "/customer-app/messages",
@@ -346,13 +463,14 @@ def test_dedicated_inbox_setting_wins_over_chatwoot_inbox_id() -> None:
     )
     respx.get(f"{CW}/contacts/7/conversations").mock(
         return_value=httpx.Response(
-            200, json={"payload": [{"id": 41, "inbox_id": 1, "status": "open"}]}
+            200, json={"payload": [{"id": 41, "inbox_id": 1, **OWN, "status": "open"}]}
         )
     )
     open_conv = respx.post(f"{CW}/conversations").mock(
         return_value=httpx.Response(200, json={"id": 60})
     )
     respx.post(f"{CW}/conversations/60/messages").mock(return_value=httpx.Response(200, json={}))
+    respx.post(f"{CW}/conversations/60/labels").mock(return_value=httpx.Response(200, json={}))
     c = _client(_settings(demo_customer_app_inbox_id=5))
     assert c.post("/customer-app/messages", data={"persona": "ahmad", "text": "hi"}).json() == {
         "conversation_id": 60
@@ -390,7 +508,7 @@ def test_thread_shows_customer_and_proton_messages_only() -> None:
     )
     respx.get(f"{CW}/contacts/7/conversations").mock(
         return_value=httpx.Response(
-            200, json={"payload": [{"id": 41, "inbox_id": 1, "status": "open"}]}
+            200, json={"payload": [{"id": 41, "inbox_id": 1, **OWN, "status": "open"}]}
         )
     )
     respx.get(f"{CW}/conversations/41/messages").mock(

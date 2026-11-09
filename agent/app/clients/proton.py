@@ -364,14 +364,16 @@ class ProtonConfigClient:
 
     async def get_contact_context(self, phone: str) -> str:
         """The backend's chat caller-context paragraph for a phone number
-        (GET /agent/contact-context), or "" on no match, any error, non-2xx
+        (POST /agent/contact-context), or "" on no match, any error, non-2xx
         or a malformed body -- never raises. Short timeout: it runs before
         the bot's turn. Not cached (the contact changes as the bot saves)."""
         if not phone:
             return ""
         try:
-            response = await self._client.get(
-                "/agent/contact-context", params={"phone": phone}, timeout=3.0
+            # POST with a JSON body: the number never appears in a URL
+            # (access logs, httpx's request log).
+            response = await self._client.post(
+                "/agent/contact-context", json={"phone": phone}, timeout=3.0
             )
             if response.status_code != 200:
                 return ""

@@ -697,7 +697,7 @@ class Settings(BaseSettings):
     demo_customer_app_inbox_id: int = 0
 
     # Chat-side caller context (2026-11-09). See features/contact_context/.
-    # On: GET /agent/contact-context?phone= (x-api-key = PROTON_BACKEND_KEY)
+    # On: POST /agent/contact-context {"phone"} (x-api-key = PROTON_BACKEND_KEY)
     # returns the minimal "who is this" view the phone path uses (first name,
     # car model(s), plate last 4, usual dealer, open cases -- never the phone,
     # surname or full plate) plus a prompt paragraph, for the agent service's

@@ -2,29 +2,34 @@
   "_comment": [
     "GCS lifecycle for proton call recordings + transcripts.",
     "",
-    "matchesPrefix is LOAD-BEARING, not a tidiness detail. gs://lv-playground-genai",
-    "is a SHARED bucket -- it also holds bqml/, which belongs to unrelated work. A",
-    "rule without the prefix condition applies to the WHOLE bucket and would delete",
-    "that data after 90 days. Never remove or widen the prefix.",
+    "9 Nov 2026: NO automatic deletion. The former 90-day Delete rule was removed",
+    "from the live bucket, because Proton's RFP 2026_028 section 4.84 asks for all",
+    "operations data to be kept for at least 7 years and 90 days was only our",
+    "default. Whether call recordings fall under the 7 years (or a shorter PDPA",
+    "period) is an open question to Proton; set a rule here once they answer.",
+    "The old rule is kept below under _former_rule for reference.",
     "",
-    "This is what makes PHONE_RECORDING_RETENTION_DAYS real. retention.py cannot",
-    "enforce it (there is no Twilio recording-delete adapter, so a run is a dry",
-    "run), and the Twilio-side copies are NOT covered by this rule -- it governs",
-    "only the archived copies in this bucket.",
+    "If a rule is ever re-added: matchesPrefix is LOAD-BEARING. gs://lv-playground-genai",
+    "is a SHARED bucket -- it also holds bqml/, which belongs to unrelated work. A",
+    "rule without the prefix condition applies to the WHOLE bucket. Never remove or",
+    "widen the prefix. retention.py cannot enforce PHONE_RECORDING_RETENTION_DAYS",
+    "(there is no Twilio recording-delete adapter), and the Twilio-side copies are",
+    "NOT covered by any rule here -- it governs only the archived copies in this",
+    "bucket.",
     "",
     "Apply with:",
     "  gcloud storage buckets update gs://lv-playground-genai \\",
-    "    --lifecycle-file=deploy/gcs/proton-crm-lifecycle.json"
+    "    --lifecycle-file=deploy/gcs/proton-crm-lifecycle.json",
+    "(an empty rule list clears the bucket's lifecycle configuration)"
   ],
+  "_former_rule": {
+    "action": { "type": "Delete" },
+    "condition": {
+      "age": 90,
+      "matchesPrefix": ["proton-crm/call-recording/"]
+    }
+  },
   "lifecycle": {
-    "rule": [
-      {
-        "action": { "type": "Delete" },
-        "condition": {
-          "age": 90,
-          "matchesPrefix": ["proton-crm/call-recording/"]
-        }
-      }
-    ]
+    "rule": []
   }
 }

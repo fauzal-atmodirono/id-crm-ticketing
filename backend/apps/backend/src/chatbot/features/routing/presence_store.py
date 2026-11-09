@@ -322,7 +322,16 @@ class PresenceEventStore:
         try:
 
             def _query() -> PresenceEvent | None:
-                docs = self._collection().where("agent_id", "==", agent_id).stream()
+                # Bounded server-side like since()/latest(): the unbounded
+                # stream took >20 s per agent on proton and hung Workforce.
+                docs = (
+                    self._collection()
+                    .where("agent_id", "==", agent_id)
+                    .where("at", "<=", at)
+                    .order_by("at", direction=firestore.Query.DESCENDING)
+                    .limit(_LATEST_QUERY_LIMIT)
+                    .stream()
+                )
                 events = [e for e in (_from_document(d) for d in docs) if e is not None]
                 events = [e for e in events if e.at <= at]
                 if not events:

@@ -94,9 +94,15 @@ class _FakeQuery:
         self._limit_n = limit_n
 
     def where(self, field: str, op: str, value: Any) -> _FakeQuery:
-        assert op in ("==", ">="), "the store issues equality filters and since()'s `at >=` bound"
+        assert op in ("==", ">=", "<="), "equality filters plus the `at` window bounds"
         if op == "==":
             filtered = [(doc_id, data) for doc_id, data in self._docs if data.get(field) == value]
+        elif op == "<=":
+            filtered = [
+                (doc_id, data)
+                for doc_id, data in self._docs
+                if data.get(field) is not None and data.get(field) <= value
+            ]
         else:
             filtered = [
                 (doc_id, data)
@@ -277,6 +283,23 @@ async def test_since_reads_only_the_window_server_side():
 
         assert [e.status for e in events] == ["on_call", "wrap_up"]
         assert client.stream_log == [2], "since() must not stream events before the window"
+
+
+@pytest.mark.asyncio
+async def test_time_in_status_since_reads_a_bounded_number_of_documents():
+    # Regression: _latest_at_or_before streamed the agent's whole history.
+    with patch("chatbot.features.routing.presence_store.firestore.Client", autospec=True) as C:
+        client = _FakeFirestoreClient()
+        C.return_value = client
+        store = _store()
+        for hour in range(0, 9):
+            await store.append(_event("available", _dt(hour), previous=None))
+        await store.append(_event("on_call", _dt(10), previous="available"))
+
+        client.stream_log.clear()
+        await store.time_in_status_since(AGENT, _dt(10), _dt(11))
+
+        assert max(client.stream_log) < 9, client.stream_log
 
 
 @pytest.mark.asyncio

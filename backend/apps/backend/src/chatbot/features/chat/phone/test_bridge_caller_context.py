@@ -494,3 +494,72 @@ async def test_flag_on_without_caller_context_still_uses_the_formatter() -> None
     notes = _handoff_notes(log)
     assert len(notes) == 1
     assert "Who: not identified" in notes[0]
+
+
+# --- handoff-note fix round 2 -------------------------------------------------
+
+
+class _FailFirstNoteLog(_NoteLog):
+    """The first handoff-note append fails the way ChatwootAdapter reports a
+    swallowed 404/5xx: ConversationLogResult.FAILED, no exception."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.note_attempts = 0
+
+    async def append_conversation_comment(self, ticket_id: str, text: str, status: Any = None):
+        from chatbot.features.chat.ports import ConversationLogResult  # noqa: PLC0415
+
+        if text.startswith("[Handoff"):
+            self.note_attempts += 1
+            if self.note_attempts == 1:
+                return ConversationLogResult.FAILED
+        return await super().append_conversation_comment(ticket_id, text, status)
+
+
+async def test_a_failed_phone_note_is_retried_at_finalize() -> None:
+    ctx = CallerContext.from_candidates(PHONE, "caller_id", [AHMAD])
+    call = ToolCall(id="t1", name="request_human_handoff", args={"reason": "r", "summary": "s"})
+    log = _FailFirstNoteLog()
+    bridge, _, _ = _bridge(
+        [call], service=_Service(ctx), ctx=ctx, log=log,
+        settings=_settings(handoff_note_enabled=True),
+    )
+    await bridge.handle_twilio(_start())
+    await bridge.pump()
+    await asyncio.sleep(0.01)
+    assert _handoff_notes(log) == []  # the handoff-time post failed
+    await bridge.finalize()
+    assert log.note_attempts == 2
+    assert len(_handoff_notes(log)) == 1
+
+
+async def test_an_unverified_number_is_marked_in_the_note() -> None:
+    for source in ("spoken", "web_call_as"):
+        ctx = CallerContext.from_candidates(PHONE, source, [AHMAD])
+        call = ToolCall(
+            id="t1", name="request_human_handoff", args={"reason": "r", "summary": "s"}
+        )
+        log = _NoteLog()
+        bridge, _, _ = _bridge(
+            [call], service=_Service(ctx), ctx=ctx, log=log,
+            settings=_settings(handoff_note_enabled=True),
+        )
+        await bridge.handle_twilio(_start())
+        await bridge.pump()
+        await bridge.finalize()
+        assert "Who: Ahmad bin Ali · +60•••••0101 (unverified)" in _handoff_notes(log)[0], source
+
+
+async def test_a_caller_id_number_is_not_marked_unverified() -> None:
+    ctx = CallerContext.from_candidates(PHONE, "caller_id", [AHMAD])
+    call = ToolCall(id="t1", name="request_human_handoff", args={"reason": "r", "summary": "s"})
+    log = _NoteLog()
+    bridge, _, _ = _bridge(
+        [call], service=_Service(ctx), ctx=ctx, log=log,
+        settings=_settings(handoff_note_enabled=True),
+    )
+    await bridge.handle_twilio(_start())
+    await bridge.pump()
+    await bridge.finalize()
+    assert "(unverified)" not in _handoff_notes(log)[0]

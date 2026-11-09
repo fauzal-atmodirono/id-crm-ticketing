@@ -462,6 +462,7 @@ class PhoneBridge:
             priority=handoff_priority(texts=[reason, summary]),
             name=self._caller_name(),
             mobile=self._caller_phone or "",
+            mobile_unverified=bool(self._caller_phone) and self._caller_source != SOURCE_CALLER_ID,
             vehicle_model=model,
             vehicle_plate=plate,
             dealer=self._note_dealer(),
@@ -471,13 +472,23 @@ class PhoneBridge:
     async def _post_handoff_note(self, ticket_id: str) -> None:
         """The one structured note + priority + the phone marker (external_id
         = phone-<CallSid>, which /escalation/notify reads to send no written
-        customer ack for a call). Idempotent per call."""
+        customer ack for a call). Idempotent per call.
+
+        ``_handoff_note_posted`` is set only on ConversationLogResult.OK, so
+        a swallowed Chatwoot failure (FAILED, no exception) leaves finalize()
+        to retry the note. Residual edge, kept on purpose: if the handoff
+        task is cancelled by finalize()'s settle timeout AFTER Chatwoot
+        accepted the post but before the flag is set, finalize() posts the
+        note a second time -- a duplicate note beats a missing one."""
         if self._handoff_note_posted:
             return
         note = self._handoff_note(ticket_id)
-        await self._log_port.append_conversation_comment(
+        result = await self._log_port.append_conversation_comment(
             ticket_id, format_handoff_note(note), status="open"
         )
+        if result != ConversationLogResult.OK:
+            _log.warning("phone_handoff_note_not_posted", call_sid=self.call_sid)
+            return
         self._handoff_note_posted = True
         try:
             await apply_priority(self._log_port, ticket_id, note.priority)

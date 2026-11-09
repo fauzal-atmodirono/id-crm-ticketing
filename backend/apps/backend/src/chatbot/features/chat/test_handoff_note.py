@@ -362,3 +362,18 @@ async def test_priority_is_never_lowered() -> None:
     conv["priority"] = None
     await apply_priority(cw, "42", "medium")
     assert cw.priorities[-1] == ("42", "medium")
+
+
+def test_unverified_mobile_is_marked() -> None:
+    text = format_handoff_note(_note(mobile_unverified=True))
+    assert "Who: Ahmad bin Ali · +60•••••0101 (unverified)" in text
+
+
+async def test_chat_marks_a_spoken_or_flagged_number_unverified() -> None:
+    for attrs in ({"caller_phone_source": "spoken"}, {"caller_unverified": True}):
+        cw = _Chatwoot(_conv(**attrs))
+        await _service(cw).post_for_chat("42", {})
+        assert "+60•••••0101 (unverified)" in cw.notes[0][1], attrs
+    cw = _Chatwoot(_conv(caller_phone_source="caller_id"))
+    await _service(cw).post_for_chat("42", {})
+    assert "(unverified)" not in cw.notes[0][1]

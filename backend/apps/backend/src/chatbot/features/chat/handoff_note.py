@@ -94,6 +94,9 @@ _DEALER_CACHE_SECONDS = 300.0
 _DEALER_FETCH_TIMEOUT_SECONDS = 1.5
 _MAX_SUMMARY = 1200
 _DEALER_LABEL = re.compile(r"^dealer_(.+)$")
+# caller_context SOURCE_SPOKEN / SOURCE_WEB_CALL_AS (caller ID is the only
+# source the network proves).
+_UNVERIFIED_SOURCES = frozenset({"spoken", "web_call_as"})
 
 
 def handoff_priority(
@@ -160,6 +163,9 @@ class HandoffNote:
     priority: str
     name: str = ""
     mobile: str = ""
+    # Told by the caller / picked in the test console, not proven by the
+    # network: the agent must not trust it as the caller's identity.
+    mobile_unverified: bool = False
     vehicle_model: str = ""
     vehicle_plate: str = ""
     dealer: DealerLine = DealerLine()
@@ -198,6 +204,8 @@ def format_handoff_note(n: HandoffNote) -> str:
     who = n.name or "not identified"
     if n.mobile:
         who += f" · {mask_phone_value(n.mobile)}"
+        if n.mobile_unverified:
+            who += " (unverified)"
     vehicle = " · ".join(x for x in (n.vehicle_model, n.vehicle_plate) if x) or "not given"
     lines = [
         f"{NOTE_HEADING} {n.channel} · Priority: {n.priority.upper()}",
@@ -404,6 +412,9 @@ class HandoffNoteService:
             ),
             name=_s(sender.get("name")) or _s(customer_name),
             mobile=_s(sender.get("phone_number")) or _s(customer_phone),
+            # A number the phone path did not get from caller ID.
+            mobile_unverified=bool(attrs.get("caller_unverified"))
+            or _s(attrs.get("caller_phone_source")) in _UNVERIFIED_SOURCES,
             vehicle_model=_s(state.get("vehicle_model"))
             or _s(attrs.get("vehicle_model"))
             or _s(contact_attrs.get("vehicle_model")),

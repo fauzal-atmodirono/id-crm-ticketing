@@ -16,6 +16,7 @@ from chatbot.features.authz.db import init_authz_db
 from chatbot.features.authz.identity import TokenValidator
 from chatbot.features.authz.repository import AuthzRepository
 from chatbot.features.authz.seed import seed_defaults
+from chatbot.features.chat.adapters.chatwoot import ChatwootAdapter
 from chatbot.features.chat.customer360_router import (
     _DMS_BUDGET_FLOOR_SECONDS,
     _build_dms_block,
@@ -29,7 +30,7 @@ from chatbot.features.chat.dms_client import (
 )
 from chatbot.features.chat.dms_config_store import MAX_TIMEOUT_SECONDS, DmsConfig
 from chatbot.features.rsa.rsa_repository import InMemoryRsaRepository
-from chatbot.platform.config import get_settings
+from chatbot.platform.config import Settings, get_settings
 
 HEADERS = {
     "x-chatwoot-access-token": "tok-abc",
@@ -59,6 +60,7 @@ def _fake_chatwoot(*, contacts=None, contact_conversations=None, all_conversatio
     chatwoot.list_contact_conversations.return_value = contact_conversations or []
     chatwoot.list_conversations.return_value = all_conversations or []
     chatwoot.find_contacts_by_vehicle_no.return_value = []
+    chatwoot.find_conversations_by_vehicle_plate.return_value = []
     return chatwoot
 
 
@@ -904,3 +906,126 @@ async def test_the_floor_still_applies_under_the_new_ceiling(monkeypatch):
 @pytest.mark.asyncio
 async def test_an_in_range_timeout_is_passed_through_untouched(monkeypatch):
     assert await _budget_for(monkeypatch, 7.5) == [7.5]
+
+
+# --- C360-002: a vehicle number returns the customer, not only RSA incidents --
+
+
+@pytest.mark.asyncio
+async def test_plate_only_on_conversation_returns_its_contact(tmp_path, respx_mock):
+    owner = {"id": 31, "name": "Conv Owner", "phone_number": "+60000000031"}
+    plate_conv = {"id": 801, "status": "open", "inbox_id": 1,
+                  "custom_attributes": {"vehicle_plate": "VAB1234"},
+                  "meta": {"sender": owner}}
+    older = {"id": 802, "status": "resolved", "inbox_id": 1}
+    chatwoot = _fake_chatwoot(contact_conversations=[plate_conv, older])
+    chatwoot.find_conversations_by_vehicle_plate.return_value = [plate_conv]
+    client = await _client_for(
+        tmp_path, "plate_conv", 40, respx_mock, chatwoot, InMemoryRsaRepository()
+    )
+    res = client.get("/admin/customer360/search?q=vab%201234", headers=HEADERS)
+    body = res.json()
+    assert res.status_code == 200
+    assert body["contact"]["id"] == 31
+    assert [c["id"] for c in body["conversations"]] == [801, 802]
+    chatwoot.list_contact_conversations.assert_awaited_once_with(31)
+    (variants,) = chatwoot.find_conversations_by_vehicle_plate.await_args.args
+    assert "VAB1234" in variants  # case_fields stores vehicle_plate compact
+
+
+@pytest.mark.asyncio
+async def test_plate_only_on_rsa_incident_returns_contact_by_incident_phone(
+    tmp_path, respx_mock
+):
+    """The Playwright C360-002 data: the plate lives only on an RSA incident
+    that carries the contact's phone -- the contact is found through it."""
+    contact = {"id": 32, "name": "[TEST] Rsa Owner", "phone_number": "+60120000032"}
+    conv = {"id": 803, "status": "open", "inbox_id": 1}
+    chatwoot = _fake_chatwoot(contacts=[contact], contact_conversations=[conv])
+    rsa_repo = InMemoryRsaRepository()
+    await rsa_repo.create_incident(
+        incident_date="2026-11-10", vehicle_no="TEST ABC123V", vehicle_model="X50",
+        cause="[TEST] marker", customer_phone="012-000 0032",
+    )
+    client = await _client_for(tmp_path, "plate_rsa", 41, respx_mock, chatwoot, rsa_repo)
+    for q in ("TEST%20ABC123V", "test%20abc123v", "TESTABC123V", "TEST-ABC123V"):
+        body = client.get(f"/admin/customer360/search?q={q}", headers=HEADERS).json()
+        assert body["contact"]["id"] == 32, q
+        assert body["conversations"] == [conv], q
+        assert [i["vehicle_no"] for i in body["rsa_incidents"]] == ["TEST ABC123V"], q
+    chatwoot.search_contacts.assert_awaited_with("012-000 0032")
+
+
+@pytest.mark.asyncio
+async def test_rsa_phone_with_no_exact_contact_match_returns_no_contact(tmp_path, respx_mock):
+    stranger = {"id": 33, "phone_number": "+60000000099"}
+    chatwoot = _fake_chatwoot(contacts=[stranger])
+    rsa_repo = InMemoryRsaRepository()
+    await rsa_repo.create_incident(
+        incident_date="2026-11-10", vehicle_no="VCD5678", vehicle_model="X50",
+        cause="x", customer_phone="+60000000034",
+    )
+    client = await _client_for(tmp_path, "plate_rsa_miss", 42, respx_mock, chatwoot, rsa_repo)
+    body = client.get("/admin/customer360/search?q=VCD5678", headers=HEADERS).json()
+    assert body["contact"] is None
+    assert body["conversations"] == []
+    assert len(body["rsa_incidents"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_contact_attribute_variants_include_the_typed_spelling(tmp_path, respx_mock):
+    chatwoot = _fake_chatwoot()
+    client = await _client_for(
+        tmp_path, "plate_typed", 43, respx_mock, chatwoot, InMemoryRsaRepository()
+    )
+    client.get("/admin/customer360/search?q=test%20%20abc123v", headers=HEADERS)
+    (variants,) = chatwoot.find_contacts_by_vehicle_no.await_args.args
+    assert "TEST ABC123V" in variants
+    assert "TESTABC123V" in variants
+
+
+@pytest.mark.asyncio
+async def test_unknown_plate_no_contact_no_error_even_when_filters_fail(tmp_path, respx_mock):
+    chatwoot = _fake_chatwoot()
+    chatwoot.find_conversations_by_vehicle_plate.side_effect = RuntimeError("no attr")
+    chatwoot.find_contacts_by_vehicle_no.return_value = None
+    client = await _client_for(
+        tmp_path, "plate_unknown", 44, respx_mock, chatwoot, InMemoryRsaRepository()
+    )
+    res = client.get("/admin/customer360/search?q=ZZZ9999", headers=HEADERS)
+    assert res.status_code == 200
+    assert res.json() == {"contact": None, "conversations": [], "rsa_incidents": []}
+
+
+@pytest.mark.asyncio
+async def test_phone_search_never_runs_plate_lookups(tmp_path, respx_mock):
+    contact = {"id": 35, "phone_number": "+60000000035"}
+    chatwoot = _fake_chatwoot(contacts=[contact])
+    client = await _client_for(
+        tmp_path, "phone_only", 45, respx_mock, chatwoot, InMemoryRsaRepository()
+    )
+    res = client.get("/admin/customer360/search?q=%2B60000000035", headers=HEADERS)
+    assert res.json()["contact"] == contact
+    chatwoot.find_conversations_by_vehicle_plate.assert_not_awaited()
+    chatwoot.find_contacts_by_vehicle_no.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_adapter_conversation_plate_filter_posts_vehicle_plate():
+    adapter = ChatwootAdapter(Settings(chatwoot_account_id=1, chatwoot_inbox_id=7))
+    calls = []
+
+    async def fake_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return {"meta": {}, "payload": [{"id": 5}, "junk"]}
+
+    adapter._request = fake_request
+    out = await adapter.find_conversations_by_vehicle_plate(["VAB1234", "VAB 1234", "VAB1234"])
+    assert out == [{"id": 5}]
+    (method, path, body), = calls
+    assert (method, path) == ("POST", "/conversations/filter")
+    assert [f["attribute_key"] for f in body["payload"]] == ["vehicle_plate", "vehicle_plate"]
+    assert [f["values"] for f in body["payload"]] == [["VAB1234"], ["VAB 1234"]]
+    assert body["payload"][0]["query_operator"] == "OR"
+    assert body["payload"][-1]["query_operator"] is None
+    assert await adapter.find_conversations_by_vehicle_plate([]) == []

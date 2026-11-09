@@ -129,7 +129,10 @@ def _plate_variants(query: str) -> list[str]:
     compact = _plate_key(query)
     spaced = re.sub(r"(?<=[A-Z])(?=\d)|(?<=\d)(?=[A-Z])", " ", compact)
     dashed = spaced.replace(" ", "-")
-    return list(dict.fromkeys(v for v in (compact, spaced, dashed) if v))
+    # The spelling as typed (upper-cased, runs of spaces collapsed) too: a
+    # plate like "TEST ABC123V" splits where the regex above would not.
+    typed = re.sub(r"\s+", " ", query.strip().upper())
+    return list(dict.fromkeys(v for v in (compact, spaced, dashed, typed) if v))
 
 
 # Plate-shaped: 2-3 letters, digits, optional trailing letter (BMT5518,
@@ -317,29 +320,85 @@ async def _build_dms_block(
     }
 
 
+async def _dicts_or_empty(coro: Any, what: str) -> list[dict[str, Any]]:
+    """Await one plate lookup; any failure or odd shape reads as no match, so
+    one missing source never hides the others."""
+    try:
+        res = await coro
+    except Exception as exc:
+        _log.warning("customer360_plate_source_failed", source=what,
+                     error_type=type(exc).__name__)
+        return []
+    return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+
+
+async def _contact_by_incident_phone(
+    chatwoot: ChatwootAdapter, phones: list[str]
+) -> dict[str, Any] | None:
+    """The contact an RSA incident names by phone -- exact (suffix-tolerant)
+    phone match only; a merely relevance-ranked neighbour is never shown."""
+    for phone in phones[:2]:
+        contacts = await _dicts_or_empty(chatwoot.search_contacts(phone), "rsa_phone")
+        for contact in contacts:
+            if contact.get("id") is not None and _phones_match(
+                phone, contact.get("phone_number")
+            ):
+                return contact
+    return None
+
+
 async def _plate_lookup(
     chatwoot: ChatwootAdapter,
     query: str,
     needle: str,
     plate_contacts: list[dict[str, Any]],
     conversations: list[dict[str, Any]],
+    incident_phones: list[str] | None = None,
 ) -> None:
     """Fill ``plate_contacts``/``conversations`` in place (so whatever
-    finished survives a wait_for timeout): one contacts/filter call, then the
-    matched contacts' conversations fetched concurrently."""
-    found = await chatwoot.find_contacts_by_vehicle_no(_plate_variants(query))
+    finished survives a wait_for timeout). C360-002: the plate can live in
+    three places, tried in this order of trust --
+      1. the contact's ``vehicle_no`` attribute (contacts/filter),
+      2. a case's ``vehicle_plate`` attribute (conversations/filter; the
+         conversation's ``meta.sender`` is its contact),
+      3. an RSA incident with that plate, through its ``customer_phone``.
+    1 and 2 run concurrently; 3 only when neither found a contact. Then the
+    matched contacts' conversations are fetched concurrently."""
+    variants = _plate_variants(query)
+    found, plate_convs = await asyncio.gather(
+        _dicts_or_empty(chatwoot.find_contacts_by_vehicle_no(variants), "contact_vehicle_no"),
+        _dicts_or_empty(
+            chatwoot.find_conversations_by_vehicle_plate(variants), "conversation_vehicle_plate"
+        ),
+    )
     found = [c for c in found if c.get("id") is not None]
     # exact plate first, so `contact` is the real owner, not a substring
     # neighbour
     found.sort(
         key=lambda c: _plate_key((c.get("custom_attributes") or {}).get("vehicle_no")) != needle
     )
-    plate_contacts.extend(found[:_MAX_PLATE_CONTACTS])
+    plate_convs.sort(
+        key=lambda c: _plate_key((c.get("custom_attributes") or {}).get("vehicle_plate"))
+        != needle
+    )
+    for conv in plate_convs:
+        sender = (conv.get("meta") or {}).get("sender")
+        if isinstance(sender, dict) and sender.get("id") is not None:
+            found.append(sender)
+    if not found and incident_phones:
+        by_phone = await _contact_by_incident_phone(chatwoot, incident_phones)
+        if by_phone is not None:
+            found.append(by_phone)
+    unique: dict[Any, dict[str, Any]] = {}
+    for c in found:
+        unique.setdefault(c["id"], c)
+    plate_contacts.extend(list(unique.values())[:_MAX_PLATE_CONTACTS])
     per_contact = await asyncio.gather(
         *(chatwoot.list_contact_conversations(int(c["id"])) for c in plate_contacts)
     )
     seen: set[Any] = set()
-    for convs in per_contact:
+    # A plate-matched case whose contact list came back short still shows.
+    for convs in [*per_contact, plate_convs]:
         for conv in convs:
             if conv.get("id") not in seen:
                 seen.add(conv.get("id"))
@@ -430,7 +489,18 @@ def build_customer360_router(
             if needle:
                 try:
                     await asyncio.wait_for(
-                        _plate_lookup(chatwoot, q_stripped, needle, plate_contacts, conversations),
+                        _plate_lookup(
+                            chatwoot,
+                            q_stripped,
+                            needle,
+                            plate_contacts,
+                            conversations,
+                            incident_phones=[
+                                i["customer_phone"]
+                                for i in rsa_incidents
+                                if i.get("customer_phone")
+                            ],
+                        ),
                         timeout=_VEHICLE_CRM_BUDGET_SECONDS,
                     )
                 except Exception as exc:

@@ -149,7 +149,10 @@ async def test_unmatched_dealer_is_text_only_and_never_labelled() -> None:
     assert svc.saves[-1]["dealer_slug"] is None
 
 
-async def test_handoff_labels_the_matched_dealer_and_note_has_who_vehicle_dealer() -> None:
+async def test_handoff_never_labels_the_dealer_and_note_has_who_vehicle_dealer() -> None:
+    """Controller ruling 9 Nov 2026: a handoff to customer service is not a
+    dealer escalation, so no dealer_<slug> label; the confirmed dealer stays
+    on the conversation (caller_dealer, via save)."""
     ctx = CallerContext.from_candidates(PHONE, "caller_id", [AHMAD])
     calls = [
         ToolCall(id="t1", name="save_caller_details", args={"dealer": "Petaling Jaya"}),
@@ -159,12 +162,13 @@ async def test_handoff_labels_the_matched_dealer_and_note_has_who_vehicle_dealer
             args={"reason": "booking", "summary": "wants service"},
         ),
     ]
-    bridge, _, log = _bridge(calls, service=_Service(ctx), ctx=ctx)
+    svc = _Service(ctx)
+    bridge, _, log = _bridge(calls, service=svc, ctx=ctx)
     await bridge.handle_twilio(_start())
     await bridge.pump()
     await bridge.finalize()
-    assert ("T-1", "dealer_petaling_jaya") in log.tags
-    assert log.tags.count(("T-1", "dealer_petaling_jaya")) == 1
+    assert not any(tag.startswith("dealer_") for _, tag in log.tags)
+    assert svc.saves[-1]["dealer_slug"] == "petaling_jaya"
     note = next(text for _, text, _ in log.comments if text.startswith("[Handoff"))
     assert "booking" in note and "wants service" in note
     assert "Caller: Ahmad bin Ali" in note
@@ -271,3 +275,103 @@ async def test_caller_tools_are_unknown_without_a_caller_service() -> None:
     bridge = PhoneBridge(live, _FakeKnowledge(), _Log(), send, Settings())
     await bridge.pump()
     assert live.tool_responses[0][2] == {"error": "unknown tool: lookup_caller"}
+
+
+# --- brief 3: the structured handoff note (HANDOFF_NOTE_ENABLED) -------------
+
+
+class _NoteLog(_Log):
+    def __init__(self) -> None:
+        super().__init__()
+        self.priorities: list[tuple[str, str]] = []
+
+    async def set_conversation_priority(self, ticket_id: str, priority: str) -> None:
+        self.priorities.append((ticket_id, priority))
+
+
+def _handoff_notes(log: _Log) -> list[str]:
+    return [text for _, text, _ in log.comments if text.startswith("[Handoff")]
+
+
+async def test_flag_on_posts_one_structured_note_at_the_handoff() -> None:
+    ctx = CallerContext.from_candidates(PHONE, "caller_id", [AHMAD])
+    calls = [
+        ToolCall(id="t1", name="save_caller_details", args={"dealer": "Petaling Jaya"}),
+        ToolCall(
+            id="t2",
+            name="request_human_handoff",
+            args={"reason": "breakdown", "summary": "Car broke down on the highway."},
+        ),
+    ]
+    log = _NoteLog()
+    bridge, _, _ = _bridge(
+        calls,
+        service=_Service(ctx),
+        ctx=ctx,
+        log=log,
+        settings=_settings(handoff_note_enabled=True),
+    )
+    await bridge.handle_twilio(_start())
+    await bridge.pump()
+    await asyncio.sleep(0.01)
+    # Posted during the call, before hang-up, with the transcript link.
+    notes = _handoff_notes(log)
+    assert len(notes) == 1
+    note = notes[0]
+    assert note.startswith("[Handoff to human agent] Phone call · Priority: URGENT")
+    assert "Who: Ahmad bin Ali · +60•••••0101" in note
+    assert PHONE not in note
+    assert "Vehicle: Proton X50 · DMO1101" in note
+    assert "Dealer: Petaling Jaya — escalate by adding the `escalate` label" in note
+    assert "Live transcript: [open](/app/accounts/1/conversations/T-1)" in note
+    assert log.priorities == [("T-1", "urgent")]
+    assert ("T-1", "phone-CA1") in log.external_ids
+    await bridge.finalize()
+    assert len(_handoff_notes(log)) == 1  # finalize does not repeat it
+    assert not any(tag.startswith("dealer_") for _, tag in log.tags)
+
+
+async def test_flag_on_history_dealer_is_shown_unconfirmed() -> None:
+    ctx = CallerContext.from_candidates(
+        PHONE, "caller_id", [{**AHMAD, "last_dealer": "caroline_motor"}]
+    )
+    call = ToolCall(id="t1", name="request_human_handoff", args={"reason": "r", "summary": "s"})
+    log = _NoteLog()
+    bridge, _, _ = _bridge(
+        [call],
+        service=_Service(ctx),
+        ctx=ctx,
+        log=log,
+        settings=_settings(handoff_note_enabled=True),
+    )
+    await bridge.handle_twilio(_start())
+    await bridge.pump()
+    await bridge.finalize()
+    note = _handoff_notes(log)[0]
+    assert "Dealer: Caroline Motor (usual dealer from history, not confirmed)" in note
+    assert log.priorities == [("T-1", "medium")]
+    assert not any(tag.startswith("dealer_") for _, tag in log.tags)
+
+
+async def test_flag_on_without_caller_context_still_uses_the_formatter() -> None:
+    live = _FakeLive(
+        [ToolCall(id="t1", name="request_human_handoff", args={"reason": "r", "summary": "s"})]
+    )
+    log = _NoteLog()
+
+    async def send(_: dict[str, object]) -> None:
+        return None
+
+    bridge = PhoneBridge(
+        live,
+        _FakeKnowledge(),
+        log,
+        send,
+        Settings(handoff_note_enabled=True, phone_transcript_live_enabled=True),
+    )
+    await bridge.handle_twilio(_start())
+    await bridge.pump()
+    await bridge.finalize()
+    notes = _handoff_notes(log)
+    assert len(notes) == 1
+    assert "Who: not identified" in notes[0]

@@ -32,8 +32,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import re
 import time
 from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -43,6 +45,7 @@ from pydantic import BaseModel
 from chatbot.features.chat.audit_events import EVENT_REPLY_LINK, record_event
 from chatbot.features.chat.escalation_ack import ack_transport
 from chatbot.features.chat.escalation_context import derive_context
+from chatbot.features.chat.handoff_note import is_phone_conversation
 from chatbot.features.chat.sla import ACKNOWLEDGED_STATE
 
 if TYPE_CHECKING:
@@ -54,6 +57,14 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(__name__)
 
 _CWRequest = Callable[..., Coroutine[Any, Any, dict[str, Any] | None]]
+_MergeAttrs = Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]
+_AddLabel = Callable[[str, str], Coroutine[Any, Any, None]]
+
+# The agent service's once-per-escalation stamp (agent/app/services/sync.py
+# _NOTIFIED_ATTR). Written here only when this endpoint itself adds a
+# dealer_<slug> label -- see _fill_dealer.
+_NOTIFIED_ATTR = "escalation_notified_at"
+_SLUG_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 
 
 class _NotifyIn(BaseModel):
@@ -185,7 +196,12 @@ def build_escalation_router(
     dealer_store: DealerStore | None = None,
     audit: AuditLogPort | None = None,
     contacts_cache: ContactsCache | None = None,
+    merge_attributes: _MergeAttrs | None = None,
+    add_label: _AddLabel | None = None,
 ) -> APIRouter:
+    """``merge_attributes`` / ``add_label`` (merge-safe Chatwoot writers) are
+    used only with ``handoff_note_enabled``, by the one-click dealer
+    escalation in ``_do_notify``."""
     router = APIRouter()
     auth = _require_api_key(settings)
     # key -> (monotonic start time, shared task). The task, not the result, is
@@ -226,10 +242,56 @@ def build_escalation_router(
         inflight[key] = (now, task)
         return await asyncio.shield(task)
 
+    async def _read_conversation(conv_id: str) -> dict[str, Any] | None:
+        try:
+            data = await chatwoot_request("GET", f"/conversations/{conv_id}", None)
+        except Exception:
+            _log.warning("escalation_notify_conversation_read_failed", conv_id=conv_id)
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _confirmed_dealer(conv: dict[str, Any] | None) -> str | None:
+        """The dealer the customer named and that matched one configured
+        dealer (caller_dealer, written by the phone caller context or the
+        chat handoff note). Never the history dealer, never raw text."""
+        attrs = (conv or {}).get("custom_attributes") or {}
+        slug = str(attrs.get("caller_dealer") or "").strip().lower() if isinstance(attrs, dict) else ""
+        return slug if _SLUG_RE.match(slug) else None
+
+    async def _label_dealer(conv_id: str, slug: str) -> None:
+        """Make the dealer escalation visible like a hand-added one: the
+        dealer_<slug> label (reports, dealer_escalated_at, the ladder).
+        Stamp the agent's once-per-escalation guard FIRST: the label fires
+        a conversation_updated that re-enters maybe_escalate, and with the
+        stamp in place that echo is skipped instead of escalating twice."""
+        if merge_attributes is None or add_label is None:
+            return
+        try:
+            await merge_attributes(conv_id, {_NOTIFIED_ATTR: datetime.now(UTC).isoformat()})
+            await add_label(conv_id, f"dealer_{slug}")
+        except Exception as e:
+            _log.warning(
+                "escalation_notify_dealer_label_failed", conv_id=conv_id, error=str(e)
+            )
+
     async def _do_notify(payload: _NotifyIn) -> dict[str, str]:
         transport = (
             "email" if payload.channel_type is None else ack_transport(payload.channel_type)
         )
+        dealer = payload.dealer
+        filled_dealer: str | None = None
+        if settings.handoff_note_enabled and (transport == "conversation" or not dealer):
+            # 2026-11-09 brief 3 (features/chat/handoff_note.py): a phone
+            # call sits in the API inbox, so its channel type says
+            # "conversation" -- but there is no thread to write to; the
+            # caller was spoken to. And `escalate` alone escalates to the
+            # dealer the customer confirmed.
+            conv = await _read_conversation(payload.conversation_id)
+            if transport == "conversation" and is_phone_conversation(conv):
+                transport = "none"
+            if not dealer:
+                filled_dealer = _confirmed_dealer(conv)
+                dealer = filled_dealer
         customer_email = (
             await _resolve_customer_email(chatwoot_request, payload.conversation_id)
             if transport == "email"
@@ -273,13 +335,15 @@ def build_escalation_router(
             title=payload.title,
             body=payload.body,
             department=payload.department,
-            dealer=payload.dealer,
+            dealer=dealer,
             customer_email=customer_email,
             ack_transport=transport,
             customer_subject=payload.customer_subject,
             customer_in_reply_to=payload.customer_in_reply_to,
             **audit_ctx,
         )
+        if filled_dealer:
+            await _label_dealer(payload.conversation_id, filled_dealer)
         return {"status": "ok"}
 
     @router.get("/escalation/contacts", dependencies=[Depends(auth)])

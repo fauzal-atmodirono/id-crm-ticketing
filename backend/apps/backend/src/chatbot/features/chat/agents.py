@@ -286,6 +286,44 @@ def build_ai_agent(  # noqa: PLR0915 — one builder, many tool closures
         tool_context.state["handoff_reason"] = reason
         return f"[internal] handoff triggered (Reason: {reason})."
 
+    if settings.handoff_note_enabled:
+        # 2026-11-09 pre-filled handoff note (features/chat/handoff_note.py):
+        # the same tool, plus what the human taking over needs -- a summary
+        # and the dealer the customer named (matched to the configured
+        # dealer list later). Optional, so a reason-only call still hands
+        # off. Flag off keeps the one-argument tool above, byte-identical.
+        async def emit_handoff_tool(  # type: ignore[no-redef]
+            tool_context: ToolContext,
+            reason: str,
+            summary: str = "",
+            dealer: str = "",
+        ) -> str:
+            """Hand off the conversation immediately to a human support agent.
+
+            Args:
+                tool_context: Context injected by the ADK runner.
+                reason: Explanation why handoff is triggered (e.g. help_request,
+                    negative_sentiment, breakdown).
+                summary: Two or three sentences for the agent taking over: what
+                    the customer needs, what was already tried, anything urgent
+                    (breakdown, accident, safety). In English.
+                dealer: The dealer or service centre the customer named, as they
+                    said it; empty if they did not name one.
+            """
+            state = tool_context.state
+            state["handoff_triggered"] = True
+            state["handoff_reason"] = reason
+            # Never carry an earlier handoff's summary/dealer into this one.
+            for key, value in (("handoff_summary", summary), ("handoff_dealer", dealer)):
+                if value.strip():
+                    state[key] = value.strip()
+                elif key in state:
+                    del state[key]
+            # One note per handoff: a crm- session keeps handoff_triggered
+            # set across later turns, so the note is keyed on this counter.
+            state["handoff_seq"] = int(state.get("handoff_seq") or 0) + 1
+            return f"[internal] handoff triggered (Reason: {reason})."
+
     async def flag_for_ticket_tool(
         tool_context: ToolContext,
         reason: str,

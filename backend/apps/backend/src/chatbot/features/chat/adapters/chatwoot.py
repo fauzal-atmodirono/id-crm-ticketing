@@ -555,6 +555,22 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         res = await self._request("PUT", f"/contacts/{contact_id}", payload)
         return res is not None
 
+    async def get_conversation(self, ticket_id: str) -> dict[str, Any] | None:
+        """GET one conversation payload (meta.sender, labels, custom and
+        additional attributes); None on any failure. Used by the handoff
+        note (features/chat/handoff_note.py)."""
+        res = await self._request("GET", f"/conversations/{ticket_id}")
+        return res if isinstance(res, dict) else None
+
+    async def set_conversation_priority(self, ticket_id: str, priority: str) -> None:
+        """Set the conversation priority (low/medium/high/urgent); anything
+        else is sent as medium, like create_ticket's mapping."""
+        await self._request(
+            "POST",
+            f"/conversations/{ticket_id}/toggle_priority",
+            {"priority": _PRIORITY_MAP.get(priority.lower(), "medium")},
+        )
+
     async def set_conversation_attributes(self, ticket_id: str, attributes: dict[str, Any]) -> None:
         """Public merge-set of conversation custom attributes (see
         ``_merge_custom_attributes``)."""

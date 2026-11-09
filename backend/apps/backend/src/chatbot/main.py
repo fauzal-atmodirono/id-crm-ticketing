@@ -651,6 +651,10 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
                 dealer_store=dealer_store,
                 audit=audit_log,
                 contacts_cache=escalation_contacts_cache,
+                # Used only with handoff_note_enabled (one-click dealer
+                # escalation from caller_dealer); merge-safe writers.
+                merge_attributes=chatwoot_client._merge_custom_attributes,
+                add_label=chatwoot_client.add_ticket_tag,
             )
         )
 
@@ -663,6 +667,22 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
     _shared_scenarios_store = build_scenarios_store(settings)
     _shared_assignment_store = build_inbox_assignment_store(settings)
     _shared_timing_store = build_inbox_timing_store(settings)
+
+    # 2026-11-09 pre-filled handoff note (features/chat/handoff_note.py).
+    # Built only with the flag on and a Chatwoot adapter; None keeps every
+    # handoff note exactly as before. Dealer slugs: the operator-edited
+    # DealerStore plus DEALER_EMAIL_MAP_JSON, as for the phone caller context.
+    _handoff_note_service = None
+    if settings.handoff_note_enabled and chatwoot_client is not None:
+        from chatbot.features.chat.handoff_note import HandoffNoteService  # noqa: PLC0415
+
+        async def _note_dealer_slugs() -> list[str]:
+            records = await dealer_store.list_all()
+            return [r.dealer for r in records] + list(build_dealer_email_map(settings))
+
+        _handoff_note_service = HandoffNoteService(
+            chatwoot_client, settings, dealer_source=_note_dealer_slugs
+        )
 
     orchestrator = OrchestratorService(
         settings=settings,
@@ -677,6 +697,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         assignment_store=_shared_assignment_store,
         assistants_store=_shared_assistants_store,
         tenant_settings_store=_shared_tenant_settings_store,
+        handoff_note_service=_handoff_note_service,
     )
 
     # --- P6: after-call work, built before the chat router that consumes it ---

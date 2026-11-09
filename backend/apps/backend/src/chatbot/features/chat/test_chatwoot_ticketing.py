@@ -691,3 +691,30 @@ async def test_set_conversation_attributes_merges() -> None:
     method, path, payload = fake.calls[-1]
     assert (method, path) == ("POST", "/conversations/9/custom_attributes")
     assert payload == {"custom_attributes": {"external_id": "phone-CA1", "caller_name": "Hafiz"}}
+
+
+# --- 2026-11-09 handoff note: conversation read + priority -------------------
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_returns_the_payload_or_none() -> None:
+    fake = _FakeClient({("GET", "/conversations/42"): {"id": 42, "labels": ["x"]}})
+    assert await _adapter(fake).get_conversation("42") == {"id": 42, "labels": ["x"]}
+
+    class _Down(_FakeClient):
+        async def _request(self, method, path, payload=None):  # type: ignore[override]
+            return None
+
+    assert await _adapter(_Down({})).get_conversation("42") is None
+
+
+@pytest.mark.asyncio
+async def test_set_conversation_priority_maps_unknown_to_medium() -> None:
+    fake = _FakeClient({})
+    a = _adapter(fake)
+    await a.set_conversation_priority("42", "URGENT")
+    await a.set_conversation_priority("42", "whatever")
+    assert fake.calls == [
+        ("POST", "/conversations/42/toggle_priority", {"priority": "urgent"}),
+        ("POST", "/conversations/42/toggle_priority", {"priority": "medium"}),
+    ]

@@ -204,8 +204,16 @@ class OrchestratorService:
         assignment_store: Any | None = None,
         assistants_store: Any | None = None,
         tenant_settings_store: Any | None = None,
+        handoff_note_service: Any | None = None,
     ) -> None:
         self._settings = settings
+        # 2026-11-09 pre-filled handoff note (features/chat/handoff_note.py
+        # HandoffNoteService). Passed only with handoff_note_enabled and a
+        # Chatwoot adapter; None keeps every handoff note exactly as before.
+        self._handoff_note_service = handoff_note_service
+        # session_id -> last handoff_seq noted. Mirrors the persisted
+        # handoff_note_seq for stores that hand back copies (in-memory ADK).
+        self._handoff_note_seq: dict[str, int] = {}
         self._chat_port = chat_port
         self._ticketing_port = ticketing_port
         self._knowledge_port = knowledge_port
@@ -824,6 +832,7 @@ class OrchestratorService:
                 language=session_state.get("language", "unknown"),
             )
             reply_text = None
+            await self._post_crm_handoff_note(session_id, final_session)
         elif reply_text:
             # 6. Append assistant message to history (skip when handing off).
             updated_session = await self._adk_sessions.get_session(
@@ -1099,9 +1108,28 @@ class OrchestratorService:
                     customer_phone=customer_phone,
                 )
                 state["conversation_ticket_id"] = ticket_id
-            await self._conversation_log_port.append_conversation_comment(
-                ticket_id, f"[Handoff to human agent]\n{summary}", status="open"
-            )
+            notes = self._handoff_note_service
+            if notes is not None and notes.chatwoot is self._conversation_log_port:
+                # The structured note (handoff_note.py) replaces the one-line
+                # one, but only when it writes to the Chatwoot this ticket
+                # lives in. Bounded and fail-open inside.
+                await notes.post_for_chat(
+                    str(ticket_id),
+                    state,
+                    channel=channel,
+                    customer_name=customer_name,
+                    customer_phone=customer_phone,
+                    fallback_summary=summary,
+                    # Same write as the old note, so the conversation still
+                    # reopens for a human.
+                    post=lambda text: self._conversation_log_port.append_conversation_comment(
+                        ticket_id, text, status="open"
+                    ),
+                )
+            else:
+                await self._conversation_log_port.append_conversation_comment(
+                    ticket_id, f"[Handoff to human agent]\n{summary}", status="open"
+                )
         except Exception as e:
             _log.error("begin_handoff_failed", session_id=session_id, error=str(e))
         state[_HANDOFF_STATE_KEY] = WHATSAPP_PAUSED
@@ -1170,6 +1198,29 @@ class OrchestratorService:
         session.state["handoff_triggered"] = False
         session.state["handoff_reason"] = ""
         await self._persist_session_state(session)
+
+    async def _post_crm_handoff_note(self, session_id: str, session: Any) -> None:
+        """One pre-filled note on Chatwoot conversation <id> per handoff of a
+        ``crm-<id>`` session (the agent service owns the handoff itself and
+        posts no note). Keyed on ``handoff_seq`` (set by the flag-on handoff
+        tool) because a crm- session keeps ``handoff_triggered`` set across
+        later turns. Fail-open; the note service is bounded inside."""
+        if self._handoff_note_service is None or session is None:
+            return
+        state = session.state
+        seq = int(state.get("handoff_seq") or 0)
+        noted = max(
+            int(state.get("handoff_note_seq") or 0), self._handoff_note_seq.get(session_id, 0)
+        )
+        if seq <= noted:
+            return
+        state["handoff_note_seq"] = seq
+        self._handoff_note_seq[session_id] = seq
+        try:
+            await self._persist_session_state(session)
+            await self._handoff_note_service.post_for_chat(session_id.removeprefix("crm-"), state)
+        except Exception as e:
+            _log.warning("crm_handoff_note_failed", session_id=session_id, error=str(e))
 
     async def _persist_session_state(self, session: Any) -> None:
         """Write back mutations to ``session.state``.

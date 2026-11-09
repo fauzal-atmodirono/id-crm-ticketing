@@ -678,6 +678,20 @@ class Settings(BaseSettings):
     # assistant sees.
     phone_web_call_as_enabled: bool = False
 
+    # --- Pre-filled handoff note (2026-11-09) ------------------------------
+    # See features/chat/handoff_note.py. On: every AI -> human handoff (the
+    # crm- /chat/turn branch, WhatsApp/email begin_handoff, phone calls) posts
+    # ONE structured private note (who + masked mobile, vehicle, dealer, case,
+    # reason, priority, AI summary; phone: live transcript link), sets the
+    # conversation priority from the AI's urgency (breakdown/safety = urgent)
+    # and stores a confirmed dealer as caller_dealer. A handoff never adds a
+    # dealer_<slug> label; adding `escalate` does (/escalation/notify fills
+    # the dealer from caller_dealer), and a phone call's escalation sends no
+    # written customer ack. Off (default) = today's notes, byte-identical.
+    handoff_note_enabled: bool = False
+    # Budget for the chat note's Chatwoot reads/writes (inline in /chat/turn).
+    handoff_note_timeout_seconds: float = 5.0
+
     # Frontend CORS — origins of the Vue dev/prod app (comma-separated in env).
     # Defaults cover Vite's first few fallback ports (5173-5180) so a stale dev
     # server on 5173 doesn't break a fresh one bound to 5174+.

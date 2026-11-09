@@ -12,6 +12,14 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from chatbot.features.chat.csat import record_csat_on_ticket
+from chatbot.features.chat.handoff_note import (
+    DealerLine,
+    HandoffNote,
+    apply_priority,
+    conversation_path,
+    format_handoff_note,
+    handoff_priority,
+)
 from chatbot.features.chat.nps import record_nps_agent_attribution, record_nps_on_ticket
 from chatbot.features.chat.phone.agent_client_resolver import AgentClientResolver, ChainedResolver
 from chatbot.features.chat.phone.audio_codec import mulaw8k_to_pcm16k, pcm24k_to_mulaw8k
@@ -197,7 +205,12 @@ class PhoneBridge:
             self._caller_known.set()
         self._caller_write_task: asyncio.Task[None] | None = None
         self._caller_write_pending = False
-        self._dealer_labeled = False
+        # 2026-11-09 handoff note (features/chat/handoff_note.py): with
+        # handoff_note_enabled the structured note is posted at the handoff
+        # (so the answering agent has it, with the live transcript link),
+        # and finalize() posts it only if that never landed.
+        self._handoff_note_task: asyncio.Task[None] | None = None
+        self._handoff_note_posted = False
         self._knowledge = knowledge_port
         self._log_port = conversation_log_port
         self._send_twilio = send_twilio
@@ -383,18 +396,102 @@ class PhoneBridge:
         Full values -- these go to the CRM / an authenticated agent, never to
         the model or the logs."""
         d = self.caller_details
+        who = self._caller_name()
+        model, plate = self._caller_vehicle()
+        vehicle = " ".join(x for x in (model, plate) if x)
+        slug = self._effective_dealer_slug()
+        dealer = dealer_display(slug) if slug else d.dealer_text
+        return who, vehicle, dealer
+
+    def _caller_name(self) -> str:
         single = self._single_candidate()
-        who = d.name or (single.name if single is not None else "")
+        return self.caller_details.name or (single.name if single is not None else "")
+
+    def _caller_vehicle(self) -> tuple[str, str]:
+        """(model, plate): what the caller said, completed from the known
+        customer's only car when it does not contradict it."""
+        d = self.caller_details
+        single = self._single_candidate()
         model, plate = d.model, d.plate
         if single is not None and len(single.vehicles) == 1:
             v = single.vehicles[0]
             if not plate and (not model or model.lower() == v.model.lower()):
                 plate = v.plate
             model = model or v.model
-        vehicle = " ".join(x for x in (model, plate) if x)
-        slug = self._effective_dealer_slug()
-        dealer = dealer_display(slug) if slug else d.dealer_text
-        return who, vehicle, dealer
+        return model, plate
+
+    def _note_dealer(self) -> DealerLine:
+        """The handoff note's dealer: confirmed only when the caller named
+        it and it matched; the usual dealer from history is shown as not
+        confirmed (controller ruling 9 Nov: never labelled from history)."""
+        if self._caller_dealer_slug:
+            return DealerLine(slug=self._caller_dealer_slug, confirmed=True)
+        single = self._single_candidate()
+        if single is not None and single.last_dealer:
+            return DealerLine(slug=single.last_dealer, confirmed=False)
+        return DealerLine(text=self.caller_details.dealer_text)
+
+    def _handoff_note(self, ticket_id: str) -> HandoffNote:
+        handoff = self.handoff or {}
+        reason = handoff.get("reason", "")
+        summary = handoff.get("summary", "")
+        model, plate = self._caller_vehicle()
+        return HandoffNote(
+            channel="Phone call",
+            reason=reason,
+            summary=summary,
+            priority=handoff_priority(texts=[reason, summary]),
+            name=self._caller_name(),
+            mobile=self._caller_phone or "",
+            vehicle_model=model,
+            vehicle_plate=plate,
+            dealer=self._note_dealer(),
+            transcript_path=conversation_path(self._settings.chatwoot_account_id, ticket_id),
+        )
+
+    async def _post_handoff_note(self, ticket_id: str) -> None:
+        """The one structured note + priority + the phone marker (external_id
+        = phone-<CallSid>, which /escalation/notify reads to send no written
+        customer ack for a call). Idempotent per call."""
+        if self._handoff_note_posted:
+            return
+        note = self._handoff_note(ticket_id)
+        await self._log_port.append_conversation_comment(
+            ticket_id, format_handoff_note(note), status="open"
+        )
+        self._handoff_note_posted = True
+        try:
+            await apply_priority(self._log_port, ticket_id, note.priority)
+            if self.call_sid:
+                await self._log_port.set_ticket_external_id(ticket_id, f"phone-{self.call_sid}")
+        except Exception as e:
+            _log.warning("phone_handoff_note_extras_failed", call_sid=self.call_sid, error=str(e))
+
+    def _schedule_handoff_note(self) -> None:
+        if not self._settings.handoff_note_enabled or self._handoff_note_task is not None:
+            return
+        self._handoff_note_task = asyncio.create_task(self._handoff_note_when_ticket())
+
+    async def _handoff_note_when_ticket(self) -> None:
+        try:
+            if self.ticket_id is None and self._ticket_create_task is not None:
+                await asyncio.gather(self._ticket_create_task, return_exceptions=True)
+            if self._caller_write_task is not None:
+                # So a just-said name/plate is in the note.
+                await asyncio.gather(self._caller_write_task, return_exceptions=True)
+            if self.ticket_id is None:
+                return  # finalize() posts it
+            await self._post_handoff_note(self.ticket_id)
+        except Exception as e:
+            _log.warning("phone_handoff_note_deferred", call_sid=self.call_sid, error=str(e))
+
+    async def _settle_handoff_note_task(self) -> None:
+        if self._handoff_note_task is None:
+            return
+        try:
+            await asyncio.wait_for(self._handoff_note_task, timeout=_FLUSH_DRAIN_TIMEOUT_SECONDS)
+        except Exception as e:
+            _log.error("phone_finalize_handoff_note_failed", call_sid=self.call_sid, error=str(e))
 
     def _ticket_customer(self) -> tuple[str | None, str | None]:
         """(customer_name, customer_phone) for ensure_conversation_ticket."""
@@ -458,10 +555,10 @@ class PhoneBridge:
         self.caller_details = self.caller_details.merged(details)
         if details.dealer_text:
             self._caller_dealer_slug = match_dealer(details.dealer_text, self._dealer_slugs)
-        self._schedule_caller_write(label_dealer=self.handoff is not None)
+        self._schedule_caller_write()
         return {"status": "saved", "dealer_matched": bool(self._caller_dealer_slug)}
 
-    def _schedule_caller_write(self, *, label_dealer: bool = False) -> None:
+    def _schedule_caller_write(self) -> None:
         """CRM writes for what the caller said run detached (the tool reply
         must not wait on Chatwoot) and one after another (later details are
         merged over earlier ones in order)."""
@@ -469,14 +566,14 @@ class PhoneBridge:
             return
         self._caller_write_pending = True
         prev = self._caller_write_task
-        self._caller_write_task = asyncio.create_task(self._run_caller_write(prev, label_dealer))
+        self._caller_write_task = asyncio.create_task(self._run_caller_write(prev))
 
-    async def _run_caller_write(self, prev: asyncio.Task[None] | None, label_dealer: bool) -> None:
+    async def _run_caller_write(self, prev: asyncio.Task[None] | None) -> None:
         if prev is not None:
             await asyncio.gather(prev, return_exceptions=True)
         try:
             await asyncio.wait_for(
-                self._write_caller_when_ticket(label_dealer),
+                self._write_caller_when_ticket(),
                 timeout=self._settings.phone_caller_save_timeout_seconds,
             )
         except Exception as e:
@@ -485,14 +582,14 @@ class PhoneBridge:
                 "phone_caller_write_deferred", call_sid=self.call_sid, error_type=type(e).__name__
             )
 
-    async def _write_caller_when_ticket(self, label_dealer: bool) -> None:
+    async def _write_caller_when_ticket(self) -> None:
         if self.ticket_id is None and self._ticket_create_task is not None:
             await asyncio.gather(self._ticket_create_task, return_exceptions=True)
         if self.ticket_id is None:
             return  # finalize() will apply it
-        await self._apply_caller(self.ticket_id, label_dealer=label_dealer)
+        await self._apply_caller(self.ticket_id)
 
-    async def _apply_caller(self, ticket_id: str, *, label_dealer: bool) -> None:
+    async def _apply_caller(self, ticket_id: str) -> None:
         if self._caller_service is None:
             return
         await self._caller_service.save(
@@ -502,19 +599,18 @@ class PhoneBridge:
             details=self.caller_details,
             dealer_slug=self._caller_dealer_slug,
         )
+        # No dealer_<slug> label here, not even on a handoff (controller
+        # ruling 9 Nov 2026): reports count that label as "escalated to
+        # dealer", and a handoff to customer service is not that. The
+        # confirmed dealer stays on the conversation as caller_dealer; the
+        # agent's `escalate` label applies dealer_<slug> via
+        # /escalation/notify (features/chat/handoff_note.py).
         self._caller_write_pending = False
-        slug = self._effective_dealer_slug()
-        if label_dealer and slug and not self._dealer_labeled:
-            # Only on a handoff: the dealer_<slug> label is what reporting
-            # reads as "escalated to dealer" and what the ladder routes on, so
-            # a call the assistant resolved itself must not carry it.
-            await self._log_port.add_ticket_tag(ticket_id, f"dealer_{slug}")
-            self._dealer_labeled = True
 
     async def _prepare_handoff_context(self) -> None:
         """Before ringing an agent: stop waiting for a number, give a
         still-running conversation create a short chance to finish (so the
-        ring carries the conversation id), and queue the dealer label."""
+        ring carries the conversation id)."""
         self._caller_known.set()
         task = self._ticket_create_task
         if self.ticket_id is None and task is not None and not task.done():
@@ -526,8 +622,6 @@ class PhoneBridge:
                     call_sid=self.call_sid,
                     error_type=type(e).__name__,
                 )
-        if self._effective_dealer_slug():
-            self._schedule_caller_write(label_dealer=True)
 
     async def _settle_caller_write_task(self) -> None:
         if self._caller_write_task is None:
@@ -823,6 +917,8 @@ class PhoneBridge:
             }
             if self._caller_service is not None:
                 await self._prepare_handoff_context()
+            # Detached: the note waits for the conversation, never the ring.
+            self._schedule_handoff_note()
             status = await self._attempt_transfer()
             await self._live.send_tool_response(event.id, event.name, {"status": status})
         elif event.name == "save_caller_details" and self._caller_service is not None:
@@ -1292,6 +1388,7 @@ class PhoneBridge:
         await self._settle_recording_task()
         await self._settle_handoff_prefetch_task()
         await self._settle_caller_write_task()
+        await self._settle_handoff_note_task()
         await self._drain_flush_queue()
 
         if not self.call_sid:
@@ -1339,23 +1436,19 @@ class PhoneBridge:
             if self._settings.phone_transcript_classification_enabled:
                 status = await self._classify_and_apply(ticket_id, body, status)
 
-            if self._caller_service is not None and (
-                self._caller_write_pending
-                or (
-                    self.handoff is not None
-                    and not self._dealer_labeled
-                    and self._effective_dealer_slug()
-                )
-            ):
+            if self._caller_service is not None and self._caller_write_pending:
                 # What the caller said, if the mid-call write never landed
-                # (no ticket yet, Chatwoot slow), plus the handoff's dealer
-                # label. Inside the bounded tail like every closing write.
+                # (no ticket yet, Chatwoot slow). Inside the bounded tail
+                # like every closing write.
                 try:
-                    await self._apply_caller(ticket_id, label_dealer=self.handoff is not None)
+                    await self._apply_caller(ticket_id)
                 except Exception as e:
                     _log.error("phone_finalize_caller_write_failed", error=str(e))
 
-            if self.handoff is not None:
+            if self.handoff is not None and self._settings.handoff_note_enabled:
+                # The structured note, unless the handoff already posted it.
+                await self._post_handoff_note(ticket_id)
+            elif self.handoff is not None:
                 note = (
                     "[Handoff to human agent]\n"
                     f"{self.handoff.get('reason', '')}\n{self.handoff.get('summary', '')}"

@@ -163,6 +163,12 @@ async def _process_one(conv, settings, chatwoot, now, inbox_cache) -> None:
         await _maybe_resolve_stale_handoff(conv, settings, now)
         return
 
+    # A phone call's conversation has no chat to warn or close (see
+    # lifecycle.is_phone_call_conversation). Its silent stale-handoff resolve
+    # above still applies.
+    if lifecycle.is_phone_call_conversation(conv):
+        return
+
     row = await lifecycle_store.get_row(conversation_id)
     if row is None:
         await lifecycle_store.seed_active(conversation_id, channel=channel)

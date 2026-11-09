@@ -241,3 +241,50 @@ async def test_a_non_string_sla_status_is_sent_as_a_string(monkeypatch):
     body = json.loads(notify.calls.last.request.read())
     assert body["sla_status"] == "3"
     get_proton_config_client.cache_clear()
+
+
+# --- 2026-11-09 brief 3: phone (API inbox) and WhatsApp reach the dealer ------
+
+
+@respx.mock
+async def test_a_phone_call_in_the_api_inbox_escalates_to_its_dealer(monkeypatch):
+    """Phone calls live in the Chatwoot API inbox. The dealer leg rides the
+    dealer_<slug> label; whether the caller gets a written ack is the
+    backend's call (none for a phone conversation, see the backend's
+    test_escalation_router_handoff_note.py)."""
+    _enable(monkeypatch, all_channels=True)
+    notify = _stub(channel_type="Channel::Api")
+
+    await sync.maybe_escalate(_payload(labels=("escalate", "dealer_petaling_jaya")))
+
+    body = json.loads(notify.calls.last.request.read())
+    assert body["channel_type"] == "Channel::Api"
+    assert body["dealer"] == "petaling_jaya"
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_a_whatsapp_case_escalates_to_its_dealer(monkeypatch):
+    _enable(monkeypatch, all_channels=True)
+    notify = _stub(channel_type="Channel::Whatsapp")
+
+    await sync.maybe_escalate(_payload(labels=("escalate", "dealer_caroline_motor")))
+
+    body = json.loads(notify.calls.last.request.read())
+    assert body["channel_type"] == "Channel::Whatsapp"
+    assert body["dealer"] == "caroline_motor"
+    get_proton_config_client.cache_clear()
+
+
+@respx.mock
+async def test_escalate_alone_still_reaches_the_backend_without_a_dealer(monkeypatch):
+    """One-click: with no dealer label the backend fills the dealer from the
+    conversation's caller_dealer attribute (backend HANDOFF_NOTE_ENABLED)."""
+    _enable(monkeypatch, all_channels=True)
+    notify = _stub(channel_type="Channel::Api", conv_attrs={"caller_dealer": "petaling_jaya"})
+
+    await sync.maybe_escalate(_payload(labels=("escalate",)))
+
+    body = json.loads(notify.calls.last.request.read())
+    assert body.get("dealer") is None
+    get_proton_config_client.cache_clear()

@@ -1,0 +1,229 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] Idle monitor never signs out a fresh login (0079 follow-up)
+
+With SESSION_IDLE_TIMEOUT_MINUTES > 0 every login whose browser held an
+old proton_last_activity_ms stamp was signed out within a second: 0079's
+reload/reopen bypass judged the bare timestamp left by the PREVIOUS
+session (menu logout, closed tab and token expiry never clear it) on the
+new session's first dashboard load, and fired.
+
+* idleMonitor.js: stamps are "<ms>|<session key>" (FNV-1a of
+  uid|client|expiry from cw_d_session_info, never the token) and only the
+  current session's stamp counts, at install and on every check. No live
+  session -> the monitor does not arm. A session change under the tab
+  restarts the window; a session that disappears stops the monitor.
+* useProtonIdleTimeout.js: never arms on /login or /auth pages (same test
+  as DashboardController#set_application_pack) or without the auth cookie.
+* store/utils/api.js: setAuthCredentials (every successful sign-in) drops
+  the old stamp.
+
+---
+diff --git a/app/javascript/dashboard/composables/idleMonitor.js b/app/javascript/dashboard/composables/idleMonitor.js
+index 5f1b877..d32196e 100644
+--- a/app/javascript/dashboard/composables/idleMonitor.js
++++ b/app/javascript/dashboard/composables/idleMonitor.js
+@@ -5,9 +5,41 @@
+ // Activity is shared across tabs through `storage` (localStorage in the SPA):
+ // a user active in tab B must not be logged out because tab A saw no input.
+ // Reading the shared stamp on every check is the whole cross-tab mechanism.
++//
++// Patch 0093: a stamp belongs to the login session that wrote it. 0079 stored
++// a bare timestamp, and nothing clears it when a session ends without the
++// monitor firing (menu logout, closed tab, token expiry). The next login's
++// first dashboard load then read that old stamp in the reload/reopen bypass
++// and signed the brand-new session out within a second. With `session`
++// given, a stamp is "<ms>|<session key>", and only a stamp written by the
++// current session counts; a bare 0079 stamp or another session's is ignored.
+ export const ACTIVITY_KEY = 'proton_last_activity_ms';
+ const CHECK_EVERY_MS = 15000;
+ 
++// Same test DashboardController#set_application_pack uses to serve the v3
++// (login / auth) bundle. The monitor is never armed on those pages.
++export function isAuthPath(pathname) {
++  const p = String(pathname || '');
++  return p.includes('/auth') || p.includes('/login');
++}
++
++// Non-secret key for the session in the cw_d_session_info cookie: a 32-bit
++// FNV-1a hash of uid|client|expiry (never the access token itself, since this
++// lands in localStorage). A new sign-in gets a new client and expiry, so a
++// new key. Null when there is no usable session.
++export function sessionKey(auth) {
++  if (!auth || typeof auth !== 'object' || !auth.uid || !auth.client) {
++    return null;
++  }
++  const s = `${auth.uid}|${auth.client}|${auth.expiry || ''}`;
++  let h = 0x811c9dc5;
++  for (let i = 0; i < s.length; i += 1) {
++    h ^= s.charCodeAt(i);
++    h = Math.imul(h, 0x01000193) >>> 0;
++  }
++  return h.toString(16).padStart(8, '0');
++}
++
+ export function createIdleMonitor({
+   timeoutMinutes,
+   now = () => Date.now(),
+@@ -16,20 +48,42 @@ export function createIdleMonitor({
+   // Returns true while something (an active softphone call) must keep the
+   // session alive despite no input. Polled, never cached.
+   hold = () => false,
++  // Patch 0093: returns the current session key (sessionKey()), or a falsy
++  // value when nobody is signed in. Polled, never cached. Omitted = 0079
++  // behaviour (unbound stamps).
++  session = null,
+   setIntervalFn = setInterval,
+   clearIntervalFn = clearInterval,
+ }) {
++  const off = { enabled: false, touch() {}, check: () => false, stop() {} };
+   const timeoutMs = Number(timeoutMinutes) * 60 * 1000;
+   // Off unless a positive number of minutes was configured.
+   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+-    return { enabled: false, touch() {}, check: () => false, stop() {} };
++    return off;
+   }
+ 
++  const bound = typeof session === 'function';
++  const currentSession = () => {
++    try {
++      return session() || null;
++    } catch (e) {
++      return null;
++    }
++  };
++  let sid = bound ? currentSession() : null;
++  // No live session: there is nothing to sign out, so never arm (and never
++  // fire at install).
++  if (bound && !sid) return off;
++
+   let last = now();
+   let fired = false;
++  let timer = null;
+   const read = () => {
+     try {
+-      const v = Number(storage && storage.getItem(ACTIVITY_KEY));
++      const raw = String((storage && storage.getItem(ACTIVITY_KEY)) || '');
++      const [ms, owner] = raw.split('|');
++      if (bound && owner !== sid) return 0; // another (or no) session's stamp
++      const v = Number(ms);
+       return Number.isFinite(v) && v > 0 ? v : 0;
+     } catch (e) {
+       return 0;
+@@ -38,7 +92,9 @@ export function createIdleMonitor({
+   const touch = () => {
+     last = now();
+     try {
+-      if (storage) storage.setItem(ACTIVITY_KEY, String(last));
++      if (storage) {
++        storage.setItem(ACTIVITY_KEY, bound ? `${last}|${sid}` : String(last));
++      }
+     } catch (e) {
+       /* storage blocked: per-tab tracking still works */
+     }
+@@ -62,8 +118,27 @@ export function createIdleMonitor({
+     onIdle();
+     return true;
+   };
++  const stop = () => {
++    if (timer !== null) clearIntervalFn(timer);
++  };
+   const check = () => {
+     if (fired) return false;
++    if (bound) {
++      const cur = currentSession();
++      if (!cur) {
++        // Signed out elsewhere (menu logout, another tab): nothing to do.
++        fired = true;
++        stop();
++        return false;
++      }
++      if (cur !== sid) {
++        // A new sign-in replaced the session under this tab: its idle window
++        // starts now, never from the old session's activity.
++        sid = cur;
++        touch();
++        return false;
++      }
++    }
+     if (isHeld()) {
+       // Held (in a call): the clock restarts from now, so the full window
+       // runs only after the hold is released.
+@@ -78,12 +153,14 @@ export function createIdleMonitor({
+   };
+   // Reload/reopen bypass: judge the stamp left by the previous page load BEFORE
+   // touching, or reopening the app after the timeout would reset the clock.
++  // Bound (0093): only this session's own stamp is judged, so a fresh login is
++  // never signed out by the previous session's last activity.
+   const previous = read();
+   if (previous > 0 && now() - previous >= timeoutMs && !isHeld()) {
+     fire();
+   } else {
+     touch();
+   }
+-  const timer = setIntervalFn(check, CHECK_EVERY_MS);
+-  return { enabled: true, touch, check, stop: () => clearIntervalFn(timer) };
++  timer = setIntervalFn(check, CHECK_EVERY_MS);
++  return { enabled: true, touch, check, stop };
+ }
+diff --git a/app/javascript/dashboard/composables/useProtonIdleTimeout.js b/app/javascript/dashboard/composables/useProtonIdleTimeout.js
+index c160ea5..fb5fe0b 100644
+--- a/app/javascript/dashboard/composables/useProtonIdleTimeout.js
++++ b/app/javascript/dashboard/composables/useProtonIdleTimeout.js
+@@ -9,7 +9,7 @@ import {
+   clearCookiesOnLogout,
+   deleteIndexedDBOnLogout,
+ } from 'dashboard/store/utils/api';
+-import { createIdleMonitor } from './idleMonitor';
++import { createIdleMonitor, isAuthPath, sessionKey } from './idleMonitor';
+ 
+ let installed = false;
+ 
+@@ -58,6 +58,11 @@ export function installProtonIdleTimeout() {
+   if (installed || typeof window === 'undefined') return;
+   const minutes = Number(window.__PROTON_IDLE_TIMEOUT_MINUTES__ || 0);
+   if (!(minutes > 0)) return;
++  // Patch 0093: never arm on the login / auth pages, and never without a live
++  // session -- with nobody signed in there is nothing to time out, and arming
++  // there is what let a stale stamp sign a fresh login out.
++  if (isAuthPath(window.location && window.location.pathname)) return;
++  if (!Auth.hasAuthCookie()) return;
+   installed = true;
+   let storage = null;
+   try {
+@@ -69,6 +74,9 @@ export function installProtonIdleTimeout() {
+     timeoutMinutes: minutes,
+     storage,
+     onIdle: signOut,
++    // Patch 0093: bind stamps to this login session (see idleMonitor.js).
++    session: () =>
++      Auth.hasAuthCookie() ? sessionKey(Auth.getAuthData()) : null,
+     hold: () =>
+       typeof window.__PROTON_IDLE_HOLD__ === 'function' &&
+       window.__PROTON_IDLE_HOLD__(),
+diff --git a/app/javascript/dashboard/store/utils/api.js b/app/javascript/dashboard/store/utils/api.js
+index 002f525..104fba8 100644
+--- a/app/javascript/dashboard/store/utils/api.js
++++ b/app/javascript/dashboard/store/utils/api.js
+@@ -4,6 +4,7 @@ import { LOCAL_STORAGE_KEYS } from 'dashboard/constants/localStorage';
+ import { SESSION_STORAGE_KEYS } from 'dashboard/constants/sessionStorage';
+ import { LocalStorage } from 'shared/helpers/localStorage';
+ import SessionStorage from 'shared/helpers/sessionStorage';
++import { ACTIVITY_KEY } from 'dashboard/composables/idleMonitor';
+ import { emitter } from 'shared/helpers/mitt';
+ import {
+   ANALYTICS_IDENTITY,
+@@ -34,6 +35,14 @@ export const setAuthCredentials = response => {
+     // 24 h, which made js-cookie write an already-expired cookie.
+     expires: expiryDate,
+   });
++  // Patch 0093: a new sign-in starts a new idle window. Drop whatever stamp
++  // the previous session left so the idle monitor cannot judge this login by
++  // it (idleMonitor.js also ignores stamps of other sessions).
++  try {
++    window.localStorage.removeItem(ACTIVITY_KEY);
++  } catch (e) {
++    /* storage blocked: nothing stored to clear */
++  }
+   setUser(response.data.data, expiryDate);
+ };
+ 

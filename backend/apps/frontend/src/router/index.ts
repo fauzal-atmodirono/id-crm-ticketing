@@ -8,6 +8,8 @@ const routes: RouteRecordRaw[] = [
 ];
 
 export const router = createRouter({
-  history: createWebHistory(),
+  // BASE_URL follows vite's --base, so the app also works under a sub-path
+  // (the VM test console is served at /apps/test-console/).
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes,
 });

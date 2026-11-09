@@ -112,6 +112,12 @@ COPY --from=builder /app/app/views/api/v1/models/_user.json.jbuilder /app/app/vi
 COPY --from=builder /app/app/views/api/v1/models/_agent.json.jbuilder /app/app/views/api/v1/models/_agent.json.jbuilder
 COPY --from=builder /app/app/views/platform/api/v1/models/_user.json.jbuilder /app/app/views/platform/api/v1/models/_user.json.jbuilder
 
+# Patch 0086 (FIX-51, days_before filter 500) edits a Rails service. Without
+# this COPY the fix is applied in the builder only and never ships.
+# tests/test_dockerfile_runtime_copies.py fails if any server-side patched
+# file is left out of this stage.
+COPY --from=builder /app/app/services/filter_service.rb /app/app/services/filter_service.rb
+
 # Overwrite the baked-in upstream .git_sha so the in-app "Build <sha>" display
 # (and GET /api) reflects OUR commit, not upstream's frozen v4.15.1 release
 # commit — see the PROTON_BUILD_SHA comment near the top of this file.

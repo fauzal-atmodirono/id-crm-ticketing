@@ -1,5 +1,5 @@
 From: Proton CRM <build@proton.local>
-Subject: [PATCH 0098] cases: sort control (Newest first default, Oldest first, Recently updated) applied server-side
+Subject: [PATCH 0098] cases: sort control (Newest first default, Oldest first, Recently updated) applied server-side; Created column
 
 diff --git a/app/javascript/dashboard/api/protonCases.js b/app/javascript/dashboard/api/protonCases.js
 index f75e046..ff677c6 100644
@@ -89,6 +89,46 @@ index f75e046..ff677c6 100644
    return {
      rows,
      fetchedCount: rows.length,
+diff --git a/app/javascript/dashboard/components/widgets/ProtonCasesTable.vue b/app/javascript/dashboard/components/widgets/ProtonCasesTable.vue
+index c7eabc7..a70edf2 100644
+--- a/app/javascript/dashboard/components/widgets/ProtonCasesTable.vue
++++ b/app/javascript/dashboard/components/widgets/ProtonCasesTable.vue
+@@ -95,6 +95,17 @@ export default {
+     },
+   },
+   methods: {
++    // CASE-002: the case's creation instant (unix epoch seconds, from
++    // mapConversationToCaseRow's createdAt) as a short local date-time, so
++    // the Cases page's sort order is visible. Missing -> em dash.
++    formatCreated(createdAt) {
++      const seconds = Number(createdAt);
++      if (!createdAt || Number.isNaN(seconds) || seconds <= 0) return '—';
++      return new Date(seconds * 1000).toLocaleString(undefined, {
++        dateStyle: 'short',
++        timeStyle: 'short',
++      });
++    },
+     resetFilters() {
+       this.divisionFilter = ALL;
+       this.caseTypeFilter = ALL;
+@@ -211,6 +222,7 @@ export default {
+         <thead>
+           <tr class="text-left border-b border-n-weak text-n-slate-12">
+             <th class="px-3 py-2 font-medium whitespace-nowrap">Case ID</th>
++            <th class="px-3 py-2 font-medium whitespace-nowrap">Created</th>
+             <th class="px-3 py-2 font-medium whitespace-nowrap">Division</th>
+             <th class="px-3 py-2 font-medium whitespace-nowrap">Concern</th>
+             <th class="px-3 py-2 font-medium whitespace-nowrap">
+@@ -241,6 +253,9 @@ export default {
+                 #{{ row.id }}
+               </router-link>
+             </td>
++            <td class="px-3 py-2 whitespace-nowrap tabular-nums">
++              {{ formatCreated(row.createdAt) }}
++            </td>
+             <td class="px-3 py-2 whitespace-nowrap">
+               {{ row.division ?? '—' }}
+             </td>
 diff --git a/app/javascript/dashboard/views/ProtonCasesPage.vue b/app/javascript/dashboard/views/ProtonCasesPage.vue
 index a2b8287..b93af70 100644
 --- a/app/javascript/dashboard/views/ProtonCasesPage.vue

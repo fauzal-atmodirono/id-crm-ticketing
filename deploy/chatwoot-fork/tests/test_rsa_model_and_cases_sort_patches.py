@@ -25,6 +25,7 @@ D = "app/javascript/dashboard/"
 RSA_PAGE = D + "views/ProtonRsaPage.vue"
 CASES_PAGE = D + "views/ProtonCasesPage.vue"
 CASES_API = D + "api/protonCases.js"
+CASES_TABLE = D + "components/widgets/ProtonCasesTable.vue"
 
 
 def _final(tmp_path_factory, path: str) -> str:
@@ -47,6 +48,11 @@ def rsa_page(tmp_path_factory):
 @pytest.fixture(scope="module")
 def cases_page(tmp_path_factory):
     return _final(tmp_path_factory, CASES_PAGE)
+
+
+@pytest.fixture(scope="module")
+def cases_table(tmp_path_factory):
+    return _final(tmp_path_factory, CASES_TABLE)
 
 
 @pytest.fixture(scope="module")
@@ -99,7 +105,7 @@ def test_client_check_names_the_field_before_submit(rsa_page):
         "createRsaIncident("
     )
     save = rsa_page.split("async saveEdit(id) {", 1)[1].split("async ", 1)[0]
-    assert save.index("missingVehicleModel(this.editForm)") < save.index(
+    assert save.index("missingVehicleModel(this.editForm, 'editError')") < save.index(
         "updateRsaIncident("
     )
 
@@ -151,3 +157,30 @@ def test_weekly_report_still_calls_without_sort():
     weekly = (FORK / "patches" / "0044-weekly-report.patch").read_text()
     assert "await fetchAllCases();" in weekly
     assert "ProtonWeeklyReport" not in P0098.read_text()
+
+
+# --- review follow-ups (10 Nov) ---------------------------------------------
+
+
+def test_edit_row_has_its_own_error(rsa_page):
+    """The inline-edit message renders in the edit row, not the create form."""
+    assert "editError: ''," in rsa_page
+    edit_row = rsa_page.split('v-model="editForm.vehicle_model"', 1)[1].split("</td>", 1)[0]
+    assert 'v-if="editError"' in edit_row
+    assert "{{ editError }}" in edit_row
+    start = rsa_page.split("startEdit(incident) {", 1)[1].split("},\n", 1)[0]
+    assert "this.editError = '';" in start
+    cancel = rsa_page.split("cancelEdit() {", 1)[1].split("},", 1)[0]
+    assert "this.editError = '';" in cancel
+    create_form = rsa_page.split("<!-- (b) Data-entry form -->", 1)[1].split("</form>", 1)[0]
+    assert "editError" not in create_form
+
+
+def test_cases_table_shows_created_column(cases_table):
+    heads = cases_table.split("<thead>", 1)[1].split("</thead>", 1)[0]
+    assert ">Created</th>" in heads
+    for kept in ("Case ID", "Division", "Concern", "Car Plate", "Status"):
+        assert kept in heads
+    assert heads.index("Case ID") < heads.index(">Created</th>")
+    assert "{{ formatCreated(row.createdAt) }}" in cases_table
+    assert "formatCreated(createdAt) {" in cases_table

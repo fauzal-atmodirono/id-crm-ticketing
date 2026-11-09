@@ -94,8 +94,15 @@ class _FakeQuery:
         self._limit_n = limit_n
 
     def where(self, field: str, op: str, value: Any) -> _FakeQuery:
-        assert op == "==", "the store only ever issues equality filters"
-        filtered = [(doc_id, data) for doc_id, data in self._docs if data.get(field) == value]
+        assert op in ("==", ">="), "the store issues equality filters and since()'s `at >=` bound"
+        if op == "==":
+            filtered = [(doc_id, data) for doc_id, data in self._docs if data.get(field) == value]
+        else:
+            filtered = [
+                (doc_id, data)
+                for doc_id, data in self._docs
+                if data.get(field) is not None and data.get(field) >= value
+            ]
         return _FakeQuery(
             self._collection_store,
             filtered,
@@ -249,6 +256,27 @@ async def test_since_returns_events_in_chronological_order():
 
         assert [e.status for e in events] == ["available", "on_call", "wrap_up"]
         assert [e.at for e in events] == sorted(e.at for e in events)
+
+
+@pytest.mark.asyncio
+async def test_since_reads_only_the_window_server_side():
+    # Regression: since() streamed the agent's whole history and filtered
+    # client-side; on proton that took >20 s per agent and the Workforce page
+    # never loaded. The read must be bounded by `at` in the query itself.
+    with patch("chatbot.features.routing.presence_store.firestore.Client", autospec=True) as C:
+        client = _FakeFirestoreClient()
+        C.return_value = client
+        store = _store()
+        for hour in range(0, 8):
+            await store.append(_event("available", _dt(hour), previous=None))
+        await store.append(_event("on_call", _dt(10), previous="available"))
+        await store.append(_event("wrap_up", _dt(11), previous="on_call"))
+
+        client.stream_log.clear()
+        events = await store.since(AGENT, _dt(10))
+
+        assert [e.status for e in events] == ["on_call", "wrap_up"]
+        assert client.stream_log == [2], "since() must not stream events before the window"
 
 
 @pytest.mark.asyncio

@@ -238,7 +238,18 @@ class PresenceEventStore:
         try:
 
             def _query() -> list[PresenceEvent]:
-                docs = self._collection().where("agent_id", "==", agent_id).stream()
+                # Bounded server-side by `at`: streaming every event the
+                # agent ever had and filtering here took over 20 s per agent
+                # on proton (months of poller events), so GET /admin/workforce
+                # never answered. Same shape as `latest()` and served by the
+                # same (agent_id ASC, at DESC) composite index.
+                docs = (
+                    self._collection()
+                    .where("agent_id", "==", agent_id)
+                    .where("at", ">=", at)
+                    .order_by("at", direction=firestore.Query.DESCENDING)
+                    .stream()
+                )
                 events = [e for e in (_from_document(d) for d in docs) if e is not None]
                 events = [e for e in events if e.at >= at]
                 events.sort(key=lambda e: e.at)

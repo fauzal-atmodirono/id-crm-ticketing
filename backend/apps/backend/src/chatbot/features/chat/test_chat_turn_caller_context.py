@@ -307,7 +307,8 @@ async def test_anonymous_and_unknown_sessions_hand_over_no_number() -> None:
     svc, served, deltas = _svc_deltas(_settings(), _Lookup())
     await svc.handle_turn(session_id="sim-1", text="book a test drive")
     await svc.handle_turn(session_id="sim-2", text="book a test drive", persona_phone=NEW)
-    assert deltas == [None, None]
+    # an entry exists but is not trusted: the number is explicitly cleared
+    assert deltas == [{"caller_trusted_phone": ""}, {"caller_trusted_phone": ""}]
     assert "already have their phone number" not in served[-1]
 
 
@@ -345,3 +346,38 @@ async def test_cache_entry_expires_after_thirty_minutes() -> None:
     await svc.handle_turn(session_id="sim-1", text="hi", persona_phone=AHMAD)
     assert lookup.calls == [AHMAD, AHMAD]
     assert "Hi Ahmad" in served[-1]
+
+
+# --- fix round 2: a stale trusted number is cleared; the tool says "leave it empty"
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_that_is_no_longer_trusted_clears_the_number() -> None:
+    lookup = _Lookup()
+    svc, _, deltas = _svc_deltas(_settings(), lookup)
+    now = [0.0]
+    svc._caller_clock = lambda: now[0]  # type: ignore[method-assign]
+    await svc.handle_turn(session_id="sim-1", text="hi", persona_phone=AHMAD)
+    assert deltas[-1] == {"caller_trusted_phone": AHMAD}
+    lookup.mode = "raise"
+    now[0] += 31 * 60
+    await svc.handle_turn(session_id="sim-1", text="hi", persona_phone=AHMAD)
+    assert deltas[-1] == {"caller_trusted_phone": ""}
+
+
+def test_book_test_drive_tool_tells_the_model_to_leave_the_number_empty() -> None:
+    svc, _, _ = _svc_deltas(_settings(), _Lookup())
+    tool = next(
+        getattr(t, "func", t)
+        for t in svc._support_agent.tools
+        if getattr(getattr(t, "func", t), "__name__", "") == "book_test_drive_tool"
+    )
+    doc = tool.__doc__ or ""
+    assert 'phone_number=""' in doc and "never invent" in doc
+
+
+@pytest.mark.asyncio
+async def test_flag_off_sends_no_state_delta() -> None:
+    svc, _, deltas = _svc_deltas(_settings(chat_turn_caller_context_enabled=False), _Lookup())
+    await svc.handle_turn(session_id="sim-1", text="hi", persona_phone=AHMAD)
+    assert deltas == [None]

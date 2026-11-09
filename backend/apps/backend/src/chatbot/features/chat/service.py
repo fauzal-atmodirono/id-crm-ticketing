@@ -561,8 +561,9 @@ class OrchestratorService:
         Bounded (PHONE_CALLER_LOOKUP_TIMEOUT_SECONDS, plus a small margin over
         the service's own deadline) and fail-open: a timeout, an error or a
         failed lookup adds nothing -- "we do not know" is not "a new customer".
-        The result (even "") is cached for the session, so a slow CRM costs
-        at most one bounded wait per conversation.
+        The result (even "") is cached for the session and re-resolved once
+        per ``_CALLER_CONTEXT_TTL_SECONDS`` (30-minute) window (R52), so a
+        slow CRM costs at most one bounded wait per window.
         """
         if (
             not self._settings.chat_turn_caller_context_enabled
@@ -701,9 +702,11 @@ class OrchestratorService:
         # tool via session state (never via the prompt). No entry -> the
         # call is exactly as before.
         entry = getattr(self, "_caller_by_session", {}).get(session_id)
+        # An entry that is not (or no longer) trusted sends "" so a number
+        # from an earlier window cannot linger in session state.
         extra: dict[str, Any] = (
             {"state_delta": {"caller_trusted_phone": entry.trusted_phone}}
-            if entry is not None and entry.trusted_phone
+            if entry is not None
             else {}
         )
         async for event in runner.run_async(

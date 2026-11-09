@@ -1512,7 +1512,8 @@ class ChatRouter:
     # --- Frontend-facing API (consumed by the Vue app) ----------------------
 
     def _guard_session(self, session_id: str, x_api_key: str | None) -> None:
-        """R49: /chat/turn and /voice/turn are reachable from the browser, and
+        """R49/R53: /chat/turn, /voice/turn, /chat/stream, /chat/csat and
+        /chat/nps are reachable from the browser, and
         the browser chooses ``session_id``. A server-owned id (a WhatsApp
         sender's, an agent-service crm- conversation, a phone call, ...)
         would let it read or steer that session -- including its cached
@@ -1560,28 +1561,40 @@ class ChatRouter:
             products=_products_list(result),
         )
 
-    async def chat_csat(self, payload: CsatRequest) -> dict[str, str]:
+    async def chat_csat(
+        self, payload: CsatRequest, x_api_key: str | None = Header(default=None)
+    ) -> dict[str, str]:
+        self._guard_session(payload.session_id, x_api_key)  # R53
         await self.orchestrator.record_csat(payload.session_id, payload.score, channel="web")
         return {
             "status": "ok",
             "message": "Thank you for your feedback!",
         }
 
-    async def chat_nps(self, payload: NpsRequest) -> dict[str, str]:
+    async def chat_nps(
+        self, payload: NpsRequest, x_api_key: str | None = Header(default=None)
+    ) -> dict[str, str]:
+        self._guard_session(payload.session_id, x_api_key)  # R53
         await self.orchestrator.record_nps(payload.session_id, payload.score, channel="web")
         return {
             "status": "ok",
             "message": "Thank you for your feedback!",
         }
 
-    async def chat_stream(self, session_id: str) -> StreamingResponse:
+    async def chat_stream(
+        self, session_id: str, x_api_key: str | None = Header(default=None)
+    ) -> StreamingResponse:
         """SSE stream of human-agent messages for a handed-off session.
 
         Emits one event per agent message. A 30-second heartbeat keeps the
         connection alive through HTTP proxies. The stream terminates when the
         session is unregistered (e.g. `New session` clicked) or when the
         client disconnects.
+
+        R53: a server-owned session id (a WhatsApp customer's agent replies)
+        needs the backend key, as for /chat/turn.
         """
+        self._guard_session(session_id, x_api_key)
         if self._handoff_bridge is None:
             raise HTTPException(status_code=503, detail="Live chat bridge disabled")
 

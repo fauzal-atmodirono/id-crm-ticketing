@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import { openAgentStream, postChatTurn } from '@/features/chat/api/chat.api';
 import { ANONYMOUS_PERSONA_ID, chatPersonaNumber } from '@/features/phone/personas';
+import { newSessionId } from '@/features/chat/sessionId';
 import type {
   AgentMessageEvent,
   ChatMessage,
@@ -9,7 +10,7 @@ import type {
 } from '@/features/chat/types';
 
 export const useChatStore = defineStore('chat', () => {
-  const sessionId = ref<string>(`sim-${crypto.randomUUID()}`);
+  const sessionId = ref<string>(newSessionId('sim'));
   const messages = ref<ChatMessage[]>([
     {
       role: 'system',
@@ -76,7 +77,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function resetSession(): void {
     closeAgentStream();
-    sessionId.value = `sim-${crypto.randomUUID()}`;
+    sessionId.value = newSessionId('sim');
     messages.value = [
       { role: 'system', text: `New session: ${sessionId.value}` },
     ];

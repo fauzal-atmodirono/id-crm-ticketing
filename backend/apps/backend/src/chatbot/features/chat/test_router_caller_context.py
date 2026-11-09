@@ -182,3 +182,27 @@ def test_whatsapp_without_a_twilio_token_never_claims_a_number() -> None:
     params = {"From": "whatsapp:+60000000101", "Body": "hi", "MessageSid": "SM1"}
     client.post("/webhooks/twilio-whatsapp", data=params)
     assert "customer_phone" not in orch.handle_turn.await_args.kwargs  # type: ignore[attr-defined]
+
+
+# --- fix round 2: stream / csat / nps are guarded too (R53) --------------------
+
+
+@pytest.mark.parametrize("path", ["/chat/csat", "/chat/nps"])
+def test_browser_cannot_rate_a_server_owned_session(path: str) -> None:
+    client, orch = _keyed()
+    orch.record_csat = AsyncMock()  # type: ignore[method-assign]
+    orch.record_nps = AsyncMock()  # type: ignore[method-assign]
+    res = client.post(path, json={"session_id": "whatsapp-+60000000101", "score": 5})
+    assert res.status_code == 403
+    orch.record_csat.assert_not_awaited()
+    orch.record_nps.assert_not_awaited()
+    ok = client.post(path, json={"session_id": "crm-42", "score": 5}, headers={"x-api-key": KEY})
+    assert ok.status_code == 200
+    browser = client.post(path, json={"session_id": "sim-1", "score": 5})
+    assert browser.status_code == 200
+
+
+def test_browser_cannot_open_a_server_owned_stream() -> None:
+    client, _ = _keyed()
+    res = client.get("/chat/stream/whatsapp-+60000000101")
+    assert res.status_code == 403

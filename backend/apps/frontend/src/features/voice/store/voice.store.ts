@@ -4,13 +4,14 @@ import { openAgentStream } from '@/features/chat/api/chat.api';
 import type { AgentMessageEvent } from '@/features/chat/types';
 import { postVoiceTurn, postVoiceTts } from '@/features/voice/api/voice.api';
 import { ANONYMOUS_PERSONA_ID, chatPersonaNumber } from '@/features/phone/personas';
+import { newSessionId } from '@/features/chat/sessionId';
 import type { HandoffPayload } from '@/features/chat/types';
 import type { VoiceEntry } from '@/features/voice/types';
 
 export type ConversationPhase = 'idle' | 'listening' | 'processing' | 'speaking';
 
 export const useVoiceStore = defineStore('voice', () => {
-  const sessionId = ref<string>(`voice-${crypto.randomUUID()}`);
+  const sessionId = ref<string>(newSessionId('voice'));
   const entries = ref<VoiceEntry[]>([
     {
       kind: 'system',
@@ -97,7 +98,7 @@ export const useVoiceStore = defineStore('voice', () => {
   function resetSession(): void {
     closeAgentStream();
     stopAssistantAudio();
-    sessionId.value = `voice-${crypto.randomUUID()}`;
+    sessionId.value = newSessionId('voice');
     entries.value = [{ kind: 'system', text: `New session: ${sessionId.value}` }];
     phase.value = 'idle';
     handoff.value = null;

@@ -1,0 +1,107 @@
+From: Proton CRM <build@proton.local>
+Subject: [PATCH 0096] conversation list: a call-archive note previews as "Call recording", never its gs:// lines
+
+diff --git a/app/javascript/dashboard/components-next/Conversation/ConversationCard/CardMessagePreview.vue b/app/javascript/dashboard/components-next/Conversation/ConversationCard/CardMessagePreview.vue
+index c8c3977..9d65136 100644
+--- a/app/javascript/dashboard/components-next/Conversation/ConversationCard/CardMessagePreview.vue
++++ b/app/javascript/dashboard/components-next/Conversation/ConversationCard/CardMessagePreview.vue
+@@ -2,6 +2,11 @@
+ import { computed } from 'vue';
+ import { useI18n } from 'vue-i18n';
+ import { useMessageFormatter } from 'shared/composables/useMessageFormatter';
++// 0096: a call-archive note previews as a label, never its gs:// lines.
++import {
++  isProtonCallArchiveNote,
++  PROTON_CALL_NOTE_PREVIEW,
++} from 'dashboard/components/proton/useProtonCallRecording.js';
+ 
+ import Avatar from 'dashboard/components-next/avatar/Avatar.vue';
+ 
+@@ -20,6 +25,9 @@ const lastNonActivityMessageContent = computed(() => {
+   const { lastNonActivityMessage = {}, customAttributes = {} } =
+     props.conversation;
+   const { email: { subject } = {} } = customAttributes;
++  if (!subject && isProtonCallArchiveNote(lastNonActivityMessage?.content)) {
++    return PROTON_CALL_NOTE_PREVIEW;
++  }
+   return getPlainText(
+     subject || lastNonActivityMessage?.content || t('CHAT_LIST.NO_CONTENT')
+   );
+diff --git a/app/javascript/dashboard/components-next/Conversation/ConversationCard/CardMessagePreviewWithMeta.vue b/app/javascript/dashboard/components-next/Conversation/ConversationCard/CardMessagePreviewWithMeta.vue
+index df2b22b..14bbb32 100644
+--- a/app/javascript/dashboard/components-next/Conversation/ConversationCard/CardMessagePreviewWithMeta.vue
++++ b/app/javascript/dashboard/components-next/Conversation/ConversationCard/CardMessagePreviewWithMeta.vue
+@@ -2,6 +2,11 @@
+ import { computed, ref } from 'vue';
+ import { useI18n } from 'vue-i18n';
+ import { useMessageFormatter } from 'shared/composables/useMessageFormatter';
++// 0096: a call-archive note previews as a label, never its gs:// lines.
++import {
++  isProtonCallArchiveNote,
++  PROTON_CALL_NOTE_PREVIEW,
++} from 'dashboard/components/proton/useProtonCallRecording.js';
+ 
+ import Avatar from 'dashboard/components-next/avatar/Avatar.vue';
+ import CardLabels from 'dashboard/components-next/Conversation/ConversationCard/CardLabels.vue';
+@@ -28,6 +33,9 @@ const lastNonActivityMessageContent = computed(() => {
+   const { lastNonActivityMessage = {}, customAttributes = {} } =
+     props.conversation;
+   const { email: { subject } = {} } = customAttributes;
++  if (!subject && isProtonCallArchiveNote(lastNonActivityMessage?.content)) {
++    return PROTON_CALL_NOTE_PREVIEW;
++  }
+   return getPlainText(
+     subject || lastNonActivityMessage?.content || t('CHAT_LIST.NO_CONTENT')
+   );
+diff --git a/app/javascript/dashboard/components-next/Conversation/ConversationCard/MessagePreview.vue b/app/javascript/dashboard/components-next/Conversation/ConversationCard/MessagePreview.vue
+index 5cce3cd..126ab7a 100644
+--- a/app/javascript/dashboard/components-next/Conversation/ConversationCard/MessagePreview.vue
++++ b/app/javascript/dashboard/components-next/Conversation/ConversationCard/MessagePreview.vue
+@@ -3,6 +3,11 @@ import { computed } from 'vue';
+ import { MESSAGE_TYPE } from 'widget/helpers/constants';
+ import { useMessageFormatter } from 'shared/composables/useMessageFormatter';
+ import Icon from 'dashboard/components-next/icon/Icon.vue';
++// 0096: a call-archive note previews as a label, never its gs:// lines.
++import {
++  isProtonCallArchiveNote,
++  PROTON_CALL_NOTE_PREVIEW,
++} from 'dashboard/components/proton/useProtonCallRecording.js';
+ 
+ const props = defineProps({
+   message: {
+@@ -50,6 +55,9 @@ const isMessagePrivate = computed(() => {
+ });
+ 
+ const parsedLastMessage = computed(() => {
++  if (isProtonCallArchiveNote(props.message.content)) {
++    return PROTON_CALL_NOTE_PREVIEW;
++  }
+   const { content_attributes: contentAttributes } = props.message;
+   const { email: { subject } = {} } = contentAttributes || {};
+   return getPlainText(subject || props.message.content);
+diff --git a/app/javascript/dashboard/components/widgets/conversation/MessagePreview.vue b/app/javascript/dashboard/components/widgets/conversation/MessagePreview.vue
+index 2421f94..c6d7ae7 100644
+--- a/app/javascript/dashboard/components/widgets/conversation/MessagePreview.vue
++++ b/app/javascript/dashboard/components/widgets/conversation/MessagePreview.vue
+@@ -2,6 +2,11 @@
+ import { MESSAGE_TYPE } from 'widget/helpers/constants';
+ import { useMessageFormatter } from 'shared/composables/useMessageFormatter';
+ import { ATTACHMENT_ICONS } from 'shared/constants/messages';
++// 0096: a call-archive note previews as a label, never its gs:// lines.
++import {
++  isProtonCallArchiveNote,
++  PROTON_CALL_NOTE_PREVIEW,
++} from 'dashboard/components/proton/useProtonCallRecording.js';
+ 
+ export default {
+   name: 'MessagePreview',
+@@ -39,6 +44,9 @@ export default {
+       return isPrivate;
+     },
+     parsedLastMessage() {
++      if (isProtonCallArchiveNote(this.message.content)) {
++        return PROTON_CALL_NOTE_PREVIEW;
++      }
+       const { content_attributes: contentAttributes } = this.message;
+       const { email: { subject } = {} } = contentAttributes || {};
+       return this.getPlainText(subject || this.message.content);

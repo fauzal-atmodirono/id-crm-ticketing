@@ -17,6 +17,7 @@ FORK = Path(__file__).resolve().parent.parent
 PATCHES = sorted((FORK / "patches").glob("*.patch"))
 P0094 = FORK / "patches" / "0094-call-recording-player.patch"
 PANEL = "app/javascript/dashboard/components/proton/ProtonCallRecordingPanel.vue"
+COMPOSABLE = "app/javascript/dashboard/components/proton/useProtonCallRecording.js"
 CONTACT_PANEL = "app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue"
 
 
@@ -33,6 +34,13 @@ def _added(path: str) -> str:
 
 @pytest.fixture(scope="module")
 def panel() -> str:
+    """The panel and the shared composable it delegates to (also used by
+    0095's in-note player), read as one unit."""
+    return _added(PANEL) + "\n" + _added(COMPOSABLE)
+
+
+@pytest.fixture(scope="module")
+def panel_only() -> str:
     return _added(PANEL)
 
 
@@ -54,6 +62,7 @@ def test_no_earlier_patch_touches_the_files_0094_edits():
         text = p.read_text()
         assert f"b/{CONTACT_PANEL}" not in text, p.name
         assert f"b/{PANEL}" not in text, p.name
+        assert f"b/{COMPOSABLE}" not in text, p.name
 
 
 def test_contact_panel_mounts_the_player_under_contact_info():
@@ -67,8 +76,11 @@ def test_contact_panel_mounts_the_player_under_contact_info():
 
 def test_panel_calls_the_backend_with_the_session_helper(panel):
     assert "import { adminRequest } from 'dashboard/api/protonAdmin';" in panel
-    assert "`/calls/${encodeURIComponent(props.conversationId)}/recording`" in panel
-    assert "adminRequest(`${recordingPath()}/retranscribe`, { method: 'POST' })" in panel
+    assert "`/calls/${encodeURIComponent(conversationId())}/recording`" in panel
+    assert "adminRequest(`${recordingPath()}${noteQuery()}`)" in panel
+    assert "adminRequest(`${recordingPath()}/retranscribe${noteQuery()}`, {" in panel
+    # the sidebar panel asks for the latest call: no message id
+    assert "useProtonCallRecording({ conversationId: () => props.conversationId })" in panel
 
 
 def test_panel_renders_an_inline_player_that_does_not_preload(panel):
@@ -81,8 +93,9 @@ def test_panel_renders_an_inline_player_that_does_not_preload(panel):
 
 def test_panel_is_hidden_unless_a_recording_is_available(panel):
     assert "v-if=\"state === 'available' || state === 'deleted'\"" in panel
-    # every failure (403 no permission, 404 off, 503 unconfigured) -> hidden
-    assert "if (mine === requestSeq) state.value = 'hidden';" in panel
+    # 403 no permission, 404 off, 503 unconfigured -> no player
+    assert "const FINAL_STATUSES = [403, 404, 503];" in panel
+    assert "if (FINAL_STATUSES.includes(e?.status)) {" in panel
     # ordinary chats never ask
     assert "attrs.value.call_recording_object" in panel
     assert "attrs.value.recording_sid" in panel
@@ -105,20 +118,67 @@ def test_panel_offers_transcript_and_retranscribe(panel):
     assert "e?.status === 429" in panel
 
 
-def test_panel_reloads_when_the_recording_attribute_appears(panel):
+def test_panel_reloads_when_the_recording_attribute_appears(panel_only):
     """The archive attribute lands minutes after the call; a conversation
     already open with recording_sid must pick it up."""
-    assert "attrs.value.call_recording_object,\n  ]," in panel
+    assert "attrs.value.call_recording_object || ''" in panel_only
+    assert "watch(\n  loadKey," in panel_only
+
+
+def test_panel_does_not_remint_on_unrelated_attribute_updates(panel_only):
+    """M2: the watcher keys on a string (conversation + recording object), not
+    a fresh array, and only a conversation change resets/unmounts."""
+    assert "const loadKey = computed(() =>" in panel_only
+    assert "`${props.conversationId}|${attrs.value.call_recording_object || ''}`" in panel_only
+    assert "watch(() => props.conversationId, reset);" in panel_only
+    assert "() => [" not in panel_only
+
+
+def test_panel_only_asks_for_agents_who_may_listen(panel_only):
+    assert (
+        "import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';"
+        in panel_only
+    )
+    assert "hasPermission('call_recording.listen')" in panel_only
+    assert "permitted.value && isRecordedCall.value" in panel_only
+
+
+def test_a_failed_refresh_keeps_a_working_player(panel):
+    assert "} else if (state.value === 'available') {\n        // A refresh failed: keep the player, say so." in panel
+    assert "message.value = 'Could not load — try again';" in panel
+
+
+def test_retranscribe_failure_does_not_tear_down_the_player(panel):
+    """M1: only 403, or 404 before anything loaded, collapses the player."""
+    assert "e?.status === 403 ||\n        (e?.status === 404 && state.value === 'idle')" in panel
+    assert "[403, 404, 503].includes(e?.status)" not in panel
+
+
+def test_starting_one_player_pauses_the_others(panel):
+    assert "const PLAY_EVENT = 'proton-call-recording-play';" in panel
+    assert "window.addEventListener(PLAY_EVENT, pauseIfOther);" in panel
+    assert "onScopeDispose(() => window.removeEventListener(PLAY_EVENT, pauseIfOther));" in panel
+    assert "if (audio && event.detail !== audio && !audio.paused) audio.pause();" in panel
+    assert "  async function onPlay() {\n    announcePlay();" in panel
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
-def test_panel_script_parses(panel, tmp_path):
-    script = panel.split("<script setup>", 1)[1].split("</script>", 1)[0]
+def test_panel_script_parses(panel_only, tmp_path):
+    script = panel_only.split("<script setup>", 1)[1].split("</script>", 1)[0]
     (tmp_path / "panel.mjs").write_text(script)
     subprocess.run(["node", "--check", str(tmp_path / "panel.mjs")], check=True)
+    (tmp_path / "composable.mjs").write_text(_added(COMPOSABLE))
+    subprocess.run(["node", "--check", str(tmp_path / "composable.mjs")], check=True)
 
 
 def test_a_rate_limited_retranscribe_says_how_long_to_wait(panel):
     assert "Re-transcribe limit reached — try again in ${minutes} min" in panel
     assert "?.detail?.retry_after_seconds" in panel
     assert "Math.ceil(seconds / 60)" in panel
+
+
+def test_a_new_call_in_the_same_conversation_drops_the_old_transcript(panel, panel_only):
+    """Round 2: when call_recording_object changes, the previous call's
+    transcript/open state/message must not show under the new recording."""
+    assert "  function forgetTranscript() {\n    transcriptText.value = '';\n    transcriptOpen.value = false;\n    message.value = '';" in panel
+    assert "    forgetTranscript();\n    load();" in panel_only

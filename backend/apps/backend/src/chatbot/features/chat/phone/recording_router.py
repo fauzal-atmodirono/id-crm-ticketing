@@ -14,7 +14,12 @@ can open. This router makes those recordings playable inside the conversation
   returns `{status, play_url, expires_at, transcript_url?, transcript_token?,
   can_retranscribe}`. Status `available`, `empty` or `deleted`; an object
   bound to another conversation, or a legacy one that could not be bound, is
-  404. `play_url` is a backend path carrying a <=5-minute HMAC token. The token
+  404. `?message_id=<id>` resolves ONE archive note instead (the in-note
+  player, fork patch 0095: a conversation can hold several calls): that
+  message, read from this conversation's own list, must be a private archive
+  note authored by the backend's identity, and its objects are proven exactly
+  as above (`recording_access.resolve_note_recording`); anything else is 404.
+  `play_url` is a backend path carrying a <=5-minute HMAC token. The token
   is signed, not encrypted: the object path inside it is readable, the bucket
   never appears.
 - `GET|HEAD /calls/{id}/recording/audio?t=` -- streams the object with the
@@ -27,7 +32,9 @@ can open. This router makes those recordings playable inside the conversation
   inline), so it never sits in a URL; `?t=` is still accepted.
 - `POST /calls/{id}/recording/retranscribe` -- same person/permission/scope.
   Re-runs the transcriber on the archived audio in the background and posts a
-  `[Re-transcribed]` private note. Limits: one per conversation per cooldown,
+  `[Re-transcribed]` private note (naming the note when `?message_id=` picked
+  one call). Limits: one per conversation (per note with `?message_id=`) per
+  cooldown,
   plus per-user and tenant-wide hourly caps (429 + Retry-After).
 
 **Audit, fail-closed** (review R45). One row per minted LINK: the first byte
@@ -100,6 +107,7 @@ from chatbot.features.chat.phone.recording_access import (
     TokenClaims,
     object_bound_to,
     parse_range,
+    resolve_note_recording,
     resolve_recording,
     sign_token,
     signing_secret,
@@ -122,6 +130,8 @@ _HOUR = 3600.0
 _NO_STORE = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
 # Chatwoot conversation ids are integers; anything else is refused (422).
 ConversationId = Annotated[str, Path(pattern=r"^\d{1,12}$")]
+# The in-note player names ONE archive note; same digits-only rule.
+NoteMessageId = Annotated[str | None, Query(pattern=r"^\d{1,12}$")]
 
 # nonce -> True (audited) or the Future of the audit write in flight.
 _audited_links: OrderedDict[str, Any] = OrderedDict()
@@ -297,22 +307,34 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
             raise HTTPException(status_code=404, detail="Conversation not found")
         return conversation
 
-    async def _resolve(cid: str, scope: Scope):
+    async def _resolve(cid: str, scope: Scope, message_id: str | None = None):
         conversation = await _conversation_in_scope(cid, scope)
         try:
-            res = await resolve_recording(
-                cid,
-                conversation,
-                chatwoot_messages,
-                store,
-                backend_sender,
-                bucket=_bucket(),
-                prefix=_prefix(),
-            )
+            if message_id is not None:
+                res = await resolve_note_recording(
+                    cid,
+                    int(message_id),
+                    conversation,
+                    chatwoot_messages,
+                    store,
+                    backend_sender,
+                    bucket=_bucket(),
+                    prefix=_prefix(),
+                )
+            else:
+                res = await resolve_recording(
+                    cid,
+                    conversation,
+                    chatwoot_messages,
+                    store,
+                    backend_sender,
+                    bucket=_bucket(),
+                    prefix=_prefix(),
+                )
         except Exception as exc:
             _log.error("call_recording_storage_failed", conversation_id=cid, error=str(exc))
             raise HTTPException(status_code=502, detail="Recording storage unavailable") from exc
-        if res.status in ("mismatch", "unverifiable"):
+        if res.status in ("mismatch", "unverifiable", "missing"):
             raise HTTPException(status_code=404, detail="Recording not found")
         return res
 
@@ -379,42 +401,54 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
     @router.get("/{conversation_id}/recording", dependencies=enabled)
     async def get_call_recording(
         conversation_id: ConversationId,
+        message_id: NoteMessageId = None,
         user_id: int = Depends(person),
         scope: Scope = Depends(data_scope),
     ) -> JSONResponse:
         secret = _secret()
-        res = await _resolve(conversation_id, scope)
+        res = await _resolve(conversation_id, scope, message_id)
+        note = {"message_id": int(message_id)} if message_id is not None else {}
         if res.status != "available" or res.recording is None:
             message = {
                 "deleted": "Call recording was deleted under the retention policy",
             }.get(res.status, "No call recording exists for this conversation")
             return JSONResponse(
-                {"status": res.status, "conversation_id": conversation_id, "message": message},
+                {
+                    "status": res.status,
+                    "conversation_id": conversation_id,
+                    "message": message,
+                    **note,
+                },
                 headers=_NO_STORE,
             )
         rec: ArchivedRecording = res.recording
         ttl = settings.call_recording_url_ttl_seconds
         path = f"/calls/{conversation_id}/recording"
-        token, expires = sign_token(
-            secret,
-            conversation_id=conversation_id,
-            object_name=rec.audio_object,
-            kind="audio",
-            user_id=user_id,
-            ttl_seconds=ttl,
-        )
         body: dict[str, Any] = {
             "status": "available",
             "conversation_id": conversation_id,
-            "play_url": f"{path}/audio?t={token}",
-            "expires_at": datetime.fromtimestamp(expires, UTC).isoformat(),
+            **note,
             "size_bytes": res.size,
             "can_retranscribe": bool(
-                settings.phone_recording_transcription_enabled and post_note is not None
+                rec.audio_object
+                and settings.phone_recording_transcription_enabled
+                and post_note is not None
             ),
         }
+        # A transcript-only archive note (per-note path) has no audio link.
+        if rec.audio_object:
+            token, expires = sign_token(
+                secret,
+                conversation_id=conversation_id,
+                object_name=rec.audio_object,
+                kind="audio",
+                user_id=user_id,
+                ttl_seconds=ttl,
+            )
+            body["play_url"] = f"{path}/audio?t={token}"
+            body["expires_at"] = datetime.fromtimestamp(expires, UTC).isoformat()
         if rec.transcript_object:
-            t_token, _ = sign_token(
+            t_token, t_expires = sign_token(
                 secret,
                 conversation_id=conversation_id,
                 object_name=rec.transcript_object,
@@ -424,11 +458,13 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
             )
             body["transcript_url"] = f"{path}/transcript"
             body["transcript_token"] = t_token
+            body.setdefault("expires_at", datetime.fromtimestamp(t_expires, UTC).isoformat())
         _log.info(
             "call_recording_link_minted",
             conversation_id=conversation_id,
             user_id=user_id,
             source=rec.source,
+            message_id=message_id,
         )
         return JSONResponse(body, headers=_NO_STORE)
 
@@ -521,7 +557,9 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
 
     # --- re-transcribe -------------------------------------------------------------
 
-    async def _run_retranscribe(conversation_id: str, rec: ArchivedRecording) -> None:
+    async def _run_retranscribe(
+        conversation_id: str, rec: ArchivedRecording, message_id: str | None = None
+    ) -> None:
         """Background task: never raises (the services invariant)."""
         try:
             audio = await asyncio.to_thread(store.read, _bucket(), rec.audio_object, None, None)
@@ -535,7 +573,11 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
             _log.warning("call_retranscribe_empty", conversation_id=conversation_id)
             return
         try:
-            await post_note(conversation_id, f"{RETRANSCRIBED_HEADER}\n\n{text}")
+            # Several calls can share a conversation: say which one this is.
+            which = (
+                f" (call archived in note #{message_id})" if message_id is not None else ""
+            )
+            await post_note(conversation_id, f"{RETRANSCRIBED_HEADER}{which}\n\n{text}")
             _log.info("call_retranscribed", conversation_id=conversation_id, chars=len(text))
         except Exception as exc:
             _log.error("call_retranscribe_note_failed", conversation_id=conversation_id, error=str(exc))
@@ -554,6 +596,7 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
     async def retranscribe_call_recording(
         background_tasks: BackgroundTasks,
         conversation_id: ConversationId,
+        message_id: NoteMessageId = None,
         user_id: int = Depends(person),
         scope: Scope = Depends(data_scope),
     ) -> JSONResponse:
@@ -562,13 +605,15 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
                 status_code=409,
                 detail="Transcription is disabled (PHONE_RECORDING_TRANSCRIPTION_ENABLED=false)",
             )
-        res = await _resolve(conversation_id, scope)
-        if res.status != "available" or res.recording is None:
+        res = await _resolve(conversation_id, scope, message_id)
+        if res.status != "available" or res.recording is None or not res.recording.audio_object:
             raise HTTPException(status_code=404, detail="No call recording exists for this conversation")
 
         now = monotonic()
         cooldown = max(0, int(settings.call_recording_retranscribe_cooldown_seconds))
-        last = _last_retranscribe.get(conversation_id)
+        # Per call: a second call's note in the same conversation is its own key.
+        key = conversation_id if message_id is None else f"{conversation_id}#{message_id}"
+        last = _last_retranscribe.get(key)
         if last is not None and now - last < cooldown:
             raise _too_many(
                 "This call was re-transcribed recently; try again later", cooldown - (now - last)
@@ -587,23 +632,23 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
             )
 
         previous = last
-        _last_retranscribe[conversation_id] = now
+        _last_retranscribe[key] = now
         mine.append(now)
         _global_runs.append(now)
 
         def _rollback() -> None:
             if previous is None:
-                _last_retranscribe.pop(conversation_id, None)
+                _last_retranscribe.pop(key, None)
             else:
-                _last_retranscribe[conversation_id] = previous
+                _last_retranscribe[key] = previous
             if mine and mine[-1] == now:
                 mine.pop()
             if _global_runs and _global_runs[-1] == now:
                 _global_runs.pop()
 
         if len(_last_retranscribe) > _STATE_CAP:
-            for key in [k for k, v in _last_retranscribe.items() if now - v >= cooldown]:
-                del _last_retranscribe[key]
+            for stale in [k for k, v in _last_retranscribe.items() if now - v >= cooldown]:
+                del _last_retranscribe[stale]
 
         await _audit_or_503(
             EVENT_CALL_RECORDING_RETRANSCRIBE,
@@ -613,7 +658,7 @@ def build_recording_router(  # noqa: PLR0915 -- one router, five small handlers
             "Call recording re-transcription requested",
             on_fail=_rollback,
         )
-        background_tasks.add_task(_run_retranscribe, conversation_id, res.recording)
+        background_tasks.add_task(_run_retranscribe, conversation_id, res.recording, message_id)
         return JSONResponse(
             {"status": "queued", "conversation_id": conversation_id, "retry_after_seconds": cooldown},
             status_code=202,
